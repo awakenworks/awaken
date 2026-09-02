@@ -38,24 +38,26 @@ async fn create_session(app: &Router) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-/// The built-in hand tools fold into one `agent_toolset_20260401` reference: the
-/// registered official tools inherit the Managed Agent `always_allow` default,
-/// while configurable `web_fetch` and `web_search` are disabled when no routed
-/// Web plugin is selected. An unversioned host-static Skill remains
-/// direct-session compatibility input and does not appear on Managed
-/// `agent.skills`.
+/// The built-in hand tools fold into one `agent_toolset_20260401` reference. This
+/// legacy fixture has no typed Agent Toolset, so the closed fallback keeps
+/// read/glob/grep on the Managed Agent `always_allow` default and projects
+/// bash/write/edit as enabled `always_ask` overrides. Configurable `web_fetch`
+/// and `web_search` remain disabled when no routed Web plugin is selected. An
+/// unversioned host-static Skill remains direct-session compatibility input and
+/// does not appear on Managed `agent.skills`.
 ///
 /// Cause/effect graph and decision table:
-/// C1=the host registers an official static tool, C2=a configurable Web plugin
-/// is absent, C3=an override names a closed Agent toolset member, C4=an
-/// unversioned host-static Skill exists; E1=the static
-/// tool inherits the enabled/always-allow default, E2=the Web tool is disabled,
-/// E3=the config's `type` repeats the
-/// closed member discriminator, E4=the direct-only Skill is absent from Managed
-/// capabilities.
-/// R1(C1,!C2)->E1 covers bash/read/write/edit/glob/grep;
-/// R2(!C1,C2,C3)->E2+E3 covers WebFetch and WebSearch.
-/// R3(C4, no versioned catalog record)->E4 covers profile convergence.
+/// C1=no typed Agent Toolset is bound, C2=the registered closed member is a
+/// controlled modification, C3=the registered closed member is perception,
+/// C4=a configurable Web plugin is absent, C5=an unversioned host-static Skill
+/// exists; E1=perception inherits the enabled/always-allow default,
+/// E2=controlled modification is explicitly enabled/always-ask, E3=the Web tool
+/// is disabled with the default policy repeated in its complete config,
+/// E4=the direct-only Skill is absent from Managed capabilities.
+/// R1(C1,C3)->E1 covers read/glob/grep and therefore emits no override;
+/// R2(C1,C2)->E2 covers bash/write/edit;
+/// R3(C4)->E3 covers WebFetch and WebSearch;
+/// R4(C5, no versioned catalog record)->E4 covers profile convergence.
 /// Constraints/invariants: one neutral `SessionToolConfiguration` owns policy;
 /// the Managed projector is the only wire owner, Web providers use the unified
 /// configured-provider registry, and there is no legacy static WebFetch path.
@@ -81,10 +83,13 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
             "type": "agent_toolset_20260401",
             // Every config carries all of {name, type, enabled, permission_policy}
             // as the `BetaManagedAgentsAgentToolConfig` SDK type requires; only
-            // deviations from `default_config` are listed. Registered official
-            // Hand members inherit always_allow; unavailable Web members flip
-            // only `enabled`.
+            // deviations from `default_config` are listed. Legacy perception
+            // members inherit always_allow, controlled modifications require
+            // confirmation, and unavailable Web members flip only `enabled`.
             "configs": [
+                { "name": "bash", "type": "bash", "enabled": true, "permission_policy": { "type": "always_ask" } },
+                { "name": "write", "type": "write", "enabled": true, "permission_policy": { "type": "always_ask" } },
+                { "name": "edit", "type": "edit", "enabled": true, "permission_policy": { "type": "always_ask" } },
                 { "name": "web_fetch", "type": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" } },
                 { "name": "web_search", "type": "web_search", "enabled": false, "permission_policy": { "type": "always_allow" } }
             ],

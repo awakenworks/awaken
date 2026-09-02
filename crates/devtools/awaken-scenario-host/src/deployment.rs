@@ -73,6 +73,41 @@ impl ScenarioPlatform {
         }
         bindings
     }
+
+    /// Seed the deterministic Memory scenario through the same Resources
+    /// application used by its API, Managed admission, and Runtime. The fixed
+    /// identity lets the immutable Agent binding and the official id-only
+    /// Session resource name the same aggregate without a placeholder or a
+    /// path/order fallback.
+    pub(crate) async fn publish_managed_memory_store(&self, id: &str, name: &str) {
+        let workspace_id = self.host.local_workspace().to_string();
+        let stores = self.resources.memory_stores();
+        if let Some(existing) = stores
+            .get(&workspace_id, id)
+            .await
+            .expect("read deterministic Managed MemoryStore fixture")
+        {
+            assert_eq!(existing.name, name, "deterministic MemoryStore name drift");
+            assert_eq!(
+                existing.state,
+                awaken_resource_contract::ResourceState::Active,
+                "deterministic MemoryStore must remain active"
+            );
+            return;
+        }
+        stores
+            .create(awaken_resource_contract::CreateMemoryStoreCommand {
+                workspace_id,
+                id: Some(id.into()),
+                name: name.into(),
+                description: "Deterministic Managed Memory scenario store".into(),
+                metadata: Default::default(),
+                initial_state: awaken_resource_contract::ResourceState::Active,
+                retention_policy: Default::default(),
+            })
+            .await
+            .expect("publish deterministic Managed MemoryStore fixture");
+    }
 }
 
 static SCENARIO_RUNTIME_AUTHORITY: std::sync::OnceLock<

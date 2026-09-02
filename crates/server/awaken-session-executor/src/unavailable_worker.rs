@@ -188,6 +188,13 @@ mod tests {
             "T2 list"
         );
         assert!(
+            files
+                .list_files_including_deleted("workspace", None)
+                .await
+                .is_err(),
+            "T2 recovery list"
+        );
+        assert!(
             files.mark_file_deleted("workspace", "file").await.is_err(),
             "T2 delete"
         );

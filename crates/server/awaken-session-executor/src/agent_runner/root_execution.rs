@@ -12,20 +12,22 @@ use awaken_runtime_contract::delegation::RunDelegationService;
 use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::terminal::{
+    CommittedTerminalProjection, committed_terminal_projection, deliver_committed_terminal,
+};
 use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 use awaken_sandbox_local::LocalProvider;
 #[cfg(test)]
 use awaken_sandbox_local::LocalSandbox;
 
+use super::{AgentRunBoundary, settled_agent_boundary};
 #[cfg(test)]
 use super::{
-    AgentRunBoundary, ChildExecutionAdapters, ChildRunRequest, RunScheduler,
-    run_configured_agent_until_boundary,
+    ChildExecutionAdapters, ChildRunRequest, RunScheduler, run_configured_agent_until_boundary,
 };
 use crate::agent_catalog::AgentCatalog;
 use crate::config::{
-    build_runtime_with_authorization, effective_tool_authorization, latest_assistant_text,
-    server_config,
+    build_runtime_with_authorization, effective_tool_authorization, server_config,
 };
 
 /// Where an Agent Run's tools execute. A delegated Agent shares the initiating
@@ -163,6 +165,48 @@ async fn run_configured_agent_inner(
         .resolve(agent_id)
         .ok_or_else(|| AgentRunError::Configuration(format!("unknown agent {agent_id:?}")))?
         .clone();
+    // Configuration and committed Run truth are the admission authority. They
+    // must be resolved before a Fresh provider can cause filesystem effects.
+    let mut ctx = context.ok_or_else(|| {
+        AgentRunError::Configuration(
+            "an Agent Run requires an explicitly owned commit/history context".to_string(),
+        )
+    })?;
+    if let Some(token) = cancellation {
+        ctx = ctx.with_cancellation(token);
+    }
+    if ctx.commit.is_none() || ctx.reader.is_none() {
+        return Err(AgentRunError::Configuration(
+            "an Agent Run requires commit and history wiring".to_string(),
+        ));
+    }
+    let reader = ctx.reader.clone().expect("checked above");
+    let thread_id = ThreadId(thread.to_string());
+
+    // A stable terminal Run is already complete. Reuse the runtime contract's
+    // sole committed-terminal projection and observer delivery before touching
+    // provider state; retry input and a missing/replaced sandbox cannot alter it.
+    if let Some(run_id) = stable_run_id.as_ref() {
+        match committed_terminal_projection(reader.as_ref(), run_id, &thread_id) {
+            CommittedTerminalProjection::Exact(terminal) => {
+                let _ = deliver_committed_terminal(&ctx.terminal_observers, &terminal).await;
+                return completed_agent_result(
+                    reader.as_ref(),
+                    &thread_id,
+                    RunState::Ended(terminal.cause),
+                );
+            }
+            CommittedTerminalProjection::IdentityConflict => {
+                return Err(AgentRunError::Runtime(
+                    awaken_runtime_contract::execution::Error::Execution(
+                        "stable Agent Run identity belongs to another Thread".to_string(),
+                    ),
+                ));
+            }
+            CommittedTerminalProjection::Nonterminal => {}
+        }
+    }
+
     // Reuse the parent's sandbox by default; a `Fresh` Agent Run gets its own root. The
     // created sandbox (if any) is bound here so the borrow lives for the whole run.
     let created = match &sandbox {
@@ -204,22 +248,7 @@ async fn run_configured_agent_inner(
     if let Some(service) = run_delegation {
         runtime = runtime.with_run_delegation(service);
     }
-    let mut ctx = context.ok_or_else(|| {
-        AgentRunError::Configuration(
-            "an Agent Run requires an explicitly owned commit/history context".to_string(),
-        )
-    })?;
-    if let Some(token) = cancellation {
-        ctx = ctx.with_cancellation(token);
-    }
     ctx = ctx.with_tool_executor(current_tool_executor);
-    if ctx.commit.is_none() || ctx.reader.is_none() {
-        return Err(AgentRunError::Configuration(
-            "an Agent Run requires commit and history wiring".to_string(),
-        ));
-    }
-    let reader = ctx.reader.clone().expect("checked above");
-    let thread_id = ThreadId(thread.to_string());
     let state = match stable_run_id {
         Some(run_id) => {
             runtime
@@ -235,33 +264,22 @@ async fn run_configured_agent_inner(
         }
     }
     .map_err(AgentRunError::Runtime)?;
-    if let RunState::Ended(cause) = &state
-        && !matches!(
-            cause,
-            awaken_agent_contract::agent::run::EndCause::NaturalEnd
-                | awaken_agent_contract::agent::run::EndCause::MaxSteps
-        )
-    {
-        return Err(AgentRunError::Runtime(
-            awaken_runtime_contract::execution::Error::Execution(format!(
-                "auxiliary Agent ended unsuccessfully: {cause:?}"
-            )),
-        ));
-    }
-    let text = latest_assistant_text(&reader.committed_messages(&thread_id));
-    let usage = usage_from_committed(reader.as_ref(), &thread_id);
-    Ok((text, usage))
+    completed_agent_result(reader.as_ref(), &thread_id, state)
 }
 
-/// Read a finished Agent Run's accumulated [`ThreadUsage`] out of committed
-/// thread state. The run loop writes the running cumulative under
-/// `THREAD_USAGE_STATE_KEY` each step, so the last `Set` is the whole tally
-/// (mirrors `SharedHost::thread_usage`).
-pub(super) fn usage_from_committed(
+fn completed_agent_result(
     reader: &dyn CommittedThreadView,
     thread_id: &ThreadId,
-) -> ThreadUsage {
-    ThreadUsage::from_committed_state(&reader.committed_state(thread_id))
+    state: RunState,
+) -> Result<(String, ThreadUsage), AgentRunError> {
+    match settled_agent_boundary(reader, thread_id, state)? {
+        AgentRunBoundary::Ended { text, usage } => Ok((text, usage)),
+        AgentRunBoundary::Awaiting => Err(AgentRunError::Runtime(
+            awaken_runtime_contract::execution::Error::Execution(
+                "an Agent Run escaped completion at an awaiting boundary".to_string(),
+            ),
+        )),
+    }
 }
 
 /// Run a default `assistant` Agent with `input` to completion and return its last

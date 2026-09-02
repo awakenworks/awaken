@@ -61,9 +61,9 @@ pub(super) fn workspace_path(subdir: &str) -> Result<String, pc::SandboxError> {
     }
     let components = lexical_components(subdir, true)?;
     Ok(if components.is_empty() {
-        "/workspace".into()
+        pc::WorkspaceLayout::ROOT.into()
     } else {
-        format!("/workspace/{}", components.join("/"))
+        format!("{}/{}", pc::WorkspaceLayout::ROOT, components.join("/"))
     })
 }
 
@@ -82,11 +82,12 @@ pub(super) fn read_root(subdir: &str, outputs_path: &str) -> Result<String, pc::
 pub(super) fn logical_path(logical: &str) -> Result<String, pc::SandboxError> {
     let logical = logical.trim_start_matches('/');
     let logical = lexical_components(logical, false)?.join("/");
+    let workspace = pc::WorkspaceLayout::ROOT.trim_start_matches('/');
     Ok(
-        if logical == "workspace" || logical.starts_with("workspace/") {
+        if logical == workspace || logical.starts_with(&format!("{workspace}/")) {
             format!("/{logical}")
         } else {
-            format!("/workspace/{logical}")
+            format!("{}/{logical}", pc::WorkspaceLayout::ROOT)
         },
     )
 }
@@ -112,7 +113,7 @@ pub(super) async fn write(
                 logical.clone(),
                 stage.clone(),
             ],
-            cwd: "/workspace".into(),
+            cwd: pc::WorkspaceLayout::ROOT.into(),
             env: Vec::new(),
             stdio: pc::Stdio::Null,
         })
@@ -135,7 +136,7 @@ pub(super) async fn write(
                     stage.clone(),
                     encoded,
                 ],
-                cwd: "/workspace".into(),
+                cwd: pc::WorkspaceLayout::ROOT.into(),
                 env: Vec::new(),
                 stdio: pc::Stdio::Null,
             })
@@ -156,7 +157,7 @@ pub(super) async fn write(
                 stage.clone(),
                 logical,
             ],
-            cwd: "/workspace".into(),
+            cwd: pc::WorkspaceLayout::ROOT.into(),
             env: Vec::new(),
             stdio: pc::Stdio::Null,
         })
@@ -175,7 +176,7 @@ async fn remove_staged_file(
     if let Ok(process) = sandbox
         .spawn(pc::Command {
             argv: vec!["rm".into(), "-f".into(), "--".into(), stage.to_string()],
-            cwd: "/workspace".into(),
+            cwd: pc::WorkspaceLayout::ROOT.into(),
             env: Vec::new(),
             stdio: pc::Stdio::Null,
         })
@@ -218,7 +219,7 @@ pub(super) async fn materialize_read_only_tree(
                 stage.clone(),
                 subdir.to_string(),
             ],
-            cwd: "/workspace".into(),
+            cwd: pc::WorkspaceLayout::ROOT.into(),
             env: Vec::new(),
             stdio: pc::Stdio::Null,
         })
@@ -234,7 +235,7 @@ pub(super) async fn materialize_read_only_tree(
             let chmod = sandbox
                 .spawn(pc::Command {
                     argv: vec!["chmod".into(), "u+x".into(), "--".into(), path],
-                    cwd: "/workspace".into(),
+                    cwd: pc::WorkspaceLayout::ROOT.into(),
                     env: Vec::new(),
                     stdio: pc::Stdio::Null,
                 })
@@ -256,7 +257,7 @@ pub(super) async fn materialize_read_only_tree(
                 "--".into(),
                 stage.clone(),
             ],
-            cwd: "/workspace".into(),
+            cwd: pc::WorkspaceLayout::ROOT.into(),
             env: Vec::new(),
             stdio: pc::Stdio::Null,
         })
@@ -277,7 +278,7 @@ pub(super) async fn materialize_read_only_tree(
                 stage.clone(),
                 backup,
             ],
-            cwd: "/workspace".into(),
+            cwd: pc::WorkspaceLayout::ROOT.into(),
             env: Vec::new(),
             stdio: pc::Stdio::Null,
         })
@@ -302,7 +303,7 @@ async fn remove_staged_tree(
                 "awaken-remove-staged-tree".into(),
                 stage.to_string(),
             ],
-            cwd: "/workspace".into(),
+            cwd: pc::WorkspaceLayout::ROOT.into(),
             env: Vec::new(),
             stdio: pc::Stdio::Null,
         })
@@ -334,7 +335,7 @@ fn removal_command(path: String) -> pc::Command {
             "awaken-remove-workspace-path".into(),
             path,
         ],
-        cwd: "/workspace".into(),
+        cwd: pc::WorkspaceLayout::ROOT.into(),
         env: Vec::new(),
         stdio: pc::Stdio::Null,
     }

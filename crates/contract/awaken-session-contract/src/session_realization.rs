@@ -12,6 +12,14 @@ use crate::{
     SessionRealizationLease, StageMcpAttachment,
 };
 
+mod repository_publication_projection;
+pub use repository_publication_projection::SessionRepositoryPublicationProjection;
+mod terminal_cleanup_authorization;
+pub use terminal_cleanup_authorization::{
+    SessionTerminalCleanupAssignment, SessionTerminalCleanupPreparationAuthorization,
+    SessionTerminalCleanupWork,
+};
+
 /// Exact durable Session projection consumed by local and remote realization.
 /// A Worker may cache it only as rebuildable execution input; the Session
 /// aggregate remains the sole authority.
@@ -30,6 +38,12 @@ pub struct FrozenSessionProjection {
     #[serde(default)]
     pub resource_revision: u64,
     pub resources: crate::ResolvedSessionResources,
+    /// Prior active generation for an in-flight physical replacement. New
+    /// Coordinators always include it; absence is accepted only for legacy
+    /// same-generation projections and never authorizes guessing from a Worker
+    /// cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_resource_manifest: Option<crate::SessionResourceManifest>,
     #[serde(default)]
     pub tools: crate::SessionToolConfiguration,
     pub mcp: Vec<crate::SessionMcpAttachment>,
@@ -88,6 +102,20 @@ impl SessionProjectionInstallMode {
     }
 }
 
+/// Whether decoding a frozen Resource transition can execute physical effects.
+///
+/// This is the sole compatibility decision for projections written before
+/// `previous_resource_manifest` existed. New projections always carry both
+/// aggregate-authored generations; callers that may perform Resource effects
+/// must require them. Validation-only recovery may accept a bound legacy
+/// projection as an already-installed no-op, but must not pass that transition
+/// to a physical effect port.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrozenResourceTransitionUse {
+    ApplyEffects,
+    ValidateInstalled,
+}
+
 impl FrozenSessionProjection {
     #[must_use]
     pub fn session_init(&self) -> crate::SessionInit {
@@ -102,6 +130,44 @@ impl FrozenSessionProjection {
             runtime: self.baseline.runtime.clone(),
             environment: self.baseline.environment.clone(),
         }
+    }
+
+    /// Decode the one aggregate-authored Resource transition for this frozen
+    /// projection. The typed use keeps legacy validation separate from any
+    /// effect-capable path without exposing a boolean compatibility switch.
+    pub fn resource_transition(
+        &self,
+        transition_use: FrozenResourceTransitionUse,
+    ) -> Result<crate::SessionResourceTransition, crate::RunError> {
+        let desired = crate::SessionResourceManifest::at_revision(
+            self.workspace_id.clone(),
+            self.resource_revision,
+            self.resources.clone(),
+        );
+        let previous = match &self.previous_resource_manifest {
+            Some(previous) => previous.clone(),
+            None if self.environment.binding().is_none() => {
+                // A legacy never-materialized projection has no physical prior
+                // generation. Empty→desired is conservative and lets a newly
+                // created/deferred Environment realize the complete manifest.
+                crate::SessionResourceManifest::at_revision(
+                    self.workspace_id.clone(),
+                    0,
+                    crate::ResolvedSessionResources::default(),
+                )
+            }
+            None if transition_use == FrozenResourceTransitionUse::ValidateInstalled => {
+                desired.clone()
+            }
+            None => {
+                return Err(crate::RunError::unavailable_classified(
+                    "session_resource_transition_missing",
+                    "durable Session Environment recovery requires the prior Resource generation",
+                ));
+            }
+        };
+        crate::SessionResourceTransition::new(previous, desired)
+            .map_err(|error| crate::RunError::bad_request(error.to_string()))
     }
 }
 
@@ -166,21 +232,61 @@ const fn frozen_agent_publication_facts(
     publication_present: bool,
     agent_id_matches: bool,
     source_revision_matches: bool,
-    runtime_matches: bool,
+    frozen_runtime_is_resolved: bool,
+    model_candidate_present: bool,
 ) -> FrozenAgentPublicationDecision {
-    if !has_frozen_revision {
-        FrozenAgentPublicationDecision::Unpinned
-    } else if !publication_present {
+    if publication_present {
+        if agent_id_matches && source_revision_matches && frozen_runtime_is_resolved {
+            FrozenAgentPublicationDecision::Exact
+        } else {
+            FrozenAgentPublicationDecision::Mismatch
+        }
+    } else if has_frozen_revision {
         if worker_placement {
             FrozenAgentPublicationDecision::MissingRequired
-        } else {
+        } else if frozen_runtime_is_resolved {
             FrozenAgentPublicationDecision::OptionalMissing
+        } else {
+            FrozenAgentPublicationDecision::Mismatch
         }
-    } else if agent_id_matches && source_revision_matches && runtime_matches {
-        FrozenAgentPublicationDecision::Exact
-    } else {
+    } else if !frozen_runtime_is_resolved {
         FrozenAgentPublicationDecision::Mismatch
+    } else if model_candidate_present {
+        // A complete Session-local override is a frozen model publication even
+        // when an optional Agent snapshot is unavailable. It must not be
+        // collapsed into the genuinely publication-free legacy Host case.
+        FrozenAgentPublicationDecision::OptionalMissing
+    } else {
+        FrozenAgentPublicationDecision::Unpinned
     }
+}
+
+fn publication_decision_for_coordinates(
+    agent_id: &str,
+    agent_revision: Option<u64>,
+    runtime_placement: crate::SessionRuntimePlacement,
+    model_override: Option<&crate::SessionModelOverride>,
+    runtime: Option<&str>,
+    publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+) -> FrozenAgentPublicationDecision {
+    let model_candidate = model_override
+        .and_then(|model_override| model_override.publication.as_ref())
+        .map(|publication| &publication.primary)
+        .or_else(|| publication.map(|publication| &publication.resolved_spec.model_binding));
+    let frozen_runtime_is_resolved = runtime.is_none_or(|runtime| {
+        model_candidate.is_some_and(|candidate| candidate.binding().backend_ref == runtime)
+    });
+    frozen_agent_publication_facts(
+        agent_revision.is_some(),
+        runtime_placement == crate::SessionRuntimePlacement::Worker,
+        publication.is_some(),
+        publication.is_some_and(|publication| publication.root_agent_id.0 == agent_id),
+        publication.is_some_and(|publication| {
+            agent_revision.is_none_or(|revision| publication.metadata.source.revision == revision)
+        }),
+        frozen_runtime_is_resolved,
+        model_candidate.is_some(),
+    )
 }
 
 /// Compare a delivered executable publication with the immutable coordinates
@@ -191,35 +297,49 @@ pub fn frozen_agent_publication_decision(
     baseline: &crate::SessionBaseline,
     publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
 ) -> FrozenAgentPublicationDecision {
-    let Some(source_revision) = baseline.agent_revision else {
-        return FrozenAgentPublicationDecision::Unpinned;
-    };
-    let Some(publication) = publication else {
-        return frozen_agent_publication_facts(
-            true,
-            baseline.runtime_placement == crate::SessionRuntimePlacement::Worker,
-            false,
-            false,
-            false,
-            false,
-        );
-    };
-    let expected_backend = baseline
-        .model_override
-        .as_ref()
-        .and_then(|model_override| model_override.publication.as_ref())
-        .map(|publication| &publication.primary.binding().backend_ref)
-        .unwrap_or(&publication.resolved_spec.model_binding.backend_ref);
-    frozen_agent_publication_facts(
-        true,
-        baseline.runtime_placement == crate::SessionRuntimePlacement::Worker,
-        true,
-        publication.root_agent_id.0 == baseline.agent_id,
-        publication.metadata.source.revision == source_revision,
-        baseline
-            .runtime
-            .as_ref()
-            .is_none_or(|runtime| expected_backend == runtime),
+    publication_decision_for_coordinates(
+        &baseline.agent_id,
+        baseline.agent_revision,
+        baseline.runtime_placement,
+        baseline.model_override.as_ref(),
+        baseline.runtime.as_deref(),
+        publication,
+    )
+}
+
+/// Prospective-layout adapter for [`frozen_agent_publication_decision`]. Both
+/// current Session baselines and pre-root layouts consume the same fact kernel;
+/// protocol/application callers never select a provider independently.
+#[must_use]
+pub fn frozen_sandbox_layout_publication_decision(
+    layout: &crate::SessionSandboxLayout,
+    publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+) -> FrozenAgentPublicationDecision {
+    publication_decision_for_coordinates(
+        &layout.agent_id,
+        layout.agent_revision,
+        layout.runtime_placement,
+        layout.model_override.as_ref(),
+        layout.runtime.as_deref(),
+        publication,
+    )
+}
+
+/// Compatibility adapter for a pre-baseline local Session. It deliberately has
+/// no frozen runtime or model override, so only an exact current Agent
+/// publication or the genuinely publication-free Host path is admissible.
+#[must_use]
+pub fn legacy_agent_publication_decision(
+    agent_id: &str,
+    publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+) -> FrozenAgentPublicationDecision {
+    publication_decision_for_coordinates(
+        agent_id,
+        None,
+        crate::SessionRuntimePlacement::Local,
+        None,
+        None,
+        publication,
     )
 }
 
@@ -232,6 +352,7 @@ fn frozen_worker_agent_publication_is_exact_or_fails_closed() {
     let agent_id_matches: bool = kani::any();
     let source_revision_matches: bool = kani::any();
     let runtime_matches: bool = kani::any();
+    let model_candidate_present: bool = kani::any();
     let decision = frozen_agent_publication_facts(
         has_frozen_revision,
         worker_placement,
@@ -239,6 +360,7 @@ fn frozen_worker_agent_publication_is_exact_or_fails_closed() {
         agent_id_matches,
         source_revision_matches,
         runtime_matches,
+        model_candidate_present,
     );
 
     if has_frozen_revision && worker_placement {
@@ -249,7 +371,6 @@ fn frozen_worker_agent_publication_is_exact_or_fails_closed() {
         assert_ne!(decision, FrozenAgentPublicationDecision::OptionalMissing);
     }
     if decision == FrozenAgentPublicationDecision::Exact {
-        assert!(has_frozen_revision);
         assert!(publication_present);
         assert!(agent_id_matches && source_revision_matches && runtime_matches);
     }
@@ -271,26 +392,38 @@ mod frozen_agent_publication_tests {
                     for id_matches in [false, true] {
                         for revision_matches in [false, true] {
                             for runtime_matches in [false, true] {
-                                let decision = frozen_agent_publication_facts(
-                                    has_revision,
-                                    worker,
-                                    present,
-                                    id_matches,
-                                    revision_matches,
-                                    runtime_matches,
-                                );
-                                let exact =
-                                    present && id_matches && revision_matches && runtime_matches;
-                                if has_revision && worker {
+                                for candidate_present in [false, true] {
+                                    let decision = frozen_agent_publication_facts(
+                                        has_revision,
+                                        worker,
+                                        present,
+                                        id_matches,
+                                        revision_matches,
+                                        runtime_matches,
+                                        candidate_present,
+                                    );
+                                    let exact = present
+                                        && id_matches
+                                        && revision_matches
+                                        && runtime_matches;
+                                    if has_revision && worker {
+                                        assert_eq!(
+                                            decision == FrozenAgentPublicationDecision::Exact,
+                                            exact
+                                        );
+                                    }
                                     assert_eq!(
-                                        decision == FrozenAgentPublicationDecision::Exact,
-                                        exact
+                                        decision == FrozenAgentPublicationDecision::MissingRequired,
+                                        has_revision && worker && !present
+                                    );
+                                    assert_eq!(
+                                        decision == FrozenAgentPublicationDecision::Unpinned,
+                                        !has_revision
+                                            && !present
+                                            && runtime_matches
+                                            && !candidate_present
                                     );
                                 }
-                                assert_eq!(
-                                    decision == FrozenAgentPublicationDecision::MissingRequired,
-                                    has_revision && worker && !present
-                                );
                             }
                         }
                     }
@@ -414,6 +547,21 @@ pub fn realization_lease_authorizes(
     )
 }
 
+/// Whether an asserted terminal generation is still the aggregate's exact
+/// owner/epoch. Terminal cleanup may intentionally outlive the ordinary lease
+/// wall-clock expiry after Work retirement; authenticated topology and the
+/// aggregate's monotonic generation, rather than a second timer rule, fence it.
+#[must_use]
+pub fn realization_lease_generation_authorizes(
+    current: &SessionRealizationLease,
+    asserted: &SessionRealizationLease,
+) -> bool {
+    current.owner == asserted.owner
+        && current.runtime_incarnation == asserted.runtime_incarnation
+        && current.epoch == asserted.epoch
+        && current.expires_at_unix_ms >= asserted.expires_at_unix_ms
+}
+
 #[cfg(kani)]
 #[kani::proof]
 fn realization_renewal_never_widens_owner_epoch_or_expiry_authority() {
@@ -507,29 +655,38 @@ pub struct SessionRealizationDirective {
     pub action: SessionRealizationAction,
 }
 
-/// One cold Worker assignment for an already-fenced terminal Session.
-///
-/// Cleanup commands deliberately do not travel in this assignment. The Worker
-/// installs the frozen projection and then polls
-/// [`SessionRealizationControl::terminal_cleanup_commands`] plus the root-only
-/// [`SessionRealizationControl::terminal_repository_publication_command`]
-/// projection, keeping [`crate::SessionCleanupOperation`] as the only durable
-/// work queue and completion registry.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SessionTerminalCleanupAssignment {
-    pub session_id: String,
-    pub projection: FrozenSessionProjection,
-    pub lease: SessionRealizationLease,
-}
+#[cfg(test)]
+mod repository_publication_projection_tests {
+    use super::{SessionRealizationLease, SessionRepositoryPublicationProjection};
 
-/// One aggregate-derived terminal Repository publication together with the
-/// Session row's immutable owning Workspace. Coordinator adapters project both
-/// facts through the same Control read so an authenticated Worker cannot choose
-/// a different tenant coordinate for the Repository transport hop.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SessionRepositoryPublicationProjection {
-    pub workspace_id: String,
-    pub command: crate::SessionRepositoryPublicationCommand,
+    fn command() -> crate::SessionRepositoryPublicationCommand {
+        crate::SessionRepositoryPublicationCommand {
+            session_id: "publication-session".into(),
+            effect_id: "publication-effect".into(),
+            intent: serde_json::from_value(serde_json::json!({
+                "input": {
+                    "binding_id": "repository-binding",
+                    "source": {
+                        "kind": "repository",
+                        "repository_id": "repository",
+                        "config": {
+                            "repository_id": "repository",
+                            "version": 1,
+                            "remote_url": "https://git.invalid/repository.git",
+                            "initial_branch": "main"
+                        }
+                    },
+                    "mount_path": "/workspace/repository",
+                    "access": "read_write"
+                },
+                "expectation": {
+                    "branch": "awf/publication",
+                    "commit": "0123456789abcdef0123456789abcdef01234567"
+                }
+            }))
+            .expect("valid publication intent"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -761,7 +918,8 @@ pub trait SessionRealizationControl: Send + Sync {
     /// Claim the next terminal Session whose physical realization was lost
     /// with a prior Worker process. The returned assignment contains only the
     /// facts needed to rebuild that process-local projection; callers must use
-    /// [`Self::terminal_cleanup_commands`] for the immutable cleanup commands.
+    /// [`Self::terminal_cleanup_work`] for the immutable cleanup commands and a
+    /// current readback of the same frozen projection.
     /// Implementations that do not own external Worker placement return `None`.
     async fn claim_next_terminal_cleanup(
         &self,
@@ -770,17 +928,70 @@ pub trait SessionRealizationControl: Send + Sync {
         Ok(None)
     }
 
-    /// Project the exact terminal-cleanup commands owned by this realization
-    /// lease. `None` means the Session has no terminal fence; `Some([])` means
-    /// terminal cleanup is fenced but not currently executable (or all receipts
-    /// are already recorded). Remote Workers poll this existing Control channel
-    /// so the durable [`crate::SessionCleanupOperation`] remains the only queue.
-    async fn terminal_cleanup_commands(
+    /// Project the exact terminal assignment and closed next action owned by this
+    /// realization generation from one Session-root snapshot. `None` means the
+    /// Session has no terminal fence or is durably complete; `Some(work)` with
+    /// `Waiting` action means cleanup is fenced but not currently executable.
+    /// Remote Workers poll this existing Control channel so the durable
+    /// [`crate::SessionCleanupOperation`] remains the only queue.
+    async fn terminal_cleanup_work(
         &self,
         _session_id: &str,
         _lease: &SessionRealizationLease,
-    ) -> Result<Option<Vec<crate::SessionCleanupCommand>>, SessionRealizationControlFailure> {
+    ) -> Result<Option<SessionTerminalCleanupWork>, SessionRealizationControlFailure> {
         Ok(None)
+    }
+
+    /// Re-derive one exact terminal effect and its canonical Workspace from the
+    /// aggregate immediately before an external adapter performs I/O. This is a
+    /// read of [`crate::SessionCleanupOperation`], not another claim or queue.
+    async fn authorize_terminal_cleanup_effect(
+        &self,
+        _effect: &crate::SessionTerminalCleanupEffect,
+    ) -> Result<SessionTerminalCleanupPreparationAuthorization, SessionRealizationControlFailure>
+    {
+        Err(SessionRealizationControlFailure::Invalid(
+            "terminal cleanup effect authorization is unsupported".into(),
+        ))
+    }
+
+    /// Re-derive the single aggregate-wide physical disposal from the
+    /// durable preparation set and the current realization lease. This is a
+    /// read-only authorization edge; provider deletion remains with the
+    /// Runtime receiving the exact effect.
+    async fn authorize_terminal_cleanup_disposal(
+        &self,
+        _effect: &crate::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<String, SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "terminal cleanup disposal authorization is unsupported".into(),
+        ))
+    }
+
+    /// Re-derive an exact checkpoint source-release Artifact effect from the
+    /// current Session root. This authorizes only live output publication while
+    /// `Suspending/ReadyToDispose` still owns the durable checkpoint; it neither
+    /// advances the Environment state nor creates a cleanup receipt.
+    async fn authorize_checkpoint_release_artifact_effect(
+        &self,
+        _session_id: &str,
+        _operation: &crate::SessionEnvironmentOperation,
+    ) -> Result<String, SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "checkpoint source-release Artifact authorization is unsupported".into(),
+        ))
+    }
+
+    /// Re-derive one exact terminal Memory target from the Session root. The
+    /// returned value adds the canonical Workspace only after the aggregate has
+    /// matched the intent against its active input and current Sandbox handle.
+    async fn authorize_terminal_memory_intent(
+        &self,
+        _intent: &crate::SessionTerminalMemoryIntent,
+    ) -> Result<crate::SessionTerminalMemoryTarget, SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "terminal Memory reconciliation authorization is unsupported".into(),
+        ))
     }
 
     /// Project the one root Repository publication command already frozen in
@@ -827,16 +1038,29 @@ pub trait SessionRealizationControl: Send + Sync {
         ))
     }
 
-    /// Admit one exact Runtime completion into the existing durable terminal
-    /// cleanup operation. Implementations must verify the command identity and
-    /// current realization generation before recording it.
-    async fn record_terminal_cleanup_completion(
+    /// Admit one exact source-dependent preparation into the existing Session
+    /// cleanup operation. The aggregate verifies both the asserted current
+    /// lease and the preparation's persisted predecessor lease before its CAS.
+    async fn record_terminal_cleanup_preparation(
         &self,
         _lease: &SessionRealizationLease,
-        _completion: crate::SessionCleanupCompletion,
+        _preparation: crate::SessionCleanupPreparation,
     ) -> Result<(), SessionRealizationControlFailure> {
         Err(SessionRealizationControlFailure::Invalid(
-            "remote Session terminal cleanup is unsupported".into(),
+            "remote Session terminal cleanup preparation is unsupported".into(),
+        ))
+    }
+
+    /// Admit the one exact physical-disposal receipt and atomically retire
+    /// the aggregate's Environment/Resource projection. Implementations must
+    /// re-derive the command and current lease before committing.
+    async fn record_terminal_cleanup_disposal(
+        &self,
+        _lease: &SessionRealizationLease,
+        _receipt: crate::SessionCleanupDisposalReceipt,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "remote Session terminal cleanup disposal is unsupported".into(),
         ))
     }
 }
@@ -1052,14 +1276,92 @@ pub async fn drive_session_realization(
 mod tests {
     use super::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
-        FailSessionRealization, SessionProjectionInstallMode, SessionRealizationControl,
-        SessionRealizationControlDisposition, SessionRealizationControlFailure,
-        SessionRealizationDirective, realization_generation_authorizes,
+        FailSessionRealization, RenewSessionRealization, SessionProjectionInstallMode,
+        SessionRealizationControl, SessionRealizationControlDisposition,
+        SessionRealizationControlFailure, SessionRealizationDirective,
+        SessionTerminalCleanupPreparationAuthorization, realization_generation_authorizes,
         realization_lease_authorizes, realization_lease_is_live_at,
     };
     use crate::{McpAttachmentId, McpGeneration, McpGenerationRef, SessionRealizationLease};
 
     struct MinimalControl;
+
+    fn terminal_effect(
+        thread_id: &str,
+        epoch: u64,
+        expires_at_unix_ms: u64,
+    ) -> crate::SessionTerminalCleanupEffect {
+        crate::SessionTerminalCleanupEffect::new(
+            crate::SessionCleanupCommand::new("session", thread_id, "terminal-root"),
+            SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "worker/boot".into(),
+                epoch,
+                expires_at_unix_ms,
+            },
+        )
+    }
+
+    fn legacy_resource_projection(bound: bool) -> super::FrozenSessionProjection {
+        let baseline = crate::SessionBaseline::compile(crate::SessionBaselineInputs {
+            environment: crate::EnvironmentSnapshot {
+                environment_id: "environment".into(),
+                revision: crate::EnvironmentRevision(1),
+                self_hosted: false,
+                config_fingerprint: crate::EnvironmentFingerprint("environment-v1".into()),
+                sandbox: Default::default(),
+                sandbox_provisioning: Default::default(),
+                idle_retention: Default::default(),
+                packages: Default::default(),
+                prepared_image: None,
+                network: crate::SessionNetworkPolicy::Unrestricted,
+                credential_realization: awaken_credential_contract::CredentialRealizationProfile {
+                    inference_holder: awaken_credential_contract::PlaintextHolder::new(
+                        awaken_credential_contract::PlaintextBoundary::Workload,
+                        "awaken.workload.acp",
+                    ),
+                    mcp_holder: awaken_credential_contract::PlaintextHolder::new(
+                        awaken_credential_contract::PlaintextBoundary::Worker,
+                        "awaken.worker",
+                    ),
+                    resource_holder: awaken_credential_contract::PlaintextHolder::new(
+                        awaken_credential_contract::PlaintextBoundary::Worker,
+                        "awaken.worker",
+                    ),
+                },
+            },
+            runtime_placement: crate::SessionRuntimePlacement::Local,
+            mcp_authoring: Default::default(),
+            agent_id: "agent".into(),
+            agent_revision: None,
+            model: "model".into(),
+            model_override: None,
+            runtime: None,
+            delegate_ids: Vec::new(),
+            toolsets: Vec::new(),
+            mounts: Vec::new(),
+            env: Vec::new(),
+            prompts: Vec::new(),
+            transcript_prefix: None,
+        });
+        let mut environment = crate::SessionEnvironmentState::default();
+        if bound {
+            environment.set_resident("sandbox-binding");
+        }
+        super::FrozenSessionProjection {
+            workspace_id: "workspace".into(),
+            revision: crate::SessionRevision(2),
+            baseline,
+            agent_publication: None,
+            environment,
+            resource_revision: 7,
+            resources: Default::default(),
+            previous_resource_manifest: None,
+            tools: Default::default(),
+            mcp: Vec::new(),
+            request_context: Vec::new(),
+        }
+    }
 
     #[test]
     fn projection_install_mode_effect_decision_table_is_closed() {
@@ -1401,21 +1703,4 @@ mod tests {
             );
         }
     }
-}
-
-
-
-/// Whether an asserted terminal generation is still the aggregate's exact
-/// owner/epoch. Terminal cleanup may intentionally outlive the ordinary lease
-/// wall-clock expiry after Work retirement; authenticated topology and the
-/// aggregate's monotonic generation, rather than a second timer rule, fence it.
-#[must_use]
-pub fn realization_lease_generation_authorizes(
-    current: &SessionRealizationLease,
-    asserted: &SessionRealizationLease,
-) -> bool {
-    current.owner == asserted.owner
-        && current.runtime_incarnation == asserted.runtime_incarnation
-        && current.epoch == asserted.epoch
-        && current.expires_at_unix_ms >= asserted.expires_at_unix_ms
 }

@@ -13,8 +13,12 @@ use awaken_agent_contract::{
 };
 use awaken_runtime_contract::tool_batch::ToolBatch;
 use awaken_session_contract::{Pending, RunError, SessionRuntime, ToolPermissionDecision};
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tower::ServiceExt as _;
 
 async fn persist_batch_projection_anchors(
     state: &ManagedState,
@@ -740,6 +744,23 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
 
 struct AdvisorProfile;
 
+fn native_test_agent_snapshot(
+    agent_id: &str,
+    model_ref: &str,
+    backend_ref: &str,
+    source_revision: u64,
+) -> awaken_runtime_contract::ExecutableAgentSnapshot {
+    let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder(agent_id)
+        .model(awaken_runtime_contract::resolved::ModelBinding::new(
+            agent_id,
+            model_ref,
+            backend_ref,
+        ))
+        .build();
+    snapshot.metadata.source.revision = source_revision;
+    snapshot
+}
+
 #[derive(Clone, Copy)]
 enum FrozenTestToolFamily {
     Custom,
@@ -857,15 +878,12 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FrozenTo
             .profiles
             .get(agent_id)
             .filter(|profile| profile.source_revision == source_revision)?;
-        let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder(agent_id)
-            .model(awaken_runtime_contract::resolved::ModelBinding::new(
-                agent_id,
-                profile.execution_model_ref.as_deref()?,
-                &profile.backend_ref,
-            ))
-            .build();
-        snapshot.metadata.source.revision = source_revision;
-        Some(snapshot)
+        Some(native_test_agent_snapshot(
+            agent_id,
+            profile.execution_model_ref.as_deref()?,
+            &profile.backend_ref,
+            source_revision,
+        ))
     }
 }
 
@@ -922,6 +940,22 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for AdvisorP
             }
         })
     }
+
+    fn executable_snapshot_at_revision_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
+        let profile =
+            self.session_profile_at_revision_in(workspace_id, agent_id, source_revision)?;
+        Some(native_test_agent_snapshot(
+            agent_id,
+            profile.execution_model_ref.as_deref()?,
+            &profile.backend_ref,
+            source_revision,
+        ))
+    }
 }
 
 #[derive(Clone, Default)]
@@ -942,6 +976,7 @@ struct LifecycleRuntime {
     /// root-snapshot reads without manufacturing a partial transaction.
     outcome_commit_on_read: Arc<Mutex<Vec<(awaken_agent_contract::agent::state::Command, u64)>>>,
     include_runs_in_snapshot: Arc<AtomicBool>,
+    fail_recovery_snapshot: Arc<AtomicBool>,
     pending: Arc<Mutex<Option<Pending>>>,
     snapshot_reads: Arc<AtomicUsize>,
     split_message_reads: Arc<AtomicUsize>,
@@ -1024,6 +1059,11 @@ impl SessionRuntime for LifecycleRuntime {
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
         self.snapshot_reads.fetch_add(1, Ordering::SeqCst);
+        if self.fail_recovery_snapshot.load(Ordering::SeqCst) {
+            return Err(RunError::unavailable(
+                "scripted cold recovery snapshot failure",
+            ));
+        }
         let lifecycle = self.lifecycle.lock().unwrap().clone();
         let Some(run_id) = lifecycle
             .iter()
@@ -1389,15 +1429,16 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
     // Cause/effect graph: C1=the latest Runtime Run has zero, one, or two
     // committed ResumeTickets; C2=the Awaiting audit retains the exact closed
     // target independently of the consumable ticket. Effects: E1=zero with no
-    // target projects no pending but strict reply admission rejects the damaged
-    // wait; E2=one projects that exact pending; E3=two fail closed for replies,
-    // while list projection rebuilds the same pending from C2. This records the
-    // separation between reply authority and historical/public projection.
+    // target makes committed projection unhealthy and strict reply admission
+    // rejects the damaged wait; E2=one projects that exact pending; E3=two fail
+    // closed for replies, while list projection rebuilds the same pending from
+    // C2. This records the separation between reply authority and historical/
+    // public projection without hiding an unreconstructable damaged wait.
     // Decision table:
     // | Rule | Current-Run tickets | Effect |
-    // | P1 | 0, no audit target | lenient E1; strict reject |
+    // | P1 | 0, no audit target | projection + strict reject E1 |
     // | P2 | 1 | E2 |
-    // | P3 | 2, exact audit target | strict E3; lenient exact rebuild |
+    // | P3 | 2, exact audit target | strict E3; exact rebuild |
     let runtime = LifecycleRuntime::default();
     runtime
         .include_runs_in_snapshot
@@ -1418,10 +1459,8 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
         .unwrap()
         .unwrap();
     assert!(
-        ManagedState::pending_from_recovery_snapshot(&empty)
-            .unwrap()
-            .is_none(),
-        "P1/E1"
+        ManagedState::pending_from_recovery_snapshot(&empty).is_err(),
+        "P1/E1 committed projection exposes unreconstructable damage"
     );
     assert!(
         ManagedState::pending_ticket_from_recovery_snapshot(&empty).is_err(),
@@ -1477,24 +1516,31 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
 async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
     // Cause/effect graph: C1=the latest Run is durably Awaiting; C2=its active
     // ResumeTicket is isolated-missing; C3=RunStateChanged retains the exact
-    // AwaitTarget; C4=batch is pure user.interrupt, an ordinary message/reply,
-    // or a mixed interrupt batch.
-    // Effects: E1=list projection rebuilds the pending payload from C3; E2=pure
-    // interrupt freezes the canonical target without reading reply authority;
-    // E3=ordinary input remains fail-closed and cannot start a competing Run.
+    // AwaitTarget or that historical target is also unavailable; C4=input is
+    // Events GET, pure user.interrupt, an ordinary message/reply, or a mixed
+    // interrupt batch. Effects: E0=no target makes Events GET explicitly
+    // unhealthy instead of synthesizing a tool card; E1=list projection rebuilds
+    // the pending payload only from an exact C3 target; E2=pure interrupt freezes
+    // the canonical target from committed Run lifecycle/topology without reading
+    // reply authority; E3=ordinary input remains fail-closed and cannot start a
+    // competing Run; E4 Session GET still returns the root-owned nonterminal
+    // aggregate needed to authorize that control.
     //
     // | Rule | Awaiting | Ticket | Audit target | Input | Effect |
+    // | DI0 | yes | missing | missing | GET / pure interrupt | E0 + E2 + E4 |
     // | DI1 | yes | missing | exact | list | E1 |
     // | DI2 | yes | missing | exact | pure interrupt | E2 |
     // | DI3 | yes | missing | exact | user message/reply | E3 |
     // | DI4 | yes | missing | exact | interrupt + message | E3 |
     // Constraint: only the control command bypasses ticket correlation; mixed
-    // batches and every reply still use strict ResumeTicket admission.
+    // batches and every reply still use strict ResumeTicket admission. The
+    // existing non-2xx Events response is the Web projection-health seam; no
+    // second pending store or browser-only damage flag is introduced.
     let runtime = LifecycleRuntime::default();
     runtime
         .include_runs_in_snapshot
         .store(true, Ordering::SeqCst);
-    let state = ManagedState::new(runtime.clone());
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let session = state
         .create_session(
             serde_json::from_value(serde_json::json!({
@@ -1514,6 +1560,79 @@ async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
         RunLifecycleEventKind::Awaiting,
         RunState::Awaiting,
     ));
+
+    let no_target = runtime
+        .session_thread_recovery_snapshot(&session.id, &session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        ManagedState::pending_from_recovery_snapshot(&no_target).is_err(),
+        "DI0/E0 no authority makes committed projection unhealthy"
+    );
+    let app = crate::router(state.clone());
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/v1/sessions/{}/events", session.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("DI0 Events GET response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "DI0/E0");
+    let body: serde_json::Value = serde_json::from_slice(
+        &response
+            .into_body()
+            .collect()
+            .await
+            .expect("DI0 error body")
+            .to_bytes(),
+    )
+    .expect("DI0 error envelope");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("Awaiting Run without its answerable ticket")),
+        "DI0/E0 route publishes the existing projection-health error seam: {body}"
+    );
+    let aggregate_response = app
+        .oneshot(
+            Request::get(format!("/v1/sessions/{}", session.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("DI0 Session GET response");
+    assert_eq!(aggregate_response.status(), StatusCode::OK, "DI0/E4");
+    let aggregate: serde_json::Value = serde_json::from_slice(
+        &aggregate_response
+            .into_body()
+            .collect()
+            .await
+            .expect("DI0 Session body")
+            .to_bytes(),
+    )
+    .expect("DI0 Session envelope");
+    assert_eq!(aggregate["status"], "idle", "DI0/E4 root aggregate truth");
+    let no_target_interrupt = state
+        .validate_event_batch(
+            &session.id,
+            &[InboundEvent::UserInterrupt {
+                session_thread_id: None,
+            }],
+        )
+        .await
+        .expect("DI0 pure interrupt remains admissible without a visible tool card");
+    assert!(
+        matches!(
+            no_target_interrupt.inputs.as_slice(),
+            [SessionEventInput::Interrupt(SessionEventInterrupt { targets, .. })]
+                if targets == &[SessionThreadTarget::Primary]
+        ),
+        "DI0/E2"
+    );
+
     runtime
         .audit_events
         .lock()
@@ -1626,12 +1745,18 @@ async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
 async fn pending_without_transcript_uses_awaiting_lifecycle_anchor() {
     // Synthetic pending projection cause/effect graph: C1 one Runtime
     // ResumeTicket exists; C2 its exact Run has a committed Awaiting lifecycle
-    // fact; C3 no ToolUse transcript message exists. Effects: E1 publish one
-    // qualified client-answerable tool event; E2 canonical ordering uses C2 and
-    // does not reject the event as unanchored. Decision table: S1 C1+C2+C3 =>
-    // E1+E2. The converse C1+!C2 remains covered by the global unanchored-event
-    // fail-closed guard and must not acquire a guessed cursor.
+    // fact and current Run record; C3 no ToolUse transcript message exists; C4
+    // the same Run later completes and consumes its ticket. Effects: E1 publish
+    // one qualified client-answerable tool event; E2 canonical ordering uses C2
+    // and does not reject the event as unanchored; E3 C4 makes the old Awaiting
+    // audit historical rather than damaged current truth. Decision rules:
+    // S1=C1+C2+C3=>E1+E2; S2=S1+C4=>E3. The converse C1+!C2 remains covered by
+    // the global unanchored-event fail-closed guard and acquires no guessed
+    // cursor.
     let runtime = LifecycleRuntime::default();
+    runtime
+        .include_runs_in_snapshot
+        .store(true, Ordering::SeqCst);
     let state = ManagedState::new(runtime.clone()).with_config_source(Arc::new(
         FrozenToolFamilyProfiles::uniform(
             "coder",
@@ -5253,6 +5378,10 @@ async fn child_reschedule_projects_running_rescheduled_running_idle_live_warm_an
     // | R2 | T | T | T | warm | E1,E2,E3,E4 |
     // | R3 | T | T | T | repeat warm | E4 |
     // | R4 | T | T | T | cold | E1-E4 |
+    // Test-design note: the durable relationship link and lifecycle feed already
+    // supply every cause above. A write-only latest-Run checkpoint cannot select
+    // another effect, so R1-R4 are also the smallest systematic proof that live,
+    // repeated warm, and cold projection converge without a parallel Run cache.
     let runtime = RehydrateFake::default();
     runtime
         .delegate_ids
@@ -5996,8 +6125,9 @@ async fn child_pending_tool_projects_and_replies_through_the_parent_partition() 
     // qualified Event id; C7 the same reply is stale/duplicate; C8 its
     // validation read may also observe unrelated committed Runtime facts.
     // Effects: E1 primary idle is deferred; E2 C3 emits neither a premature
-    // tool event nor terminal and retains the source occurrence; E3 C4 keeps
-    // lifecycle and transcript behind the ticket fence; E4 C5 emits one
+    // tool event nor terminal and retains the source occurrence; E3 C4 fails
+    // the projection as damaged current truth while keeping lifecycle and
+    // transcript behind the ticket fence; E4 C5 emits one
     // child-owned tool event, cross-posted to primary, and aggregate idle names
     // that exact id; E5 C6 uses the parent-partition typed reply port and the
     // child stream sees the input; E6 C7 is rejected before another matching
@@ -6133,7 +6263,18 @@ async fn child_pending_tool_projects_and_replies_through_the_parent_partition() 
             RunLifecycleEventKind::Awaiting,
             RunState::Awaiting,
         ));
-        state.refresh_committed_events(&session.id).await.unwrap();
+        let damaged = state
+            .refresh_committed_events(&session.id)
+            .await
+            .expect_err("P3 Awaiting without its exact ticket is damaged");
+        assert!(
+            matches!(
+                damaged,
+                StateError::Run(ref error)
+                    if error.code == "session_projection_recovery_required"
+            ),
+            "P3/E3"
+        );
 
         assert_eq!(
             state.lifecycle_cursor(&session.id).unwrap(),

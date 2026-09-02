@@ -512,6 +512,12 @@ pub enum ToolError {
     /// replaying an external effect. Failures after dispatch remain `Execution`.
     #[error("tool executor unavailable before dispatch: {0}")]
     UnavailableBeforeDispatch(String),
+    /// The external effect crossed its dispatch boundary, but a required
+    /// executor-owned projection became unavailable before the result could be
+    /// admitted. The Runtime must terminate the current attempt at its
+    /// `StateConflict` boundary: this is neither model-visible nor replayable.
+    #[error("tool executor state invalidated after dispatch: {0}")]
+    StateInvalidatedAfterDispatch(String),
     /// Includes non-retryable local executor-configuration rejection as well as
     /// failures after the dispatch boundary. An owner must not replace an
     /// executor merely because this variant was returned.

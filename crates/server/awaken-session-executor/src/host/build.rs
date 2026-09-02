@@ -398,7 +398,9 @@ impl SharedHost {
                         as Arc<dyn crate::FileContentSource<awaken_dispatch::RunClaim>>
                 });
         let artifact_publisher: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<awaken_dispatch::RunClaim>,
+            dyn awaken_resource_contract::ArtifactPublisher<
+                    awaken_dispatch::ArtifactPublicationFence,
+                >,
         > = {
             #[cfg(test)]
             if let Some(application) = &file_application {
@@ -607,6 +609,17 @@ impl SharedHost {
         self
     }
 
+    /// Install the same authenticated Control client as the pre-effect Session
+    /// Environment root authority on a database-less Worker.
+    #[must_use]
+    pub fn with_environment_binding_sink(
+        mut self,
+        sink: Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+    ) -> Self {
+        self.environment_binding_sink = std::sync::RwLock::new(Some(sink));
+        self
+    }
+
     /// Platform-managed local workspace used when no authenticated/path scope
     /// exists. Process startup may override it with a provisioned coordinate.
     #[must_use]
@@ -670,7 +683,9 @@ impl SharedHost {
         application: Arc<dyn awaken_resource_contract::FileApplicationService>,
         content_source: Arc<dyn crate::FileContentSource<awaken_dispatch::RunClaim>>,
         artifact_publisher: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<awaken_dispatch::RunClaim>,
+            dyn awaken_resource_contract::ArtifactPublisher<
+                    awaken_dispatch::ArtifactPublicationFence,
+                >,
         >,
     ) -> Self {
         self.file_content_source = content_source;
@@ -685,7 +700,9 @@ impl SharedHost {
     pub fn with_artifact_publisher(
         mut self,
         publisher: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<awaken_dispatch::RunClaim>,
+            dyn awaken_resource_contract::ArtifactPublisher<
+                    awaken_dispatch::ArtifactPublicationFence,
+                >,
         >,
     ) -> Self {
         // This is the database-less Worker startup edge. Retaining the
@@ -873,14 +890,14 @@ impl SharedHost {
     /// Install the Resource transport's opaque Memory capability encoder.
     /// The execution host does not own or inspect the wire representation.
     #[must_use]
-    pub fn with_memory_reference_encoder(
-        mut self,
-        encoder: Arc<
-            dyn awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-                    awaken_dispatch::RunClaim,
-                >,
-        >,
-    ) -> Self {
+    pub fn with_memory_reference_encoder<E>(mut self, encoder: Arc<E>) -> Self
+    where
+        E: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+                awaken_dispatch::RunClaim,
+            > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+                awaken_session_contract::SessionTerminalMemoryIntent,
+            > + 'static,
+    {
         self.memory_reference_encoder = Some(encoder);
         self
     }
@@ -1262,7 +1279,7 @@ impl SharedHost {
         }
         self.session_provider
             .prewarm(
-                &crate::provisioning::agent_run_sandbox_spec("environment-warmup"),
+                &crate::provisioning::default_session_sandbox_spec("environment-warmup"),
                 target,
             )
             .await
@@ -1273,14 +1290,14 @@ impl SharedHost {
         &self,
     ) -> awaken_provisioning_contract::SandboxCapacityShapeId {
         awaken_provisioning_contract::SandboxCapacityShapeId::from_spec(
-            &crate::provisioning::agent_run_sandbox_spec("environment-warmup"),
+            &crate::provisioning::default_session_sandbox_spec("environment-warmup"),
         )
         .expect("default Environment capacity spec is mount-less")
     }
 
     pub async fn discard_default_environment_capacity(&self) {
         self.session_provider
-            .discard_capacity(&crate::provisioning::agent_run_sandbox_spec(
+            .discard_capacity(&crate::provisioning::default_session_sandbox_spec(
                 "environment-warmup",
             ))
             .await;

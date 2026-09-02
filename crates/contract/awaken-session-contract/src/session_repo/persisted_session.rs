@@ -1,5 +1,97 @@
+//! The durable Managed Session aggregate and its root-owned projections.
+
 use super::*;
 
+/// The durable, adapter-side configuration of one Managed session, keyed by its
+/// id (which is also its thread id). Everything here is what the wire `Session`
+/// object needs beyond the runtime's committed transcript.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedSession {
+    pub session_id: String,
+    /// The one optimistic-concurrency fence for baseline, Resource, MCP,
+    /// environment, execution, and disposition mutations. New, not-yet-inserted
+    /// values use 0.
+    pub revision: SessionRevision,
+    /// The only immutable configuration authority. A preparation intent is
+    /// consumed exactly once and replaced by its frozen baseline.
+    pub baseline: crate::SessionBaselineState,
+    pub title: Option<String>,
+    pub metadata: BTreeMap<String, String>,
+    /// Exact durable neutral mutable tool policy. Empty is an intentional clear;
+    /// public protocol tool unions are projections and never persistence truth.
+    pub tools: crate::SessionToolConfiguration,
+    /// All accepted Session Event batches in root-revision order. Entries remain
+    /// after processing as the sole durable inbound DTO provenance; User/System
+    /// completion remains owned by Dispatch/Thread and Outcome state by the
+    /// Thread Outcome aggregate.
+    pub event_batches: Vec<crate::SessionEventBatch>,
+    /// Monotonic root-CAS environment fence for overlapping driving events.
+    /// Execution and disposition remain the durable logical state; completion
+    /// membership is owned by `active_activity_epochs`, while this scalar never
+    /// rewinds and therefore keeps environment operations uniquely ordered.
+    pub activity_epoch: u64,
+    /// Epochs of driving activities that have been admitted but have not yet
+    /// settled. This is Session activity truth, not a child/coordinator
+    /// relationship registry. `activity_epoch` remains the monotonic
+    /// environment fence; this set only prevents an out-of-order completion
+    /// from closing the shared Running interval while an older activity remains.
+    ///
+    /// Historical Running rows deserialize with an empty set. A direct settle
+    /// of their current scalar epoch is treated as the one legacy activity; a
+    /// new admission supersedes that unknowable crash-orphan and starts the
+    /// explicit set at its successor epoch.
+    pub active_activity_epochs: BTreeSet<u64>,
+    /// One continuous authoritative Running interval. It is persisted in the
+    /// aggregate so process recovery and overlapping driving events cannot
+    /// fabricate gaps or emit two customer-usage intervals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_interval: Option<crate::SessionRuntimeIntervalStart>,
+    /// Every closed aggregate Running interval in root-revision order. This is
+    /// intentionally retained for the Session lifetime: the public Events API
+    /// accepts any prior event id as a page cursor, so truncating this prefix
+    /// would make a valid cross-replica cursor unknowable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closed_runtime_intervals: Vec<crate::SessionRuntimeInterval>,
+    /// Cumulative wall-clock milliseconds across closed Running intervals.
+    /// Overlapping activities share one interval, so this is the authoritative
+    /// non-double-counted Session runtime quantity used by list-cost pricing.
+    pub runtime_active_millis: u64,
+    /// Latest cumulative neutral Runtime usage observed by the Session root.
+    /// Runtime remains the counter authority; retaining this root-CAS projection
+    /// lets no-budget Sessions close an exact historical usage event too.
+    #[serde(default)]
+    pub usage_cursor: crate::ManagedBudgetUsageCursor,
+    /// Exact Managed list-cost budget and immutable price snapshot. All
+    /// Session threads share this root-owned admission and settlement fence.
+    pub budget: crate::SessionBudgetState,
+    /// Durable, secret-free execution-environment phase. Opaque bindings are
+    /// interpreted only by the runtime that produced them; this aggregate owns
+    /// their transition, not their substrate meaning.
+    pub environment: crate::SessionEnvironmentState,
+    /// The only initial and hot MCP desired-state authority.
+    pub mcp: crate::SessionMcpAttachmentSet,
+    /// Durable resource activation state. Its `active` manifest is the exact,
+    /// secret-free Session pin; `pending` and activation records make external
+    /// realization/release recoverable without importing authorization concepts.
+    pub resources: crate::SessionResourceState,
+    /// Continuing Session projection ownership; no process-local slot is an
+    /// authority for this lease.
+    pub realization: Option<SessionRealizationLease>,
+    /// Initial Environment realization retry state. Kept inside the Session
+    /// root so a reclaimed Worker claim cannot reset the failure budget.
+    pub realization_progress: crate::SessionRealizationProgress,
+    /// The only durable execution-state authority. The retained serialized key
+    /// keeps historical aggregate JSON readable through the store codec.
+    #[serde(rename = "status")]
+    pub execution: SessionExecutionState,
+    /// Retention/public-visibility is independent from execution progress.
+    pub disposition: SessionDisposition,
+    /// Durable intent/receipt state for terminal Runtime effects. Resource,
+    /// Environment, artifact, and process cleanup project from this one fact.
+    #[serde(deserialize_with = "crate::terminal_cleanup::deserialize_persisted_operation")]
+    pub terminal_cleanup: crate::SessionCleanupOperation,
+}
 
 impl PersistedSession {
     /// Construct a complete Session root after the creation compiler has
@@ -242,14 +334,36 @@ impl PersistedSession {
         Ok(changed)
     }
 
-    /// Accept the exact per-thread cleanup evidence and retire the Resource
-    /// projection atomically with the cleanup completion fact.
-    pub fn complete_terminal_cleanup(
+    /// Report whether a historical one-stage row already contains its complete
+    /// canonical receipt set. The evidence remains inside this aggregate; no
+    /// legacy Runtime authoring value is returned to an adapter.
+    pub fn has_complete_legacy_terminal_cleanup_evidence(
+        &self,
+    ) -> Result<bool, crate::SessionCleanupError> {
+        self.terminal_cleanup
+            .has_complete_legacy_receipts(&self.session_id)
+    }
+
+    /// Normalize one complete historical receipt set and retire the Resource
+    /// projection atomically. Current callers cannot supply or manufacture
+    /// one-stage evidence through this compatibility boundary.
+    pub fn normalize_legacy_terminal_cleanup(
         &mut self,
-        receipts: &[crate::VerifiedSessionCleanupReceipt],
         release_reason: impl Into<String>,
     ) -> Result<bool, crate::SessionCleanupError> {
-        let changed = self.terminal_cleanup.complete(&self.session_id, receipts)?;
+        if matches!(
+            self.environment,
+            crate::SessionEnvironmentState::Restoring { .. }
+        ) {
+            // Historical one-stage evidence predates the exact physical target
+            // carried by Restoring. It cannot prove that unpublished target was
+            // disposed, so retain both authorities for the current two-stage
+            // reconciler instead of normalizing target-free completion bytes.
+            return Err(crate::SessionCleanupError::ReceiptMismatch);
+        }
+        let changed = self
+            .terminal_cleanup
+            .normalize_legacy_completion(&self.session_id)?;
         if changed {
             self.resources.complete_terminal_release(release_reason);
             self.environment = crate::SessionEnvironmentState::Unmaterialized;
@@ -257,15 +371,372 @@ impl PersistedSession {
         Ok(changed)
     }
 
-    /// Admit one exact remote Runtime receipt into the existing cleanup
-    /// operation. This changes no target or phase and therefore cannot create a
-    /// second cleanup queue beside [`crate::SessionCleanupOperation`].
-    pub fn record_terminal_cleanup_completion(
+    /// Admit one exact source-dependent preparation under the current
+    /// realization lease. The last required receipt atomically changes the
+    /// cleanup operation to Disposing, but does not retire Resources or the
+    /// Environment before the separate physical receipt is admitted.
+    pub fn record_terminal_cleanup_preparation(
         &mut self,
-        completion: crate::SessionCleanupCompletion,
+        workspace_id: &str,
+        lease: &crate::SessionRealizationLease,
+        preparation: crate::SessionCleanupPreparation,
+        repository_preparation: Option<crate::SessionCleanupRepositoryPreparation>,
     ) -> Result<bool, crate::SessionCleanupError> {
+        if preparation.effect.command.session_id != self.session_id {
+            return Err(crate::SessionCleanupError::OperationMismatch);
+        }
+        if lease != &preparation.effect.lease {
+            return Err(crate::SessionCleanupError::RealizationMismatch);
+        }
+        let expected_restore_target = (preparation.effect.command.thread_id == self.session_id)
+            .then(|| {
+                self.environment
+                    .restoring_request(workspace_id, &self.session_id)
+            })
+            .flatten();
+        if preparation.effect.command.restore_target != expected_restore_target {
+            return Err(crate::SessionCleanupError::PreparationReceiptMismatch);
+        }
+        let Some(current) = self.realization.as_ref() else {
+            return Err(crate::SessionCleanupError::RealizationMismatch);
+        };
+        if !crate::realization_lease_generation_authorizes(current, lease) {
+            return Err(crate::SessionCleanupError::RealizationMismatch);
+        }
+        let current_effect_fence = current
+            .sandbox_effect_fence(preparation.effect.command.effect_id.clone())
+            .map_err(|_| crate::SessionCleanupError::RealizationMismatch)?;
+        if !preparation
+            .provider_prepared_effect_fence()
+            .authorizes_effect_successor(&current_effect_fence)
+        {
+            return Err(crate::SessionCleanupError::RealizationMismatch);
+        }
+        if let Some(repository_preparation) = &repository_preparation {
+            repository_preparation.verify_for_resources(
+                &self.session_id,
+                workspace_id,
+                &self.resources,
+            )?;
+        }
+        self.terminal_cleanup.record_preparation(
+            &self.session_id,
+            preparation,
+            repository_preparation,
+        )
+    }
+
+    /// Join terminal preparation progress with the frozen Environment's one
+    /// provider predecessor. A continuation already in `Disposing` remains the
+    /// sole owner of A/fingerprint; an ordinary terminal cleanup derives A from
+    /// its root Runtime preparation. No provider fact is copied into the
+    /// terminal cleanup state.
+    fn terminal_provider_disposal_preparation(
+        &self,
+    ) -> Result<
+        Option<awaken_provisioning_contract::SandboxDisposalPreparation>,
+        crate::SessionCleanupError,
+    > {
+        let Some(ordinary) = self
+            .terminal_cleanup
+            .terminal_provider_disposal_preparation(&self.session_id)?
+        else {
+            return Ok(None);
+        };
+        self.environment
+            .terminal_disposal_preparation()
+            .map_err(|_| crate::SessionCleanupError::ProviderDisposalPreparationMismatch)
+            .map(|inherited| inherited.or(Some(ordinary)))
+    }
+
+    /// Project one closed terminal action from the complete Session root. The
+    /// cleanup operation owns phase/progress; this aggregate join alone chooses
+    /// the provider predecessor required by a physical disposal.
+    pub fn terminal_cleanup_work_action(
+        &self,
+    ) -> Result<Option<crate::SessionTerminalCleanupAction>, crate::SessionCleanupError> {
+        let provider_disposal = self.terminal_provider_disposal_preparation()?;
         self.terminal_cleanup
-            .record_completion(&self.session_id, completion)
+            .terminal_work_action(&self.session_id, provider_disposal.as_ref())
+    }
+
+    /// Admit the one exact physical-disposal receipt and retire the
+    /// Resource/Environment projection in the same aggregate mutation.
+    pub fn record_terminal_cleanup_disposal(
+        &mut self,
+        workspace_id: &str,
+        lease: &crate::SessionRealizationLease,
+        receipt: crate::SessionCleanupDisposalReceipt,
+        release_reason: impl Into<String>,
+    ) -> Result<bool, crate::SessionCleanupError> {
+        if self.verified_terminal_cleanup()?.is_completed() {
+            // The final root CAS may have committed before its response was
+            // lost. Completed retains the canonical receipt fingerprint, so an
+            // exact no-mutation replay is verifiable without a current lease,
+            // Environment, or Resource projection.
+            return self
+                .terminal_cleanup
+                .record_disposal(&self.session_id, None, receipt);
+        }
+        if !self
+            .realization
+            .as_ref()
+            .is_some_and(|current| crate::realization_lease_generation_authorizes(current, lease))
+        {
+            return Err(crate::SessionCleanupError::RealizationMismatch);
+        }
+        let provider_disposal = self
+            .terminal_provider_disposal_preparation()?
+            .ok_or(crate::SessionCleanupError::DisposalNotReady)?;
+        let command = self
+            .terminal_cleanup
+            .disposal_command(&self.session_id, Some(&provider_disposal))?
+            .ok_or(crate::SessionCleanupError::DisposalNotReady)?;
+        self.authorize_terminal_cleanup_disposal_effect(
+            workspace_id,
+            &crate::SessionTerminalCleanupDisposalEffect::new(command, lease.clone()),
+        )?;
+        let changed = self.terminal_cleanup.record_disposal(
+            &self.session_id,
+            Some(&provider_disposal),
+            receipt,
+        )?;
+        if changed {
+            self.resources.complete_terminal_release(release_reason);
+            self.environment = crate::SessionEnvironmentState::Unmaterialized;
+        }
+        Ok(changed)
+    }
+
+    /// Re-derive one source-dependent preparation authorization from the
+    /// aggregate's sole operation and realization generation. Physical
+    /// deletion is authorized only by
+    /// [`Self::authorize_terminal_cleanup_disposal_effect`].
+    pub fn authorize_terminal_cleanup_effect(
+        &self,
+        effect: &crate::SessionTerminalCleanupEffect,
+    ) -> Result<
+        Option<awaken_provisioning_contract::SandboxDisposalPreparation>,
+        crate::SessionCleanupError,
+    > {
+        if effect.command.session_id != self.session_id {
+            return Err(crate::SessionCleanupError::OperationMismatch);
+        }
+        if !self.realization.as_ref().is_some_and(|current| {
+            crate::realization_lease_generation_authorizes(current, &effect.lease)
+        }) {
+            return Err(crate::SessionCleanupError::RealizationMismatch);
+        }
+        if !self
+            .terminal_cleanup
+            .pending_preparation_commands(&self.session_id)?
+            .contains(&effect.command.without_restore_target())
+        {
+            return Err(crate::SessionCleanupError::CommandNotPending);
+        }
+        if effect.command.thread_id != self.session_id {
+            return Ok(None);
+        }
+        self.environment
+            .terminal_disposal_preparation()
+            .map_err(|_| crate::SessionCleanupError::ProviderDisposalPreparationMismatch)
+    }
+
+    /// Re-derive the one root-owned physical disposal after every exact
+    /// preparation receipt is already durable in this aggregate.
+    pub fn authorize_terminal_cleanup_disposal_effect(
+        &self,
+        workspace_id: &str,
+        effect: &crate::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<(), crate::SessionCleanupError> {
+        if effect.command.session_id != self.session_id {
+            return Err(crate::SessionCleanupError::OperationMismatch);
+        }
+        if !self.realization.as_ref().is_some_and(|current| {
+            crate::realization_lease_generation_authorizes(current, &effect.lease)
+        }) {
+            return Err(crate::SessionCleanupError::RealizationMismatch);
+        }
+        let repository_preparation = self
+            .terminal_cleanup
+            .repository_preparation()
+            .ok_or(crate::SessionCleanupError::DisposalNotReady)?;
+        repository_preparation.verify_for_resources(
+            &self.session_id,
+            workspace_id,
+            &self.resources,
+        )?;
+        effect
+            .sandbox_disposal_authorization()
+            .map_err(|_| crate::SessionCleanupError::ProviderDisposalPreparationMismatch)?;
+        let provider_disposal = self
+            .terminal_provider_disposal_preparation()?
+            .ok_or(crate::SessionCleanupError::DisposalNotReady)?;
+        if self
+            .terminal_cleanup
+            .disposal_command(&self.session_id, Some(&provider_disposal))?
+            .as_ref()
+            != Some(&effect.command)
+        {
+            return Err(crate::SessionCleanupError::CommandNotPending);
+        }
+        Ok(())
+    }
+
+    /// Re-derive the narrow Artifact publication fence that precedes one
+    /// checkpoint source release. The Environment state and current realization
+    /// remain the only authority: a durable checkpoint in any other phase, a
+    /// stale operation, a legacy unfenced operation, or terminal takeover all
+    /// reject without granting Resource I/O.
+    pub fn authorize_checkpoint_release_artifact_effect(
+        &self,
+        operation: &crate::SessionEnvironmentOperation,
+    ) -> Result<(), crate::SessionEnvironmentReceiptError> {
+        if self.is_terminal() {
+            return Err(crate::SessionEnvironmentReceiptError::WrongPhase);
+        }
+        let crate::SessionEnvironmentState::Suspending {
+            operation: current_operation,
+            suspend_phase: crate::SuspendPhase::ReadyToDispose,
+            checkpoint: Some(_),
+            ..
+        } = &self.environment
+        else {
+            return Err(crate::SessionEnvironmentReceiptError::WrongPhase);
+        };
+        if current_operation != operation {
+            return Err(crate::SessionEnvironmentReceiptError::Mismatch);
+        }
+        let (Some(current_lease), Some(asserted_lease)) =
+            (self.realization.as_ref(), operation.realization.as_ref())
+        else {
+            return Err(crate::SessionEnvironmentReceiptError::RealizationStale);
+        };
+        if !crate::realization_lease_generation_authorizes(current_lease, asserted_lease) {
+            return Err(crate::SessionEnvironmentReceiptError::RealizationStale);
+        }
+        Ok(())
+    }
+
+    /// Project the one live source-release preparation effect from complete
+    /// root truth. The Environment fixes the canonical suspend operation while
+    /// the root contributes the exact current renewable realization lease.
+    pub fn source_release_preparation_effect(
+        &self,
+    ) -> Result<crate::SourceReleasePreparationEffect, crate::SessionEnvironmentReceiptError> {
+        if self.is_terminal() {
+            return Err(crate::SessionEnvironmentReceiptError::WrongPhase);
+        }
+        let current_realization = self
+            .realization
+            .as_ref()
+            .ok_or(crate::SessionEnvironmentReceiptError::RealizationStale)?;
+        self.environment
+            .source_release_preparation_effect(current_realization)
+    }
+
+    /// Admit one exact preparation receipt under the same aggregate-current
+    /// realization generation that authorized it. A monotonic expiry renewal
+    /// may race the root CAS; owner/incarnation/epoch replacement may not.
+    pub fn record_source_release_prepared(
+        &mut self,
+        receipt: &crate::SourceReleasePreparedReceipt,
+    ) -> Result<bool, crate::SessionEnvironmentReceiptError> {
+        if self.is_terminal() {
+            return Err(crate::SessionEnvironmentReceiptError::WrongPhase);
+        }
+        let current_realization = self
+            .realization
+            .as_ref()
+            .ok_or(crate::SessionEnvironmentReceiptError::RealizationStale)?;
+        if !crate::realization_lease_generation_authorizes(
+            current_realization,
+            receipt.preparation().lease(),
+        ) {
+            return Err(crate::SessionEnvironmentReceiptError::RealizationStale);
+        }
+        let current_effect_fence = current_realization
+            .sandbox_effect_fence(receipt.preparation().operation().effect_id.as_str())
+            .map_err(|_| crate::SessionEnvironmentReceiptError::RealizationStale)?;
+        if !receipt
+            .provider_prepared_effect_fence()
+            .authorizes_effect_successor(&current_effect_fence)
+        {
+            return Err(crate::SessionEnvironmentReceiptError::RealizationStale);
+        }
+        self.environment
+            .record_source_release_prepared(receipt)
+            .map_err(|error| match error {
+                crate::SessionEnvironmentTransitionError::ReceiptMismatch => {
+                    crate::SessionEnvironmentReceiptError::Mismatch
+                }
+                crate::SessionEnvironmentTransitionError::NotSuspending
+                | crate::SessionEnvironmentTransitionError::WrongPhase => {
+                    crate::SessionEnvironmentReceiptError::WrongPhase
+                }
+                _ => crate::SessionEnvironmentReceiptError::InvalidTransition,
+            })
+    }
+
+    /// Project the one destructive checkpoint-source effect from the complete
+    /// aggregate truth. The Environment owns the durable preparation identity;
+    /// the root supplies its current realization so a higher-epoch Worker may
+    /// resume Disposing without inheriting source-dependent preparation work.
+    pub fn source_release_disposal(
+        &self,
+    ) -> Result<crate::SourceReleaseDisposal, crate::SessionEnvironmentReceiptError> {
+        if self.is_terminal() {
+            return Err(crate::SessionEnvironmentReceiptError::WrongPhase);
+        }
+        let current_realization = self
+            .realization
+            .as_ref()
+            .ok_or(crate::SessionEnvironmentReceiptError::RealizationStale)?;
+        self.environment
+            .source_release_disposal(current_realization)
+    }
+
+    /// Admit one terminal Memory intent from the current aggregate truth.
+    /// The caller-supplied evidence is never authoritative: this method decodes
+    /// the exact Environment binding stored by the Session and requires one
+    /// equality match in both the active frozen manifest and that handle.
+    pub fn authorize_terminal_memory_intent(
+        &self,
+        intent: &crate::SessionTerminalMemoryIntent,
+    ) -> Result<(), crate::SessionMemoryReconciliationError> {
+        self.authorize_terminal_cleanup_effect(intent.effect())?;
+        if self.resources.pending.is_some()
+            || self
+                .resources
+                .active
+                .inputs()
+                .iter()
+                .filter(|input| intent.matches_input(input))
+                .count()
+                != 1
+        {
+            return Err(crate::SessionMemoryReconciliationError::ResourceMismatch);
+        }
+
+        let binding = self
+            .environment
+            .binding()
+            .ok_or(crate::SessionMemoryReconciliationError::EnvironmentMismatch)?;
+        let handle = serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(binding)
+            .map_err(|_| crate::SessionMemoryReconciliationError::EnvironmentMismatch)?;
+        let materializations = handle
+            .memory_materializations()
+            .map_err(|_| crate::SessionMemoryReconciliationError::EnvironmentMismatch)?
+            .ok_or(crate::SessionMemoryReconciliationError::EnvironmentMismatch)?;
+        if materializations
+            .iter()
+            .filter(|evidence| *evidence == intent.materialization())
+            .count()
+            != 1
+        {
+            return Err(crate::SessionMemoryReconciliationError::EnvironmentMismatch);
+        }
+        Ok(())
     }
 
     /// Whether the root Session state forbids every new realization effect.
@@ -378,6 +849,88 @@ impl PersistedSession {
             crate::SessionBaselineState::Frozen(baseline) => Some(baseline),
             crate::SessionBaselineState::Preparing(_) => None,
         }
+    }
+
+    fn environment_effect_context(
+        &self,
+        owner_scope: &str,
+    ) -> Result<(String, Option<String>), crate::SessionEnvironmentReceiptError> {
+        let environment_fingerprint = self
+            .frozen_baseline()
+            .map(|baseline| baseline.environment.config_fingerprint.0.clone())
+            .ok_or(crate::SessionEnvironmentReceiptError::EnvironmentMismatch)?;
+        let transition_fingerprint = if self.resources.pending.is_some() {
+            let (previous_revision, previous) = self.resources.active_generation();
+            let (desired_revision, desired) = self.resources.desired_generation();
+            Some(
+                crate::SessionResourceTransition::new(
+                    crate::SessionResourceManifest::at_revision(
+                        owner_scope,
+                        previous_revision,
+                        previous.clone(),
+                    ),
+                    crate::SessionResourceManifest::at_revision(
+                        owner_scope,
+                        desired_revision,
+                        desired.clone(),
+                    ),
+                )
+                .map_err(|_| crate::SessionEnvironmentReceiptError::ResourceTransitionMismatch)?
+                .operation_fingerprint(),
+            )
+        } else {
+            None
+        };
+        Ok((environment_fingerprint, transition_fingerprint))
+    }
+
+    /// Authorize one Environment effect against the complete Session aggregate
+    /// before a provider is allowed to perform I/O. The same state-machine
+    /// result is consumed by receipt application after the physical effect.
+    pub fn authorize_environment_effect(
+        &self,
+        owner_scope: &str,
+        intent: &crate::SessionEnvironmentEffectIntent,
+        now_unix_ms: u64,
+    ) -> Result<crate::SessionEnvironmentEffectAuthorization, crate::SessionEnvironmentReceiptError>
+    {
+        if intent.session_id() != self.session_id {
+            return Err(crate::SessionEnvironmentReceiptError::Mismatch);
+        }
+        let realization_is_current = match (self.realization.as_ref(), intent.realization()) {
+            (Some(current), Some(asserted)) => {
+                crate::realization_lease_authorizes(current, asserted, now_unix_ms)
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        if !realization_is_current {
+            return Err(crate::SessionEnvironmentReceiptError::RealizationStale);
+        }
+        let (environment_fingerprint, transition_fingerprint) =
+            self.environment_effect_context(owner_scope)?;
+        self.environment.authorize_effect(
+            intent,
+            &environment_fingerprint,
+            transition_fingerprint.as_deref(),
+        )
+    }
+
+    /// Apply an Environment receipt against the complete Session aggregate.
+    /// The Environment state machine owns phase/source/substrate admission;
+    /// this root method supplies its immutable baseline and the sole durable
+    /// active→pending Resource operation identity.
+    pub fn try_apply_environment_receipt(
+        &mut self,
+        owner_scope: &str,
+        receipt: &crate::SessionEnvironmentReceipt,
+        now_unix_ms: u64,
+    ) -> Result<bool, crate::SessionEnvironmentReceiptError> {
+        receipt.verify()?;
+        let intent = receipt.effect_intent()?;
+        let authorization = self.authorize_environment_effect(owner_scope, &intent, now_unix_ms)?;
+        self.environment
+            .apply_authorized_receipt(receipt, authorization)
     }
 
     #[must_use]

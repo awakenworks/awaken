@@ -5,7 +5,8 @@
 //! prompts, and MCP generations come only from the frozen Control projection
 //! and are installed into the same Session slot for the Native/ACP backend path.
 
-use std::collections::HashSet;
+mod realization_control_deadline;
+
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -15,6 +16,8 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecutor};
 use futures_util::stream::{self, StreamExt};
+
+use realization_control_deadline::DeadlineSessionRealizationControl;
 
 /// Independent Session lease renewals are fast root CAS operations. Bound them
 /// per Worker so cloud replica count scales total capacity without removing
@@ -29,6 +32,140 @@ enum RenewalFailureDisposition {
     RetryWhileLeaseLive,
 }
 
+/// Resource behavior for the one complete frozen-projection installer.
+/// Keeping this typed prevents terminal recovery from entering ordinary
+/// materialization while preserving one publication/baseline/lease owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrozenResourceProjectionMode {
+    Dispatch,
+    Synchronize,
+    ValidateInstalled,
+    Terminal,
+}
+
+impl FrozenResourceProjectionMode {
+    const fn synchronizes(self) -> bool {
+        matches!(self, Self::Dispatch | Self::Synchronize)
+    }
+
+    const fn transition_use(self) -> awaken_session_contract::FrozenResourceTransitionUse {
+        if self.synchronizes() {
+            awaken_session_contract::FrozenResourceTransitionUse::ApplyEffects
+        } else {
+            awaken_session_contract::FrozenResourceTransitionUse::ValidateInstalled
+        }
+    }
+
+    const fn allows_unattempted_amendment(self) -> bool {
+        matches!(self, Self::Dispatch)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrozenResourceTransitionInstallDecision {
+    Stage,
+    Replace,
+    Reject,
+}
+
+/// Decide whether one complete aggregate projection may replace the Runtime's
+/// disposable Resource projection. Durable amendment eligibility remains owned
+/// by the Session aggregate; this kernel only prevents a claimed realization
+/// from projecting different content into the same observed generation.
+const fn frozen_resource_generation_install_decision(
+    previous_exists: bool,
+    exact_replay: bool,
+    workspace_matches: bool,
+    previous_revision: u64,
+    incoming_revision: u64,
+    authority_amends_unattempted: bool,
+) -> FrozenResourceTransitionInstallDecision {
+    use FrozenResourceTransitionInstallDecision::{Reject, Replace, Stage};
+
+    if !previous_exists || exact_replay {
+        return Stage;
+    }
+    if workspace_matches
+        && (incoming_revision > previous_revision
+            || (authority_amends_unattempted && incoming_revision == previous_revision))
+    {
+        Replace
+    } else {
+        Reject
+    }
+}
+
+/// Project aggregate-owned transition values into the one generation kernel.
+/// This adapter contains no independent policy and is the only place where
+/// Runtime cache identity is translated into the kernel's complete fact set.
+fn frozen_resource_transition_install_decision(
+    existing: Option<&awaken_session_contract::SessionResourceTransition>,
+    incoming: &awaken_session_contract::SessionResourceTransition,
+    authority_amends_unattempted: bool,
+) -> FrozenResourceTransitionInstallDecision {
+    match existing {
+        Some(existing) => frozen_resource_generation_install_decision(
+            true,
+            existing.desired() == incoming.desired(),
+            existing.desired().workspace_id == incoming.desired().workspace_id,
+            existing.desired().revision,
+            incoming.desired().revision,
+            authority_amends_unattempted,
+        ),
+        None => frozen_resource_generation_install_decision(
+            false,
+            false,
+            false,
+            0,
+            incoming.desired().revision,
+            authority_amends_unattempted,
+        ),
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn session_resource_replacement_requires_newer_or_authority_amended_generation() {
+    use FrozenResourceTransitionInstallDecision::{Reject, Replace, Stage};
+
+    let previous_exists: bool = kani::any();
+    let exact_replay: bool = kani::any();
+    let workspace_matches: bool = kani::any();
+    let previous_revision: u64 = kani::any();
+    let incoming_revision: u64 = kani::any();
+    let mode = match kani::any::<u8>() % 4 {
+        0 => FrozenResourceProjectionMode::Dispatch,
+        1 => FrozenResourceProjectionMode::Synchronize,
+        2 => FrozenResourceProjectionMode::ValidateInstalled,
+        _ => FrozenResourceProjectionMode::Terminal,
+    };
+    let authority_amends_unattempted = mode.allows_unattempted_amendment();
+    assert_eq!(
+        authority_amends_unattempted,
+        mode == FrozenResourceProjectionMode::Dispatch
+    );
+
+    let decision = frozen_resource_generation_install_decision(
+        previous_exists,
+        exact_replay,
+        workspace_matches,
+        previous_revision,
+        incoming_revision,
+        authority_amends_unattempted,
+    );
+    let replacement_authorized = previous_exists
+        && !exact_replay
+        && workspace_matches
+        && (incoming_revision > previous_revision
+            || (authority_amends_unattempted && incoming_revision == previous_revision));
+    assert_eq!(decision == Replace, replacement_authorized);
+    assert_eq!(decision == Stage, !previous_exists || exact_replay);
+    assert_eq!(
+        decision == Reject,
+        !replacement_authorized && previous_exists && !exact_replay
+    );
+}
+
 fn realization_renewal_failure_disposition(
     error: &awaken_session_contract::SessionRealizationControlFailure,
 ) -> RenewalFailureDisposition {
@@ -39,173 +176,17 @@ fn realization_renewal_failure_disposition(
     }
 }
 
-#[derive(Clone)]
-struct DeadlineSessionRealizationControl {
-    inner: Arc<dyn awaken_dispatch_contract::ClaimedSessionControl>,
-    request_timeout: std::time::Duration,
-}
-
-impl DeadlineSessionRealizationControl {
-    async fn call<T>(
-        &self,
-        operation: &'static str,
-        future: impl std::future::Future<
-            Output = Result<T, awaken_session_contract::SessionRealizationControlFailure>,
-        >,
-    ) -> Result<T, awaken_session_contract::SessionRealizationControlFailure> {
-        tokio::time::timeout(self.request_timeout, future)
-            .await
-            .map_err(|_| {
-                awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
-                    "Session realization Control `{operation}` exceeded its authority-derived request deadline"
-                ))
-            })?
-    }
-}
-
-/// Deadline decoration only bounds transport waiting. The wrapped Control
-/// remains the sole owner of leases, phases, cleanup commands, and receipts.
-#[async_trait::async_trait]
-impl awaken_session_contract::SessionRealizationControl for DeadlineSessionRealizationControl {
-    async fn begin_session_realization(
-        &self,
-        command: awaken_session_contract::BeginSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call("begin", self.inner.begin_session_realization(command))
-            .await
-    }
-
-    async fn renew_session_realization(
-        &self,
-        command: awaken_session_contract::RenewSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationLease,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call("renew", self.inner.renew_session_realization(command))
-            .await
-    }
-
-    async fn activate_session_realization(
-        &self,
-        command: awaken_session_contract::ActivateSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call("activate", self.inner.activate_session_realization(command))
-            .await
-    }
-
-    async fn acknowledge_session_realization(
-        &self,
-        command: awaken_session_contract::AcknowledgeSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call(
-            "acknowledge",
-            self.inner.acknowledge_session_realization(command),
-        )
-        .await
-    }
-
-    async fn fail_session_realization(
-        &self,
-        command: awaken_session_contract::FailSessionRealization,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        self.call("fail", self.inner.fail_session_realization(command))
-            .await
-    }
-
-    async fn claim_next_terminal_cleanup(
-        &self,
-        target: awaken_session_contract::SessionRealizationTarget,
-    ) -> Result<
-        Option<awaken_session_contract::SessionTerminalCleanupAssignment>,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call(
-            "claim_terminal_cleanup",
-            self.inner.claim_next_terminal_cleanup(target),
-        )
-        .await
-    }
-
-    async fn terminal_cleanup_commands(
-        &self,
-        session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
-    ) -> Result<
-        Option<Vec<awaken_session_contract::SessionCleanupCommand>>,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call(
-            "poll_terminal_cleanup",
-            self.inner.terminal_cleanup_commands(session_id, lease),
-        )
-        .await
-    }
-
-    async fn terminal_repository_publication_command(
-        &self,
-        session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
-    ) -> Result<
-        Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call(
-            "poll_terminal_repository_publication",
-            self.inner
-                .terminal_repository_publication_command(session_id, lease),
-        )
-        .await
-    }
-
-    async fn record_terminal_repository_publication_receipt(
-        &self,
-        session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        self.call(
-            "record_terminal_repository_publication",
-            self.inner
-                .record_terminal_repository_publication_receipt(session_id, lease, receipt),
-        )
-        .await
-    }
-
-    async fn record_terminal_repository_publication_rejection(
-        &self,
-        session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        self.call(
-            "record_terminal_repository_publication_rejection",
-            self.inner
-                .record_terminal_repository_publication_rejection(session_id, lease, rejection),
-        )
-        .await
-    }
-
-    async fn record_terminal_cleanup_completion(
-        &self,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        completion: awaken_session_contract::SessionCleanupCompletion,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        self.call(
-            "record_terminal_cleanup",
-            self.inner
-                .record_terminal_cleanup_completion(lease, completion),
-        )
-        .await
+fn terminal_cleanup_drive_error(
+    session_id: &str,
+    error: awaken_session_contract::SessionRealizationDriveError,
+) -> crate::HostError {
+    match error {
+        awaken_session_contract::SessionRealizationDriveError::Effect(error) => {
+            crate::managed_adapter_error::from_run_error(error)
+        }
+        error => crate::HostError::internal(format!(
+            "Session `{session_id}` terminal cleanup remained pending: {error}"
+        )),
     }
 }
 
@@ -551,16 +532,7 @@ mod acp_context_tests {
         // Construction happens before the claim-fenced frozen projection is
         // accepted; realization installs the one authoritative slot later.
         slots.update("session-1", |slot| {
-            slot.baseline = Some(crate::session_slot::FrozenBaselineRuntimeProjection {
-                fingerprint: awaken_session_contract::SessionBaselineFingerprint("baseline".into()),
-                agent_id: "agent".into(),
-                agent_revision: None,
-                model_override: None,
-                system_prompt: awaken_session_contract::SessionSystemPromptSelection::Inherit,
-                mounts: Vec::new(),
-                env: Vec::new(),
-                prompts: vec!["frozen session prompt".into()],
-            });
+            slot.resources.prompts = vec!["frozen session prompt".into()];
         });
         let durable = activation("genai");
         let mut context = awaken_runtime_contract::RuntimeRunContext::default();
@@ -912,210 +884,73 @@ impl crate::SharedHost {
             .unwrap_or(false)
     }
 
-    /// Drive the one aggregate-owned terminal cleanup projection for a resident
+    /// Drive the one aggregate-owned terminal cleanup projection for a claimed
     /// realization. `true` means the terminal fence owns this slot (including a
-    /// completed/not-found retirement); `false` resumes ordinary lease renewal.
-    /// Warm slots and cold recovery assignments both enter this exact helper.
+    /// completed/not-found retirement); `false` means another actor settled the
+    /// assignment before this recovery drive observed it.
     pub(crate) async fn reconcile_terminal_cleanup_for_lease(
         &self,
         control: &dyn awaken_session_contract::SessionRealizationControl,
         session_id: &str,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<bool, crate::HostError> {
-        match control.terminal_cleanup_commands(session_id, lease).await {
-            Ok(Some(commands)) => {
-                let mut terminal_error = None;
-                let root_was_ready = commands
-                    .iter()
-                    .any(|command| command.thread_id == session_id);
-                for command in commands {
-                    match self
-                        .execute_dispatched_terminal_cleanup(command.clone())
-                        .await
-                    {
-                        Ok(completion) => {
-                            if let Err(error) = control
-                                .record_terminal_cleanup_completion(lease, completion)
-                                .await
-                            {
-                                return self
-                                    .handle_session_realization_control_failure(
-                                        session_id,
-                                        error,
-                                        "terminal cleanup receipt",
-                                    )
-                                    .await;
-                            }
-                        }
-                        Err(error) => {
-                            terminal_error.get_or_insert_with(|| {
-                                crate::HostError::internal(format!(
-                                    "Session `{session_id}` terminal cleanup effect remained pending: {error}"
-                                ))
-                            });
-                        }
-                    }
-                }
-                if let Some(error) = terminal_error {
-                    return Err(error);
-                }
-                if root_was_ready {
-                    return Ok(true);
-                }
-
-                // Publication is the sole root-owned effect between child
-                // cleanup and root finalization. Its command and receipt remain
-                // projections of the same aggregate operation; no Worker-local
-                // queue or completion registry is introduced.
-                match control
-                    .terminal_repository_publication_command(session_id, lease)
+        match control.terminal_cleanup_work(session_id, lease).await {
+            Ok(Some(_)) => {
+                // This first read distinguishes an ordinary Session (`None`)
+                // from an aggregate-owned terminal fence. The topology-neutral
+                // driver re-reads the closed action and remains the sole owner
+                // of installation, effect ordering, receipt admission, retry,
+                // and process-local acknowledgement for warm and cold slots.
+                let runtime = self
+                    .dispatch_session_runtime()
+                    .and_then(|runtime| runtime.managed())
+                    .map_err(crate::managed_adapter_error::from_run_error)?;
+                awaken_session_contract::drive_session_terminal_cleanup(
+                    session_id, lease, control, &runtime,
+                )
+                .await
+                .map_err(|error| terminal_cleanup_drive_error(session_id, error))?;
+                Ok(true)
+            }
+            Ok(None) => {
+                if self
+                    .retire_completed_terminal_cleanup_projection(session_id, lease)
                     .await
                 {
-                    Ok(Some(projection)) => {
-                        if self.thread_workspace(session_id) != projection.workspace_id {
-                            return Err(crate::HostError::internal(format!(
-                                "Session `{session_id}` terminal Repository publication Workspace does not match its frozen Runtime projection"
-                            )));
-                        }
-                        let effect = self
-                            .execute_dispatched_terminal_repository_publication(
-                                projection.command,
-                                lease,
-                            )
-                            .await
-                            .map_err(|error| {
-                                crate::HostError::internal(format!(
-                                    "Session `{session_id}` terminal Repository publication remained pending: {error}"
-                                ))
-                            })?;
-                        let outcome = match effect {
-                            awaken_session_contract::SessionRepositoryPublicationEffect::Published(
-                                receipt,
-                            ) => {
-                                control
-                                    .record_terminal_repository_publication_receipt(
-                                        session_id,
-                                        lease,
-                                        receipt,
-                                    )
-                                    .await
-                            }
-                            awaken_session_contract::SessionRepositoryPublicationEffect::Rejected(
-                                rejection,
-                            ) => {
-                                control
-                                    .record_terminal_repository_publication_rejection(
-                                        session_id,
-                                        lease,
-                                        rejection,
-                                    )
-                                    .await
-                            }
-                        };
-                        if let Err(error) = outcome {
-                            return self
-                                .handle_session_realization_control_failure(
-                                    session_id,
-                                    error,
-                                    "terminal Repository publication outcome",
-                                )
-                                .await;
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        return self
-                            .handle_session_realization_control_failure(
-                                session_id,
-                                error,
-                                "terminal Repository publication",
-                            )
-                            .await;
-                    }
+                    Ok(true)
+                } else {
+                    Ok(false)
                 }
-
-                // Re-read the aggregate after child receipts and the publication
-                // outcome. Only its canonical pending-command projection may expose
-                // the root finalizer that disposes the retained Environment.
-                let root_commands = match control.terminal_cleanup_commands(session_id, lease).await
+            }
+            Err(awaken_session_contract::SessionRealizationControlFailure::NotFound) => {
+                let _ = self.interrupt(session_id).await;
+                if !self
+                    .retire_completed_terminal_cleanup_projection(session_id, lease)
+                    .await
                 {
-                    Ok(Some(commands)) => commands,
-                    Ok(None) => return Ok(true),
-                    Err(error) => {
-                        return self
-                            .handle_session_realization_control_failure(
-                                session_id,
-                                error,
-                                "terminal root cleanup",
-                            )
-                            .await;
-                    }
-                };
-                for command in root_commands {
-                    let completion = self
-                        .execute_dispatched_terminal_cleanup(command)
-                        .await
-                        .map_err(|error| {
-                            crate::HostError::internal(format!(
-                                "Session `{session_id}` terminal root cleanup remained pending: {error}"
-                            ))
-                        })?;
-                    if let Err(error) = control
-                        .record_terminal_cleanup_completion(lease, completion)
-                        .await
-                    {
-                        return self
-                            .handle_session_realization_control_failure(
-                                session_id,
-                                error,
-                                "terminal root cleanup receipt",
-                            )
-                            .await;
-                    }
+                    self.revoke_session_realization(session_id).await?;
                 }
                 Ok(true)
             }
-            Ok(None) => Ok(false),
-            Err(error) => {
-                self.handle_session_realization_control_failure(
-                    session_id,
-                    error,
-                    "terminal cleanup",
-                )
-                .await
-            }
+            Err(error) => Err(crate::HostError::internal(format!(
+                "Session `{session_id}` terminal cleanup control remained pending: {error}"
+            ))),
         }
     }
 
-    async fn handle_session_realization_control_failure(
-        &self,
-        session_id: &str,
-        error: awaken_session_contract::SessionRealizationControlFailure,
-        operation: &str,
-    ) -> Result<bool, crate::HostError> {
-        if realization_renewal_failure_disposition(&error)
-            == RenewalFailureDisposition::RevokeImmediately
-        {
-            let _ = self.interrupt(session_id).await;
-            self.revoke_session_realization(session_id).await?;
-            return Ok(true);
-        }
-        Err(crate::HostError::internal(format!(
-            "Session `{session_id}` {operation} remained pending: {error}"
-        )))
-    }
-
-    /// Claim and install every currently discoverable cold terminal assignment,
-    /// then enter the same cleanup helper as resident projections. The bound
-    /// prevents one heartbeat from monopolizing the Worker. Within one heartbeat
-    /// Control skips an exact assignment; a later heartbeat carries a newer
-    /// expiry and may fence/retry that same incarnation without waiting for the
-    /// old proof to expire.
+    /// Claim every currently discoverable cold terminal assignment, then enter
+    /// the canonical cleanup driver. The driver alone installs the current
+    /// aggregate readback; the claim is routing and
+    /// ownership input, not a second projection-installation path. This is the
+    /// sole recovery selector; ordinary terminal settlement stays on the
+    /// initiating command path. The bound prevents one recovery sweep from
+    /// monopolizing the Worker, and the lifecycle awaits the whole sweep without
+    /// imposing a timeout on its durable effects.
     pub async fn recover_terminal_cleanup_assignments(
         &self,
         target: awaken_session_contract::SessionRealizationTarget,
     ) -> Result<usize, crate::HostError> {
-        const MAX_ASSIGNMENTS_PER_HEARTBEAT: usize = 64;
+        const MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP: usize = 64;
 
         let control = self.session_control.as_ref().ok_or_else(|| {
             crate::HostError::internal(
@@ -1124,7 +959,7 @@ impl crate::SharedHost {
         })?;
         let mut recovered = 0;
         let mut terminal_error = None;
-        for _ in 0..MAX_ASSIGNMENTS_PER_HEARTBEAT {
+        for _ in 0..MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP {
             let assignment = match control.claim_next_terminal_cleanup(target.clone()).await {
                 Ok(Some(assignment)) => assignment,
                 Ok(None) => break,
@@ -1137,21 +972,6 @@ impl crate::SharedHost {
                     break;
                 }
             };
-            if let Err(error) =
-                crate::host::HostWorkerResolver::install_terminal_cleanup_assignment(
-                    self,
-                    &assignment,
-                )
-                .await
-            {
-                terminal_error.get_or_insert_with(|| {
-                    crate::HostError::internal(format!(
-                        "Session `{}` terminal cleanup projection remained pending: {error}",
-                        assignment.session_id
-                    ))
-                });
-                continue;
-            }
             recovered += 1;
             match self
                 .reconcile_terminal_cleanup_for_lease(
@@ -1183,49 +1003,46 @@ impl crate::SharedHost {
         }
     }
 
-    async fn renew_one_session_realization(
+    async fn reconcile_one_session_realization(
         &self,
         control: &dyn awaken_session_contract::SessionRealizationControl,
         session_id: String,
         lease: awaken_session_contract::SessionRealizationLease,
         requested_expiry_unix_ms: u64,
     ) -> Result<bool, crate::HostError> {
-        // Cause/effect decision table: C1 this lease is due; C2 Control renews,
-        // explicitly rejects this owner, or is temporarily unavailable; C3 the
-        // old proof is still live. Effects: E1 extend only the same durable
-        // owner/incarnation/epoch; E2 interrupt and revoke on explicit loss; E3
-        // retain a still-live proof for retry; E4 revoke once proof expires.
-        // Terminal discovery is deliberately absent: the existing global
-        // claim-next recovery path is its sole authority.
+        // Cause/effect decision table: C1 this lease was selected by the due-only
+        // scheduler; C2 Control extends its exact generation; C3 Control
+        // explicitly rejects this owner; C4 Control is temporarily unavailable;
+        // C5 the old lease remains live. Effects: E1 install the monotonic lease;
+        // E2 interrupt and revoke immediately; E3 retain and retry; E4 interrupt
+        // and revoke at expiry. Terminal work is intentionally absent: the
+        // initiating command owns ordinary settlement and the Worker
+        // lifecycle's cold claim-next lane is the sole recovery scheduler.
         //
-        // | Rule | Control | old proof | Effect |
-        // | R1 | renewed | any | E1 |
-        // | R2 | explicit loss | any | E2 |
-        // | R3 | unavailable | live | E3 |
-        // | R4 | unavailable | expired | E4 |
+        // | Rule | due | Control | old lease | Effect |
+        // | R1 | yes | renewed | any | E1 |
+        // | R2 | yes | explicit loss | any | E2 |
+        // | R3 | yes | temporary failure | live | E3 |
+        // | R4 | yes | temporary failure | expired | E4 |
         let renewal: Result<bool, (crate::HostError, bool)> = async {
             let control_failure = |error| {
                 let revoke = realization_renewal_failure_disposition(&error)
                     == RenewalFailureDisposition::RevokeImmediately;
                 (crate::HostError::internal(error.to_string()), revoke)
             };
-            let renewal_command = || awaken_session_contract::RenewSessionRealization {
-                session_id: session_id.clone(),
-                asserted_lease: lease.clone(),
-                requested_expires_at_unix_ms: requested_expiry_unix_ms,
-            };
-            let renewed_lease = match control.renew_session_realization(renewal_command()).await {
+            let renewed_lease = match control
+                .renew_session_realization(awaken_session_contract::RenewSessionRealization {
+                    session_id: session_id.clone(),
+                    asserted_lease: lease.clone(),
+                    requested_expires_at_unix_ms: requested_expiry_unix_ms,
+                })
+                .await
+            {
                 Ok(renewed_lease) => renewed_lease,
                 Err(error) => return Err(control_failure(error)),
             };
-            let realization = self.session_slots.realization_lock(&session_id);
-            let Ok(_realization) = realization.try_lock() else {
-                // Control extended only the same owner/incarnation/epoch. The
-                // active phase driver observes the renewed aggregate fence at
-                // Activate/Acknowledge; renewal never starts a second driver.
-                self.install_session_realization_lease(&session_id, renewed_lease);
-                return Ok::<bool, (crate::HostError, bool)>(true);
-            };
+            // The aggregate returned only a monotonic same-generation fence.
+            // Installing that readback cannot start or duplicate a phase driver.
             self.install_session_realization_lease(&session_id, renewed_lease);
             Ok::<bool, (crate::HostError, bool)>(true)
         }
@@ -1253,44 +1070,16 @@ impl crate::SharedHost {
         }
     }
 
-    /// Renew every due Session through the lease-only root CAS.
-    /// Environment-only Sessions participate because image/package realization
-    /// can outlive the initial lease even when no MCP attachment exists.
+    /// Renew every due Session through the lease-only root CAS. Environment-only
+    /// Sessions participate because physical realization can outlive the initial
+    /// lease even when no MCP attachment exists. Ordinary terminal settlement
+    /// remains on the initiating command path; recovery discovery and effects
+    /// remain exclusively on the Worker lifecycle's cold claim-next lane.
+    ///
     /// A conclusive ownership loss or expired proof revokes only that Session;
     /// a transient failure retains a still-live lease for the next sweep.
-    ///
-    /// Each Session keeps its one realization lock and phase driver. Independent
-    /// renewals use a fixed upper bound to protect Control; authority-derived
-    /// per-request deadlines release every occupied slot. Terminal cleanup is
-    /// discovered only by the existing global claim-next recovery path instead
-    /// of issuing one Control poll per resident Session. If
-    /// Control still cannot answer before an individual durable expiry, that
-    /// Session fails closed instead of inventing local grace.
-    async fn reconcile_session_realization_batch(
-        &self,
-        control: Arc<dyn awaken_session_contract::SessionRealizationControl>,
-        realizations: Vec<(String, awaken_session_contract::SessionRealizationLease)>,
-        requested_expiry_unix_ms: u64,
-        concurrency: usize,
-    ) -> Vec<Result<bool, crate::HostError>> {
-        stream::iter(realizations)
-            .map(|(session_id, lease)| {
-                let control = Arc::clone(&control);
-                async move {
-                    self.renew_one_session_realization(
-                        control.as_ref(),
-                        session_id,
-                        lease,
-                        requested_expiry_unix_ms,
-                    )
-                    .await
-                }
-            })
-            .buffer_unordered(concurrency.max(1))
-            .collect::<Vec<_>>()
-            .await
-    }
-
+    /// Authority-derived per-request deadlines release occupied capacity, and
+    /// earliest-deadline ordering prevents one Session from starving another.
     pub async fn renew_due_session_realizations(
         &self,
         now_unix_ms: u64,
@@ -1314,11 +1103,11 @@ impl crate::SharedHost {
         })?;
         let requested_expiry_unix_ms = now_unix_ms
             .saturating_add(u64::try_from(timing.lease_ttl().as_millis()).unwrap_or(u64::MAX));
-        let control: Arc<dyn awaken_session_contract::SessionRealizationControl> =
-            Arc::new(DeadlineSessionRealizationControl {
-                inner: Arc::clone(control),
-                request_timeout: timing.request_timeout(),
-            });
+        let control: Arc<dyn awaken_session_contract::SessionRealizationControl> = Arc::new(
+            DeadlineSessionRealizationControl::new(Arc::clone(control), timing.request_timeout()),
+        );
+        // This cadence owns only due lease writes. The independent lifecycle
+        // lane owns cold claim-next recovery and complete effect execution.
         let order =
             |left: &(String, awaken_session_contract::SessionRealizationLease),
              right: &(String, awaken_session_contract::SessionRealizationLease)| {
@@ -1328,13 +1117,21 @@ impl crate::SharedHost {
                     .then_with(|| left.0.cmp(&right.0))
             };
         due.sort_by(order);
-        let outcomes = self
-            .reconcile_session_realization_batch(
-                control,
-                due,
-                requested_expiry_unix_ms,
-                MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS,
-            )
+        let outcomes = stream::iter(due)
+            .map(|(session_id, lease)| {
+                let control = Arc::clone(&control);
+                async move {
+                    self.reconcile_one_session_realization(
+                        control.as_ref(),
+                        session_id,
+                        lease,
+                        requested_expiry_unix_ms,
+                    )
+                    .await
+                }
+            })
+            .buffer_unordered(MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS)
+            .collect::<Vec<_>>()
             .await;
         let mut renewed = 0;
         let mut first_error = None;
@@ -1449,8 +1246,11 @@ impl crate::SharedHost {
             thread,
             projection,
             claim,
-            synchronize_resources,
-            false,
+            if synchronize_resources {
+                FrozenResourceProjectionMode::Synchronize
+            } else {
+                FrozenResourceProjectionMode::ValidateInstalled
+            },
             realization_lease,
         )
         .await
@@ -1466,7 +1266,11 @@ impl crate::SharedHost {
         projection: awaken_session_contract::FrozenSessionProjection,
     ) -> Result<(), crate::HostError> {
         self.install_frozen_session_projection_with_resource_authority(
-            thread, projection, None, true, true, None,
+            thread,
+            projection,
+            None,
+            FrozenResourceProjectionMode::Dispatch,
+            None,
         )
         .await
     }
@@ -1476,8 +1280,7 @@ impl crate::SharedHost {
         thread: &str,
         projection: awaken_session_contract::FrozenSessionProjection,
         claim: Option<&RunClaim>,
-        synchronize_resources: bool,
-        authority_amends_unattempted_resources: bool,
+        resource_mode: FrozenResourceProjectionMode,
         realization_lease: Option<awaken_session_contract::SessionRealizationLease>,
     ) -> Result<(), crate::HostError> {
         if projection.baseline.fingerprint.0.trim().is_empty() {
@@ -1492,27 +1295,27 @@ impl crate::SharedHost {
                     | awaken_session_contract::McpAttachmentState::Failed
             )
         });
+        let resource_transition = projection
+            .resource_transition(resource_mode.transition_use())
+            .map_err(|error| crate::HostError::internal(error.to_string()))?;
         let baseline = baseline_projection(&projection.baseline);
         let init = projection.session_init();
-        match awaken_session_contract::frozen_agent_publication_decision(
-            &projection.baseline,
-            projection.agent_publication.as_ref(),
-        ) {
-            awaken_session_contract::FrozenAgentPublicationDecision::Unpinned
-            | awaken_session_contract::FrozenAgentPublicationDecision::OptionalMissing
-            | awaken_session_contract::FrozenAgentPublicationDecision::Exact => {}
-            awaken_session_contract::FrozenAgentPublicationDecision::MissingRequired => {
-                return Err(crate::HostError::internal(
-                    "Worker Session realization requires its exact frozen Agent publication",
-                ));
-            }
-            awaken_session_contract::FrozenAgentPublicationDecision::Mismatch => {
-                return Err(crate::HostError::internal(
-                    "Session Agent publication does not match its frozen identity, revision, or runtime",
-                ));
-            }
-        }
-        if let Some(asserted) = &projection.agent_publication
+        let environment_projection = crate::provisioning::project_environment(&init.environment);
+        // Complete projection installation owns the Resource suffix lock from
+        // the first comparison through publication of every correlated fact.
+        // Desired-only staging and physical reconciliation therefore cannot
+        // interleave a different resources/skills/manifest generation between
+        // preflight and the baseline/transition/lease update below.
+        let resource_projection = self
+            .session_slots
+            .update(thread, |slot| slot.resource_projection.clone());
+        let _resource_projection = resource_projection.lock().await;
+        let (publication, model_candidate) = self.resolve_canonical_session_projection(
+            &projection.workspace_id,
+            crate::host::CanonicalSessionProjection::Baseline(&projection.baseline),
+            projection.agent_publication.clone(),
+        )?;
+        if let Some(asserted) = &publication
             && self
                 .session_slots
                 .read(thread, |slot| {
@@ -1526,7 +1329,6 @@ impl crate::SharedHost {
                 "Session realization cannot replace its immutable Agent publication",
             ));
         }
-        let environment_projection = crate::provisioning::project_environment(&init.environment);
         if self
             .session_slots
             .read(thread, |slot| {
@@ -1542,6 +1344,42 @@ impl crate::SharedHost {
                 "thread {thread} is already bound to a different frozen Environment"
             )));
         }
+        // Validate the prospective complete layout before publishing any part of
+        // a cold projection. The baseline is not resident yet on first install,
+        // so a validator that reads only the current slot would miss a Repository
+        // nested below one of its frozen mounts and could load Skills first. A
+        // Worker-owned Dispatch is projection-only on the Coordinator: it uses
+        // the same structural kernel without resolving a trusted-host provider
+        // that only the claimed Worker may own. Every realization/cleanup path
+        // and every Local dispatch retains the exact provider-effective check.
+        if resource_mode == FrozenResourceProjectionMode::Dispatch
+            && projection.baseline.runtime_placement
+                == awaken_session_contract::SessionRuntimePlacement::Worker
+        {
+            self.validate_structural_managed_resource_layout(
+                thread,
+                &projection.resources,
+                Some(&baseline.mounts),
+                Some(&baseline.env),
+                Some(&environment_projection),
+            )?;
+        } else {
+            let provider = if let Some(candidate) = model_candidate.as_ref() {
+                self.session_environment_provider(candidate.provisioning())?
+            } else {
+                self.session_environment_provider(
+                    &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+                )?
+            };
+            self.validate_managed_resource_layout(
+                thread,
+                &projection.resources,
+                provider,
+                Some(&baseline.mounts),
+                Some(&baseline.env),
+                Some(&environment_projection),
+            )?;
+        }
 
         let baseline_to_install = if let Some(existing) = self
             .session_slots
@@ -1555,51 +1393,61 @@ impl crate::SharedHost {
             }
             None
         } else {
-            let occupied = self.session_slots.read(thread, |slot| {
-                (
-                    slot.runtime.is_some() || slot.environment_owner.has_local_environment(),
-                    slot.resources.mounts.clone(),
-                )
-            });
-            let (is_realized, built_in_mounts) = occupied.unwrap_or_else(|| (false, Vec::new()));
+            let is_realized = self
+                .session_slots
+                .read(thread, |slot| {
+                    slot.runtime.is_some() || slot.environment_owner.has_local_environment()
+                })
+                .unwrap_or(false);
             if is_realized {
                 return Err(crate::HostError::internal(format!(
                     "thread {thread} was realized before its frozen Session baseline"
                 )));
             }
-            validate_baseline_projection(&baseline, &built_in_mounts)?;
             Some(baseline)
         };
 
         if baseline_to_install.is_some()
-            && !synchronize_resources
+            && matches!(
+                resource_mode,
+                FrozenResourceProjectionMode::ValidateInstalled
+            )
             && projection.resource_revision > 0
         {
             return Err(crate::HostError::internal(format!(
                 "thread {thread} cannot cold-materialize frozen Session Resources during lease-only renewal"
             )));
         }
-        // The baseline is immutable, but a remote Resource verification is
-        // authorized by the current dispatch claim. Re-stage the exact
-        // manifest on every claimed replay so Repository checks never retain a
-        // prior lease epoch. Resource installation owns generation equality and
-        // fencing; every cold/replay case then joins the one projection publish
-        // sequence below.
-        if synchronize_resources && projection.resource_revision > 0 {
-            let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
-                projection.workspace_id.clone(),
-                projection.resource_revision,
-                projection.resources.clone(),
-            );
-            let installed = if authority_amends_unattempted_resources {
-                self.amend_unattempted_dispatched_resources(thread, &manifest)
-                    .await
-            } else {
-                self.install_dispatched_resources(thread, &manifest, claim)
-                    .await
-            };
-            installed.map_err(|error| crate::HostError::internal(error.to_string()))?;
+        let transition_install = self
+            .session_slots
+            .read(thread, |slot| {
+                frozen_resource_transition_install_decision(
+                    slot.resource_transition.as_ref(),
+                    &resource_transition,
+                    resource_mode.allows_unattempted_amendment(),
+                )
+            })
+            .unwrap_or(FrozenResourceTransitionInstallDecision::Stage);
+        if transition_install == FrozenResourceTransitionInstallDecision::Reject {
+            return Err(crate::HostError::internal(format!(
+                "thread {thread} cannot replace its current Session Resource projection"
+            )));
         }
+        // Resource installation owns generation equality and fencing. Claimed
+        // replay revalidates the exact aggregate transition. Requirements are
+        // staged here, but only the physical transition body may publish the
+        // active manifest.
+        if resource_mode.synchronizes() && projection.resource_revision > 0 {
+            self.stage_prevalidated_dispatched_resource_transition_under_resource_projection(
+                thread,
+                &resource_transition,
+                claim,
+                projection.environment.binding().is_some(),
+            )
+            .await
+            .map_err(|error| crate::HostError::internal(error.to_string()))?;
+        }
+        self.retain_session_publication(thread, publication.as_ref())?;
         self.install_session_environment_owner_projection(
             thread,
             &projection.workspace_id,
@@ -1612,13 +1460,34 @@ impl crate::SharedHost {
                 slot.baseline = Some(baseline);
             }
             slot.has_mcp_projection = has_mcp_projection;
-            if let Some(publication) = projection.agent_publication {
-                slot.published_snapshot = Some(publication);
-            }
+            slot.resource_transition = Some(resource_transition);
         });
         if let Some(lease) = realization_lease {
             self.install_session_realization_lease(thread, lease);
         }
+        Ok(())
+    }
+
+    /// Install one aggregate-frozen terminal assignment without entering the
+    /// active realization driver. Cleanup I/O remains owned by the terminal
+    /// effect path.
+    pub(crate) async fn install_terminal_cleanup_projection(
+        &self,
+        assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+    ) -> Result<(), crate::HostError> {
+        let realization = self.session_slots.realization_lock(&assignment.session_id);
+        let _realization = realization.lock().await;
+        self.install_frozen_session_projection_with_resource_authority(
+            &assignment.session_id,
+            assignment.projection.clone(),
+            None,
+            FrozenResourceProjectionMode::Terminal,
+            Some(assignment.lease.clone()),
+        )
+        .await?;
+        self.session_slots.update(&assignment.session_id, |slot| {
+            slot.terminal_environment_state = Some(assignment.projection.environment.clone());
+        });
         Ok(())
     }
 
@@ -1656,21 +1525,13 @@ impl crate::SharedHost {
     ) -> Vec<awaken_provisioning_contract::MountRequirement> {
         self.session_slots
             .read(thread, |slot| {
-                let mut mounts = slot.resources.mounts.clone();
-                if let Some(baseline) = &slot.baseline {
-                    mounts.extend(baseline.mounts.clone());
-                }
-                if slot.content_delivery
-                    == Some(crate::session_slot::ManagedContentDelivery::SemanticTools)
-                {
-                    mounts.retain(|mount| {
-                        !matches!(
-                            mount.source,
-                            awaken_provisioning_contract::MountSource::MemoryStore { .. }
-                        )
-                    });
-                }
-                mounts
+                project_session_mounts(
+                    slot.resources.mounts.clone(),
+                    slot.baseline
+                        .as_ref()
+                        .map(|baseline| baseline.mounts.as_slice()),
+                    slot.content_delivery,
+                )
             })
             .unwrap_or_default()
     }
@@ -1712,55 +1573,75 @@ impl crate::SharedHost {
     }
 }
 
-fn baseline_projection(
-    baseline: &awaken_session_contract::SessionBaseline,
-) -> crate::session_slot::FrozenBaselineRuntimeProjection {
-    crate::session_slot::FrozenBaselineRuntimeProjection {
-        fingerprint: baseline.fingerprint.clone(),
-        agent_id: baseline.agent_id.clone(),
-        agent_revision: baseline.agent_revision,
-        model_override: baseline.model_override.clone(),
-        system_prompt: (*baseline.system_prompt).clone(),
-        mounts: baseline.mounts.clone(),
-        env: baseline.env.clone(),
-        prompts: baseline.prompts.clone(),
+pub(crate) fn project_session_mounts(
+    mut resources: Vec<awaken_provisioning_contract::MountRequirement>,
+    baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
+    content_delivery: Option<crate::session_slot::ManagedContentDelivery>,
+) -> Vec<awaken_provisioning_contract::MountRequirement> {
+    if let Some(baseline_mounts) = baseline_mounts {
+        resources.extend_from_slice(baseline_mounts);
     }
+    if content_delivery == Some(crate::session_slot::ManagedContentDelivery::SemanticTools) {
+        resources.retain(|mount| {
+            !matches!(
+                mount.source,
+                awaken_provisioning_contract::MountSource::MemoryStore { .. }
+            )
+        });
+    }
+    resources
 }
 
-fn validate_baseline_projection(
-    baseline: &crate::session_slot::FrozenBaselineRuntimeProjection,
-    built_in_mounts: &[awaken_provisioning_contract::MountRequirement],
-) -> Result<(), crate::HostError> {
-    let mut mount_ids: HashSet<&str> = built_in_mounts
-        .iter()
-        .map(|mount| mount.mount_id.as_str())
-        .collect();
-    let mut mount_paths: HashSet<&str> = built_in_mounts
-        .iter()
-        .map(|mount| mount.mount_path.as_str())
-        .collect();
-    for mount in &baseline.mounts {
-        if mount.mount_id.trim().is_empty()
-            || mount.mount_path.trim().is_empty()
-            || !mount_ids.insert(&mount.mount_id)
-            || !mount_paths.insert(&mount.mount_path)
-        {
-            return Err(crate::HostError::internal(
-                "frozen Session baseline has an empty or conflicting mount",
-            ));
-        }
+pub(crate) fn baseline_projection(
+    baseline: &awaken_session_contract::SessionBaseline,
+) -> crate::session_slot::FrozenBaselineRuntimeProjection {
+    baseline.clone()
+}
+
+#[cfg(test)]
+mod terminal_cleanup_drive_error_tests {
+    use super::terminal_cleanup_drive_error;
+    use crate::HostErrorKind;
+}
+
+#[cfg(test)]
+mod resource_transition_install_tests {
+    use super::{
+        FrozenResourceTransitionInstallDecision, frozen_resource_transition_install_decision,
+    };
+
+    fn transition(
+        workspace: &str,
+        revision: u64,
+        skill: Option<&str>,
+    ) -> awaken_session_contract::SessionResourceTransition {
+        let resources = awaken_session_contract::ResolvedSessionResources::try_new(
+            Vec::new(),
+            skill
+                .map(|skill_id| awaken_session_contract::ResolvedSkillBinding {
+                    kind: awaken_agent_contract::AgentSkillKind::Custom,
+                    skill_id: skill_id.into(),
+                    version: 1,
+                    bundle_sha256: format!("sha256-{skill_id}"),
+                })
+                .into_iter()
+                .collect(),
+        )
+        .expect("test Resource projection is valid");
+        let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
+            workspace, revision, resources,
+        );
+        awaken_session_contract::SessionResourceTransition::new(manifest.clone(), manifest)
+            .expect("test transition belongs to one Workspace")
     }
 
-    let mut env_names = HashSet::new();
-    for env in &baseline.env {
-        if env.name.trim().is_empty() || !env_names.insert(env.name.as_str()) {
-            return Err(crate::HostError::internal(
-                "frozen Session baseline has an empty or duplicate environment variable",
-            ));
-        }
+    fn transition_from(
+        previous: awaken_session_contract::SessionResourceManifest,
+        desired: awaken_session_contract::SessionResourceManifest,
+    ) -> awaken_session_contract::SessionResourceTransition {
+        awaken_session_contract::SessionResourceTransition::new(previous, desired)
+            .expect("test transition belongs to one Workspace")
     }
-
-    Ok(())
 }
 
 #[cfg(test)]

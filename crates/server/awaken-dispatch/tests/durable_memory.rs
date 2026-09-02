@@ -17,9 +17,10 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as AuditKind;
 use awaken_dispatch::PlacementRequirements;
 use awaken_dispatch::{
-    DEFAULT_LEASE_MS, DispatchOutcome, DispatchQueue, DispatchSettlementError,
-    DispatchSettlementObserver, DispatchTestHarness, DispatchWorker, Inbox, ManualClock,
-    MemoryDispatchStore, PendingInput, RunClaim, RunDispatch, SessionChildAdmission,
+    ContinuationAdmission, DEFAULT_LEASE_MS, DispatchOutcome, DispatchQueue,
+    DispatchSettlementError, DispatchSettlementObserver, DispatchTestHarness, DispatchWorker,
+    Inbox, ManualClock, MemoryDispatchStore, Outbox, PendingInput, RunClaim, RunDispatch,
+    SessionChildAdmission,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{

@@ -73,7 +73,11 @@ impl SharedHost {
 
     pub fn worker_artifact_publisher(
         &self,
-    ) -> Arc<dyn awaken_resource_contract::ArtifactPublisher<awaken_dispatch::RunClaim>> {
+    ) -> Arc<
+        dyn awaken_resource_contract::ArtifactPublisher<
+                awaken_dispatch::ArtifactPublicationFence,
+            >,
+    > {
         self.artifact_publisher.clone()
     }
 }
@@ -143,11 +147,13 @@ mod tests {
     struct RemotePublisher;
 
     #[async_trait::async_trait]
-    impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::RunClaim> for RemotePublisher {
+    impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublicationFence>
+        for RemotePublisher
+    {
         async fn publish(
             &self,
             _publication: awaken_resource_contract::ArtifactPublication<
-                awaken_dispatch::RunClaim,
+                awaken_dispatch::ArtifactPublicationFence,
             >,
         ) -> Result<
             awaken_resource_contract::ArtifactPublicationReceipt,

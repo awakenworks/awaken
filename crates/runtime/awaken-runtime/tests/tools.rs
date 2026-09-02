@@ -7,10 +7,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
+use awaken_agent_contract::agent::state::Store;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta};
-use awaken_runtime::Runtime;
+use awaken_runtime::{DetachedToolError, PreparedToolExecutor, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -26,6 +27,7 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_runtime_contract::tool::{
     RawTool, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput, ToolOutputSpiller,
+    ToolTaskHandle, ToolTaskPoll,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 
@@ -69,6 +71,15 @@ impl LlmExecutor for ToolThenText {
 /// Records whether it actually ran, so denial can be proven.
 struct EchoTool {
     ran: Arc<AtomicUsize>,
+}
+
+struct InvalidatesAfterEffect {
+    effects: Arc<AtomicUsize>,
+}
+
+struct InvalidatesContinuation {
+    polls: Arc<AtomicUsize>,
+    cancellations: Arc<AtomicUsize>,
 }
 
 struct MultimodalTool;
@@ -125,6 +136,53 @@ impl RawTool for EchoTool {
         Ok(ToolOutput::ok(
             call.call_id,
             format!("echoed: {}", call.arguments),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl RawTool for InvalidatesAfterEffect {
+    fn id(&self) -> &str {
+        "echo"
+    }
+
+    async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.effects.fetch_add(1, Ordering::SeqCst);
+        Err(ToolError::StateInvalidatedAfterDispatch(
+            "scripted post-effect projection failure".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl RawTool for InvalidatesContinuation {
+    fn id(&self) -> &str {
+        "echo"
+    }
+
+    async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+        panic!("continuation fixture must not redispatch the original effect")
+    }
+
+    async fn poll_task(
+        &self,
+        _call: &ToolCall,
+        _task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError> {
+        self.polls.fetch_add(1, Ordering::SeqCst);
+        Err(ToolError::StateInvalidatedAfterDispatch(
+            "poll projection invalidated".into(),
+        ))
+    }
+
+    async fn cancel_task(
+        &self,
+        _call: &ToolCall,
+        _task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError> {
+        self.cancellations.fetch_add(1, Ordering::SeqCst);
+        Err(ToolError::StateInvalidatedAfterDispatch(
+            "cancel projection invalidated".into(),
         ))
     }
 }

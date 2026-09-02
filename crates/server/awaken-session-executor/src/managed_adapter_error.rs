@@ -24,3 +24,24 @@ pub(crate) fn to_run_error(error: HostError) -> RunError {
         HostErrorKind::Internal => RunError::classified(error.code, error.message),
     }
 }
+
+/// Preserve the neutral Run classification when a durable Session port calls
+/// back into Host lifecycle orchestration. This is the sole inverse projector;
+/// authorization, receipt persistence, and readback must not each reinterpret
+/// retryability from error strings.
+pub(crate) fn from_run_error(error: RunError) -> HostError {
+    HostError {
+        message: error.message,
+        kind: match error.kind {
+            awaken_session_contract::RunErrorKind::BadRequest => HostErrorKind::BadRequest,
+            awaken_session_contract::RunErrorKind::Internal => HostErrorKind::Internal,
+            awaken_session_contract::RunErrorKind::Unavailable => HostErrorKind::Unavailable,
+        },
+        code: error.code,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+}

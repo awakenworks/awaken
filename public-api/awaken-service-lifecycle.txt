@@ -27,6 +27,7 @@ pub fn awaken_service_lifecycle::ShutdownError::fmt(&self, &mut core::fmt::Forma
 pub struct awaken_service_lifecycle::TaskFailure
 pub awaken_service_lifecycle::TaskFailure::cause: alloc::string::String
 pub awaken_service_lifecycle::TaskFailure::task: alloc::string::String
+pub fn awaken_service_lifecycle::block_on_service<F: core::future::future::Future>(F) -> <F as core::future::future::Future>::Output
 pub const fn awaken_service_lifecycle::required_startup_components(awaken_service_lifecycle::StartupRole) -> u8
 pub const fn awaken_service_lifecycle::startup_requires(awaken_service_lifecycle::StartupRole, awaken_service_lifecycle::StartupComponent) -> bool
 pub const fn awaken_service_lifecycle::startup_wiring_is_exact(u8, u8) -> bool

@@ -9,7 +9,6 @@ mod agent;
 mod coordination;
 mod erasure;
 mod hand;
-mod task;
 mod web;
 
 pub use coordination::{
@@ -19,11 +18,9 @@ pub use coordination::{
 };
 pub use erasure::{Erased, erase};
 pub use hand::{
-    BashArgs, BashTool, DeleteArgs, DeleteTool, EditArgs, EditTool, GlobArgs, GlobTool, GrepArgs,
-    GrepTool, HandToolContext, MoveArgs, MoveTool, ReadArgs, ReadTool, WriteArgs, WriteTool,
-    executable_hand_tools, executable_hand_tools_in,
+    BashArgs, BashTool, EditArgs, EditTool, GlobArgs, GlobTool, GrepArgs, GrepTool,
+    HandToolContext, ReadArgs, ReadTool, WriteArgs, WriteTool,
 };
-pub use task::{CancelTaskArgs, CancelTaskTool, TaskCanceller, task_tools};
 pub use web::{
     AWAKEN_CLOUD_PROVIDER_ID, AWAKEN_DIRECT_PROVIDER_ID, AwakenDirectFetchProvider,
     BRAVE_PROVIDER_ID, BraveSearchProvider, DUCKDUCKGO_PROVIDER_ID, DuckDuckGoProvider,
@@ -50,7 +47,7 @@ pub fn all_hand_tools() -> Vec<std::sync::Arc<dyn awaken_runtime_contract::tool:
 pub fn all_hand_tools_in(
     context: HandToolContext,
 ) -> Vec<std::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>> {
-    executable_hand_tools_in(context)
+    hand::hand_tools_in(context)
 }
 
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
@@ -67,16 +64,15 @@ pub const AUXILIARY_AGENT: &str = "auxiliary_agent";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Toolset {
     Hand,
-    Task,
     Delegation,
     Coordination,
 }
 
 /// One catalog-owned built-in descriptor and its execution family.
 ///
-/// The fields are deliberately private: delegation descriptors and ordinary
-/// Hand/Task descriptors have different runtime semantics and cannot be paired
-/// arbitrarily.
+/// The fields are deliberately private: Delegation descriptors and ordinary
+/// Hand/Coordination descriptors have different runtime semantics and cannot be
+/// paired arbitrarily.
 ///
 /// ```compile_fail
 /// use awaken_ext_builtin_tools::{AgentRunArgs, BuiltinTool, Toolset};
@@ -97,13 +93,6 @@ impl BuiltinTool {
     fn hand(descriptor: ToolDescriptor) -> Self {
         Self {
             toolset: Toolset::Hand,
-            descriptor,
-        }
-    }
-
-    fn task(descriptor: ToolDescriptor) -> Self {
-        Self {
-            toolset: Toolset::Task,
             descriptor,
         }
     }
@@ -162,11 +151,8 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
         hand_tool::<ReadTool>(),
         hand_tool::<WriteTool>(),
         hand_tool::<EditTool>(),
-        hand_tool::<MoveTool>(),
-        hand_tool::<DeleteTool>(),
         hand_tool::<GlobTool>(),
         hand_tool::<GrepTool>(),
-        task_tool::<CancelTaskTool>(),
         BuiltinTool::delegation(
             ToolDescriptor::for_args::<AgentRunArgs>(
                 "builtin:delegation",
@@ -183,10 +169,6 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
 
 fn hand_tool<T: Tool>() -> BuiltinTool {
     BuiltinTool::hand(ToolDescriptor::for_tool::<T>("builtin:hand"))
-}
-
-fn task_tool<T: Tool>() -> BuiltinTool {
-    BuiltinTool::task(ToolDescriptor::for_tool::<T>("builtin:task"))
 }
 
 fn coordination_tool<T: Tool>() -> BuiltinTool {
@@ -212,7 +194,7 @@ pub use agent::{AuxiliaryAgentInput, invoke_auxiliary_agent};
 
 #[cfg(test)]
 mod tests {
-    use super::{Toolset, builtin_tools, selected_hand_recovery_modes};
+    use super::{Toolset, all_hand_tools, builtin_tools, selected_hand_recovery_modes};
     use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
 
     #[test]
@@ -273,8 +255,9 @@ mod tests {
     #[test]
     fn selected_hand_recovery_uses_the_canonical_catalog_membership() {
         // Cause/effect decision table: C1=selected descriptor belongs to Hand;
-        // C2=selected descriptor belongs to Task; C3=its policy is durable.
-        // R1 C1+C3 => DurableRequest is projected; R2 C2+C3 => no Hand mode.
+        // C2=selected descriptor belongs to another canonical family; C3=its
+        // policy is durable. R1 C1+C3 => DurableRequest is projected;
+        // R2 C2+C3 => no Hand mode.
         // This single projection prevents Cloud and placement from maintaining
         // parallel concrete tool-id filters.
         let builtins = builtin_tools();
@@ -285,10 +268,10 @@ mod tests {
             .descriptor()
             .clone()
             .with_recovery(ToolRecoveryPolicy::durable_request());
-        let task = builtins
+        let non_hand = builtins
             .iter()
-            .find(|tool| tool.toolset() == Toolset::Task)
-            .expect("Task catalog is non-empty")
+            .find(|tool| tool.toolset() == Toolset::Delegation)
+            .expect("Delegation catalog is non-empty")
             .descriptor()
             .clone()
             .with_recovery(ToolRecoveryPolicy::durable_request());
@@ -297,6 +280,6 @@ mod tests {
             [ToolRecoveryMode::DurableRequest].into_iter().collect(),
             "R1"
         );
-        assert!(selected_hand_recovery_modes(&[task]).is_empty(), "R2");
+        assert!(selected_hand_recovery_modes(&[non_hand]).is_empty(), "R2");
     }
 }

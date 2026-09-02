@@ -5,15 +5,23 @@ use awaken_dispatch_testkit::worker_http as support;
 use std::sync::Arc;
 
 use awaken_memory_store::{MemErr, MemoryRepository as _};
+use awaken_provisioning_contract::{MemoryMaterializationEvidence, MemoryMaterializationHead};
 use awaken_resource_contract::{
     ChangeMemoryStoreState, ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition,
     RegisterMemoryStore, ResourceAccess, ResourceAdministration as _, ResourceState,
 };
-use awaken_resource_worker_http::memory_materialization_reference;
 use awaken_resource_worker_http::{
     HttpMemoryRepository, WorkerMemoryService, worker_memory_router,
 };
+use awaken_resource_worker_http::{
+    memory_materialization_reference, terminal_memory_materialization_reference,
+};
 use awaken_dispatch::{DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch};
+use awaken_session_contract::{
+    AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
+    FailSessionRealization, SessionRealizationControl, SessionRealizationControlFailure,
+    SessionRealizationDirective, SessionTerminalMemoryIntent, SessionTerminalMemoryTarget,
+};
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 fn memory_input(
@@ -57,6 +65,72 @@ fn create_store(catalog: &awaken_resource_application::RegistryApplication, id: 
             },
         })
         .expect("register test MemoryStore");
+}
+
+struct ExactTerminalMemoryControl {
+    workspace_id: String,
+    intent: SessionTerminalMemoryIntent,
+    current_effect: awaken_session_contract::SessionTerminalCleanupEffect,
+}
+
+#[async_trait::async_trait]
+impl SessionRealizationControl for ExactTerminalMemoryControl {
+    async fn begin_session_realization(
+        &self,
+        _command: BeginSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "test control has no realization driver".into(),
+        ))
+    }
+
+    async fn activate_session_realization(
+        &self,
+        _command: ActivateSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "test control has no realization driver".into(),
+        ))
+    }
+
+    async fn acknowledge_session_realization(
+        &self,
+        _command: AcknowledgeSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "test control has no realization driver".into(),
+        ))
+    }
+
+    async fn fail_session_realization(
+        &self,
+        _command: FailSessionRealization,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "test control has no realization driver".into(),
+        ))
+    }
+
+    async fn authorize_terminal_memory_intent(
+        &self,
+        intent: &SessionTerminalMemoryIntent,
+    ) -> Result<SessionTerminalMemoryTarget, SessionRealizationControlFailure> {
+        if intent != &self.intent
+            || self.current_effect.command != intent.effect().command
+            || !awaken_session_contract::realization_lease_generation_authorizes(
+                &self.current_effect.lease,
+                &intent.effect().lease,
+            )
+            || !awaken_session_contract::realization_lease_is_live_at(
+                self.current_effect.lease.expires_at_unix_ms,
+                support::unix_now_ms(),
+            )
+        {
+            return Err(SessionRealizationControlFailure::StaleOwnership);
+        }
+        SessionTerminalMemoryTarget::from_authorized_root(self.workspace_id.clone(), intent.clone())
+            .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))
+    }
 }
 
 /// Cause/effect decision table:

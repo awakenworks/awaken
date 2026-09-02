@@ -10,6 +10,15 @@ struct ProtocolProjectionRuntime;
 struct ActivationOnlySessionRunRuntime {
     reservations: Mutex<Vec<AdmitSessionRun>>,
     deliveries: Mutex<Vec<SessionRunDelivery>>,
+    restores: AtomicUsize,
+    events: Mutex<Vec<&'static str>>,
+    projection_installs: Mutex<
+        Vec<(
+            awaken_session_contract::FrozenSessionProjection,
+            awaken_session_contract::SessionProjectionInstallMode,
+        )>,
+    >,
+    adoptions: Mutex<Vec<(String, String, String)>>,
 }
 
 #[async_trait::async_trait]
@@ -20,7 +29,38 @@ impl awaken_session_contract::SessionRuntime for ActivationOnlySessionRunRuntime
         projection: awaken_session_contract::FrozenSessionProjection,
         mode: awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
+        self.events.lock().unwrap().push(match &mode {
+            awaken_session_contract::SessionProjectionInstallMode::Dispatch => {
+                "dispatch_projection"
+            }
+            awaken_session_contract::SessionProjectionInstallMode::Realization {
+                prepare_session: true,
+                ..
+            } if projection.environment.binding().is_some() => "resident_projection",
+            awaken_session_contract::SessionProjectionInstallMode::Realization { .. } => {
+                "realization_projection"
+            }
+        });
+        self.projection_installs
+            .lock()
+            .unwrap()
+            .push((projection.clone(), mode.clone()));
         install_complete_test_projection(self, thread, projection, mode).await
+    }
+
+    async fn adopt_session_environment(
+        &self,
+        agent: &str,
+        thread: &str,
+        binding: &str,
+    ) -> Result<(), RunError> {
+        self.events.lock().unwrap().push("adopt");
+        self.adoptions.lock().unwrap().push((
+            agent.to_string(),
+            thread.to_string(),
+            binding.to_string(),
+        ));
+        Ok(())
     }
 
     async fn run(
@@ -55,6 +95,7 @@ impl awaken_session_contract::SessionRuntime for ActivationOnlySessionRunRuntime
         &self,
         delivery: SessionRunDelivery,
     ) -> Result<SessionRunActivation, RunError> {
+        self.events.lock().unwrap().push("activate");
         self.deliveries.lock().unwrap().push(delivery);
         Ok(SessionRunActivation::Activated)
     }
@@ -63,8 +104,42 @@ impl awaken_session_contract::SessionRuntime for ActivationOnlySessionRunRuntime
         &self,
         command: AdmitSessionRun,
     ) -> Result<SessionRunReservation, RunError> {
+        self.events.lock().unwrap().push("reserve");
         self.reservations.lock().unwrap().push(command);
         Ok(SessionRunReservation::Reserved)
+    }
+
+    async fn activate_and_observe_session_run(
+        &self,
+        admission: AdmittedSessionRun,
+        _input_message_ids: Vec<String>,
+        _sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Result<StepOutcome, RunError> {
+        self.events.lock().unwrap().push("activate");
+        self.deliveries.lock().unwrap().push(
+            admission
+                .delivery()
+                .expect("fresh foreground admission carries a delivery")
+                .clone(),
+        );
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+        ))
+    }
+
+    async fn restore_checkpointed_session_environment(
+        &self,
+        request: awaken_session_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
+        self.events.lock().unwrap().push("restore");
+        self.restores.fetch_add(1, Ordering::SeqCst);
+        Ok(awaken_session_contract::RestoreReceipt {
+            effect_id: request.effect_id,
+            generation_id: request.generation_id,
+            checkpoint_id: request.checkpoint.id,
+            binding: "restored-binding".into(),
+        })
     }
 
     fn model(&self) -> String {
@@ -120,6 +195,9 @@ async fn background_attention_uses_canonical_session_admission_without_observing
         .await
         .expect("B1 background admission");
 
+    // B1/E1-E2 readback is synchronous evidence only. Keep each recording
+    // lock in its own lexical scope so the durable repository read below can
+    // never await while holding a test-side projection lock.
     {
         let reservations = runtime.reservations.lock().unwrap();
         assert_eq!(reservations.len(), 1, "B1/E1");

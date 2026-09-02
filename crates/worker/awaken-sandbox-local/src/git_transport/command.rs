@@ -1,9 +1,12 @@
 //! Command-scoped Git process and credential boundary for local Repository transport.
 //!
-//! This private module admits one exact network endpoint, removes ambient Git,
-//! SSH, proxy, TLS, trace, and credential configuration, and invokes Git. It
-//! owns no clone or push policy, remote-write selection, CAS classification,
-//! receipt, queue, or durable state.
+//! This private module admits one exact network endpoint and invokes Git.
+//! Network commands remove ambient Git, SSH, proxy, TLS, trace, and credential
+//! configuration; local commands remove explicit Repository-selection variables
+//! plus Awaken and askpass credential variables, use the caller-provided working
+//! directory when supplied, and otherwise execute the caller-selected
+//! argument-only local operation. It owns no clone or push policy, remote-write
+//! selection, CAS classification, receipt, queue, or durable state.
 
 use std::path::Path;
 

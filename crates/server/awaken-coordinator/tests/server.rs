@@ -308,6 +308,9 @@ async fn hitl_write_awaits_then_confirms_and_reads_rooted() {
     // assertions below hold together` and every asserted state transition or side effect must hold.
     // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
     // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: a committed custom result on the default test stack must
+    // traverse the one Host context-realization owner and reach end_turn; a
+    // protocol-specific stack override or alternate resume path is forbidden.
     let app = build_write_confirmation_router(Arc::new(WriteReadProbe), "scripted");
     let id = create_session(&app).await;
 
@@ -1002,14 +1005,14 @@ fn all_agent_text(list: &serde_json::Value) -> String {
 
 #[tokio::test]
 async fn delegation_runs_a_subagent_and_returns_its_result() {
-    // Causes: the fixtures below establish `delegation runs a subagent and` with the concrete
-    // inputs, state, dependencies, and failure triggers used by this case.
-    // Effects: the observable result `returns its result` and every asserted state transition or
-    // side effect must hold.
-    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
-    // delivery is best-effort and cannot replace committed replay truth.
-    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
-    // selects only its stated effect and preserves the authority constraint.
+    // Publication/coordination cause-effect rule: C1 the Session freezes one
+    // immutable root publication with a delegate; C2 Managed execution derives
+    // a Run clone whose coordination tools and fingerprint differ; C3 the local
+    // Worker claims that exact clone after Control realization. Effects: E1 C3
+    // retains C1 as publication truth instead of treating C2 as replacement;
+    // E2 Runtime still executes C2's list/send surface; E3 the child report
+    // admits exactly one later root report Run. The immutable publication and
+    // derived execution closure are distinct roles, never parallel authorities.
     let app = build_delegation_router();
     let id = create_session(&app).await;
     send_message(&app, &id, "research the answer").await;
@@ -1090,16 +1093,11 @@ async fn delegation_runs_a_subagent_and_returns_its_result() {
 
 #[tokio::test]
 async fn delegation_fails_closed_on_unpublished_target() {
-    // Causes: the fixtures below establish `delegation` with the concrete inputs, state,
-    // dependencies, and failure triggers used by this case.
-    // Effects: the observable result `fails closed on unpublished target` and every asserted state
-    // transition or side effect must hold.
-    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
-    // delivery is best-effort and cannot replace committed replay truth.
-    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
-    // selects only its stated effect and preserves the authority constraint.
-    // Cause/effect rule: `ghost` is absent from the frozen Session roster, so
-    // send_message fails before a child Thread or Run can be admitted.
+    // Cause/effect rule: C1 the same immutable-publication/derived-Run boundary
+    // reaches the managed coordination surface; C2 `ghost` is absent from C1's
+    // frozen roster. E1 C1 remains accepted as publication truth; E2 the
+    // Thread-owned `SEND_MESSAGE` command rejects C2 before a child Thread or
+    // Run can be admitted.
     let app = build_delegation_router();
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "use the ghost agent").await;

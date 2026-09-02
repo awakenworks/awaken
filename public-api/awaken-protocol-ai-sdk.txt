@@ -9,7 +9,7 @@ impl awaken_agent_contract::event::fold::Transcoder for awaken_protocol_ai_sdk::
 pub type awaken_protocol_ai_sdk::encoder::AiSdkEncoder::Output = awaken_protocol_ai_sdk::types::UIStreamEvent
 pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::delta(&mut self, &awaken_agent_contract::event::agent::Delta) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
 pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::fact(&mut self, &awaken_agent_contract::event::agent::Fact) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
-pub fn awaken_protocol_ai_sdk::encoder::encode_history(&[awaken_agent_contract::agent::message::Message], core::option::Option<&awaken_session_contract::session::Pending>) -> alloc::vec::Vec<serde_json::value::Value>
+pub fn awaken_protocol_ai_sdk::encoder::encode_history(&[awaken_agent_contract::agent::message::Message], core::option::Option<&awaken_session_contract::session::pending::Pending>) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn awaken_protocol_ai_sdk::encoder::encode_step(&awaken_session_contract::session::StepOutcome) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
 pub mod awaken_protocol_ai_sdk::request
 pub enum awaken_protocol_ai_sdk::request::DecisionKind

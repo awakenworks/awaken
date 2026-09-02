@@ -7,6 +7,7 @@ pub awaken_runtime::DetachedToolError::NotAuthorized::reason: alloc::string::Str
 pub awaken_runtime::DetachedToolError::NotAuthorized::tool_id: alloc::string::String
 pub awaken_runtime::DetachedToolError::NotExecutable(alloc::string::String)
 pub awaken_runtime::DetachedToolError::Resolve(alloc::string::String)
+pub awaken_runtime::DetachedToolError::StateInvalidated
 pub struct awaken_runtime::ActiveAttemptScope<'a>
 impl awaken_runtime::ActiveAttemptScope<'_>
 pub fn awaken_runtime::ActiveAttemptScope<'_>::context(&self) -> &awaken_runtime_contract::runtime_context::RuntimeRunContext

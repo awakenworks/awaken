@@ -75,7 +75,7 @@ impl ManagedState {
         session_id: &str,
         owner_scope: &str,
         resources: &[crate::types::resource::ResourceInput],
-        current: &awaken_session_contract::ResolvedSessionResources,
+        session: &awaken_session_contract::PersistedSession,
     ) -> Result<
         (
             awaken_session_contract::ResolvedSessionResources,
@@ -83,10 +83,15 @@ impl ManagedState {
         ),
         StateError,
     > {
+        let current = session.resources.desired();
         let mut parsed = resources
             .iter()
             .map(crate::types::resource::ResourceInput::to_parsed_input)
             .collect::<Vec<_>>();
+        // Validate the entire authored Repository set before even a preceding
+        // implicit MemoryStore can read its definition. Later phases reuse the
+        // same shared rule at the aggregate and provider effect boundaries.
+        super::resource::preflight_repository_mount_paths(&parsed)?;
         if parsed
             .iter()
             .filter(|input| matches!(input.target, ParsedInputTarget::File(_)))
@@ -135,17 +140,28 @@ impl ManagedState {
                 )
             })
             .collect::<Vec<_>>();
-        awaken_session_contract::SessionInputResolver::effective_bindings(&provisional, &[])
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        let effective_bindings =
+            awaken_session_contract::SessionInputResolver::effective_bindings(&provisional, &[])
+                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        self.application
+            .validate_persisted_session_resource_layout(owner_scope, session, effective_bindings)
+            .map_err(StateError::Run)?;
 
+        let mut authored_mount_counts = std::collections::BTreeMap::<String, usize>::new();
+        for input in &parsed {
+            *authored_mount_counts
+                .entry(input.mount_path.trim_start_matches('/').to_string())
+                .or_default() += 1;
+        }
         let mut inputs = Vec::with_capacity(parsed.len());
         let mut repository_configurations = Vec::new();
         for input in parsed {
             let normalized_mount = input.mount_path.trim_start_matches('/');
-            let same_mount = current
-                .inputs()
-                .iter()
-                .find(|existing| existing.mount_path.trim_start_matches('/') == normalized_mount);
+            let same_mount = current.inputs().iter().find(|existing| {
+                existing.mount_path.trim_start_matches('/') == normalized_mount
+                    && super::resource::parsed_projection_class(&input.target)
+                        == super::resource::resolved_projection_class(&existing.source)
+            });
             let reusable = same_mount.filter(|existing| match (&input.target, &existing.source) {
                 (
                     ParsedInputTarget::File(requested),
@@ -185,10 +201,20 @@ impl ManagedState {
             let binding_id = same_mount
                 .map(|existing| existing.binding_id.to_string())
                 .unwrap_or_else(|| {
-                    format!(
-                        "session:{session_id}:manifest:{}",
+                    let fingerprint = if authored_mount_counts
+                        .get(normalized_mount)
+                        .copied()
+                        .unwrap_or_default()
+                        > 1
+                    {
+                        awaken_session_contract::stable_fingerprint(&(
+                            normalized_mount,
+                            super::resource::parsed_projection_class(&input.target),
+                        ))
+                    } else {
                         awaken_session_contract::stable_fingerprint(&normalized_mount)
-                    )
+                    };
+                    format!("session:{session_id}:manifest:{}", fingerprint)
                 });
             let repository_id = if let ParsedInputTarget::Repository {
                 remote_url,
@@ -353,12 +379,7 @@ impl ManagedState {
             )));
         }
         let (desired, repository_configurations) = self
-            .lower_complete_resource_manifest(
-                id,
-                &owner_scope,
-                &body.resources,
-                persisted.resources.desired(),
-            )
+            .lower_complete_resource_manifest(id, &owner_scope, &body.resources, &persisted)
             .await?;
         let outcome = self
             .execute_resource_manifest_command(
@@ -561,16 +582,17 @@ impl ManagedState {
             }
             suffix += 1;
         };
-        current
-            .validate_new_binding(
-                &awaken_resource_contract::BindingId::from(binding_id.clone()),
-                &parsed.mount_path,
-            )
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         let input = self.resolve_live_file_input(&owner_scope, binding_id, &parsed)?;
         let desired = current
             .attach(input.clone())
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        self.application
+            .validate_persisted_session_resource_layout(
+                &owner_scope,
+                &persisted,
+                desired.sandbox_layout_bindings(),
+            )
+            .map_err(StateError::Run)?;
         self.execute_resource_manifest_command(
             id,
             awaken_session_application::ReplaceSessionResourceManifest {

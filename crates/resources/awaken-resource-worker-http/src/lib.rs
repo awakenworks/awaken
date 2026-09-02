@@ -9,10 +9,12 @@ mod file_content_http;
 mod memory_transport;
 mod repository_binding_http;
 mod skill_bundle_transport;
+mod worker_authority;
 
 pub use artifact_publication_http::{
-    ARTIFACT_METADATA_HEADER, ARTIFACT_PUBLICATION_PATH, ArtifactPublicationRequest,
-    HttpArtifactPublisher, WorkerArtifactPublicationService, worker_artifact_publication_router,
+    ARTIFACT_METADATA_HEADER, ARTIFACT_PUBLICATION_PATH, ARTIFACT_RECOVERY_PATH,
+    ArtifactPublicationRequest, ArtifactRecoveryRequest, HttpArtifactPublisher,
+    WorkerArtifactPublicationService, worker_artifact_publication_router,
 };
 pub use file_content_http::{
     HttpFileContentSource, WorkerFileContentService, worker_file_content_router,
@@ -20,7 +22,7 @@ pub use file_content_http::{
 pub use memory_transport::{
     HttpMemoryMaterializationReferenceEncoder, HttpMemoryRepository, HttpMemorySnapshotSource,
     HttpMemoryWritebackClient, WorkerMemoryService, memory_materialization_reference,
-    worker_memory_router,
+    terminal_memory_materialization_reference, worker_memory_router,
 };
 pub use repository_binding_http::{
     HttpRepositoryBindingVerifier, RepositoryTransportAuthority, RepositoryTransportAuthorization,

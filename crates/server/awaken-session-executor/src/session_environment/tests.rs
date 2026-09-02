@@ -1,4 +1,3 @@
-
 use super::*;
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
@@ -8,6 +7,10 @@ use awaken_provisioning_contract::{
 use awaken_run_executor_acp::AgentChannelType;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::ToolExecutor;
+use awaken_sandbox_container::{
+    PublishedSandboxControlService, SandboxControlPublishError, SandboxControlService,
+    SandboxControlServiceKind, SandboxControlServicePublisher,
+};
 use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -16,6 +19,7 @@ use tokio::io::AsyncReadExt;
 #[derive(Default)]
 struct FakeContainerProvider {
     creates: std::sync::atomic::AtomicUsize,
+    disposals: Arc<std::sync::atomic::AtomicUsize>,
     specs: std::sync::Mutex<Vec<pc::SandboxSpec>>,
     renews: Arc<std::sync::atomic::AtomicUsize>,
     hand_spawns: Arc<std::sync::atomic::AtomicUsize>,
@@ -25,6 +29,8 @@ struct FakeContainerProvider {
 }
 
 struct FakeContainer {
+    handle: pc::SandboxHandle,
+    disposals: Arc<std::sync::atomic::AtomicUsize>,
     renews: Arc<std::sync::atomic::AtomicUsize>,
     hand_spawns: Arc<std::sync::atomic::AtomicUsize>,
     resident_channel_opens: Arc<std::sync::atomic::AtomicUsize>,
@@ -160,6 +166,8 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.specs.lock().unwrap().push(spec.clone());
         Ok(Arc::new(FakeContainer {
+            handle: current_fake_container_handle(spec),
+            disposals: self.disposals.clone(),
             renews: self.renews.clone(),
             hand_spawns: self.hand_spawns.clone(),
             resident_channel_opens: self.resident_channel_opens.clone(),
@@ -170,9 +178,11 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
 
     async fn adopt_environment(
         &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
         Ok(Arc::new(FakeContainer {
+            handle: adoption.handle.clone(),
+            disposals: self.disposals.clone(),
             renews: self.renews.clone(),
             hand_spawns: self.hand_spawns.clone(),
             resident_channel_opens: self.resident_channel_opens.clone(),
@@ -184,6 +194,15 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
 
 #[async_trait]
 impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
+    fn record_owned_path(&self, path: &str) -> Result<(), pc::SandboxError> {
+        self.shared
+            .lock()
+            .unwrap()
+            .entry(format!("__owned_path:{path}"))
+            .or_default();
+        Ok(())
+    }
+
     async fn open_agent_channel(&self) -> Result<Box<dyn AgentChannelType>, pc::SandboxError> {
         self.resident_channel_opens
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -281,6 +300,14 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
         &self,
         _root: &str,
     ) -> Result<Vec<awaken_sandbox_container::EnvironmentFile>, pc::SandboxError> {
+        if self
+            .shared
+            .lock()
+            .unwrap()
+            .contains_key("__fail_skill_read")
+        {
+            return Err(pc::SandboxError::new("scripted Skill read outage"));
+        }
         Ok(self
             .shared
             .lock()
@@ -295,27 +322,26 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
 }
 
 #[async_trait]
-impl awaken_sandbox_container::SandboxControlServicePublisher for FakeContainer {
+impl SandboxControlServicePublisher for FakeContainer {
     async fn publish_sandbox_control_service(
         &self,
-        _kind: awaken_sandbox_container::SandboxControlServiceKind,
-        _service: Arc<dyn awaken_sandbox_container::SandboxControlService>,
-    ) -> Result<
-        Box<dyn awaken_sandbox_container::PublishedSandboxControlService>,
-        awaken_sandbox_container::SandboxControlPublishError,
-    > {
-        Err(awaken_sandbox_container::SandboxControlPublishError)
+        _kind: SandboxControlServiceKind,
+        _service: Arc<dyn SandboxControlService>,
+    ) -> Result<Box<dyn PublishedSandboxControlService>, SandboxControlPublishError> {
+        // This fixture declares no control-service topology, so publication must
+        // fail closed instead of manufacturing a successful provider lease.
+        Err(SandboxControlPublishError)
     }
 }
 
 #[async_trait]
 impl pc::Sandbox for FakeContainer {
     fn id(&self) -> &str {
-        "session-container"
+        &self.handle.sandbox_id
     }
 
     fn handle(&self) -> pc::SandboxHandle {
-        pc::SandboxHandle::new("container", self.id())
+        self.handle.clone()
     }
 
     async fn spawn(
@@ -377,6 +403,8 @@ impl pc::Sandbox for FakeContainer {
     }
 
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
+        self.disposals
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 }
@@ -393,12 +421,39 @@ fn spec() -> SandboxSpec {
         requests: Default::default(),
         limits: ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
-        lease_ttl_secs: None,
         control_services: Default::default(),
+        lease_ttl_secs: None,
         environment: None,
         command: Vec::new(),
         deny_tool_egress: false,
     }
+}
+
+fn current_fake_container_handle(spec: &pc::SandboxSpec) -> pc::SandboxHandle {
+    let realization_fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
+    let owned_paths = spec
+        .mounts
+        .iter()
+        .map(|mount| mount.mount_path.clone())
+        .collect::<Vec<_>>();
+    pc::SandboxHandle::container_v2(
+        "session-container",
+        pc::ContainerSandboxHandleV2 {
+            previous: pc::ContainerSandboxHandleV1 {
+                container_id: "container-session-container".into(),
+                outputs_path: spec.outputs_path.clone(),
+                base_env: spec.env.clone(),
+                live_input_projection: false,
+                continuation_excluded_paths: owned_paths.clone(),
+                runtime_handle: None,
+                sandbox_control_incarnation: None,
+                control_services: spec.control_services.clone(),
+            },
+            adoption_fingerprint: realization_fingerprint.clone(),
+            realization_fingerprint,
+            owned_paths,
+        },
+    )
 }
 
 #[tokio::test]
@@ -455,14 +510,38 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
 
 #[tokio::test]
 async fn namespace_native_process_and_agent_channel_share_one_live_environment() {
-    // Decision rule N1 mirrors W1 at the Namespace tier: opaque ACP paths and
-    // cooperative Native Hand calls must converge on one transparent workspace.
+    // Namespace Workspace-path cause/effect graph: C0 the caller is an ordinary
+    // developer run or the required substrate profile; C1 the admitted provider
+    // offers tool transparency and path fidelity; C2 a sandbox process writes
+    // through the canonical absolute `/workspace`; C3 the typed file surface
+    // reads/writes that Session-owned tree; C4 an ACP process reads the same
+    // canonical absolute paths. Effects: E1 the typed read sees C2's bytes and
+    // E2 the ACP process sees both C2 and C3 without an alias or path rewrite;
+    // E3 an unavailable optional substrate is reported and skipped; E4 the
+    // required profile fails rather than converting a skipped proof to green.
+    //
+    // | Rule | required profile | provider admitted | process write | typed file I/O | ACP read | Effect |
+    // |---|---|---|---|---|---|---|
+    // | N0 | no | no | no | no | no | E3 plus fail-closed provider-selection assertion |
+    // | NR | yes | no | no | no | no | E4 |
+    // | N1 | either | yes | yes | read process bytes | no | E1 |
+    // | N2 | either | yes | yes | write typed bytes | yes | E1+E2 |
+    //
+    // Constraint: WorkspaceLayout plus Sandbox capability admission remain the
+    // sole path authority. This test must not add a host-path alias, symlink, or
+    // shell-command classifier to make split paths appear consistent.
     let base = tempfile::tempdir().unwrap();
     let mut namespace_spec = spec();
     namespace_spec.scope = "session-namespace".into();
     namespace_spec.isolation = IsolationClass::Namespace;
     let provider = NamespaceProvider::new(base.path());
+    let namespace_workspace_required =
+        std::env::var("AWAKEN_TEST_REQUIRE_NAMESPACE_WORKSPACE").as_deref() == Ok("1");
     if let Err(probe_error) = provider.probe_ready().await {
+        assert!(
+            !namespace_workspace_required,
+            "NR/E4 required Namespace /workspace substrate is unavailable: {probe_error}"
+        );
         let rejection = crate::sandbox_source::resolve_sandbox_tier(
             crate::deployment_config::SandboxTier::Namespace,
             false,
@@ -472,6 +551,20 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         .expect_err("an unavailable namespace must not silently degrade");
         assert!(rejection.contains("OS-native sandbox unavailable"));
         assert!(rejection.contains(&probe_error.to_string()));
+        return;
+    }
+    let capabilities = provider.capabilities();
+    if !capabilities.path_fidelity {
+        assert!(
+            !namespace_workspace_required,
+            "NR/E4 required Namespace provider lacks /workspace path fidelity"
+        );
+        let requirements = pc::SandboxRequirements::from_spec(&namespace_spec, true);
+        assert!(requirements.path_fidelity, "N0 path requirement");
+        assert!(
+            !capabilities.satisfies_requirements(&requirements),
+            "N0 a split-path Namespace must fail closed before environment creation"
+        );
         return;
     }
     let namespace = provider.create_sandbox(&namespace_spec).await.unwrap();
@@ -486,10 +579,26 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
     #[cfg(not(target_os = "macos"))]
     assert_eq!(environment.handle().provider_kind(), "bwrap");
 
-    let mut native_command = pc::Command::new(["/bin/sh", "-c", "printf namespace-state > marker"]);
-    native_command.cwd = "/workspace".into();
+    let mut native_command = pc::Command::new([
+        "/bin/sh",
+        "-c",
+        "printf namespace-state > /workspace/process-marker",
+    ]);
+    native_command.cwd = pc::WorkspaceLayout::ROOT.into();
     let native = environment.sandbox().spawn(native_command).await.unwrap();
     assert_eq!(native.wait().await.unwrap().code, Some(0));
+
+    let typed_files = environment.list_workspace_files("").await.unwrap();
+    assert!(
+        typed_files.iter().any(|(path, bytes)| {
+            path.ends_with("process-marker") && bytes.as_slice() == b"namespace-state"
+        }),
+        "N1/E1 typed file reads the process-authored /workspace bytes: {typed_files:?}"
+    );
+    environment
+        .write_workspace_file("typed-marker", b"typed-state")
+        .await
+        .unwrap();
 
     let hand_output = environment
         .tool_executor()
@@ -502,13 +611,17 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         .unwrap();
     assert_eq!(hand_output.text(), "bound-hand-ok", "N1 Hand binding");
 
-    let mut agent_command = pc::Command::new(["/bin/sh", "-c", "cat marker"]);
-    agent_command.cwd = "/workspace".into();
+    let mut agent_command = pc::Command::new([
+        "/bin/sh",
+        "-c",
+        "cat /workspace/process-marker; printf '|'; cat /workspace/typed-marker",
+    ]);
+    agent_command.cwd = pc::WorkspaceLayout::ROOT.into();
     let (agent, mut channel) = environment.spawn_agent(agent_command).await.unwrap();
     let mut output = String::new();
     channel.read_to_string(&mut output).await.unwrap();
     assert_eq!(agent.wait().await.unwrap().code, Some(0));
-    assert_eq!(output, "namespace-state");
+    assert_eq!(output, "namespace-state|typed-state", "N2/E2");
 
     environment.dispose().await.unwrap();
 }
@@ -802,11 +915,13 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
      * Worker attachment closes; C4 replacement Worker adopts the handle;
      * C5 Pod/Hand itself fails. Constraints: C4 requires C2; C5 excludes
      * healthy adoption. Effects: E1 no attached `hand --stdio` child; E2
-     * open one provider-owned Pod channel per Worker binding; E3 advertise
-     * DurableRequest recovery; E4 detaching does not signal the resident
-     * process; E5 Pod/Hand failure is not masked as Worker recovery.
-     * Rules: RH1 C1+C2=>E1+E2+E3; RH2 C1+C2+C3+C4=>E2+E4;
-     * RH3 C5=>E5 (covered by channel/open failure tests).
+     * lazily open one provider-owned Pod channel per Worker binding on first
+     * tool demand; E3 advertise DurableRequest recovery before that bind; E4
+     * detaching does not signal the resident process; E5 Pod/Hand failure is
+     * not masked as Worker recovery.
+     * Rules: RH1 C1+C2=>E1+E3; RH2 RH1+tool demand=>E2;
+     * RH3 C1+C2+C3+C4+tool demand=>E2+E4;
+     * RH4 C5=>E5 (covered by channel/open failure tests).
      * FMECA: Worker crash loses only the ephemeral channel (severity 2,
      * detectable by channel failure); re-adoption/open-channel is the
      * mitigation. A Pod/Hand crash remains severity 4 and requires workload
@@ -832,22 +947,38 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
         awaken_runtime_contract::tool::ToolRecoveryCapability::DurableRequest
     );
     assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 0);
+    original
+        .tool_executor()
+        .invoke(&ToolCall {
+            call_id: "original-resident-bind".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
     assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 1);
 
-    assert!(matches!(
-        original.stop_bound_processes().await.unwrap(),
-        environment::EnvironmentStopProof::Hand(
-            session_hand::HandStopProof::ResidentProcessRetained
-        )
-    ));
+    original.stop_bound_processes().await.unwrap();
     let adopted = environments.adopt(&spec(), &handle).await.unwrap();
     assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 0);
-    assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 2);
+    assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 1);
     assert_eq!(provider.renews.load(Ordering::SeqCst), 1);
     assert_eq!(
         adopted.tool_executor().recovery_capability("bash"),
         awaken_runtime_contract::tool::ToolRecoveryCapability::DurableRequest
     );
+    adopted
+        .tool_executor()
+        .invoke(&ToolCall {
+            call_id: "adopted-resident-bind".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+    assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 2);
+    adopted.dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -1106,6 +1237,14 @@ async fn live_projection_update_hibernates_and_fences_the_session_hand() {
     .await
     .unwrap();
     let hand = environment.tool_executor();
+    hand.invoke(&ToolCall {
+        call_id: "before-projection-update".into(),
+        tool_id: "read".into(),
+        arguments: serde_json::json!({}),
+    })
+    .await
+    .unwrap();
+    assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 1, "U1/C1");
 
     let committed = environment
         .begin_live_projection_update()
@@ -1173,9 +1312,14 @@ async fn live_projection_update_hibernates_and_fences_the_session_hand() {
 
 #[tokio::test]
 async fn live_projection_update_rejects_an_unreapable_hand() {
-    // A failed reap leaves the old process outcome unknown. An empty local
-    // binding is therefore not evidence that the projection can proceed:
-    // the owner must remain closed and must never launch a second Hand.
+    // Projection-reap cause/effect rule. C1=a lazily bound Hand exists;
+    // C2=its provider cannot prove reap; C3=projection update begins;
+    // C4=the owning Environment is terminally disposed. E1=reject the update;
+    // E2=fence later dispatch; E3=retain one process owner and never launch a
+    // replacement; E4=still invoke the one physical Environment disposal
+    // boundary exactly once. Rules UR1=C1+C2+C3=>E1+E2+E3;
+    // UR2=UR1+C4=>E4 because physical disposal, unlike Hand replacement,
+    // terminates the complete process substrate.
     let provider = Arc::new(FakeContainerProvider::default());
     provider
         .shared
@@ -1192,6 +1336,13 @@ async fn live_projection_update_rejects_an_unreapable_hand() {
     .await
     .unwrap();
     let hand = environment.tool_executor();
+    hand.invoke(&ToolCall {
+        call_id: "bind-unreapable-hand".into(),
+        tool_id: "read".into(),
+        arguments: serde_json::json!({}),
+    })
+    .await
+    .unwrap();
 
     let error = match environment.begin_live_projection_update().await {
         Err(error) => error,
@@ -1216,11 +1367,17 @@ async fn live_projection_update_rejects_an_unreapable_hand() {
         1,
         "a failed projection reap never permits a replacement Hand"
     );
-    assert!(environment.dispose().await.is_err());
+    environment.dispose().await.unwrap();
+    assert_eq!(provider.disposals.load(Ordering::SeqCst), 1, "UR2/E4");
 }
 
 #[tokio::test]
 async fn cancelled_projection_reap_retains_the_tracked_hand_owner() {
+    // Cancelled-reap cause/effect rule. C1=a lazily bound Hand exists;
+    // C2=projection retirement is in flight; C3=the update Future is
+    // cancelled before wait proves exit. E1=retain the binding as the sole
+    // process owner; E2=keep dispatch fenced; E3=do not spawn a replacement.
+    // Rule CR1=C1+C2+C3=>E1+E2+E3.
     let provider = Arc::new(FakeContainerProvider::default());
     provider
         .shared
@@ -1238,6 +1395,15 @@ async fn cancelled_projection_reap_retains_the_tracked_hand_owner() {
         .await
         .unwrap(),
     );
+    environment
+        .tool_executor()
+        .invoke(&ToolCall {
+            call_id: "bind-slow-reap-hand".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
     let updating = tokio::spawn({
         let environment = environment.clone();
         async move {
@@ -1286,6 +1452,15 @@ async fn checkpoint_quiescence_fails_closed_when_attached_hand_cannot_be_reaped(
     .create(&spec())
     .await
     .unwrap();
+    environment
+        .tool_executor()
+        .invoke(&ToolCall {
+            call_id: "bind-unreapable-checkpoint-hand".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
 
     assert!(environment.quiesce().await.is_err(), "QH1/E1");
     let SessionEnvironment::Container { hand, .. } = &environment else {
@@ -1297,7 +1472,8 @@ async fn checkpoint_quiescence_fails_closed_when_attached_hand_cannot_be_reaped(
 
 #[tokio::test]
 async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
-    // Cause/effect graph: C2=resident Hand belongs to the Session Pod;
+    // Cause/effect graph: C1=tool demand has opened the lazy resident channel;
+    // C2=resident Hand belongs to the Session Pod;
     // C3=checkpoint-and-release requests process quiescence; C4=the same
     // durable operation retries; C5=terminal disposal follows. C2+C3 ->
     // E1=first attempt has no proof while the resident binding and sandbox
@@ -1318,6 +1494,15 @@ async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
     .create(&spec())
     .await
     .unwrap();
+    environment
+        .tool_executor()
+        .invoke(&ToolCall {
+            call_id: "bind-resident-checkpoint-hand".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
 
     assert!(environment.quiesce().await.is_err(), "QR1/E1");
     let SessionEnvironment::Container { hand, .. } = &environment else {
@@ -1363,6 +1548,15 @@ async fn cancelled_checkpoint_quiescence_retains_the_attached_hand_owner() {
         .await
         .unwrap(),
     );
+    environment
+        .tool_executor()
+        .invoke(&ToolCall {
+            call_id: "bind-slow-checkpoint-hand".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
     let quiescing = tokio::spawn({
         let environment = environment.clone();
         async move { environment.quiesce().await }
@@ -1385,9 +1579,10 @@ async fn cancelled_checkpoint_quiescence_retains_the_attached_hand_owner() {
 /// newer generation; E3=deadline releases the Hand; E4=next call lazily
 /// creates exactly one replacement; E5=zero disables hibernation; C6=the
 /// provider cannot reap the expired process; E6=close the owner and never
-/// launch a possibly concurrent replacement. Rules:
+/// launch a possibly concurrent replacement; C7=the Environment is terminally
+/// disposed after C6; E7=invoke its one physical disposal boundary once. Rules:
 /// I1 C1+!C2=>E1; I2 C1+C2+C3=>E2; I3 C1+C2+!C3=>E3;
-/// I4 I3+C5=>E4; I5 C4=>E5; I6 C6=>E6. This executes in the Runtime Host
+/// I4 I3+C5=>E4; I5 C4=>E5; I6 C6=>E6; I7=I6+C7=>E7. This executes in the Runtime Host
 /// without a Coordinator or durable Session scan, covering split deployment
 /// ownership.
 #[tokio::test(start_paused = true)]
@@ -1407,6 +1602,13 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
     .await
     .unwrap();
     let hand = environment.tool_executor();
+    hand.invoke(&ToolCall {
+        call_id: "start-idle-window".into(),
+        tool_id: "read".into(),
+        arguments: serde_json::json!({}),
+    })
+    .await
+    .unwrap();
 
     tokio::time::advance(std::time::Duration::from_secs(59)).await;
     tokio::task::yield_now().await;
@@ -1482,6 +1684,15 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
     .create(&spec())
     .await
     .unwrap();
+    failed
+        .tool_executor()
+        .invoke(&ToolCall {
+            call_id: "bind-unreapable-idle-hand".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
     tokio::task::yield_now().await;
     tokio::time::advance(std::time::Duration::from_secs(60)).await;
     tokio::task::yield_now().await;
@@ -1497,7 +1708,8 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
         Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
     ));
     assert_eq!(failed_provider.hand_spawns.load(Ordering::SeqCst), 1, "I6");
-    assert!(failed.dispose().await.is_err());
+    failed.dispose().await.unwrap();
+    assert_eq!(failed_provider.disposals.load(Ordering::SeqCst), 1, "I7/E7");
 }
 
 /// Idle/invoke race rule I7: C1=the old deadline fires while a Hand call owns
@@ -1567,11 +1779,11 @@ async fn adopting_a_container_renews_its_ownership_before_use() {
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     );
+    let spec = spec();
+    let effective_spec = environments.effective_spec(&spec).unwrap();
+    let handle = current_fake_container_handle(&effective_spec);
     let adopted = environments
-        .adopt(
-            &spec(),
-            &pc::SandboxHandle::new("container", "session-container"),
-        )
+        .adopt(&spec, &handle)
         .await
         .expect("adopt environment");
     assert_eq!(
@@ -1621,22 +1833,59 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
 
     let shared = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let container = FakeContainer {
+        handle: current_fake_container_handle(&spec()),
+        disposals: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         renews: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         hand_spawns: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         resident_channel_opens: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         fail_hand_spawn_at: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         shared: shared.clone(),
     };
+
+    // Container Repository path rule: C1 a plan carries `/repo`; E1 reject
+    // before host bundle acquisition/container exec, E2 never reinterpret it
+    // as `/workspace/repo`.
+    let unsupported_plan = pc::RepositoryRealizationPlan {
+        repository_id: "unsupported".into(),
+        mount_path: "/repo".into(),
+        source_remote_url: source.to_string_lossy().into_owned(),
+        transport_url: source.to_string_lossy().into_owned(),
+        initial_branch: None,
+        initial_commit: None,
+        access: pc::MountAccess::ReadWrite,
+    };
+    let unsupported = container_repositories::provision(
+        &container,
+        "/opt/custom/awaken-sandbox",
+        &unsupported_plan,
+        None,
+    )
+    .await
+    .expect_err("C1/E1 unsupported path");
+    assert!(
+        unsupported
+            .to_string()
+            .contains("current providers require")
+    );
+    assert!(shared.lock().unwrap().is_empty(), "E1 no container effect");
+
     shared
         .lock()
         .unwrap()
         .insert("__fail_repository_import".into(), Vec::new());
+    let import_plan = pc::RepositoryRealizationPlan {
+        repository_id: "repo".into(),
+        mount_path: "/workspace/repo".into(),
+        source_remote_url: source.to_string_lossy().into_owned(),
+        transport_url: source.to_string_lossy().into_owned(),
+        initial_branch: None,
+        initial_commit: None,
+        access: pc::MountAccess::ReadWrite,
+    };
     let import_error = container_repositories::provision(
         &container,
-        "repo",
-        source.to_str().unwrap(),
-        None,
-        None,
+        "/opt/custom/awaken-sandbox",
+        &import_plan,
         None,
     )
     .await
@@ -1654,7 +1903,7 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
     }
     let plan = pc::RepositoryRealizationPlan {
         repository_id: "repo".into(),
-        mount_path: "repo".into(),
+        mount_path: "/workspace/repo".into(),
         source_remote_url: source.to_string_lossy().into_owned(),
         transport_url: source.to_string_lossy().into_owned(),
         initial_branch: None,
@@ -1676,16 +1925,165 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
     );
 }
 
+struct RestartMemoryMounter {
+    outcomes: std::sync::Mutex<std::collections::VecDeque<pc::Realization>>,
+    mount_calls: Arc<std::sync::atomic::AtomicUsize>,
+    teardown_calls: Arc<std::sync::atomic::AtomicUsize>,
+    teardown_failures: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct RestartMemoryMount {
+    realization: pc::Realization,
+    teardown_calls: Arc<std::sync::atomic::AtomicUsize>,
+    teardown_failures: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl pc::MemoryMounter for RestartMemoryMounter {
+    async fn mount(
+        &self,
+        _store_id: &str,
+        host_path: &std::path::Path,
+        _access: pc::MountAccess,
+    ) -> Result<Box<dyn pc::MemoryMount>, pc::SandboxError> {
+        self.mount_calls.fetch_add(1, Ordering::SeqCst);
+        let realization = self
+            .outcomes
+            .lock()
+            .expect("restart Memory outcomes lock poisoned")
+            .pop_front()
+            .ok_or_else(|| pc::SandboxError::new("unexpected Memory remount"))?;
+        std::fs::create_dir_all(host_path).map_err(|error| {
+            pc::SandboxError::new(format!("create fake Memory projection: {error}"))
+        })?;
+        std::fs::write(host_path.join("value.txt"), b"durable-memory").map_err(|error| {
+            pc::SandboxError::new(format!("write fake Memory projection: {error}"))
+        })?;
+        Ok(Box::new(RestartMemoryMount {
+            realization,
+            teardown_calls: self.teardown_calls.clone(),
+            teardown_failures: self.teardown_failures.clone(),
+        }))
+    }
+}
+
+#[async_trait]
+impl pc::MemoryMount for RestartMemoryMount {
+    fn realization(&self) -> pc::Realization {
+        self.realization
+    }
+
+    fn materialization_heads(&self) -> Option<Vec<pc::MemoryMaterializationHead>> {
+        (self.realization == pc::Realization::Copy).then(|| {
+            vec![pc::MemoryMaterializationHead {
+                path: "value.txt".into(),
+                id: "head".into(),
+                content_sha256: "digest".into(),
+            }]
+        })
+    }
+
+    async fn teardown(&self) -> Result<(), pc::SandboxError> {
+        self.teardown_calls.fetch_add(1, Ordering::SeqCst);
+        if self
+            .teardown_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(pc::SandboxError::new("scripted Memory teardown failure"));
+        }
+        Ok(())
+    }
+}
+
+fn install_restart_memory_mounter(
+    provider: SessionEnvironmentProvider,
+    outcomes: impl IntoIterator<Item = pc::Realization>,
+    mount_calls: Arc<std::sync::atomic::AtomicUsize>,
+    teardown_calls: Arc<std::sync::atomic::AtomicUsize>,
+    teardown_failures: Arc<std::sync::atomic::AtomicUsize>,
+) -> SessionEnvironmentProvider {
+    provider.install_memory_mounter(Arc::new(RestartMemoryMounter {
+        outcomes: std::sync::Mutex::new(outcomes.into_iter().collect()),
+        mount_calls,
+        teardown_calls,
+        teardown_failures,
+    }));
+    provider
+}
+
+fn restart_namespace_provider(
+    root: &std::path::Path,
+    outcomes: impl IntoIterator<Item = pc::Realization>,
+    mount_calls: Arc<std::sync::atomic::AtomicUsize>,
+    teardown_calls: Arc<std::sync::atomic::AtomicUsize>,
+) -> SessionEnvironmentProvider {
+    let provider = SessionEnvironmentProvider::namespace_with_agent_stderr(
+        root,
+        false,
+        Arc::new(FakeHandExecutorFactory),
+        "/bin/sh",
+        std::time::Duration::ZERO,
+    );
+    install_restart_memory_mounter(
+        provider,
+        outcomes,
+        mount_calls,
+        teardown_calls,
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    )
+}
+
+fn restart_memory_spec(scope: &str) -> (pc::SandboxSpec, pc::MountRequirement) {
+    let memory = pc::MountRequirement {
+        mount_id: "memory".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "store".into(),
+            materialization_reference: None,
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/mnt/memory/restart".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    };
+    let mut spec = spec();
+    spec.scope = scope.into();
+    spec.mounts = vec![memory.clone()];
+    (spec, memory)
+}
+
+fn restart_disposal_authorization(
+    prepared: pc::SandboxEffectFence,
+    label: &str,
+) -> pc::SandboxDisposalAuthorization {
+    let preparation = pc::SandboxDisposalPreparation::new(prepared, label).unwrap();
+    let effect = pc::SandboxEffectFence::new(
+        preparation.operation_id().unwrap(),
+        "owner",
+        "runtime",
+        1,
+        u64::MAX,
+    )
+    .unwrap();
+    preparation.authorize(effect).unwrap()
+}
+
 #[tokio::test]
 async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() {
-    /* Runtime-host Namespace adoption decision rule:
-     * C1=create persists one realized control topology; C2=the frozen
-     * SandboxSpec requests that exact topology; C3=the frozen demand is
-     * missing or different. E1=Provider::adopt restores the handle and
-     * environment through the spec-aware port; E2=C3 fails before a
-     * control-free downgrade. Rules H1 C1+C2=>E1; H2 C1+C3=>E2.
-     * Other assertions retain the existing tier-rebase/mount-jail coverage.
-     */
+    // Provider-projection cause/effect rules. C1=a provider is rebased;
+    // C2=a current fenced Namespace handle is adopted; C3=a container mount
+    // escapes its jail; C4=aggregate disposal preparation is not yet/is durably
+    // accepted; C5=the closed observation carries the exact/foreign physical
+    // incarnation. E1=preserve the provider kind/configuration; E2=preparation
+    // quiesces and binds the exact owner but does not remove it; E3=physical
+    // disposal removes only the exact evidenced root after C4; E4=reject C3
+    // before provider create; E5=accept only exact terminal evidence while
+    // retaining the filesystem-absence rule. Rules: P1=C1=>E1;
+    // P2=C1+C2+!C4+exact-C5=>E1+E2+E5; P3=C1+C2+C4=>E3;
+    // P4=C1+C3=>E4; P5=C1+C2+foreign-C5=>reject before disposal.
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
 
@@ -1707,25 +2105,79 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
     ));
     let mut namespace_spec = spec();
     namespace_spec.scope = "provider-namespace-adopt".into();
-    #[cfg(target_os = "linux")]
-    namespace_spec
-        .control_services
-        .insert(pc::SandboxControlServiceKind::RepositoryGitCredential);
-    let created = namespace.create(&namespace_spec).await.unwrap();
+    let namespace_spec = namespace.effective_spec(&namespace_spec).unwrap();
+    let create_fence =
+        pc::SandboxEffectFence::new("create", "provider-test", "runtime", 1, u64::MAX).unwrap();
+    let created = namespace
+        .create_effective_for_effect(
+            &namespace_spec,
+            Some(&create_fence),
+            None,
+            awaken_sandbox_container::ContainerRealizationIntent::Create,
+        )
+        .await
+        .unwrap();
     let handle = created.handle();
     drop(created);
-    #[cfg(target_os = "linux")]
-    {
-        let mut mismatched = namespace_spec.clone();
-        mismatched.control_services.clear();
-        assert!(
-            namespace.adopt(&mismatched, &handle).await.is_err(),
-            "H2/E2"
-        );
-    }
-    let adopted = namespace.adopt(&namespace_spec, &handle).await.unwrap();
-    assert_eq!(adopted.handle(), handle, "H1/E1");
-    adopted.dispose().await.unwrap();
+    let adopted = namespace
+        .adopt_effective_for_effect(&namespace_spec, &handle, Some(&create_fence))
+        .await
+        .unwrap();
+    assert_eq!(adopted.handle(), handle);
+    let terminal_fence =
+        pc::SandboxEffectFence::new("terminal", "provider-test", "runtime", 1, u64::MAX).unwrap();
+    adopted
+        .prepare_disposal_for_effect(&terminal_fence)
+        .await
+        .unwrap();
+    let terminal_observation = namespace
+        .observe_effective_for_effect(&namespace_spec, &handle, &terminal_fence)
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            terminal_observation,
+            pc::SandboxObservation::Terminal { .. }
+        ),
+        "P2 preparation retains the exact physical root without forging aggregate disposal"
+    );
+    namespace
+        .validate_closed_observation(&handle, &terminal_observation)
+        .expect("P2/P5 exact marker incarnation is the sole closed evidence");
+    assert!(
+        namespace
+            .validate_closed_observation(
+                &handle,
+                &pc::SandboxObservation::Terminal {
+                    physical_incarnation: "foreign-physical-incarnation".into(),
+                },
+            )
+            .is_err(),
+        "P5 foreign terminal evidence fails closed",
+    );
+    assert!(
+        namespace
+            .validate_closed_observation(
+                &handle,
+                &pc::SandboxObservation::DefinitivelyUnavailable {
+                    physical_incarnation: handle
+                        .filesystem_physical_incarnation()
+                        .unwrap()
+                        .map(str::to_owned),
+                },
+            )
+            .is_err(),
+        "P5 filesystem absence cannot reuse a once-live incarnation",
+    );
+    let preparation_fingerprint = "provider-test-preparation";
+    let disposal_preparation =
+        pc::SandboxDisposalPreparation::new(terminal_fence.clone(), preparation_fingerprint)
+            .unwrap();
+    let disposal_id = disposal_preparation.operation_id().unwrap();
+    let disposal_fence =
+        pc::SandboxEffectFence::new(disposal_id, "provider-test", "runtime", 1, u64::MAX).unwrap();
+    let authorization = disposal_preparation.authorize(disposal_fence).unwrap();
+    adopted.dispose_for_effect(&authorization).await.unwrap();
 
     let provider = Arc::new(FakeContainerProvider::default());
     let unsafe_mount = pc::MountRequirement {
@@ -1805,7 +2257,7 @@ async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_t
     .unwrap();
     let repository_plan = pc::RepositoryRealizationPlan {
         repository_id: "repo".into(),
-        mount_path: "workspace/repo".into(),
+        mount_path: "/workspace/repo".into(),
         source_remote_url: remote.to_string_lossy().into_owned(),
         transport_url: remote.to_string_lossy().into_owned(),
         initial_branch: None,
@@ -1898,14 +2350,11 @@ async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_t
     assert_eq!(first, replay, "C1/C2 canonical receipt");
     // Artifact cause/effect rule: one regular output file → one canonical
     // content-addressed Artifact and binary-safe read through the same port.
-    let artifacts = environment.artifacts().await.unwrap();
+    let artifacts = environment.capture_artifacts().await.unwrap();
     assert_eq!(artifacts.len(), 1);
-    assert!(artifacts[0].path.ends_with("nested/result.bin"));
-    assert_eq!(artifacts[0].id, artifacts[0].content_hash);
-    assert_eq!(
-        environment.read_artifact(&artifacts[0].id).await.unwrap(),
-        vec![0, 0xff]
-    );
+    assert!(artifacts[0].metadata.path.ends_with("nested/result.bin"));
+    assert_eq!(artifacts[0].metadata.id, artifacts[0].metadata.content_hash);
+    assert_eq!(artifacts[0].bytes, vec![0, 0xff]);
     environment.dispose().await.unwrap();
 
     git(

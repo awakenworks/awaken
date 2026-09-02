@@ -1,5 +1,4 @@
-use super::*;
-
+//! Projection of one externally answerable committed await target.
 
 /// The tool a run awaits: its id, model-visible name/input, and whether it is
 /// client-executed (projected as `agent.custom_tool_use`) or a built-in awaiting

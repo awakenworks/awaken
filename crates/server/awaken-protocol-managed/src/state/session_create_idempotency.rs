@@ -106,30 +106,9 @@ fn request_fingerprint(
 impl ManagedState {
     pub async fn create_session_idempotent(
         self: &Arc<Self>,
-        req: SessionCreateParams,
-        workspace_id: Option<String>,
-        idempotency_key: &str,
-    ) -> Result<Session, StateError> {
-        self.create_session_idempotent_with_completion(req, workspace_id, idempotency_key, false)
-            .await
-    }
-
-    pub async fn accept_session_idempotent(
-        self: &Arc<Self>,
-        req: SessionCreateParams,
-        workspace_id: Option<String>,
-        idempotency_key: &str,
-    ) -> Result<Session, StateError> {
-        self.create_session_idempotent_with_completion(req, workspace_id, idempotency_key, true)
-            .await
-    }
-
-    async fn create_session_idempotent_with_completion(
-        self: &Arc<Self>,
         mut req: SessionCreateParams,
         workspace_id: Option<String>,
         idempotency_key: &str,
-        accept_durable_root: bool,
     ) -> Result<Session, StateError> {
         let owner_scope = workspace_id.as_deref().unwrap_or(DEFAULT_SCOPE).to_owned();
         if req
@@ -156,13 +135,12 @@ impl ManagedState {
             SESSION_CREATE_REQUEST_FINGERPRINT.into(),
             request_fingerprint.clone(),
         );
-        let created = if accept_durable_root {
-            Box::pin(self.accept_session_with_identity(req, workspace_id, Some(session_id.clone())))
-                .await
-        } else {
-            Box::pin(self.create_session_with_identity(req, workspace_id, Some(session_id.clone())))
-                .await
-        };
+        let created = Box::pin(self.create_session_with_identity(
+            req,
+            workspace_id,
+            Some(session_id.clone()),
+        ))
+        .await;
         match created {
             Ok(session) => Ok(session),
             Err(error) => {

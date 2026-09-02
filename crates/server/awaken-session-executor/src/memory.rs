@@ -21,11 +21,10 @@ use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadV
 use awaken_agent_contract::thread::read::transcript::TranscriptSnapshot;
 use awaken_ext_builtin_tools::erase;
 use awaken_ext_memory::{
-    EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryExtractionController, MemoryExtractionDriver,
-    MemoryExtractionError, MemoryExtractionIntent, MemoryExtractionMutation,
-    MemoryExtractionRepository, MemoryExtractorSnapshot, MemoryMutationReceipt, MemoryStoreHandle,
-    MemoryTerminalExtraction, MemoryTerminalExtractionRequest, MemoryTerminalObserver,
-    WriteMemoryTool, accepts_memory_content, sanitize_stem,
+    EXTRACT_PROMPT, MemoryExtractionController, MemoryExtractionDriver, MemoryExtractionError,
+    MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionRepository,
+    MemoryExtractorSnapshot, MemoryMutationReceipt, MemoryStoreHandle,
+    MemoryTerminalExtractionRequest, WriteMemoryTool, accepts_memory_content, sanitize_stem,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -38,11 +37,9 @@ use crate::store::HostCommit;
 
 mod platform;
 mod selector;
+mod terminal_observer;
 pub(crate) use platform::PlatformMemoryHandle;
 pub(crate) use selector::AgentSelector;
-
-// The config pieces the host wires (registering the default extractor agent).
-use awaken_ext_memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
 
 static EXTRACTION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -124,11 +121,6 @@ pub struct BoundMemory {
     recall_enabled: bool,
     extraction_enabled: bool,
     execution: Arc<RwLock<Option<Arc<HostCommit>>>>,
-}
-
-struct BoundMemoryTerminalExtraction {
-    memory: Arc<BoundMemory>,
-    extractor: MemoryExtractorSnapshot,
 }
 
 /// Adapter from the Memory bounded context's durable claim to the common
@@ -233,20 +225,6 @@ fn memory_unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default()
-}
-
-#[async_trait]
-impl MemoryTerminalExtraction for BoundMemoryTerminalExtraction {
-    async fn extract_terminal(
-        &self,
-        terminal: &awaken_runtime_contract::terminal::CommittedTerminalRun,
-        transcript: TranscriptSnapshot,
-    ) -> Result<(), String> {
-        self.memory
-            .trigger(&terminal.run_id.0, transcript, self.extractor.clone())
-            .await
-            .map_err(|error| error.to_string())
-    }
 }
 
 impl MemoryRuntime {
@@ -805,102 +783,6 @@ impl crate::host::SharedHost {
         Ok(scheduled)
     }
 
-    pub(crate) async fn memory_terminal_observer(
-        &self,
-        session_thread: &str,
-        snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
-        effective_model_ref: &str,
-        dispatched_resources: Option<&awaken_session_contract::SessionResourceManifest>,
-        frozen_publications: &dyn awaken_runtime_contract::PublishedAgentSnapshotSource,
-        commit: Arc<HostCommit>,
-    ) -> Result<
-        Option<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,
-        crate::HostError,
-    > {
-        if !snapshot
-            .resolved_spec
-            .plugin_ids
-            .iter()
-            .any(|id| id == awaken_ext_memory::MEMORY_PLUGIN_ID)
-        {
-            return Ok(None);
-        }
-        let config = awaken_ext_memory::MemoryConfig::from_value(
-            snapshot
-                .resolved_spec
-                .plugin_config
-                .get(awaken_ext_memory::MEMORY_PLUGIN_ID),
-        )
-        .map_err(|error| {
-            crate::HostError::internal(format!(
-                "invalid frozen Memory plugin configuration: {error}"
-            ))
-        })?;
-        if !config.extraction_enabled {
-            return Ok(None);
-        }
-        let memory = if let Some(manifest) = dispatched_resources {
-            let binding_id = config.binding_id.as_deref().ok_or_else(|| {
-                crate::HostError::internal(
-                    "the frozen Memory plugin requires an explicit `memory.binding_id`",
-                )
-            })?;
-            let memory = self
-                .compile_dispatched_memory_binding(session_thread, manifest, binding_id)
-                .await
-                .map_err(|error| crate::HostError::internal(error.to_string()))?;
-            if !memory.extraction_enabled() {
-                return Ok(None);
-            }
-            memory
-                .bind_recovery(commit.clone())
-                .await
-                .map_err(|error| crate::HostError::internal(error.to_string()))?;
-            memory
-        } else {
-            let Some(memory) = self.memory_for_thread(session_thread) else {
-                return Ok(None);
-            };
-            // Resident Session construction has already attached `commit` to
-            // every writable frozen binding through
-            // `bind_thread_memory_recovery`, including this selected one.
-            memory
-        };
-        if !memory.extraction_enabled() {
-            return Ok(None);
-        }
-        let model = snapshot
-            .resolved_spec
-            .candidate_for_model(effective_model_ref)
-            .cloned()
-            .ok_or_else(|| {
-                crate::HostError::internal(format!(
-                    "memory extraction model `{effective_model_ref}` is absent from frozen snapshot `{}`",
-                    snapshot.id.0
-                ))
-        })?;
-        let agent_id = config.agent_id.as_deref().unwrap_or(MEMORY_AGENT_ID);
-        let agent = crate::agent_catalog::resolve_auxiliary_snapshot(
-            Some(frozen_publications),
-            &memory.workspace_id,
-            agent_id,
-            default_memory_agent(model, DEFAULT_MEMORY_INSTRUCTIONS),
-            config.instructions.as_deref(),
-        )
-        .map_err(crate::HostError::internal)?;
-        let extraction = Arc::new(BoundMemoryTerminalExtraction {
-            memory,
-            extractor: MemoryExtractorSnapshot {
-                agent,
-                extraction_prompt: config.extraction_prompt,
-            },
-        });
-        let reader: Arc<dyn CommittedThreadView> = commit;
-        Ok(Some(Arc::new(MemoryTerminalObserver::new(
-            reader, extraction,
-        ))))
-    }
-
     pub(crate) fn platform_memory_handle(
         &self,
         store_id: String,
@@ -954,7 +836,7 @@ mod tests {
     use super::*;
     use crate::SharedHost;
     use async_trait::async_trait;
-    use awaken_ext_memory::{MemoryExtractionStatus, RecallSelector as _};
+    use awaken_ext_memory::{MEMORY_AGENT_ID, MemoryExtractionStatus, RecallSelector as _};
     use awaken_memory_store::MemoryRepository as _;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult, ToolCall,
@@ -1614,6 +1496,11 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_redelivery_creates_one_logical_extraction_and_one_memory_version() {
+        // Structural-extraction coverage: the private terminal-observer adapter
+        // delegates committed terminal truth to this same `BoundMemory::trigger`
+        // path. Keeping the redelivery cause here proves the module split leaves
+        // the one durable intent and one governed Memory version effects intact;
+        // the child module owns no observer state, repository, or retry policy.
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

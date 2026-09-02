@@ -1,4 +1,4 @@
-//! Exact, ambient-free host Git transport for Repository realization.
+//! Exact host Git transport for Repository realization.
 
 mod command;
 

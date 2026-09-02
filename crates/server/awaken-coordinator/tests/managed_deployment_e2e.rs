@@ -3,6 +3,7 @@
 mod support;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_deployment_application::{
@@ -19,9 +20,7 @@ use awaken_runtime_contract::{
     AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
     AgentSnapshotMetadata, ExecutableAgentSnapshot, ModelBinding,
 };
-use awaken_scenario_host::{
-    EchoModel, build_unmounted_host, build_unmounted_host_with_agent_publications,
-};
+use awaken_scenario_host::{EchoModel, build_unmounted_host_with_agent_publications};
 use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
@@ -37,6 +36,56 @@ fn resource_registry() -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
         .expect("open the Deployment test Resource application")
         .authorities()
         .resource_registry()
+}
+
+/// Failure injection over the existing immutable catalog. Session authoring
+/// continues to read the catalog directly; only the Host publication transport
+/// can be made unavailable after the create projection has committed.
+struct TogglePublishedAgents {
+    catalog: Arc<ExecutableAgentCatalog>,
+    available: AtomicBool,
+}
+
+impl awaken_runtime_contract::PublishedAgentSnapshotSource for TogglePublishedAgents {
+    fn current(&self, workspace: &str, agent_id: &AgentId) -> Option<ExecutableAgentSnapshot> {
+        self.available.load(Ordering::Acquire).then(|| {
+            awaken_runtime_contract::PublishedAgentSnapshotSource::current(
+                self.catalog.as_ref(),
+                workspace,
+                agent_id,
+            )
+        })?
+    }
+
+    fn exact(
+        &self,
+        workspace: &str,
+        fingerprint: &awaken_runtime_contract::CatalogFingerprint,
+    ) -> Option<ExecutableAgentSnapshot> {
+        self.available.load(Ordering::Acquire).then(|| {
+            awaken_runtime_contract::PublishedAgentSnapshotSource::exact(
+                self.catalog.as_ref(),
+                workspace,
+                fingerprint,
+            )
+        })?
+    }
+
+    fn at_revision(
+        &self,
+        workspace: &str,
+        agent_id: &AgentId,
+        source_revision: u64,
+    ) -> Option<ExecutableAgentSnapshot> {
+        self.available.load(Ordering::Acquire).then(|| {
+            awaken_runtime_contract::PublishedAgentSnapshotSource::at_revision(
+                self.catalog.as_ref(),
+                workspace,
+                agent_id,
+                source_revision,
+            )
+        })?
+    }
 }
 
 struct DeploymentPriceProvider;
@@ -113,7 +162,8 @@ async fn publish_assistant(
 async fn initial_event_failure_preserves_the_committed_deployment_session() {
     // FMECA/cause-effect graph: C1 a valid frozen Agent and user-then-system
     // initial Event plan commit one Session root; C2 the Runtime publication
-    // source is unavailable when the lifecycle owner later executes that plan; C3 the same
+    // transport becomes unavailable only after that create projection commits;
+    // C3 the same
     // DeploymentRun is retried after response loss. Effects: E1 launch returns
     // the committed Session, E2 C2 leaves that Session visible and retryable,
     // E3 C3 returns the same Session. K1 DeploymentRun records Session creation,
@@ -121,7 +171,15 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     // launch executor or compensating delete exists. Rules: D1 C1 -> E1;
     // D2 C1+C2 -> E2; D3 C1+C2+C3 -> E3.
     let catalog = Arc::new(ExecutableAgentCatalog::new());
-    let host = build_unmounted_host(Arc::new(EchoModel), "claude-sonnet-5");
+    let runtime_publications = Arc::new(TogglePublishedAgents {
+        catalog: catalog.clone(),
+        available: AtomicBool::new(true),
+    });
+    let host = build_unmounted_host_with_agent_publications(
+        Arc::new(EchoModel),
+        "claude-sonnet-5",
+        runtime_publications.clone(),
+    );
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
     let managed = awaken_coordinator::local_managed_state_with_agent_source(
@@ -172,6 +230,9 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
         "D1/E1: {first:?}"
     );
 
+    runtime_publications
+        .available
+        .store(false, Ordering::Release);
     let error = Box::pin(
         managed
             .session_application()

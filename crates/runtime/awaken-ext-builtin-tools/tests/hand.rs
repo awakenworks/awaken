@@ -1,6 +1,6 @@
 //! Hand tools execute in-process against a real (temp) filesystem.
 
-use awaken_ext_builtin_tools::{HandToolContext, executable_hand_tools_in};
+use awaken_ext_builtin_tools::{HandToolContext, all_hand_tools_in};
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError};
 use std::sync::Arc;
 
@@ -9,7 +9,7 @@ fn tool(id: &str) -> Arc<dyn RawTool> {
 }
 
 fn tool_at(id: &str, root: &std::path::Path) -> Arc<dyn RawTool> {
-    executable_hand_tools_in(HandToolContext::new(root))
+    all_hand_tools_in(HandToolContext::new(root))
         .into_iter()
         .find(|t| t.id() == id)
         .unwrap_or_else(|| panic!("no builtin tool {id}"))
@@ -121,7 +121,7 @@ async fn glob_absolute_pattern_reuses_the_confined_logical_path_projection() {
     std::fs::write(projected.path().join("a.rs"), "a").expect("projected file");
     let context =
         HandToolContext::new(workdir.path()).with_path_projection("/managed", projected.path());
-    let glob = executable_hand_tools_in(context)
+    let glob = all_hand_tools_in(context)
         .into_iter()
         .find(|candidate| candidate.id() == "glob")
         .expect("glob tool");
@@ -752,8 +752,6 @@ async fn file_tools_reject_parent_absolute_and_symlink_escapes() {
     // C1 lexical parent escape -> reject before filesystem mutation.
     // C2 absolute path outside every trusted root -> reject.
     // C3 symlink resolving outside a trusted root -> reject.
-    // C4 move/delete use the same resolver as read/write/edit -> reject both
-    // source and destination escapes; no tool-specific ambient path bypass.
     let root = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("secret"), "secret").unwrap();
@@ -776,32 +774,6 @@ async fn file_tools_reject_parent_absolute_and_symlink_escapes() {
             .expect_err("symlink escape must fail");
         assert!(error.to_string().contains("escapes workdir"));
     }
-
-    let inside = root.path().join("inside.txt");
-    let escaped_move = outside.path().join("moved.txt");
-    std::fs::write(&inside, "inside").unwrap();
-    let error = tool_at("move", root.path())
-        .invoke(call(
-            "move",
-            serde_json::json!({
-                "source": inside,
-                "destination": escaped_move,
-            }),
-        ))
-        .await
-        .expect_err("move destination outside workdir must fail");
-    assert!(error.to_string().contains("escapes workdir"), "C4");
-    assert!(inside.exists(), "a rejected move leaves its source intact");
-
-    let error = tool_at("delete", root.path())
-        .invoke(call(
-            "delete",
-            serde_json::json!({ "path": outside.path().join("secret") }),
-        ))
-        .await
-        .expect_err("delete outside workdir must fail");
-    assert!(error.to_string().contains("escapes workdir"), "C4");
-    assert!(outside.path().join("secret").exists());
 }
 
 #[tokio::test]

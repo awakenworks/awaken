@@ -60,8 +60,6 @@ pub enum ResourceInput {
     MemoryStore {
         memory_store_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        mount_path: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         instructions: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         access: Option<ResourceAccess>,
@@ -91,13 +89,11 @@ impl ResourceInput {
             } => awaken_session_contract::stable_fingerprint(&("file", file_id, mount_path)),
             Self::MemoryStore {
                 memory_store_id,
-                mount_path,
                 instructions,
                 access,
             } => awaken_session_contract::stable_fingerprint(&(
                 "memory_store",
                 memory_store_id,
-                mount_path,
                 instructions,
                 access,
             )),
@@ -281,6 +277,16 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<ResourceInput>(invalid).is_err());
         }
+
+        assert!(
+            serde_json::from_value::<ResourceInput>(json!({
+                "type":"memory_store",
+                "memory_store_id":"memstore_1",
+                "mount_path":"/mnt/private-extension"
+            }))
+            .is_err(),
+            "the official MemoryStore input has no client-authored mount_path"
+        );
     }
 
     #[test]

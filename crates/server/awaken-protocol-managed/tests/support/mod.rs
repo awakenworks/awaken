@@ -71,6 +71,26 @@ pub fn assert_current_sdk_session_shape(session: &serde_json::Value) {
     assert_sdk_object_shape(session, shape, "Session");
 }
 
+/// Assert one request Resource variant against the exact current SDK interface
+/// selected by its generated discriminator. The generated oracle owns every
+/// allowed/required field; Rust tests do not maintain a parallel field list.
+#[allow(dead_code)]
+pub fn assert_current_sdk_resource_param_shape(resource: &serde_json::Value) {
+    let oracle: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/anthropic-managed/upstream-oracle.generated.json"
+    ))
+    .expect("generated Managed SDK oracle is valid JSON");
+    let discriminator = resource["type"]
+        .as_str()
+        .expect("Managed Resource discriminator is a string");
+    let shape = &oracle["current"]["wire_contract"]["resource_params"][discriminator];
+    assert!(
+        shape.is_object(),
+        "current SDK Resource variant is generated"
+    );
+    assert_sdk_object_shape(resource, shape, &format!("ResourceParam.{discriminator}"));
+}
+
 /// Advance retained Session Event commands through the production-owned
 /// [`awaken_session_application::SessionApplication`] driver.
 ///
@@ -338,10 +358,11 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
         self.inner.get(session_id).await
     }
 
-    async fn reconcilable_sessions(
+    async fn reconcilable_sessions_page(
         &self,
+        after: Option<&awaken_session_contract::SessionRecoveryCursor>,
     ) -> Result<awaken_session_contract::SessionRecoveryScan, SessionRepositoryError> {
-        self.inner.reconcilable_sessions().await
+        self.inner.reconcilable_sessions_page(after).await
     }
 
     async fn sessions_referencing_credential_source(

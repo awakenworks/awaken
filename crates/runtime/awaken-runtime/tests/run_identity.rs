@@ -1,6 +1,7 @@
 //! A caller-supplied Run id changes identity, not Runtime behavior.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_runtime::Runtime;
@@ -13,12 +14,29 @@ use awaken_store_inmem::MemoryCommitCoordinator;
 
 struct FixedModel;
 
+struct CountingModel(AtomicUsize);
+
 #[async_trait::async_trait]
 impl LlmExecutor for FixedModel {
     async fn infer(
         &self,
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        Ok(ChatResponse {
+            output: AssistantOutput::text("same result"),
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for CountingModel {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        self.0.fetch_add(1, Ordering::SeqCst);
         Ok(ChatResponse {
             output: AssistantOutput::text("same result"),
             usage: None,

@@ -105,39 +105,40 @@ pub(crate) async fn export_tools(
 }
 
 #[cfg(test)]
+#[derive(Default)]
+pub(crate) struct RecordingAcpToolExporter(pub(crate) std::sync::Mutex<Vec<(String, Vec<String>)>>);
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl AcpToolExporter for RecordingAcpToolExporter {
+    async fn export_set(
+        &self,
+        server_name: &str,
+        descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
+        _tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+    ) -> Result<AcpToolExport, String> {
+        self.0.lock().unwrap().push((
+            server_name.into(),
+            descriptors
+                .into_iter()
+                .map(|descriptor| descriptor.id)
+                .collect(),
+        ));
+        Ok(AcpToolExport::new(
+            awaken_run_executor_acp::McpServerConfig {
+                name: server_name.into(),
+                transport: awaken_run_executor_acp::McpTransport::Http {
+                    url: format!("http://127.0.0.1/{server_name}"),
+                },
+            },
+            (),
+        ))
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    #[derive(Default)]
-    struct RecordingExporter(Mutex<Vec<(String, Vec<String>)>>);
-
-    #[async_trait::async_trait]
-    impl AcpToolExporter for RecordingExporter {
-        async fn export_set(
-            &self,
-            server_name: &str,
-            descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-            _tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
-        ) -> Result<AcpToolExport, String> {
-            self.0.lock().unwrap().push((
-                server_name.into(),
-                descriptors
-                    .into_iter()
-                    .map(|descriptor| descriptor.id)
-                    .collect(),
-            ));
-            Ok(AcpToolExport::new(
-                awaken_run_executor_acp::McpServerConfig {
-                    name: server_name.into(),
-                    transport: awaken_run_executor_acp::McpTransport::Http {
-                        url: format!("http://127.0.0.1/{server_name}"),
-                    },
-                },
-                (),
-            ))
-        }
-    }
 
     struct Echo(&'static str);
 
@@ -176,7 +177,7 @@ mod tests {
         // MCP routes and two retained leases; R2 missing executor -> reject before
         // exporting anything. This is the ACP/native compatibility invariant:
         // only transport changes, never the semantic tool contracts.
-        let exporter = RecordingExporter::default();
+        let exporter = RecordingAcpToolExporter::default();
         let (servers, leases) = export_tools(
             &exporter,
             "awaken_session",
@@ -199,7 +200,7 @@ mod tests {
             "R1 exact contracts"
         );
 
-        let missing = RecordingExporter::default();
+        let missing = RecordingAcpToolExporter::default();
         assert!(
             export_tools(
                 &missing,

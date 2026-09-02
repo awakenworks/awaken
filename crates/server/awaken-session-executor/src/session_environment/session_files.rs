@@ -33,6 +33,26 @@ struct FileReadPathFacts {
     lexically_safe: bool,
 }
 
+/// One process-local Artifact capture. The Sandbox remains the byte source and
+/// ArtifactPublisher remains the durable owner; this value only keeps metadata
+/// and the exact bytes from one harvest pass together.
+pub(crate) struct CapturedArtifact {
+    pub(crate) metadata: pc::Artifact,
+    pub(crate) bytes: Vec<u8>,
+}
+
+async fn capture_sandbox_artifacts(
+    sandbox: &dyn pc::Sandbox,
+) -> Result<Vec<CapturedArtifact>, pc::SandboxError> {
+    let artifacts = sandbox.artifacts().await?;
+    let mut captured = Vec::with_capacity(artifacts.len());
+    for metadata in artifacts {
+        let bytes = sandbox.read_artifact(&metadata.id).await?;
+        captured.push(CapturedArtifact { metadata, bytes });
+    }
+    Ok(captured)
+}
+
 /// Pure authority kernel consumed by both typed constructors. Filesystem and
 /// parser behavior remain adapter boundaries; the privilege relation itself is
 /// small enough to exhaustively prove.
@@ -117,13 +137,16 @@ fn file_read_authority_never_changes_path_class_or_admits_unsafe_input() {
 }
 
 impl SessionEnvironment {
-    /// Enumerate Agent-authored outputs through the provisioning contract's
-    /// canonical Artifact port. Container backends expose the same contract over
-    /// their output-file transport instead of creating a second host-side scanner.
-    pub(crate) async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
+    /// Capture Agent-authored output metadata and bytes as one ephemeral batch.
+    /// Container backends already expose a bounded complete-tree transport, so
+    /// one harvest must consume it once instead of listing once and rescanning
+    /// the same tree for every content id.
+    pub(crate) async fn capture_artifacts(
+        &self,
+    ) -> Result<Vec<CapturedArtifact>, pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => pc::Sandbox::artifacts(sandbox.as_ref()).await,
-            Self::Namespace { sandbox, .. } => pc::Sandbox::artifacts(sandbox.as_ref()).await,
+            Self::Workdir(sandbox) => capture_sandbox_artifacts(sandbox.as_ref()).await,
+            Self::Namespace { sandbox, .. } => capture_sandbox_artifacts(sandbox.as_ref()).await,
             Self::Container { sandbox, .. } => sandbox
                 .read_files(sandbox.outputs_path())
                 .await
@@ -132,32 +155,18 @@ impl SessionEnvironment {
                         .into_iter()
                         .map(|file| {
                             let id = awaken_resource_contract::content_id(&file.bytes);
-                            pc::Artifact {
-                                id: id.clone(),
-                                path: file.path,
-                                size_bytes: file.bytes.len() as u64,
-                                content_hash: id,
+                            CapturedArtifact {
+                                metadata: pc::Artifact {
+                                    id: id.clone(),
+                                    path: file.path,
+                                    size_bytes: file.bytes.len() as u64,
+                                    content_hash: id,
+                                },
+                                bytes: file.bytes,
                             }
                         })
                         .collect()
                 }),
-        }
-    }
-
-    pub(crate) async fn read_artifact(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::read_artifact(sandbox.as_ref(), id).await,
-            Self::Namespace { sandbox, .. } => {
-                pc::Sandbox::read_artifact(sandbox.as_ref(), id).await
-            }
-            Self::Container { sandbox, .. } => sandbox
-                .read_files(sandbox.outputs_path())
-                .await?
-                .into_iter()
-                .find_map(|file| {
-                    (awaken_resource_contract::content_id(&file.bytes) == id).then_some(file.bytes)
-                })
-                .ok_or_else(|| pc::SandboxError::new(format!("artifact `{id}` not found"))),
         }
     }
 
@@ -206,11 +215,10 @@ impl SessionEnvironment {
         }
     }
 
-    pub(crate) fn needs_recovered_memory_reconciliation(&self) -> bool {
-        matches!(self, Self::Container { sandbox, .. } if sandbox.is_recovered())
-    }
-
-    pub(crate) fn scan_skill_dir(&self, subdir: &str) -> Result<Vec<DiscoveredSkillFile>, pc::SandboxError> {
+    pub(crate) fn scan_skill_dir(
+        &self,
+        subdir: &str,
+    ) -> Result<Vec<DiscoveredSkillFile>, pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => sandbox.scan_skill_dir(subdir),
             Self::Namespace { sandbox, .. } => sandbox.scan_skill_dir(subdir),
@@ -270,15 +278,35 @@ impl SessionEnvironment {
         self.sandbox().attach(requirement).await
     }
 
-    /// Rebuild the dynamic bind layout of an adopted Namespace from the frozen
-    /// Session manifest. Workdir paths survive directly and container runtimes
-    /// retain their own mount namespace across process ownership changes.
+    /// Complete an adopted Namespace from the frozen Session manifest. The
+    /// provider's Ready receipt already owns create-time Bind/Copy participants
+    /// and reacquires its exact FUSE participants during adoption; only late
+    /// mounts absent from that receipt flow through the ordinary attach port.
+    /// Workdir paths survive directly and container runtimes retain their own
+    /// mount namespace across process ownership changes.
     pub(crate) async fn reconcile_adopted_mounts(
         &self,
         requirements: &[pc::MountRequirement],
     ) -> Result<(), pc::SandboxError> {
         if let Self::Namespace { sandbox, .. } = self {
             for requirement in requirements {
+                let retained = pc::Sandbox::realized(sandbox.as_ref())
+                    .iter()
+                    .any(|realized| {
+                        realized.mount_id == requirement.mount_id
+                            && realized.mount_path == requirement.mount_path
+                            && realized.access == requirement.access
+                            && match &requirement.source {
+                                pc::MountSource::MemoryStore { .. } => matches!(
+                                    realized.realization,
+                                    pc::Realization::Copy | pc::Realization::Fuse
+                                ),
+                                _ => realized.realization == pc::Realization::Bind,
+                            }
+                    });
+                if retained {
+                    continue;
+                }
                 pc::Sandbox::attach(sandbox.as_ref(), requirement.clone()).await?;
             }
         }

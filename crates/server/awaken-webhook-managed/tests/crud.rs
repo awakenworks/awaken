@@ -136,8 +136,9 @@ impl ManagedSessionRepository for SessionOutbox {
         Err(awaken_session_contract::SessionRepositoryError::NotFound)
     }
 
-    async fn reconcilable_sessions(
+    async fn reconcilable_sessions_page(
         &self,
+        _after: Option<&awaken_session_contract::SessionRecoveryCursor>,
     ) -> Result<
         awaken_session_contract::SessionRecoveryScan,
         awaken_session_contract::SessionRepositoryError,

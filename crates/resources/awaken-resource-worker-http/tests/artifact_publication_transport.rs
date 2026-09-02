@@ -1,16 +1,21 @@
 //! Session artifact publication over the real Worker HTTP boundary.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use awaken_resource_contract::{
-    ArtifactPublication, ArtifactPublisher as _, FileStore, FileStoreError, content_id,
+    ArtifactPublication, ArtifactPublisher as _, ArtifactRecovery, FileApplicationService,
+    FileRecord, FileStore, FileStoreError, ResourcePurgeError, content_id,
 };
 use awaken_resource_worker_http::{
     ARTIFACT_METADATA_HEADER, ARTIFACT_PUBLICATION_PATH, HttpArtifactPublisher,
     WorkerArtifactPublicationService, worker_artifact_publication_router,
 };
 use awaken_dispatch::{
-    DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
+    ArtifactPublicationFence, DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch,
+    WorkerIdentity,
 };
 use awaken_dispatch_testkit::worker_http as support;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
@@ -39,7 +44,7 @@ fn publication(
     session: &str,
     path: &str,
     bytes: &[u8],
-) -> ArtifactPublication<RunClaim> {
+) -> ArtifactPublication<ArtifactPublicationFence> {
     let content_id = awaken_resource_contract::content_id(bytes);
     ArtifactPublication {
         effect_id: awaken_resource_contract::harvest_idempotency_key(session, path, &content_id),
@@ -50,7 +55,49 @@ fn publication(
         content_id,
         bytes: bytes.to_vec(),
         idempotency_scope: None,
-        fence: claim,
+        fence: claim.map(ArtifactPublicationFence::Run),
+    }
+}
+
+fn terminal_publication(
+    workspace: &str,
+    session: &str,
+    path: &str,
+    bytes: &[u8],
+    effect: awaken_session_contract::SessionTerminalCleanupEffect,
+) -> ArtifactPublication<ArtifactPublicationFence> {
+    let content_id = content_id(bytes);
+    ArtifactPublication {
+        effect_id: awaken_resource_contract::harvest_idempotency_key(session, path, &content_id),
+        workspace_id: workspace.into(),
+        session_id: session.into(),
+        logical_path: path.into(),
+        mime_type: "text/plain".into(),
+        content_id,
+        bytes: bytes.to_vec(),
+        idempotency_scope: Some(effect.operation_id().to_string()),
+        fence: Some(ArtifactPublicationFence::Terminal(effect)),
+    }
+}
+
+fn checkpoint_release_publication(
+    workspace: &str,
+    session: &str,
+    path: &str,
+    bytes: &[u8],
+    operation: awaken_session_contract::SessionEnvironmentOperation,
+) -> ArtifactPublication<ArtifactPublicationFence> {
+    let content_id = content_id(bytes);
+    ArtifactPublication {
+        effect_id: awaken_resource_contract::harvest_idempotency_key(session, path, &content_id),
+        workspace_id: workspace.into(),
+        session_id: session.into(),
+        logical_path: path.into(),
+        mime_type: "text/plain".into(),
+        content_id,
+        bytes: bytes.to_vec(),
+        idempotency_scope: None,
+        fence: Some(ArtifactPublicationFence::CheckpointRelease(operation)),
     }
 }
 
@@ -73,12 +120,220 @@ fn metadata_header(
             "mime_type": "text/html",
             "content_id": digest,
             "effect_id": effect_id,
+            "idempotency_scope": null,
         }))
         .unwrap(),
     )
 }
 
 struct FailingFileStore;
+
+struct ExactArtifactControl {
+    workspace_id: String,
+    terminal_effect: Option<awaken_session_contract::SessionTerminalCleanupEffect>,
+    checkpoint: Option<(String, awaken_session_contract::SessionEnvironmentOperation)>,
+}
+
+struct CountingFileApplication {
+    inner: Arc<dyn FileApplicationService>,
+    recovery_lists: AtomicUsize,
+    artifact_creates: AtomicUsize,
+}
+
+impl CountingFileApplication {
+    fn new(inner: Arc<dyn FileApplicationService>) -> Self {
+        Self {
+            inner,
+            recovery_lists: AtomicUsize::new(0),
+            artifact_creates: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl FileApplicationService for CountingFileApplication {
+    async fn get(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+    ) -> Result<Option<FileRecord>, ResourcePurgeError> {
+        self.inner.get(workspace_id, file_id).await
+    }
+
+    async fn list(
+        &self,
+        workspace_id: &str,
+        scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
+        self.inner.list(workspace_id, scope_id).await
+    }
+
+    async fn list_including_deleted(
+        &self,
+        workspace_id: &str,
+        scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
+        self.recovery_lists.fetch_add(1, Ordering::SeqCst);
+        self.inner
+            .list_including_deleted(workspace_id, scope_id)
+            .await
+    }
+
+    async fn create_uploaded_file_with_expiry(
+        &self,
+        workspace_id: &str,
+        filename: String,
+        mime_type: String,
+        bytes: &[u8],
+        expires_at: Option<String>,
+    ) -> Result<FileRecord, ResourcePurgeError> {
+        self.inner
+            .create_uploaded_file_with_expiry(workspace_id, filename, mime_type, bytes, expires_at)
+            .await
+    }
+
+    async fn create_generated_file(
+        &self,
+        workspace_id: &str,
+        filename: String,
+        mime_type: String,
+        bytes: &[u8],
+        idempotency_key: String,
+    ) -> Result<FileRecord, ResourcePurgeError> {
+        self.inner
+            .create_generated_file(workspace_id, filename, mime_type, bytes, idempotency_key)
+            .await
+    }
+
+    async fn create_artifact(
+        &self,
+        publication: &ArtifactPublication<()>,
+    ) -> Result<FileRecord, ResourcePurgeError> {
+        self.artifact_creates.fetch_add(1, Ordering::SeqCst);
+        self.inner.create_artifact(publication).await
+    }
+
+    async fn bytes(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+    ) -> Result<Option<(FileRecord, Vec<u8>)>, ResourcePurgeError> {
+        self.inner.bytes(workspace_id, file_id).await
+    }
+
+    async fn delete(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+        requested_at_unix_ms: u64,
+    ) -> Result<Option<FileRecord>, ResourcePurgeError> {
+        self.inner
+            .delete(workspace_id, file_id, requested_at_unix_ms)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionRealizationControl for ExactArtifactControl {
+    async fn begin_session_realization(
+        &self,
+        _command: awaken_session_contract::BeginSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        Err(
+            awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                "test control has no realization driver".into(),
+            ),
+        )
+    }
+
+    async fn activate_session_realization(
+        &self,
+        _command: awaken_session_contract::ActivateSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        Err(
+            awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                "test control has no realization driver".into(),
+            ),
+        )
+    }
+
+    async fn acknowledge_session_realization(
+        &self,
+        _command: awaken_session_contract::AcknowledgeSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        Err(
+            awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                "test control has no realization driver".into(),
+            ),
+        )
+    }
+
+    async fn fail_session_realization(
+        &self,
+        _command: awaken_session_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        Err(
+            awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                "test control has no realization driver".into(),
+            ),
+        )
+    }
+
+    async fn authorize_terminal_cleanup_effect(
+        &self,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+    ) -> Result<
+        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        let Some(current) = self.terminal_effect.as_ref() else {
+            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+        };
+        if current.command != effect.command
+            || !awaken_session_contract::realization_lease_generation_authorizes(
+                &current.lease,
+                &effect.lease,
+            )
+            || !awaken_session_contract::realization_lease_is_live_at(
+                current.lease.expires_at_unix_ms,
+                support::unix_now_ms(),
+            )
+        {
+            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+        }
+        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+            effect.clone(),
+            self.workspace_id.clone(),
+            None,
+        )
+    }
+
+    async fn authorize_checkpoint_release_artifact_effect(
+        &self,
+        session_id: &str,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
+    ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
+        if !self
+            .checkpoint
+            .as_ref()
+            .is_some_and(|(expected_session, expected_operation)| {
+                expected_session == session_id && expected_operation == operation
+            })
+        {
+            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+        }
+        Ok(self.workspace_id.clone())
+    }
+}
 
 #[async_trait::async_trait]
 impl FileStore for FailingFileStore {
@@ -111,7 +366,7 @@ impl FileStore for FailingFileStore {
 /// | A6 | valid | yes | foreign Workspace/Session | valid | available | 403; publish nothing |
 /// | A7 | valid | yes | exact | substituted digest | available | 400; publish nothing |
 /// | A8 | stale incarnation | yes | exact | valid | available | 403; publish nothing |
-/// | A9 | valid | yes | exact | traversal path | available | 403; publish nothing |
+/// | A9 | valid | yes | exact | traversal path | available | 400; publish nothing |
 /// | A10 | valid | yes | exact | valid | unavailable | 503; claim remains unsettled |
 /// | A11 | valid | absent | exact | valid | available | Worker client fails closed pre-I/O |
 /// | A12 | valid | malformed metadata | any | any | available | 400; publish nothing |
@@ -235,24 +490,27 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         .unwrap();
     assert_eq!(malformed.status(), reqwest::StatusCode::BAD_REQUEST, "A12");
 
-    for (workspace, session, path, rule) in [
+    for (workspace, session, path, rule, status) in [
         (
             "workspace-foreign",
             "thread-session-artifacts",
             "scope.html",
             "A6",
+            "403",
         ),
         (
             "workspace-artifacts",
             "session-foreign",
             "session.html",
             "A6",
+            "403",
         ),
         (
             "workspace-artifacts",
             "thread-session-artifacts",
             "../escape.html",
             "A9",
+            "400",
         ),
     ] {
         let error = publisher
@@ -265,7 +523,7 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
             ))
             .await
             .expect_err(rule);
-        assert!(error.to_string().contains("403"), "{rule}: {error}");
+        assert!(error.to_string().contains(status), "{rule}: {error}");
     }
 
     let substituted_request = upstream
@@ -321,7 +579,7 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         .await
         .expect_err("A11");
     assert!(
-        no_claim.to_string().contains("requires a dispatch claim"),
+        no_claim.to_string().contains("requires an execution fence"),
         "A11"
     );
 

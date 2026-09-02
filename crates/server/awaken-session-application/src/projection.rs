@@ -61,6 +61,15 @@ impl SessionApplication {
         } else {
             Vec::new()
         };
+        let (previous_resource_revision, previous_resources) =
+            session.resources.active_generation();
+        let previous_resource_manifest = Some(
+            awaken_session_contract::SessionResourceManifest::at_revision(
+                owner_scope.clone(),
+                previous_resource_revision,
+                previous_resources.clone(),
+            ),
+        );
         let agent_publication = match baseline.agent_revision {
             Some(source_revision) => {
                 let snapshot = self.config_source.as_ref().and_then(|source| {
@@ -110,6 +119,7 @@ impl SessionApplication {
             environment: session.environment.clone(),
             resource_revision,
             resources,
+            previous_resource_manifest,
             tools: session.tools.clone(),
             mcp: session.mcp.attachments.clone(),
             request_context,

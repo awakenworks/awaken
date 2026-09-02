@@ -24,7 +24,9 @@ use awaken_runtime_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
     CredentialUsage,
 };
+use awaken_session_executor::ManagedHost;
 use awaken_scenario_host::{EchoModel, build_router};
+use awaken_service_lifecycle::run_composed_async_test;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -32,33 +34,6 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
-
-const COMPOSED_ASYNC_TEST_STACK_BYTES: usize = 32 * 1024 * 1024;
-
-fn run_composed_async_test<F, Fut>(case: F)
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + 'static,
-{
-    // The in-process A2A fixture composes parent Runtime, transport, remote
-    // Router, and child Runtime on one process stack. Production crosses a
-    // socket; this dedicated test executor preserves that scheduling boundary
-    // while giving the deliberately composed future a bounded explicit stack.
-    let test = std::thread::Builder::new()
-        .name("a2a-loopback-composed-test".into())
-        .stack_size(COMPOSED_ASYNC_TEST_STACK_BYTES)
-        .spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("composed A2A test runtime")
-                .block_on(case());
-        })
-        .expect("spawn composed A2A test thread");
-    if let Err(panic) = test.join() {
-        std::panic::resume_unwind(panic);
-    }
-}
 
 struct RouterTransport {
     app: Router,
@@ -249,7 +224,7 @@ impl LlmExecutor for NativeDelegatingModel {
     }
 }
 
-fn delegating_host(transport: Arc<dyn Transport>) -> SharedHost {
+fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
     let parent = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
         .tools(awaken_session_executor::authorable_tools())
@@ -275,14 +250,18 @@ fn delegating_host(transport: Arc<dyn Transport>) -> SharedHost {
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("parent and delegated remote publications are valid");
-    SharedHost::new(Arc::new(NativeDelegatingModel), "parent")
-        .with_agent_publications(Arc::new(publications))
-        .with_remote_attempt_executor(awaken_session_executor::RemoteAttemptInstallation {
-            executor: Arc::new(A2aRunExecutor::new(Arc::new(FixedTransportResolver(
-                transport,
-            )))),
-            credential_realization: Default::default(),
-        })
+    let host = Arc::new(
+        SharedHost::new(Arc::new(NativeDelegatingModel), "parent")
+            .with_agent_publications(Arc::new(publications))
+            .with_remote_attempt_executor(awaken_session_executor::RemoteAttemptInstallation {
+                executor: Arc::new(A2aRunExecutor::new(Arc::new(FixedTransportResolver(
+                    transport,
+                )))),
+                credential_realization: Default::default(),
+            }),
+    );
+    let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    host
 }
 
 fn published_delegating_host(
@@ -290,7 +269,7 @@ fn published_delegating_host(
     credential: CredentialAccess,
     security_fingerprint: String,
     materializer: awaken_credential_materializer::PinnedCredentialMaterializer,
-) -> SharedHost {
+) -> Arc<SharedHost> {
     let parent = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
         .tools(awaken_session_executor::authorable_tools())
@@ -316,9 +295,15 @@ fn published_delegating_host(
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("authenticated parent and child publications are valid");
-    SharedHost::new(Arc::new(NativeDelegatingModel), "parent")
-        .with_agent_publications(Arc::new(publications))
-        .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(materializer)))
+    let host = Arc::new(
+        SharedHost::new(Arc::new(NativeDelegatingModel), "parent")
+            .with_agent_publications(Arc::new(publications))
+            .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(
+                materializer,
+            ))),
+    );
+    let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    host
 }
 
 #[test]

@@ -16,6 +16,10 @@ use axum::Router;
 use super::{EchoModel, SharedHost, resource_host};
 use crate::deployment::ScenarioPlatform;
 
+pub(super) const SCENARIO_MEMORY_STORE_ID: &str = "memstore_scenario_memory";
+pub(super) const SCENARIO_MEMORY_STORE_NAME: &str = "scenario-memory";
+const SCENARIO_MEMORY_MOUNT_PATH: &str = "/mnt/memory/scenario-memory";
+
 /// Scenario equivalent of the production service wiring: one secret-free
 /// Resource Registry is shared by the Memory API, Managed ACL, and runtime
 /// activation. Authorization remains outside this helper.
@@ -290,10 +294,11 @@ impl FixedAgentPublication {
 }
 
 /// Install the deterministic Memory probe through the same immutable Agent
-/// publication path used by production. The published `/memory` slot is a
-/// replaceable identity: the Managed Session attachment supplies the actual
-/// Store while retaining this binding id for the plugin configuration.
-pub(super) fn mount_with_memory_publication(
+/// publication path used by production. The seeded Resource definition and
+/// frozen Agent binding share one real identity; an official id-only Session
+/// attachment can therefore replace the slot while retaining the binding id
+/// selected by the Memory plugin.
+pub(super) async fn mount_with_memory_publication(
     platform: ScenarioPlatform,
     model_ref: &str,
     skills: Vec<awaken_agent_contract::AgentSkillBinding>,
@@ -304,14 +309,18 @@ pub(super) fn mount_with_memory_publication(
         skills,
         awaken_service_lifecycle::ServiceLifecycle::new(),
     )
+    .await
 }
 
-pub(super) fn mount_with_memory_publication_on_lifecycle(
+pub(super) async fn mount_with_memory_publication_on_lifecycle(
     platform: ScenarioPlatform,
     model_ref: &str,
     skills: Vec<awaken_agent_contract::AgentSkillBinding>,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
+    platform
+        .publish_managed_memory_store(SCENARIO_MEMORY_STORE_ID, SCENARIO_MEMORY_STORE_NAME)
+        .await;
     let snapshot = ExecutableAgentSnapshot::builder("assistant")
         .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
             "scenario", model_ref, "default",
@@ -331,9 +340,9 @@ pub(super) fn mount_with_memory_publication_on_lifecycle(
         vec![awaken_resource_contract::InputBinding {
             binding_id: awaken_resource_contract::BindingId::from("memory"),
             target: awaken_resource_contract::InputResourceId::MemoryStore(
-                awaken_resource_contract::MemoryStoreId::from("scenario-memory-placeholder"),
+                awaken_resource_contract::MemoryStoreId::from(SCENARIO_MEMORY_STORE_ID),
             ),
-            mount_path: "/memory".into(),
+            mount_path: SCENARIO_MEMORY_MOUNT_PATH.into(),
             access: awaken_resource_contract::ResourceAccess::ReadWrite,
             instructions: None,
         }],

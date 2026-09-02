@@ -1,7 +1,87 @@
-use super::*;
+//! Suspend and restore transitions on the Session-owned Environment aggregate.
+//!
+//! This private module is an implementation boundary only. Durable state and
+//! every public transition method remain owned by `SessionEnvironmentState`;
+//! providers still advance them solely through exact receipts.
 
+use super::{
+    CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef, SandboxGeneration,
+    SessionEnvironmentOperation, SessionEnvironmentReceiptError, SessionEnvironmentState,
+    SessionEnvironmentTransitionError, SourceDisposedReceipt, SuspendPhase,
+    checkpoint_source_disposal_authorized, checkpoint_source_preparation_authorized,
+    source_release_preparation_receipt_admitted,
+};
 
 impl SessionEnvironmentOperation {
+    /// Construct the complete workspace-bound operation identity. The writer
+    /// binds every immutable generation, realization, and optional checkpoint
+    /// axis; already-durable legacy ids continue to replay opaquely.
+    #[must_use]
+    pub fn new(
+        workspace_id: &str,
+        session_id: &str,
+        kind: &str,
+        generation: &SandboxGeneration,
+        activity_epoch: u64,
+        realization: Option<crate::SessionRealizationLease>,
+        checkpoint: Option<&SandboxCheckpointRef>,
+    ) -> Self {
+        Self::new_started_at(
+            workspace_id,
+            session_id,
+            kind,
+            generation,
+            activity_epoch,
+            0,
+            realization,
+            checkpoint,
+        )
+    }
+
+    // Every argument is an independently fenced coordinate in the effect-id
+    // preimage. Keeping them explicit here avoids a second identity DTO whose
+    // field set could drift from the canonical fingerprint below.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_started_at(
+        workspace_id: &str,
+        session_id: &str,
+        kind: &str,
+        generation: &SandboxGeneration,
+        activity_epoch: u64,
+        started_at_unix_ms: u64,
+        realization: Option<crate::SessionRealizationLease>,
+        checkpoint: Option<&SandboxCheckpointRef>,
+    ) -> Self {
+        let generation_bytes =
+            serde_json::to_vec(generation).expect("SandboxGeneration serializes");
+        let activity_epoch_bytes = activity_epoch.to_be_bytes();
+        let started_at = started_at_unix_ms.to_be_bytes();
+        let realization_bytes =
+            serde_json::to_vec(&realization).expect("SessionRealizationLease serializes");
+        let checkpoint_bytes =
+            checkpoint.map(|value| serde_json::to_vec(value).expect("checkpoint serializes"));
+        let mut components = vec![
+            workspace_id.as_bytes(),
+            session_id.as_bytes(),
+            kind.as_bytes(),
+            generation_bytes.as_slice(),
+            activity_epoch_bytes.as_slice(),
+            started_at.as_slice(),
+            realization_bytes.as_slice(),
+        ];
+        if let Some(checkpoint) = checkpoint_bytes.as_deref() {
+            components.push(checkpoint);
+        }
+        Self {
+            effect_id: awaken_agent_contract::collision_resistant_fingerprint(
+                "awaken-session-environment-operation-v3",
+                &components,
+            ),
+            activity_epoch,
+            started_at_unix_ms,
+            realization,
+        }
+    }
 
     /// Project this exact operation through its aggregate-owned realization
     /// lease. `None` is explicit legacy evidence and never authorizes a
@@ -199,6 +279,18 @@ impl SourceReleasePreparedReceipt {
         &self.receipt_fingerprint
     }
 
+    pub(crate) fn sandbox_disposal_preparation(
+        &self,
+    ) -> Result<
+        awaken_provisioning_contract::SandboxDisposalPreparation,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        awaken_provisioning_contract::SandboxDisposalPreparation::new(
+            self.provider_prepared_effect_fence.clone(),
+            self.receipt_fingerprint.clone(),
+        )
+    }
+
     fn verify_shape(&self) -> Result<(), SessionEnvironmentTransitionError> {
         self.preparation.verify(&self.preparation.operation)?;
         let asserted_effect_fence = self
@@ -237,6 +329,441 @@ impl SourceReleasePreparedReceipt {
             return Err(SessionEnvironmentTransitionError::ReceiptMismatch);
         }
         Ok(())
+    }
+
+    fn verify(
+        &self,
+        operation: &SessionEnvironmentOperation,
+        generation: &SandboxGeneration,
+        source_binding: &str,
+    ) -> Result<(), SessionEnvironmentTransitionError> {
+        self.preparation.verify(operation)?;
+        self.verify_shape()?;
+        if source_release_preparation_receipt_admitted(
+            self.preparation.operation.effect_id == operation.effect_id,
+            self.generation_id == generation.id,
+            self.source_binding == source_binding,
+            true,
+        ) {
+            Ok(())
+        } else {
+            Err(SessionEnvironmentTransitionError::ReceiptMismatch)
+        }
+    }
+}
+
+/// Closed aggregate projection for the physical half of one prepared source
+/// release. Its exact prepared effect comes only from the durable receipt; the
+/// current realization is only the successor authorized to finish that same
+/// physical effect after renewal or failover.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceReleaseDisposal {
+    preparation: SourceReleasePreparedReceipt,
+    generation: SandboxGeneration,
+    current_realization: crate::SessionRealizationLease,
+}
+
+impl SourceReleaseDisposal {
+    fn from_disposing_state(
+        preparation: SourceReleasePreparedReceipt,
+        generation: SandboxGeneration,
+        current_realization: crate::SessionRealizationLease,
+    ) -> Self {
+        Self {
+            preparation,
+            generation,
+            current_realization,
+        }
+    }
+
+    #[must_use]
+    pub const fn operation(&self) -> &SessionEnvironmentOperation {
+        self.preparation.preparation.operation()
+    }
+
+    #[must_use]
+    pub const fn generation(&self) -> &SandboxGeneration {
+        &self.generation
+    }
+
+    #[must_use]
+    pub fn source_binding(&self) -> &str {
+        self.preparation.source_binding()
+    }
+
+    #[must_use]
+    pub const fn preparation(&self) -> &SourceReleasePreparedReceipt {
+        &self.preparation
+    }
+
+    #[must_use]
+    pub const fn current_realization(&self) -> &crate::SessionRealizationLease {
+        &self.current_realization
+    }
+
+    /// Lower the Session-owned fact into the one provider-neutral destructive
+    /// authority. A remains immutable; B may be a renewal or higher-epoch
+    /// successor, but the canonical physical operation id is unchanged.
+    pub fn sandbox_disposal_authorization(
+        &self,
+    ) -> Result<
+        awaken_provisioning_contract::SandboxDisposalAuthorization,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        let preparation = self.preparation.sandbox_disposal_preparation()?;
+        let operation_id = preparation.operation_id()?;
+        let effect_fence = self
+            .current_realization
+            .sandbox_effect_fence(operation_id)?;
+        preparation.authorize(effect_fence)
+    }
+}
+
+impl SessionEnvironmentState {
+    /// Project an already-durable checkpoint-source preparation for terminal
+    /// takeover. Every other Environment phase returns `None`; the terminal
+    /// root then derives its provider predecessor from its own root
+    /// preparation instead of guessing that a continuation gate exists.
+    pub(crate) fn terminal_disposal_preparation(
+        &self,
+    ) -> Result<
+        Option<awaken_provisioning_contract::SandboxDisposalPreparation>,
+        SessionEnvironmentReceiptError,
+    > {
+        let Self::Suspending {
+            operation,
+            source_binding,
+            generation,
+            suspend_phase: SuspendPhase::Disposing,
+            checkpoint: Some(_),
+            source_release_preparation: Some(preparation),
+            ..
+        } = self
+        else {
+            return Ok(None);
+        };
+        preparation
+            .verify(operation, generation, source_binding)
+            .map_err(|_| SessionEnvironmentReceiptError::Mismatch)?;
+        preparation
+            .sandbox_disposal_preparation()
+            .map(Some)
+            .map_err(|_| SessionEnvironmentReceiptError::RealizationStale)
+    }
+
+    /// Project live preparation only from ReadyToDispose and the aggregate's
+    /// exact current realization generation. The returned closed value is the
+    /// only preparation fence the Runtime may lower.
+    pub(crate) fn source_release_preparation_effect(
+        &self,
+        current_realization: &crate::SessionRealizationLease,
+    ) -> Result<SourceReleasePreparationEffect, SessionEnvironmentReceiptError> {
+        let Self::Suspending {
+            operation,
+            suspend_phase: SuspendPhase::ReadyToDispose,
+            checkpoint: Some(_),
+            source_release_preparation: None,
+            ..
+        } = self
+        else {
+            return Err(SessionEnvironmentReceiptError::WrongPhase);
+        };
+        SourceReleasePreparationEffect::new(operation.clone(), current_realization.clone())
+    }
+
+    /// Project physical disposal only from the durable Disposing phase. The
+    /// aggregate root supplies its current realization; the prepared fence A
+    /// is read exclusively from the persisted receipt.
+    pub(crate) fn source_release_disposal(
+        &self,
+        current_realization: &crate::SessionRealizationLease,
+    ) -> Result<SourceReleaseDisposal, SessionEnvironmentReceiptError> {
+        let Self::Suspending {
+            operation,
+            source_binding,
+            generation,
+            suspend_phase: SuspendPhase::Disposing,
+            checkpoint: Some(_),
+            source_release_preparation: Some(preparation),
+            ..
+        } = self
+        else {
+            return Err(SessionEnvironmentReceiptError::WrongPhase);
+        };
+        preparation
+            .verify(operation, generation, source_binding)
+            .map_err(|_| SessionEnvironmentReceiptError::Mismatch)?;
+        let disposal = SourceReleaseDisposal::from_disposing_state(
+            preparation.as_ref().clone(),
+            generation.clone(),
+            current_realization.clone(),
+        );
+        disposal
+            .sandbox_disposal_authorization()
+            .map_err(|_| SessionEnvironmentReceiptError::RealizationStale)?;
+        Ok(disposal)
+    }
+
+    pub fn begin_suspend(
+        &mut self,
+        workspace_id: &str,
+        session_id: &str,
+        activity_epoch: u64,
+        realization: Option<crate::SessionRealizationLease>,
+    ) -> Result<&SessionEnvironmentOperation, SessionEnvironmentTransitionError> {
+        self.begin_suspend_at(workspace_id, session_id, activity_epoch, realization, 0)
+    }
+
+    pub fn begin_suspend_at(
+        &mut self,
+        workspace_id: &str,
+        session_id: &str,
+        activity_epoch: u64,
+        realization: Option<crate::SessionRealizationLease>,
+        started_at_unix_ms: u64,
+    ) -> Result<&SessionEnvironmentOperation, SessionEnvironmentTransitionError> {
+        if let Self::Suspending { operation, .. } = self {
+            return Ok(operation);
+        }
+        let Self::Resident {
+            binding,
+            effect_id: Some(source_effect_id),
+            generation: Some(generation),
+            ..
+        } = self
+        else {
+            return Err(SessionEnvironmentTransitionError::NotResident);
+        };
+        let operation = SessionEnvironmentOperation::new_started_at(
+            workspace_id,
+            session_id,
+            "suspend",
+            generation,
+            activity_epoch,
+            started_at_unix_ms,
+            realization,
+            None,
+        );
+        *self = Self::Suspending {
+            operation,
+            source_effect_id: Box::new(source_effect_id.clone()),
+            source_binding: binding.clone(),
+            generation: generation.clone(),
+            suspend_phase: SuspendPhase::Quiescing,
+            checkpoint: None,
+            source_release_preparation: None,
+        };
+        match self {
+            Self::Suspending { operation, .. } => Ok(operation),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn record_quiescence(
+        &mut self,
+        receipt: &QuiescenceReceipt,
+        expected_mcp_generations: &[crate::McpGenerationRef],
+    ) -> Result<bool, SessionEnvironmentTransitionError> {
+        let Self::Suspending {
+            operation,
+            generation,
+            suspend_phase,
+            ..
+        } = self
+        else {
+            return Err(SessionEnvironmentTransitionError::NotSuspending);
+        };
+        receipt.verify(operation, generation, expected_mcp_generations)?;
+        if *suspend_phase != SuspendPhase::Quiescing {
+            return Ok(false);
+        }
+        *suspend_phase = SuspendPhase::Uploading;
+        Ok(true)
+    }
+
+    pub fn record_checkpoint(
+        &mut self,
+        receipt: &CheckpointReceipt,
+    ) -> Result<bool, SessionEnvironmentTransitionError> {
+        let Self::Suspending {
+            operation,
+            generation,
+            suspend_phase,
+            checkpoint,
+            source_release_preparation,
+            ..
+        } = self
+        else {
+            return Err(SessionEnvironmentTransitionError::NotSuspending);
+        };
+        receipt.verify(operation, generation)?;
+        if matches!(*suspend_phase, SuspendPhase::ReadyToDispose)
+            && source_release_preparation.is_some()
+            || matches!(*suspend_phase, SuspendPhase::Disposing)
+                && source_release_preparation.is_none()
+        {
+            return Err(SessionEnvironmentTransitionError::WrongPhase);
+        }
+        if matches!(
+            *suspend_phase,
+            SuspendPhase::ReadyToDispose | SuspendPhase::Disposing
+        ) {
+            return if checkpoint.as_ref() == Some(&receipt.checkpoint) {
+                Ok(false)
+            } else {
+                Err(SessionEnvironmentTransitionError::ReceiptMismatch)
+            };
+        }
+        if *suspend_phase != SuspendPhase::Uploading {
+            return Err(SessionEnvironmentTransitionError::WrongPhase);
+        }
+        *checkpoint = Some(receipt.checkpoint.clone());
+        *suspend_phase = SuspendPhase::ReadyToDispose;
+        *source_release_preparation = None;
+        Ok(true)
+    }
+
+    /// Admit the canonical proof that every live source-durability participant
+    /// completed, then durably separate that fact from physical deletion.
+    pub fn record_source_release_prepared(
+        &mut self,
+        receipt: &SourceReleasePreparedReceipt,
+    ) -> Result<bool, SessionEnvironmentTransitionError> {
+        let Self::Suspending {
+            operation,
+            source_binding,
+            generation,
+            suspend_phase,
+            checkpoint,
+            source_release_preparation,
+            ..
+        } = self
+        else {
+            return Err(SessionEnvironmentTransitionError::NotSuspending);
+        };
+        receipt.verify(operation, generation, source_binding)?;
+        if *suspend_phase == SuspendPhase::Disposing && checkpoint.is_some() {
+            return if source_release_preparation.as_deref() == Some(receipt) {
+                Ok(false)
+            } else {
+                Err(SessionEnvironmentTransitionError::ReceiptMismatch)
+            };
+        }
+        if !checkpoint_source_preparation_authorized(
+            *suspend_phase,
+            checkpoint.is_some(),
+            source_release_preparation.is_some(),
+        ) {
+            return Err(SessionEnvironmentTransitionError::WrongPhase);
+        }
+        *source_release_preparation = Some(Box::new(receipt.clone()));
+        *suspend_phase = SuspendPhase::Disposing;
+        Ok(true)
+    }
+
+    pub fn complete_suspend(
+        &mut self,
+        receipt: &SourceDisposedReceipt,
+    ) -> Result<bool, SessionEnvironmentTransitionError> {
+        let (phase, has_checkpoint, has_preparation) = match self {
+            Self::Suspending {
+                suspend_phase,
+                checkpoint,
+                source_release_preparation,
+                ..
+            } => (
+                *suspend_phase,
+                checkpoint.is_some(),
+                source_release_preparation.is_some(),
+            ),
+            Self::Hibernated { .. } => return Ok(false),
+            _ => return Err(SessionEnvironmentTransitionError::WrongPhase),
+        };
+        if !checkpoint_source_disposal_authorized(phase, has_checkpoint, has_preparation) {
+            return Err(SessionEnvironmentTransitionError::WrongPhase);
+        }
+        let Self::Suspending {
+            operation,
+            source_binding,
+            generation,
+            suspend_phase: SuspendPhase::Disposing,
+            checkpoint: Some(checkpoint),
+            source_release_preparation: Some(_),
+            ..
+        } = self
+        else {
+            unreachable!("source-disposal gate proved exact suspend shape")
+        };
+        receipt.verify(operation, generation, source_binding)?;
+        *self = Self::Hibernated {
+            checkpoint: checkpoint.clone(),
+            generation: generation.clone(),
+        };
+        Ok(true)
+    }
+
+    pub fn begin_restore(
+        &mut self,
+        workspace_id: &str,
+        session_id: &str,
+        activity_epoch: u64,
+        realization: Option<crate::SessionRealizationLease>,
+        now_unix_ms: u64,
+    ) -> Result<&SessionEnvironmentOperation, SessionEnvironmentTransitionError> {
+        if let Self::Restoring { operation, .. } = self {
+            return Ok(operation);
+        }
+        let Self::Hibernated {
+            checkpoint,
+            generation,
+        } = self
+        else {
+            return Err(SessionEnvironmentTransitionError::NotHibernated);
+        };
+        if checkpoint.expired_at(now_unix_ms) || generation.expired_at(now_unix_ms) {
+            return Err(SessionEnvironmentTransitionError::CheckpointExpired);
+        }
+        let operation = SessionEnvironmentOperation::new_started_at(
+            workspace_id,
+            session_id,
+            "restore",
+            generation,
+            activity_epoch,
+            now_unix_ms,
+            realization,
+            Some(checkpoint),
+        );
+        *self = Self::Restoring {
+            operation,
+            checkpoint: checkpoint.clone(),
+            generation: generation.clone(),
+        };
+        match self {
+            Self::Restoring { operation, .. } => Ok(operation),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn complete_restore(
+        &mut self,
+        receipt: &RestoreReceipt,
+    ) -> Result<bool, SessionEnvironmentTransitionError> {
+        let Self::Restoring {
+            operation,
+            checkpoint,
+            generation,
+        } = self
+        else {
+            return Err(SessionEnvironmentTransitionError::NotRestoring);
+        };
+        receipt.verify(operation, generation, checkpoint)?;
+        *self = Self::Resident {
+            binding: receipt.binding.clone(),
+            effect_id: Some(operation.effect_id.clone()),
+            generation: Some(generation.clone()),
+            idle_since_unix_ms: None,
+        };
+        Ok(true)
     }
 }
 
@@ -310,239 +837,3 @@ mod tests {
         );
     }
 }
-
-
-
-impl SessionEnvironmentOperation {
-    #[must_use]
-    pub fn new(
-        workspace_id: &str,
-        session_id: &str,
-        kind: &str,
-        generation: &SandboxGeneration,
-        activity_epoch: u64,
-        realization: Option<crate::SessionRealizationLease>,
-        checkpoint: Option<&SandboxCheckpointRef>,
-    ) -> Self {
-        let generation_bytes =
-            serde_json::to_vec(generation).expect("SandboxGeneration serializes");
-        let activity_epoch_bytes = activity_epoch.to_be_bytes();
-        let realization_bytes =
-            serde_json::to_vec(&realization).expect("SessionRealizationLease serializes");
-        let checkpoint_bytes = checkpoint
-            .map(|value| serde_json::to_vec(value).expect("SandboxCheckpointRef serializes"));
-        let mut components = vec![
-            workspace_id.as_bytes(),
-            session_id.as_bytes(),
-            kind.as_bytes(),
-            generation_bytes.as_slice(),
-            activity_epoch_bytes.as_slice(),
-            realization_bytes.as_slice(),
-        ];
-        if let Some(checkpoint_bytes) = checkpoint_bytes.as_deref() {
-            components.push(checkpoint_bytes);
-        }
-        Self {
-            effect_id: awaken_agent_contract::collision_resistant_fingerprint(
-                "awaken-session-environment-operation-v2",
-                &components,
-            ),
-            activity_epoch,
-            realization,
-        }
-    }}
-
-
-impl SessionEnvironmentState {
-
-    pub fn begin_suspend(
-        &mut self,
-        workspace_id: &str,
-        session_id: &str,
-        activity_epoch: u64,
-        realization: Option<crate::SessionRealizationLease>,
-    ) -> Result<&SessionEnvironmentOperation, SessionEnvironmentTransitionError> {
-        if let Self::Suspending { operation, .. } = self {
-            return Ok(operation);
-        }
-        let Self::Resident {
-            binding,
-            effect_id: Some(source_effect_id),
-            generation: Some(generation),
-            ..
-        } = self
-        else {
-            return Err(SessionEnvironmentTransitionError::NotResident);
-        };
-        let operation = SessionEnvironmentOperation::new(
-            workspace_id,
-            session_id,
-            "suspend",
-            generation,
-            activity_epoch,
-            realization,
-            None,
-        );
-        *self = Self::Suspending {
-            operation,
-            source_effect_id: Box::new(source_effect_id.clone()),
-            source_binding: binding.clone(),
-            generation: generation.clone(),
-            suspend_phase: SuspendPhase::Quiescing,
-            checkpoint: None,
-        };
-        match self {
-            Self::Suspending { operation, .. } => Ok(operation),
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn record_quiescence(
-        &mut self,
-        receipt: &QuiescenceReceipt,
-        expected_mcp_generations: &[crate::McpGenerationRef],
-    ) -> Result<bool, SessionEnvironmentTransitionError> {
-        let Self::Suspending {
-            operation,
-            generation,
-            suspend_phase,
-            ..
-        } = self
-        else {
-            return Err(SessionEnvironmentTransitionError::NotSuspending);
-        };
-        receipt.verify(operation, generation, expected_mcp_generations)?;
-        if *suspend_phase != SuspendPhase::Quiescing {
-            return Ok(false);
-        }
-        *suspend_phase = SuspendPhase::Uploading;
-        Ok(true)
-    }
-
-    pub fn record_checkpoint(
-        &mut self,
-        receipt: &CheckpointReceipt,
-    ) -> Result<bool, SessionEnvironmentTransitionError> {
-        let Self::Suspending {
-            operation,
-            generation,
-            suspend_phase,
-            checkpoint,
-            ..
-        } = self
-        else {
-            return Err(SessionEnvironmentTransitionError::NotSuspending);
-        };
-        receipt.verify(operation, generation)?;
-        if *suspend_phase == SuspendPhase::ReadyToDispose {
-            return if checkpoint.as_ref() == Some(&receipt.checkpoint) {
-                Ok(false)
-            } else {
-                Err(SessionEnvironmentTransitionError::ReceiptMismatch)
-            };
-        }
-        if *suspend_phase != SuspendPhase::Uploading {
-            return Err(SessionEnvironmentTransitionError::WrongPhase);
-        }
-        *checkpoint = Some(receipt.checkpoint.clone());
-        *suspend_phase = SuspendPhase::ReadyToDispose;
-        Ok(true)
-    }
-
-    pub fn complete_suspend(
-        &mut self,
-        receipt: &SourceDisposedReceipt,
-    ) -> Result<bool, SessionEnvironmentTransitionError> {
-        let (phase, has_checkpoint) = match self {
-            Self::Suspending {
-                suspend_phase,
-                checkpoint,
-                ..
-            } => (*suspend_phase, checkpoint.is_some()),
-            Self::Hibernated { .. } => return Ok(false),
-            _ => return Err(SessionEnvironmentTransitionError::WrongPhase),
-        };
-        if !checkpoint_source_disposal_authorized(phase, has_checkpoint) {
-            return Err(SessionEnvironmentTransitionError::WrongPhase);
-        }
-        let Self::Suspending {
-            operation,
-            source_binding,
-            generation,
-            suspend_phase: SuspendPhase::ReadyToDispose,
-            checkpoint: Some(checkpoint),
-            ..
-        } = self
-        else {
-            unreachable!("source-disposal gate proved exact suspend shape")
-        };
-        receipt.verify(operation, generation, source_binding)?;
-        *self = Self::Hibernated {
-            checkpoint: checkpoint.clone(),
-            generation: generation.clone(),
-        };
-        Ok(true)
-    }
-
-    pub fn begin_restore(
-        &mut self,
-        workspace_id: &str,
-        session_id: &str,
-        activity_epoch: u64,
-        realization: Option<crate::SessionRealizationLease>,
-        now_unix_ms: u64,
-    ) -> Result<&SessionEnvironmentOperation, SessionEnvironmentTransitionError> {
-        if let Self::Restoring { operation, .. } = self {
-            return Ok(operation);
-        }
-        let Self::Hibernated {
-            checkpoint,
-            generation,
-        } = self
-        else {
-            return Err(SessionEnvironmentTransitionError::NotHibernated);
-        };
-        if checkpoint.expired_at(now_unix_ms) || generation.expired_at(now_unix_ms) {
-            return Err(SessionEnvironmentTransitionError::CheckpointExpired);
-        }
-        let operation = SessionEnvironmentOperation::new(
-            workspace_id,
-            session_id,
-            "restore",
-            generation,
-            activity_epoch,
-            realization,
-            Some(checkpoint),
-        );
-        *self = Self::Restoring {
-            operation,
-            checkpoint: checkpoint.clone(),
-            generation: generation.clone(),
-        };
-        match self {
-            Self::Restoring { operation, .. } => Ok(operation),
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn complete_restore(
-        &mut self,
-        receipt: &RestoreReceipt,
-    ) -> Result<bool, SessionEnvironmentTransitionError> {
-        let Self::Restoring {
-            operation,
-            checkpoint,
-            generation,
-        } = self
-        else {
-            return Err(SessionEnvironmentTransitionError::NotRestoring);
-        };
-        receipt.verify(operation, generation, checkpoint)?;
-        *self = Self::Resident {
-            binding: receipt.binding.clone(),
-            effect_id: Some(operation.effect_id.clone()),
-            generation: Some(generation.clone()),
-            idle_since_unix_ms: None,
-        };
-        Ok(true)
-    }}
