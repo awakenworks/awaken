@@ -13,6 +13,8 @@ import re
 import tomllib
 from pathlib import Path
 
+import _crate_boundary_workspace
+
 RESOURCE_PLANE_CRATES = {
     "awaken-resource-contract",
     "awaken-file-store",
@@ -117,25 +119,9 @@ def _dependency_package_names(manifest: dict) -> set[str]:
     return names
 
 
-def _without_cfg_test_module(content: str) -> str:
-    """Return the production prefix before a conventional trailing test module."""
-
-    marker = re.search(
-        r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*\n\s*mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{",
-        content,
-    )
-    return content if marker is None else content[: marker.start()]
-
-
-def _without_rust_comments_and_strings(content: str) -> str:
-    content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
-    content = re.sub(r"//[^\n]*", "", content)
-    return re.sub(r'"(?:\\.|[^"\\])*"', '""', content)
-
-
 def _rust_violations(content: str) -> list[str]:
-    production = _without_cfg_test_module(content)
-    code = _without_rust_comments_and_strings(production)
+    production = _crate_boundary_workspace.production_rust(content)
+    code = _crate_boundary_workspace.rust_syntax(production)
     violations: list[str] = []
 
     if re.search(r"\bawaken_(?:iam|authz)\b", code):
@@ -145,8 +131,7 @@ def _rust_violations(content: str) -> list[str]:
         if re.search(rf"\b{re.escape(type_name)}\b", code):
             violations.append(f"uses authorization-plane type {type_name!r}")
 
-    uncommented = re.sub(r"/\*.*?\*/", "", production, flags=re.DOTALL)
-    uncommented = re.sub(r"//[^\n]*", "", uncommented)
+    uncommented = _crate_boundary_workspace.rust_without_comments(production)
     if re.search(r"\b(?:DEFAULT|FIXED|HOST)_\w*WORKSPACE\w*\b", code):
         violations.append("declares or uses a fixed Workspace selector")
     if re.search(
@@ -164,9 +149,8 @@ def _rust_violations(content: str) -> list[str]:
 def _has_unversioned_ddl(path: Path, content: str) -> bool:
     if path.name == "schema.rs":
         return False
-    production = _without_cfg_test_module(content)
-    uncommented = re.sub(r"/\*.*?\*/", "", production, flags=re.DOTALL)
-    uncommented = re.sub(r"//[^\n]*", "", uncommented)
+    production = _crate_boundary_workspace.production_rust(content)
+    uncommented = _crate_boundary_workspace.rust_without_comments(production)
     return re.search(r"\bCREATE\s+TABLE\b", uncommented, flags=re.IGNORECASE) is not None
 
 
@@ -198,6 +182,21 @@ def selftest() -> None:
     assert not _has_unversioned_ddl(
         Path("schema.rs"), 'const V1: &str = "CREATE TABLE {prefix}_row (id TEXT)";'
     )
+    # Rust lexer cause/effect table: C1 a URL string contains `//`; C2 a later
+    # executable authorization identifier or JSON field literal is forbidden;
+    # C3 a later SQL literal owns unversioned DDL; C4 the same tokens occur only
+    # in an actual comment. Effects: L1 C1+C2/C3 remains visible and rejected;
+    # L2 C4 is ignored. One shared lexer must distinguish strings from comments.
+    url_prefix = 'const URL: &str = "https://resource.invalid/v1";\n'
+    hidden_identifier = _rust_violations(url_prefix + "fn read(_: PermissionDecision) {}")
+    assert any("PermissionDecision" in item for item in hidden_identifier), "L1/C2"
+    hidden_field = _rust_violations(url_prefix + 'let row = json!({"api_key": value});')
+    assert any("api_key" in item for item in hidden_field), "L1/C2 literal"
+    assert _has_unversioned_ddl(
+        Path("sqlite.rs"),
+        url_prefix + 'conn.execute("CREATE TABLE raw (id TEXT)");',
+    ), "L1/C3"
+    assert not _rust_violations(url_prefix + "// PermissionDecision api_key"), "L2/C4"
     # Cause/effect rule: a driving adapter that calls a Registry mutation creates
     # a second lifecycle owner and is rejected; application-port calls are clean.
     assert re.search(
@@ -238,7 +237,9 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
                 "the product Runtime Host"
             )
     dream_source_path = repo_root / "crates/server/awaken-coordinator/src/dream.rs"
-    dream_source = _without_cfg_test_module(dream_source_path.read_text(encoding="utf-8"))
+    dream_source = _crate_boundary_workspace.production_rust(
+        dream_source_path.read_text(encoding="utf-8")
+    )
     # FMECA cause/effect rules (RPN 240): C1 Dream needs transcript persistence
     # and C2 product Host hides resource stores -> E1 Coordinator must inject the
     # exact File application; C3 any `host.file_application()` lookup -> E2 a
@@ -299,8 +300,10 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
         path = repo_root / relative
         if not path.is_file():
             continue
-        production = _without_cfg_test_module(path.read_text(encoding="utf-8"))
-        code = _without_rust_comments_and_strings(production)
+        production = _crate_boundary_workspace.production_rust(
+            path.read_text(encoding="utf-8")
+        )
+        code = _crate_boundary_workspace.rust_syntax(production)
         if "RequiredWorkspaceScope" not in code:
             errors.append(
                 f"{relative}: resource HTTP adapter does not require the edge-stamped "
@@ -315,8 +318,10 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
         if not path.is_file():
             errors.append(f"missing resource recovery source {relative!r}")
             continue
-        production = _without_cfg_test_module(path.read_text(encoding="utf-8"))
-        code = _without_rust_comments_and_strings(production)
+        production = _crate_boundary_workspace.production_rust(
+            path.read_text(encoding="utf-8")
+        )
+        code = _crate_boundary_workspace.rust_syntax(production)
         recovery = re.search(
             r"pub\s+async\s+fn\s+reconcile_resource_activations\b(?P<body>.*?)(?:\n\s*///|\n\s*pub(?:\([^)]*\))?\s+fn)",
             code,
@@ -334,8 +339,10 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
         if not path.is_file():
             errors.append(f"missing MemoryStore driving adapter {relative!r}")
             continue
-        production = _without_cfg_test_module(path.read_text(encoding="utf-8"))
-        code = _without_rust_comments_and_strings(production)
+        production = _crate_boundary_workspace.production_rust(
+            path.read_text(encoding="utf-8")
+        )
+        code = _crate_boundary_workspace.rust_syntax(production)
         for mutation in (
             "register_memory_store",
             "update_memory_store_profile",

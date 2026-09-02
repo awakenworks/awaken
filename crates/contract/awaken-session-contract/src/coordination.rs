@@ -56,7 +56,7 @@ pub enum SessionRunActivityAdmission {
 }
 
 /// Whether reservation repair may create a fresh Session activity receipt.
-/// Cancellation uses `RecoverOnly`: deleting a never-admitted intent is valid,
+/// Cancellation uses `RecoverOnly`: deleting a never-admitted reservation is valid,
 /// but an already-committed receipt must first follow the ordinary cancellation
 /// settlement path so its epoch cannot leak.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,8 +97,8 @@ pub fn coordinated_thread_id(
 }
 
 /// Whether an admitted Run creates a coordinated Thread or follows up on an
-/// already-derived one. Spawn input belongs to the ordinary activation;
-/// follow-up input belongs to the existing cross-Thread message path.
+/// already-derived one. Spawn derives a logical Thread and follow-up reuses it;
+/// both freeze input in their own fresh ordinary Run activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoordinatedRunIntent {
     Spawn,

@@ -154,6 +154,10 @@ pub awaken_coordinator::WorkerTransportBuildError::CheckpointOpen::path: std::pa
 pub awaken_coordinator::WorkerTransportBuildError::Dispatch(alloc::string::String)
 pub awaken_coordinator::WorkerTransportBuildError::MissingCheckpointAuthority
 pub awaken_coordinator::WorkerTransportBuildError::MissingFileApplication
+pub struct awaken_coordinator::AiSdkBrowserCors
+impl awaken_coordinator::AiSdkBrowserCors
+pub fn awaken_coordinator::AiSdkBrowserCors::origins(&self) -> &[alloc::string::String]
+pub fn awaken_coordinator::AiSdkBrowserCors::try_from_origins(alloc::vec::Vec<alloc::string::String>) -> core::result::Result<Self, alloc::string::String>
 pub struct awaken_coordinator::ClaimFencedArtifactPublisher
 impl awaken_coordinator::ClaimFencedArtifactPublisher
 pub fn awaken_coordinator::ClaimFencedArtifactPublisher::install_session_control(&self, alloc::sync::Arc<dyn awaken_session_contract::session_realization::SessionRealizationControl>) -> core::result::Result<(), &'static str>
@@ -169,6 +173,7 @@ pub awaken_coordinator::CoordinatorComponent::private_router: axum::routing::Rou
 pub awaken_coordinator::CoordinatorComponent::router: axum::routing::Router
 pub awaken_coordinator::CoordinatorComponent::work_session_access: alloc::sync::Arc<awaken_protocol_managed::work_session_access::ManagedWorkSessionAccess>
 pub struct awaken_coordinator::CoordinatorDependencies
+pub awaken_coordinator::CoordinatorDependencies::ai_sdk_browser_cors: awaken_coordinator::AiSdkBrowserCors
 pub awaken_coordinator::CoordinatorDependencies::application_access: alloc::sync::Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>
 pub awaken_coordinator::CoordinatorDependencies::default_workspace: alloc::string::String
 pub awaken_coordinator::CoordinatorDependencies::deployment_application: alloc::sync::Arc<awaken_deployment_application::DeploymentApplication>
@@ -207,6 +212,7 @@ pub awaken_coordinator::ManagedApplicationServices::model_inventory: core::optio
 pub awaken_coordinator::ManagedApplicationServices::resource_registry: alloc::sync::Arc<dyn awaken_resource_contract::registry::ResourceRegistry>
 pub awaken_coordinator::ManagedApplicationServices::session_application: alloc::sync::Arc<awaken_session_application::SessionApplication>
 pub struct awaken_coordinator::ManagedRoutingExtensions
+pub awaken_coordinator::ManagedRoutingExtensions::ai_sdk_browser_cors: awaken_coordinator::AiSdkBrowserCors
 pub awaken_coordinator::ManagedRoutingExtensions::memory_stores: alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>
 pub awaken_coordinator::ManagedRoutingExtensions::repository_transport_authorizer: core::option::Option<alloc::sync::Arc<dyn awaken_resource_worker_http::repository_binding_http::RepositoryTransportAuthorizer>>
 pub awaken_coordinator::ManagedRoutingExtensions::resource_management_router: axum::routing::Router

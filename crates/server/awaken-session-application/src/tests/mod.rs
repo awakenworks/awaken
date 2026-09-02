@@ -5,38 +5,13 @@ use std::sync::{
 };
 
 use awaken_environment_realization_contract::EnvironmentImageBuildError;
+use awaken_service_lifecycle::run_composed_async_test;
 use awaken_session_contract::{
     ManagedSessionRepository, McpAttachmentRealizer, PersistedSession, RunError,
     SandboxProvisioning, SessionEnvironmentBindingSink, SessionRuntime, SessionRuntimePlacement,
 };
 
 use super::*;
-
-const COMPOSED_ASYNC_TEST_STACK_BYTES: usize = 32 * 1024 * 1024;
-
-fn run_composed_async_test<F, Fut>(case: F)
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + 'static,
-{
-    // One test-only executor owns the larger stack required by deeply composed
-    // Session-application futures. The cases remain ordinary async functions,
-    // so this changes neither their authority nor their oracle.
-    let test = std::thread::Builder::new()
-        .name("session-application-composed-test".into())
-        .stack_size(COMPOSED_ASYNC_TEST_STACK_BYTES)
-        .spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("composed test runtime")
-                .block_on(case());
-        })
-        .expect("spawn composed test thread");
-    if let Err(panic) = test.join() {
-        std::panic::resume_unwind(panic);
-    }
-}
 
 /// Execute the canonical complete-projection effects for a Session Application
 /// test double. Domain mode decisions come from `SessionProjectionInstallMode`;

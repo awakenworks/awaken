@@ -83,8 +83,10 @@ does not inject live input and never consumes that Run's `ResumeTicket`.
 - Spawn and follow-up use one admission path and one idempotency boundary.
 - Child-to-parent reports use that same activation-input boundary and create no
   root Inbox or Outbox record.
-- A Managed primary Session projects exactly `list_agents` and `send_message`;
-  Managed children receive neither coordination nor native delegation tools.
+- A Managed primary Session with a published delegate or Advisor projects
+  exactly the `list_agents` and `send_message` coordination subset; Managed
+  children receive neither coordination nor native delegation/Advisor
+  capability.
 - Dispatch cannot resume an unrelated Awaiting Run or strand input on a stale
   ticket because it never performs that classification.
 - External pending input and internal Agent coordination remain distinct

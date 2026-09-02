@@ -55,9 +55,10 @@ use session_coordination::{
 use session_realization::{
     acknowledge_session_realization, activate_session_realization,
     authorize_session_environment_effect, authorize_session_terminal_cleanup_disposal,
-    authorize_session_terminal_cleanup_preparation, persist_session_environment_receipt,
-    record_session_terminal_cleanup_disposal, record_session_terminal_cleanup_preparation,
-    renew_session_realization, session_cleanup_claim_next, session_cleanup_poll, session_resume,
+    authorize_session_terminal_cleanup_preparation, fail_session_realization,
+    persist_session_environment_receipt, record_session_terminal_cleanup_disposal,
+    record_session_terminal_cleanup_preparation, renew_session_realization,
+    session_cleanup_claim_next, session_cleanup_poll, session_resume,
 };
 use terminal_repository_publication::{
     session_repository_publication_complete, session_repository_publication_poll,

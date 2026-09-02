@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import _crate_boundary_workspace
+
 
 SESSION_CONTRACT = "crates/contract/awaken-session-contract/src/session_repo.rs"
 SESSION_PERSISTED_CONTRACT = (
@@ -26,11 +28,6 @@ DIRECT_STATE_WRITE = re.compile(r"\.(?:execution|disposition)\s*=(?!=)")
 RETIRED_SESSION_STATE = re.compile(
     r"\bSessionLifecycleState\b|\bSessionExecutionState::Deleted\b"
 )
-
-
-def _production(text: str) -> str:
-    """Exclude the terminal inline Rust test module from ownership checks."""
-    return re.split(r"#\[cfg\(test\)\]\s*mod\s+\w+\s*\{", text, maxsplit=1)[0]
 
 
 def _is_test_module(relative: str) -> bool:
@@ -102,7 +99,11 @@ def session_state_ownership_violations(sources: dict[str, str]) -> list[str]:
         )
 
     for relative, text in sources.items():
-        production = "" if _is_test_module(relative) else _production(text)
+        production = (
+            ""
+            if _is_test_module(relative)
+            else _crate_boundary_workspace.production_rust(text)
+        )
         if RETIRED_SESSION_STATE.search(production):
             errors.append(
                 f"{relative}: retired one-dimensional Session state; use "

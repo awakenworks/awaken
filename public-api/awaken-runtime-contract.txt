@@ -1676,16 +1676,28 @@ pub awaken_runtime_contract::tool_batch::ToolBatchError::AttemptsExhausted
 pub awaken_runtime_contract::tool_batch::ToolBatchError::DuplicateCall(alloc::string::String)
 pub awaken_runtime_contract::tool_batch::ToolBatchError::Empty
 pub awaken_runtime_contract::tool_batch::ToolBatchError::EmptyRunId
+pub awaken_runtime_contract::tool_batch::ToolBatchError::EmptyWaitCorrelation
 pub awaken_runtime_contract::tool_batch::ToolBatchError::Finalized
 pub awaken_runtime_contract::tool_batch::ToolBatchError::Incomplete
 pub awaken_runtime_contract::tool_batch::ToolBatchError::InvalidBatchId
 pub awaken_runtime_contract::tool_batch::ToolBatchError::InvalidPersistedState(alloc::string::String)
 pub awaken_runtime_contract::tool_batch::ToolBatchError::InvalidTransition
+pub awaken_runtime_contract::tool_batch::ToolBatchError::MultipleAwaitingCalls
 pub awaken_runtime_contract::tool_batch::ToolBatchError::UnknownCall(alloc::string::String)
 pub awaken_runtime_contract::tool_batch::ToolBatchError::WaitMismatch
 pub enum awaken_runtime_contract::tool_batch::ToolBatchPhase
 pub awaken_runtime_contract::tool_batch::ToolBatchPhase::Finalized
 pub awaken_runtime_contract::tool_batch::ToolBatchPhase::Open
+pub enum awaken_runtime_contract::tool_batch::ToolBatchWaitError
+pub awaken_runtime_contract::tool_batch::ToolBatchWaitError::CallMismatch
+pub awaken_runtime_contract::tool_batch::ToolBatchWaitError::CorrelationMismatch
+pub awaken_runtime_contract::tool_batch::ToolBatchWaitError::Finalized
+pub awaken_runtime_contract::tool_batch::ToolBatchWaitError::KindMismatch
+pub awaken_runtime_contract::tool_batch::ToolBatchWaitError::MissingAwaitingCall
+pub awaken_runtime_contract::tool_batch::ToolBatchWaitError::NotToolCall
+pub awaken_runtime_contract::tool_batch::ToolBatchWaitError::RunMismatch
+pub awaken_runtime_contract::tool_batch::ToolBatchWaitError::ThreadMismatch
+pub awaken_runtime_contract::tool_batch::ToolBatchWaitError::ToolMismatch
 pub enum awaken_runtime_contract::tool_batch::ToolCallPhase
 pub awaken_runtime_contract::tool_batch::ToolCallPhase::Awaiting
 pub awaken_runtime_contract::tool_batch::ToolCallPhase::Awaiting::wait: awaken_runtime_contract::tool_batch::ToolWait
@@ -1736,6 +1748,7 @@ pub fn awaken_runtime_contract::tool_batch::ToolBatch::seal_on_run_end(&mut self
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::set_result_messages(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::set_result_state(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::validate(&self) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
+pub fn awaken_runtime_contract::tool_batch::ToolBatch::validate_awaiting_ticket(&self, &awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::awaiting::ResumeTicket) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchWaitError>
 impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::tool_batch::ToolBatch
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct awaken_runtime_contract::tool_batch::ToolBatchId(_)
@@ -2419,6 +2432,7 @@ pub fn awaken_runtime_contract::tool_batch::ToolBatch::seal_on_run_end(&mut self
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::set_result_messages(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::set_result_state(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::validate(&self) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
+pub fn awaken_runtime_contract::tool_batch::ToolBatch::validate_awaiting_ticket(&self, &awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::awaiting::ResumeTicket) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchWaitError>
 impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::tool_batch::ToolBatch
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct awaken_runtime_contract::ToolBatchId(_)

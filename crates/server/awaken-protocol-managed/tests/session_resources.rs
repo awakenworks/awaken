@@ -57,6 +57,9 @@ fn profiled_router(state: std::sync::Arc<ManagedState>, workspace: &str) -> Rout
     let extensions = awaken_protocol_awaken::profiled_session_router(
         awaken_protocol_managed::create_profiled_session,
     )
+    .merge(awaken_protocol_awaken::profiled_session_run_router(
+        awaken_protocol_managed::submit_profiled_session_run,
+    ))
     .merge(awaken_protocol_awaken::profiled_session_release_router(
         awaken_protocol_managed::release_profiled_session,
     ))
@@ -131,8 +134,8 @@ fn resource_registry() -> std::sync::Arc<awaken_resource_application::RegistryAp
     registry
 }
 
-/// A runtime that accepts every complete Session projection — the session record exists, so
-/// the resource routes can be exercised. Run methods are unused here.
+/// A runtime that accepts every complete Session projection and records the
+/// profiled-Run reservation/activation boundary exercised by this adapter.
 #[derive(Clone, Default)]
 struct AcceptingFake {
     prepared: std::sync::Arc<std::sync::Mutex<Vec<SessionInit>>>,
@@ -145,6 +148,19 @@ struct AcceptingFake {
     published: std::sync::Arc<
         std::sync::Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationCommand>>,
     >,
+    reserved_runs: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, awaken_session_contract::AdmitSessionRun>,
+        >,
+    >,
+    activated_runs: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, awaken_session_contract::SessionRunDelivery>,
+        >,
+    >,
+    fail_next_reservation_unavailable: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fail_next_activation_unavailable: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fail_next_activation_internal: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct AgentWithResources;
@@ -1707,6 +1723,68 @@ impl SessionRuntime for AcceptingFake {
             self.prepared.lock().unwrap().push(init);
         }
         Ok(())
+    }
+
+    async fn reserve_session_run(
+        &self,
+        command: awaken_session_contract::AdmitSessionRun,
+    ) -> Result<awaken_session_contract::SessionRunReservation, RunError> {
+        if self
+            .fail_next_reservation_unavailable
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(RunError::unavailable(
+                "injected Session Run reservation outage",
+            ));
+        }
+        let mut reserved = self.reserved_runs.lock().unwrap();
+        if let Some(existing) = reserved.get(&command.run_id.0) {
+            if existing != &command {
+                return Err(RunError::bad_request(
+                    "Session Run reservation conflicts with its durable identity",
+                ));
+            }
+            return Ok(awaken_session_contract::SessionRunReservation::AlreadyReserved);
+        }
+        reserved.insert(command.run_id.0.clone(), command);
+        Ok(awaken_session_contract::SessionRunReservation::Reserved)
+    }
+
+    async fn activate_session_run(
+        &self,
+        delivery: awaken_session_contract::SessionRunDelivery,
+    ) -> Result<awaken_session_contract::SessionRunActivation, RunError> {
+        if self
+            .fail_next_activation_unavailable
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(RunError::unavailable(
+                "injected Session Run activation outage",
+            ));
+        }
+        if self
+            .fail_next_activation_internal
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(RunError::internal(
+                "injected Session Run activation failure",
+            ));
+        }
+        let mut activated = self.activated_runs.lock().unwrap();
+        if let Some(existing) = activated.get(&delivery.run_id.0) {
+            if existing != &delivery {
+                return Err(RunError::internal(
+                    "Session Run activation changed its durable delivery",
+                ));
+            }
+            return Ok(
+                awaken_session_contract::SessionRunActivation::AlreadyActivated {
+                    session_activity_epoch: delivery.session_activity_epoch,
+                },
+            );
+        }
+        activated.insert(delivery.run_id.0.clone(), delivery);
+        Ok(awaken_session_contract::SessionRunActivation::Activated)
     }
 
     fn validate_session_sandbox_layout(
@@ -4795,12 +4873,12 @@ async fn settle_profiled_session(
     workspace_id: &str,
     session_id: &str,
 ) -> awaken_session_contract::PersistedSession {
-    // Fixture boundary decision table: C1 an accepted profiled root is still
-    // Preparing; C2 the exact owner is present/foreign. Effects: E1 C1+exact C2
-    // enters the canonical execution-admission recovery once and returns the
-    // same root after Resource/realization convergence; E2 foreign C2 is
-    // rejected by that owner. This wrapper owns no retry, state, or physical
-    // effect; it only asserts the existing application boundary used by Runs.
+    // Fixture boundary rule: C1 an accepted profiled root is still Preparing;
+    // C2 the exact owner is supplied. Effect E1=C1+C2 enters the canonical
+    // execution-admission recovery once and returns the same root after
+    // Resource/realization convergence. This wrapper owns no retry, state, or
+    // physical effect; foreign-owner rejection remains covered at the existing
+    // application boundary rather than being claimed by this exact-owner helper.
     let recovered = state
         .session_application()
         .recover_session_projection(session_id, Some(workspace_id))
@@ -5459,11 +5537,12 @@ fn profiled_run_body(operation_id: &str, run_id: &str, narrowing: &str) -> Value
 
 #[tokio::test]
 async fn profiled_run_submission_preserves_one_canonical_command_across_replay_and_repair() {
-    // Causes: C1 exact existing profiled Session/owner and Primary command; C2
-    // exact replay after activation/HTTP response loss; C3 same Run with a
-    // changed Agent, operation, Message, requirements, or Session; C4 a distinct
-    // OutputRepair command; C5 the Flow Worker capability is later evaluated by
-    // canonical placement. Effects: E1 C1 reserves/activates every exact field;
+    // Causes: C1 exact durably accepted and recovered profiled Session/owner
+    // plus Primary command; C2 exact replay after activation/HTTP response loss;
+    // C3 same Run with a changed Agent, operation, Message, requirements, or
+    // Session; C4 a distinct OutputRepair command; C5 the Flow Worker capability
+    // is later evaluated by canonical placement. Effects: E1 C1
+    // reserves/activates every exact field;
     // E2 C2 returns the same receipt without duplicate effects; E3 C3 is 400 and
     // cannot overwrite the first command; E4 C4 preserves Session/Agent, uses
     // DenyAll and PreservePrior; E5 C5 remains frozen in durable admission.
@@ -5479,7 +5558,7 @@ async fn profiled_run_submission_preserves_one_canonical_command_across_replay_a
             .with_session_repo(sessions)
             .with_resource_registry(resource_registry()),
     );
-    let app = profiled_router(state, "default");
+    let app = profiled_router(state.clone(), "default");
     for session_id in ["profiled-run-command", "profiled-run-other"] {
         let (status, created) = call(
             &app,
@@ -5492,7 +5571,8 @@ async fn profiled_run_submission_preserves_one_canonical_command_across_replay_a
             })),
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "seed {session_id}: {created}");
+        assert_eq!(status, StatusCode::ACCEPTED, "seed {session_id}: {created}");
+        settle_profiled_session(&state, "default", session_id).await;
     }
 
     let primary = profiled_run_body("work-unit-42", "work-unit-42", "configured");
@@ -5627,10 +5707,11 @@ async fn profiled_run_submission_preserves_one_canonical_command_across_replay_a
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn profiled_run_commits_into_the_existing_managed_read_projection() {
-    // Causes: C1 an exact profiled Run is admitted while its canonical
-    // activation is held after the Session activity receipt; C2 Runtime then
-    // commits the Run lifecycle, output, and usage facts; C3 the application
-    // settles that exact activity; C4 the product retries after completion.
+    // Causes: C1 an exact profiled Session is durably accepted/recovered and its
+    // Run is admitted while canonical activation is held after the Session
+    // activity receipt; C2 Runtime then commits the Run lifecycle, output, and
+    // usage facts; C3 the application settles that exact activity; C4 the
+    // product retries after completion.
     // Effects: E1 ordinary Managed GET projects Running during C1; E2 the same
     // GET projects Idle after C2+C3; E3 ordinary Managed SSE backfills Running,
     // output, usage, then terminal truth in commit order; E4 C4 returns the same
@@ -5661,7 +5742,8 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "R10 seed: {created}");
+    assert_eq!(status, StatusCode::ACCEPTED, "R10 seed: {created}");
+    settle_profiled_session(&state, "default", session_id).await;
 
     let run_uri = format!("/v1/awaken/sessions/{session_id}/runs");
     let request = profiled_run_body("work-unit-45", "work-unit-45", "configured");
@@ -5781,7 +5863,8 @@ async fn profiled_run_submission_fails_closed_by_target_and_error_class() {
             })),
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "seed {session_id}: {body}");
+        assert_eq!(status, StatusCode::ACCEPTED, "seed {session_id}: {body}");
+        settle_profiled_session(&state, "default", session_id).await;
     }
 
     let request = profiled_run_body("work-unit-43", "work-unit-43", "configured");

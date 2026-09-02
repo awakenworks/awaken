@@ -9,6 +9,9 @@ context = "shared"
 layer = "infrastructure"
 authority = "service-lifecycle"
 
+[features]
+test-support = []
+
 [dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true

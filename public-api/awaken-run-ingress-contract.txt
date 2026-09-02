@@ -70,7 +70,11 @@ pub awaken_run_ingress_contract::dispatch::DispatchCredentialAdmissionError::Inv
 pub awaken_run_ingress_contract::dispatch::DispatchCredentialAdmissionError::SessionAdmission(awaken_credential_contract::CredentialAdmissionError)
 pub awaken_run_ingress_contract::dispatch::DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder
 pub enum awaken_run_ingress_contract::dispatch::DispatchError
+pub awaken_run_ingress_contract::dispatch::DispatchError::Conflict(alloc::string::String)
 pub awaken_run_ingress_contract::dispatch::DispatchError::Rejected(alloc::string::String)
+pub awaken_run_ingress_contract::dispatch::DispatchError::Unavailable(alloc::string::String)
+impl awaken_run_ingress_contract::dispatch::DispatchError
+pub fn awaken_run_ingress_contract::dispatch::DispatchError::unavailable(impl core::fmt::Display) -> Self
 pub enum awaken_run_ingress_contract::dispatch::DispatchOutcome
 pub awaken_run_ingress_contract::dispatch::DispatchOutcome::Awaiting
 pub awaken_run_ingress_contract::dispatch::DispatchOutcome::Done
@@ -386,7 +390,11 @@ pub awaken_run_ingress_contract::DispatchCredentialAdmissionError::InvalidSessio
 pub awaken_run_ingress_contract::DispatchCredentialAdmissionError::SessionAdmission(awaken_credential_contract::CredentialAdmissionError)
 pub awaken_run_ingress_contract::DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder
 pub enum awaken_run_ingress_contract::DispatchError
+pub awaken_run_ingress_contract::DispatchError::Conflict(alloc::string::String)
 pub awaken_run_ingress_contract::DispatchError::Rejected(alloc::string::String)
+pub awaken_run_ingress_contract::DispatchError::Unavailable(alloc::string::String)
+impl awaken_run_ingress_contract::dispatch::DispatchError
+pub fn awaken_run_ingress_contract::dispatch::DispatchError::unavailable(impl core::fmt::Display) -> Self
 pub enum awaken_run_ingress_contract::DispatchIdentityScope
 pub awaken_run_ingress_contract::DispatchIdentityScope::FullDispatch
 pub awaken_run_ingress_contract::DispatchIdentityScope::SessionCommand

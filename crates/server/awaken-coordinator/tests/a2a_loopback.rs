@@ -26,6 +26,7 @@ use awaken_runtime_contract::{
 };
 use awaken_runtime_host::ManagedHost;
 use awaken_scenario_host::{EchoModel, build_router};
+use awaken_service_lifecycle::run_composed_async_test;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -33,33 +34,6 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
-
-const COMPOSED_ASYNC_TEST_STACK_BYTES: usize = 32 * 1024 * 1024;
-
-fn run_composed_async_test<F, Fut>(case: F)
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + 'static,
-{
-    // The in-process A2A fixture composes parent Runtime, transport, remote
-    // Router, and child Runtime on one process stack. Production crosses a
-    // socket; this dedicated test executor preserves that scheduling boundary
-    // while giving the deliberately composed future a bounded explicit stack.
-    let test = std::thread::Builder::new()
-        .name("a2a-loopback-composed-test".into())
-        .stack_size(COMPOSED_ASYNC_TEST_STACK_BYTES)
-        .spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("composed A2A test runtime")
-                .block_on(case());
-        })
-        .expect("spawn composed A2A test thread");
-    if let Err(panic) = test.join() {
-        std::panic::resume_unwind(panic);
-    }
-}
 
 struct RouterTransport {
     app: Router,

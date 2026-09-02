@@ -8,6 +8,9 @@
 use super::*;
 
 mod agent_message_source;
+mod session_reply_receipt;
+
+use session_reply_receipt::SessionReplyReceipt;
 
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::delegation::{DelegationId, DelegationOrigin};
@@ -51,61 +54,6 @@ fn coordinated_activation_input(
         Role::User,
         message,
     )]
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionReplyReceipt {
-    Absent,
-    Exact,
-    Conflict,
-}
-
-/// Fold one committed ResumeApplied fact into the reply-recovery decision.
-/// This is the sole classifier used by the history scan and its Kani proof:
-/// unrelated facts stutter, a same-correlation/different-operation fact closes
-/// the reply as conflicting, and an exact operation receipt is absorbing.
-const fn advance_session_reply_receipt(
-    current: SessionReplyReceipt,
-    same_correlation: bool,
-    same_operation: bool,
-) -> SessionReplyReceipt {
-    if matches!(current, SessionReplyReceipt::Exact) {
-        return SessionReplyReceipt::Exact;
-    }
-    if same_correlation && same_operation {
-        SessionReplyReceipt::Exact
-    } else if same_correlation {
-        SessionReplyReceipt::Conflict
-    } else {
-        current
-    }
-}
-
-#[cfg(kani)]
-#[kani::proof]
-fn resume_receipt_classification_is_exact_and_conflict_absorbing() {
-    // Cause/effect graph: C1 an Event has the expected correlation; C2 it has
-    // the expected operation; C3 an exact receipt was already observed.
-    // Effects: E1 C1+C2 selects Exact; E2 C1+!C2 selects Conflict unless E1 is
-    // already absorbing; E3 !C1 cannot change the accumulated decision.
-    // Decision rules K1=C1+C2=>E1, K2=C1+!C2+!C3=>E2,
-    // K3=!C1=>E3, K4=C3=>Exact. These are the complete Boolean partitions.
-    let current = match kani::any::<u8>() % 3 {
-        0 => SessionReplyReceipt::Absent,
-        1 => SessionReplyReceipt::Conflict,
-        _ => SessionReplyReceipt::Exact,
-    };
-    let same_correlation = kani::any::<bool>();
-    let same_operation = kani::any::<bool>();
-    let next = advance_session_reply_receipt(current, same_correlation, same_operation);
-
-    if current == SessionReplyReceipt::Exact || (same_correlation && same_operation) {
-        assert!(next == SessionReplyReceipt::Exact, "K1/K4");
-    } else if same_correlation {
-        assert!(next == SessionReplyReceipt::Conflict, "K2");
-    } else {
-        assert!(next == current, "K3");
-    }
 }
 
 #[derive(Clone)]
@@ -649,53 +597,6 @@ impl SharedHost {
         Ok(())
     }
 
-    /// Classify the committed receipt only after the current active ticket fails
-    /// validation. A successful resume intentionally deletes that ticket, while
-    /// the audit fact lives in the same ThreadCommit and therefore survives
-    /// response loss, Worker settlement, process restart, and projection lag.
-    async fn session_thread_tool_reply_receipt(
-        &self,
-        command: &awaken_session_contract::SessionThreadToolReplyCommand,
-    ) -> Result<SessionReplyReceipt, HostError> {
-        if command.session_id.trim().is_empty()
-            || command.expected_run_id.0.trim().is_empty()
-            || command.expected_correlation_id.trim().is_empty()
-            || command.tool_use_id.trim().is_empty()
-        {
-            return Err(HostError::bad_request(
-                "Session Thread tool reply is incomplete",
-            ));
-        }
-        let thread_id = command.target.thread_id(&command.session_id);
-        let commit = self.commit_for_read(&command.session_id).await?;
-        let snapshot = commit
-            .recovery_snapshot(&thread_id, &command.expected_run_id)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
-        let expected_operation = command.delivery_operation_id();
-        let mut receipt = SessionReplyReceipt::Absent;
-        for event in snapshot.events.iter().filter(|event| {
-            event.run_id == command.expected_run_id
-                && event.kind == awaken_agent_contract::audit::kind::Kind::ResumeApplied
-        }) {
-            let correlation = event
-                .payload
-                .get("correlation_id")
-                .and_then(serde_json::Value::as_str);
-            let same_correlation = correlation == Some(command.expected_correlation_id.as_str());
-            let same_operation = event
-                .payload
-                .get("operation_id")
-                .and_then(serde_json::Value::as_str)
-                == Some(expected_operation.as_str());
-            receipt = advance_session_reply_receipt(receipt, same_correlation, same_operation);
-            if receipt == SessionReplyReceipt::Exact {
-                break;
-            }
-        }
-        Ok(receipt)
-    }
-
     async fn coordinated_child_admission(
         &self,
         session_id: &str,
@@ -776,7 +677,11 @@ impl SharedHost {
                 (
                     slot.baseline.clone(),
                     slot.tools.clone(),
-                    slot.manifest.clone(),
+                    // Coordinated children share the exact generation selected
+                    // for root and extension dispatch. Selection stays inside
+                    // this one slot snapshot; child admission neither publishes
+                    // nor reconstructs physical active truth.
+                    slot.dispatch_resource_manifest(),
                 )
             })
             .ok_or_else(|| HostError::bad_request("Session runtime projection is unavailable"))?;
@@ -1351,6 +1256,166 @@ mod tests {
         assert_eq!(spawn[0].text_content(), "first", "M1/E1");
         assert_eq!(spawn, follow_up_replay, "M1+M2/E2");
         assert_ne!(spawn[0].id, next[0].id, "M3/E3");
+    }
+
+    #[tokio::test]
+    async fn coordinated_child_admission_uses_the_canonical_dispatch_resource_generation() {
+        // Cause/effect graph: C1 a prepared Session has no active manifest or a
+        // stale active A; C2 its aggregate transition desires B, or is absent
+        // for a legacy Session. Effects: E1 production coordinated admission
+        // queues desired B before physical publication; E2 desired B wins over
+        // stale A; E3 legacy admission falls back to A; E4 the queued manifest
+        // owns exact Workspace scope and Worker capability; E5 selection never
+        // publishes or replaces active.
+        //
+        // | Rule | Active | Transition | Queued | Active after | Effects    |
+        // | C1   | none   | 0->B       | B      | none         | E1,E4,E5  |
+        // | C2   | A      | A->B       | B      | A            | E2,E4,E5  |
+        // | C3   | A      | none       | A      | A            | E3,E4,E5  |
+        use awaken_run_ingress::DispatchQueue as _;
+
+        let manifest = |revision| {
+            awaken_session_contract::SessionResourceManifest::at_revision(
+                "workspace-a",
+                revision,
+                awaken_session_contract::ResolvedSessionResources::default(),
+            )
+        };
+        for (rule, active_revision, desired_revision, expected_revision) in [
+            ("C1", None, Some(7), 7),
+            ("C2", Some(4), Some(7), 7),
+            ("C3", Some(4), None, 4),
+        ] {
+            let session_id = format!("coordinated-resource-{rule}");
+            let child_thread = ThreadId(format!("coordinated-resource-child-{rule}"));
+            let child_run = RunId(format!("coordinated-resource-run-{rule}"));
+            let active = active_revision.map(manifest);
+            let transition = desired_revision.map(|revision| {
+                awaken_session_contract::SessionResourceTransition::new(
+                    active.clone().unwrap_or_else(|| manifest(0)),
+                    manifest(revision),
+                )
+                .expect("test transition belongs to one Workspace")
+            });
+            let baseline = awaken_session_contract::SessionBaseline::compile(
+                awaken_session_contract::SessionBaselineInputs {
+                    environment: awaken_session_contract::EnvironmentSnapshot {
+                        environment_id: format!("coordinated-resource-environment-{rule}"),
+                        revision: awaken_session_contract::EnvironmentRevision(1),
+                        self_hosted: false,
+                        config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                            format!("coordinated-resource-environment-{rule}-v1"),
+                        ),
+                        sandbox: Default::default(),
+                        sandbox_provisioning: Default::default(),
+                        idle_retention: Default::default(),
+                        packages: Default::default(),
+                        prepared_image: None,
+                        network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                        credential_realization:
+                            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+                    },
+                    runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
+                    mcp_authoring: Default::default(),
+                    agent_id: "agent-a".into(),
+                    agent_revision: Some(1),
+                    model: "model-a".into(),
+                    model_override: None,
+                    runtime: Some("native".into()),
+                    delegate_ids: Vec::new(),
+                    toolsets: Vec::new(),
+                    mounts: Vec::new(),
+                    env: Vec::new(),
+                    prompts: Vec::new(),
+                    transcript_prefix: None,
+                },
+            );
+            let dispatch = Arc::new(
+                awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+                    .expect("coordinated Resource dispatch store"),
+            );
+            let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
+                .with_dispatch_store(dispatch.clone());
+            host.session_slots.update(&session_id, |slot| {
+                slot.session_dispatch = true;
+                slot.baseline = Some(baseline);
+                slot.manifest = active.clone();
+                slot.resource_transition = transition;
+            });
+            let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
+                .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                    "test", "model-a", "native",
+                ))
+                .build();
+            snapshot.metadata.source.agent_id = snapshot.root_agent_id.clone();
+            snapshot.metadata.source.revision = 1;
+            snapshot
+                .recompute_fingerprint()
+                .expect("published child snapshot");
+
+            let receipt = host
+                .admit_coordinated_run(CoordinatedRunCommand {
+                    intent: CoordinatedRunIntent::Spawn,
+                    session_id: session_id.clone(),
+                    thread_id: child_thread.clone(),
+                    run_id: child_run.clone(),
+                    parent_run_id: RunId(format!("coordinated-resource-parent-{rule}")),
+                    parent_call_id: format!("coordinated-resource-call-{rule}"),
+                    operation_id: format!("coordinated-resource-operation-{rule}"),
+                    snapshot,
+                    message: format!("coordinate Resource rule {rule}"),
+                    session_activity_epoch: 1,
+                    max_unarchived_threads: 24,
+                })
+                .await
+                .unwrap_or_else(|error| panic!("{rule} production child admission: {error}"));
+            assert_eq!(receipt.thread_id, child_thread, "{rule} child identity");
+
+            let claimed = dispatch
+                .claim_run(
+                    &child_run,
+                    "resource-inspector",
+                    30_000,
+                    1,
+                    &Default::default(),
+                )
+                .await
+                .unwrap_or_else(|error| panic!("{rule} inspect queued child: {error}"))
+                .unwrap_or_else(|| panic!("{rule} queued child is claimable"));
+            let carried = claimed
+                .request
+                .session_resources
+                .as_ref()
+                .unwrap_or_else(|| panic!("{rule} child Resource envelope"))
+                .decode_manifest()
+                .unwrap_or_else(|error| panic!("{rule} decode child Resource envelope: {error}"));
+            assert_eq!(carried.revision, expected_revision, "{rule} generation");
+            assert_eq!(
+                carried,
+                manifest(expected_revision),
+                "{rule} exact manifest"
+            );
+            assert_eq!(
+                claimed.request.execution_scope,
+                Some(awaken_tenancy::ExecutionScopeRef(
+                    awaken_tenancy::ScopeId::from("workspace-a")
+                )),
+                "{rule}/E4 exact scope",
+            );
+            assert!(
+                claimed
+                    .request
+                    .placement
+                    .required_capabilities
+                    .contains(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY),
+                "{rule}/E4 eligible Worker capability",
+            );
+            assert_eq!(
+                host.thread_resource_manifest(&session_id),
+                active,
+                "{rule}/E5 admission must not publish active",
+            );
+        }
     }
 
     #[test]

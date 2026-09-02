@@ -13,12 +13,11 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import _crate_boundary_workspace
+import _service_lifecycle_fitness
 
-WORKER_MANIFEST = "crates/bin/awaken-worker/Cargo.toml"
+
 WORKER_SOURCE = "crates/bin/awaken-worker/src"
-WORKER_MAIN = "crates/bin/awaken-worker/src/main.rs"
-SERVICE_LIFECYCLE_SOURCE = "crates/server/awaken-service-lifecycle/src/lib.rs"
-CLI_PROCESS_STARTUP = "crates/bin/awaken-cli/src/process_startup.rs"
 CONTROL_SOURCE = "crates/control/awaken-control/src"
 CLI_SOURCE = "crates/bin/awaken-cli/src"
 CLI_LIB_SOURCE = "crates/bin/awaken-cli/src/lib.rs"
@@ -32,10 +31,6 @@ PROCESS_STORES = "crates/bin/awaken-cli/src/process_stores.rs"
 RUNTIME_HOST_MANIFEST = "crates/server/awaken-runtime-host/Cargo.toml"
 COORDINATOR_MANIFEST = "crates/server/awaken-coordinator/Cargo.toml"
 PROTOCOL_MANAGED_MANIFEST = "crates/server/awaken-protocol-managed/Cargo.toml"
-CLI_MANIFEST = "crates/bin/awaken-cli/Cargo.toml"
-CLI_SERVICE = "crates/bin/awaken-cli/src/service.rs"
-CONTROL_BIN = "crates/bin/awaken-cli/src/bin/awaken-control.rs"
-COORDINATOR_BIN = "crates/bin/awaken-cli/src/bin/awaken-coordinator.rs"
 FILE_STORE_SOURCE = "crates/resources/awaken-file-store/src/lib.rs"
 COORDINATOR_SOURCE = "crates/server/awaken-coordinator/src/lib.rs"
 MEMORY_STORE_SOURCE = "crates/resources/awaken-memory-store/src/repository.rs"
@@ -552,71 +547,6 @@ def runtime_host_feature_violations(manifest: dict) -> list[str]:
         errors.append("Runtime Host default features must be authority-free")
     if "coordinator" in features:
         errors.append("Runtime Host must not retain a Coordinator compatibility feature")
-    return errors
-
-
-def service_binary_violations(
-    manifest: dict,
-    service_source: str,
-    control_source: str,
-    coordinator_source: str,
-) -> list[str]:
-    """Keep one lifecycle implementation behind the role-named executables."""
-
-    errors: list[str] = []
-    bins = {
-        entry.get("name"): entry.get("path")
-        for entry in manifest.get("bin", [])
-        if isinstance(entry, dict)
-    }
-    expected = {
-        "awaken": "src/main.rs",
-        "awaken-control": "src/bin/awaken-control.rs",
-        "awaken-coordinator": "src/bin/awaken-coordinator.rs",
-    }
-    for name, path in expected.items():
-        if bins.get(name) != path:
-            errors.append(f"missing canonical `{name}` executable at `{path}`")
-    if manifest.get("package", {}).get("default-run") != "awaken":
-        errors.append("aggregate operator launcher must remain Cargo's default executable")
-    if "awaken-worker" in bins:
-        errors.append("aggregate CLI package must not recreate the Worker executable")
-    if service_source.count("pub async fn run_service(") != 1:
-        errors.append("CLI must own exactly one shared service lifecycle")
-    if service_source.count("async fn migrate_service_for_role(") != 1:
-        errors.append("role executables must share one role-fenced migration lifecycle")
-    for name, source in (
-        ("awaken-control", control_source),
-        ("awaken-coordinator", coordinator_source),
-    ):
-        if "run_service_binary(" not in source:
-            errors.append(f"`{name}` bypasses the shared service lifecycle")
-        if "build_" in source:
-            errors.append(f"`{name}` reconstructs applications inside its thin entrypoint")
-    return errors
-
-
-def service_runtime_violations(
-    worker_manifest: dict,
-    worker_main: str,
-    lifecycle_source: str,
-    cli_process_startup: str,
-) -> list[str]:
-    """Keep one stack-safe Tokio Runtime owner for every service launcher."""
-
-    errors: list[str] = []
-    if "awaken-service-lifecycle" not in worker_manifest.get("dependencies", {}):
-        errors.append("awaken-worker must depend on the canonical service Runtime owner")
-    if "#[tokio::main" in worker_main:
-        errors.append("awaken-worker must not recreate Tokio's default-stack Runtime")
-    if worker_main.count("awaken_service_lifecycle::block_on_service(") != 1:
-        errors.append("awaken-worker must enter exactly one canonical service Runtime")
-    if lifecycle_source.count("pub fn block_on_service") != 1:
-        errors.append("service lifecycle must own exactly one public Runtime builder")
-    if lifecycle_source.count(".thread_stack_size(") != 1:
-        errors.append("service lifecycle must own exactly one explicit Worker stack budget")
-    if "pub use awaken_service_lifecycle::block_on_service;" not in cli_process_startup:
-        errors.append("aggregate service launchers must reuse the service-lifecycle Runtime")
     return errors
 
 
@@ -1189,7 +1119,10 @@ def control_publication_authority_violations(
         "CatalogRepo",
         "CredentialRepo",
     ):
-        if forbidden in coordinator_source:
+        if re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(forbidden)}(?![A-Za-z0-9_])",
+            coordinator_source,
+        ):
             errors.append(f"Coordinator reads Control publication authority `{forbidden}`")
     return errors
 
@@ -1272,9 +1205,7 @@ def selftest() -> None:
     journaled Webhook mutation authority -> accepted; O34 direct put/delete or a
     missing recovery edge -> rejected; O35 an empty Runtime Host default plus an
     explicit Coordinator capability -> accepted; O36 an implicit default or a
-    detached Coordinator capability -> rejected; O37 all role-named executables
-    terminate in one lifecycle -> accepted; O38 a missing target, Worker twin, or
-    entrypoint-local application construction -> rejected; O39 one normalized
+    detached Coordinator capability -> rejected; O39 one normalized
     model-reference rule shared by Dream and Managed projections -> accepted;
     O40 a retired directory or duplicate/missing inventory selection -> rejected; O41
     one candidate router in credential materialization -> accepted; O42 a
@@ -1287,6 +1218,8 @@ def selftest() -> None:
     Together the rules cover compile-time acquisition, production call paths,
     component ownership, and schema acquisition.
     """
+
+    _service_lifecycle_fitness.selftest()
 
     assert dependency_violations({"awaken-runtime-host", "awaken-runtime-contract"}) == []  # O1
     assert dependency_violations({"awaken-session-store"}) == ["awaken-session-store"]  # O2
@@ -1666,50 +1599,6 @@ def selftest() -> None:
         "Runtime Host default features must be authority-free",
         "Runtime Host must not retain a Coordinator compatibility feature",
     ]  # O36
-    service_bins = {
-        "package": {"default-run": "awaken"},
-        "bin": [
-            {"name": "awaken", "path": "src/main.rs"},
-            {"name": "awaken-control", "path": "src/bin/awaken-control.rs"},
-            {
-                "name": "awaken-coordinator",
-                "path": "src/bin/awaken-coordinator.rs",
-            },
-        ]
-    }
-    assert service_binary_violations(
-        service_bins,
-        "pub async fn run_service( async fn migrate_service_for_role(",
-        "run_service_binary(",
-        "run_service_binary(",
-    ) == []  # O37
-    assert service_binary_violations(
-        {
-            "package": {"default-run": "awaken"},
-            "bin": service_bins["bin"]
-            + [{"name": "awaken-worker", "path": "worker.rs"}],
-        },
-        "pub async fn run_service( pub async fn run_service( async fn migrate_service_for_role(",
-        "build_control()",
-        "",
-    )  # O38
-    # Service Runtime cause/effect table: C1 a Worker launcher names the shared
-    # lifecycle dependency; C2 it enters that owner exactly once; C3 the owner
-    # has one explicit stack budget; C4 aggregate launchers re-export the same
-    # owner. R39 all causes => no violation. R40 a default-stack macro, missing
-    # dependency, duplicate/missing builder, or parallel CLI builder => reject.
-    assert service_runtime_violations(
-        {"dependencies": {"awaken-service-lifecycle": {"workspace": True}}},
-        "awaken_service_lifecycle::block_on_service(async {})",
-        "pub fn block_on_service .thread_stack_size(",
-        "pub use awaken_service_lifecycle::block_on_service;",
-    ) == []  # O39
-    assert service_runtime_violations(
-        {"dependencies": {}},
-        "#[tokio::main] async fn main() {}",
-        "pub fn block_on_service pub fn block_on_service",
-        "fn block_on_service() {}",
-    )  # O40
     # Model inventory FMECA/cause-effect table: FM1 independent Dream/HTTP model
     # normalization diverges; FM2 a Control catalog reader returns beside the
     # executable publication inventory. R41 one rule + both consumers + one
@@ -1738,6 +1627,16 @@ def selftest() -> None:
         "struct CatalogModelPublicationResolver;",
         "pub mod coordinator_component;",
     ) == []  # O45
+    # Publication-reader cause/effect rule: C1 an exact CatalogRepo or
+    # CredentialRepo authority crosses into Coordinator -> reject; C2 a
+    # differently named concrete repository used by scenario Vault wiring is
+    # not by itself a model-publication reader -> accept. Exact identifier
+    # boundaries prevent the newly complete production projection from turning
+    # a suffix match into a false architectural owner.
+    assert control_publication_authority_violations(
+        "struct CatalogModelPublicationResolver;",
+        "InMemoryCatalogRepo InMemoryCredentialRepo",
+    ) == []  # O45/C2
     assert control_publication_authority_violations(
         "",
         "struct CatalogModelPublicationResolver; CredentialRepo",
@@ -1785,7 +1684,8 @@ def check_all(repo_root: Path) -> list[str]:
         dependencies = set()
     for package in dependency_violations(dependencies):
         errors.append(
-            f"{WORKER_MANIFEST}: Worker transitively links authority-store dependency `{package}`; "
+            f"{_service_lifecycle_fitness.WORKER_MANIFEST}: Worker transitively links "
+            f"authority-store dependency `{package}`; "
             "use the existing claim-fenced boundary adapter"
         )
     runtime_host_manifest = product_manifests[RUNTIME_HOST_MANIFEST]
@@ -1824,27 +1724,18 @@ def check_all(repo_root: Path) -> list[str]:
             f"{PROTOCOL_MANAGED_MANIFEST}: default Managed protocol transitively links "
             f"concrete persistence adapter `{package}`; inject the existing contract/application"
         )
-    for error in service_binary_violations(
-        product_manifests[CLI_MANIFEST],
-        (repo_root / CLI_SERVICE).read_text(encoding="utf-8"),
-        (repo_root / CONTROL_BIN).read_text(encoding="utf-8"),
-        (repo_root / COORDINATOR_BIN).read_text(encoding="utf-8"),
-    ):
-        errors.append(f"{CLI_MANIFEST}: {error}")
-    for error in service_runtime_violations(
-        product_manifests[WORKER_MANIFEST],
-        (repo_root / WORKER_MAIN).read_text(encoding="utf-8"),
-        (repo_root / SERVICE_LIFECYCLE_SOURCE).read_text(encoding="utf-8"),
-        (repo_root / CLI_PROCESS_STARTUP).read_text(encoding="utf-8"),
-    ):
-        errors.append(f"Service Runtime: {error}")
+    errors.extend(
+        _service_lifecycle_fitness.check_all(
+            repo_root,
+            product_manifests[_service_lifecycle_fitness.CLI_MANIFEST],
+            product_manifests[_service_lifecycle_fitness.WORKER_MANIFEST],
+        )
+    )
 
     source_root = repo_root / WORKER_SOURCE
     for path in sorted(source_root.rglob("*.rs")):
         source = path.read_text(encoding="utf-8")
-        # Worker tests are inline and may use fakes, but the production portion
-        # conventionally precedes the trailing cfg(test) module.
-        source = re.split(r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*]", source, maxsplit=1)[0]
+        source = _crate_boundary_workspace.production_rust(source)
         for token in source_violations(source):
             errors.append(
                 f"{path.relative_to(repo_root)}: Worker production code acquires "
@@ -1854,7 +1745,7 @@ def check_all(repo_root: Path) -> list[str]:
     control_root = repo_root / CONTROL_SOURCE
     for path in sorted(control_root.rglob("*.rs")):
         source = path.read_text(encoding="utf-8")
-        source = re.split(r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*]", source, maxsplit=1)[0]
+        source = _crate_boundary_workspace.production_rust(source)
         for token in control_execution_violations(source):
             errors.append(
                 f"{path.relative_to(repo_root)}: Control reconstructs Coordinator-owned "
@@ -1866,7 +1757,7 @@ def check_all(repo_root: Path) -> list[str]:
     for path in sorted(cli_root.rglob("*.rs")):
         raw_source = path.read_text(encoding="utf-8")
         cli_sources.append(raw_source)
-        source = re.split(r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*]", raw_source, maxsplit=1)[0]
+        source = _crate_boundary_workspace.production_rust(raw_source)
         for token in retired_launch_violations(source):
             errors.append(
                 f"{path.relative_to(repo_root)}: retired remote Deployment launch "
@@ -1899,7 +1790,7 @@ def check_all(repo_root: Path) -> list[str]:
     errors.extend(
         coordinator_resource_access_violations(
             product_manifests[COORDINATOR_MANIFEST],
-            product_manifests[CLI_MANIFEST],
+            product_manifests[_service_lifecycle_fitness.CLI_MANIFEST],
             (repo_root / COORDINATOR_SOURCE).read_text(encoding="utf-8"),
             (repo_root / COORDINATOR_COMPONENT).read_text(encoding="utf-8"),
         )
@@ -1963,7 +1854,7 @@ def check_all(repo_root: Path) -> list[str]:
     ):
         errors.append(f"Coordinator model projection: {error}")
     coordinator_production = "\n".join(
-        re.split(r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*]", source, maxsplit=1)[0]
+        _crate_boundary_workspace.production_rust(source)
         for path in sorted((repo_root / "crates/server/awaken-coordinator/src").rglob("*.rs"))
         if "tests" not in path.stem
         for source in [path.read_text(encoding="utf-8")]

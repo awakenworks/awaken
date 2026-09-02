@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 
+import _crate_boundary_workspace
 import _execution_ownership_fitness
 
 
@@ -44,7 +45,7 @@ def managed_application_bypass_violations(sources: dict[str, str]) -> list[str]:
     """Managed wire state may call the application, never its raw collaborators."""
     errors: list[str] = []
     for relative, source in sources.items():
-        production = _execution_ownership_fitness._production(source)
+        production = _crate_boundary_workspace.production_rust(source)
         for method, replacement in FORBIDDEN_APPLICATION_BYPASSES.items():
             pattern = re.compile(
                 rf"\.application\s*\.\s*{re.escape(method)}\s*\(", re.MULTILINE
@@ -70,7 +71,7 @@ def session_admission_ownership_violations(sources: dict[str, str]) -> list[str]
     """SessionApplication, never a protocol adapter, owns Run admission."""
     errors: list[str] = []
     for relative, source in sources.items():
-        production = _execution_ownership_fitness._production(source)
+        production = _crate_boundary_workspace.production_rust(source)
         for symbol in ("prepare_protocol_session", "ManagedSessionAdmission"):
             if re.search(rf"\b{symbol}\b", production):
                 errors.append(

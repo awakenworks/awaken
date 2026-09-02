@@ -108,11 +108,10 @@ impl SharedHost {
                 "cannot freeze Agent execution publications: {error}"
             ))
         })?;
-        let resources = self.thread_resource_manifest(&thread);
-        let runtime_projection = self
+        let (resources, runtime_projection, is_session_dispatch) = self
             .session_slots
             .read(&thread, |slot| {
-                slot.environment_snapshot.clone().map(|environment| {
+                let runtime_projection = slot.environment_snapshot.clone().map(|environment| {
                     let mcp_stages = slot
                         .mcp
                         .iter()
@@ -122,9 +121,17 @@ impl SharedHost {
                         .map(|projection| projection.request.clone())
                         .collect();
                     (environment, slot.tools.clone(), mcp_stages)
-                })
+                });
+                // Resource generation, Session identity, and runtime projection
+                // come from one slot snapshot so dispatch cannot mix transition
+                // generations. The slot owns the sole desired/active selector;
+                // an Environment projection alone never promotes an ordinary
+                // Run to Session identity.
+                let is_session_dispatch = slot.session_dispatch;
+                let resources = slot.dispatch_resource_manifest();
+                (resources, runtime_projection, is_session_dispatch)
             })
-            .flatten();
+            .unwrap_or_default();
         // `SessionRuntime::install_session_projection` is the sole
         // Coordinator-side owner that installs this frozen runtime projection.
         // Preserve that existing
@@ -132,11 +139,6 @@ impl SharedHost {
         // the canonical Control-owned realization path before it constructs the
         // execution context. Resource manifests alone are deliberately
         // insufficient: ordinary Runs may carry one without being Sessions.
-        let is_session_dispatch = self
-            .session_slots
-            .read(&thread, |slot| slot.session_dispatch)
-            .unwrap_or(false)
-            || runtime_projection.is_some();
         let environment_snapshot = runtime_projection
             .as_ref()
             .map(|(environment, _, _)| environment);

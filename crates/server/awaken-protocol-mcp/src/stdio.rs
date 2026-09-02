@@ -10,7 +10,7 @@
 //! with an in-memory duplex; [`McpStdioServer::serve_stdio`] binds the real
 //! process stdin/stdout for a subprocess-launched server.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_mcp_server_core::NotifySink;
@@ -21,22 +21,38 @@ use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::watch;
 
 use crate::service::McpToolService;
 
 /// Delivers notifications through the peer's write queue. The peer is built
 /// around the request handler, so the notifier lands here one step later —
-/// before it does, there is no connection to notify.
+/// callers arriving before that publication wait at this one startup handshake
+/// instead of silently losing their notification.
 struct PeerSink {
-    notifier: Arc<OnceLock<JsonRpcNotifier>>,
+    notifier: watch::Receiver<Option<JsonRpcNotifier>>,
+}
+
+impl PeerSink {
+    async fn published_notifier(&self) -> JsonRpcNotifier {
+        let mut notifier = self.notifier.clone();
+        loop {
+            if let Some(notifier) = notifier.borrow().clone() {
+                return notifier;
+            }
+            notifier
+                .changed()
+                .await
+                .expect("stdio peer publishes its notifier during construction");
+        }
+    }
 }
 
 #[async_trait]
 impl NotifySink for PeerSink {
     async fn notify(&self, method: &str, params: Value) {
-        if let Some(notifier) = self.notifier.get() {
-            let _ = notifier.notify(method, params).await;
-        }
+        let notifier = self.published_notifier().await;
+        let _ = notifier.notify(method, params).await;
     }
 }
 
@@ -75,17 +91,14 @@ impl McpStdioServer {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let notifier_cell = Arc::new(OnceLock::new());
+        let (notifier_publisher, notifier) = watch::channel(None);
+        let sink = Arc::new(PeerSink { notifier });
         let handler = Arc::new(ServiceHandler {
             service: Arc::clone(&service),
-            sink: Arc::new(PeerSink {
-                notifier: Arc::clone(&notifier_cell),
-            }),
+            sink: Arc::clone(&sink),
         });
         let (peer, mut notifications) = JsonRpcPeer::new(reader, writer, Some(handler));
-        notifier_cell
-            .set(peer.notifier())
-            .unwrap_or_else(|_| unreachable!("notifier cell is set exactly once"));
+        notifier_publisher.send_replace(Some(peer.notifier()));
         let peer = Arc::new(peer);
 
         // Client notifications (initialized, cancelled) forward to the service.
@@ -100,12 +113,9 @@ impl McpStdioServer {
 
         // Export-set changes owe the client a tools/list_changed.
         if let Some(mut changes) = service.source().changes() {
-            let sink = PeerSink {
-                notifier: Arc::clone(&notifier_cell),
-            };
             tokio::spawn(async move {
                 while changes.changed().await.is_ok() {
-                    awaken_mcp_server_core::notify_tools_list_changed(&sink).await;
+                    awaken_mcp_server_core::notify_tools_list_changed(sink.as_ref()).await;
                 }
             });
         }
@@ -137,7 +147,10 @@ mod tests {
     use awaken_runtime_contract::permission::ToolCall;
     use awaken_runtime_contract::resolved::ToolDescriptor;
     use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+    use std::future::Future;
+    use std::task::Poll;
     use std::time::Duration;
+    use tokio::io::{AsyncBufReadExt, BufReader};
 
     struct EchoTool;
 
@@ -173,6 +186,80 @@ mod tests {
         let (client_r, client_w) = tokio::io::split(client_side);
         let (client, notifications) = JsonRpcPeer::new(client_r, client_w, None);
         (server, client, notifications)
+    }
+
+    #[tokio::test]
+    async fn peer_sink_waits_for_startup_publication_and_preserves_exact_notifications() {
+        // Causes: C1 a notification starts before the peer notifier is
+        // published; C2 the unique peer notifier is then published; C3 a
+        // later notification starts after publication. Effects: E1 C1 remains
+        // pending instead of returning and dropping the message; E2 C2 resumes
+        // C1 and writes its exact method/params once; E3 C3 writes its exact
+        // method/params through the same notifier without another handshake.
+        // The peer/write channel remains open in every rule.
+        //
+        // | Rule | published at notify | publication occurs | Effect |
+        // |---|---|---|---|
+        // | N1 | no | no | E1 |
+        // | N2 | no | yes | E2 |
+        // | N3 | yes | already | E3 |
+        let (notifier_publisher, notifier) = watch::channel(None);
+        let sink = PeerSink { notifier };
+        let (client_side, server_side) = tokio::io::duplex(8192);
+        let (server_reader, server_writer) = tokio::io::split(server_side);
+        let (peer, _notifications) = JsonRpcPeer::new(server_reader, server_writer, None);
+        let (client_reader, _client_writer) = tokio::io::split(client_side);
+        let mut lines = BufReader::new(client_reader).lines();
+
+        let mut startup_notification = Box::pin(sink.notify(
+            "notifications/progress",
+            json!({ "progressToken": "startup", "progress": 1 }),
+        ));
+        let pending_before_publication = std::future::poll_fn(|context| {
+            Poll::Ready(matches!(
+                startup_notification.as_mut().poll(context),
+                Poll::Pending
+            ))
+        })
+        .await;
+        assert!(
+            pending_before_publication,
+            "N1/E1 an unpublished notifier must wait, not silently return"
+        );
+
+        notifier_publisher.send_replace(Some(peer.notifier()));
+        startup_notification.await;
+        let startup_wire = lines
+            .next_line()
+            .await
+            .expect("N2 reads the wire")
+            .expect("N2 peer remains open");
+        assert_eq!(
+            serde_json::from_str::<Value>(&startup_wire).expect("N2 valid JSON"),
+            json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": { "progressToken": "startup", "progress": 1 },
+            }),
+            "N2/E2 the startup notification is preserved exactly"
+        );
+
+        sink.notify("notifications/tools/list_changed", json!({ "revision": 2 }))
+            .await;
+        let published_wire = lines
+            .next_line()
+            .await
+            .expect("N3 reads the wire")
+            .expect("N3 peer remains open");
+        assert_eq!(
+            serde_json::from_str::<Value>(&published_wire).expect("N3 valid JSON"),
+            json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/tools/list_changed",
+                "params": { "revision": 2 },
+            }),
+            "N3/E3 a published notifier preserves the exact notification"
+        );
     }
 
     #[tokio::test]

@@ -1433,7 +1433,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .install_dispatched_resources("thread-cold-resource", &cleared, None)
         .await
         .expect_err("F3 desired-only replacement must fail closed");
-    assert_eq!(error.code, "session_resource_transition_required", "F3");
+    assert_eq!(error.code, "session_resource_transition_conflict", "F3");
     assert_eq!(
         host.thread_resource_manifest("thread-cold-resource"),
         Some(manifest.clone()),
@@ -1475,6 +1475,148 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         host.thread_resource_manifest("thread-cold-resource"),
         Some(cleared),
         "F4 publishes generation 2 only after realization"
+    );
+}
+
+#[tokio::test]
+async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
+    // Producer/consumer cause/effect table: C1 the complete-projection producer
+    // has installed an exact rev1→rev1 or rev1→rev2 transition; C2 active is
+    // absent or equals the transition's previous generation; C3 the carried
+    // desired-only manifest is exact or differs only by revision. Effects: E1
+    // the consumer reuses the existing transition without publishing desired
+    // as active; E2 a mismatch rejects before changing any correlated Resource
+    // projection.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // | R1 | rev1→rev1 | absent | exact rev1 | E1, active absent |
+    // | R2 | rev1→rev2 | active rev1 | exact rev2 | E1, active rev1 |
+    // | R3 | rev1→rev1 | absent | rev2 | E2 |
+    let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    let managed = managed_test_host(host.clone());
+    let revision_one = awaken_session_contract::SessionResourceManifest::at_revision(
+        "workspace-a",
+        1,
+        awaken_session_contract::ResolvedSessionResources::default(),
+    );
+    let revision_two = awaken_session_contract::SessionResourceManifest::at_revision(
+        "workspace-a",
+        2,
+        awaken_session_contract::ResolvedSessionResources::default(),
+    );
+
+    for thread in ["exact-cold-transition", "mismatched-cold-transition"] {
+        let mut projection = frozen_projection_for_manifest(deferred_environment(), &revision_one);
+        projection.previous_resource_manifest = Some(revision_one.clone());
+        awaken_session_contract::SessionRuntime::install_session_projection(
+            &managed,
+            thread,
+            projection,
+            awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{thread}: complete projection producer: {error}"));
+        assert!(
+            host.thread_resource_manifest(thread).is_none(),
+            "{thread}: C2 active truth remains absent"
+        );
+    }
+    let active_thread = "active-previous-transition";
+    host.register_thread_resource_manifest(active_thread, revision_one.clone());
+    let mut active_projection =
+        frozen_projection_for_manifest(deferred_environment(), &revision_two);
+    active_projection.previous_resource_manifest = Some(revision_one.clone());
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        active_thread,
+        active_projection,
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("R2 complete projection producer");
+
+    let exact_before = host
+        .session_slots
+        .read("exact-cold-transition", |slot| {
+            slot.resource_transition.clone()
+        })
+        .flatten()
+        .expect("R1 exact transition projection");
+    assert_eq!(exact_before.previous(), &revision_one, "R1/C1 previous");
+    assert_eq!(exact_before.desired(), &revision_one, "R1/C1 desired");
+    host.install_dispatched_resources("exact-cold-transition", &revision_one, None)
+        .await
+        .expect("R1/E1 exact desired-only consumer");
+    assert_eq!(
+        host.session_slots
+            .read("exact-cold-transition", |slot| slot
+                .resource_transition
+                .clone())
+            .flatten(),
+        Some(exact_before),
+        "R1/E1 retains the exact producer transition"
+    );
+    assert!(
+        host.thread_resource_manifest("exact-cold-transition")
+            .is_none(),
+        "R1/E1 staging does not publish active truth"
+    );
+
+    let active_transition = host
+        .session_slots
+        .read(active_thread, |slot| slot.resource_transition.clone())
+        .flatten()
+        .expect("R2 exact transition projection");
+    assert_eq!(
+        active_transition.previous(),
+        &revision_one,
+        "R2/C1 previous"
+    );
+    assert_eq!(active_transition.desired(), &revision_two, "R2/C1 desired");
+    host.install_dispatched_resources(active_thread, &revision_two, None)
+        .await
+        .expect("R2/E1 exact desired consumer with active previous");
+    assert_eq!(
+        host.session_slots
+            .read(active_thread, |slot| slot.resource_transition.clone())
+            .flatten(),
+        Some(active_transition),
+        "R2/E1 retains the exact producer transition"
+    );
+    assert_eq!(
+        host.thread_resource_manifest(active_thread),
+        Some(revision_one.clone()),
+        "R2/E1 staging does not publish desired as active"
+    );
+
+    let mismatched_thread = "mismatched-cold-transition";
+    let before_mismatch = host
+        .session_slots
+        .read(mismatched_thread, |slot| {
+            (
+                slot.resource_transition.clone(),
+                slot.staged_resource_effect_key.clone(),
+                slot.workspace.clone(),
+                slot.manifest.clone(),
+            )
+        })
+        .expect("R3 producer slot");
+    let error = host
+        .install_dispatched_resources(mismatched_thread, &revision_two, None)
+        .await
+        .expect_err("R3/E2 mismatched desired-only consumer");
+    assert_eq!(error.code, "session_resource_transition_conflict", "R3/E2");
+    assert_eq!(
+        host.session_slots.read(mismatched_thread, |slot| {
+            (
+                slot.resource_transition.clone(),
+                slot.staged_resource_effect_key.clone(),
+                slot.workspace.clone(),
+                slot.manifest.clone(),
+            )
+        }),
+        Some(before_mismatch),
+        "R3/E2 rejects without mutating correlated Resource state"
     );
 }
 

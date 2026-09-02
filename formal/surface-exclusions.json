@@ -128,12 +128,6 @@
       "evidence": ["crates/runtime/awaken-ext-mcp/src/lib.rs"]
     },
     {
-      "path": "crates/runtime/awaken-ext-builtin-tools/src/agent.rs",
-      "boundary": "tool_invocation_adapter",
-      "reason": "Serializes the auxiliary-Agent input into an ordinary RawTool call and delegates execution and cancellation to the canonical generic tool boundary.",
-      "evidence": ["crates/runtime/awaken-ext-builtin-tools/src/agent.rs"]
-    },
-    {
       "path": "crates/runtime/awaken-ext-memory/src/agent.rs",
       "boundary": "static_agent_wiring",
       "reason": "Builds two fixed internal Agent snapshots from static instructions and descriptors; extraction admission, persistence, and secret filtering are owned by other modules.",
@@ -158,12 +152,6 @@
       "evidence": ["crates/runtime/awaken-observability/src/otel.rs"]
     },
     {
-      "path": "crates/runtime/awaken-observability/src/propagation.rs",
-      "boundary": "observability_adapter",
-      "reason": "Captures and restores W3C trace context around durable dispatch solely for trace parentage; dispatch authority and persisted business state do not depend on it.",
-      "evidence": ["crates/runtime/awaken-observability/src/propagation.rs"]
-    },
-    {
       "path": "crates/runtime/awaken-runtime-contract/src/lib.rs",
       "boundary": "module_facade",
       "reason": "Runtime-contract module declarations and public re-exports only; all behavior is inventoried in its defining modules.",
@@ -179,12 +167,6 @@
       "path": "crates/runtime/awaken-runtime-contract/src/plugin/contributions.rs",
       "boundary": "composition_registry",
       "reason": "Collects plugin-provided handles and identifiers without admitting them; capability-bound, duplicate, dependency, and permission checks remain in the execution-environment owner.",
-      "evidence": ["crates/runtime/awaken-runtime-contract/src/plugin/env.rs"]
-    },
-    {
-      "path": "crates/runtime/awaken-runtime-contract/src/plugin/mod.rs",
-      "boundary": "module_facade",
-      "reason": "Plugin module declarations and re-exports plus test cases; production capability enforcement and merge behavior are defined in capability.rs and env.rs.",
       "evidence": ["crates/runtime/awaken-runtime-contract/src/plugin/env.rs"]
     },
     {
@@ -210,12 +192,6 @@
       "boundary": "wire_dto",
       "reason": "AG-UI protocol serde shapes and error constructors only; request admission and event projection decisions live in request.rs and encoder.rs.",
       "evidence": ["crates/server/awaken-protocol-ag-ui/tests/router_errors.rs"]
-    },
-    {
-      "path": "crates/server/awaken-protocol-managed/src/state.rs",
-      "boundary": "module_facade",
-      "reason": "Managed adapter module assembly and shared imports/re-exports only; stateful behavior is defined in the listed submodules.",
-      "evidence": ["crates/server/awaken-protocol-managed/src/state/tests/mod.rs"]
     },
     {
       "path": "crates/server/awaken-protocol-managed/src/state/environment.rs",
@@ -290,12 +266,6 @@
       "evidence": ["crates/server/awaken-runtime-host/src/host/worker_resolver/dispatched_mcp_tests.rs"]
     },
     {
-      "path": "crates/server/awaken-runtime-host/src/no_model.rs",
-      "boundary": "fallback_adapter",
-      "reason": "Deterministic provider-free fallback response for an unconfigured host; it performs no model routing, secret access, authorization, or state mutation.",
-      "evidence": ["crates/server/awaken-runtime-host/src/no_model.rs"]
-    },
-    {
       "path": "crates/server/awaken-runtime-host/src/test_mcp.rs",
       "boundary": "test_only",
       "reason": "In-process MCP protocol emulator declared under cfg(test) and used only by runtime-host tests.",
@@ -318,12 +288,6 @@
       "boundary": "composition_adapter",
       "reason": "Static owner: hosted composition seam carrying already-selected provider ports. Dynamic path: startup injects those ports into canonical IAM, Vault, Session, and protocol owners; this file neither evaluates entitlement nor adopts credential material. Evidence: crates/control/awaken-credential-vault/src/repo.rs and the canonical downstream owners.",
       "evidence": ["crates/control/awaken-credential-vault/src/repo.rs"]
-    },
-    {
-      "path": "crates/contract/awaken-agent-contract/src/audit/model_request.rs",
-      "boundary": "projection_dto",
-      "reason": "Static owner: serializable model-request audit projection and retry counter. Dynamic path: already-decided request facts are lowered into audit events without admitting a model request or mutating Run state; the scanner's StateChanged term occurs only below cfg(test). Evidence: crates/contract/awaken-agent-contract/src/audit/run_event.rs.",
-      "evidence": ["crates/contract/awaken-agent-contract/src/audit/run_event.rs"]
     },
     {
       "path": "crates/server/awaken-coordinator/src/managed_lifecycle.rs",

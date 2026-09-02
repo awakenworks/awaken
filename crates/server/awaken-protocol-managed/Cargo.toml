@@ -143,6 +143,7 @@ name = "streaming"
 required-features = ["test-support"]
 
 [dev-dependencies]
+awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
 awaken-data-subject-store = { workspace = true, features = ["test-support"] }
 awaken-executable-environment-catalog.workspace = true
 awaken-work-store = { workspace = true, features = ["test-support"] }

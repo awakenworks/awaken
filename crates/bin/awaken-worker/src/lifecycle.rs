@@ -620,91 +620,124 @@ mod tests {
 
     use super::supervise_session_realization_reconciliation;
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn effectful_reconciliation_outlives_poll_budget_and_remains_single_flight() {
+        const PERIOD: std::time::Duration = std::time::Duration::from_secs(10);
+
+        let renewal_initial = Arc::new(tokio::sync::Notify::new());
+        let renewal_during_cold = Arc::new(tokio::sync::Notify::new());
+        let renewal_slow_started = Arc::new(tokio::sync::Notify::new());
+        let renewal_slow_release = Arc::new(tokio::sync::Notify::new());
+        let renewal_caught_up = Arc::new(tokio::sync::Notify::new());
         let cold_started = Arc::new(tokio::sync::Notify::new());
         let cold_release = Arc::new(tokio::sync::Notify::new());
-        let cold_restarted = Arc::new(tokio::sync::Notify::new());
-        let renewal_progress = Arc::new(tokio::sync::Notify::new());
+        let cold_caught_up = Arc::new(tokio::sync::Notify::new());
         let renewal_calls = Arc::new(AtomicUsize::new(0));
         let cold_calls = Arc::new(AtomicUsize::new(0));
+        let renewal_completed = Arc::new(AtomicBool::new(false));
         let cold_completed = Arc::new(AtomicBool::new(false));
 
-        // Cause/effect graph: C1 a cold recovery effect is still in flight
-        // after several short scheduler ticks; C2 lease renewal becomes due
-        // while C1 is pending; C3 another cold tick becomes due before C1
-        // completes; C4 C1 eventually reaches its durable boundary. Effects:
-        // E1 C1 is not cancelled by a poll deadline; E2 C2 continues through
-        // the same process supervisor; E3 C3 cannot start an overlapping
-        // claim-next drive; E4 the next recovery starts only after C4.
-        // Decision table: R1=C1+C2+!C4=>E1+E2;
-        // R2=C1+C3+!C4=>E1+E3; R3=C1+C3+C4=>E4. Ordinary errors are covered by
-        // the production closures, which log the explicit Host result before
-        // the next tick. Renewal and recovery own no local queue or new state;
-        // only their independent cadence is under test.
+        // Cause/effect graph: C1 cold recovery remains pending across several
+        // periods; C2 renewal becomes due while C1 is pending; C3 that renewal
+        // also remains pending across several periods; C4 both effects reach
+        // their durable boundary with several ticks overdue. Effects: E1 the
+        // independent renewal lane still starts while cold recovery is pending;
+        // E2 neither lane overlaps or cancels its pending effect; E3 each lane
+        // executes exactly one overdue tick after completion instead of a Burst
+        // replay; E4 no successor starts before its predecessor completes.
+        //
+        // | Rule | cold pending | renewal due | renewal pending | released | Effect |
+        // |---|---|---|---|---|---|
+        // | R1 | yes | yes | no | no | E1 |
+        // | R2 | yes | yes | yes | no | E2 + E4 |
+        // | R3 | yes | yes | yes | yes | E3 + E4 |
+        //
+        // Error reporting belongs to the production closures; this test owns
+        // only the shared supervisor cadence and adds no second scheduler.
         let task = tokio::spawn(supervise_session_realization_reconciliation(
-            std::time::Duration::from_millis(1),
-            std::time::Duration::from_millis(1),
+            PERIOD,
+            PERIOD,
             {
-                let progress = renewal_progress.clone();
+                let initial = renewal_initial.clone();
+                let during_cold = renewal_during_cold.clone();
+                let slow_started = renewal_slow_started.clone();
+                let slow_release = renewal_slow_release.clone();
+                let caught_up = renewal_caught_up.clone();
                 let calls = renewal_calls.clone();
+                let completed = renewal_completed.clone();
                 move || {
-                    let progress = progress.clone();
+                    let initial = initial.clone();
+                    let during_cold = during_cold.clone();
+                    let slow_started = slow_started.clone();
+                    let slow_release = slow_release.clone();
+                    let caught_up = caught_up.clone();
                     let calls = calls.clone();
+                    let completed = completed.clone();
                     async move {
-                        calls.fetch_add(1, Ordering::SeqCst);
-                        progress.notify_waiters();
+                        match calls.fetch_add(1, Ordering::SeqCst) + 1 {
+                            1 => initial.notify_one(),
+                            2 => during_cold.notify_one(),
+                            3 => {
+                                slow_started.notify_one();
+                                slow_release.notified().await;
+                                completed.store(true, Ordering::SeqCst);
+                            }
+                            4 => caught_up.notify_one(),
+                            _ => {}
+                        }
                     }
                 }
             },
             {
                 let started = cold_started.clone();
                 let release = cold_release.clone();
-                let restarted = cold_restarted.clone();
+                let caught_up = cold_caught_up.clone();
                 let calls = cold_calls.clone();
                 let completed = cold_completed.clone();
-                let first = Arc::new(AtomicBool::new(true));
                 move || {
                     let started = started.clone();
                     let release = release.clone();
-                    let restarted = restarted.clone();
+                    let caught_up = caught_up.clone();
                     let calls = calls.clone();
                     let completed = completed.clone();
-                    let first = first.swap(false, Ordering::SeqCst);
                     async move {
-                        calls.fetch_add(1, Ordering::SeqCst);
-                        if first {
-                            started.notify_one();
-                            release.notified().await;
-                            completed.store(true, Ordering::SeqCst);
-                        } else {
-                            restarted.notify_one();
+                        match calls.fetch_add(1, Ordering::SeqCst) + 1 {
+                            1 => {
+                                started.notify_one();
+                                release.notified().await;
+                                completed.store(true, Ordering::SeqCst);
+                            }
+                            2 => caught_up.notify_one(),
+                            _ => {}
                         }
                     }
                 }
             },
         ));
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), cold_started.notified())
-            .await
-            .expect("R1 cold recovery effect starts");
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while renewal_calls.load(Ordering::SeqCst) < 3 {
-                renewal_progress.notified().await;
-            }
-        })
-        .await
-        .expect("R1/E2 resident leases keep renewing during recovery I/O");
-        assert!(!cold_completed.load(Ordering::SeqCst), "R1/E1");
-        assert!(renewal_calls.load(Ordering::SeqCst) >= 3, "R1/E2");
-        assert_eq!(cold_calls.load(Ordering::SeqCst), 1, "R2/E3");
+        renewal_initial.notified().await;
+        tokio::time::advance(PERIOD).await;
+        cold_started.notified().await;
+        renewal_during_cold.notified().await;
+        assert_eq!(renewal_calls.load(Ordering::SeqCst), 2, "R1/E1");
+        assert_eq!(cold_calls.load(Ordering::SeqCst), 1, "R1");
 
+        tokio::time::advance(PERIOD).await;
+        renewal_slow_started.notified().await;
+        tokio::time::advance(PERIOD * 2 + PERIOD / 2).await;
+        assert_eq!(renewal_calls.load(Ordering::SeqCst), 3, "R2/E2");
+        assert_eq!(cold_calls.load(Ordering::SeqCst), 1, "R2/E2");
+        assert!(!renewal_completed.load(Ordering::SeqCst), "R2/E4");
+        assert!(!cold_completed.load(Ordering::SeqCst), "R2/E4");
+
+        renewal_slow_release.notify_one();
         cold_release.notify_one();
-        tokio::time::timeout(std::time::Duration::from_secs(1), cold_restarted.notified())
-            .await
-            .expect("R3/E4 next recovery follows the durable cold boundary");
+        renewal_caught_up.notified().await;
+        cold_caught_up.notified().await;
+        assert!(renewal_completed.load(Ordering::SeqCst), "R3/E4");
         assert!(cold_completed.load(Ordering::SeqCst), "R3/E4");
-        assert!(cold_calls.load(Ordering::SeqCst) >= 2, "R3/E4");
+        assert_eq!(renewal_calls.load(Ordering::SeqCst), 4, "R3/E3");
+        assert_eq!(cold_calls.load(Ordering::SeqCst), 2, "R3/E3");
         task.abort();
     }
 }

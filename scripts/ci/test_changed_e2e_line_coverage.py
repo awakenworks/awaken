@@ -296,6 +296,25 @@ evidence = "test"
         )
         self.assertEqual(moved_excluded, expected_moved)
 
+    def test_test_line_projection_preserves_feature_alternatives_and_later_code(self) -> None:
+        # Causes: C1 exact cfg(test) item; C2 all(test, feature) item; C3
+        # any(test, feature) item; C4 ordinary production after C1/C2.
+        # Effects: E1 C1/C2 lines are test-only; E2 C3/C4 remain production.
+        # Decision rules: P1=C1|C2 -> E1; P2=C3|C4 -> E2. The shared cfg
+        # evaluator owns these decisions for both boundary and coverage gates.
+        relative = "crates/example/src/projection.rs"
+        source = (
+            "#[cfg(test)]\nconst EXACT: usize = 1;\n"
+            "#[cfg(all(test, feature = \"loom\"))]\nconst ALL: usize = 2;\n"
+            "#[cfg(any(test, feature = \"support\"))]\nconst ANY: usize = 3;\n"
+            "const LATER: usize = 4;\n"
+        )
+        target = self.root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source, encoding="utf-8")
+
+        self.assertEqual(MODULE.test_only_lines(relative), {1, 2, 3, 4})
+
     def test_real_git_rename_and_filters_share_the_single_added_set(self) -> None:
         # Causes: C1 a high-similarity rename plus one append; C2 an inline
         # cfg(test) addition; C3 a src/tests.rs addition; C4 an ignored path.

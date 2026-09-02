@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from check_changed_e2e_line_coverage import TEST_MODULE
+import _crate_boundary_workspace
 
 
 VERSIONED_SQL = re.compile(r"^V[0-9]{4}__[a-z0-9_]+\.sql$")
@@ -130,33 +130,6 @@ def _conditional_errors(path: Path, source: str, root: Path) -> list[str]:
     return errors
 
 
-def _production_rust(source: str) -> str:
-    lines = source.splitlines(keepends=True)
-    for index, line in enumerate(lines):
-        marker = TEST_MODULE.match(line)
-        if marker is None:
-            continue
-        candidates = [line[marker.end() :], *lines[index + 1 : index + 6]]
-        item = next(
-            (
-                candidate
-                for candidate in candidates
-                if candidate.strip()
-                and not candidate.lstrip().startswith(("#", "//"))
-            ),
-            "",
-        )
-        if re.match(
-            r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{",
-            item,
-        ):
-            source = "".join(lines[:index])
-            break
-    return "\n".join(
-        line for line in source.splitlines() if not line.lstrip().startswith("//")
-    )
-
-
 def _migration_declarations(source: str) -> str:
     """Return the declaration region that owns inline Migration SQL.
 
@@ -194,7 +167,7 @@ def check_all(repo_root: Path) -> list[str]:
         )
 
     rust_sources = {
-        path: _production_rust(path.read_text(encoding="utf-8"))
+        path: _crate_boundary_workspace.production_rust(path.read_text(encoding="utf-8"))
         for path in sorted(crates.rglob("*.rs"))
         if "tests" not in path.parts
     }
@@ -361,8 +334,8 @@ def selftest() -> None:
     """
     assert VERSIONED_SQL.fullmatch("V0001__catalog.sql")  # M1
     assert not VERSIONED_SQL.fullmatch("catalog.sql")  # M2
-    assert DDL.search(_production_rust('const SQL: &str = "CREATE TABLE x(id TEXT)";'))  # M3
-    assert "Migration::new" in _production_rust(
+    assert DDL.search(_crate_boundary_workspace.production_rust('const SQL: &str = "CREATE TABLE x(id TEXT)";'))  # M3
+    assert "Migration::new" in _crate_boundary_workspace.production_rust(
         'Migration::new(1, "x", "CREATE TABLE {prefix}_x(id TEXT)")'
     )  # M4
     for test_module in (
@@ -370,12 +343,12 @@ def selftest() -> None:
         '#[cfg(all(test, not(feature = "loom")))]\n'
         'mod tests { const SQL: &str = "DROP TABLE fixture"; }',
     ):
-        assert not DDL.search(_production_rust(test_module))  # M8/E3
+        assert not DDL.search(_crate_boundary_workspace.production_rust(test_module))  # M8/E3
     attributed_import = (
         '#[cfg(test)]\nuse fixture::Store;\n'
         'const SQL: &str = "CREATE TABLE production(id TEXT)";'
     )
-    assert DDL.search(_production_rust(attributed_import))  # M9/E4/K2
+    assert DDL.search(_crate_boundary_workspace.production_rust(attributed_import))  # M9/E4/K2
     mixed = """pub fn bundle() {\nMigration::new(1, \"x\", \"CREATE TABLE x(id INT)\");\n}\n\
 pub fn write() { sql(\"INSERT OR IGNORE INTO x VALUES (1)\"); }"""
     assert "INSERT OR IGNORE" not in _migration_declarations(mixed)  # M6

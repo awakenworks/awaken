@@ -742,7 +742,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
 
         // Cause/effect decision table for an expired Session Run reservation:
         // C1=claim still current; C2=cancelled; C3=Session authority decision.
-        // E1=delete unstarted intent; E2=bind epoch and publish ordinary Pending;
+        // E1=delete unstarted reserved dispatch; E2=bind epoch and publish ordinary Pending;
         // E3=return to Reserved for retry; E4=stale owner changes nothing.
         //
         // | Rule | C1 | C2 | C3 | Queue effect | Executor |

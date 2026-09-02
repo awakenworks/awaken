@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import _crate_boundary_workspace
+
 
 SESSION_RUNTIME = "crates/contract/awaken-session-contract/src/session.rs"
 SESSION_CLEANUP = "crates/contract/awaken-session-contract/src/terminal_cleanup.rs"
@@ -318,24 +320,6 @@ REQUIRED = {
 }
 
 
-def _production_source(source: str) -> str:
-    """Exclude inline `#[cfg(test)] mod ...` items, not test-only helpers/fields."""
-    test_module = re.compile(
-        r"#\[cfg\(test\)\]\s*(?:#\[[^\]]+\]\s*)*mod\s+[A-Za-z0-9_]+\s*(?P<end>[;{])"
-    )
-    ranges: list[tuple[int, int]] = []
-    for match in test_module.finditer(source):
-        if match.group("end") == ";":
-            ranges.append((match.start(), match.end()))
-            continue
-        body_start = match.end() - 1
-        body_end = _matching_rust_brace(source, body_start)
-        ranges.append((match.start(), len(source) if body_end is None else body_end))
-    for start, end in reversed(ranges):
-        source = source[:start] + source[end:]
-    return source
-
-
 def _matching_rust_brace(source: str, body_start: int) -> int | None:
     depth = 0
     for index in range(body_start, len(source)):
@@ -349,15 +333,9 @@ def _matching_rust_brace(source: str, body_start: int) -> int | None:
     return None
 
 
-def _without_rust_comments(source: str) -> str:
-    """Remove comments so a prose copy cannot satisfy an executable guard."""
-    without_blocks = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
-    return re.sub(r"//[^\n]*", "", without_blocks)
-
-
 def _rust_function(source: str, name: str) -> str | None:
     """Return the first Rust function item with a body, including that body."""
-    source = _without_rust_comments(_production_source(source))
+    source = _crate_boundary_workspace.production_rust(source)
     signature = re.compile(
         rf"(?m)^[ \t]*(?:pub(?:\([^\n)]*\))?[ \t]+)?"
         rf"(?:async[ \t]+)?fn[ \t]+{re.escape(name)}\b"
@@ -456,7 +434,9 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         )
     )
 
-    realization = _production_source(sources.get(SESSION_TERMINAL_AUTHORIZATION, ""))
+    realization = _crate_boundary_workspace.production_rust(
+        sources.get(SESSION_TERMINAL_AUTHORIZATION, "")
+    )
     closed_authorization = re.search(
         r"#\[serde\(deny_unknown_fields\)\]\s*"
         r"pub struct SessionTerminalCleanupPreparationAuthorization\s*\{(?P<body>.*?)\n\}",
@@ -769,7 +749,9 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         RUNTIME_HOST_TERMINAL_PREPARATION,
         RUNTIME_HOST_TERMINAL_CLEANUP,
     ):
-        production = _production_source(sources.get(relative, ""))
+        production = _crate_boundary_workspace.production_rust(
+            sources.get(relative, "")
+        )
         for obsolete in (
             "execute_terminal_cleanup_for_effect",
             "SessionCleanupCompletion::new",

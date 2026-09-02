@@ -356,6 +356,65 @@ fn generated_session(id: &str) -> PersistedSession {
     session
 }
 
+/// Add the one durable Active MCP generation used by continuation tests. This
+/// fixture writes the same Session aggregate fields that the production MCP
+/// admission owns; callers vary only the generation set and receipt returned by
+/// the existing Runtime fake.
+fn add_acknowledged_active_mcp(
+    session: &mut PersistedSession,
+    name: &str,
+    generation: u64,
+) -> awaken_session_contract::McpGenerationRef {
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "worker-a".into(),
+        runtime_incarnation: "worker-a/boot-1".into(),
+        epoch: 7,
+        expires_at_unix_ms: u64::MAX,
+    };
+    session.realization = Some(lease.clone());
+    let attachment_id = awaken_session_contract::McpAttachmentId(name.into());
+    session
+        .mcp
+        .desired_names
+        .get_or_insert_with(Default::default)
+        .insert(name.into());
+    session
+        .mcp
+        .attachments
+        .push(awaken_session_contract::SessionMcpAttachment {
+            attachment_id: attachment_id.clone(),
+            name: name.into(),
+            generation: awaken_session_contract::McpGeneration(generation),
+            target: awaken_session_contract::McpTarget::parse_http(format!(
+                "https://{name}.example.test/mcp"
+            ))
+            .expect("continuation MCP fixture endpoint is valid"),
+            prompts_as_skills: false,
+            origin: awaken_session_contract::McpAttachmentOrigin::Agent,
+            credential: None,
+            selected_plaintext_holder: None,
+            state: awaken_session_contract::McpAttachmentState::Active,
+            publication_acknowledged: true,
+            realization: Some(awaken_session_contract::McpRealizationClaim {
+                realization_id: format!("realize-{name}-{generation}"),
+                runtime_incarnation: lease.runtime_incarnation.clone(),
+                lease_epoch: lease.epoch,
+                lease_expires_at_unix_ms: lease.expires_at_unix_ms,
+                stage_idempotency_key: format!("stage-{name}-{generation}"),
+            }),
+            attempts: 1,
+            last_error: None,
+        });
+    awaken_session_contract::McpGenerationRef {
+        session_id: session.session_id.clone(),
+        attachment_id,
+        generation: awaken_session_contract::McpGeneration(generation),
+        runtime_incarnation: lease.runtime_incarnation,
+        lease_epoch: lease.epoch,
+        lease_expires_at_unix_ms: lease.expires_at_unix_ms,
+    }
+}
+
 fn externally_placed(mut session: PersistedSession) -> PersistedSession {
     let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
     else {

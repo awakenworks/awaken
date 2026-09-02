@@ -1,14 +1,14 @@
 //! Fail-closed live run control: cancel, pause and wake by correlation-id (G5/G18).
 //!
-//! [`LiveRunControlService`] is the `LiveRunControl` seam described in G18:
-//! it owns active-run steering and nothing else. It never starts runs, publishes
-//! config, or owns a second commit mechanism. Cancellation tries the runtime live
-//! channel first (for in-flight runs), then the dispatch store for queued or
-//! awaiting runs. Wake is live-only and fail-closed: if no live subscriber accepts
-//! the command, [`Error::NoSubscriber`] is returned rather than silently
-//! succeeding — callers on direct ingress that receive this error must treat the
-//! operation as undelivered (G5: durable-only operations fail closed on direct
-//! ingress).
+//! [`LiveRunControlService`] is the protocol-neutral `LiveRunControl` seam and
+//! owns no Run truth or second commit mechanism. Cancellation first records intent
+//! through the authoritative Dispatch store. For a matching cancellable dispatch,
+//! it then signals the live Runtime when present and drives that same durable row
+//! through [`DispatchWorker`]; a live-delivery or drive failure is surfaced while
+//! the committed intent remains durable. When the store reports a terminal or
+//! unknown run, cancellation falls back only to inline live delivery. Pause and
+//! wake target the current attempt only and return [`Error::NoSubscriber`] when no
+//! subscriber accepts them.
 
 use std::sync::Arc;
 

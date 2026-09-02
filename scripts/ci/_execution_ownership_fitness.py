@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import _crate_boundary_workspace
+
 
 RETIRED_EXECUTION_PATHS = {
     "AgentContainerProvider": "ContainerEnvironmentProvider is the only Container Environment owner",
@@ -112,16 +114,6 @@ RAW_TOOL_REGISTRY_CONSUMERS = (
 )
 
 
-def _production(text: str) -> str:
-    """A terminal inline unit-test module is not a route owner.
-
-    Test-only imports/constants may appear before production routers, so cutting
-    at the first `#[cfg(test)]` silently omitted real owners. Rust source in this
-    repository keeps the inline `mod tests` last; cut only at that module marker.
-    """
-    return re.split(r"#\[cfg\(test\)\]\s*mod\s+\w+\s*\{", text, maxsplit=1)[0]
-
-
 def _normalized_path(path: str) -> str:
     return PARAMETER.sub(lambda match: "{*}" if match.group(0).startswith("{*") else "{}", path)
 
@@ -158,7 +150,9 @@ def _call_end(text: str, opening: int) -> int:
 
 
 def _owned_routes(path: Path) -> list[tuple[str, str]]:
-    text = _production(path.read_text(encoding="utf-8"))
+    text = _crate_boundary_workspace.production_rust(
+        path.read_text(encoding="utf-8")
+    )
     owned: list[tuple[str, str]] = []
     for match in ROUTE_START.finditer(text):
         opening = text.find("(", match.start(), match.end())
@@ -194,7 +188,9 @@ def duplicate_tool_registry_violations(sources: dict[str, str]) -> list[str]:
     if "pub struct RawToolRegistry" not in owner:
         errors.append(f"{RAW_TOOL_REGISTRY_OWNER}: missing authoritative RawToolRegistry")
     for relative, text in sources.items():
-        if PARALLEL_RAW_TOOL_REGISTRY.search(_production(text)):
+        if PARALLEL_RAW_TOOL_REGISTRY.search(
+            _crate_boundary_workspace.production_rust(text)
+        ):
             errors.append(
                 f"{relative}: parallel RawTool HashMap; reuse RawToolRegistry"
             )
@@ -223,7 +219,9 @@ def _is_this_checker(path: Path) -> bool:
 
 def runtime_host_boundary_violations(sources: dict[str, str]) -> list[str]:
     errors: list[str] = []
-    host_error_projection = _production(sources.get(RUNTIME_HOST_ERROR_OWNER, ""))
+    host_error_projection = _crate_boundary_workspace.production_rust(
+        sources.get(RUNTIME_HOST_ERROR_OWNER, "")
+    )
     for token in FORBIDDEN_HOST_ERROR_INFERENCE:
         if token in host_error_projection:
             errors.append(
@@ -307,8 +305,12 @@ def selftest() -> None:
     assert _normalized_path("/v1/agents/{agent_id}") == "/v1/agents/{}", "E1"
     assert _normalized_path("/v1/agents/{id}") == "/v1/agents/{}", "E1"
     assert ("GET", "/x") != ("POST", "/x"), "E2"
-    assert _production("prod\n#[cfg(test)]\nuse x;\nroute").endswith("route"), "E3 import"
-    assert _production("prod\n#[cfg(test)]\nmod tests { route }") == "prod\n", "E3 module"
+    assert _crate_boundary_workspace.production_rust(
+        "prod\n#[cfg(test)]\nuse x;\nroute"
+    ).strip().endswith("route"), "E3 import"
+    assert "route" not in _crate_boundary_workspace.production_rust(
+        "prod\n#[cfg(test)]\nmod tests { route }"
+    ), "E3 module"
     assert duplicate_route_owner_violations(
         [("GET", "/x", "a.rs"), ("GET", "/x", "a.rs")]
     ) == [], "E4 same owner"

@@ -98,12 +98,42 @@ impl DispatchSessionRuntime {
             .update(thread, |slot| slot.resource_projection.clone());
         let _resource_projection = resource_projection.lock().await;
         let active = managed.host.thread_resource_manifest(thread);
+        let live_environment = managed.host.session_environment(thread).await;
+        let (expected_binding, projected_transition) = managed
+            .host
+            .session_slots
+            .read(thread, |slot| {
+                (
+                    slot.environment_owner.durable_binding().is_some(),
+                    slot.resource_transition.clone(),
+                )
+            })
+            .unwrap_or_default();
+        if let Some(projected_transition) = projected_transition {
+            if projected_transition.desired() != manifest {
+                return Err(RunError::unavailable_classified(
+                    "session_resource_transition_conflict",
+                    "the cold Session already carries a different exact Resource transition",
+                ));
+            }
+            // The complete Session projection already owns the exact physical
+            // previous generation. Reuse that command for requirement staging
+            // so desired-only dispatch cannot replace it with an inferred
+            // Empty→desired transition or a no-op effect identity.
+            return managed
+                .stage_prevalidated_resource_transition_under_resource_projection(
+                    thread,
+                    &projected_transition,
+                    claim,
+                    expected_binding,
+                )
+                .await;
+        }
         if let Some(active) = &active {
             if active != manifest {
-                // A desired-only envelope cannot prove the physical previous
-                // generation. Every replacement, including an unattempted
-                // Coordinator amendment, must carry the exact aggregate
-                // `SessionResourceTransition` instead.
+                // Without an aggregate transition, a desired-only envelope
+                // cannot prove the physical previous generation. Every
+                // replacement must carry that exact command instead.
                 return Err(RunError::unavailable_classified(
                     "session_resource_transition_required",
                     "a desired-only Resource manifest cannot replace the active generation",
@@ -123,18 +153,6 @@ impl DispatchSessionRuntime {
                 )
                 .await;
         }
-
-        let live_environment = managed.host.session_environment(thread).await;
-        let (expected_binding, projected_transition) = managed
-            .host
-            .session_slots
-            .read(thread, |slot| {
-                (
-                    slot.environment_owner.durable_binding().is_some(),
-                    slot.resource_transition.clone(),
-                )
-            })
-            .unwrap_or_default();
         if live_environment.is_some() || expected_binding {
             return Err(RunError::unavailable_classified(
                 "session_resource_transition_required",
@@ -149,22 +167,12 @@ impl DispatchSessionRuntime {
         let proven_transition =
             awaken_session_contract::SessionResourceTransition::new(empty, manifest.clone())
                 .map_err(|error| RunError::bad_request(error.to_string()))?;
-        if projected_transition
-            .as_ref()
-            .is_some_and(|projected| projected != &proven_transition)
-        {
-            return Err(RunError::unavailable_classified(
-                "session_resource_transition_conflict",
-                "the cold Session already carries a different exact Resource transition",
-            ));
-        }
         managed
-            .stage_resource_manifest(
+            .stage_prevalidated_resource_transition_under_resource_projection(
                 thread,
-                &manifest.workspace_id,
-                manifest.revision,
-                &manifest.resources,
+                &proven_transition,
                 claim,
+                false,
             )
             .await?;
         // No resident or durable binding exists, so Empty→desired is proven

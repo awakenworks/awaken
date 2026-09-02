@@ -2,8 +2,17 @@ pub mod awaken_sqlite_runtime
 pub enum awaken_sqlite_runtime::SqliteConnectionError
 pub awaken_sqlite_runtime::SqliteConnectionError::Configure(rusqlite::error::Error)
 pub awaken_sqlite_runtime::SqliteConnectionError::Open(rusqlite::error::Error)
+pub enum awaken_sqlite_runtime::SqliteTaskError
+pub awaken_sqlite_runtime::SqliteTaskError::Join(tokio::runtime::task::error::JoinError)
+pub awaken_sqlite_runtime::SqliteTaskError::Poisoned
+pub awaken_sqlite_runtime::SqliteTaskError::SchedulerClosed
+pub struct awaken_sqlite_runtime::SharedSqliteConnection
+impl awaken_sqlite_runtime::SharedSqliteConnection
+pub fn awaken_sqlite_runtime::SharedSqliteConnection::lock(&self) -> std::sync::poison::LockResult<std::sync::poison::mutex::MutexGuard<'_, rusqlite::Connection>>
+pub fn awaken_sqlite_runtime::SharedSqliteConnection::new(rusqlite::Connection) -> Self
 pub struct awaken_sqlite_runtime::SqliteConnectionFactory
 impl awaken_sqlite_runtime::SqliteConnectionFactory
 pub fn awaken_sqlite_runtime::SqliteConnectionFactory::file(impl core::convert::AsRef<std::path::Path>) -> Self
 pub const fn awaken_sqlite_runtime::SqliteConnectionFactory::memory() -> Self
 pub fn awaken_sqlite_runtime::SqliteConnectionFactory::open(&self) -> core::result::Result<rusqlite::Connection, awaken_sqlite_runtime::SqliteConnectionError>
+pub async fn awaken_sqlite_runtime::with_connection<T, F>(awaken_sqlite_runtime::SharedSqliteConnection, F) -> core::result::Result<T, awaken_sqlite_runtime::SqliteTaskError> where T: core::marker::Send + 'static, F: core::ops::function::FnOnce(&mut rusqlite::Connection) -> T + core::marker::Send + 'static

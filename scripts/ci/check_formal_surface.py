@@ -15,6 +15,8 @@ import pathlib
 import re
 import sys
 
+import _crate_boundary_workspace
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 LEDGER = ROOT / "formal" / "coverage.json"
@@ -36,6 +38,37 @@ SIGNAL_GROUPS: dict[str, tuple[tuple[re.Pattern[str], ...], ...]] = {
             re.compile(r"\b(?:scope|tenant|workspace)[A-Za-z0-9_]*\b", re.I),
             re.compile(r"\b(?:resolve|guard|fence|admit|claim|allow|deny)\w*\b", re.I),
         ),
+        (
+            re.compile(r"\bvalidate_credential_file_ownership\b"),
+            re.compile(r"\bRole::(?:AllInOne|Coordinator|Worker)\b"),
+        ),
+        (re.compile(r"\bcheck_entitlement\b"),),
+        (
+            re.compile(r"\bhas_work_session_access\b"),
+            re.compile(r"\bWorkSessionAccess\b"),
+            re.compile(r"\bWorkspaceScope::non_empty\b"),
+        ),
+        (
+            re.compile(r"\bNetworkPolicy::(?:Unrestricted|Allowlist)\b"),
+            re.compile(r"\bEnvironmentNetworking::(?:Unrestricted|Limited)\b"),
+        ),
+        (
+            re.compile(r"\bSha256::new\b"),
+            re.compile(r"\bcall_id\.as_bytes\b"),
+            re.compile(r"\bwrite_workspace_file\b"),
+        ),
+        (
+            re.compile(r"\bComponent::(?:ParentDir|RootDir|Prefix)\b"),
+            re.compile(r"\bfn\s+safe_root\b"),
+        ),
+        (
+            re.compile(r"\bK8S_DNS_(?:LABEL|SUBDOMAIN)_MAX_LEN\b"),
+            re.compile(r"\bblake3::hash\s*\(\s*scope\.as_bytes\s*\(\s*\)\s*\)"),
+        ),
+        (
+            re.compile(r"\bSandboxControlBindingRequest::"),
+            re.compile(r"\bautomount_service_account_token\b"),
+        ),
     ),
     "state_machine": (
         (
@@ -48,10 +81,35 @@ SIGNAL_GROUPS: dict[str, tuple[tuple[re.Pattern[str], ...], ...]] = {
             re.compile(r"\b(?:terminal|absorbing)\w*\b", re.I),
             re.compile(r"\b(?:state|phase|status|outcome)\w*\b", re.I),
         ),
+        (
+            re.compile(r"\bfn\s+[A-Za-z0-9_]*archive[A-Za-z0-9_]*\b"),
+            re.compile(r"\bSessionDisposition::"),
+        ),
+        (
+            re.compile(r"\bTaskStatus::"),
+            re.compile(r"\bToolTaskPoll::"),
+        ),
+        (
+            re.compile(r"\benum\s+(?:Result|Status)Matcher\b"),
+            re.compile(r"\bfn\s+(?:result_matches|status_match)\b"),
+        ),
+        (
+            re.compile(r"\bsession_slots\s*\.\s*update\s*\("),
+            re.compile(
+                r"\benvironment_owner\s*\.\s*(?:begin_[A-Za-z0-9_]*|publish_prepared)\s*\("
+            ),
+        ),
     ),
     "concurrency": (
         (re.compile(r"\b(?:Mutex|RwLock|Atomic[A-Za-z0-9_]*|compare_exchange)\b"),),
         (re.compile(r"\b(?:tokio::select|loom::|spawn_blocking|JoinSet)\b"),),
+        (
+            re.compile(
+                r"\bwatch::Receiver\s*<\s*Option\s*<\s*JsonRpcNotifier\s*>\s*>"
+            ),
+            re.compile(r"\bpublished_notifier\b"),
+        ),
+        (re.compile(r"\.\s*lock\s*\(\s*\)\s*\.\s*await\b"),),
     ),
     "durability": (
         (
@@ -69,6 +127,29 @@ SIGNAL_GROUPS: dict[str, tuple[tuple[re.Pattern[str], ...], ...]] = {
             re.compile(r"\b(?:state|durable|pending|queue|outbox|checkpoint)\w*\b", re.I),
         ),
         (re.compile(r"\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO|FROM)?\b", re.I),),
+        (
+            re.compile(r"\bexpected_prior_commit\b"),
+            re.compile(r"\bverify[A-Za-z0-9_]*\b"),
+        ),
+        (
+            re.compile(r"\breceipt_fingerprint[A-Za-z0-9_]*\b"),
+            re.compile(r"\b(?:verify|canonical)[A-Za-z0-9_]*\b"),
+            re.compile(r"\bsession_cleanup_completion_admitted\s*\("),
+        ),
+        (
+            re.compile(r"\benum\s+PublishedMemoryStream\b"),
+            re.compile(r"\bselected_memory_store_bundle\b"),
+        ),
+        (
+            re.compile(r"\bResourceReferenceIndex\b"),
+            re.compile(r"\badd_reference\b"),
+            re.compile(r"\bremove_reference\b"),
+        ),
+        (
+            re.compile(r"\bLiveCommand::Cancel\b"),
+            re.compile(r"\.\s*cancel\s*\(\s*&run_id\s*\)"),
+            re.compile(r"\.\s*tick_run\s*\(\s*&run_id\b"),
+        ),
     ),
     "secret_boundary": (
         (re.compile(r"\b(?:PlaintextHolder|PlaintextBoundary)\b"),),
@@ -78,6 +159,28 @@ SIGNAL_GROUPS: dict[str, tuple[tuple[re.Pattern[str], ...], ...]] = {
                 r"\b(?:resolve|materializ|validate|rotate|revoke|redact|inject|holder|boundary)\w*\b",
                 re.I,
             ),
+        ),
+        (
+            re.compile(r"\bstruct\s+RedactedString\b"),
+            re.compile(r"\b(?:expose_secret|zeroize)\b"),
+        ),
+        (
+            re.compile(r"\bfn\s+http_basic_material\b"),
+            re.compile(r"\bStructuredCredentialMaterial\b"),
+            re.compile(r"\bRedactedString\b"),
+        ),
+        (re.compile(r"\bSealedAeadSecretStore::over\b"),),
+        (
+            re.compile(r"\bCredentialArtifactCodec\b"),
+            re.compile(r"\.\s*expose_secret\s*\("),
+        ),
+        (
+            re.compile(r"\bclassify_secret_store_error\b"),
+            re.compile(r"\bCredentialMaterialError::(?:Invalid|Unavailable)\b"),
+        ),
+        (
+            re.compile(r"\bproject_work_with_secret\b"),
+            re.compile(r"\.\s*expose_secret\s*\("),
         ),
     ),
 }
@@ -113,13 +216,8 @@ def is_production_source(path: pathlib.Path) -> bool:
     return not any(part in {"tests", "test_support", "fixtures"} for part in parts)
 
 
-def code_without_comments(source: str) -> str:
-    source = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
-    return "\n".join(line.split("//", 1)[0] for line in source.splitlines())
-
-
 def detect_signals(source: str) -> list[str]:
-    code = code_without_comments(source)
+    code = _crate_boundary_workspace.production_rust(source)
     return [
         category
         for category, groups in SIGNAL_GROUPS.items()

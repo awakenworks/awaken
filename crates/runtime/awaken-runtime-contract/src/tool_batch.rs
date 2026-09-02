@@ -249,14 +249,12 @@ const fn permits_await_transition(phase: CallPhaseView, another_call_is_awaiting
         )
 }
 
-impl From<ToolAwaitReason> for ToolWaitKind {
-    fn from(reason: ToolAwaitReason) -> Self {
-        match reason {
-            ToolAwaitReason::Permission => Self::ToolPermission,
-            ToolAwaitReason::ClientExecution => Self::ExternalResult,
-            ToolAwaitReason::ScheduledAction => Self::ScheduledAction,
-            ToolAwaitReason::Delegation => Self::Delegation,
-        }
+const fn tool_wait_kind(reason: ToolAwaitReason) -> ToolWaitKind {
+    match reason {
+        ToolAwaitReason::Permission => ToolWaitKind::ToolPermission,
+        ToolAwaitReason::ClientExecution => ToolWaitKind::ExternalResult,
+        ToolAwaitReason::ScheduledAction => ToolWaitKind::ScheduledAction,
+        ToolAwaitReason::Delegation => ToolWaitKind::Delegation,
     }
 }
 
@@ -516,11 +514,11 @@ impl ToolBatch {
     /// Validate that this aggregate is the exact execution truth named by a
     /// committed ResumeTicket. Every identity and payload axis is checked, so a
     /// stale ticket cannot resume another Run, Thread, call, tool, or wait.
-    pub fn validate_awaiting_ticket<'a>(
-        &'a self,
+    pub fn validate_awaiting_ticket(
+        &self,
         expected_thread: &ThreadId,
         ticket: &ResumeTicket,
-    ) -> Result<&'a DurableToolCall, ToolBatchWaitError> {
+    ) -> Result<(), ToolBatchWaitError> {
         if self.phase == ToolBatchPhase::Finalized {
             return Err(ToolBatchWaitError::Finalized);
         }
@@ -549,7 +547,7 @@ impl ToolBatch {
         let ToolCallPhase::Awaiting { wait } = &entry.phase else {
             unreachable!("entry selected from awaiting calls")
         };
-        if wait.kind != (*reason).into() {
+        if wait.kind != tool_wait_kind(*reason) {
             return Err(ToolBatchWaitError::KindMismatch);
         }
         if wait.correlation_id != ticket.correlation_id {
@@ -558,7 +556,7 @@ impl ToolBatch {
         if entry.call.tool_id != tool.tool_id || entry.call.arguments != tool.arguments {
             return Err(ToolBatchWaitError::ToolMismatch);
         }
-        Ok(entry)
+        Ok(())
     }
 
     pub fn complete(&mut self, output: ToolOutput) -> Result<(), ToolBatchError> {
@@ -884,24 +882,47 @@ mod tests {
         // Cause/effect graph: C1 batch is open; C2 exactly one call awaits;
         // C3 Run matches; C4 Thread matches; C5 target is a tool call; C6 call
         // id matches; C7 reason maps to the wait kind; C8 correlation matches;
-        // C9 tool id and arguments match. Effect E1 is the sole awaiting entry;
-        // each negated cause fails closed with its specific error and no state
-        // transition. The decision table has one success rule A1=C1..C9=>E1
-        // and one MC/DC rule A2..A10 for each independently negated cause.
+        // C9 tool id and arguments match. Effect E1 proves exact coherence by
+        // returning unit without exposing or mutating the DurableToolCall; each
+        // negated cause fails closed with its specific error and no state
+        // transition. The decision table has four positive mapping rules
+        // A1a..A1d=C1..C9=>E1, one for every durable wait reason, and one MC/DC
+        // rule A2..A10 for each independently negated cause.
+        for (rule, reason, kind) in [
+            (
+                "A1a",
+                ToolAwaitReason::Permission,
+                ToolWaitKind::ToolPermission,
+            ),
+            (
+                "A1b",
+                ToolAwaitReason::ClientExecution,
+                ToolWaitKind::ExternalResult,
+            ),
+            (
+                "A1c",
+                ToolAwaitReason::ScheduledAction,
+                ToolWaitKind::ScheduledAction,
+            ),
+            ("A1d", ToolAwaitReason::Delegation, ToolWaitKind::Delegation),
+        ] {
+            let mut mapped = two_call_batch();
+            mapped.mark_awaiting("c1", kind, "corr").unwrap();
+            let ticket = tool_ticket(reason, "c1", "tool-c1", "corr");
+            let before = mapped.clone();
+            assert_eq!(
+                mapped.validate_awaiting_ticket(&ThreadId("thread".into()), &ticket),
+                Ok(()),
+                "{rule}/E1"
+            );
+            assert_eq!(mapped, before, "{rule}/E1 is validation-only");
+        }
+
         let mut batch = two_call_batch();
         batch
             .mark_awaiting("c1", ToolWaitKind::ToolPermission, "corr")
             .unwrap();
         let exact = tool_ticket(ToolAwaitReason::Permission, "c1", "tool-c1", "corr");
-        assert_eq!(
-            batch
-                .validate_awaiting_ticket(&ThreadId("thread".into()), &exact)
-                .unwrap()
-                .call
-                .call_id,
-            "c1",
-            "A1/E1"
-        );
 
         let mut wrong_run = exact.clone();
         wrong_run.run_id = RunId("other".into());

@@ -32,6 +32,20 @@ fn map_claimed_session_control_error(
     }
 }
 
+/// Compare the carried Run manifest with the one effect-capable Resource
+/// transition authored by Control. Decoding through the projection's canonical
+/// transition boundary keeps legacy validation and physical replay rules out of
+/// the Worker transport adapter.
+fn control_projection_matches_dispatched_manifest(
+    projection: &awaken_session_contract::FrozenSessionProjection,
+    dispatched: &awaken_session_contract::SessionResourceManifest,
+) -> Result<bool, awaken_session_contract::RunError> {
+    Ok(projection
+        .resource_transition(awaken_session_contract::FrozenResourceTransitionUse::ApplyEffects)?
+        .desired()
+        == dispatched)
+}
+
 /// Install the frozen Session projection under the authenticated Run claim.
 /// Session authoring is complete before WorkQueue dispatch; the Worker can
 /// realize committed truth but cannot contribute another desired-state input.
@@ -95,13 +109,21 @@ pub(super) async fn install_claimed_session_projection(
             claimed.lease.run_id.0
         ))
     })?;
-    if let Some(dispatched) = dispatched_resources
-        && (dispatched.workspace_id != directive.projection.workspace_id
-            || dispatched.resources != directive.projection.resources)
-    {
-        return Err(HostWorkerResolver::execution_error(
-            "Control resume projection conflicts with the claimed resource snapshot",
-        ));
+    if let Some(dispatched) = dispatched_resources {
+        let exact = control_projection_matches_dispatched_manifest(
+            &directive.projection,
+            dispatched,
+        )
+        .map_err(|error| {
+            HostWorkerResolver::execution_error(format!(
+                "Control resume projection has no effect-capable Resource transition: {error}"
+            ))
+        })?;
+        if !exact {
+            return Err(HostWorkerResolver::execution_error(
+                "Control resume projection conflicts with the claimed resource snapshot",
+            ));
+        }
     }
     HostWorkerResolver::drive_session_realization(
         host,
@@ -116,6 +138,94 @@ pub(super) async fn install_claimed_session_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_projection_requires_the_exact_dispatched_resource_manifest() {
+        use crate::host::worker_resolver::test_support::{
+            deferred_environment, frozen_projection_for_manifest,
+        };
+
+        // Cause/effect graph: C1 Control supplies an effect-capable transition;
+        // C2 the carried manifest matches/mismatches desired Workspace,
+        // revision, or resources; C3 a resident legacy projection omits the
+        // prior generation. Effects: E1 only exact desired truth is accepted;
+        // E2 every individual coordinate mismatch rejects; E3 ApplyEffects
+        // fails closed before the Worker treats legacy desired state as a
+        // physical transition.
+        //
+        // | Rule | C1 | C2 | C3 | Effect |
+        // | R1 | yes | exact | no | E1 accept |
+        // | R2 | yes | Workspace mismatch | no | E2 reject |
+        // | R3 | yes | revision mismatch | no | E2 reject |
+        // | R4 | yes | resources mismatch | no | E2 reject |
+        // | R5 | no | exact desired | yes | E3 error |
+        let desired = awaken_session_contract::SessionResourceManifest::at_revision(
+            "workspace-a",
+            7,
+            awaken_session_contract::ResolvedSessionResources::default(),
+        );
+        let projection = frozen_projection_for_manifest(deferred_environment(), &desired);
+        assert!(
+            control_projection_matches_dispatched_manifest(&projection, &desired)
+                .expect("R1 effect-capable transition"),
+            "R1/E1 exact desired manifest"
+        );
+
+        let different_resources = awaken_session_contract::ResolvedSessionResources::try_new(
+            Vec::new(),
+            vec![awaken_session_contract::ResolvedSkillBinding {
+                kind: awaken_agent_contract::AgentSkillKind::Custom,
+                skill_id: "different-skill".into(),
+                version: 1,
+                bundle_sha256: "sha256-different".into(),
+            }],
+        )
+        .expect("R4 valid different resources");
+        for (rule, carried) in [
+            (
+                "R2",
+                awaken_session_contract::SessionResourceManifest::at_revision(
+                    "workspace-b",
+                    7,
+                    Default::default(),
+                ),
+            ),
+            (
+                "R3",
+                awaken_session_contract::SessionResourceManifest::at_revision(
+                    "workspace-a",
+                    8,
+                    Default::default(),
+                ),
+            ),
+            (
+                "R4",
+                awaken_session_contract::SessionResourceManifest::at_revision(
+                    "workspace-a",
+                    7,
+                    different_resources,
+                ),
+            ),
+        ] {
+            assert!(
+                !control_projection_matches_dispatched_manifest(&projection, &carried)
+                    .unwrap_or_else(|error| panic!("{rule} transition decode: {error}")),
+                "{rule}/E2"
+            );
+        }
+
+        let mut legacy_bound = projection;
+        legacy_bound.previous_resource_manifest = None;
+        legacy_bound.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+            binding: "durable-environment".into(),
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        };
+        let error = control_projection_matches_dispatched_manifest(&legacy_bound, &desired)
+            .expect_err("R5 legacy bound projection cannot authorize effects");
+        assert_eq!(error.code, "session_resource_transition_missing", "R5/E3");
+    }
 
     #[test]
     fn claimed_session_control_uses_the_contract_disposition() {

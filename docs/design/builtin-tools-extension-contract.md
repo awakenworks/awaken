@@ -15,11 +15,12 @@ authority, credential secrets, or public protocol DTOs.
 |---|---|---|---|
 | `builtin-hand-tools` | local hand operations | Runtime extension (in-process) | `bash`, `read`, `write`, `edit`, `glob`, `grep`; the two Web tools use the shared configurable Web provider catalog |
 | `builtin-delegation-tools` | Agent delegation | Runtime extension (local or remote child Run) | one `agent_run` tool with `agent_id` argument |
-| `builtin-coordination-tools` | Session-scoped Agent roster and messaging | Runtime extension plus Session coordination | fixed `list_agents` and `send_message`; projected only for a Managed primary Session and backed by source Thread state plus a deterministic target Run |
+| `builtin-coordination-tools` | Session-scoped Agent roster and messaging | Runtime extension plus Session coordination | fixed `list_agents` and `send_message`; projected only for a Managed primary Session with a published delegate or Advisor and backed by source Thread state plus a deterministic target Run |
 
 Installing the package does not make every tool visible to every agent. Hand and
 native delegation descriptors follow publication selection; the Managed host
-projects its fixed coordination pair only into a Managed primary execution clone.
+projects its fixed coordination pair only into a Managed primary execution clone
+with a published delegate or Advisor.
 
 ## Common Contract
 
@@ -129,11 +130,12 @@ Do not generate `agent_run_<agent_id>` descriptors.
 
 ## Managed Coordination Tools
 
-A Managed primary Session replaces native delegation descriptors with exactly
-`list_agents` and `send_message`. A Managed child receives neither native
-delegation nor another coordination surface. `send_message` commits its request
-through source Thread state and freezes its input in the deterministic target
-Run; it does not install a second mailbox or pending store.
+A Managed primary Session with a published delegate or Advisor replaces native
+delegation descriptors with exactly `list_agents` and `send_message`. A Managed
+single-Agent Session receives no coordination tools, and a Managed child receives
+neither native delegation nor another coordination surface. `send_message`
+commits its request through source Thread state and freezes its input in the
+deterministic target Run; it does not install a second mailbox or pending store.
 
 ## First Vertical Slice
 

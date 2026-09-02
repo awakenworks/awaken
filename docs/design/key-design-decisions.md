@@ -272,18 +272,23 @@ store/
   committed_thread_view.rs
 ```
 
-Durable-ingress modules use their own context:
+Direct and durable delivery use one physical-attempt composition:
 
 ```text
-run_ingress::{direct, durable, lifecycle}
-durable_host::{
-  input_buffer,
-  dispatch_coordinator,
-  recovery_replay,
-  event_capture,
-  staging_coordinator,
+runtime::DirectAttemptDriver
+run_ingress::{
+  RunDispatch,
+  DispatchQueue,
+  DispatchWorker::{physical_attempt, claim_renewal},
+  pool,
   live_control,
-  commit_boundary,
+}
+runtime_host::host::{
+  completion,
+  run,
+  durable_control,
+  session,
+  worker_resolver,
 }
 ```
 
@@ -375,7 +380,7 @@ extension package with independently enabled toolsets:
 |---|---|---|
 | `builtin-hand-tools` | `bash`, `read`, `write`, `edit`, `glob`, `grep` | registers filesystem and shell tools that execute in-process; `web_fetch` and `web_search` each have one separately configured plugin owner |
 | `builtin-delegation-tools` | `agent_run` | registers one delegation tool; target agent is an argument, not a generated tool id |
-| `builtin-coordination-tools` | `list_agents`, `send_message` | the Managed primary replaces native delegation with this one Thread-owned roster/follow-up surface; Managed children receive neither family |
+| `builtin-coordination-tools` | `list_agents`, `send_message` | a Managed primary with a published delegate or Advisor replaces native delegation with this one Thread-owned roster/follow-up surface; a Managed single-Agent Session receives no coordination tools, and Managed children receive neither family |
 
 There is no generic builtin Task command family. Cancellation, recovery, A2A/MCP
 Task operations, and generic async-tool control retain their existing typed

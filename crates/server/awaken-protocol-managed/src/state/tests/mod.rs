@@ -2,34 +2,9 @@ use super::test_support::{RehydrateFake, create_session_fixture, ephemeral_sessi
 use super::*;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
+use awaken_service_lifecycle::run_composed_async_test;
 use awaken_session_contract::ToolPermissionDecision;
 use std::collections::{BTreeMap, BTreeSet};
-
-const COMPOSED_ASYNC_TEST_STACK_BYTES: usize = 32 * 1024 * 1024;
-
-fn run_composed_async_test<F, Fut>(case: F)
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + 'static,
-{
-    // One test-only executor owns the larger stack required by deeply composed
-    // Managed recovery futures. The case remains an ordinary async function,
-    // so this changes neither its authority path nor its behavior oracle.
-    let test = std::thread::Builder::new()
-        .name("managed-state-composed-test".into())
-        .stack_size(COMPOSED_ASYNC_TEST_STACK_BYTES)
-        .spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("composed Managed-state test runtime")
-                .block_on(case());
-        })
-        .expect("spawn composed Managed-state test thread");
-    if let Err(panic) = test.join() {
-        std::panic::resume_unwind(panic);
-    }
-}
 
 fn ephemeral_resource_registry() -> awaken_resource_application::RegistryApplication {
     let storage = Arc::new(

@@ -7,6 +7,7 @@ pub use awaken_cli::ManagementAuthz
 pub use awaken_cli::ManagementIdentityMode
 pub use awaken_cli::RemoteManagementAuthz
 pub use awaken_cli::TokenSpec
+pub use awaken_cli::block_on_service
 pub use awaken_cli::embedded_iam
 pub mod awaken_cli::config
 pub use awaken_cli::config::WorkerBootstrap
@@ -83,6 +84,7 @@ pub fn awaken_cli::config::ExecutableAgentRegistrationConfig::control_credential
 pub fn awaken_cli::config::ExecutableAgentRegistrationConfig::coordinator_authenticator(&self) -> core::result::Result<alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>, alloc::string::String>
 pub struct awaken_cli::config::ResolvedDeployment
 pub awaken_cli::config::ResolvedDeployment::admin_listen: core::option::Option<alloc::string::String>
+pub awaken_cli::config::ResolvedDeployment::ai_sdk_browser_cors: awaken_coordinator::browser_cors::AiSdkBrowserCors
 pub awaken_cli::config::ResolvedDeployment::bind: alloc::string::String
 pub awaken_cli::config::ResolvedDeployment::cloud_iam: awaken_cli::config::CloudIamConfig
 pub awaken_cli::config::ResolvedDeployment::cloud_models: awaken_cli::config::CloudModelMode
@@ -234,7 +236,6 @@ pub awaken_cli::PreparedProcess::service_lifecycle: awaken_service_lifecycle::Se
 pub trait awaken_cli::ManagedBackgroundService: core::marker::Send + core::marker::Sync
 pub fn awaken_cli::ManagedBackgroundService::name(&self) -> &'static str
 pub fn awaken_cli::ManagedBackgroundService::run<'life0, 'async_trait>(&'life0 self, tokio_util::sync::cancellation_token::CancellationToken) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_cli::block_on_service<F: core::future::future::Future>(F) -> <F as core::future::future::Future>::Output
 pub async fn awaken_cli::build_all_in_one_router() -> axum::routing::Router
 pub async fn awaken_cli::build_all_in_one_router_with_deployment(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub async fn awaken_cli::build_control_router(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<axum::routing::Router, alloc::string::String>

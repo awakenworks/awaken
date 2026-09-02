@@ -18,12 +18,10 @@ fn test_model_binding() -> awaken_runtime_contract::resolved::ModelBinding {
 fn awaiting_tool_batch_state(
     run_id: &RunId,
     ticket: &ResumeTicket,
+    wait_kind: awaken_runtime_contract::ToolWaitKind,
 ) -> awaken_agent_contract::agent::state::Command {
-    let awaken_agent_contract::agent::awaiting::AwaitTarget::ToolCall {
-        reason,
-        call_id,
-        tool,
-    } = ticket.target()
+    let awaken_agent_contract::agent::awaiting::AwaitTarget::ToolCall { call_id, tool, .. } =
+        ticket.target()
     else {
         panic!("awaiting tool-batch fixture requires a tool ticket")
     };
@@ -41,7 +39,7 @@ fn awaiting_tool_batch_state(
     )
     .expect("valid awaiting tool-batch fixture");
     batch
-        .mark_awaiting(call_id, (*reason).into(), ticket.correlation_id.clone())
+        .mark_awaiting(call_id, wait_kind, ticket.correlation_id.clone())
         .expect("ticket and tool batch enter one exact wait");
     awaken_runtime_contract::ActiveToolBatch::write(&Some(batch))
 }
@@ -13549,57 +13547,157 @@ fn session_event_dispatch_uses_the_explicit_persisted_trace_source() {
     );
 }
 
-/// Dispatch projection rule: a registered manifest's Workspace, generation, and
-/// resolved values are one cause tuple; the envelope decode must reproduce that
-/// tuple exactly and select the Session-resource worker capability.
+/// Dispatch Resource selection stays on the one Session-slot authority for both
+/// ordinary and Session-root durable requests.
 #[test]
 fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
-    let host = SharedHost::new(Arc::new(OkModel), "host-default");
-    let thread = "t-dispatch-resources";
-    let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
-        "workspace-a",
-        7,
-        awaken_session_contract::ResolvedSessionResources::default(),
-    );
-    host.register_thread_resource_manifest(thread, manifest.clone());
-    let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
-        .model(test_model_binding())
-        .fingerprint("sha256:dispatch-resources")
-        .build();
-    let activation = awaken_runtime_contract::RunActivation::new(
-        awaken_agent_contract::agent::run::Id("run-dispatch-resources".into()),
-        awaken_agent_contract::agent::thread::Id(thread.into()),
-        snapshot,
-        Vec::new(),
-    );
+    // Cause/effect graph: C1 the slot is/is-not a prepared Session; C2 the
+    // canonical root/ordinary decorator is selected; C3 an aggregate-staged
+    // Resource transition exists; C4 an active manifest exists; C5 an
+    // Environment runtime projection exists independently of Session admission.
+    // Effects: E1 a non-Session projection carries active even with C5; E2
+    // every prepared Session projection carries desired, independently of root
+    // affinity; E3 desired works before active exists and wins over stale
+    // active; E4 a legacy Session without a transition falls back to active;
+    // E5 dispatch decoration never publishes or replaces active; E6 runtime
+    // projection presence and exact root Session affinity follow C5 and C1+C2,
+    // respectively. Scope and Worker capability derive from the exact selected
+    // manifest.
+    //
+    // | Rule | C1 | Root | C3   | C4   | C5 | Carried | Runtime | Affinity | Active after |
+    // | R1   | F  | T    | none | A    | T  | A       | some    | none     | A            |
+    // | R2   | T  | F    | A->B | A    | F  | B       | none    | none     | A            |
+    // | R3   | T  | T    | 0->B | none | F  | B       | none    | thread   | none         |
+    // | R4   | T  | T    | A->B | A    | F  | B       | none    | thread   | A            |
+    // | R5   | T  | T    | none | A    | F  | A       | none    | thread   | A            |
+    // | R6   | T  | T    | A->B | A    | T  | B       | some    | thread   | A            |
+    // Constraint: C1, C3, C4, runtime projection, and the selected manifest are
+    // read under one Session-slot lock, so no dispatch can mix generations.
+    for (
+        rule,
+        prepared_session,
+        root_decorator,
+        runtime_projection,
+        active_revision,
+        desired_revision,
+        expected_revision,
+    ) in [
+        ("R1", false, true, true, Some(4), None, 4),
+        ("R2", true, false, false, Some(4), Some(7), 7),
+        ("R3", true, true, false, None, Some(7), 7),
+        ("R4", true, true, false, Some(4), Some(7), 7),
+        ("R5", true, true, false, Some(4), None, 4),
+        ("R6", true, true, true, Some(4), Some(7), 7),
+    ] {
+        let host = SharedHost::new(Arc::new(OkModel), "host-default");
+        let thread = format!("t-dispatch-resources-{rule}");
+        let resources = |generation: &str| {
+            effective_resources(vec![TestInput {
+                kind: "file".into(),
+                id: format!("file-{generation}-{rule}"),
+                mount_path: format!("/workspace/{generation}-{rule}"),
+                access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                instructions: Some(format!("{generation} instructions for {rule}")),
+                initial_branch: None,
+                initial_commit: None,
+            }])
+        };
+        let active = active_revision.map(|revision| {
+            awaken_session_contract::SessionResourceManifest::at_revision(
+                "workspace-a",
+                revision,
+                resources("active"),
+            )
+        });
+        let desired = desired_revision.map(|revision| {
+            awaken_session_contract::SessionResourceManifest::at_revision(
+                "workspace-a",
+                revision,
+                resources("desired"),
+            )
+        });
+        let transition = desired.clone().map(|desired| {
+            awaken_session_contract::SessionResourceTransition::new(
+                active.clone().unwrap_or_else(|| {
+                    awaken_session_contract::SessionResourceManifest::at_revision(
+                        "workspace-a",
+                        0,
+                        resources("previous"),
+                    )
+                }),
+                desired,
+            )
+            .expect("test transition belongs to one Workspace")
+        });
+        let expected = desired
+            .or_else(|| active.clone())
+            .expect("selected manifest");
+        host.session_slots.update(&thread, |slot| {
+            slot.session_dispatch = prepared_session;
+            slot.manifest = active.clone();
+            slot.resource_transition = transition;
+            slot.environment_snapshot = runtime_projection.then(|| {
+                session_environment(
+                    awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                    serde_json::json!({}),
+                )
+            });
+        });
+        let activation = awaken_runtime_contract::RunActivation::new(
+            awaken_agent_contract::agent::run::Id(format!("run-dispatch-resources-{rule}")),
+            awaken_agent_contract::agent::thread::Id(thread.clone()),
+            awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
+                .model(test_model_binding())
+                .fingerprint(format!("sha256:dispatch-resources-{rule}"))
+                .build(),
+            Vec::new(),
+        );
 
-    let dispatch = host
-        .resolved_dispatch(activation)
-        .expect("decorate durable dispatch");
-    let carried = dispatch
-        .session_resources
-        .as_ref()
-        .expect("resource envelope")
-        .decode_manifest()
-        .expect("decode resource envelope");
-    assert_eq!(carried, manifest);
-    assert_eq!(
-        dispatch.execution_scope,
-        Some(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from("workspace-a")
-        ))
-    );
-    assert!(
-        dispatch
-            .placement
-            .required_capabilities
-            .contains(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY),
-        "mixed local/remote deployments must not expose the manifest to an ineligible worker"
-    );
-    assert_eq!(
-        dispatch.session_thread_id, None,
-        "a resource-bearing ordinary Run must not be promoted to a Session"
-    );
+        let dispatch = if root_decorator {
+            host.resolved_dispatch(activation)
+        } else {
+            host.resolved_thread_extension_dispatch(activation)
+        }
+        .unwrap_or_else(|error| panic!("{rule} decorate durable dispatch: {error}"));
+        let carried = dispatch
+            .session_resources
+            .as_ref()
+            .unwrap_or_else(|| panic!("{rule} resource envelope"))
+            .decode_manifest()
+            .unwrap_or_else(|error| panic!("{rule} decode resource envelope: {error}"));
+
+        assert_eq!(carried.revision, expected_revision, "{rule} selection");
+        assert_eq!(carried, expected, "{rule} exact generation and payload");
+        assert_eq!(
+            dispatch.execution_scope,
+            Some(awaken_tenancy::ExecutionScopeRef(
+                awaken_tenancy::ScopeId::from("workspace-a")
+            )),
+            "{rule} scope",
+        );
+        assert!(
+            dispatch
+                .placement
+                .required_capabilities
+                .contains(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY),
+            "{rule} selected manifest requires an eligible Worker",
+        );
+        assert_eq!(
+            dispatch.session_runtime.is_some(),
+            runtime_projection,
+            "{rule}/E6 runtime projection presence",
+        );
+        assert_eq!(
+            dispatch.session_thread_id,
+            (prepared_session && root_decorator).then(|| ThreadId(thread.clone())),
+            "{rule}/E6 exact Session affinity",
+        );
+        assert_eq!(
+            host.thread_resource_manifest(&thread),
+            active,
+            "{rule}/E5 dispatch staging must not publish active",
+        );
+    }
 }
 
 /// Coordinator-to-Worker publication cause/effect/FMECA design. C1 a parent
@@ -14747,7 +14845,11 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
             RunDisposition::awaiting(ticket.clone()),
             true,
             Vec::new(),
-            vec![awaiting_tool_batch_state(&child_run, &ticket)],
+            vec![awaiting_tool_batch_state(
+                &child_run,
+                &ticket,
+                awaken_runtime_contract::ToolWaitKind::ToolPermission,
+            )],
             Vec::new(),
         ))
         .await
@@ -15231,7 +15333,11 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
             RunDisposition::awaiting(ticket.clone()),
             true,
             Vec::new(),
-            vec![awaiting_tool_batch_state(&run_id, &ticket)],
+            vec![awaiting_tool_batch_state(
+                &run_id,
+                &ticket,
+                awaken_runtime_contract::ToolWaitKind::ExternalResult,
+            )],
             Vec::new(),
         ))
         .await
@@ -15347,7 +15453,11 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
             RunDisposition::awaiting(ticket.clone()),
             true,
             Vec::new(),
-            vec![awaiting_tool_batch_state(&run_id, &ticket)],
+            vec![awaiting_tool_batch_state(
+                &run_id,
+                &ticket,
+                awaken_runtime_contract::ToolWaitKind::ExternalResult,
+            )],
             Vec::new(),
         ))
         .await
