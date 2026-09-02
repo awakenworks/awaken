@@ -254,7 +254,7 @@ Session activity makes the Session `Running`; normal settlement returns it to
 `Idle` or its ordinary terminal state. Child-Agent reports keep their distinct
 `SessionAgentCoordination` and Outbox/Inbox path because they cross Thread
 ownership and carry relationship provenance; BackgroundTask completion is a
-same-Thread state wake and does not reuse `send_message`.
+same-Thread state wake and does not reuse Managed coordination message ingress.
 
 Foreground and detached tool effects for the same `(Session, Environment
 generation)` acquire one host-owned execution admission at Runtime's canonical

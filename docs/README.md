@@ -190,7 +190,7 @@ are checked separately by the OKF/wiki hooks.
 | `permission-policy-axis.md` | Permission decisions, HITL tickets, authorization, and audit staging |
 | `model-provider-backend-binding.md` | Model/provider/backend binding validation and capability reconciliation |
 | `commit-fact-projection-taxonomy.md` | Live streams, commits, facts, protocol replay, public projection, and dataset sinks |
-| `builtin-tools-extension-contract.md` | `awaken-ext-builtin-tools`, hand tools, task tools, and unified delegation tool contracts |
+| `builtin-tools-extension-contract.md` | `awaken-ext-builtin-tools`, Hand tools, native delegation, and Managed coordination contracts |
 | `runtime-behavior.md` | Run lifecycle, state/effects, plugins, cancellation, scheduled work, observability/eval |
 | `runtime-scenario-validation.md` | GWT scenario ids, scenario text, executable-test mapping, and scenario test organization |
 | `runtime-interface-boundaries.md` | Runtime role traits, executable snapshot contract, plugin contribution matrix, tool decision ladder, simple-design evaluation |

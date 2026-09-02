@@ -2,6 +2,9 @@
 
 - Status: Accepted
 - Date: 2026-08-11
+- Amended: 2026-08-30 — source release is split into durable preparation and
+  physical disposal so response loss cannot turn provider absence into
+  aggregate proof.
 - Amends: ADR-0056. Clarifies ADR-0073: `SessionEnvironment` remains the sole
   live environment owner; Hand process hibernation remains an orthogonal local
   optimization, and its stop primitive is reused during Environment quiescence.
@@ -69,7 +72,7 @@ states:
 ```text
 Unmaterialized
 Resident { binding, generation }
-Suspending { operation, source_binding, generation, phase }
+Suspending { operation, source_binding, generation, phase, source_release_preparation? }
 Hibernated { checkpoint, generation }
 Restoring { operation, checkpoint, generation }
 ```
@@ -78,8 +81,16 @@ The top-level vocabulary describes business-significant availability. Crash
 recovery progress stays inside the operation:
 
 ```text
-SuspendPhase = Quiescing | Uploading | ReadyToDispose
+SuspendPhase = Quiescing | Uploading | ReadyToDispose | Disposing
 ```
+
+`ReadyToDispose` means only that the checkpoint reference is durable. The
+Runtime next completes every source-dependent durability participant and
+returns one canonical `SourceReleasePreparedReceipt`. The root CAS admits that
+receipt and its closed `SourceReleasePreparationEffect` by moving to
+`Disposing`; only `Disposing` with that exact receipt authorizes physical
+deletion. The receipt is part of the existing Suspending state, so no parallel
+receipt store or second cleanup state machine is introduced.
 
 `SandboxGeneration` carries a stable generation id, creation time, immutable
 Environment fingerprint, base-image identity, and fixed expiry. Activity and
@@ -226,25 +237,47 @@ last shared-environment activity reaches a durable boundary
   -> provider checkpoints the complete mutable filesystem
   -> verify manifest, digest and size
   -> root CAS: phase=ReadyToDispose with durable checkpoint reference
-  -> provider disposes the source Sandbox and proves it terminated
+  -> pure validation joins frozen Resource inputs with exact handle evidence
+  -> publish Artifact outputs under the unscoped CheckpointRelease fence
+  -> acknowledge exact continuation Memory evidence
+  -> provider durably prepares credential write-back and its cleanup gate
+     without deleting the physical source
+  -> return canonical SourceReleasePreparedReceipt embedding the exact
+     current preparation lease
+  -> root CAS: phase=Disposing with that complete receipt
+  -> provider performs physical-only source disposal and proves termination
   -> root CAS: environment=Hibernated
 ```
 
 `Running -> Idle` closes Agent execution before infrastructure housekeeping.
-Checkpoint/upload/dispose are environment maintenance and cannot admit Agent
-work. A failed quiescence, unavailable checkpoint target, quota failure, or
-checkpoint timeout retains the source Sandbox and retries; it never disposes
-without a durable, verified checkpoint reference.
+Checkpoint/upload/preparation/dispose are environment maintenance and cannot
+admit Agent work. Pure Memory/evidence validation precedes Artifact, Memory,
+credential, finalizer, and delete effects. A failed validation, quiescence,
+Artifact publication, Memory acknowledgement, credential write-back,
+checkpoint target, quota check, or checkpoint timeout retains the source
+Sandbox and retries; it never physically disposes without both a durable,
+verified checkpoint reference and a durably admitted preparation receipt.
 
 The ordering closes every crash window:
 
 - upload success before `ReadyToDispose` may leave an orphan object, but the
   source remains available and reconciliation can retry or collect the orphan;
-- `ReadyToDispose` before dispose replays idempotent disposal;
-- dispose success before `Hibernated` observes terminated source status and
-  completes the CAS;
-- duplicate commands use the same operation id and cannot create a second
-  authoritative checkpoint.
+- preparation success before `Disposing` leaves the source present and replays
+  the same idempotent Artifact harvest, Memory acknowledgement, credential
+  write-back, and provider preparation under the stable operation. A retry
+  after same-generation renewal embeds the exact fence that actually completed
+  preparation rather than reconstructing it from the older suspend lease;
+- `Disposing` before physical disposal retries only physical disposal and never
+  repeats live source-dependent I/O. Its destructive authority binds the exact
+  persisted preparation fence A and receipt fingerprint to the aggregate's
+  current realization fence B. A renewed same lease or a strictly higher epoch
+  may finish the same canonical physical operation after failover; a foreign
+  same- or lower-epoch lease fails closed;
+- physical disposal success before `Hibernated` remains in `Disposing`, whose
+  durable preparation fact makes exact physical absence safe to accept on
+  retry before completing the CAS;
+- duplicate preparation or disposal commands derive the same operation id
+  and cannot create a second authoritative checkpoint or disposal effect.
 
 ### D6: driving ingress waits for one canonical restore path
 
@@ -316,9 +349,9 @@ prioritization aid, not an authorization to accept data loss.
 
 | Failure mode | Local effect / end effect | S/O/D | RPN | Required prevention, detection, and recovery |
 |---|---|---:|---:|---|
-| Source disposed before checkpoint reference commits | Mutable filesystem is permanently lost | 5/2/4 | 40 | Type and transition invariants forbid dispose before `ReadyToDispose`; provider contract tests inject every crash boundary; retain source and alert on checkpoint failure. |
+| Source disposed before checkpoint and preparation facts commit | Mutable filesystem or independently governed outputs are permanently lost | 5/2/4 | 40 | Type and transition invariants forbid physical dispose before `Disposing` with an exact preparation receipt; `ReadyToDispose` permits only idempotent preparation; provider contract tests inject every crash boundary and failures retain the source. |
 | Lease loss is mistaken for disposal authority | Worker loss becomes Session data loss | 5/3/4 | 60 | The lease action type has no dispose variant; route fenced environments to referenced-set reconciliation and permit disposal only after the durable live reference is absent. |
-| Stale Worker, epoch, generation, or realization lease applies a receipt | New work is overwritten or duplicate Environments become authoritative | 5/3/3 | 45 | Bind and verify all receipt identities under root CAS; reject stale evidence; property-test concurrent interleavings. |
+| Stale Worker, epoch, generation, or realization lease applies a receipt | New work is overwritten or duplicate Environments become authoritative | 5/3/3 | 45 | Persist the exact successful preparation fence A and bind disposal to the aggregate-current authorized successor B; allow renewal or higher-epoch takeover of the same deterministic disposal id, reject foreign same/lower epochs, and property-test concurrent interleavings. |
 | Shared child/background work is omitted or misclassified | Snapshot is inconsistent while a writer remains active | 5/3/4 | 60 | One typed background admission API, generation-scoped activity guards, deny unclassified detached work, and runtime leak assertions. |
 | Hand/MCP/tool process survives quiescence | Post-checkpoint mutation or duplicate side effect | 4/2/3 | 24 | Close admission first, supervise bounded stop/reap, require exact quiescence receipt, and retain source on ambiguous termination. |
 | Worker crashes during upload or disposal | Orphan bytes, resident leak, or stuck phase | 3/4/2 | 24 | Durable phase before effect, stable operation id, idempotent provider calls, and bounded reconciliation from the committed phase. |
@@ -338,14 +371,16 @@ The core causes are:
 - C3: process/MCP effects active or quiescent;
 - C4: activity epoch and realization lease current or stale;
 - C5: checkpoint effect success, failure, or ambiguous completion;
-- C6: dispose effect success, failure, or ambiguous completion;
-- C7: checkpoint valid, expired, missing, or corrupt;
-- C8: concurrent driving or terminal command.
+- C6: source-release preparation success, failure, or ambiguous completion;
+- C7: physical dispose success, failure, or ambiguous completion;
+- C8: checkpoint valid, expired, missing, or corrupt;
+- C9: concurrent driving or terminal command.
 
 The effects are:
 
 - E1: retain Resident and emit no checkpoint effect;
-- E2: advance one suspend phase;
+- E2: advance exactly one suspend phase, including the durable
+  `ReadyToDispose -> Disposing` preparation edge;
 - E3: retain source and retry;
 - E4: enter Hibernated only after verified checkpoint plus terminated source;
 - E5: restore once and admit the driving event once;
@@ -371,7 +406,9 @@ beside each case. Required layers are:
 1. pure transition and property tests for every legal and illegal state edge;
 2. SQLite/PostgreSQL repository conformance for CAS, outbox, migration and
    duplicate receipt behavior;
-3. application saga tests for crashes before and after every CAS/effect boundary;
+3. application saga tests for crashes before and after every CAS/effect
+   boundary, including preparation failure with zero physical disposal and
+   `Disposing` retry with zero repeated live preparation;
 4. Runtime tests for primary, delegated, Skill-fork, Background, MCP and process
    combinations;
 5. one provider contract suite covering metadata fidelity, excluded state,
@@ -502,10 +539,14 @@ The PVC is created and digest-verified before the Pod, carries no Pod or Worker
 owner reference, and is mounted at each canonical writable root through a
 distinct pre-created subpath. A Worker crash therefore leaves Pod and PVC
 running; a terminal-Pod rebuild deletes only the observed Pod incarnation and
-reattaches the same PVC. Explicit `Sandbox::dispose` is the sole active-volume
-deletion path. The suspend sequence reaches it only after `ReadyToDispose` has
-durably committed verified checkpoint evidence, while terminal Session cleanup
-reuses its existing fenced deletion effect.
+reattaches the same PVC. Explicit fenced Sandbox disposal is the sole
+active-volume deletion path. The suspend sequence reaches its physical edge
+only after `Disposing` has durably admitted both verified checkpoint and
+source-release preparation evidence, while terminal Session cleanup must use
+the same prepare/dispose owner and its existing fenced deletion effect. This
+amendment specifies the required terminal ordering; it does not claim terminal
+two-phase orchestration is implemented until its adjacent conformance tests
+pass.
 
 This is not a second checkpoint mechanism. `SandboxCheckpointStore`,
 `Sandbox::checkpoint`, provider `restore`, and Session Environment transitions
