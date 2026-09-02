@@ -229,6 +229,32 @@ impl WorkState {
     }
 }
 
+/// Storage-neutral result of admitting an owner/epoch guarded Work mutation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkLeaseMutationAdmission {
+    Applied,
+    NotFound,
+    PreconditionFailed,
+}
+
+/// One closed authorization table for Work acknowledgement, heartbeat, and
+/// stop adapters. A backend obtains all facts from its existing atomic lock or
+/// transaction, then this kernel decides whether any write may occur.
+#[must_use]
+pub const fn work_lease_mutation_admission(
+    record_present: bool,
+    owner_and_epoch_match: bool,
+    command_condition_matches: bool,
+) -> WorkLeaseMutationAdmission {
+    if !record_present {
+        WorkLeaseMutationAdmission::NotFound
+    } else if !owner_and_epoch_match || !command_condition_matches {
+        WorkLeaseMutationAdmission::PreconditionFailed
+    } else {
+        WorkLeaseMutationAdmission::Applied
+    }
+}
+
 /// One queued/leased unit of work in an environment's queue (the domain shape; the
 /// Managed adapter renders the `BetaSelfHostedWork` wire object from it).
 #[derive(Clone, Debug)]
@@ -686,7 +712,9 @@ pub trait WorkQueue: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::next_heartbeat_receipt;
+    use super::{
+        WorkLeaseMutationAdmission, next_heartbeat_receipt, work_lease_mutation_admission,
+    };
 
     #[test]
     fn heartbeat_receipts_are_rfc3339_and_advance_within_one_millisecond() {
@@ -711,6 +739,32 @@ mod tests {
             next_heartbeat_receipt(0, Some("2026-01-01T00:00:00Z")),
             "2026-01-01T00:00:00.000000001Z"
         );
+    }
+
+    #[test]
+    fn lease_mutation_admission_follows_the_complete_decision_table() {
+        // Causes: C1 the Work row exists; C2 exact owner+epoch matches; C3 the
+        // command CAS condition matches. Effects: E1 only C1+C2+C3 mutates;
+        // E2 absence is distinguishable; E3 every stale fact fails unchanged.
+        // Decision rules are the complete 2^3 input table below.
+        for present in [false, true] {
+            for authority in [false, true] {
+                for condition in [false, true] {
+                    let actual = work_lease_mutation_admission(present, authority, condition);
+                    let expected = if !present {
+                        WorkLeaseMutationAdmission::NotFound
+                    } else if authority && condition {
+                        WorkLeaseMutationAdmission::Applied
+                    } else {
+                        WorkLeaseMutationAdmission::PreconditionFailed
+                    };
+                    assert_eq!(
+                        actual, expected,
+                        "C1={present} C2={authority} C3={condition}"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -738,6 +792,19 @@ mod verification {
     fn only_active_work_accepts_lease_extension() {
         let state = symbolic_state(kani::any());
         assert_eq!(state.can_extend_lease(), state == WorkState::Active);
+    }
+
+    #[kani::proof]
+    fn work_lease_mutation_requires_present_exact_authority_and_matching_condition() {
+        let present = kani::any::<bool>();
+        let authority = kani::any::<bool>();
+        let condition = kani::any::<bool>();
+        let decision = work_lease_mutation_admission(present, authority, condition);
+        assert_eq!(
+            decision == WorkLeaseMutationAdmission::Applied,
+            present && authority && condition
+        );
+        assert_eq!(decision == WorkLeaseMutationAdmission::NotFound, !present);
     }
 
     #[kani::proof]

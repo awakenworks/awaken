@@ -144,3 +144,139 @@ fn decode_checked(
     })
     .transpose()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use sqlx::Executor;
+    use sqlx::postgres::{PgPool, PgPoolOptions};
+    use tokio::sync::Barrier;
+
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority() {
+        // Cause/effect graph: C1 one Pending row; C2 sixteen concurrent first
+        // claimers; C3 lease reaches its exact expiry; C4 sixteen concurrent
+        // reclaimers; C5 stale epoch completes; C6 current epoch completes; C7
+        // the store reconnects. Effects: E1 exactly one epoch-1 winner; E2
+        // exactly one epoch-2 winner; E3 stale completion is inert; E4 current
+        // completion alone publishes Ready; E5 reconnect observes that same
+        // durable fact. Decision rules: P1=C1+C2=>E1, P2=E1+C3+C4=>E2,
+        // P3=E2+C5=>E3, P4=E2+C6=>E4, P5=E4+C7=>E5.
+        const SCHEMA: &str = "t_environment_image_build_concurrency";
+        let database_url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".into()
+        });
+        let Ok(admin) = PgPool::connect(&database_url).await else {
+            eprintln!("[skip] no PostgreSQL reachable for Environment image-build concurrency");
+            return;
+        };
+        admin
+            .execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str())
+            .await
+            .expect("P1 reset schema");
+        admin
+            .execute(format!("CREATE SCHEMA {SCHEMA}").as_str())
+            .await
+            .expect("P1 create schema");
+        let pool = PgPoolOptions::new()
+            .max_connections(24)
+            .after_connect(|connection, _| {
+                Box::pin(async move {
+                    connection
+                        .execute(format!("SET search_path = {SCHEMA}").as_str())
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&database_url)
+            .await
+            .expect("P1 schema pool");
+        let bundle = environment_image_build_bundle().expect("P1 migration bundle");
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .expect("P1 migration runner")
+            .run_bundle(&bundle)
+            .await
+            .expect("P1 migrate");
+        let build_store = store(pool.clone());
+        let demand = crate::test_demand();
+        build_store
+            .ensure(demand.clone(), 100)
+            .await
+            .expect("P1 pending row");
+
+        async fn concurrent_claims(
+            build_store: Arc<dyn EnvironmentImageBuildStore>,
+            now_ms: u64,
+        ) -> Vec<awaken_environment_realization_contract::EnvironmentImageBuildClaim> {
+            const CLAIMERS: usize = 16;
+            let barrier = Arc::new(Barrier::new(CLAIMERS));
+            let mut tasks = Vec::with_capacity(CLAIMERS);
+            for index in 0..CLAIMERS {
+                let build_store = Arc::clone(&build_store);
+                let barrier = Arc::clone(&barrier);
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    build_store
+                        .claim_next(&format!("worker-{index}"), now_ms, 10)
+                        .await
+                        .expect("claim")
+                }));
+            }
+            let mut claims = Vec::new();
+            for task in tasks {
+                if let Some(claim) = task.await.expect("claim task") {
+                    claims.push(claim);
+                }
+            }
+            claims
+        }
+
+        let first = concurrent_claims(Arc::clone(&build_store), 100).await;
+        assert_eq!(first.len(), 1, "P1/E1");
+        assert_eq!(first[0].lease_epoch, 1, "P1/E1");
+        let reclaimed = concurrent_claims(Arc::clone(&build_store), 110).await;
+        assert_eq!(reclaimed.len(), 1, "P2/E2");
+        assert_eq!(reclaimed[0].lease_epoch, 2, "P2/E2");
+        assert!(
+            !build_store
+                .complete(&first[0], "image@sha256:stale", 111)
+                .await
+                .expect("P3 stale complete"),
+            "P3/E3"
+        );
+        assert!(
+            build_store
+                .complete(&reclaimed[0], "image@sha256:ready", 111)
+                .await
+                .expect("P4 current complete"),
+            "P4/E4"
+        );
+
+        pool.close().await;
+        let separator = if database_url.contains('?') { '&' } else { '?' };
+        let scoped_url = format!("{database_url}{separator}options=-c%20search_path%3D{SCHEMA}");
+        let reopened = connect_existing_postgres_environment_image_build_store(&scoped_url)
+            .await
+            .expect("P5 reconnect");
+        assert!(
+            matches!(
+                reopened.get(&demand.build_key).await.expect("P5 read").expect("P5 row").state,
+                awaken_environment_realization_contract::EnvironmentImageBuildState::Ready {
+                    ref image,
+                    attempt: 2,
+                    ..
+                } if image == "image@sha256:ready"
+            ),
+            "P5/E5"
+        );
+
+        admin
+            .execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str())
+            .await
+            .expect("P5 cleanup schema");
+        admin.close().await;
+    }
+}

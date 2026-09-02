@@ -624,6 +624,134 @@ pub struct SessionRealizationTarget {
     pub reassign_existing_lease: bool,
 }
 
+/// Assignment result for one atomically loaded Session realization fence.
+/// The aggregate applies the returned epoch in the same root-CAS commit that
+/// installs the owner; callers cannot mint or reinterpret an epoch themselves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionRealizationAssignment {
+    Reuse,
+    Assign { epoch: u64 },
+    StaleOwnership,
+    EpochExhausted,
+}
+
+/// Closed owner/incarnation/epoch arbitration used by the real Session root
+/// mutation. `current_epoch` is `None` only when no fence has ever existed.
+#[must_use]
+pub const fn session_realization_assignment(
+    current_epoch: Option<u64>,
+    current_is_live: bool,
+    same_owner: bool,
+    same_runtime_incarnation: bool,
+    reassign_existing_lease: bool,
+) -> SessionRealizationAssignment {
+    if current_is_live && !same_owner && !reassign_existing_lease {
+        return SessionRealizationAssignment::StaleOwnership;
+    }
+    let needs_assignment =
+        !current_is_live || !same_runtime_incarnation || (reassign_existing_lease && !same_owner);
+    if !needs_assignment {
+        return SessionRealizationAssignment::Reuse;
+    }
+    match current_epoch {
+        None => SessionRealizationAssignment::Assign { epoch: 1 },
+        Some(epoch) => match epoch.checked_add(1) {
+            Some(epoch) => SessionRealizationAssignment::Assign { epoch },
+            None => SessionRealizationAssignment::EpochExhausted,
+        },
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an_epoch() {
+    let has_current = kani::any::<bool>();
+    let current_epoch = has_current.then(kani::any::<u64>);
+    let current_is_live = kani::any::<bool>();
+    let same_owner = kani::any::<bool>();
+    let same_runtime_incarnation = kani::any::<bool>();
+    let reassign = kani::any::<bool>();
+    let decision = session_realization_assignment(
+        current_epoch,
+        current_is_live,
+        same_owner,
+        same_runtime_incarnation,
+        reassign,
+    );
+
+    if current_is_live && !same_owner && !reassign {
+        assert_eq!(decision, SessionRealizationAssignment::StaleOwnership);
+    }
+    if let SessionRealizationAssignment::Assign { epoch } = decision {
+        match current_epoch {
+            None => assert_eq!(epoch, 1),
+            Some(previous) => {
+                assert!(previous < u64::MAX);
+                assert_eq!(epoch, previous + 1);
+            }
+        }
+    }
+    if decision == SessionRealizationAssignment::Reuse {
+        assert!(current_is_live);
+        assert!(same_owner);
+        assert!(same_runtime_incarnation);
+    }
+}
+
+#[cfg(test)]
+mod realization_assignment_tests {
+    use super::*;
+
+    #[test]
+    fn assignment_follows_the_owner_incarnation_epoch_decision_table() {
+        // Cause/effect graph: C1 a current fence exists and is live; C2 owner
+        // matches; C3 Runtime incarnation matches; C4 authenticated topology
+        // explicitly permits cross-owner reassignment; C5 epoch can advance.
+        // Effects: E1 reuse only the exact live owner/incarnation; E2 reject a
+        // live foreign owner; E3 every new assignment mints exactly successor
+        // epoch (or 1 from absence); E4 exhaustion fails closed.
+        //
+        // | Rule | Live | Owner | Incarnation | Reassign | Effect |
+        // |---|---|---|---|---|---|
+        // | R1 | yes | same | same | no | E1 reuse |
+        // | R2 | yes | other | any | no | E2 stale |
+        // | R3 | no | any | any | any | E3 successor |
+        // | R4 | yes | same | other | no | E3 successor |
+        // | R5 | yes | other | any | yes | E3 successor |
+        // | R6 | assignment | any | any | any | E4 exhausted |
+        assert_eq!(
+            session_realization_assignment(Some(7), true, true, true, false),
+            SessionRealizationAssignment::Reuse,
+            "R1/E1"
+        );
+        assert_eq!(
+            session_realization_assignment(Some(7), true, false, false, false),
+            SessionRealizationAssignment::StaleOwnership,
+            "R2/E2"
+        );
+        assert_eq!(
+            session_realization_assignment(Some(7), false, false, false, false),
+            SessionRealizationAssignment::Assign { epoch: 8 },
+            "R3/E3"
+        );
+        assert_eq!(
+            session_realization_assignment(Some(7), true, true, false, false),
+            SessionRealizationAssignment::Assign { epoch: 8 },
+            "R4/E3"
+        );
+        assert_eq!(
+            session_realization_assignment(Some(7), true, false, false, true),
+            SessionRealizationAssignment::Assign { epoch: 8 },
+            "R5/E3"
+        );
+        assert_eq!(
+            session_realization_assignment(Some(u64::MAX), false, true, true, false),
+            SessionRealizationAssignment::EpochExhausted,
+            "R6/E4"
+        );
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum SessionRealizationAction {

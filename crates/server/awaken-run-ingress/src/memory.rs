@@ -39,7 +39,9 @@ use crate::{
     DispatchPage, LeaseLossReason,
 };
 use awaken_run_ingress_contract::{
-    CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition, RunDispatch,
+    CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition,
+    PhysicalAttemptSlot, PhysicalAttemptTransition, RunDispatch, begin_physical_attempt,
+    finish_physical_attempt,
 };
 
 mod outbox;
@@ -1402,16 +1404,23 @@ impl DispatchQueue for MemoryDispatchStore {
                 .lease
                 .as_ref()
                 .is_some_and(|lease| lease.owner == claim.owner && lease.expires_ms >= now_ms);
-        if !current {
-            return Ok(AttemptAdmission::Fenced);
-        }
-        match row.active_attempt.as_ref() {
-            Some(active) if active == claim => Ok(AttemptAdmission::AlreadyApplied),
-            Some(_) => Ok(AttemptAdmission::Blocked),
-            None => {
+        let slot = match row.active_attempt.as_ref() {
+            None => PhysicalAttemptSlot::Empty,
+            Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,
+            Some(_) => PhysicalAttemptSlot::OtherClaim,
+        };
+        match begin_physical_attempt(current, slot) {
+            PhysicalAttemptTransition::Install => {
                 row.active_attempt = Some(claim.clone());
                 Ok(AttemptAdmission::Applied)
             }
+            PhysicalAttemptTransition::Stutter => Ok(AttemptAdmission::AlreadyApplied),
+            PhysicalAttemptTransition::Blocked => Ok(AttemptAdmission::Blocked),
+            PhysicalAttemptTransition::Fenced => Ok(AttemptAdmission::Fenced),
+            PhysicalAttemptTransition::Corrupt => Err(DispatchError::Rejected(
+                "persisted physical attempt slot is not an owner/epoch pair".to_string(),
+            )),
+            PhysicalAttemptTransition::Clear => unreachable!("begin never clears a slot"),
         }
     }
 
@@ -1421,10 +1430,23 @@ impl DispatchQueue for MemoryDispatchStore {
         let Some(row) = state.rows.get_mut(&claim.run_id) else {
             return Ok(SettleOutcome::Fenced);
         };
-        match row.active_attempt.as_ref() {
-            Some(active) if active == claim => row.active_attempt = None,
-            None => return Ok(SettleOutcome::Applied),
-            Some(_) => return Ok(SettleOutcome::Fenced),
+        let slot = match row.active_attempt.as_ref() {
+            None => PhysicalAttemptSlot::Empty,
+            Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,
+            Some(_) => PhysicalAttemptSlot::OtherClaim,
+        };
+        match finish_physical_attempt(slot) {
+            PhysicalAttemptTransition::Clear => row.active_attempt = None,
+            PhysicalAttemptTransition::Stutter => return Ok(SettleOutcome::Applied),
+            PhysicalAttemptTransition::Fenced => return Ok(SettleOutcome::Fenced),
+            PhysicalAttemptTransition::Corrupt => {
+                return Err(DispatchError::Rejected(
+                    "persisted physical attempt slot is not an owner/epoch pair".to_string(),
+                ));
+            }
+            PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Blocked => {
+                unreachable!("finish never installs or blocks a slot")
+            }
         }
         Ok(SettleOutcome::Applied)
     }

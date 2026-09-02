@@ -189,39 +189,9 @@ fn decode_checked(
 
 #[cfg(test)]
 mod tests {
-    use awaken_environment_contract::{
-        EnvItem, EnvironmentConfig, EnvironmentPackages, EnvironmentRevision,
-    };
-    use awaken_environment_realization_contract::{
-        EnvironmentImageBuildDemand, EnvironmentImageBuildState,
-    };
-    use awaken_executable_environment_contract::ExecutableEnvironmentRegistration;
+    use awaken_environment_realization_contract::EnvironmentImageBuildState;
 
     use super::*;
-
-    fn demand() -> EnvironmentImageBuildDemand {
-        let registration = ExecutableEnvironmentRegistration::new(
-            EnvItem {
-                id: "env-browser".into(),
-                revision: EnvironmentRevision(1),
-                name: "browser".into(),
-                description: None,
-                metadata: Default::default(),
-                scope: None,
-                config: EnvironmentConfig::Cloud {
-                    networking: Default::default(),
-                    packages: EnvironmentPackages {
-                        npm: vec!["@playwright/mcp@latest".into()],
-                        ..Default::default()
-                    },
-                },
-                sandbox_policy: None,
-                archived_at: None,
-            },
-            None,
-        );
-        EnvironmentImageBuildDemand::from_registration(&registration, "registry/base:1").unwrap()
-    }
 
     #[tokio::test]
     async fn sqlite_reopens_ready_image_and_fences_stale_claims() {
@@ -232,7 +202,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("environment-images.db");
         let store = open_sqlite_environment_image_build_store(&path).unwrap();
-        let demand = demand();
+        let demand = crate::test_demand();
         store.ensure(demand.clone(), 100).await.unwrap();
         let stale = store
             .claim_next("worker-a", 100, 10)

@@ -35,6 +35,84 @@ pub enum DispatchTransitionError {
     LeaseEpochExhausted,
 }
 
+/// Complete, storage-neutral shape of the persisted physical-attempt slot.
+///
+/// Adapters derive this value while holding their existing row/aggregate lock.
+/// Keeping the four states explicit prevents a partially persisted owner/epoch
+/// pair from being treated as either empty or as an ordinary competing claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhysicalAttemptSlot {
+    Empty,
+    ExactClaim,
+    OtherClaim,
+    Corrupt,
+}
+
+impl PhysicalAttemptSlot {
+    /// Classify nullable storage columns without allowing either half of the
+    /// owner/epoch pair to disappear. Match bits are ignored unless both facts
+    /// are present.
+    #[must_use]
+    pub const fn from_facts(
+        owner_present: bool,
+        epoch_present: bool,
+        owner_matches: bool,
+        epoch_matches: bool,
+    ) -> Self {
+        match (owner_present, epoch_present) {
+            (false, false) => Self::Empty,
+            (true, true) if owner_matches && epoch_matches => Self::ExactClaim,
+            (true, true) => Self::OtherClaim,
+            _ => Self::Corrupt,
+        }
+    }
+}
+
+/// Mutation selected by the physical-attempt reducer. Storage adapters perform
+/// only the named write after this decision; they do not own another admission
+/// policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhysicalAttemptTransition {
+    Install,
+    Clear,
+    Stutter,
+    Blocked,
+    Fenced,
+    Corrupt,
+}
+
+/// Decide whether the current durable claim may enter the physical executor.
+/// The caller supplies `claim_is_current` from the same locked snapshot that
+/// supplied `slot`.
+#[must_use]
+pub const fn begin_physical_attempt(
+    claim_is_current: bool,
+    slot: PhysicalAttemptSlot,
+) -> PhysicalAttemptTransition {
+    if !claim_is_current {
+        return PhysicalAttemptTransition::Fenced;
+    }
+    match slot {
+        PhysicalAttemptSlot::Empty => PhysicalAttemptTransition::Install,
+        PhysicalAttemptSlot::ExactClaim => PhysicalAttemptTransition::Stutter,
+        PhysicalAttemptSlot::OtherClaim => PhysicalAttemptTransition::Blocked,
+        PhysicalAttemptSlot::Corrupt => PhysicalAttemptTransition::Corrupt,
+    }
+}
+
+/// Decide how an exact physical-quiescence acknowledgement changes the slot.
+/// Finishing an already empty slot is an idempotent replay; another claim and a
+/// torn owner/epoch pair are never cleared.
+#[must_use]
+pub const fn finish_physical_attempt(slot: PhysicalAttemptSlot) -> PhysicalAttemptTransition {
+    match slot {
+        PhysicalAttemptSlot::Empty => PhysicalAttemptTransition::Stutter,
+        PhysicalAttemptSlot::ExactClaim => PhysicalAttemptTransition::Clear,
+        PhysicalAttemptSlot::OtherClaim => PhysicalAttemptTransition::Fenced,
+        PhysicalAttemptSlot::Corrupt => PhysicalAttemptTransition::Corrupt,
+    }
+}
+
 /// Whether one durable dispatch is eligible for retry-exhaustion terminal
 /// claiming. Store queries may prefilter candidates, but every backend applies
 /// this kernel to the transactionally read evidence before advancing the epoch.
@@ -283,6 +361,44 @@ mod tests {
     }
 
     #[test]
+    fn physical_attempt_slot_follows_the_complete_decision_table() {
+        // Cause/effect graph: C1 the asserted durable claim is current; C2 the
+        // physical slot is empty, exact, occupied by another claim, or torn.
+        // Effects: E1 install once; E2 exact begin/empty finish stutter; E3 a
+        // predecessor blocks begin and fences finish; E4 a stale claim is
+        // fenced before slot interpretation; E5 torn persistence fails closed.
+        //
+        // | Rule | C1 | C2 | Begin | Finish |
+        // |---|---|---|---|---|
+        // | R1 | yes | empty | install | stutter |
+        // | R2 | yes | exact | stutter | clear |
+        // | R3 | yes | other | blocked | fenced |
+        // | R4 | no | any | fenced | n/a |
+        // | R5 | yes | corrupt | corrupt | corrupt |
+        // Constraint: only R1 installs and only R2 clears, so a successor can
+        // never erase a predecessor that has not acknowledged quiescence.
+        use PhysicalAttemptSlot::{Corrupt, Empty, ExactClaim, OtherClaim};
+        use PhysicalAttemptTransition::{
+            Blocked, Clear, Corrupt as CorruptTransition, Fenced, Install, Stutter,
+        };
+        assert_eq!(begin_physical_attempt(true, Empty), Install, "R1/E1");
+        assert_eq!(finish_physical_attempt(Empty), Stutter, "R1/E2");
+        assert_eq!(begin_physical_attempt(true, ExactClaim), Stutter, "R2/E2");
+        assert_eq!(finish_physical_attempt(ExactClaim), Clear, "R2/E2");
+        assert_eq!(begin_physical_attempt(true, OtherClaim), Blocked, "R3/E3");
+        assert_eq!(finish_physical_attempt(OtherClaim), Fenced, "R3/E3");
+        for slot in [Empty, ExactClaim, OtherClaim, Corrupt] {
+            assert_eq!(begin_physical_attempt(false, slot), Fenced, "R4/E4");
+        }
+        assert_eq!(
+            begin_physical_attempt(true, Corrupt),
+            CorruptTransition,
+            "R5/E5"
+        );
+        assert_eq!(finish_physical_attempt(Corrupt), CorruptTransition, "R5/E5");
+    }
+
+    #[test]
     fn stale_settle_and_relinquish_are_fenced() {
         let current = leased(8);
         assert_eq!(current.settle(7, true), GuardedTransition::Fenced);
@@ -476,6 +592,65 @@ mod proofs {
             lease_epoch: kani::any(),
             cancellation_requested: kani::any(),
         }
+    }
+
+    fn arbitrary_physical_slot() -> PhysicalAttemptSlot {
+        match kani::any::<u8>() % 4 {
+            0 => PhysicalAttemptSlot::Empty,
+            1 => PhysicalAttemptSlot::ExactClaim,
+            2 => PhysicalAttemptSlot::OtherClaim,
+            _ => PhysicalAttemptSlot::Corrupt,
+        }
+    }
+
+    #[kani::proof]
+    fn physical_attempt_slot_installs_and_clears_only_exact_authority() {
+        let current = kani::any::<bool>();
+        let slot = arbitrary_physical_slot();
+        let begin = begin_physical_attempt(current, slot);
+        let finish = finish_physical_attempt(slot);
+
+        assert_eq!(
+            begin == PhysicalAttemptTransition::Install,
+            current && slot == PhysicalAttemptSlot::Empty
+        );
+        assert_eq!(
+            begin == PhysicalAttemptTransition::Stutter,
+            current && slot == PhysicalAttemptSlot::ExactClaim
+        );
+        assert_eq!(
+            finish == PhysicalAttemptTransition::Clear,
+            slot == PhysicalAttemptSlot::ExactClaim
+        );
+        if !current {
+            assert_eq!(begin, PhysicalAttemptTransition::Fenced);
+        }
+        if slot == PhysicalAttemptSlot::OtherClaim {
+            assert_ne!(begin, PhysicalAttemptTransition::Install);
+            assert_ne!(finish, PhysicalAttemptTransition::Clear);
+        }
+    }
+
+    #[kani::proof]
+    fn physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair() {
+        let owner_present = kani::any::<bool>();
+        let epoch_present = kani::any::<bool>();
+        let owner_matches = kani::any::<bool>();
+        let epoch_matches = kani::any::<bool>();
+        let slot = PhysicalAttemptSlot::from_facts(
+            owner_present,
+            epoch_present,
+            owner_matches,
+            epoch_matches,
+        );
+        assert_eq!(
+            slot == PhysicalAttemptSlot::Corrupt,
+            owner_present != epoch_present
+        );
+        assert_eq!(
+            slot == PhysicalAttemptSlot::ExactClaim,
+            owner_present && epoch_present && owner_matches && epoch_matches
+        );
     }
 
     #[kani::proof]

@@ -43,7 +43,9 @@ use crate::{
     WorkerSnapshot, can_assign, can_claim_locally, durable_i64, durable_u64, next_claim_epoch,
     policy_selects_requester,
 };
-use awaken_run_ingress_contract::RunDispatch;
+use awaken_run_ingress_contract::{
+    PhysicalAttemptSlot, PhysicalAttemptTransition, RunDispatch, begin_physical_attempt,
+};
 
 mod claim;
 use claim::{

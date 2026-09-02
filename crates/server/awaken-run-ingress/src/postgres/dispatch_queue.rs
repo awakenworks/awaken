@@ -1048,20 +1048,22 @@ impl DispatchQueue for PostgresDispatchStore {
         let active_epoch: Option<i64> = current
             .try_get("active_attempt_epoch")
             .map_err(store_error)?;
+        let persisted_epoch = durable_u64("dispatch lease epoch", persisted_epoch)?;
+        let active_epoch = active_epoch
+            .map(|value| durable_u64("dispatch attempt epoch", value))
+            .transpose()?;
         let live = status == "running"
             && owner.as_deref() == Some(&claim.owner)
-            && persisted_epoch == epoch
+            && persisted_epoch == claim.epoch
             && lease_until.is_some_and(|until| until >= crate::clock::db_millis(now_ms));
-        if !live {
-            let _ = tx.rollback().await;
-            return Ok(AttemptAdmission::Fenced);
-        }
-        let admission = match (active_owner.as_deref(), active_epoch) {
-            (Some(owner), Some(active_epoch)) if owner == claim.owner && active_epoch == epoch => {
-                AttemptAdmission::AlreadyApplied
-            }
-            (Some(_), Some(_)) => AttemptAdmission::Blocked,
-            (None, None) => {
+        let slot = PhysicalAttemptSlot::from_facts(
+            active_owner.is_some(),
+            active_epoch.is_some(),
+            active_owner.as_deref() == Some(&claim.owner),
+            active_epoch == Some(claim.epoch),
+        );
+        let admission = match begin_physical_attempt(live, slot) {
+            PhysicalAttemptTransition::Install => {
                 sqlx::query(&format!(
                     "UPDATE {p}_dispatch SET active_attempt_owner = $2, \
                      active_attempt_epoch = $3 WHERE run_id = $1"
@@ -1074,11 +1076,15 @@ impl DispatchQueue for PostgresDispatchStore {
                 .map_err(store_error)?;
                 AttemptAdmission::Applied
             }
-            _ => {
+            PhysicalAttemptTransition::Stutter => AttemptAdmission::AlreadyApplied,
+            PhysicalAttemptTransition::Blocked => AttemptAdmission::Blocked,
+            PhysicalAttemptTransition::Fenced => AttemptAdmission::Fenced,
+            PhysicalAttemptTransition::Corrupt => {
                 return Err(DispatchError::Rejected(
                     "persisted physical attempt slot is not an owner/epoch pair".to_string(),
                 ));
             }
+            PhysicalAttemptTransition::Clear => unreachable!("begin never clears a slot"),
         };
         tx.commit().await.map_err(store_error)?;
         Ok(admission)
@@ -1087,33 +1093,61 @@ impl DispatchQueue for PostgresDispatchStore {
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         let p = NS;
         let epoch = durable_i64("dispatch attempt epoch", claim.epoch)?;
-        let changed = sqlx::query(&format!(
-            "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
-             active_attempt_epoch = NULL WHERE run_id = $1 \
-             AND active_attempt_owner = $2 AND active_attempt_epoch = $3"
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let current = sqlx::query(&format!(
+            "SELECT active_attempt_owner, active_attempt_epoch \
+             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
         ))
         .bind(&claim.run_id.0)
-        .bind(&claim.owner)
-        .bind(epoch)
-        .execute(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(store_error)?;
-        if changed.rows_affected() == 1 {
-            return Ok(SettleOutcome::Applied);
-        }
-        let empty: Option<bool> = sqlx::query_scalar(&format!(
-            "SELECT active_attempt_owner IS NULL AND active_attempt_epoch IS NULL \
-             FROM {p}_dispatch WHERE run_id = $1"
-        ))
-        .bind(&claim.run_id.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(store_error)?;
-        Ok(if empty.unwrap_or(false) {
-            SettleOutcome::Applied
-        } else {
-            SettleOutcome::Fenced
-        })
+        let Some(current) = current else {
+            let _ = tx.rollback().await;
+            return Ok(SettleOutcome::Fenced);
+        };
+        let active_owner: Option<String> = current
+            .try_get("active_attempt_owner")
+            .map_err(store_error)?;
+        let active_epoch = current
+            .try_get::<Option<i64>, _>("active_attempt_epoch")
+            .map_err(store_error)?
+            .map(|value| durable_u64("dispatch attempt epoch", value))
+            .transpose()?;
+        let slot = PhysicalAttemptSlot::from_facts(
+            active_owner.is_some(),
+            active_epoch.is_some(),
+            active_owner.as_deref() == Some(&claim.owner),
+            active_epoch == Some(claim.epoch),
+        );
+        let outcome = match awaken_run_ingress_contract::finish_physical_attempt(slot) {
+            PhysicalAttemptTransition::Clear => {
+                sqlx::query(&format!(
+                    "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
+                     active_attempt_epoch = NULL WHERE run_id = $1 \
+                     AND active_attempt_owner = $2 AND active_attempt_epoch = $3"
+                ))
+                .bind(&claim.run_id.0)
+                .bind(&claim.owner)
+                .bind(epoch)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
+                SettleOutcome::Applied
+            }
+            PhysicalAttemptTransition::Stutter => SettleOutcome::Applied,
+            PhysicalAttemptTransition::Fenced => SettleOutcome::Fenced,
+            PhysicalAttemptTransition::Corrupt => {
+                return Err(DispatchError::Rejected(
+                    "persisted physical attempt slot is not an owner/epoch pair".to_string(),
+                ));
+            }
+            PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Blocked => {
+                unreachable!("finish never installs or blocks a slot")
+            }
+        };
+        tx.commit().await.map_err(store_error)?;
+        Ok(outcome)
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {

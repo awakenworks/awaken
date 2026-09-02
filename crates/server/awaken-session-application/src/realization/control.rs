@@ -132,8 +132,20 @@ impl SessionApplication {
             let same_incarnation = session.realization.as_ref().is_some_and(|lease| {
                 lease.runtime_incarnation == command.target.runtime_incarnation
             });
-            if existing_live && !same_owner && !command.target.reassign_existing_lease {
+            let assignment = awaken_session_contract::session_realization_assignment(
+                session.realization.as_ref().map(|lease| lease.epoch),
+                existing_live,
+                same_owner,
+                same_incarnation,
+                command.target.reassign_existing_lease,
+            );
+            if assignment == awaken_session_contract::SessionRealizationAssignment::StaleOwnership {
                 return Err(SessionRealizationControlFailure::StaleOwnership);
+            }
+            if assignment == awaken_session_contract::SessionRealizationAssignment::EpochExhausted {
+                return Err(SessionRealizationControlFailure::Invalid(
+                    "Session realization lease epoch is exhausted".into(),
+                ));
             }
 
             let requested = session
@@ -147,34 +159,30 @@ impl SessionApplication {
             // process incarnation after restart. A different owner can do so
             // only when the claim-authenticated topology edge explicitly asks
             // Control to reassign this otherwise independent Session lease.
-            let needs_assignment = !existing_live
-                || !same_incarnation
-                || (command.target.reassign_existing_lease && !same_owner);
+            let needs_assignment = matches!(
+                assignment,
+                awaken_session_contract::SessionRealizationAssignment::Assign { .. }
+            );
             if !needs_assignment && requested.is_empty() {
                 return self.next_action(owner_scope, &session, false, true).await;
             }
 
-            let lease = if needs_assignment {
-                let epoch = match session.realization.as_ref() {
-                    Some(lease) => lease.epoch.checked_add(1).ok_or_else(|| {
-                        SessionRealizationControlFailure::Invalid(
-                            "Session realization lease epoch is exhausted".into(),
-                        )
-                    })?,
-                    None => 1,
+            let lease =
+                if let awaken_session_contract::SessionRealizationAssignment::Assign { epoch } =
+                    assignment
+                {
+                    SessionRealizationLease {
+                        owner: command.target.owner.clone(),
+                        runtime_incarnation: command.target.runtime_incarnation.clone(),
+                        epoch,
+                        expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
+                    }
+                } else {
+                    session
+                        .realization
+                        .clone()
+                        .expect("a live assignment was checked")
                 };
-                SessionRealizationLease {
-                    owner: command.target.owner.clone(),
-                    runtime_incarnation: command.target.runtime_incarnation.clone(),
-                    epoch,
-                    expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
-                }
-            } else {
-                session
-                    .realization
-                    .clone()
-                    .expect("a live assignment was checked")
-            };
             if session.resources.pending.is_some() {
                 session.resources.start_attempt().map_err(unavailable)?;
             }

@@ -12,8 +12,8 @@ use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
 use awaken_session_contract::work_queue::{
     ClaimedWork, HeartbeatResult, LeaseHeartbeat, LeaseReceipt, OBJECT_AT, QueueStats,
-    SessionWorkLease, WorkItem, WorkMutationResult, WorkPayload, WorkQueue, WorkQueueError,
-    WorkSessionAccess, WorkState,
+    SessionWorkLease, WorkItem, WorkLeaseMutationAdmission, WorkMutationResult, WorkPayload,
+    WorkQueue, WorkQueueError, WorkSessionAccess, WorkState, work_lease_mutation_admission,
 };
 
 use super::session_access::issue_session_token;
@@ -425,14 +425,18 @@ impl WorkQueue for InMemoryWorkQueue {
     ) -> Result<HeartbeatResult, WorkQueueError> {
         Ok(self
             .with_owned(&access.environment_id, &access.work_id, |work| {
-                if !self.book.is_owned_at_epoch(
-                    &access.work_id,
-                    &access.lease_owner,
-                    access.lease_epoch,
-                ) || !heartbeat
-                    .condition
-                    .permits(work.latest_heartbeat_at.as_deref())
-                {
+                let admission = work_lease_mutation_admission(
+                    true,
+                    self.book.is_owned_at_epoch(
+                        &access.work_id,
+                        &access.lease_owner,
+                        access.lease_epoch,
+                    ),
+                    heartbeat
+                        .condition
+                        .permits(work.latest_heartbeat_at.as_deref()),
+                );
+                if admission != WorkLeaseMutationAdmission::Applied {
                     return HeartbeatResult::PreconditionFailed;
                 }
                 let extended = work.state.can_extend_lease();

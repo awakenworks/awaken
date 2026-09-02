@@ -163,11 +163,14 @@ impl SqliteWorkQueue {
         let Some(current) = Self::owned(&tx, env_id, wid)? else {
             return Ok(HeartbeatResult::NotFound);
         };
-        if !Self::lease_matches(&tx, env_id, wid, worker_id, expected_epoch)?
-            || !heartbeat
+        let admission = awaken_session_contract::work_queue::work_lease_mutation_admission(
+            true,
+            Self::lease_matches(&tx, env_id, wid, worker_id, expected_epoch)?,
+            heartbeat
                 .condition
-                .permits(current.latest_heartbeat_at.as_deref())
-        {
+                .permits(current.latest_heartbeat_at.as_deref()),
+        );
+        if admission != awaken_session_contract::work_queue::WorkLeaseMutationAdmission::Applied {
             return Ok(HeartbeatResult::PreconditionFailed);
         }
         let extended = current.state.can_extend_lease();
@@ -404,12 +407,15 @@ impl PostgresWorkQueue {
         let current = pg_row_to_item(&row)?;
         let owner: Option<String> = row.try_get(11).map_err(storage)?;
         let epoch = u64::try_from(row.try_get::<i64, _>(12).map_err(storage)?).map_err(storage)?;
-        if owner.as_deref() != Some(worker_id)
-            || expected_epoch.is_some_and(|expected| expected != epoch)
-            || !heartbeat
+        let admission = awaken_session_contract::work_queue::work_lease_mutation_admission(
+            true,
+            owner.as_deref() == Some(worker_id)
+                && expected_epoch.is_none_or(|expected| expected == epoch),
+            heartbeat
                 .condition
-                .permits(current.latest_heartbeat_at.as_deref())
-        {
+                .permits(current.latest_heartbeat_at.as_deref()),
+        );
+        if admission != awaken_session_contract::work_queue::WorkLeaseMutationAdmission::Applied {
             return Ok(HeartbeatResult::PreconditionFailed);
         }
         let extended = current.state.can_extend_lease();
