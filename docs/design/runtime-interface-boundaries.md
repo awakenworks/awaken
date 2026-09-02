@@ -624,8 +624,9 @@ code.
 - plugin tools x catalog visibility: plugin-provided tools join the same tool
   set as global, dynamic, and unified delegation tools, then visibility filters
   run once.
-- builtin tools x runtime core: first-party hand, task, and delegation tools are
-  installed from `awaken-ext-builtin-tools`; the core registry starts without
+- builtin tools x runtime core: first-party Hand, Web, native-delegation, and
+  Managed-coordination tools are installed from `awaken-ext-builtin-tools`;
+  there is no generic Task command family, and the core registry starts without
   concrete model-callable ids.
 - unified delegation x permission: `agent_run` is the only delegation tool id;
   the resolved delegate/multiagent roster constrains the `agent_id` argument,

@@ -479,8 +479,8 @@ enters only through selected extensions, adapters, and configuration. All
 official model-callable builtin tools live in `awaken-ext-builtin-tools`. Runtime
 core may define `Tool`, `RawTool`, descriptors, permission gates, commit staging,
 and resume validation, but it must not define concrete builtin tool ids or tool
-implementations such as `agent_run`, `send_message`, `bash`, `read`, `write`, or
-recovery tools outside tests.
+implementations such as `agent_run`, `send_message`, `bash`, `read`, or `write`
+outside tests. The official catalog has no generic builtin Task commands.
 
 The normal interaction flow is:
 
@@ -488,7 +488,7 @@ The normal interaction flow is:
 configuration publication
   -> resolved run environment selects plugins, delegate roster, action kinds
   -> builtin extension contributes model-visible descriptors when selected
-  -> model calls agent_run, send_message, or another selected tool
+  -> model calls native agent_run, Managed send_message, or another selected tool
   -> tool gate validates descriptor fingerprint, permission, capability, target
   -> tool/effect returns StateCommand, deterministic child/follow-up Run request,
      external wait, or ScheduledAction request; only external ingress returns a
@@ -510,7 +510,7 @@ not pass. After validation, execution may be a local child run or a durable
 `RunDispatch` submission; the child result returns as a normal tool output or
 committed fact. Parent and child runs remain ordinary runs.
 
-`send_message` is the internal Managed Agent message path. The source
+`send_message` is the sole internal Managed Agent message path. The source
 Thread's `ActiveToolBatch` commits the request and recovery state. The
 deterministic target Run freezes the user message in `RunActivation.input`, and
 backend Run-id idempotency admits the exact payload once. Dispatch only delivers
@@ -518,9 +518,8 @@ that Run; the target transcript becomes durable through `ThreadCommit`. Before
 Session policy or activity admission, the Runtime validates run, call,
 operation, tool id, target, and message against that committed batch. A
 follow-up always queues a fresh Run on the existing Thread; it never answers or
-consumes the current Run's `ResumeTicket`. A future
-generic `send_message` must use the same Thread-scoped StateCommand/reducer shape
-instead of a server read-then-outbox adapter.
+consumes the current Run's `ResumeTicket`. There is no generic server sender,
+read-then-outbox adapter, or parallel internal-message pending path.
 
 A terminal child report follows the identical ownership rule in the reverse
 direction: the committed child result is projected into one deterministic root

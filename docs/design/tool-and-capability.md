@@ -119,9 +119,8 @@ not.
 | Toolset | Tool ids | Runtime rule |
 |---|---|---|
 | `builtin-hand-tools` | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search` | descriptors and realization contracts live in the extension; filesystem tools execute in-process and both Web tools resolve through one configured provider catalog; runtime core ships no concrete tool id |
-| `builtin-task-tools` | `cancel_task` | task control is an ordinary plugin tool over the runtime control seam |
 | `builtin-delegation-tools` | `agent_run` | delegation is one tool id with a target argument, not one generated id per target agent |
-| `builtin-coordination-tools` | `list_agents`, `send_message` | Agent messaging is the one Thread-owned coordination command, not a Task ingress/outbox adapter |
+| `builtin-coordination-tools` | `list_agents`, `send_message` | the Managed host projects this fixed pair only for a primary Session; Agent messaging is the one Thread-owned coordination command, not a Task ingress/outbox adapter |
 
 `agent_run` has a stable descriptor id. Its arguments include at least
 `agent_id` and `prompt`; optional arguments such as input metadata, handoff mode,
@@ -143,6 +142,11 @@ Invocation is fail-closed:
 Do not reintroduce `agent_run_<agent_id>` as a tool id. If UI or logs need a
 friendly label, derive it from `agent_run` plus the `agent_id` argument.
 
+There is no generic builtin Task command family. Managed coordination,
+protocol/MCP/A2A operations, ingress control, generic `RawTool` async-task
+control, and operator recovery retain their existing authoritative boundaries
+instead of being duplicated as model commands.
+
 ## Admin Assistant Tool Boundary
 
 Admin assistant tools are not builtin runtime tools.
@@ -151,7 +155,7 @@ those tools are bound through a private admin registry and route/service auth,
 not through ordinary agent `plugin_ids` or published
 `AgentSpec.allowed_tools`.
 
-Examples include `admin_get_platform_capabilities`, `admin_create_agent_draft`,
+Examples include `admin_get_platform_capabilities`, `admin_draft_agent`,
 and `admin_validate_agent`. They may read capability snapshots or validate draft
 config, but they must not carry implicit publish authority. If an admin tool
 performs a destructive or publishing action, it needs its own product/security
