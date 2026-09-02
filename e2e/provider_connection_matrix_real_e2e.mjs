@@ -141,7 +141,7 @@ async function exerciseManagedMultiagentAttempt(base, coordinator, worker, serve
     const tools = events
       .filter((event) => event.type === 'agent.tool_use')
       .map((event) => event.name);
-    assert.deepEqual(tools, ['list_agents', 'send_to_agent'], 'one fixed list -> send sequence');
+    assert.deepEqual(tools, ['list_agents', 'send_message'], 'one fixed list -> send sequence');
 
     const coordinatorMessages = events
       .filter((event) => event.type === 'agent.message')
@@ -327,8 +327,8 @@ async function certifyProvider(item, index) {
           'Follow this protocol exactly and never call more than one tool in a response.',
           `If the latest user message begins with "Message from agent ", call no tools and reply exactly ${markers.reportAck}.`,
           'Otherwise first call list_agents exactly once and emit no text.',
-          `After list_agents returns, call send_to_agent exactly once with agent_id "${agent}" and message "Reply with exactly ${markers.childReply}". Emit no text.`,
-          `After send_to_agent returns, call no more tools and reply exactly ${markers.sendAccepted}.`,
+          `After list_agents returns, call send_message exactly once with agent_id "${agent}" and message "Reply with exactly ${markers.childReply}". Emit no text.`,
+          `After send_message returns, call no more tools and reply exactly ${markers.sendAccepted}.`,
           'Never answer the original request directly and never start another child after a child report.',
         ].join('\n'),
         max_steps: 8,

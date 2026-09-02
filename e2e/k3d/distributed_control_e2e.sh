@@ -24,7 +24,7 @@ ok() { echo -e "\033[1;32m$*\033[0m"; }
 err() { echo -e "\033[1;31m$*\033[0m"; }
 
 cleanup() {
-  local status=$?
+  local status="$1"
   [ -z "$WORKER_TLS_DIR" ] || rm -rf -- "$WORKER_TLS_DIR"
   if [ "$status" -ne 0 ] && [ "${ADR71_KEEP_FAILED_CLUSTER:-0}" = "1" ]; then
     err "retaining failed k3d cluster $CLUSTER for diagnostics"
@@ -33,12 +33,16 @@ cleanup() {
   [ -z "$STOPPED_NODE" ] || docker start "$STOPPED_NODE" >/dev/null 2>&1 || true
   [ -z "$API_PF" ] || kill "$API_PF" 2>/dev/null || true
   log "teardown: deleting k3d cluster $CLUSTER"
-  k3d_delete_cluster "$CLUSTER"
-  rm -f "$DEPLOY_DIR/awaken-control" "$DEPLOY_DIR/awaken-coordinator" "$DEPLOY_DIR/awaken-server" "$DEPLOY_DIR/awaken-worker"
+  k3d_delete_cluster_and_remove \
+    "$CLUSTER" \
+    "$DEPLOY_DIR/awaken-control" \
+    "$DEPLOY_DIR/awaken-coordinator" \
+    "$DEPLOY_DIR/awaken-server" \
+    "$DEPLOY_DIR/awaken-worker"
 }
-trap cleanup EXIT
 
 k3d_admit_or_exit "ADR-0071 distributed E2E"
+k3d_install_exit_cleanup cleanup
 
 start_public_endpoint() {
   if [ -n "$API_PF" ]; then
@@ -76,6 +80,42 @@ wait_roles() {
   kubectl -n "$NS" rollout status deploy/provider --timeout=240s
   kubectl -n "$NS" rollout status deploy/awaken-api --timeout=240s
   kubectl -n "$NS" rollout status statefulset/worker --timeout=240s
+}
+
+initialize_role_installation() {
+  local role="$1"
+  local job="${role}-initialize"
+  # First-install decision table: KFI1 a fresh cluster has no binding and the
+  # ordinary rollout Job fails closed; KFI2 this explicit one-time Job carries
+  # the fixture audit reference and initializes only the role-owned targets;
+  # KFI3 every later rollout keeps using the manifest's ordinary exact-only
+  # migration command. This helper reuses that same role binary, config Secret,
+  # auth Secret, label/network boundary, and migration entry point.
+  kubectl -n "$NS" apply -f - >/dev/null <<YAML
+apiVersion: batch/v1
+kind: Job
+metadata: { name: $job }
+spec:
+  backoffLimit: 0
+  template:
+    metadata: { labels: { app: ${role}-migrate } }
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: initialize
+          image: $IMAGE
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/awaken-$role", "database", "migrate", "--config", "/etc/awaken/$role.toml", "--initialize-installation", "--initialization-reference", "adr71-fresh-$role"]
+          volumeMounts:
+            - { name: config, mountPath: /etc/awaken, readOnly: true }
+            - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
+      volumes:
+        - name: config
+          secret: { secretName: adr71-role-config }
+        - name: auth
+          secret: { secretName: adr71-$role-auth }
+YAML
+  kubectl -n "$NS" wait --for=condition=complete "job/$job" --timeout=240s
 }
 
 log "1/10 build production roles and the protocol-only Provider fixture"
@@ -182,6 +222,10 @@ log "3/10 deploy replicated authorities, real Workers, and PostgreSQL standby"
 kubectl -n "$NS" apply -k "$DEPLOY_DIR/distributed-control" >/dev/null
 kubectl -n "$NS" rollout status statefulset/postgres-primary --timeout=180s
 kubectl -n "$NS" rollout status statefulset/postgres-standby --timeout=180s
+initialize_role_installation control
+initialize_role_installation coordinator
+kubectl -n "$NS" patch job/control-migrate --type=merge -p '{"spec":{"suspend":false}}' >/dev/null
+kubectl -n "$NS" patch job/coordinator-migrate --type=merge -p '{"spec":{"suspend":false}}' >/dev/null
 kubectl -n "$NS" wait --for=condition=complete job/control-migrate --timeout=240s
 kubectl -n "$NS" wait --for=condition=complete job/coordinator-migrate --timeout=240s
 wait_roles || { diagnostics; exit 1; }

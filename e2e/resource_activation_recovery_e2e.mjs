@@ -279,7 +279,7 @@ async function main() {
       agent: AGENT,
       environment_id: 'env_local',
       resources: [{
-        type: 'memory_store', memory_store_id: memoryStoreId, mount_path: '/workspace/recovery',
+        type: 'memory_store', memory_store_id: memoryStoreId,
       }],
       betas: [MANAGED_BETA],
     });
@@ -288,7 +288,7 @@ async function main() {
       agent: AGENT,
       environment_id: 'env_local',
       resources: [{
-        type: 'memory_store', memory_store_id: memoryStoreId, mount_path: '/workspace/terminal',
+        type: 'memory_store', memory_store_id: memoryStoreId,
       }],
       betas: [MANAGED_BETA],
     });

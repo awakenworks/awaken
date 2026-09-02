@@ -5,8 +5,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import _crate_boundary_workspace
+
 
 RETIRED_EXECUTION_PATHS = {
+    "AgentContainerProvider": "ContainerEnvironmentProvider is the only Container Environment owner",
+    "AgentContainerSession": "ContainerEnvironment plus RuntimeAgentProcess is the sole Session execution shape",
+    "EnvironmentOwnedProcess": "process termination cannot authorize Environment disposal",
+    "open_agent": "create_environment plus spawn_agent_process is the sole Container launch path",
     "ToolExecutorProvider": "SessionEnvironment is the only Hand owner",
     "ToolExecutorSelectionError": "Hand selection no longer occurs per Run",
     "ConfigToolExecutorProvider": "Agent config cannot place a parallel Hand",
@@ -43,6 +49,7 @@ RETIRED_DEPLOYMENT_SELECTORS = {
     "AWAKEN_REMOTE_HAND_NATS": "the Worker-owned SessionEnvironment is the only Hand owner",
 }
 EXECUTABLE_FIXTURE_ROOTS = ("deploy", "e2e", "scripts")
+THIS_CHECKER = Path(__file__).resolve()
 
 ROUTE_OWNER_FILES = (
     "crates/control/awaken-admin-config-api/src/router.rs",
@@ -107,16 +114,6 @@ RAW_TOOL_REGISTRY_CONSUMERS = (
 )
 
 
-def _production(text: str) -> str:
-    """A terminal inline unit-test module is not a route owner.
-
-    Test-only imports/constants may appear before production routers, so cutting
-    at the first `#[cfg(test)]` silently omitted real owners. Rust source in this
-    repository keeps the inline `mod tests` last; cut only at that module marker.
-    """
-    return re.split(r"#\[cfg\(test\)\]\s*mod\s+\w+\s*\{", text, maxsplit=1)[0]
-
-
 def _normalized_path(path: str) -> str:
     return PARAMETER.sub(lambda match: "{*}" if match.group(0).startswith("{*") else "{}", path)
 
@@ -153,7 +150,9 @@ def _call_end(text: str, opening: int) -> int:
 
 
 def _owned_routes(path: Path) -> list[tuple[str, str]]:
-    text = _production(path.read_text(encoding="utf-8"))
+    text = _crate_boundary_workspace.production_rust(
+        path.read_text(encoding="utf-8")
+    )
     owned: list[tuple[str, str]] = []
     for match in ROUTE_START.finditer(text):
         opening = text.find("(", match.start(), match.end())
@@ -189,7 +188,9 @@ def duplicate_tool_registry_violations(sources: dict[str, str]) -> list[str]:
     if "pub struct RawToolRegistry" not in owner:
         errors.append(f"{RAW_TOOL_REGISTRY_OWNER}: missing authoritative RawToolRegistry")
     for relative, text in sources.items():
-        if PARALLEL_RAW_TOOL_REGISTRY.search(_production(text)):
+        if PARALLEL_RAW_TOOL_REGISTRY.search(
+            _crate_boundary_workspace.production_rust(text)
+        ):
             errors.append(
                 f"{relative}: parallel RawTool HashMap; reuse RawToolRegistry"
             )
@@ -210,9 +211,17 @@ def retired_deployment_selector_violations(sources: dict[str, str]) -> list[str]
     return errors
 
 
+def _is_this_checker(path: Path) -> bool:
+    """Match this source independently of relative/absolute path spelling."""
+
+    return path.resolve() == THIS_CHECKER
+
+
 def runtime_host_boundary_violations(sources: dict[str, str]) -> list[str]:
     errors: list[str] = []
-    host_error_projection = _production(sources.get(RUNTIME_HOST_ERROR_OWNER, ""))
+    host_error_projection = _crate_boundary_workspace.production_rust(
+        sources.get(RUNTIME_HOST_ERROR_OWNER, "")
+    )
     for token in FORBIDDEN_HOST_ERROR_INFERENCE:
         if token in host_error_projection:
             errors.append(
@@ -249,7 +258,7 @@ def check_all(repo_root: Path) -> list[str]:
     for relative_root in EXECUTABLE_FIXTURE_ROOTS:
         root = repo_root / relative_root
         for path in sorted(candidate for candidate in root.glob("**/*") if candidate.is_file()):
-            if path == Path(__file__) or "node_modules" in path.parts:
+            if _is_this_checker(path) or "node_modules" in path.parts:
                 continue
             try:
                 fixture_sources[str(path.relative_to(repo_root))] = path.read_text(encoding="utf-8")
@@ -296,8 +305,12 @@ def selftest() -> None:
     assert _normalized_path("/v1/agents/{agent_id}") == "/v1/agents/{}", "E1"
     assert _normalized_path("/v1/agents/{id}") == "/v1/agents/{}", "E1"
     assert ("GET", "/x") != ("POST", "/x"), "E2"
-    assert _production("prod\n#[cfg(test)]\nuse x;\nroute").endswith("route"), "E3 import"
-    assert _production("prod\n#[cfg(test)]\nmod tests { route }") == "prod\n", "E3 module"
+    assert _crate_boundary_workspace.production_rust(
+        "prod\n#[cfg(test)]\nuse x;\nroute"
+    ).strip().endswith("route"), "E3 import"
+    assert "route" not in _crate_boundary_workspace.production_rust(
+        "prod\n#[cfg(test)]\nmod tests { route }"
+    ), "E3 module"
     assert duplicate_route_owner_violations(
         [("GET", "/x", "a.rs"), ("GET", "/x", "a.rs")]
     ) == [], "E4 same owner"
@@ -325,6 +338,14 @@ def selftest() -> None:
     assert retired_deployment_selector_violations(
         {"deploy/stale.yaml": "AWAKEN_REMOTE_HAND=hand:9000"}
     ), "D2"
+
+    # Checker self-exclusion table: C1 the same checker arrives through either
+    # a relative or absolute spelling; C2 a peer fixture is scanned. Effects:
+    # S1 C1 is excluded exactly, preventing the retired-token catalog from
+    # flagging itself; S2 C2 remains eligible for the fixture gate.
+    assert _is_this_checker(Path(__file__)), "S1 absolute checker source"
+    assert _is_this_checker(Path(__file__).resolve()), "S1 resolved checker source"
+    assert not _is_this_checker(Path(__file__).with_name("peer.py")), "S2 peer fixture"
 
     # Runtime boundary decision table: B1 Session application owns the admitted
     # Run command and sole public adapter while Host maps typed codes -> accept;

@@ -20,6 +20,13 @@ cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
 
+# Snapshot text is an output of both cargo-public-api and rustdoc. Keep their
+# versions here, at the one snapshot-generation authority, so a tool upgrade is
+# reviewed together with the resulting API diff instead of producing alias/order
+# churn on whichever moving nightly happens to be installed.
+readonly PUBLIC_API_TOOL_VERSION="0.52.0"
+readonly PUBLIC_API_NIGHTLY="nightly-2026-07-14"
+
 bless=0
 require_tools=0
 for argument in "$@"; do
@@ -35,7 +42,26 @@ if ! command -v cargo-public-api >/dev/null 2>&1; then
     echo "cargo-public-api is required by the release gate" >&2
     exit 1
   fi
-  echo "cargo-public-api not installed; skipping public API check (cargo install cargo-public-api)"
+  echo "cargo-public-api not installed; skipping public API check (cargo install --locked cargo-public-api --version $PUBLIC_API_TOOL_VERSION)"
+  exit 0
+fi
+
+installed_public_api_version="$(cargo public-api --version 2>/dev/null | awk '{print $2}')"
+if [ "$installed_public_api_version" != "$PUBLIC_API_TOOL_VERSION" ]; then
+  if [ "$require_tools" -eq 1 ]; then
+    echo "cargo-public-api $PUBLIC_API_TOOL_VERSION is required by the release gate; found ${installed_public_api_version:-unknown}" >&2
+    exit 1
+  fi
+  echo "cargo-public-api version mismatch; skipping public API check (expected $PUBLIC_API_TOOL_VERSION, found ${installed_public_api_version:-unknown})"
+  exit 0
+fi
+
+if ! rustc +"$PUBLIC_API_NIGHTLY" --version >/dev/null 2>&1; then
+  if [ "$require_tools" -eq 1 ]; then
+    echo "$PUBLIC_API_NIGHTLY is required by the release gate" >&2
+    exit 1
+  fi
+  echo "$PUBLIC_API_NIGHTLY not installed; skipping public API check (rustup toolchain install $PUBLIC_API_NIGHTLY --profile minimal)"
   exit 0
 fi
 
@@ -45,7 +71,7 @@ mkdir -p public-api
 crates=$(cargo metadata --no-deps --format-version 1 \
   | python3 -c "import json,sys; print('\n'.join(sorted(p['name'] for p in json.load(sys.stdin)['packages'])))")
 
-# Nightly 1.99 can document every current workspace member, including the
+# The pinned nightly can document every current workspace member, including the
 # rust-version 1.96 scoped-migration dependency. Product adapters and startup
 # crates are intentionally included: a changing product surface still needs an
 # explicit reviewed snapshot update rather than an untracked exception.
@@ -59,11 +85,12 @@ compute_fail=0  # a crate whose surface could not be computed
 # between rustdoc versions). Without this, a bless on one nightly diffs against a
 # check on another by hundreds of spurious lines — the snapshots become
 # non-reproducible across machines. Omitting them makes the gate depend only on the
-# authored API (structs, fns, real trait impls), so any nightly yields the same file.
+# authored API (structs, fns, real trait impls). The remaining rustdoc spelling
+# and ordering is made reproducible by PUBLIC_API_NIGHTLY above.
 omit_flags="--omit blanket-impls,auto-trait-impls,auto-derived-impls"
 for c in $crates; do
   snap="public-api/$c.txt"
-  if ! cur=$(cargo +nightly public-api -p "$c" --simplified $omit_flags 2>/dev/null); then
+  if ! cur=$(cargo +"$PUBLIC_API_NIGHTLY" public-api -p "$c" --simplified $omit_flags 2>/dev/null); then
     echo "✗ failed to compute public API for $c"; fail=1; compute_fail=1; continue
   fi
   if [ "$bless" = 1 ] || [ ! -f "$snap" ]; then

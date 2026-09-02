@@ -7,6 +7,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import _crate_boundary_workspace
+
 
 ROOT = Path(__file__).resolve().parents[2]
 RULES = {
@@ -41,10 +43,6 @@ AUTHORITY_IDENTIFIERS = (
 PERSISTED_INTEGER_FORBIDDEN = (" as i64", " as u64", ".max(0)")
 
 
-def _production_source(path: Path) -> str:
-    return path.read_text().split("#[cfg(test)]", maxsplit=1)[0]
-
-
 def persistence_authority_sources(root: Path = ROOT) -> list[Path]:
     """Discover SQL authority adapters from crate metadata and implemented ports.
 
@@ -66,7 +64,10 @@ def persistence_authority_sources(root: Path = ROOT) -> list[Path]:
         shared_runtime_authority = (
             "awaken-store-schema" in manifest_text
             and any(
-                marker in _production_source(source)
+                marker
+                in _crate_boundary_workspace.production_rust(
+                    source.read_text(encoding="utf-8")
+                )
                 for source in sources
                 for marker in PERSISTENCE_PORT_MARKERS
             )
@@ -99,7 +100,13 @@ def violations(root: Path = ROOT) -> list[str]:
             if token in text:
                 errors.append(f"{relative}: forbidden authority arithmetic {token!r}")
     for path in persistence_authority_sources(root):
-        text = "\n".join(_authority_lines(_production_source(path)))
+        text = "\n".join(
+            _authority_lines(
+                _crate_boundary_workspace.production_rust(
+                    path.read_text(encoding="utf-8")
+                )
+            )
+        )
         relative = path.relative_to(root)
         for token in PERSISTED_INTEGER_FORBIDDEN:
             if token in text:

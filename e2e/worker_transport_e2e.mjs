@@ -179,56 +179,66 @@ async function main() {
 
     // Session-realization authority cause graph:
     // C1 authenticated identity is current
-    //   -> C2 command is renewal-only
-    //   -> C3 owner + Runtime incarnation are exact
-    //   -> C4 requested expiry is live and bounded by the registry lease
+    //   -> C2 asserted owner + Runtime incarnation are exact
+    //   -> C3 asserted/requested expiries are live and monotonic
+    //   -> C4 requested expiry is capped by the registry lease
     //   -> E1 invoke the one SessionRealizationControl port.
     // Any failed cause stops before Session-domain lookup or effects.
     //
-    // | Rule | renew | owner/incarnation | expiry | Result |
-    // | S1 | false | exact | bounded | reject at C2 |
-    // | S2 | true | wrong owner | bounded | reject at C3 |
-    // | S3 | true | wrong incarnation | bounded | reject at C3 |
-    // | S4 | true | exact | expired | reject at C4 |
-    // | S5 | true | exact | beyond registry | reject at C4 |
-    // | S6 | true | exact | bounded | reaches control; 404 `not_found` |
-    // | S7 | true | exact | bounded | preparing Session; 409 `not_ready` |
+    // | Rule | owner/incarnation | asserted/requested expiry | Result |
+    // | S1 | wrong owner | live/monotonic | reject at C2 |
+    // | S2 | wrong incarnation | live/monotonic | reject at C2 |
+    // | S3 | exact | asserted expired | reject at C3 |
+    // | S4 | exact | requested expired | reject at C3 |
+    // | S5 | exact | requested regresses | reject at C3 |
+    // | S6 | exact | beyond registry | cap at C4; reaches Control |
+    // | S7 | exact | bounded | reaches Control |
     const incarnation = `${workerIdentity.worker_id}:${workerIdentity.generation}:${workerIdentity.incarnation_id}`;
     const boundedExpiry = Date.now() + 5_000;
-    const beginCommand = (overrides = {}) => ({
+    const renewCommand = (leaseOverrides = {}, requestedExpiresAt = boundedExpiry + 1_000) => ({
       session_id: 'sesn_worker_authority_probe',
-      target: {
+      asserted_lease: {
         owner: workerIdentity.worker_id,
         runtime_incarnation: incarnation,
-        lease_expires_at_unix_ms: boundedExpiry,
-        renew_existing_lease: true,
-        ...overrides,
+        epoch: 1,
+        expires_at_unix_ms: boundedExpiry,
+        ...leaseOverrides,
       },
+      requested_expires_at_unix_ms: requestedExpiresAt,
     });
     const authorityCases = [
-      ['S1', { renew_existing_lease: false }],
-      ['S2', { owner: 'another-worker' }],
-      ['S3', { runtime_incarnation: 'another-incarnation' }],
-      ['S4', { lease_expires_at_unix_ms: 1 }],
-      ['S5', { lease_expires_at_unix_ms: Date.now() + 86_400_000 }],
+      ['S1', { owner: 'another-worker' }, boundedExpiry + 1_000, /does not match authenticated Worker authority/u],
+      ['S2', { runtime_incarnation: 'another-incarnation' }, boundedExpiry + 1_000, /does not match authenticated Worker authority/u],
+      ['S3', { expires_at_unix_ms: 1 }, boundedExpiry + 1_000, /does not match authenticated Worker authority/u],
+      ['S4', {}, 1, /does not match authenticated Worker authority/u],
+      ['S5', {}, boundedExpiry - 1, /cannot extend the asserted Session realization lease/u],
     ];
-    for (const [rule, override] of authorityCases) {
-      const response = await postJson('/v1/worker/session/realization/begin', {
-        command: beginCommand(override),
+    for (const [rule, leaseOverride, requestedExpiry, errorPattern] of authorityCases) {
+      const response = await postJson('/v1/worker/session/realization/renew', {
+        command: renewCommand(leaseOverride, requestedExpiry),
       });
       assert.equal(response.status, 400, `${rule}: ${response.text}`);
-      assert.match(response.text, /renewal exceeds authenticated Worker authority/u, rule);
+      assert.match(response.text, errorPattern, rule);
     }
-    const admitted = await postJson('/v1/worker/session/realization/begin', {
-      command: beginCommand(),
-    });
-    assert.equal(admitted.status, 404, `S6: ${admitted.text}`);
-    assert.equal(admitted.json?.realization_error?.kind, 'not_found', 'S6 typed control result');
-    assert.doesNotMatch(
-      admitted.text,
-      /renewal exceeds authenticated Worker authority/u,
-      'S6 passed the transport fence and reached the sole Session control port',
-    );
+    for (const [rule, requestedExpiry] of [
+      ['S6', Number.MAX_SAFE_INTEGER],
+      ['S7', boundedExpiry + 1_000],
+    ]) {
+      const admitted = await postJson('/v1/worker/session/realization/renew', {
+        command: renewCommand({}, requestedExpiry),
+      });
+      assert.equal(admitted.status, 404, `${rule}: ${admitted.text}`);
+      assert.equal(
+        admitted.json?.realization_error?.kind,
+        'not_found',
+        `${rule} typed control result`,
+      );
+      assert.doesNotMatch(
+        admitted.text,
+        /does not match authenticated Worker authority|cannot extend/u,
+        `${rule} passed the transport fence and reached the sole Session control port`,
+      );
+    }
 
     const wrongLease = {
       owner: 'another-worker',
@@ -246,7 +256,7 @@ async function main() {
       assert.equal(response.status, 400, `${route}: ${response.text}`);
       assert.match(response.text, /lease is not owned by the authenticated Worker incarnation/u);
     }
-    pass('Session realization transport enforces renewal, owner, incarnation, and registry expiry');
+    pass('Session realization transport enforces exact lease-only renewal authority');
 
     // --- dispatch transport: the claim endpoint is live and wired to the store ---
     // Queue a real run, then claim it over the authenticated transport. Legacy

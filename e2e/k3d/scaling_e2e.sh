@@ -49,10 +49,9 @@ cleanup() {
     return
   fi
   log "teardown: deleting k3d cluster $CLUSTER"
-  k3d_delete_cluster "$CLUSTER"
-  rm -f "$DEPLOY_DIR/awaken-server"
+  k3d_delete_cluster_and_remove "$CLUSTER" "$DEPLOY_DIR/awaken-server"
 }
-trap cleanup EXIT
+k3d_install_exit_cleanup cleanup
 
 # psql on the postgres pod (authoritative source of truth); -tA = bare scalar.
 # Polling suppresses transient exec errors, while final assertions preserve stderr.

@@ -1,15 +1,15 @@
 // Durable cross-protocol resume e2e (scenario #49): with durable ingress
 // (SESSION_DEPLOYMENT_INGRESS=durable + SESSION_DEPLOYMENT_STORAGE_DIR), a run AWAITS on a tool approval on
 // the AI-SDK wire and is APPROVED + resumed on the AG-UI wire. The resume is not a
-// foreground inline execution — it flows through DurableRunIngress.deliver_resume
-// and the DISPATCH WORKER drives the awaiting run to completion. Same thread id, same
+// foreground inline execution — it is admitted to the durable dispatch row and
+// the `DispatchWorker` resumes the claimed physical attempt to completion. Same thread id, same
 // durable `SharedHost`, different wire.
 //
 // Chain:
 //   AI-SDK : POST /v1/ai-sdk/threads/T/runs -> SharedHost (durable) ->
 //            submit_background -> DispatchPool -> Runtime (probe write) -> await (persisted)
 //   AG-UI  : POST /v1/ag-ui/agents/assistant (role:"tool" approve) ->
-//            deliver_resume -> DispatchWorker resume branch -> write executes -> done
+//            durable resume admission -> DispatchWorker resume branch -> write executes -> done
 //   AI-SDK : GET history -> completed, write took effect (read-back present)
 //
 // Deterministic (probe stub). Run: (from e2e/) node durable_cross_protocol_resume_e2e.mjs
@@ -120,7 +120,7 @@ async function main() {
     });
     assert.equal(r2.status, 200, `ag-ui durable resume accepted (${r2.status})`);
     await drain(r2);
-    pass('AG-UI delivered the approval; DurableRunIngress.deliver_resume drove the awaiting run');
+    pass('AG-UI delivered the approval; DispatchWorker drove the awaiting physical attempt');
 
     // --- The durable run completed and the approved write executed --------
     const done = await until(async () => {

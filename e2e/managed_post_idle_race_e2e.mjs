@@ -4,9 +4,9 @@
 // A live-push stream emits session.status_idle slightly before the session's
 // queryable status settles, so a client that cleans up the instant it sees idle can
 // race a still-"running" status. The safe protocol is the same regardless of how
-// idle is observed: poll sessions.retrieve() until status !== 'running', THEN
-// archive/delete. This test locks that ordering — retrieve settles off 'running',
-// and archive then delete both succeed on the settled session. (The echo stream is
+// idle is observed: poll sessions.retrieve() until status === 'idle', THEN
+// archive/delete. This test locks that ordering — retrieve reaches exact idle,
+// and archive then delete both succeed on that settled session. (The echo stream is
 // replay-at-open with no live push, so the race window is zero here; the ordering
 // gate is what we assert. The real live-push race is exercised in the real-model
 // reconnect test.)
@@ -24,21 +24,23 @@ import {
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38403);
-// The documented gate: after idle, poll until the queryable status is no longer
-// 'running' before any cleanup call.
+// The documented gate: after the event projection idles, poll until the
+// queryable Session authority is exactly idle before any cleanup call.
 async function settle(client, sessionId) {
   return (await waitForValue(
     () => client.beta.sessions.retrieve(sessionId, { betas: BETAS }),
-    (session) => session.status !== 'running',
+    (session) => session.status === 'idle',
     'queryable Session status to settle after committed idle',
     { timeoutMs: 2_000 },
   )).status;
 }
 
 async function sendAndObserveIdle(client, sessionId) {
-  // C1=exact User receipt; C2=its idle event; C3=queryable status settles.
-  // E1=C2 is post-C1; E2=C3 permits cleanup. K: event and Session projections
-  // remain separate reads. Decision P1 C1&&!C2=>retry; P2 C1+C2=>settle C3.
+  // C1=exact User receipt; C2=its idle event; C3=queryable status is exact
+  // idle. E1=C2 is post-C1; E2=C3 permits cleanup. K: event and Session
+  // projections remain separate reads; running/rescheduling/terminal are not
+  // archive admission. Decision P1 C1&&!C2=>retry; P2 C1+C2&&!C3=>retry;
+  // P3 C1+C2+C3=>E2.
   const receipt = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: 'work' }] }],
     betas: BETAS,
@@ -64,10 +66,10 @@ async function main() {
       const a = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       await sendAndObserveIdle(client, a.id);
       const settled = await settle(client, a.id);
-      assert.notEqual(settled, 'running', 'status settled off running before cleanup');
+      assert.equal(settled, 'idle', 'status reached exact idle before cleanup');
       const archived = await client.beta.sessions.archive(a.id, { betas: BETAS });
       assert.ok(archived.archived_at, 'archive succeeds on the settled session');
-      pass('turn sent -> retrieve settles off running -> archive succeeds (no write race)');
+      pass('turn sent -> retrieve reaches exact idle -> archive succeeds (no write race)');
 
       // --- delete after settling ---
       const b = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });

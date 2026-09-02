@@ -11,20 +11,41 @@ import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import {
   deploymentEnv,
   ensureProductionBuilt,
+  initializeE2EInstallation,
   pass,
   stopServer,
   waitForPort,
 } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38621);
+const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
+const WORKSPACE = 'workspace-seal-key-required';
 
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-sealkey-required-'));
-  const env = deploymentEnv(directory, {
-    // Identity is not this scenario's cause; freeze it so only seal-key custody
-    // can determine the pre-bind failure.
+  // Cause/effect table: C1=the exact installation is initialized with typed
+  // key K; C2=the ordinary-start config then omits K; C3=the retired env carries
+  // the same valid-looking K. E1=C1 removes installation continuity as a
+  // competing failure; E2=C2+C3 rejects before bind for typed key custody. If
+  // the retired input is revived, the initialized deployment can listen and
+  // the existing oracle fails. Rule S1=C1+C2+C3=>E2.
+  const initializedEnv = deploymentEnv(directory, {
     identityMode: 'no-login',
-    fields: { mode: 'server', bind: `127.0.0.1:${PORT}` },
+    controlSealKey: SEAL_KEY,
+    fields: {
+      mode: 'server',
+      bind: `127.0.0.1:${PORT}`,
+      expected_platform_workspace_id: WORKSPACE,
+    },
+  });
+  initializeE2EInstallation({ ...process.env, ...initializedEnv });
+  const env = deploymentEnv(directory, {
+    identityMode: 'no-login',
+    fields: {
+      mode: 'server',
+      bind: `127.0.0.1:${PORT}`,
+      expected_platform_workspace_id: WORKSPACE,
+    },
   });
   const server = spawn(ensureProductionBuilt(), automatedAllInOneArgs('--config', path.join(env.HOME, '.awaken', 'config.toml')), {
     env: {
@@ -32,7 +53,7 @@ async function main() {
       ...env,
       // This removed input is deliberately valid-looking. It must not satisfy
       // the typed server-mode key requirement.
-      AWAKEN_MGMT_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+      AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
     },
     stdio: ['ignore', 'ignore', 'pipe'],
   });

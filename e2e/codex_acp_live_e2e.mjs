@@ -37,7 +37,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
-import { waitForSessionEventReceipt } from './harness.mjs';
+import { initializeE2EInstallation, waitForSessionEventReceipt } from './harness.mjs';
 
 if (process.env.CODEX_ACP_LIVE !== '1') {
   throw new Error('set CODEX_ACP_LIVE=1 to confirm this test may invoke the real Codex ACP adapter');
@@ -154,6 +154,7 @@ async function startHostLoginProfile() {
     // Intentionally no acp_clis, default backend, or credential setting: host
     // ACP discovery remains the zero-configuration product path.
   ].join('\n'));
+  initializeE2EInstallation(process.env, { binary, configPath: config });
   const child = spawn(binary, automatedAllInOneArgs('--config', config), {
     env: process.env,
     stdio: ['ignore', 'ignore', 'inherit'],

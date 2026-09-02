@@ -12,6 +12,7 @@ import {
   cleanupFixtureTree,
   pass,
   realServerEnv,
+  scenarioMemoryStore,
   spawnServer,
   startUpstream,
   stopServer,
@@ -93,15 +94,12 @@ async function main() {
     servers.push(a.server);
     await waitForPort(PORT);
 
-    const store = await client.post('/v1/memory_stores', {
-      body: { name: 'crash-extraction' },
-      headers: MEMORY_HEADERS,
-    });
+    const store = await scenarioMemoryStore(client, MEMORY_HEADERS);
     const session = await client.beta.sessions.create({
       agent: 'assistant',
       environment_id: 'env_local',
       betas: BETAS,
-      resources: [{ type: 'memory_store', memory_store_id: store.id, mount_path: '/memory' }],
+      resources: [{ type: 'memory_store', memory_store_id: store.id }],
     });
     assert.ok((await turn(session.id, `remember ${MARKER}`)).includes(MARKER), 'terminal turn committed');
 
@@ -147,7 +145,7 @@ async function main() {
       agent: 'assistant',
       environment_id: 'env_local',
       betas: BETAS,
-      resources: [{ type: 'memory_store', memory_store_id: store.id, mount_path: '/memory' }],
+      resources: [{ type: 'memory_store', memory_store_id: store.id }],
     });
     assert.ok((await turn(recall.id, 'please recall what you know')).includes(MARKER));
     pass('restart reclaimed the intent exactly once and recall observed the same store');

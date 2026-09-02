@@ -414,9 +414,10 @@ async function publishAgent(endpoint: string, memoryStoreId: string): Promise<vo
     plugin_config: { memory: { binding_id: 'postgres-memory' } },
   })).status, 200);
   assert.equal((await json('PUT', scoped(WORKSPACE, `config/agents/${AGENT}/resources`), {
-    // Binding decision rule: the published plugin selects one explicit Agent
-    // binding; a Session resource at the same mount replaces its target while
-    // preserving this stable id. No runtime heuristic selects "the" memory.
+    // Binding decision rule: this Control payload is an Agent InputBinding, so
+    // its authored mount remains valid. The official id-only Session resource
+    // replaces it by exact MemoryStore identity while preserving this stable
+    // binding id; no path or first-Memory heuristic selects "the" memory.
     agent_id: AGENT,
     revision: 1,
     inputs: [{
@@ -723,7 +724,6 @@ async function main(): Promise<void> {
       resources: [{
         type: 'memory_store',
         memory_store_id: memoryId,
-        mount_path: '/workspace/memory',
       }],
       betas: [MANAGED_BETA],
     });
@@ -731,10 +731,10 @@ async function main(): Promise<void> {
     // is the canonical desired manifest, while status carries realization state;
     // there is no second installed-resource catalog.
     //
-    // | Frozen inputs | Worker acknowledgement | Public resources | Status |
+    // | Frozen id-only input | Derived catalog mount | Worker acknowledgement | Status |
     // |---|---|---|---|
-    // | present | absent | both bindings | rescheduling |
-    // | present | exact | both bindings | idle/running |
+    // | present | returned on public resource | absent | rescheduling |
+    // | present | unchanged on retrieve | exact | idle/running |
     //
     // Rule R1 covers create and R2 the Run below. FMECA: hiding desired inputs
     // breaks official create/read round-trip; calling them installed invents a
@@ -744,6 +744,12 @@ async function main(): Promise<void> {
       session.resources.map((resource: { type: string }) => resource.type),
       ['memory_store'],
       'the canonical desired manifest is immediately readable',
+    );
+    const derivedMemoryMountPath = session.resources[0]?.mount_path;
+    assert.equal(
+      derivedMemoryMountPath,
+      '/mnt/memory/shared-memory',
+      'the server derives the MemoryStore mount from its catalog name',
     );
     assert.equal(session.status, 'rescheduling');
     // Managed Run decision table: C1=official SDK create froze the MemoryStore;
@@ -781,6 +787,11 @@ async function main(): Promise<void> {
     assert.deepEqual(
       activeSession.body.resources.map((resource: { type: string }) => resource.type),
       ['memory_store'],
+    );
+    assert.equal(
+      activeSession.body.resources[0]?.mount_path,
+      derivedMemoryMountPath,
+      'retrieve preserves the frozen server-derived MemoryStore mount',
     );
     console.log('  ok: registered Worker activated the PostgreSQL-backed MemoryStore input');
     console.log('  ok: Managed Run completed over the PostgreSQL-backed resource bindings');

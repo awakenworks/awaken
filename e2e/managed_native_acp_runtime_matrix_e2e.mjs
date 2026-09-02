@@ -188,7 +188,6 @@ async function exerciseDirectMatrix() {
         resources: [{
           type: 'memory_store',
           memory_store_id: memory.id,
-          mount_path: '/memory',
         }],
         initial_events: [{
           type: 'user.message',

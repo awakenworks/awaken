@@ -1,6 +1,6 @@
 // Remote A2A delegation end-to-end via the Anthropic TS SDK.
 //
-// Server A uses fixed `list_agents` -> `send_to_agent` coordination for a
+// Server A uses fixed `list_agents` -> `send_message` coordination for a
 // `researcher` whose frozen backend is REMOTE A2A server B. The send receipt ends
 // A's coordinator Run; B's echo returns asynchronously on the child Thread.
 //
@@ -113,8 +113,8 @@ async function main() {
     const toolNames = events
       .filter((event) => event.type === 'agent.tool_use')
       .map((event) => event.name);
-    assert.deepEqual(toolNames, ['list_agents', 'send_to_agent']);
-    pass('server A issued fixed list_agents -> send_to_agent coordination');
+    assert.deepEqual(toolNames, ['list_agents', 'send_message']);
+    pass('server A issued fixed list_agents -> send_message coordination');
 
     // The coordinator ends on the admission receipt, while B's result crosses
     // back through the ordinary child Thread event.

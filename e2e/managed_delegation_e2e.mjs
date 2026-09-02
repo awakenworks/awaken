@@ -1,5 +1,5 @@
 // Managed multi-Agent coordination end-to-end with the official Anthropic TS
-// SDK. The coordinator uses the fixed `list_agents` and `send_to_agent` tools.
+// SDK. The coordinator uses the fixed `list_agents` and `send_message` tools.
 // The send result is an admission receipt; Native/ACP child work runs on an
 // ordinary child Thread and returns through a cross-Thread event, asynchronously
 // from the coordinator's final message.
@@ -10,7 +10,7 @@
 // Run: (from e2e/)  npm install && node managed_delegation_e2e.mjs
 //
 // Cause/effect graph:
-//   frozen roster + fixed tools -> list_agents result -> accepted send_to_agent
+//   frozen roster + fixed tools -> list_agents result -> accepted send_message
 //   -> stable child Thread + fresh child Run -> asynchronous cross-Thread reply
 //   -> one report Run with no second send -> child-perspective projection
 //   -> targeted interrupt -> archive termination
@@ -271,7 +271,7 @@ async function runSession(client, sessionId, text) {
   });
   const acceptedId = receipt.data[0]?.id;
   assert.equal(typeof acceptedId, 'string', 'official SDK returns the accepted User Event id');
-  // `send_to_agent` is intentionally asynchronous: the HTTP send can return
+  // `send_message` is intentionally asynchronous: the HTTP send can return
   // after the admission receipt while the child still keeps the Session active.
   // Cause/effect rule RS1: C1=a Session may already expose an older idle edge;
   // C2=this send returns a new exact durable receipt; C3=its coordinated Run
@@ -343,7 +343,7 @@ async function main() {
     const okEvents = await runSession(client, ok.id, 'research the answer');
     assert.deepEqual(
       toolNames(okEvents),
-      ['list_agents', 'send_to_agent'],
+      ['list_agents', 'send_message'],
       `fixed Managed coordination sequence: ${toolNames(okEvents)}`,
     );
     assert.ok(
@@ -474,7 +474,7 @@ async function main() {
     );
     assert.deepEqual(
       toolNames(followUpEvents),
-      ['list_agents', 'send_to_agent', 'list_agents', 'send_to_agent'],
+      ['list_agents', 'send_message', 'list_agents', 'send_message'],
       'F1/E2 each coordinator Run uses the one fixed tool path',
     );
     assert.equal(
@@ -998,7 +998,7 @@ async function main() {
       betas: BETAS,
     });
     const selfEvents = await runSession(client, selfSession.id, 'use the self agent');
-    assert.deepEqual(toolNames(selfEvents), ['list_agents', 'send_to_agent']);
+    assert.deepEqual(toolNames(selfEvents), ['list_agents', 'send_message']);
     assert.ok(messages(selfEvents).some((message) => message.includes('coordination accepted:')));
     assert.ok(!messages(selfEvents).some((message) => message.includes('self copy: 42')));
     const selfCreated = selfEvents.find(
@@ -1024,7 +1024,7 @@ async function main() {
       betas: BETAS,
     });
     const acpEvents = await runSession(client, acpSession.id, 'use the acp agent');
-    assert.deepEqual(toolNames(acpEvents), ['list_agents', 'send_to_agent']);
+    assert.deepEqual(toolNames(acpEvents), ['list_agents', 'send_message']);
     assert.ok(messages(acpEvents).some((message) => message.includes('coordination accepted:')));
     assert.ok(!messages(acpEvents).some((message) => message.includes('acp-runtime reply')));
     const acpCreated = acpEvents.find(
@@ -1055,7 +1055,7 @@ async function main() {
       `roster rejection surfaced: ${badText}`,
     );
     assert.ok(!badText.includes('researched: 42'), `no sub-run output leaked: ${badText}`);
-    assert.deepEqual(toolNames(badEvents), ['list_agents', 'send_to_agent']);
+    assert.deepEqual(toolNames(badEvents), ['list_agents', 'send_message']);
     assert.ok(!badEvents.some((event) => event.type === 'session.thread_created'));
 
     console.log('E2E PASS: fixed Managed multi-Agent coordination via TS SDK.');

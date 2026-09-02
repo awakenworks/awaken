@@ -53,12 +53,40 @@ def main() -> None:
     product_resources = (product / "resources.yaml").read_text()
     assert 'resources: ["networkpolicies"]' in product_resources
     assert 'verbs: ["get", "list", "watch"]' in product_resources
+    # Continuation-volume/RBAC cause-effect decision table. C1 the overlay omits
+    # k8s_continuation_volume; C2 its runtime Role omits an exact PVC rule. E1 no
+    # dormant PVC mutation authority is granted. Rule KRB1: C1+C2 => E1. Enabling
+    # the capability must change both causes together and grant only
+    # persistentvolumeclaims create/get/delete in that overlay.
+    for overlay_resources in (resources, product_resources):
+        active_yaml = "\n".join(
+            line
+            for line in overlay_resources.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "k8s_continuation_volume" not in active_yaml
+        assert 'resources: ["persistentvolumeclaims"]' not in active_yaml
     assert '/usr/local/bin/awaken-control", "database", "migrate"' in resources
     assert 'command: ["/usr/local/bin/awaken-server"]' in resources
     assert '/usr/local/bin/awaken-coordinator", "database", "migrate"' in resources
     assert '/usr/local/bin/awaken-coordinator", "--config"' in resources
     assert '/usr/local/bin/awaken", "coordinator"' not in resources
     assert '/usr/local/bin/awaken", "database", "migrate"' not in resources
+    # Installation-intent decision table: DB1 a repeatable rollout manifest ->
+    # ordinary exact-only migration and no retained initialization authority;
+    # DB2 a fresh disposable E2E cluster -> one explicit audited initialization
+    # Job per role, then the same ordinary Jobs converge. The fixture helper
+    # reuses the role commands and is not a second deployment manifest.
+    assert "--initialize-installation" not in resources
+    assert resources.count("suspend: true") == 2
+    e2e = (
+        Path(__file__).parent.parent.parent / "e2e" / "k3d" / "distributed_control_e2e.sh"
+    ).read_text()
+    assert "initialize_role_installation control" in e2e
+    assert "initialize_role_installation coordinator" in e2e
+    assert '"--initialize-installation", "--initialization-reference"' in e2e
+    assert 'patch job/control-migrate' in e2e
+    assert 'patch job/coordinator-migrate' in e2e
     # I4 the deterministic Control fixture changes only the publication resolver:
     # the scenario adapter consumes the deployment's one explicit Control config
     # and assembles the canonical split-Control application. The former HOME

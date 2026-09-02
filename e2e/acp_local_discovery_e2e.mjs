@@ -42,7 +42,11 @@ import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
-import { stopServer, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  initializeE2EInstallation,
+  stopServer,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 39418);
@@ -397,9 +401,13 @@ esac
   assert.match(humanDoctor.stdout, /opencode\s+probe_failed\s+opencode 9\.9\.9/);
   assert.doesNotMatch(humanDoctor.stdout, /CLI-OWNED-LOGIN/);
 
+  // Doctor command-selection rules: D1=bare/config-only doctor belongs to
+  // deployment readiness (covered by the console/report tests); D2=an unknown
+  // deployment option fails in the config parser; D3=an unknown ACP option
+  // fails in the ACP parser. This fixture owns D2/D3, not a second bare-doctor
+  // meaning. Rules D2=>config error and D3=>ACP error.
   for (const [args, expected] of [
-    [['doctor'], "doctor requires the 'acp' subject"],
-    [['doctor', 'models'], 'unknown doctor subject'],
+    [['doctor', 'models'], 'unexpected config argument "models"'],
     [['doctor', 'acp', '--bogus'], 'unexpected doctor acp argument'],
   ]) {
     const rejected = spawnSync(binary, args, { env: localEnvironment(), encoding: 'utf8' });
@@ -418,6 +426,7 @@ esac
   // capability; Awaken still never opens a Gemini credential file.
   fs.writeFileSync(path.join(HOST_HOME, 'gemini-login'), 'provider-owned-login');
 
+  initializeE2EInstallation(localEnvironment(), { binary, configPath: CONFIG });
   let server = start(binary, CONFIG);
   try {
     await ready(server);
@@ -556,6 +565,7 @@ esac
 
   // L3: a fresh data directory has no wrapper and no installer. Product startup
   // remains available for diagnostics but cannot advertise an ACP execution route.
+  initializeE2EInstallation(localEnvironment(), { binary, configPath: FAILURE_CONFIG });
   server = start(binary, FAILURE_CONFIG);
   try {
     await ready(server);

@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import _crate_boundary_workspace
+
 
 ASYNC_SQLITE_ADAPTERS = (
     "crates/stores/awaken-resource-store/src/lib.rs",
@@ -15,9 +17,7 @@ ASYNC_SQLITE_ADAPTERS = (
 def async_sqlite_scheduler_violations(source: str) -> list[str]:
     """Reject async rusqlite adapters that recreate a blocking policy."""
 
-    production = re.split(
-        r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*]", source, maxsplit=1
-    )[0]
+    production = _crate_boundary_workspace.production_rust(source)
     errors: list[str] = []
     if "SharedSqliteConnection" not in production or "with_connection" not in production:
         errors.append("async SQLite adapter bypasses SharedSqliteConnection scheduling")
@@ -28,9 +28,17 @@ def async_sqlite_scheduler_violations(source: str) -> list[str]:
 
 def selftest() -> None:
     # Cause/effect decision table: C1 an async repository uses rusqlite; C2 it
-    # owns SharedSqliteConnection and calls with_connection. R1=C1+C2 accepts
-    # event-loop isolation; R2=C1+raw mutex or missing scheduler rejects the
-    # second scheduling authority and reports both observable defects.
+    # owns SharedSqliteConnection and calls with_connection; C3 a raw Mutex is
+    # provably test-only; C4 the same syntax can compile through a non-test
+    # feature. Effects: E1 accept the canonical scheduler; E2 reject a second
+    # scheduling authority with both observable defects; E3 ignore only C3;
+    # E4 retain and reject C4.
+    #
+    # | Rule | C2 | raw Mutex | cfg(test)-only | feature-capable | Effect |
+    # | R1   | T  | F         | F              | F               | E1     |
+    # | R2   | F  | T         | F              | F               | E2     |
+    # | R3   | T  | T         | T              | F               | E3     |
+    # | R4   | F  | T         | F              | T               | E4     |
     assert async_sqlite_scheduler_violations(
         "struct Store { connection: SharedSqliteConnection } with_connection("
     ) == []  # R1
@@ -40,6 +48,17 @@ def selftest() -> None:
         "async SQLite adapter bypasses SharedSqliteConnection scheduling",
         "async SQLite adapter blocks Tokio workers on Mutex<Connection>",
     ]  # R2
+    assert async_sqlite_scheduler_violations(
+        "struct Store { connection: SharedSqliteConnection } with_connection(\n"
+        "#[cfg(test)] struct Fixture { connection: Mutex<Connection> }"
+    ) == []  # R3
+    assert async_sqlite_scheduler_violations(
+        '#[cfg(any(test, feature = "support"))] '
+        "struct Store { connection: Mutex<Connection> }"
+    ) == [
+        "async SQLite adapter bypasses SharedSqliteConnection scheduling",
+        "async SQLite adapter blocks Tokio workers on Mutex<Connection>",
+    ]  # R4
 
 
 def check_all(repo_root: Path) -> list[str]:

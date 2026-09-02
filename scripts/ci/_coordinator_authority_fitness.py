@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import _crate_boundary_workspace
+
 
 AUTHORITY_IMPLS: dict[str, tuple[str, ...]] = {
     # Durable implementations remain in run-ingress. The one Worker-side HTTP
@@ -95,26 +97,6 @@ def table_violation(
     ]
 
 
-def _strip_cfg_test_modules(source: str) -> str:
-    """Remove inline cfg(test) modules so mocks never count as production owners."""
-    marker = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*]\s*mod\s+\w+\s*\{")
-    while match := marker.search(source):
-        start = match.start()
-        opening = source.find("{", match.start(), match.end())
-        depth = 0
-        end = len(source)
-        for index in range(opening, len(source)):
-            if source[index] == "{":
-                depth += 1
-            elif source[index] == "}":
-                depth -= 1
-                if depth == 0:
-                    end = index + 1
-                    break
-        source = source[:start] + source[end:]
-    return source
-
-
 def selftest() -> None:
     """Cause/effect decision table:
 
@@ -137,7 +119,7 @@ def selftest() -> None:
     assert table_violation("crates/stores/awaken-session-store/src/lib.rs", "session", allowed) == []
     assert table_violation("crates/server/example/src/lib.rs", "session", allowed)  # R3
     sample = "pub fn live() {}\n#[cfg(test)] mod tests { impl DispatchQueue for Fake {} }"
-    stripped = _strip_cfg_test_modules(sample)
+    stripped = _crate_boundary_workspace.production_rust(sample)
     assert "Fake" not in stripped  # R4
     assert "live" in stripped  # R5
 
@@ -155,7 +137,11 @@ def check_all(repo_root: Path, crates_root: Path) -> list[str]:
         if "tests" in path.relative_to(crates_root).parts:
             continue
         source = path.read_text(encoding="utf-8")
-        production = _strip_cfg_test_modules(source) if path.suffix == ".rs" else source
+        production = (
+            _crate_boundary_workspace.production_rust(source)
+            if path.suffix == ".rs"
+            else source
+        )
         for match in implementation.finditer(production):
             errors.extend(implementation_violation(relative, match.group(1)))
         for authority, pattern, allowed in TABLE_AUTHORITIES:
