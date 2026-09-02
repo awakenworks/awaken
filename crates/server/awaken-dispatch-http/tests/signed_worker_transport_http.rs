@@ -1300,14 +1300,15 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
 
     // Terminal-cleanup v2 transport cause/effect table: C1 the current
     // authenticated registry incarnation explicitly advertises runtime 1..2;
-    // C2 identity/owner/incarnation is foreign or stale; C3 claim expiry or
-    // phase flags exceed registry authority; C4 Control projects an exact
+    // C2 identity/owner/incarnation is foreign or stale; C3 claim expiry is
+    // within/beyond registry authority or requests reassignment; C4 Control projects an exact
     // preparation authorization bound to the polled effect; C5 Control projects
     // one exact disposal after preparation is durable; C6 a caller probes the
     // removed one-stage completion route. Generic realization renewal is already
     // covered by T10-T16; terminal cleanup owns no second renewal protocol.
-    // Effects: K1 claim and poll return exact root snapshots; K2/K3
-    // reject before Control; K4 preparation
+    // Effects: K1 claim and poll return exact root snapshots; K2 and a
+    // reassignment flag reject before Control; K3 an otherwise exact excessive
+    // expiry is narrowed to current registry authority; K4 preparation
     // authorization and receipt bytes cross unchanged; K5 disposal effect and
     // receipt bytes cross unchanged; K6 the old route is absent and invokes no
     // Control method. Dispatch rows have already quiesced before targets freeze.
@@ -1315,7 +1316,8 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | Rule | identity/capability | action | Effect |
     // | K1 | current + explicit v2 | claim/poll | exact assignment/action |
     // | K2 | stale/foreign | any | reject before Control |
-    // | K3 | current + excessive/reassignment target | claim | reject before Control |
+    // | K3a | current + reassignment target | claim | reject before Control |
+    // | K3b | current + excessive expiry | claim | cap to registry expiry |
     // | K4 | current + explicit v2 | prepare authorize/record | exact bytes |
     // | K5 | current + explicit v2 | dispose authorize/record | exact bytes |
     // | K6 | current | old complete route | 404 + zero Control calls |
@@ -1368,17 +1370,20 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
     let mut over_expiry = cleanup_target;
     over_expiry.lease_expires_at_unix_ms = 40_001;
-    assert!(
-        client
-            .claim_next_terminal_cleanup(&registered.snapshot.identity, over_expiry)
-            .await
-            .is_err(),
-        "K3 registry expiry"
-    );
+    client
+        .claim_next_terminal_cleanup(&registered.snapshot.identity, over_expiry)
+        .await
+        .expect("K3b exact proposal is narrowed")
+        .expect("K3b typed assignment");
     assert_eq!(
         session_control.cleanup_claims.lock().unwrap().len(),
-        1,
-        "K2-K3 reject before Control"
+        2,
+        "K2 and K3a reject before Control; K3b reaches it"
+    );
+    assert_eq!(
+        session_control.cleanup_claims.lock().unwrap()[1].lease_expires_at_unix_ms,
+        40_000,
+        "K3b registry authority caps the Session claim",
     );
 
     let mut cleanup_operation = awaken_session_contract::SessionCleanupOperation::default();

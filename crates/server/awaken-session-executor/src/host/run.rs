@@ -259,19 +259,6 @@ impl SharedHost {
         Ok(commit)
     }
 
-    /// A thread's accumulated token usage, attributed per model (the run loop records
-    /// it as committed thread state under [`THREAD_USAGE_STATE_KEY`]; each write is the
-    /// running cumulative, so the last `Set` is the whole tally). Empty for a thread
-    /// that has never run a real Run or whose provider reported no usage (the
-    /// deterministic models). Callers use `.total()` for the session-level sum.
-    pub async fn thread_usage(&self, thread: &str) -> awaken_runtime_contract::llm::ThreadUsage {
-        use awaken_runtime_contract::llm::ThreadUsage;
-        let Ok(commit) = self.commit_for_read(thread).await else {
-            return ThreadUsage::default();
-        };
-        ThreadUsage::from_committed_state(&commit.committed_state(&ThreadId(thread.to_string())))
-    }
-
     /// True when `thread` has a run awaiting a decision.
     pub async fn is_awaiting(&self, thread: &str) -> bool {
         let commit = match self.commit_for_read(thread).await {

@@ -1799,20 +1799,49 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
 }
 
 #[tokio::test]
-async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_adoption() {
+async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_physical_inputs() {
     // Exact-staging cause/effect table. C1 resident active is previous/desired/
     // foreign; C2 no Environment is resident; C3 a current or prospective
-    // durable binding exists; C4 desired File bytes are unavailable. Effects:
-    // E1 foreign active rejects before any File read or slot write; E2 C2+C3
-    // defers all compilation until adoption; E3 previous/desired without C3
+    // durable binding exists; C4 desired File bytes are unavailable; C5 an
+    // exact immutable Skill is selected. Effects: E1 foreign active rejects
+    // before any Resource read or slot write; E2 C2+C3 defers File/provider
+    // compilation until adoption; E3 C5 still stages the dispatch-semantic
+    // Skill bytes needed by a cold Coordinator; E4 previous/desired without C3
     // may compile (covered by the live replacement and cold File tests).
     //
     // | Rule | C1 | C2 | C3 | C4 | Effect |
     // | P1 | foreign | any | any | T | E1 |
-    // | P2 | none | T | T | T | E2 |
-    // | P3 | previous/desired | any | F | F | E3 |
-    let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    // | P2 | none | T | T | T + C5 | E2+E3 |
+    // | P3 | previous/desired | any | F | F | E4 |
+    let storage = tempfile::tempdir().expect("Skill storage");
+    let host = Arc::new(
+        SharedHost::new(Arc::new(AdoptionModel), "stub")
+            .with_skill_store(storage.path().join("skills")),
+    );
     let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let skill = crate::host::tests::frozen_skill_version(
+        "cold-recovery",
+        "Cold recovery",
+        "recover on another Coordinator",
+        "retain exact immutable bytes",
+        &[],
+    );
+    let skill_hash = skill.bundle_sha256.clone();
+    host.skills
+        .create(
+            awaken_resource_contract::SkillDefinition {
+                id: "cold-recovery".into(),
+                workspace_id: "workspace-a".into(),
+                display_title: None,
+                latest_version: 1,
+                last_version: 1,
+                timestamps: Default::default(),
+            },
+            skill,
+        )
+        .await
+        .expect("P2 exact Skill store")
+        .expect("P2 create exact Skill");
     let missing_resources = awaken_session_contract::ResolvedSessionResources::try_new(
         vec![awaken_session_contract::ResolvedInput {
             binding_id: awaken_resource_contract::BindingId::new("missing-file-binding"),
@@ -1823,7 +1852,12 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_adop
             access: awaken_resource_contract::ResourceAccess::ReadOnly,
             instructions: None,
         }],
-        Vec::new(),
+        vec![awaken_session_contract::ResolvedSkillBinding {
+            kind: awaken_agent_contract::AgentSkillKind::Custom,
+            skill_id: "cold-recovery".into(),
+            version: 1,
+            bundle_sha256: skill_hash,
+        }],
     )
     .expect("valid missing-File projection");
     let previous = awaken_session_contract::SessionResourceManifest::at_revision(
@@ -1898,9 +1932,12 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_adop
                     && slot.resource_transition.is_none()
                     && slot.staged_resource_effect_key.is_none()
                     && slot.resources.mounts.is_empty()
+                    && slot.skills.as_ref().is_some_and(|skills| {
+                        skills.len() == 1 && skills[0].skill_id.as_str() == "cold-recovery"
+                    })
             })
             .unwrap_or(false),
-        "P2 adoption remains the first Resource effect edge"
+        "P2/E2-E3 only exact semantic Skill bytes precede adoption"
     );
 }
 

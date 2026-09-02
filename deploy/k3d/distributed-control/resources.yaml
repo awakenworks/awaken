@@ -15,12 +15,6 @@ data:
 ---
 apiVersion: v1
 kind: ConfigMap
-metadata: { name: adr71-installation }
-data:
-  platform-workspace-id: workspace-adr71
----
-apiVersion: v1
-kind: ConfigMap
 metadata: { name: adr71-worker-tls-route }
 data:
   nginx.conf: |
@@ -114,6 +108,7 @@ stringData:
     credential_db = "postgres://awaken_control:adr71-control-db@postgres:5432/credentials" # awaken-allow: secret
     config_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow: secret
     admin_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow: secret
+    data_subject_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow: secret
     # Static Environment definitions and sandbox-policy versions are Control facts.
     environment_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow: secret
   coordinator.toml: |
@@ -132,6 +127,7 @@ stringData:
     postgres_max_connections = 32
     resource_database_url = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/resources" # awaken-allow: secret
     sessions_db = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/runtime" # awaken-allow: secret
+    captured_content_db = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/runtime" # awaken-allow: secret
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
     control_internal_url = "http://control:3001"
     control_service_token_file = "/etc/awaken-auth/control-service-token"
@@ -253,14 +249,11 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /etc/awaken, readOnly: true }
             - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
-            - { name: workspace, mountPath: /var/lib/awaken/control/platform-workspace-id, subPath: platform-workspace-id, readOnly: true }
       volumes:
         - name: config
           secret: { secretName: adr71-role-config }
         - name: auth
           secret: { secretName: adr71-control-auth }
-        - name: workspace
-          configMap: { name: adr71-installation }
 ---
 apiVersion: v1
 kind: Service
@@ -301,7 +294,6 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /etc/awaken, readOnly: true }
             - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
-            - { name: workspace, mountPath: /var/lib/awaken/coordinator/platform-workspace-id, subPath: platform-workspace-id, readOnly: true }
         - name: worker-tls
           image: nginx:1.27-alpine
           imagePullPolicy: Never
@@ -337,8 +329,6 @@ spec:
           secret: { secretName: adr71-role-config }
         - name: auth
           secret: { secretName: adr71-coordinator-auth }
-        - name: workspace
-          configMap: { name: adr71-installation }
         - name: worker-tls-route
           configMap: { name: adr71-worker-tls-route }
         - name: worker-tls-identity

@@ -50,11 +50,7 @@ async fn marker_command(
     effect_fence: &ContainerEffectFence,
     script: &str,
 ) -> Result<Vec<u8>, RuntimeError> {
-    effect_fence
-        .validate_live_at(
-            crate::container_runtime_unix_now_ms().map_err(|error| backend(error.to_string()))?,
-        )
-        .map_err(|error| backend(error.to_string()))?;
+    crate::runtime::validate_runtime_effect_fence(effect_fence)?;
     let expected = projection_fence_value(effect_fence);
     let argv = vec![
         "/bin/sh".into(),
@@ -138,11 +134,7 @@ pub(super) async fn project_snapshots(
     plan: &ContainerPlan,
     effect_fence: &ContainerEffectFence,
 ) -> Result<(), RuntimeError> {
-    effect_fence
-        .validate_live_at(
-            crate::container_runtime_unix_now_ms().map_err(|error| backend(error.to_string()))?,
-        )
-        .map_err(|error| backend(error.to_string()))?;
+    crate::runtime::validate_runtime_effect_fence(effect_fence)?;
     let expected = projection_fence_value(effect_fence);
     for (index, mount) in plan.memory_mounts.iter().enumerate() {
         let root = format!("/memory/{index}");

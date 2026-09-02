@@ -570,7 +570,7 @@ impl SharedHost {
         .map_err(|error| HostError::internal(error.to_string()))?;
         let spec = self.sandbox_substrate_spec_for_provider(thread, provider);
         let environment = Arc::new(
-            self.create_session_environment_for_effect(provider, &spec, &effect)
+            self.create_session_environment_for_effect(thread, provider, &spec, &effect)
                 .await?,
         );
         for input in transition.desired().resources.inputs() {
@@ -709,6 +709,7 @@ impl SharedHost {
         spec: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<crate::session_environment::SessionEnvironment, HostError> {
         self.create_session_environment_with_provider_effect(
+            &spec.scope,
             provider,
             spec,
             None,
@@ -720,6 +721,7 @@ impl SharedHost {
 
     async fn create_session_environment_for_effect(
         &self,
+        thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
         spec: &awaken_provisioning_contract::SandboxSpec,
         effect: &AuthorizedSessionEnvironmentEffect,
@@ -764,6 +766,7 @@ impl SharedHost {
             awaken_sandbox_container::ContainerRealizationIntent::Create
         };
         self.create_session_environment_with_provider_effect(
+            thread,
             provider,
             spec,
             effect.provider_fence.as_ref(),
@@ -775,6 +778,7 @@ impl SharedHost {
 
     async fn create_session_environment_with_provider_effect(
         &self,
+        thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
         spec: &awaken_provisioning_contract::SandboxSpec,
         effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
@@ -786,8 +790,30 @@ impl SharedHost {
             .prepare_mounts(&spec.mounts)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
+        let current_fence = |asserted: &awaken_provisioning_contract::SandboxEffectFence| {
+            let lease = self
+                .session_slots
+                .read(thread, |slot| slot.realization_lease.clone())
+                .flatten()
+                .ok_or_else(|| {
+                    awaken_provisioning_contract::SandboxError::new(
+                        "Session realization authority is no longer installed",
+                    )
+                })?;
+            lease
+                .sandbox_effect_fence(asserted.operation_id.clone())
+                .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))
+        };
         provider
-            .create_effective_for_effect(&spec, effect_fence, source_handle, intent)
+            .create_effective_for_effect(
+                &spec,
+                effect_fence,
+                effect_fence.map(|_| {
+                    &current_fence as &dyn awaken_sandbox_container::ContainerEffectFenceSource
+                }),
+                source_handle,
+                intent,
+            )
             .await
             .map_err(|error| HostError::internal(error.to_string()))
     }

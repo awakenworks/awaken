@@ -557,6 +557,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-config",
  "awaken-agent-contract",
+ "awaken-reliability-testkit",
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
@@ -835,6 +836,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-credential-vault",
+ "awaken-reliability-testkit",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-sqlite-pool",
@@ -1845,6 +1847,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-reliability-testkit"
+version = "1.0.0"
+
+[[package]]
 name = "awaken-resource-application"
 version = "1.0.0"
 dependencies = [
@@ -2411,6 +2417,7 @@ dependencies = [
  "awaken-deployment-contract",
  "awaken-ext-memory",
  "awaken-provisioning-contract",
+ "awaken-reliability-testkit",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
@@ -2531,6 +2538,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-reliability-testkit",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-sqlite-pool",

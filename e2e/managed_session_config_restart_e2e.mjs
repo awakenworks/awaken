@@ -7,19 +7,19 @@
 //
 // Cause graph / decision table:
 //   C1 config row and transcript committed -> E1 restart can rehydrate
-//   C2 same typed data/store roots reused  -> E2 agent/title/metadata preserved
+//   C2 quiescent roots copied and restored -> E2 agent/title/metadata preserved
 //   C3 explicit no-login fixture identity -> E3 unrelated IAM cannot mask persistence
 //
 //   Rule  C1  C2  C3  Expected
 //   R1    Y   Y   Y   E1 + E2 + E3
 //   R2    N   -   Y   no rehydration claim (covered by missing-session tests)
-//   R3    Y   N   Y   no cross-root recovery (covered by repository isolation)
+//   R3    Y   N   Y   no restore claim (covered by repository isolation)
 //
 // Flow: management mode with BOTH typed data_dir (session config) and
 // SESSION_DEPLOYMENT_STORAGE_DIR (transcript, the rehydration precondition). Create a session
 // with a title + metadata, commit a turn, KILL the process, respawn over the same
-// dirs, drive one event to trigger lazy rehydration, then retrieve the session and
-// assert its config came back — not the placeholder.
+// copied roots, first shadow-read the candidate, drive one event to prove
+// continuation, then assert its config came back — not the placeholder.
 //
 // Run: (from e2e/)  node managed_session_config_restart_e2e.mjs
 
@@ -37,6 +37,9 @@ import {
   startUpstream,
   realServerEnv,
   waitForSessionEventReceipt,
+  copyQuiescentTree,
+  publishManagementAgent,
+  bindSandboxExecutionPolicy,
 } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -54,7 +57,9 @@ async function listEvents(c, id) {
 async function main() {
   const mgmtDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-sess-mgmt-'));
   const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-sess-store-'));
-  const env = {
+  const restoredMgmtDir = `${mgmtDir}-restored`;
+  const restoredStoreDir = `${storeDir}-restored`;
+  const originalEnv = {
     ...deploymentEnv(mgmtDir, { identityMode: 'no-login', controlSealKey: SEAL_KEY }),
     SESSION_DEPLOYMENT_STORAGE_DIR: storeDir,
   };
@@ -62,16 +67,41 @@ async function main() {
   let server = null;
   try {
     // ---- lifetime A: create a session with config, commit a turn ----
-    const a = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) });
+    const a = spawnServer('management', PORT, { ...originalEnv, ...realServerEnv('mcp', upstream, { mode: 'management' }) });
     server = a.server;
     await waitForPort(PORT);
     let c = client(a.baseUrl);
+
+    // The Config publication is the execution authority for the non-default
+    // Agent. Merely accepting `agent: coder` in the Session DTO must not invent
+    // an executable publication or fall back to `assistant`.
+    await publishManagementAgent(a.baseUrl, 'coder', {
+      name: 'Durable coder fixture',
+      system: 'Reply normally.',
+      max_steps: 4,
+      model: {
+        mode: 'pinned',
+        provider_identity_ref: 'default',
+        model_ref: 'fake-haiku',
+        backend_ref: 'default',
+      },
+      tools: [],
+    });
+    const environment = await c.beta.environments.create({
+      name: 'Portable lazy environment',
+      config: { type: 'self_hosted' },
+      betas: BETAS,
+    });
+    await bindSandboxExecutionPolicy(a.baseUrl, environment.id, {
+      id: `portable-lazy-${process.pid}`,
+      provisioning: 'on_tool_use',
+    });
 
     const created = await c.beta.sessions.create({
       agent: 'coder',
       title: 'Durable session',
       metadata: { team: 'research' },
-      environment_id: 'env_local',
+      environment_id: environment.id,
       betas: BETAS,
     });
     assert.equal(created.title, 'Durable session', 'title accepted at create');
@@ -96,12 +126,39 @@ async function main() {
     assert.ok(idle, 'the turn committed and the session went idle');
     pass('session created with title/metadata and a turn committed');
 
-    // ---- kill A, respawn B over the SAME dirs (fresh in-memory cache) ----
+    // ---- quiesce A, copy backups to NEW roots, respawn B from them ----
     await stopServer(a.server);
-    const b = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) });
+    const portableBackup = {
+      // Filesystem identities deliberately do not survive copies. Excluding
+      // physical realizations makes the existing typed-unavailability path
+      // rebuild a fresh incarnation instead of weakening substitution checks.
+      excludeTopLevel: ['sandboxes', 'trusted-local-sandboxes'],
+    };
+    copyQuiescentTree(mgmtDir, restoredMgmtDir, portableBackup);
+    copyQuiescentTree(storeDir, restoredStoreDir, portableBackup);
+    const restoredEnv = {
+      ...deploymentEnv(restoredMgmtDir, {
+        identityMode: 'no-login',
+        controlSealKey: SEAL_KEY,
+      }),
+      SESSION_DEPLOYMENT_STORAGE_DIR: restoredStoreDir,
+    };
+    const b = spawnServer('management', PORT, { ...restoredEnv, ...realServerEnv('mcp', upstream, { mode: 'management' }) });
     server = b.server;
     await waitForPort(PORT);
     c = client(b.baseUrl);
+
+    // Backup/shadow cause-effect graph: C1 A is quiesced after config and
+    // transcript commit; C2 both roots are copied to fresh destinations; C3 B
+    // begins with an empty memory cache. Effects: E1 a read-only candidate
+    // projection reconstructs exact durable config without touching the source;
+    // E2 a later Event continues from the restored committed prefix. Decision
+    // B1=C1+C2+C3->E1; B2=B1+accepted Event->E2.
+    const shadow = await c.beta.sessions.retrieve(created.id, { betas: BETAS });
+    assert.equal(shadow.agent.id, 'coder', 'B1 shadow replay agent');
+    assert.equal(shadow.title, 'Durable session', 'B1 shadow replay title');
+    assert.equal(shadow.metadata?.team, 'research', 'B1 shadow replay metadata');
+    pass('quiescent backup restores an exact read-only candidate projection');
 
     // Drive one event to trigger lazy rehydration on the fresh process: the
     // adapter rebuilds the session from committed truth + the durable session repo.
@@ -143,6 +200,8 @@ async function main() {
     upstream.close();
     fs.rmSync(mgmtDir, { recursive: true, force: true });
     fs.rmSync(storeDir, { recursive: true, force: true });
+    fs.rmSync(restoredMgmtDir, { recursive: true, force: true });
+    fs.rmSync(restoredStoreDir, { recursive: true, force: true });
   }
 }
 

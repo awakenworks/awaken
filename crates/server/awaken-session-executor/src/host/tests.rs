@@ -180,7 +180,7 @@ fn resource_transition(
 /// One test fixture for the production SkillVersion authority. Callers vary
 /// only identity/body/supporting files, so Managed tests cannot accidentally
 /// reintroduce host-static SkillSpec setup as a parallel source.
-fn frozen_skill_version(
+pub(crate) fn frozen_skill_version(
     id: &str,
     name: &str,
     description: &str,
@@ -1904,10 +1904,13 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     async {
         // Co-located Native baseline installation has the same immutable binding
         // rules as the claimed Worker projection. Decision table:
-        // B1 valid first install -> accept; B2 identical replay -> idempotent;
-        // B3 empty fingerprint -> reject; B4 different fingerprint -> reject;
-        // B5 Environment already realized -> reject rather than run without the
-        // frozen mounts/env/prompts.
+        // B1 valid first install without an early admission marker -> accept
+        // and classify from the Control-frozen baseline; B2 identical replay ->
+        // idempotent; B3 empty fingerprint -> reject; B4 different fingerprint
+        // -> reject; B5 Environment already realized -> reject rather than run
+        // without the frozen mounts/env/prompts. Effects: E1 B1 excludes the
+        // direct live-authored Skill source on a cold Worker; E2 B2 preserves
+        // the same projection; E3 B3-B5 publish no conflicting projection.
         let baseline_host = Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub"));
         let _baseline_runtime =
             crate::ManagedHost::new(baseline_host.clone()).install_dispatch_session_runtime();
@@ -1922,6 +1925,24 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             )
             .await
             .expect("B1 valid baseline installs");
+        assert!(
+            baseline_host
+                .session_slots
+                .read("local-baseline", |slot| {
+                    slot.baseline.is_some() && slot.session_dispatch
+                })
+                .unwrap_or(false),
+            "B1/E1 frozen baseline and Managed execution marker publish atomically on a cold Worker"
+        );
+        assert_eq!(
+            baseline_host.session_skill_source_roots(
+                "local-baseline",
+                None,
+                crate::skills::MANAGED_SKILLS_SUBDIR,
+            ),
+            None,
+            "B1/E1 no direct live-authored Skill source is registered"
+        );
         baseline_host
             .install_frozen_session_projection(
                 "local-baseline",
@@ -2025,6 +2046,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     let recorder = PromptRecorder::default();
     let observed = recorder.0.clone();
     let host = Arc::new(SharedHost::new(Arc::new(recorder), "stub"));
+    install_test_session_application(&host);
     let repository_claims = Arc::new(RepositoryClaimRecorder::default());
     let managed = crate::ManagedHost::new(host.clone())
         .with_repository_binding_verifier(repository_claims.clone())
@@ -2219,6 +2241,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     // | B1   | T  | T          | F         | E1+E3  |
     // | B2   | T  | F          | T         | E2+E3  |
     let branch_host = Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub"));
+    install_test_session_application(&branch_host);
     let committed_environment = Arc::new(Mutex::new(None));
     let branch_sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&branch_host),
@@ -2343,10 +2366,10 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         )
         .await
         .expect("P2/P4 projection");
-        host.run(None, "prompt-thread", user("P2"))
+        host.run_thread_extension_after_admission(None, "prompt-thread", user("P2"))
             .await
             .expect("P2");
-        host.run(None, "prompt-thread", user("P4"))
+        host.run_thread_extension_after_admission(None, "prompt-thread", user("P4"))
             .await
             .expect("P4");
         host.install_frozen_session_projection(
@@ -2358,7 +2381,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         )
         .await
         .expect("P3 projection");
-        host.run(
+        host.run_thread_extension_after_admission(
             None,
             "deduplicated",
             vec![
@@ -2427,9 +2450,13 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         host.install_frozen_session_projection("context-thread", contextual, None, true, None)
             .await
             .expect("C4 projection");
-        host.run(None, "context-thread", user("current branch input"))
-            .await
-            .expect("C4 run");
+        host.run_thread_extension_after_admission(
+            None,
+            "context-thread",
+            user("current branch input"),
+        )
+        .await
+        .expect("C4 run");
         let request = observed
             .lock()
             .unwrap()
@@ -7565,6 +7592,7 @@ async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
     use awaken_session_contract::SessionRuntime;
     let storage = tempfile::tempdir().unwrap();
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_store_dir(storage.path()));
+    install_test_session_application(&host);
     let thread = "binding-already-applied";
     let activation =
         crate::host::worker_resolver::test_support::test_activation(thread, "binding-applied");
@@ -7754,9 +7782,15 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
 
 /// Durable-binding decision table: no binding + no resident Environment permits
 /// first creation; exact binding + adopted/resident permits reuse (covered by the
-/// recovery E2E); exact binding + neither must fail before provider creation.
+/// recovery E2E); exact binding + neither rejects ordinary execution before
+/// provider creation, while the Coordinator-only reservation boundary freezes an
+/// environment-free dispatch context and leaves adoption to the claimed Worker.
+///
+/// | Rule | durable binding | local adoption | context purpose | Effect |
+/// | B1 | present | absent | execute | reject, no substitute |
+/// | B2 | present | absent | reserve dispatch | env=None, preserve binding |
 #[tokio::test]
-async fn missing_durable_environment_adoption_never_creates_a_substitute() {
+async fn missing_durable_environment_adoption_is_deferred_only_for_reservation() {
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     host.install_session_environment_owner_projection(
         "binding-corrupt",
@@ -7773,8 +7807,27 @@ async fn missing_durable_environment_adoption_never_creates_a_substitute() {
         Ok(_) => panic!("missing adoption must fail closed"),
         Err(error) => error,
     };
-    assert!(error.to_string().contains("was not adopted"));
-    assert!(host.session_environment("binding-corrupt").await.is_none());
+    assert!(error.to_string().contains("was not adopted"), "B1");
+    assert!(
+        host.session_environment("binding-corrupt").await.is_none(),
+        "B1"
+    );
+
+    let reserved = host
+        .ctx_for_session_reservation("binding-corrupt", None)
+        .await
+        .expect("B2 Coordinator-only projection does not adopt Worker substrate");
+    assert!(reserved.env.is_none(), "B2");
+    assert_eq!(
+        host.durable_session_environment_binding("binding-corrupt")
+            .as_deref(),
+        Some("opaque"),
+        "B2 durable identity is retained",
+    );
+    assert!(
+        host.session_environment("binding-corrupt").await.is_none(),
+        "B2 no substitute or local adoption",
+    );
 }
 
 #[tokio::test]

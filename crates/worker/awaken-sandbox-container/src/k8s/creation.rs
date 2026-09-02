@@ -13,6 +13,9 @@ pub(super) async fn create(
     plan: &ContainerPlan,
     realization_fingerprint: &pc::SandboxRealizationFingerprint,
 ) -> Result<String, RuntimeError> {
+    if let Some(effect_fence) = context.effect_fence {
+        crate::runtime::validate_runtime_effect_fence(effect_fence)?;
+    }
     let runtime_id = runtime.realization_runtime_id(context.scope)?;
     let pods = runtime.pods();
     let expected_rebuild = rebuild_continuation_expectation(
@@ -39,6 +42,9 @@ pub(super) async fn create(
         .as_ref()
         .map(continuation::claim_uid)
         .transpose()?;
+    if let Some(effect_fence) = context.effect_fence {
+        crate::runtime::validate_runtime_effect_fence(effect_fence)?;
+    }
     let mut pod = runtime.pod_for_effect(&runtime_id, plan, context.effect_fence);
     // Create the Pod before its projected ConfigMaps/Secrets. Kubernetes admits
     // missing references as a non-running Pod, giving every later participant
@@ -122,6 +128,9 @@ pub(super) async fn converge(
         );
         runtime.stamp_effect_evidence(&mut configmap, context, realization_fingerprint);
         stamp_realization(&mut configmap)?;
+        if let Some(effect_fence) = context.effect_fence {
+            crate::runtime::validate_runtime_effect_fence(effect_fence)?;
+        }
         let configmap = create_or_verify(&cms, &configmap).await?;
         verify_projected_content(
             &configmap.metadata,
@@ -144,6 +153,9 @@ pub(super) async fn converge(
         );
         runtime.stamp_effect_evidence(&mut secret, context, realization_fingerprint);
         stamp_realization(&mut secret)?;
+        if let Some(effect_fence) = context.effect_fence {
+            crate::runtime::validate_runtime_effect_fence(effect_fence)?;
+        }
         let secret = create_or_verify(&secrets, &secret).await?;
         verify_projected_content(
             &secret.metadata,
@@ -153,6 +165,9 @@ pub(super) async fn converge(
         )?;
     }
     realization::await_pod_ready(&runtime.pods(), pod_name).await?;
+    if let Some(effect_fence) = context.effect_fence {
+        crate::runtime::validate_runtime_effect_fence(effect_fence)?;
+    }
     if !plan.memory_mounts.is_empty() {
         let effect_fence = context.effect_fence.ok_or_else(|| {
             backend("Kubernetes Memory convergence requires an Environment effect fence")

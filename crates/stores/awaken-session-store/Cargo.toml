@@ -35,6 +35,7 @@ awaken-scoped-migration-sqlite.workspace = true
 
 [dev-dependencies]
 awaken-provisioning-contract.workspace = true
+awaken-reliability-testkit.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # Property-based verification of the tenant-isolation fence (ADR-0059).
 proptest = { workspace = true }

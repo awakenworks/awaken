@@ -1681,6 +1681,8 @@ struct FakeState {
     blobs: HashMap<String, Vec<u8>>,
     fail_create: bool,
     may_have_committed_create: bool,
+    expire_effect_fence_once: bool,
+    effect_fences: Vec<ContainerEffectFence>,
     attempted_binds: Vec<BindPlan>,
     refreshed_credential: Option<Vec<u8>>,
     live_credential: Option<Vec<u8>>,
@@ -1800,6 +1802,11 @@ impl FakeRuntime {
         self
     }
 
+    fn expiring_effect_fence_once(self) -> Self {
+        self.st.lock().unwrap().expire_effect_fence_once = true;
+        self
+    }
+
     fn set_observation(&self, observation: pc::SandboxObservation) {
         self.st.lock().unwrap().observation = Some(observation);
     }
@@ -1869,6 +1876,34 @@ impl ContainerRuntime for FakeRuntime {
 
     fn uses_host_bind_materialization(&self) -> bool {
         !self.st.lock().unwrap().native_memory
+    }
+
+    async fn preflight_create_for_effect(
+        &self,
+        _context: &ContainerRealizationContext<'_>,
+        _plan: &ContainerPlan,
+        _realization_fingerprint: Option<&pc::SandboxRealizationFingerprint>,
+    ) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    async fn create_for_effect(
+        &self,
+        context: &ContainerRealizationContext<'_>,
+        plan: &ContainerPlan,
+        _realization_fingerprint: &pc::SandboxRealizationFingerprint,
+    ) -> Result<String, RuntimeError> {
+        if let Some(fence) = context.effect_fence {
+            self.st.lock().unwrap().effect_fences.push(fence.clone());
+        }
+        let expires = {
+            let mut state = self.st.lock().unwrap();
+            std::mem::take(&mut state.expire_effect_fence_once)
+        };
+        if expires {
+            return Err(RuntimeError::EffectFenceExpired);
+        }
+        self.create(context.scope, plan).await
     }
 
     async fn project_live_input(
@@ -2292,6 +2327,7 @@ async fn expired_effect_fence_rejects_before_runtime_or_mount_materialization() 
         .create_container_for_effect(
             &spec("expired-fence"),
             Some(&expired),
+            None,
             ContainerRealizationIntent::Create,
         )
         .await
@@ -2303,6 +2339,115 @@ async fn expired_effect_fence_rejects_before_runtime_or_mount_materialization() 
     let state = runtime.st.lock().unwrap();
     assert_eq!(state.observations, 0, "E2 observation");
     assert!(state.alive.is_empty(), "E2 create");
+}
+
+#[tokio::test]
+async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() {
+    /* Renewable provider-boundary cause/effect table. Causes: C1 the runtime
+     * crosses an idempotent boundary and reports the asserted fence expired;
+     * C2 the sole Session authority source returns a live strict successor,
+     * no source, or a foreign operation; C3 the effect identity and staged
+     * inputs remain unchanged. Effects: E1 replay the same runtime effect once
+     * with the newer expiry and publish one Sandbox; E2 missing/foreign proof
+     * fails closed without a second runtime call; E3 no cleanup is inferred
+     * after the first call may have created physical participants.
+     *
+     * | Rule | expired boundary | refreshed proof | Effect |
+     * | R1 | yes | live strict same effect | E1 + E3 |
+     * | R2 | yes | missing | E2 + E3 |
+     * | R3 | yes | foreign/equal/regressed | E2 + E3 |
+     */
+    let now = container_runtime_unix_now_ms().expect("test clock");
+    let initial = pc::SandboxEffectFence::new(
+        "renewable-create",
+        "worker-a",
+        "worker-a/incarnation",
+        7,
+        now.saturating_add(10_000),
+    )
+    .unwrap();
+    let renewed = pc::SandboxEffectFence::new(
+        initial.operation_id.clone(),
+        initial.owner.clone(),
+        initial.runtime_incarnation.clone(),
+        initial.epoch,
+        u64::MAX,
+    )
+    .unwrap();
+    let runtime = Arc::new(FakeRuntime::default().expiring_effect_fence_once());
+    let provider = ContainerProvider::new(runtime.clone(), "agent:test");
+    let mut renewable_spec = spec("renewed-provider-boundary");
+    renewable_spec.mounts.clear();
+    renewable_spec.env.clear();
+    let source = {
+        let renewed = renewed.clone();
+        move |_asserted: &ContainerEffectFence| Ok(renewed.clone())
+    };
+    provider
+        .create_container_for_effect(
+            &renewable_spec,
+            Some(&initial),
+            Some(&source),
+            ContainerRealizationIntent::Create,
+        )
+        .await
+        .expect("R1 strict renewal replays the exact effect");
+    assert_eq!(
+        runtime.st.lock().unwrap().effect_fences,
+        vec![initial.clone(), renewed],
+        "R1/E1 exact old then renewed fence"
+    );
+    assert_eq!(runtime.st.lock().unwrap().alive.len(), 1, "R1/E1");
+
+    for (rule, source) in [
+        ("R2", None),
+        (
+            "R3",
+            Some(
+                pc::SandboxEffectFence::new(
+                    "foreign-create",
+                    initial.owner.clone(),
+                    initial.runtime_incarnation.clone(),
+                    initial.epoch,
+                    u64::MAX,
+                )
+                .unwrap(),
+            ),
+        ),
+    ] {
+        let runtime = Arc::new(FakeRuntime::default().expiring_effect_fence_once());
+        let provider = ContainerProvider::new(runtime.clone(), "agent:test");
+        let mut rejected_spec = spec(&format!("rejected-provider-boundary-{rule}"));
+        rejected_spec.mounts.clear();
+        rejected_spec.env.clear();
+        let source_fn = |_: &ContainerEffectFence| {
+            source
+                .clone()
+                .ok_or_else(|| pc::SandboxError::new("missing renewal"))
+        };
+        let error = match provider
+            .create_container_for_effect(
+                &rejected_spec,
+                Some(&initial),
+                Some(&source_fn),
+                ContainerRealizationIntent::Create,
+            )
+            .await
+        {
+            Ok(_) => panic!("R2/R3 invalid renewal must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("renewal") || error.to_string().contains("strict successor"),
+            "{rule}/E2: {error}"
+        );
+        assert_eq!(
+            runtime.st.lock().unwrap().effect_fences.len(),
+            1,
+            "{rule}/E2"
+        );
+        assert!(runtime.st.lock().unwrap().alive.is_empty(), "{rule}/E2");
+    }
 }
 
 #[derive(Default)]

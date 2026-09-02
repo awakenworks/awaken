@@ -29,6 +29,12 @@ metadata: { name: adr71-replication-init }
 data:
   01-replication.sql: |
     CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'adr71-replication';
+    -- The Docker entrypoint first creates POSTGRES_DB on a temporary server
+    -- which is not reachable by the standby. Persist synchronous replication
+    -- only after that bootstrap transaction and every init script can commit;
+    -- the final server restart loads these settings before application writes.
+    ALTER SYSTEM SET synchronous_commit = 'remote_apply';
+    ALTER SYSTEM SET synchronous_standby_names = 'FIRST 1 (awaken_standby)';
   02-replication-hba.sh: |
     #!/bin/bash
     echo 'host replication replicator 0.0.0.0/0 scram-sha-256' >> "$PGDATA/pg_hba.conf"
@@ -56,7 +62,22 @@ spec:
         - name: postgres
           image: postgres:16
           imagePullPolicy: Never
-          args: ["postgres", "-c", "wal_level=replica", "-c", "max_connections=500", "-c", "max_wal_senders=10", "-c", "wal_keep_size=256MB"]
+          # The distributed reliability scenario promises RPO=0 only for API
+          # writes which PostgreSQL acknowledged. The init script persists
+          # remote_apply after bootstrap, so the final server waits for the
+          # named standby without deadlocking POSTGRES_DB creation. Production
+          # may choose another policy, but then it must advertise the
+          # corresponding non-zero RPO.
+          args:
+            - postgres
+            - -c
+            - wal_level=replica
+            - -c
+            - max_connections=500
+            - -c
+            - max_wal_senders=10
+            - -c
+            - wal_keep_size=256MB
           env:
             - { name: POSTGRES_PASSWORD, value: "test" } # awaken-allow: secret
             - { name: POSTGRES_DB, value: "awaken" }
@@ -103,7 +124,9 @@ spec:
           command: ["/bin/bash", "-ec"]
           args:
             - |
-              until pg_basebackup -h postgres-primary -U replicator -D "$PGDATA" -Fp -Xs -R; do
+              until pg_basebackup \
+                -d "host=postgres-primary user=replicator application_name=awaken_standby connect_timeout=2" \
+                -D "$PGDATA" -Fp -Xs -R; do
                 rm -rf "${PGDATA:?}"/*
                 sleep 1
               done
@@ -111,9 +134,6 @@ spec:
               exec docker-entrypoint.sh postgres -c hot_standby=on -c max_connections=500
           env:
             - { name: PGPASSWORD, value: "adr71-replication" } # awaken-allow: secret
-            # Bound each failed attempt so an initially unpublished primary
-            # endpoint is retried instead of consuming the rollout deadline.
-            - { name: PGCONNECT_TIMEOUT, value: "2" }
             - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
           ports: [{ containerPort: 5432 }]
           readinessProbe:

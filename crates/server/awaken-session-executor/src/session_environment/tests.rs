@@ -2304,6 +2304,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 &fuse_spec,
                 Some(&fuse_effect),
                 None,
+                None,
                 awaken_sandbox_container::ContainerRealizationIntent::Create,
             )
             .await
@@ -2331,6 +2332,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             .create_effective_for_effect(
                 &fuse_spec,
                 Some(&fuse_effect),
+                None,
                 None,
                 awaken_sandbox_container::ContainerRealizationIntent::Create,
             )
@@ -2396,6 +2398,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             &copy_spec,
             Some(&copy_effect),
             None,
+            None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
         .await
@@ -2423,6 +2426,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .create_effective_for_effect(
             &copy_spec,
             Some(&copy_effect),
+            None,
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -2465,6 +2469,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             &drift_spec,
             Some(&drift_effect),
             None,
+            None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
         .await
@@ -2474,6 +2479,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .create_effective_for_effect(
             &drift_spec,
             Some(&drift_effect),
+            None,
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -2528,6 +2534,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
         .create_effective_for_effect(
             &hot_spec,
             Some(&hot_create),
+            None,
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -2592,6 +2599,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
             .create_effective_for_effect(
                 &spec,
                 Some(&create),
+                None,
                 None,
                 awaken_sandbox_container::ContainerRealizationIntent::Create,
             )
@@ -2734,6 +2742,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
         .create_effective_for_effect(
             &namespace_spec,
             Some(&create_fence),
+            None,
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
