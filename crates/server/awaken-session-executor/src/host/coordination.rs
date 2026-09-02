@@ -987,13 +987,16 @@ impl SharedHost {
         session_id: &str,
         thread_id: &ThreadId,
     ) -> Result<awaken_session_contract::SessionUsage, HostError> {
-        let commit = self.commit_for_read(session_id).await?;
-        Ok(
-            awaken_runtime_contract::llm::ThreadUsage::from_committed_state(
-                &commit.committed_state(thread_id),
-            )
-            .into(),
-        )
+        let usage = self
+            .session_thread_recovery_snapshot(session_id, thread_id)
+            .await?
+            .map_or_else(
+                awaken_runtime_contract::llm::ThreadUsage::default,
+                |snapshot| {
+                    awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&snapshot.state)
+                },
+            );
+        Ok(usage.into())
     }
 
     pub(crate) async fn session_thread_disposition(
@@ -1528,18 +1531,20 @@ mod tests {
         // Cause/effect graph: C1 the logical child has/has-not a committed Run;
         // C2 child and unrelated logical commits share the parent physical
         // partition; C3 the latest child Run is Awaiting with transcript, state,
-        // and a resume ticket. Effects: E1 no Run returns None without creating
-        // child storage; E2 one recovery read returns a mutually consistent child
+        // cumulative usage, and a resume ticket. Effects: E1 no Run returns None without creating
+        // child storage and projects zero usage; E2 one recovery read returns a mutually consistent child
         // prefix; E3 the snapshot retains the backend-wide cursor while excluding
         // unrelated logical facts; E4 ManagedHost delegates to this same read;
         // E5 the registered-Worker recovery adapter preserves the guarded parent
-        // partition while retaining the child's logical identity; C4 the caller
-        // supplies an exact present/absent Run id. E6 exact recovery reuses the
-        // same prefix for the present Run and fails closed for the absent Run.
+        // partition while retaining the child's logical identity; E6 usage is
+        // projected from that same recovery prefix, never a process-local
+        // committed-state cache; C4 the caller supplies an exact present/absent
+        // Run id. E7 exact recovery reuses the same prefix for the present Run
+        // and fails closed for the absent Run.
         //
         // | Rule | C1 | C2 | C3 | Effects       |
         // | R1   | N  | -  | -  | E1            |
-        // | R2   | Y  | Y  | Y  | E2,E3,E4,E5,E6 |
+        // | R2   | Y  | Y  | Y  | E2,E3,E4,E5,E6,E7 |
         let session_id = "snapshot-parent-session";
         let child_id = ThreadId("snapshot-logical-child".into());
         let child_run = RunId("snapshot-child-run".into());
@@ -1564,6 +1569,14 @@ mod tests {
                 .await
                 .expect("R1 child partition probe"),
             "R1/E1 does not open a child-named physical partition"
+        );
+        assert_eq!(
+            crate::ManagedHost::new(host.clone())
+                .session_thread_usage(session_id, &child_id.0)
+                .await
+                .expect("R1 absent usage read"),
+            awaken_session_contract::SessionUsage::default(),
+            "R1/E1 only a genuinely absent Run projects zero usage",
         );
 
         let parent_commit = host
@@ -1626,12 +1639,31 @@ mod tests {
                     Role::Assistant,
                     "child needs input",
                 )],
-                vec![StateCommand::set(
-                    Scope::Thread,
-                    MergePolicy::Disjoint,
-                    "snapshot-phase",
-                    serde_json::json!("awaiting"),
-                )],
+                vec![
+                    StateCommand::set(
+                        Scope::Thread,
+                        MergePolicy::Disjoint,
+                        "snapshot-phase",
+                        serde_json::json!("awaiting"),
+                    ),
+                    StateCommand::set(
+                        Scope::Thread,
+                        MergePolicy::Commutative,
+                        awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY,
+                        serde_json::to_value(awaken_runtime_contract::llm::ThreadUsage {
+                            by_model: std::collections::BTreeMap::from([(
+                                "snapshot-model".into(),
+                                awaken_runtime_contract::llm::TokenUsage {
+                                    prompt_tokens: 13,
+                                    completion_tokens: 5,
+                                    cache_read_tokens: 3,
+                                    cache_creation_tokens: 2,
+                                },
+                            )]),
+                        })
+                        .expect("serialize R2 usage"),
+                    ),
+                ],
                 Vec::new(),
             ))
             .await
@@ -1661,7 +1693,7 @@ mod tests {
             ["child question", "child needs input"],
             "R2/E2 child transcript is one consistent prefix"
         );
-        assert_eq!(snapshot.state.len(), 2, "R2/E2 both child state commands");
+        assert_eq!(snapshot.state.len(), 3, "R2/E2 all child state commands");
         assert_eq!(snapshot.resume_tickets.len(), 1, "R2/E2 active ticket");
         assert_eq!(
             snapshot.resume_tickets[0].run_id, child_run,
@@ -1676,7 +1708,17 @@ mod tests {
             .await
             .expect("R2 ManagedHost exact read")
             .expect("R2 exact committed child Run");
-        assert_eq!(exact_snapshot, snapshot, "R2/E6 exact recovery authority");
+        let usage = managed
+            .session_thread_usage(session_id, &child_id.0)
+            .await
+            .expect("R2 ManagedHost usage read");
+        assert_eq!(usage.input_tokens, 13, "R2/E6 authoritative usage");
+        assert_eq!(usage.output_tokens, 5, "R2/E6 authoritative usage");
+        assert_eq!(
+            usage.by_model["snapshot-model"].cache_read_tokens, 3,
+            "R2/E6 per-model attribution",
+        );
+        assert_eq!(exact_snapshot, snapshot, "R2/E7 exact recovery authority");
         assert_eq!(
             managed
                 .session_thread_run_recovery_snapshot(
@@ -1687,7 +1729,7 @@ mod tests {
                 .await
                 .expect("R2 absent exact read"),
             None,
-            "R2/E6 absent exact Run fails closed"
+            "R2/E7 absent exact Run fails closed"
         );
         let worker_snapshot = host
             .worker_recovery_source()

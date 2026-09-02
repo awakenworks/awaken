@@ -19,6 +19,7 @@ struct ActivationOnlySessionRunRuntime {
         )>,
     >,
     adoptions: Mutex<Vec<(String, String, String)>>,
+    already_reserved: AtomicBool,
 }
 
 #[async_trait::async_trait]
@@ -106,7 +107,11 @@ impl awaken_session_contract::SessionRuntime for ActivationOnlySessionRunRuntime
     ) -> Result<SessionRunReservation, RunError> {
         self.events.lock().unwrap().push("reserve");
         self.reservations.lock().unwrap().push(command);
-        Ok(SessionRunReservation::Reserved)
+        Ok(if self.already_reserved.load(Ordering::SeqCst) {
+            SessionRunReservation::AlreadyReserved
+        } else {
+            SessionRunReservation::Reserved
+        })
     }
 
     async fn activate_and_observe_session_run(
@@ -145,6 +150,88 @@ impl awaken_session_contract::SessionRuntime for ActivationOnlySessionRunRuntime
     fn model(&self) -> String {
         "activation-only-session-run".into()
     }
+}
+
+#[tokio::test]
+async fn cold_replica_recovers_projection_before_reusing_exact_activity_receipt() {
+    // Multi-replica response-loss cause/effect graph: C1 the Session and exact
+    // Run activity epoch are durable; C2 the shared Run reservation already
+    // exists; C3 this Coordinator has no process-local Session projection; C4
+    // placement is Worker-owned, so recovery is projection-only. Effects: E1
+    // install the complete Dispatch projection before reserve; E2 reuse the
+    // exact activity epoch; E3 create no second activity or epoch; E4 do not
+    // perform a local physical realization. Constraint K1: a durable activity
+    // receipt proves admission history, never process-local cache residency.
+    //
+    // | Rule | exact activity | reservation | local projection | Effect |
+    // | R1   | present        | existing    | cold             | E1-E4  |
+    // | R2   | absent         | fresh       | cold             | existing fresh-admission tests |
+    // | R3   | present        | existing    | warm             | idempotent E1-E3 |
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    let mut session = persisted("cold-replica-activity", false, "idle");
+    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
+    else {
+        unreachable!("fixture is frozen")
+    };
+    baseline.runtime_placement = SessionRuntimePlacement::Worker;
+    create(repository.as_ref(), session).await;
+
+    let runtime = Arc::new(ActivationOnlySessionRunRuntime::default());
+    runtime.already_reserved.store(true, Ordering::SeqCst);
+    let application = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let run_id =
+        awaken_session_contract::session_run_id("cold-replica-activity", "cold-replica-operation");
+    let activity_operation = awaken_session_contract::session_run_activity_operation_id(
+        "cold-replica-activity",
+        &run_id,
+    );
+    let (_, original_epoch) = application
+        .begin_activity_for_operation("cold-replica-activity", &activity_operation)
+        .await
+        .expect("C1 exact durable activity receipt");
+
+    let admitted = application
+        .admit_session_run(AdmitSessionRun {
+            session_id: "cold-replica-activity".into(),
+            agent_id: "agent".into(),
+            operation_id: "cold-replica-operation".into(),
+            run_id,
+            messages: Vec::new(),
+            data_subject_id: None,
+            traceparent: None,
+            execution_requirements: Default::default(),
+            replacement: Default::default(),
+        })
+        .await
+        .expect("R1 cold-replica response-loss recovery");
+
+    let AdmittedSessionRun::AlreadyReserved(delivery) = admitted else {
+        panic!("R1/E2 must retain the existing reservation outcome");
+    };
+    assert_eq!(delivery.session_activity_epoch, original_epoch, "R1/E2");
+    assert_eq!(
+        runtime.events.lock().unwrap().as_slice(),
+        ["dispatch_projection", "reserve"],
+        "R1/E1+E4 projection precedes reservation without local realization",
+    );
+    assert_eq!(
+        runtime.projection_installs.lock().unwrap().len(),
+        1,
+        "R1/E1"
+    );
+    let persisted = repository
+        .get("cold-replica-activity")
+        .await
+        .expect("R1 durable Session");
+    assert_eq!(persisted.activity_epoch, original_epoch, "R1/E3");
+    assert_eq!(persisted.active_activity_epochs.len(), 1, "R1/E3");
 }
 
 #[tokio::test]

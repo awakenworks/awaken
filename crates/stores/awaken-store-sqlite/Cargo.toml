@@ -24,6 +24,7 @@ tokio.workspace = true
 tracing = "0.1"
 
 [dev-dependencies]
+awaken-reliability-testkit.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 awaken-store-conformance.workspace = true
 tempfile = "3"

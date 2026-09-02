@@ -1093,7 +1093,13 @@ impl SessionRuntime for ManagedHost {
         &self,
         thread: &str,
     ) -> Result<awaken_session_contract::SessionUsage, RunError> {
-        Ok(self.host.thread_usage(thread).await.into())
+        self.host
+            .session_thread_usage(
+                thread,
+                &awaken_agent_contract::agent::thread::Id(thread.to_string()),
+            )
+            .await
+            .map_err(to_run_error)
     }
 
     async fn session_thread_recovery_snapshot(

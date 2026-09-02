@@ -13,7 +13,7 @@ cd "$(dirname "$0")/../.."
 source scripts/ci/_provider_environment.sh
 awaken_unset_ambient_api_keys
 
-groups=(static docs rust api formal postgres kubernetes k3d frontend e2e sandbox)
+groups=(static docs rust api formal reliability postgres kubernetes k3d frontend e2e sandbox)
 requested_group=all
 case "${1:-}" in
   "") ;;
@@ -96,6 +96,8 @@ run static "commit-message self-test" python3 scripts/ci/check_commit_message.py
 run static "release-package self-test" python3 scripts/release/package.py --self-test
 run static "product release checker self-test" python3 scripts/ci/check_product_release.py --self-test
 run static "product release contract" python3 scripts/ci/check_product_release.py
+run static "reliability checker self-test" python3 scripts/ci/check_reliability.py --self-test
+run static "reliability evidence contract" python3 scripts/ci/check_reliability.py
 run static "Cargo target isolation self-test" scripts/ci/_cargo_target.sh --self-test
 run static "Rust gate control-flow self-test" scripts/ci/check-rust.sh --self-test
 run static "sandbox image build deadline self-test" deploy/images/sandbox/build.sh --self-test
@@ -107,6 +109,7 @@ run rust "rust" scripts/ci/check-rust.sh --full
 run rust "dependency-policy" cargo deny --log-level error check bans
 run api "public-api" scripts/ci/check_public_api.sh --require-tools
 run formal "formal" scripts/ci/check_formal.sh --require-tools
+run reliability "reliability" scripts/ci/check-reliability.sh --require-tools
 # Release completeness is strict: unavailable infrastructure is a failed gate,
 # never a successful skip. Developer-specific partial suites remain runnable by
 # invoking their scripts without the required flags.

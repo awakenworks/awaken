@@ -190,7 +190,11 @@ k3d_cluster_residue() {
   return 1
 }
 
-# k3d_create_cluster <name> <agent-count> [eviction-percent] [registry-coordinate]
+# k3d_create_cluster <name> <agent-count> [eviction-threshold] [registry-coordinate]
+#
+# A bare integer preserves the historical percentage input. Kubernetes absolute
+# quantities are also accepted so image-heavy fixtures on large shared Docker
+# filesystems can retain a bounded reserve without disabling disk-pressure.
 k3d_create_cluster() {
   local cluster="$1" agents="$2" eviction="${3:-2}" registry="${4:-}"
   k3d_validate_name "$cluster" || {
@@ -201,8 +205,8 @@ k3d_create_cluster() {
     echo "invalid k3d agent count: $agents" >&2
     return 2
   }
-  [[ "$eviction" =~ ^[0-9]+$ ]] || {
-    echo "invalid k3d eviction percentage: $eviction" >&2
+  [[ "$eviction" =~ ^[0-9]+$ || "$eviction" =~ ^[1-9][0-9]*(Ki|Mi|Gi|Ti)$ ]] || {
+    echo "invalid k3d eviction threshold: $eviction" >&2
     return 2
   }
   [[ -z "$registry" || "$registry" =~ ^[a-zA-Z0-9.-]+:[0-9]+$ ]] || {
@@ -210,7 +214,10 @@ k3d_create_cluster() {
     return 2
   }
   k3d_delete_cluster "$cluster"
-  local threshold="eviction-hard=imagefs.available<${eviction}%,nodefs.available<${eviction}%"
+  if [[ "$eviction" =~ ^[0-9]+$ ]]; then
+    eviction="${eviction}%"
+  fi
+  local threshold="eviction-hard=imagefs.available<${eviction},nodefs.available<${eviction}"
   local args=(
     cluster create "$cluster" --agents "$agents" --wait --timeout 180s
     --runtime-ulimit "nofile=65536:65536"
@@ -417,10 +424,22 @@ k3d_harness_selftest() (
   k3d_create_cluster "awaken-test-1" 0 2
   [[ "${k3d_calls[1]}" != *"@agent:*"* ]]
 
+  # Eviction-threshold cause/effect table. C1 a legacy integer percentage;
+  # C2 an absolute Kubernetes quantity; C3 a malformed/zero quantity. Effects:
+  # E1 C1 retains the exact historical `%` rendering; E2 C2 reaches every
+  # kubelet unchanged; E3 C3 starts no cluster. Rules T1=C1=>E1, T2=C2=>E2,
+  # T3=C3=>E3. This keeps one cluster builder while allowing a bounded reserve
+  # on large image filesystems.
+  k3d_calls=()
+  k3d_create_cluster "awaken-test-1" 1 2Gi
+  [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi@server:*"* ]]
+  [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi@agent:*"* ]]
+
   k3d_calls=()
   ! k3d_create_cluster "--all" 1 2
   ! k3d_create_cluster "awaken-test" many 2
   ! k3d_create_cluster "awaken-test" 1 low
+  ! k3d_create_cluster "awaken-test" 1 0Gi
   (( ${#k3d_calls[@]} == 0 ))
   k3d_create_cluster "awaken-test" 1 2 "k3d-awaken-registry.localhost:5000"
   [[ "${k3d_calls[1]}" = *"--registry-use k3d-awaken-registry.localhost:5000"* ]]

@@ -480,6 +480,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         &self,
         spec: &pc::SandboxSpec,
         effect_fence: Option<&ContainerEffectFence>,
+        effect_fence_source: Option<&dyn crate::ContainerEffectFenceSource>,
         intent: ContainerRealizationIntent,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         // Cause/effect rule: a durable fence or Rebuild intent requires exact
@@ -493,7 +494,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         {
             return self
                 .inner
-                .create_environment_for_effect(spec, effect_fence, intent)
+                .create_environment_for_effect(spec, effect_fence, effect_fence_source, intent)
                 .await;
         }
         self.create_environment(spec).await
@@ -842,6 +843,7 @@ mod tests {
             .create_environment_for_effect(
                 &ephemeral,
                 Some(&fence),
+                None,
                 crate::ContainerRealizationIntent::Create,
             )
             .await

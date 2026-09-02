@@ -460,6 +460,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self.runtime
     }
 
+    #[cfg(feature = "test-support")]
     pub(crate) fn committed_reader(&self) -> Arc<dyn CommittedThreadView> {
         Arc::clone(&self.reader)
     }

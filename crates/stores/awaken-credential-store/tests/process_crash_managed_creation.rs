@@ -1,9 +1,8 @@
 #![cfg(all(feature = "sqlite", feature = "sealed-aead"))]
 
 use std::collections::BTreeMap;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::CredentialSourceId;
@@ -20,6 +19,7 @@ use awaken_credential_vault::repo::{
 use awaken_credential_vault::{
     CredentialKind, CredentialSource, CredentialStatus, SecretRef, SecretStore,
 };
+use awaken_reliability_testkit::CrashProcess;
 
 const CHILD_MODE: &str = "AWAKEN_MANAGED_CREDENTIAL_CRASH_CHILD";
 const DB_PATH: &str = "AWAKEN_MANAGED_CREDENTIAL_CRASH_DB";
@@ -102,27 +102,16 @@ async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("managed-credential.db");
     let marker = dir.path().join("material-ready.marker");
-    let mut process = Command::new(std::env::current_exe().unwrap())
-        .arg("--exact")
-        .arg("writing_material_survives_kill_but_expired_owner_is_aborted")
-        .arg("--nocapture")
-        .env(CHILD_MODE, "1")
-        .env(DB_PATH, &db)
-        .env(MARKER_PATH, &marker)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !marker.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(
-        marker.exists(),
-        "child did not reach the material failpoint"
-    );
-    process.kill().unwrap();
-    assert!(!process.wait().unwrap().success());
+    let status = CrashProcess::new(
+        "writing_material_survives_kill_but_expired_owner_is_aborted",
+        &marker,
+    )
+    .env(CHILD_MODE, "1")
+    .env(DB_PATH, &db)
+    .env(MARKER_PATH, &marker)
+    .run()
+    .expect("child reaches the material-write boundary and is killed");
+    assert!(!status.success());
 
     let (repo, secrets) = stores(db.to_str().unwrap());
     let pending = repo.pending_managed_mutations().await.unwrap();

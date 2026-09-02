@@ -1459,6 +1459,13 @@ impl crate::SharedHost {
             if let Some(baseline) = baseline_to_install {
                 slot.baseline = Some(baseline);
             }
+            // The complete frozen projection is the cold Worker's first
+            // observation of Session admission. Publish the existing execution
+            // marker in the same atomic slot update as its baseline and
+            // transition; local admission may set it earlier, while revocation
+            // remains authorized to clear it with the rest of live execution
+            // state.
+            slot.session_dispatch = true;
             slot.has_mcp_projection = has_mcp_projection;
             slot.resource_transition = Some(resource_transition);
         });

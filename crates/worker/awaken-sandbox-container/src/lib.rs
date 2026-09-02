@@ -54,7 +54,7 @@ pub use packages::package_containerfile;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
 pub use provider_contract::{
-    ContainerCreateAttempt, ContainerEffectFence, ContainerEnvironment,
+    ContainerCreateAttempt, ContainerEffectFence, ContainerEffectFenceSource, ContainerEnvironment,
     ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerObservationExpectation,
     ContainerRealizationContext, ContainerRealizationIntent, ContainerRealizationNamespace,
     EnvironmentFile,

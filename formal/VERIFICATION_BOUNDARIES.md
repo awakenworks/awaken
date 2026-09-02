@@ -48,6 +48,13 @@ type checking are valuable executable evidence, but are not formal proofs.
   Thread version. Memory, filesystem, SQLite, and PostgreSQL are linked to this
   one abstract history; database/driver durability and a mechanically checked
   Rust-to-model trace remain explicit adapter boundaries.
+  Dispatch crash recovery additionally records one normalized predecessor/
+  successor history through Memory, SQLite, and live PostgreSQL, including the
+  database-owned lease clock and physical-attempt fence. The PostgreSQL release
+  substrate finishes with a physical base-backup/WAL point-in-time restore and
+  verifies the exact immutable object referenced by restored truth. These are
+  executable adapter and recovery proofs; they do not turn PostgreSQL, S3, the
+  host filesystem, or their cryptography into directly verified code.
 
 - Workspace path projection now has one provider-independent logical root.
   `WorkspacePathProjection.tla` proves that only path-fidelitous providers may

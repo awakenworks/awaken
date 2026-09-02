@@ -291,6 +291,7 @@ impl SessionEnvironmentProvider {
             spec,
             None,
             None,
+            None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
         .await
@@ -300,6 +301,7 @@ impl SessionEnvironmentProvider {
         &self,
         spec: &pc::SandboxSpec,
         effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
+        effect_fence_source: Option<&dyn awaken_sandbox_container::ContainerEffectFenceSource>,
         source_handle: Option<&pc::SandboxHandle>,
         intent: awaken_sandbox_container::ContainerRealizationIntent,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
@@ -345,7 +347,7 @@ impl SessionEnvironmentProvider {
             } => {
                 let capabilities = provider.sandbox_capabilities();
                 let environment = provider
-                    .create_environment_for_effect(spec, effect_fence, intent)
+                    .create_environment_for_effect(spec, effect_fence, effect_fence_source, intent)
                     .await?;
                 SessionEnvironment::container(
                     environment,

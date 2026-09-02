@@ -79,6 +79,14 @@ required-features = ["test-support"]
 name = "durable_memory"
 required-features = ["test-support"]
 
+# Compile-surface decision table: C1 the PostgreSQL fixture imports the private
+# DispatchTestHarness -> require test-support; C2 production/default package
+# tests do not expose that fixture -> Cargo skips this target; C3 test-support
+# is explicit -> compile and run the real-PostgreSQL test normally.
+[[test]]
+name = "durable_postgres"
+required-features = ["test-support"]
+
 [[test]]
 name = "lease_semantics"
 required-features = ["test-support"]

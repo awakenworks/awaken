@@ -129,6 +129,11 @@ async fn publish_maps_a_publication_persist_failure_to_store() {
 
 #[tokio::test]
 async fn publish_never_installs_an_artifact_from_a_stale_source_revision() {
+    // Cause/effect decision table: P1 every prepare loses to a newer authoring
+    // revision -> the bounded current-state command returns StaleRevision and
+    // registers nothing; P2 one concurrent advance from revision 7 to 8 -> the
+    // command recompiles revision 8, persists it once, and registers only that
+    // current artifact. This test owns P1; the next test owns P2.
     let (service, catalog) = test_service_and_catalog();
     let err = service
         .publish(&scope(DEFAULT_SCOPE), &StalePublishRegistry, "a", &[])
@@ -139,6 +144,33 @@ async fn publish_never_installs_an_artifact_from_a_stale_source_revision() {
     assert!(
         catalog.current(DEFAULT_SCOPE, "a").is_none(),
         "a stale publication must not enter the live catalog"
+    );
+}
+
+#[tokio::test]
+async fn unreviewed_publish_converges_after_one_concurrent_revision_advance() {
+    // Decision rule P2 from the table above. The public unreviewed command means
+    // "publish current"; reviewed publish remains exact-revision fenced and is
+    // covered separately by `reviewed_publish_fences_config_and_resource_revisions`.
+    let (service, catalog) = test_service_and_catalog();
+    let publication = service
+        .publish(
+            &scope(DEFAULT_SCOPE),
+            &AdvancingPublishRegistry::default(),
+            "a",
+            &[],
+        )
+        .await
+        .expect("one revision advance converges through the canonical publish path");
+
+    assert_eq!(publication.source_revision, 8, "P2 current revision");
+    assert_eq!(
+        catalog
+            .current(DEFAULT_SCOPE, "a")
+            .expect("P2 current registration")
+            .source_revision,
+        8,
+        "P2 no stale revision enters the executable catalog"
     );
 }
 
