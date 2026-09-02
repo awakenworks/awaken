@@ -36,7 +36,11 @@ impl Grader for HostAgentGrader<'_> {
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         let context = self
             .host
-            .ctx_for(&thread.0, None)
+            // The Judge is a tool-less internal Run, not a public Session root.
+            // Build its frozen execution envelope without manufacturing an
+            // unfenced physical Environment that no Session aggregate can own
+            // or recover after a process crash.
+            .ctx_for_session_coordination(&thread.0, None)
             .await
             .map_err(|error| GraderError::Execution(error.to_string()))?;
         let executor = BoundRunExecutor::new(self.host, context.clone())
@@ -175,15 +179,20 @@ mod tests {
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
         let input = grading_input("agent-grade-exact-json");
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
-        let context = host.ctx_for(&thread.0, None).await.unwrap();
-        let executor = BoundRunExecutor::new(&host, context.clone());
-        let grade = AgentGrader::new(&executor, context.commit.as_ref(), RuntimeRunContext::new())
-            .grade(&snapshot, &input)
-            .await
-            .unwrap();
+        let grade = HostAgentGrader {
+            host: host.as_ref(),
+            worker_cancel: Arc::new(std::sync::Mutex::new(None)),
+        }
+        .grade(&snapshot, &input)
+        .await
+        .unwrap();
 
         assert_eq!(grade.decision, GradeDecision::NeedsRevision);
         assert_eq!(grade.explanation, "add coverage");
+        assert!(
+            host.session_environment(&thread.0).await.is_none(),
+            "J1 the tool-less Judge must not materialize an unowned Environment"
+        );
         let requests = model.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
         assert!(requests[0].tools.is_empty());

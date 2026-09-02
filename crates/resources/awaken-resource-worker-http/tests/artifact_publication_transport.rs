@@ -179,16 +179,24 @@ impl FileApplicationService for CountingFileApplication {
             .await
     }
 
-    async fn create_uploaded_file_with_expiry(
+    async fn create_uploaded_file_with_expiry_and_idempotency(
         &self,
         workspace_id: &str,
         filename: String,
         mime_type: String,
         bytes: &[u8],
         expires_at: Option<String>,
+        idempotency_key: Option<String>,
     ) -> Result<FileRecord, ResourcePurgeError> {
         self.inner
-            .create_uploaded_file_with_expiry(workspace_id, filename, mime_type, bytes, expires_at)
+            .create_uploaded_file_with_expiry_and_idempotency(
+                workspace_id,
+                filename,
+                mime_type,
+                bytes,
+                expires_at,
+                idempotency_key,
+            )
             .await
     }
 

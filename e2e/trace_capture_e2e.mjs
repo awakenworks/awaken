@@ -14,6 +14,7 @@ import {
   cleanupFixtureTree,
   pass,
   realServerEnv,
+  scenarioMemoryStore,
   spawnServer,
   startUpstream,
   stopServer,
@@ -113,13 +114,8 @@ async function captureTurn(mode, port, file, text, { extraEnv = {} } = {}) {
     let memoryStore;
     let resources = [];
     if (mode === 'memory') {
-      const created = await fetch(`${base}/v1/memory_stores`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', ...MEMORY_HEADERS },
-        body: JSON.stringify({ name: 'trace-memory' }),
-      });
-      assert.equal(created.status, 200, 'trace memory store created');
-      memoryStore = await created.json();
+      const memoryClient = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+      memoryStore = await scenarioMemoryStore(memoryClient, MEMORY_HEADERS);
       resources = [{ type: 'memory_store', memory_store_id: memoryStore.id }];
     }
     await createAndTurn(base, text, resources);
