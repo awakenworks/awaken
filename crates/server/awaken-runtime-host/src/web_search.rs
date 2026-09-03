@@ -14,16 +14,41 @@ use std::sync::Arc;
 
 use awaken_credential_materializer::PinnedCredentialMaterializer;
 
-fn ensure_acp_host_executed_web_tool(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcpWebToolDisposition {
+    ExportHostTool,
+    UseAcpBuiltin,
+}
+
+/// One closed Session-level realization decision for an ACP-visible web tool.
+/// The variants make it impossible to both export the canonical capability
+/// through Awaken MCP and enable a provider-owned ACP builtin.
+pub(crate) enum AcpWebToolRealization {
+    NotConfigured,
+    HostTool {
+        descriptor: awaken_runtime_contract::resolved::ToolDescriptor,
+        tool: Arc<dyn awaken_runtime_contract::tool::RawTool>,
+    },
+    ProviderServer(awaken_runtime_contract::resolved::ProviderServerTool),
+}
+
+fn acp_web_tool_disposition(
+    acp_cli_id: &str,
     descriptor: &awaken_runtime_contract::resolved::ToolDescriptor,
     display_name: &str,
-) -> Result<(), crate::HostError> {
-    if descriptor.provider_server_tool.is_some() {
-        return Err(crate::HostError::bad_request(format!(
-            "ACP {display_name} cannot export a provider-server Web tool as a Host tool"
-        )));
+) -> Result<AcpWebToolDisposition, crate::HostError> {
+    let Some(projection) = descriptor.provider_server_tool.as_ref() else {
+        return Ok(AcpWebToolDisposition::ExportHostTool);
+    };
+    let adapter = awaken_run_executor_acp::acp_cli(acp_cli_id).ok_or_else(|| {
+        crate::HostError::bad_request(format!("unknown ACP adapter `{acp_cli_id}`"))
+    })?;
+    if adapter.realizes_provider_server_tool(projection) {
+        return Ok(AcpWebToolDisposition::UseAcpBuiltin);
     }
-    Ok(())
+    Err(crate::HostError::bad_request(format!(
+        "ACP `{acp_cli_id}` cannot realize the selected provider-server {display_name}"
+    )))
 }
 
 impl crate::host::SharedHost {
@@ -72,59 +97,47 @@ impl crate::host::SharedHost {
         )
     }
 
-    /// Export one already-configured web tool for an ACP backend while keeping
-    /// the process-local export alive for the Session lifetime.
-    pub(crate) async fn export_web_tool_for_acp(
+    /// Select one realization for an already-configured ACP web tool. Host
+    /// execution keeps its process-local export alive for the Session lifetime;
+    /// provider execution returns only the closed launch projection.
+    pub(crate) fn realize_web_tool_for_acp(
         &self,
-        export_name: &str,
+        acp_cli_id: &str,
         display_name: &str,
         configured: Option<(
             awaken_runtime_contract::resolved::ToolDescriptor,
             Arc<dyn awaken_runtime_contract::tool::RawTool>,
         )>,
-    ) -> Result<
-        Option<(
-            crate::AcpToolExport,
-            awaken_run_executor_acp::SessionMcpServer,
-        )>,
-        crate::HostError,
-    > {
+    ) -> Result<AcpWebToolRealization, crate::HostError> {
         let Some((descriptor, tool)) = configured else {
-            return Ok(None);
+            return Ok(AcpWebToolRealization::NotConfigured);
         };
-        ensure_acp_host_executed_web_tool(&descriptor, display_name)?;
-        let export = self
-            .acp_tool_exporter
-            .as_ref()
-            .ok_or_else(|| {
-                crate::HostError::internal(format!(
-                    "ACP {display_name} requires an installed tool-export adapter"
-                ))
-            })?
-            .export(export_name, descriptor, tool)
-            .await
-            .map_err(crate::HostError::internal)?;
-        let server = match export.server.transport.clone() {
-            awaken_runtime_contract::resolved::AcpMcpTransport::Stdio { command, args } => {
-                awaken_run_executor_acp::SessionMcpServer {
-                    name: export.server.name.clone(),
-                    command: Some(command),
-                    args,
-                    url: None,
-                    auth: None,
-                }
-            }
-            awaken_runtime_contract::resolved::AcpMcpTransport::Http { url } => {
-                awaken_run_executor_acp::SessionMcpServer {
-                    name: export.server.name.clone(),
-                    command: None,
-                    args: Vec::new(),
-                    url: Some(url),
-                    auth: None,
-                }
-            }
-        };
-        Ok(Some((export, server)))
+        if acp_web_tool_disposition(acp_cli_id, &descriptor, display_name)?
+            == AcpWebToolDisposition::UseAcpBuiltin
+        {
+            tracing::info!(
+                acp_cli = acp_cli_id,
+                tool = display_name,
+                provider = descriptor
+                    .provider_server_tool
+                    .as_ref()
+                    .map_or("unknown", |tool| tool.provider_kind()),
+                realization = "acp_builtin",
+                "selected one ACP web-tool execution owner"
+            );
+            return Ok(AcpWebToolRealization::ProviderServer(
+                descriptor
+                    .provider_server_tool
+                    .expect("builtin disposition requires a provider projection"),
+            ));
+        }
+        tracing::info!(
+            acp_cli = acp_cli_id,
+            tool = display_name,
+            realization = "awaken_host_mcp",
+            "selected one ACP web-tool execution owner"
+        );
+        Ok(AcpWebToolRealization::HostTool { descriptor, tool })
     }
 }
 
@@ -186,31 +199,82 @@ mod tests {
     use awaken_runtime_contract::tool::{ToolCall, ToolError};
 
     #[test]
-    fn acp_exports_only_host_executed_web_tools() {
-        // Cause/effect table: E1 a HostExecuted descriptor may cross the
-        // existing ACP exporter; E2 a ProviderServer descriptor is rejected
-        // before a placeholder RawTool or lease is created. The provider-server
-        // model adapter remains the sole owner of that execution target.
+    fn acp_web_tools_are_exported_or_native_but_never_both() {
+        // Cause/effect table: E1 a HostExecuted descriptor crosses the ACP MCP
+        // exporter; E2 an exact CLI/provider builtin is not exported; E3 an
+        // incompatible server projection fails before a placeholder RawTool or
+        // lease is created. Exactly one execution owner is visible.
         //
         // | Rule | provider_server_tool | Effect |
         // | A1 | absent | E1 |
-        // | A2 | present | E2/fail closed |
+        // | A2 | exact CLI builtin | E2/no MCP export |
+        // | A3 | incompatible builtin | E3/fail closed |
         let host = awaken_ext_builtin_tools::web_fetch_descriptor();
-        assert!(
-            ensure_acp_host_executed_web_tool(&host, "WebFetch").is_ok(),
+        assert_eq!(
+            acp_web_tool_disposition("codex", &host, "WebFetch").unwrap(),
+            AcpWebToolDisposition::ExportHostTool,
             "A1/E1"
         );
+        for (cli, projection) in [
+            (
+                "codex",
+                awaken_runtime_contract::resolved::ProviderServerTool::DeepSeekResponsesWebSearch,
+            ),
+            (
+                "codex",
+                awaken_runtime_contract::resolved::ProviderServerTool::OpenAiWebSearch,
+            ),
+        ] {
+            let native = awaken_ext_builtin_tools::web_search_descriptor()
+                .with_provider_server_tool(projection);
+            assert_eq!(
+                acp_web_tool_disposition(cli, &native, "WebSearch").unwrap(),
+                AcpWebToolDisposition::UseAcpBuiltin,
+                "native search must not also be exported through MCP"
+            );
+        }
+        let wrong_cli = awaken_ext_builtin_tools::web_search_descriptor()
+            .with_provider_server_tool(
+                awaken_runtime_contract::resolved::ProviderServerTool::AnthropicWebSearch,
+            );
+        assert!(
+            acp_web_tool_disposition("codex", &wrong_cli, "WebSearch").is_err(),
+            "an ACP protocol match must not inherit another CLI's builtin"
+        );
+        for (cli, projection) in [
+            (
+                "codex",
+                awaken_runtime_contract::resolved::ProviderServerTool::openrouter_web_search(
+                    awaken_runtime_contract::resolved::OpenRouterWebSearchParameters::default(),
+                ),
+            ),
+            (
+                "claude",
+                awaken_runtime_contract::resolved::ProviderServerTool::AnthropicWebSearch,
+            ),
+            (
+                "gemini",
+                awaken_runtime_contract::resolved::ProviderServerTool::GeminiWebSearch,
+            ),
+        ] {
+            let unverified = awaken_ext_builtin_tools::web_search_descriptor()
+                .with_provider_server_tool(projection);
+            assert!(
+                acp_web_tool_disposition(cli, &unverified, "WebSearch").is_err(),
+                "an ACP builtin without a launch projection must fail closed"
+            );
+        }
         let provider = awaken_ext_builtin_tools::web_fetch_descriptor().with_provider_server_tool(
             awaken_runtime_contract::resolved::ProviderServerTool::openrouter_web_fetch(
                 awaken_runtime_contract::resolved::OpenRouterWebFetchParameters::default(),
             ),
         );
-        let error = match ensure_acp_host_executed_web_tool(&provider, "WebFetch") {
-            Ok(()) => panic!("A2 provider-server placeholder must not be exported"),
+        let error = match acp_web_tool_disposition("codex", &provider, "WebFetch") {
+            Ok(_) => panic!("A2 unsupported provider-server placeholder must not be exported"),
             Err(error) => error,
         };
         assert!(
-            error.to_string().contains("provider-server"),
+            error.to_string().contains("cannot realize"),
             "A2/E2: {error}"
         );
     }

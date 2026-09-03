@@ -217,6 +217,7 @@ fn acp_execution_profile_preserves_backend_wire_and_is_optional_on_provider_wire
             options: [("reasoning_effort".into(), "high".into())]
                 .into_iter()
                 .collect(),
+            working_directory: Some("repo/src".into()),
         },
     };
     let backend = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
@@ -241,7 +242,8 @@ fn acp_execution_profile_preserves_backend_wire_and_is_optional_on_provider_wire
             "capability_fingerprint": "sha256:profile",
             "session_configuration": {
                 "mode": "plan",
-                "options": {"reasoning_effort":"high"}
+                "options": {"reasoning_effort":"high"},
+                "working_directory": "repo/src"
             }
         }),
         "E1"

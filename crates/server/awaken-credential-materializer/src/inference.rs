@@ -96,7 +96,8 @@ pub fn executor_from_materialized_endpoint_for_provider(
         other => return Err(ResolvedExecutorError::UnsupportedAdapter(other.to_string())),
     };
     Ok(Arc::new(
-        awaken_provider_genai::GenaiExecutor::from_materialized_endpoint(
+        awaken_provider_genai::GenaiExecutor::from_materialized_provider_endpoint(
+            provider_kind,
             adapter,
             base_url,
             credential.expose_secret(),

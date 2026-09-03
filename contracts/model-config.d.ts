@@ -644,6 +644,11 @@ export interface AcpSessionConfiguration {
   options?: {
     [k: string]: string;
   };
+  /**
+   * Portable path relative to the Session workspace. The host maps it to the
+   * environment's interior root before sending ACP `session/new.cwd`.
+   */
+  working_directory?: string | null;
 }
 /**
  * The published intrinsic attributes of a catalog model, keyed by `model_id`. This is

@@ -4,6 +4,8 @@ import { CONSERVATIVE_DELEGATION_LIMITS } from "../../lib/agent-collaboration";
 import { useApp } from "../../lib/app-state";
 import { Button } from "../ui";
 import type { AuthorStage } from "./agent-editor-navigation";
+import { acpWorkingDirectoryIssue } from "../../lib/agent-runtime-capabilities";
+import { runtimeStatus } from "../../lib/readiness";
 
 export const BLANK_AGENT_CONFIG: AgentConfig = {
   id: "",
@@ -38,12 +40,17 @@ export function agentModelIsRunnable(
   model: AgentConfig["model"],
   readyModels: readonly string[],
   runtimes: readonly RuntimeCap[],
+  requiresToolBridge = false,
 ): boolean {
   if (typeof model === "string") return readyModels.includes(model);
   if ("id" in model) return readyModels.includes(model.id);
   if (model.mode === "backend_default" || model.mode === "backend_exact") {
-    return runtimes.some((runtime) =>
-      runtime.id === model.backend_ref && runtime.local?.detected !== false);
+    if (acpWorkingDirectoryIssue(model.configuration?.working_directory ?? "") !== null) {
+      return false;
+    }
+    return runtimes.some((runtime) => runtime.id === model.backend_ref
+      && runtimeStatus(runtime) === "ready"
+      && (!requiresToolBridge || runtime.features?.awaken_tool_bridge === "supported"));
   }
   return readyModels.length > 0;
 }

@@ -95,6 +95,9 @@ impl ModelSelection {
         backend_ref: impl Into<String>,
         configuration: AcpSessionConfiguration,
     ) -> Result<Self, String> {
+        configuration
+            .validate_working_directory()
+            .map_err(str::to_string)?;
         Ok(Self::BackendDefault {
             backend_ref: AcpBackend::parse(backend_ref).map_err(|error| error.to_string())?,
             configuration,
@@ -106,6 +109,9 @@ impl ModelSelection {
         model_ref: impl Into<String>,
         configuration: AcpSessionConfiguration,
     ) -> Result<Self, String> {
+        configuration
+            .validate_working_directory()
+            .map_err(str::to_string)?;
         Ok(Self::BackendExact {
             backend_ref: AcpBackend::parse(backend_ref).map_err(|error| error.to_string())?,
             model_ref: ExactModelRef::parse(model_ref).map_err(str::to_string)?,
@@ -226,6 +232,7 @@ impl ModelSelection {
         ) {
             return Err("ACP configuration requires an explicit acp:<cli> model selection");
         }
+        configuration.validate_working_directory()?;
         match self {
             Self::Target {
                 configuration: current,
@@ -383,6 +390,9 @@ impl<'de> Deserialize<'de> for ModelSelection {
                 || backend_ref.trim().is_empty()
                 || target.protocol_endpoint_id.is_some() && target.endpoint_name.is_some()) =>
             {
+                configuration
+                    .validate_working_directory()
+                    .map_err(serde::de::Error::custom)?;
                 Ok(Self::Target {
                     target,
                     backend_ref,
@@ -1102,6 +1112,7 @@ mod tool_binding_tests {
 #[cfg(test)]
 mod model_selection_tests {
     use super::{AgentConfig, AgentKind, ModelSelection};
+    use awaken_runtime_contract::resolved::AcpSessionConfiguration;
 
     #[test]
     fn profile_is_explicit_and_catalog_reconciled() {
@@ -1165,6 +1176,17 @@ mod model_selection_tests {
             serde_json::json!({"mode":"backend_exact","backend_ref":"acp:codex","model_ref":" model"}),
         ] {
             assert!(serde_json::from_value::<ModelSelection>(wire).is_err());
+        }
+
+        for working_directory in ["/tmp/repo", "../repo", "repo//src", "repo\\src", "repo:src"] {
+            let configuration = AcpSessionConfiguration {
+                working_directory: Some(working_directory.into()),
+                ..Default::default()
+            };
+            assert!(
+                ModelSelection::try_backend_default("acp:codex", configuration).is_err(),
+                "rejected working directory {working_directory:?}"
+            );
         }
     }
 

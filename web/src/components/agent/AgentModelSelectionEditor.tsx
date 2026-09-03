@@ -8,7 +8,9 @@ import { useApp } from "../../lib/app-state";
 import { protocolHelpPath } from "../../lib/navigation/paths";
 import { runtimeStatus } from "../../lib/readiness";
 import { Link } from "react-router";
+import { useId } from "react";
 import RuntimeCapabilitySummary from "./RuntimeCapabilitySummary";
+import { acpWorkingDirectoryIssue } from "../../lib/agent-runtime-capabilities";
 
 interface Props {
   model: AgentConfig["model"];
@@ -47,6 +49,7 @@ export default function AgentModelSelectionEditor({
   onManage,
 }: Props) {
   const app = useApp();
+  const workingDirectoryHelpId = useId();
   const current = providerModelId(model);
   const providerModels =
     current && !readyModels.includes(current) ? [current, ...readyModels] : readyModels;
@@ -61,6 +64,8 @@ export default function AgentModelSelectionEditor({
   const runtime = selected
     ? runtimes.find((candidate) => candidate.id === selected.backend_ref)
     : undefined;
+  const workingDirectory = selected?.configuration?.working_directory ?? "";
+  const workingDirectoryIssue = acpWorkingDirectoryIssue(workingDirectory);
   const setConfiguration = (
     configuration: NonNullable<
       Extract<ModelSelection, { mode: "backend_default" | "backend_exact" }>["configuration"]
@@ -215,6 +220,45 @@ export default function AgentModelSelectionEditor({
                 </select>
               </div>
             ))}
+        </div>
+      )}
+      {selected && (
+        <div className="field" style={{ marginTop: 10 }}>
+          <label>{app.t("ACP working directory", "ACP 工作目录")}</label>
+          <input
+            className="input mono"
+            aria-label={app.t("ACP working directory", "ACP 工作目录")}
+            placeholder="repo/subdirectory"
+            value={workingDirectory}
+            aria-invalid={workingDirectoryIssue !== null}
+            aria-describedby={workingDirectoryHelpId}
+            onChange={(event) => {
+              const workingDirectory = event.target.value;
+              setConfiguration({
+                ...(selected.configuration ?? {}),
+                working_directory: workingDirectory || null,
+              });
+            }}
+          />
+          <span id={workingDirectoryHelpId} className="mut" style={{ fontSize: 12 }}>
+            {app.t(
+              "Relative to the Session workspace. Absolute paths, backslashes, and parent traversal are rejected at publication.",
+              "相对于 Session 工作区；发布时会拒绝绝对路径、反斜杠和父目录穿越。",
+            )}
+          </span>
+          {workingDirectoryIssue && (
+            <div className="banner warn" role="alert">
+              <span>!</span>
+              <span>{app.t(
+              workingDirectoryIssue === "too_long"
+                ? "Keep the working directory at 512 characters or fewer."
+                : "Use a clean relative path such as repo/src. Absolute paths, parent traversal, colons, backslashes, and empty path segments are not allowed.",
+              workingDirectoryIssue === "too_long"
+                ? "工作目录不能超过 512 个字符。"
+                : "请输入 repo/src 这类规范相对路径；不允许绝对路径、父目录穿越、冒号、反斜杠或空路径段。",
+              )}</span>
+            </div>
+          )}
         </div>
       )}
       {allModels.length > readyModels.length && (

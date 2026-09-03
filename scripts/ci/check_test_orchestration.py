@@ -25,6 +25,7 @@ REQUIRED_DETERMINISTIC_SUITES = (
     "test:durable",
     "test:fs",
     "test:extended",
+    "test:acp-tool-bridge",
     "test:environment-matrix",
     "test:composition",
     "test:coordinator-authority",

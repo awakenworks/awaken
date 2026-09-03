@@ -38,8 +38,8 @@ mod configured_fetch;
 mod providers;
 pub use providers::AwakenDirectFetchProvider;
 use providers::{
-    ProviderServerWebFetchTool, openrouter_server_fetch_descriptor,
-    openrouter_server_search_descriptor,
+    ProviderServerWebFetchTool, native_server_search_descriptors,
+    openrouter_server_fetch_descriptor, openrouter_server_search_descriptor,
 };
 
 pub const WEB_SEARCH_PLUGIN_ID: &str = "web_search";
@@ -50,6 +50,12 @@ pub const DUCKDUCKGO_PROVIDER_ID: &str = "duckduckgo";
 pub const BRAVE_PROVIDER_ID: &str = "brave";
 pub const AWAKEN_DIRECT_PROVIDER_ID: &str = "awaken-direct";
 pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
+pub const OPENAI_PROVIDER_ID: &str = "openai";
+pub const DEEPSEEK_RESPONSES_PROVIDER_ID: &str = "deepseek-responses";
+pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
+pub const DEEPSEEK_ANTHROPIC_PROVIDER_ID: &str = "deepseek-anthropic";
+pub const GEMINI_PROVIDER_ID: &str = "gemini";
+pub const VERTEX_PROVIDER_ID: &str = "vertex";
 pub const AWAKEN_CLOUD_PROVIDER_ID: &str = "awaken-cloud";
 
 /// Cap on fetched bytes so a huge response cannot blow up the transcript.
@@ -288,6 +294,11 @@ impl WebSearchProviderRegistry {
         catalog
             .register_server_search(openrouter_server_search_descriptor())
             .expect("OpenRouter search descriptor is valid");
+        for descriptor in native_server_search_descriptors() {
+            catalog
+                .register_server_search(descriptor)
+                .expect("native search descriptor is valid");
+        }
         catalog
             .register_server_fetch(openrouter_server_fetch_descriptor())
             .expect("OpenRouter fetch descriptor is valid");
@@ -301,6 +312,11 @@ impl WebSearchProviderRegistry {
         catalog
             .register_server_search(openrouter_server_search_descriptor())
             .expect("OpenRouter search descriptor is valid");
+        for descriptor in native_server_search_descriptors() {
+            catalog
+                .register_server_search(descriptor)
+                .expect("native search descriptor is valid");
+        }
         catalog
             .register_server_fetch(openrouter_server_fetch_descriptor())
             .expect("OpenRouter fetch descriptor is valid");
@@ -782,11 +798,41 @@ impl WebSearchPlugin {
                     "provider-server realization cannot enforce the Agent WebSearch execution policy",
                 ));
             }
-            let parameters: OpenRouterWebSearchParameters = serde_json::from_value(config.options)
-                .map_err(|error| PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, error.to_string()))?;
-            return Ok(ConfiguredWebRoute::ProviderServer(
-                ProviderServerTool::openrouter_web_search(parameters),
-            ));
+            let projection = match config.provider_id.as_str() {
+                OPENROUTER_PROVIDER_ID => {
+                    let parameters: OpenRouterWebSearchParameters =
+                        serde_json::from_value(config.options).map_err(|error| {
+                            PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, error.to_string())
+                        })?;
+                    ProviderServerTool::openrouter_web_search(parameters)
+                }
+                OPENAI_PROVIDER_ID => empty_native_search_options(
+                    config.options,
+                    ProviderServerTool::openai_web_search(),
+                )?,
+                DEEPSEEK_RESPONSES_PROVIDER_ID => empty_native_search_options(
+                    config.options,
+                    ProviderServerTool::deepseek_responses_web_search(),
+                )?,
+                ANTHROPIC_PROVIDER_ID => empty_native_search_options(
+                    config.options,
+                    ProviderServerTool::anthropic_web_search(),
+                )?,
+                DEEPSEEK_ANTHROPIC_PROVIDER_ID => empty_native_search_options(
+                    config.options,
+                    ProviderServerTool::deepseek_anthropic_web_search(),
+                )?,
+                GEMINI_PROVIDER_ID => empty_native_search_options(
+                    config.options,
+                    ProviderServerTool::gemini_web_search(),
+                )?,
+                VERTEX_PROVIDER_ID => empty_native_search_options(
+                    config.options,
+                    ProviderServerTool::vertex_web_search(),
+                )?,
+                _ => unreachable!("registered server search providers are exhaustively projected"),
+            };
+            return Ok(ConfiguredWebRoute::ProviderServer(projection));
         }
         let mut targets = Vec::new();
         for target in config.targets() {
@@ -853,6 +899,22 @@ impl WebSearchPlugin {
         };
         Ok((descriptor, tool))
     }
+}
+
+fn empty_native_search_options(
+    options: Value,
+    projection: ProviderServerTool,
+) -> Result<ProviderServerTool, PluginConfigError> {
+    let options = options.as_object().ok_or_else(|| {
+        PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, "provider options must be an object")
+    })?;
+    if !options.is_empty() {
+        return Err(PluginConfigError::new(
+            WEB_SEARCH_PLUGIN_ID,
+            "this provider-native WebSearch route does not accept options",
+        ));
+    }
+    Ok(projection)
 }
 
 fn validate_target(
@@ -1522,6 +1584,46 @@ mod tests {
                 .is_err(),
             "F2"
         );
+    }
+
+    #[test]
+    fn model_provider_search_routes_are_closed_and_exact() {
+        // Each advertised route resolves to one provider-bound server
+        // projection. Options are deliberately closed until Awaken can prove
+        // that the exact provider/dialect enforces them.
+        let registry = WebSearchProviderRegistry::server_builtins();
+        let plugin = WebSearchPlugin::new(registry, None);
+        for (provider_id, expected) in [
+            (OPENAI_PROVIDER_ID, ProviderServerTool::OpenAiWebSearch),
+            (
+                DEEPSEEK_RESPONSES_PROVIDER_ID,
+                ProviderServerTool::DeepSeekResponsesWebSearch,
+            ),
+            (
+                ANTHROPIC_PROVIDER_ID,
+                ProviderServerTool::AnthropicWebSearch,
+            ),
+            (
+                DEEPSEEK_ANTHROPIC_PROVIDER_ID,
+                ProviderServerTool::DeepSeekAnthropicWebSearch,
+            ),
+            (GEMINI_PROVIDER_ID, ProviderServerTool::GeminiWebSearch),
+            (VERTEX_PROVIDER_ID, ProviderServerTool::VertexWebSearch),
+        ] {
+            let (descriptor, _) = plugin
+                .configured_tool(Some(&json!({"provider_id": provider_id, "options": {}})))
+                .expect("documented native search route");
+            assert_eq!(descriptor.provider_server_tool, Some(expected.clone()));
+            assert!(
+                plugin
+                    .validate_config(Some(&json!({
+                        "provider_id": provider_id,
+                        "options": {"unverified": true}
+                    })))
+                    .is_err(),
+                "unverified provider options must fail closed for {provider_id}"
+            );
+        }
     }
 
     #[async_trait]

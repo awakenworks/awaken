@@ -2368,6 +2368,13 @@
                 "type": "string"
               },
               "type": "object"
+            },
+            "working_directory": {
+              "description": "Portable path relative to the Session workspace. The host maps it to the\nenvironment's interior root before sending ACP `session/new.cwd`.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "type": "object"

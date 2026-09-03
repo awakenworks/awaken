@@ -71,11 +71,15 @@ export default function AgentAdvanced({
       config={(config.plugin_config[plugin.id] as Record<string, unknown>) ?? {}}
       credentials={credentials}
       changed={changed(`plugin_config.${plugin.id}`)}
-      availability={plugin.id === "background_task" && acp ? {
+      availability={(plugin.id === "background_task" || plugin.id === "state_machine") && acp ? {
         supported: false,
         detail: app.t(
-          "Background tool execution needs Native Awaken because it retains a prepared tool executor inside the runtime process.",
-          "后台工具执行需要 Native Awaken，因为它必须在 Runtime 进程内保留已准备的工具执行器。",
+          plugin.id === "state_machine"
+            ? "State machines require Native Awaken because the external ACP Harness owns the model/tool loop."
+            : "Background tool execution needs Native Awaken because it retains a prepared tool executor inside the runtime process.",
+          plugin.id === "state_machine"
+            ? "状态机需要 Native Awaken，因为外部 ACP Harness 掌握模型与工具循环。"
+            : "后台工具执行需要 Native Awaken，因为它必须在 Runtime 进程内保留已准备的工具执行器。",
         ),
       } : undefined}
       onToggle={(enabled) => {

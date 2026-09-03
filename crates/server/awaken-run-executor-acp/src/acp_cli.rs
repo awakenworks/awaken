@@ -355,6 +355,7 @@ pub enum ResolvedModel {
         process_secret: Option<ProcessSecretRequirement>,
         credential_artifact: Option<CredentialArtifactRequirement>,
         acp: Option<awaken_runtime_contract::resolved::AcpExecutionProfile>,
+        provider_server_tools: Vec<awaken_runtime_contract::resolved::ProviderServerTool>,
     },
     BackendOwned {
         model_selection: BackendModelSelection,
@@ -384,6 +385,7 @@ impl ResolvedModel {
             process_secret: Some(ProcessSecretRequirement::new(lease_reference)),
             credential_artifact: None,
             acp: None,
+            provider_server_tools: Vec::new(),
         }
     }
 
@@ -400,6 +402,7 @@ impl ResolvedModel {
             process_secret,
             credential_artifact,
             acp: None,
+            provider_server_tools: Vec::new(),
         }
     }
 
@@ -417,6 +420,7 @@ impl ResolvedModel {
             process_secret,
             credential_artifact,
             acp: Some(acp),
+            provider_server_tools: Vec::new(),
         }
     }
 
@@ -451,9 +455,78 @@ impl ResolvedModel {
             Self::BackendOwned { .. } => None,
         }
     }
+
+    /// Attach the exact provider-owned tools selected by the immutable Agent
+    /// publication. The ACP adapter still validates that its CLI, API dialect,
+    /// and provider route can realize every entry before launch.
+    #[must_use]
+    pub fn with_provider_server_tools(
+        mut self,
+        tools: impl IntoIterator<Item = awaken_runtime_contract::resolved::ProviderServerTool>,
+    ) -> Self {
+        if let Self::Managed {
+            provider_server_tools,
+            ..
+        } = &mut self
+        {
+            provider_server_tools.extend(tools);
+        }
+        self
+    }
 }
 
 impl AcpCli {
+    /// Closed ACP delivery matrix for provider-owned tools. A compatible wire
+    /// protocol is insufficient: the adapter must also have an explicit launch
+    /// projection below. Today only Codex Responses WebSearch has that path.
+    #[must_use]
+    pub fn realizes_provider_server_tool(
+        &self,
+        tool: &awaken_runtime_contract::resolved::ProviderServerTool,
+    ) -> bool {
+        matches!(
+            (self.id, tool),
+            (
+                "codex",
+                awaken_runtime_contract::resolved::ProviderServerTool::OpenAiWebSearch
+                    | awaken_runtime_contract::resolved::ProviderServerTool::DeepSeekResponsesWebSearch
+            )
+        )
+    }
+
+    /// Validate an already-selected provider-tool plan against this adapter's
+    /// exact model route. Provider identity, wire dialect, and launch support
+    /// form one capability contract; OpenAI-compatible naming alone grants
+    /// nothing.
+    pub fn validate_provider_server_tool_route(
+        &self,
+        provider_kind: &str,
+        api_dialect: &str,
+        tools: &[awaken_runtime_contract::resolved::ProviderServerTool],
+    ) -> Result<(), OpenError> {
+        for tool in tools {
+            if tool.provider_kind() != provider_kind {
+                return Err(OpenError(format!(
+                    "provider_server_tool_mismatch: tool requires `{}` but model route is `{provider_kind}`",
+                    tool.provider_kind()
+                )));
+            }
+            if !self.realizes_provider_server_tool(tool) {
+                return Err(OpenError(format!(
+                    "provider_server_tool_unsupported: ACP `{}` has no verified launch projection for `{}`",
+                    self.id,
+                    tool.provider_kind()
+                )));
+            }
+            if api_dialect != "open_ai_responses" {
+                return Err(OpenError(format!(
+                    "provider_server_tool_dialect_mismatch: `{api_dialect}` cannot carry the selected ACP provider tool"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Project the resolved model + optional compaction window + per-agent env
     /// overrides onto a concrete [`AcpLaunch`]. Precedence (low→high):
     /// static defaults < per-agent passthrough < typed model delivery < the secret
@@ -502,6 +575,7 @@ impl AcpCli {
         }
         let mut session_config_options = BTreeMap::new();
         let mut session_mode = None;
+        let mut session_working_directory = None;
         if let ResolvedModel::BackendOwned {
             model_selection,
             model,
@@ -509,7 +583,11 @@ impl AcpCli {
             session_configuration,
         } = model
         {
+            session_configuration
+                .validate_working_directory()
+                .map_err(|reason| OpenError(format!("invalid ACP working directory: {reason}")))?;
             session_mode.clone_from(&session_configuration.mode);
+            session_working_directory.clone_from(&session_configuration.working_directory);
             for (config_id, value) in &session_configuration.options {
                 session_config_options.insert(config_id.clone(), value.clone());
             }
@@ -595,6 +673,7 @@ impl AcpCli {
                         },
                     )
                     .collect(),
+                session_working_directory,
                 expected_capability: Some(capability.clone()),
             });
         }
@@ -605,13 +684,40 @@ impl AcpCli {
             process_secret,
             credential_artifact,
             acp,
+            provider_server_tools,
         } = model
         else {
             unreachable!("backend-owned launch returned above")
         };
         let d = self.model_delivery.as_ref();
+        if let Some(unsupported) = provider_server_tools
+            .iter()
+            .find(|tool| !self.realizes_provider_server_tool(tool))
+        {
+            return Err(OpenError(format!(
+                "provider_server_tool_unsupported: {} cannot realize {}",
+                self.id,
+                unsupported.provider_kind()
+            )));
+        }
+        let native_web_search = provider_server_tools.iter().any(|tool| {
+            matches!(
+                tool,
+                awaken_runtime_contract::resolved::ProviderServerTool::OpenAiWebSearch
+                    | awaken_runtime_contract::resolved::ProviderServerTool::DeepSeekResponsesWebSearch
+            )
+        });
         let (session_mode, session_config_options, expected_capability) =
             project_acp_session(self.id, acp.as_ref());
+        if let Some(profile) = acp.as_ref() {
+            profile
+                .session_configuration
+                .validate_working_directory()
+                .map_err(|reason| OpenError(format!("invalid ACP working directory: {reason}")))?;
+        }
+        let session_working_directory = acp
+            .as_ref()
+            .and_then(|profile| profile.session_configuration.working_directory.clone());
         let session_model = match self.managed_model_interface {
             ManagedModelInterface::Environment => None,
             ManagedModelInterface::SessionModel if model.trim().is_empty() => {
@@ -646,6 +752,7 @@ impl AcpCli {
                 session_model,
                 session_mode,
                 session_config_options,
+                session_working_directory,
                 expected_capability,
             });
         };
@@ -669,13 +776,18 @@ impl AcpCli {
                             "base_url": base_url,
                             "wire_api": config.wire_api,
                             "requires_openai_auth": config.requires_openai_auth,
+                            "supports_standalone_web_search": native_web_search,
                         }),
                     );
-                    serde_json::json!({
+                    let mut document = serde_json::json!({
                         "model": model,
                         "model_provider": config.provider_id,
                         "model_providers": providers,
-                    })
+                    });
+                    if native_web_search {
+                        document["web_search"] = serde_json::json!("live");
+                    }
+                    document
                 }
                 ManagedProviderConfigCodec::OpenCode {
                     provider_package,
@@ -754,6 +866,7 @@ impl AcpCli {
             session_model,
             session_mode,
             session_config_options,
+            session_working_directory,
             expected_capability,
         })
     }
@@ -964,6 +1077,7 @@ mod tests {
             process_secret: Some(ProcessSecretRequirement::new("lease://test-model")),
             credential_artifact: None,
             acp: None,
+            provider_server_tools: Vec::new(),
         }
     }
 
@@ -1324,6 +1438,7 @@ mod tests {
             )),
             credential_artifact: None,
             acp: None,
+            provider_server_tools: Vec::new(),
         };
         let claude = acp_cli("claude").unwrap();
         let launch = claude
@@ -1768,7 +1883,102 @@ mod tests {
             config["model_providers"]["awaken-managed"]["requires_openai_auth"], true,
             "E1"
         );
+        assert_eq!(
+            config["model_providers"]["awaken-managed"]["supports_standalone_web_search"], false,
+            "WebSearch is never enabled by protocol compatibility alone"
+        );
+        assert!(config.get("web_search").is_none());
         assert!(!config.to_string().contains("one-shot"), "E2");
+    }
+
+    #[test]
+    fn codex_native_web_search_requires_and_projects_the_exact_responses_capability() {
+        use awaken_runtime_contract::resolved::ProviderServerTool;
+
+        let codex = acp_cli("codex").unwrap();
+        for projection in [
+            ProviderServerTool::OpenAiWebSearch,
+            ProviderServerTool::DeepSeekResponsesWebSearch,
+        ] {
+            let provider = projection.provider_kind();
+            codex
+                .validate_provider_server_tool_route(
+                    provider,
+                    "open_ai_responses",
+                    std::slice::from_ref(&projection),
+                )
+                .expect("exact provider and Responses dialect");
+            let model = ResolvedModel::managed(
+                "https://responses.example/v1",
+                "model",
+                None,
+                Some(CredentialArtifactRequirement::new(
+                    "credential://search",
+                    ".codex/auth.json",
+                )),
+            )
+            .with_provider_server_tools([projection]);
+            let launch = codex
+                .try_project(&model, None, &[])
+                .expect("exact Codex Responses WebSearch projection");
+            let config: serde_json::Value =
+                serde_json::from_str(&env_of(&launch, "CODEX_CONFIG").expect("Codex config"))
+                    .expect("valid Codex config");
+            assert_eq!(config["web_search"], "live");
+            assert_eq!(
+                config["model_providers"]["awaken-managed"]["supports_standalone_web_search"],
+                true
+            );
+        }
+
+        for (provider, dialect, projection, error) in [
+            (
+                "openai",
+                "open_ai_responses",
+                ProviderServerTool::DeepSeekResponsesWebSearch,
+                "provider_server_tool_mismatch",
+            ),
+            (
+                "openai",
+                "open_ai_chat",
+                ProviderServerTool::OpenAiWebSearch,
+                "provider_server_tool_dialect_mismatch",
+            ),
+            (
+                "anthropic",
+                "anthropic_messages",
+                ProviderServerTool::AnthropicWebSearch,
+                "provider_server_tool_unsupported",
+            ),
+        ] {
+            let actual = codex
+                .validate_provider_server_tool_route(provider, dialect, &[projection])
+                .unwrap_err();
+            assert!(actual.0.starts_with(error), "{actual}");
+        }
+        codex
+            .validate_provider_server_tool_route("openai", "open_ai_chat", &[])
+            .expect("no selected provider tool leaves the model route untouched");
+
+        for (cli, projection) in [
+            ("codex", ProviderServerTool::AnthropicWebSearch),
+            ("claude", ProviderServerTool::AnthropicWebSearch),
+            ("gemini", ProviderServerTool::GeminiWebSearch),
+        ] {
+            let adapter = acp_cli(cli).unwrap();
+            let model = ResolvedModel::managed(
+                "https://provider.example/v1",
+                "model",
+                Some(ProcessSecretRequirement::new("credential://search")),
+                None,
+            )
+            .with_provider_server_tools([projection]);
+            let error = adapter.try_project(&model, None, &[]).unwrap_err();
+            assert!(
+                error.0.starts_with("provider_server_tool_unsupported:"),
+                "{cli}: {error}"
+            );
+        }
     }
 
     #[test]
@@ -1794,6 +2004,7 @@ mod tests {
                     options: [("reasoning_effort".into(), "high".into())]
                         .into_iter()
                         .collect(),
+                    working_directory: Some("repo/src".into()),
                 },
             },
         );
@@ -1807,10 +2018,41 @@ mod tests {
             "E2"
         );
         assert_eq!(launch.session_config_options[0].value, "high", "E2");
+        assert_eq!(
+            launch.session_working_directory.as_deref(),
+            Some("repo/src"),
+            "E2"
+        );
         let expectation = launch.expected_capability.expect("E3");
         assert_eq!(expectation.adapter_id, "codex", "E3");
         assert_eq!(expectation.adapter_version, "1.2.3", "E3");
         assert_eq!(expectation.fingerprint, "sha256:profile", "E3");
+    }
+
+    #[test]
+    fn launch_projection_rejects_a_stale_unsafe_working_directory() {
+        let model = ResolvedModel::managed_with_acp(
+            "https://provider.example/v1",
+            "model",
+            None,
+            Some(CredentialArtifactRequirement::new(
+                "awaken-credential-artifact://one-shot",
+                ".codex/auth.json",
+            )),
+            awaken_runtime_contract::resolved::AcpExecutionProfile {
+                capability_adapter_version: "1".into(),
+                capability_fingerprint: "sha256:stale".into(),
+                session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration {
+                    working_directory: Some("../outside".into()),
+                    ..Default::default()
+                },
+            },
+        );
+        let error = acp_cli("codex")
+            .unwrap()
+            .try_project(&model, None, &[])
+            .unwrap_err();
+        assert!(error.0.starts_with("invalid ACP working directory:"));
     }
 
     #[test]

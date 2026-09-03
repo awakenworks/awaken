@@ -146,7 +146,16 @@ export default function AgentEditorSurface() {
     && targetId().length > 0
     && (cfg.system ?? "").trim().length > 0;
   const body = () => buildAgentDraftBody(cfg, targetId(), permissionPreset);
-  const modelIsRunnable = agentModelIsRunnable(cfg.model, models, caps.data?.runtimes ?? []);
+  const requiresToolBridge = cfg.tools.length > 0
+    || cfg.skills.length > 0
+    || cfg.mcp_servers.length > 0
+    || Object.hasOwn(cfg.plugin_config, "memory");
+  const modelIsRunnable = agentModelIsRunnable(
+    cfg.model,
+    models,
+    caps.data?.runtimes ?? [],
+    requiresToolBridge,
+  );
 
   const saveConfig = async (): Promise<number | undefined> => {
     const result = await api.put<{ id: string; generation?: number }>(

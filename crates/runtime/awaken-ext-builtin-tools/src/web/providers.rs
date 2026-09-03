@@ -97,6 +97,30 @@ pub(super) fn openrouter_server_search_descriptor() -> WebServerToolProviderDesc
     }
 }
 
+pub(super) fn native_server_search_descriptors() -> Vec<WebServerToolProviderDescriptor> {
+    [
+        (OPENAI_PROVIDER_ID, "OpenAI hosted search"),
+        (
+            DEEPSEEK_RESPONSES_PROVIDER_ID,
+            "DeepSeek Responses hosted search",
+        ),
+        (ANTHROPIC_PROVIDER_ID, "Anthropic server search"),
+        (
+            DEEPSEEK_ANTHROPIC_PROVIDER_ID,
+            "DeepSeek Anthropic server search",
+        ),
+        (GEMINI_PROVIDER_ID, "Gemini Google Search grounding"),
+        (VERTEX_PROVIDER_ID, "Vertex Google Search grounding"),
+    ]
+    .into_iter()
+    .map(|(id, label)| WebServerToolProviderDescriptor {
+        id: id.into(),
+        label: label.into(),
+        options_schema: json!({ "type": "object", "additionalProperties": false }),
+    })
+    .collect()
+}
+
 pub(super) fn openrouter_server_fetch_descriptor() -> WebServerToolProviderDescriptor {
     WebServerToolProviderDescriptor {
         id: OPENROUTER_PROVIDER_ID.into(),

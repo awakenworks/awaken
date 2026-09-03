@@ -124,10 +124,15 @@ impl AcpBackend {
         permission: Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>,
         backend: awaken_runtime_contract::resolved::Backend,
         mcp_servers: Vec<awaken_run_executor_acp::SessionMcpServer>,
+        grant_observer: Option<Arc<dyn awaken_run_executor_acp::PermissionGrantObserver>>,
     ) -> Arc<AcpRunExecutor> {
         match &self.source {
             AcpExecutorSource::Static(executor) => {
-                Arc::new(executor.for_session_servers(permission, &mcp_servers))
+                Arc::new(executor.for_session_servers_with_grant_observer(
+                    permission,
+                    &mcp_servers,
+                    grant_observer,
+                ))
             }
             AcpExecutorSource::Bound {
                 launch,
@@ -148,6 +153,9 @@ impl AcpBackend {
                 }
                 if let Some(session_home) = session_home {
                     executor = executor.with_session_home(session_home.clone());
+                }
+                if let Some(observer) = grant_observer {
+                    executor = executor.with_permission_grant_observer(observer);
                 }
                 Arc::new(executor.with_permission_policy(permission))
             }
@@ -585,6 +593,7 @@ mod tests {
                 process_secret: None,
                 credential_artifact: None,
                 acp: None,
+                provider_server_tools: Vec::new(),
             })
         }
     }

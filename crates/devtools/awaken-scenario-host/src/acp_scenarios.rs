@@ -184,6 +184,52 @@ pub fn build_acp_permission_router() -> Router {
     )
 }
 
+/// Product-composed ACP tool bridge fixture. Unlike `acp-permission`, the
+/// external process consumes the Session MCP projection and performs the real
+/// rooted write/read after Awaken resumes the durable permission ticket.
+pub async fn build_acp_tool_bridge_router() -> Router {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../e2e/fixtures/acp_awaken_tool_bridge_fixture.mjs");
+    let launch = awaken_run_executor_acp::AcpLaunch::custom(
+        vec!["node".into(), fixture.to_string_lossy().into_owned()],
+        vec![],
+    );
+    let source = Arc::new(
+        awaken_run_executor_acp::SubprocessChannelSource::new(launch)
+            .with_codec(awaken_run_executor_acp::Codec::Acp),
+    );
+    let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
+    let mut deployment = scenario_deployment();
+    deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+    let mut hand = awaken_ext_builtin_tools::builtin_tools()
+        .into_iter()
+        .filter(|tool| matches!(tool.descriptor().id.as_str(), "read" | "write"))
+        .map(awaken_ext_builtin_tools::BuiltinTool::into_descriptor)
+        .collect::<Vec<_>>();
+    hand.sort_by(|left, right| left.id.cmp(&right.id));
+    let snapshot = ExecutableAgentSnapshot::builder("acp-agent")
+        .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
+            "",
+            "",
+            "acp:claude",
+        )))
+        .tools(hand)
+        .agent_bindings(ask_tool_bindings("write"))
+        .build();
+    let publication = fixed_agent_publication([snapshot]);
+    let host_publication = publication.clone();
+    let platform = runtime_resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment)
+        .await
+        .map_host(|host| {
+            host.with_acp(acp)
+                .with_acp_tool_exporter(Arc::new(
+                    awaken_coordinator::mcp_export::SessionToolExporter,
+                ))
+                .with_agent_publications(host_publication)
+        });
+    mount_with_agent_source(platform, publication)
+}
+
 /// A router where a session can select `runtime: "acp:*"` to run on an external
 /// ACP CLI (here the fake agent), else the native echo model (R3/R4/R7).
 /// `AWAKEN_MODEL_MODE=acp`.

@@ -13,7 +13,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::{GenaiExecutor, OpenAiResponsesExecutor};
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, DeltaSink, LlmExecutor};
-use awaken_runtime_contract::resolved::ModelBinding;
+use awaken_runtime_contract::resolved::{ModelBinding, ProviderServerTool, ToolDescriptor};
 use std::sync::Mutex;
 use support::compatibility_tool;
 
@@ -250,13 +250,115 @@ fn live_deepseek_anthropic_executor() -> (GenaiExecutor, String) {
     let model =
         std::env::var("AWAKEN_ANTHROPIC_MODEL").unwrap_or_else(|_| "deepseek-v4-pro".to_string());
     (
-        GenaiExecutor::from_materialized_endpoint(
+        GenaiExecutor::from_materialized_provider_endpoint(
+            "deepseek",
             awaken_provider_genai::AdapterKind::Anthropic,
             "https://api.deepseek.com/anthropic",
             key,
         ),
         model,
     )
+}
+
+fn native_web_search_request(model: String, projection: ProviderServerTool) -> ChatRequest {
+    let mut request = text_request(
+        model,
+        "Use web search to identify one current headline and include its source URL.",
+    );
+    request.tools.push(
+        ToolDescriptor::pinned(
+            "builtin",
+            "web_search",
+            "Search the web",
+            serde_json::json!({"type":"object"}),
+        )
+        .with_provider_server_tool(projection),
+    );
+    request
+}
+
+#[tokio::test]
+#[ignore = "requires network and DEEPSEEK_API_KEY"]
+async fn live_deepseek_responses_executes_hosted_web_search() {
+    let key = std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY");
+    let model = std::env::var("AWAKEN_DEEPSEEK_RESPONSES_MODEL")
+        .unwrap_or_else(|_| "deepseek-v4-flash".to_string());
+    let executor = OpenAiResponsesExecutor::from_materialized_endpoint(
+        "deepseek",
+        "https://api.deepseek.com/v1",
+        key,
+    )
+    .expect("DeepSeek Responses executor");
+    let response = executor
+        .infer(native_web_search_request(
+            model,
+            ProviderServerTool::DeepSeekResponsesWebSearch,
+        ))
+        .await
+        .expect("DeepSeek hosted WebSearch");
+    let text = response.output.text_content();
+    assert!(!text.trim().is_empty());
+    assert!(
+        text.contains("http")
+            || response
+                .output
+                .blocks
+                .iter()
+                .any(|block| matches!(block, ContentBlock::SearchResult { .. })),
+        "expected hosted-search source evidence: {text}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires network and DEEPSEEK_API_KEY"]
+async fn live_deepseek_responses_reports_a_real_web_search_call() {
+    // This provider contract probe complements the adapter test above: a URL in
+    // prose can be hallucinated, whereas a typed web_search_call is emitted by
+    // the server only when the hosted tool actually ran.
+    let key = std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY");
+    let model = std::env::var("AWAKEN_DEEPSEEK_RESPONSES_MODEL")
+        .unwrap_or_else(|_| "deepseek-v4-flash".to_string());
+    let response = reqwest::Client::new()
+        .post("https://api.deepseek.com/v1/responses")
+        .bearer_auth(key)
+        .json(&serde_json::json!({
+            "model": model,
+            "input": "Search the web for one current headline and cite it.",
+            "tools": [{"type": "web_search"}],
+            "tool_choice": {"type": "web_search"},
+            "store": false
+        }))
+        .send()
+        .await
+        .expect("DeepSeek Responses request");
+    let status = response.status();
+    let body: serde_json::Value = response.json().await.expect("Responses JSON");
+    assert!(status.is_success(), "HTTP {status}: {body}");
+    assert!(
+        body["output"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["type"] == "web_search_call")),
+        "provider did not report a hosted web_search_call: {body}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires network and DEEPSEEK_API_KEY"]
+async fn live_deepseek_anthropic_executes_hosted_web_search() {
+    let (executor, model) = live_deepseek_anthropic_executor();
+    let response = executor
+        .infer(native_web_search_request(
+            model,
+            ProviderServerTool::DeepSeekAnthropicWebSearch,
+        ))
+        .await
+        .expect("DeepSeek Anthropic hosted WebSearch");
+    let text = response.output.text_content();
+    assert!(!text.trim().is_empty());
+    assert!(
+        text.contains("http"),
+        "expected a searched source URL: {text}"
+    );
 }
 
 #[tokio::test]

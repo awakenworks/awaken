@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use super::{
     AcpSpec, Backend, BackendModelSelection, ContextPolicy, InferencePlacementMechanism,
-    ModelBinding, ResolvedModelCandidate, ResolvedSpec, ToolDescriptor, ToolExposure,
-    ToolExposurePolicy, ToolExposureRule, ToolKind, ToolPresentation, ToolPresentationOverride,
-    ToolSelector, content_hash, normalize_model_tool_schema,
+    ModelBinding, ProviderServerTool, ResolvedModelCandidate, ResolvedSpec, ToolDescriptor,
+    ToolExposure, ToolExposurePolicy, ToolExposureRule, ToolKind, ToolPresentation,
+    ToolPresentationOverride, ToolSelector, content_hash, normalize_model_tool_schema,
 };
 
 #[test]
@@ -580,6 +580,30 @@ fn descriptor_state_owns_one_derived_content_identity() {
     let decoded: ToolDescriptor =
         serde_json::from_value(encoded).expect("deserialize valid descriptor facts");
     assert_eq!(decoded.content_hash(), base.content_hash());
+}
+
+#[test]
+fn provider_native_search_projection_survives_the_persisted_descriptor_wire() {
+    for projection in [
+        ProviderServerTool::OpenAiWebSearch,
+        ProviderServerTool::DeepSeekResponsesWebSearch,
+        ProviderServerTool::AnthropicWebSearch,
+        ProviderServerTool::DeepSeekAnthropicWebSearch,
+        ProviderServerTool::GeminiWebSearch,
+        ProviderServerTool::VertexWebSearch,
+    ] {
+        let descriptor = ToolDescriptor::pinned(
+            "builtin:web",
+            "web_search",
+            "search",
+            serde_json::json!({"type": "object"}),
+        )
+        .with_provider_server_tool(projection.clone());
+        let encoded = serde_json::to_value(&descriptor).expect("persist descriptor");
+        let decoded: ToolDescriptor = serde_json::from_value(encoded).expect("restore descriptor");
+        assert_eq!(decoded.provider_server_tool, Some(projection));
+        assert_eq!(decoded.content_hash(), descriptor.content_hash());
+    }
 }
 
 #[test]

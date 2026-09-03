@@ -1065,6 +1065,12 @@ pub struct ToolDescriptor {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderServerTool {
+    OpenAiWebSearch,
+    DeepSeekResponsesWebSearch,
+    AnthropicWebSearch,
+    DeepSeekAnthropicWebSearch,
+    GeminiWebSearch,
+    VertexWebSearch,
     OpenRouterToolSearch {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_results: Option<ToolSearchLimit>,
@@ -1086,6 +1092,36 @@ pub enum ProviderServerTool {
 }
 
 impl ProviderServerTool {
+    #[must_use]
+    pub const fn openai_web_search() -> Self {
+        Self::OpenAiWebSearch
+    }
+
+    #[must_use]
+    pub const fn deepseek_responses_web_search() -> Self {
+        Self::DeepSeekResponsesWebSearch
+    }
+
+    #[must_use]
+    pub const fn anthropic_web_search() -> Self {
+        Self::AnthropicWebSearch
+    }
+
+    #[must_use]
+    pub const fn deepseek_anthropic_web_search() -> Self {
+        Self::DeepSeekAnthropicWebSearch
+    }
+
+    #[must_use]
+    pub const fn gemini_web_search() -> Self {
+        Self::GeminiWebSearch
+    }
+
+    #[must_use]
+    pub const fn vertex_web_search() -> Self {
+        Self::VertexWebSearch
+    }
+
     /// OpenRouter's provider-owned regex Tool Search. `None` preserves the
     /// provider default (currently five results).
     #[must_use]
@@ -1106,6 +1142,11 @@ impl ProviderServerTool {
     #[must_use]
     pub const fn provider_kind(&self) -> &'static str {
         match self {
+            Self::OpenAiWebSearch => "openai",
+            Self::DeepSeekResponsesWebSearch | Self::DeepSeekAnthropicWebSearch => "deepseek",
+            Self::AnthropicWebSearch => "anthropic",
+            Self::GeminiWebSearch => "gemini",
+            Self::VertexWebSearch => "vertex",
             Self::OpenRouterToolSearch { .. }
             | Self::OpenRouterWebSearch { .. }
             | Self::OpenRouterWebFetch { .. } => "openrouter",

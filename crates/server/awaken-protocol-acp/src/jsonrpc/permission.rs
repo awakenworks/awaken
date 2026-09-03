@@ -26,7 +26,7 @@ impl PermissionContext {
                 id.clone(),
                 ObservedToolCall {
                     name: name.clone(),
-                    input: input.clone(),
+                    input: crate::exact_mcp_tool_arguments(name, input),
                 },
             );
         }
@@ -309,7 +309,11 @@ mod tests {
         context.observe(&AcpProjectedEvent::ToolCall {
             id: "mcp-1".into(),
             name: "mcp.pilot.set_plan".into(),
-            input: serde_json::json!({"arguments": {"summary": "ship"}}),
+            input: serde_json::json!({
+                "server": "pilot",
+                "tool": "set_plan",
+                "arguments": {"summary": "ship"}
+            }),
         });
         let raw = |id: &str| {
             serde_json::json!({
@@ -319,7 +323,22 @@ mod tests {
 
         let matched = permission_ask(&raw("mcp-1"), &context);
         assert_eq!(matched.tool, "mcp.pilot.set_plan", "R1");
-        assert_eq!(matched.arguments["arguments"]["summary"], "ship", "R1");
+        assert_eq!(matched.arguments["summary"], "ship", "R1");
+
+        context.observe(&AcpProjectedEvent::ToolCall {
+            id: "mcp-mismatch".into(),
+            name: "mcp.pilot.set_plan".into(),
+            input: serde_json::json!({
+                "server": "other",
+                "tool": "set_plan",
+                "arguments": {"summary": "unsafe"}
+            }),
+        });
+        let mismatch = permission_ask(&raw("mcp-mismatch"), &context);
+        assert_eq!(
+            mismatch.arguments["server"], "other",
+            "identity mismatch fails closed"
+        );
 
         let unrelated = permission_ask(&raw("other"), &context);
         assert_eq!(unrelated.tool, "execute", "R2");

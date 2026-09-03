@@ -67,7 +67,7 @@ impl HostWorkerResolver {
             let environment = environment.clone();
             Arc::new(move |backend, permission| {
                 Ok(
-                    acp.executor_for(environment.clone(), permission, backend, Vec::new())
+                    acp.executor_for(environment.clone(), permission, backend, Vec::new(), None)
                         as Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
                 )
             }) as crate::agent_runner::ChildAcpExecutorFactory

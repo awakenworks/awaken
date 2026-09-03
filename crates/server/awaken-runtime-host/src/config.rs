@@ -254,7 +254,7 @@ pub(crate) fn effective_tool_authorization(
     }
 }
 
-fn hand_tool_descriptors() -> Vec<ToolDescriptor> {
+pub(crate) fn hand_tool_descriptors() -> Vec<ToolDescriptor> {
     let registered: HashSet<String> = all_hand_tools()
         .iter()
         .map(|t| t.id().to_string())

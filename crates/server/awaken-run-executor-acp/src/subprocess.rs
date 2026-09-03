@@ -39,6 +39,7 @@ pub struct AcpLaunch {
     pub session_model: Option<String>,
     pub session_mode: Option<String>,
     pub session_config_options: Vec<awaken_protocol_acp::SessionConfigOptionSelection>,
+    pub session_working_directory: Option<String>,
     pub expected_capability: Option<awaken_protocol_acp::AcpCapabilityExpectation>,
 }
 
@@ -60,6 +61,7 @@ impl AcpLaunch {
             session_model: None,
             session_mode: None,
             session_config_options: Vec::new(),
+            session_working_directory: None,
             expected_capability: None,
         }
     }
@@ -826,6 +828,7 @@ mod tests {
             session_model: None,
             session_mode: None,
             session_config_options: Vec::new(),
+            session_working_directory: None,
             expected_capability: None,
         };
         let debug = format!("{launch:?}");

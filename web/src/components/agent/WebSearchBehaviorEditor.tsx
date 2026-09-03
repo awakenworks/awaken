@@ -85,7 +85,7 @@ export default function WebSearchBehaviorEditor({
       </SelectField>
       <div className="mut" style={{ fontSize: 12 }}>
         {selected.realization === "provider_server"
-          ? app.t("Executed by the exact model provider. It uses that model route/account; no separate web credential or fallback is stored here.", "由精确的模型供应商执行；复用该模型路由/账户，此处不保存独立 Web 凭证或 fallback。")
+          ? app.t("Executed by the exact model provider. It uses that model route/account; no separate web credential or fallback is stored here. Per-call Awaken approval is unavailable for provider-executed tools.", "由精确的模型供应商执行；复用该模型路由/账户，此处不保存独立 Web 凭证或 fallback。供应商执行的工具不支持 Awaken 逐次审批。")
           : app.t("Executed by Awaken. Provider accounts are exact credential pins and fail over only before dispatch.", "由 Awaken 执行；供应商账户由精确凭证版本表示，并且仅在请求发出前失败时切换。")}
       </div>
       {selected.requiresCredential && (
