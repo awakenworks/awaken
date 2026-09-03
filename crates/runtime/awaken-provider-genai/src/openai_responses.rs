@@ -162,6 +162,10 @@ enum ResponseTool {
         parameters: Value,
         strict: bool,
     },
+    NativeWebSearch {
+        #[serde(rename = "type")]
+        kind: NativeWebSearchType,
+    },
     OpenRouterToolSearch {
         #[serde(rename = "type")]
         kind: OpenRouterToolSearchType,
@@ -190,6 +194,12 @@ enum ResponseTool {
 #[serde(rename_all = "snake_case")]
 enum ResponseToolType {
     Function,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum NativeWebSearchType {
+    WebSearch,
 }
 
 #[derive(Debug, Serialize)]
@@ -297,6 +307,21 @@ fn request_body_for_provider(
                     )));
                 }
                 return Ok(match projection {
+                    ProviderServerTool::OpenAiWebSearch
+                    | ProviderServerTool::DeepSeekResponsesWebSearch => {
+                        ResponseTool::NativeWebSearch {
+                            kind: NativeWebSearchType::WebSearch,
+                        }
+                    }
+                    ProviderServerTool::AnthropicWebSearch
+                    | ProviderServerTool::DeepSeekAnthropicWebSearch
+                    | ProviderServerTool::GeminiWebSearch
+                    | ProviderServerTool::VertexWebSearch => {
+                        return Err(Error::Binding(format!(
+                            "tool `{}` requires a non-Responses native adapter",
+                            tool.id
+                        )));
+                    }
                     ProviderServerTool::OpenRouterToolSearch { max_results } => {
                         ResponseTool::OpenRouterToolSearch {
                             kind: OpenRouterToolSearchType::ToolSearch,
@@ -472,6 +497,19 @@ enum ResponseOutputItem {
 enum ResponseOutputContent {
     OutputText {
         text: String,
+        #[serde(default)]
+        annotations: Vec<ResponseAnnotation>,
+    },
+    #[serde(other)]
+    Unsupported,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ResponseAnnotation {
+    UrlCitation {
+        url: String,
+        title: String,
     },
     #[serde(other)]
     Unsupported,
@@ -510,8 +548,22 @@ fn response_from_wire(wire: ResponsesResponse) -> Result<ChatResponse, Error> {
         match item {
             ResponseOutputItem::Message { content } => {
                 for content in content {
-                    if let ResponseOutputContent::OutputText { text } = content {
+                    if let ResponseOutputContent::OutputText { text, annotations } = content {
                         blocks.push(ContentBlock::text(text));
+                        blocks.extend(annotations.into_iter().filter_map(|annotation| {
+                            let ResponseAnnotation::UrlCitation { url, title } = annotation else {
+                                return None;
+                            };
+                            Some(ContentBlock::SearchResult {
+                                source: url,
+                                title,
+                                content: Vec::new(),
+                                citations:
+                                    awaken_agent_contract::agent::content::SearchResultCitations {
+                                        enabled: true,
+                                    },
+                            })
+                        }));
                     }
                 }
             }
@@ -752,6 +804,71 @@ mod tests {
                 .contains("requires provider `openrouter`"),
             "R2"
         );
+    }
+
+    #[test]
+    fn openai_and_deepseek_responses_use_native_web_search_only_on_exact_routes() {
+        for (provider, projection) in [
+            ("openai", ProviderServerTool::OpenAiWebSearch),
+            ("deepseek", ProviderServerTool::DeepSeekResponsesWebSearch),
+        ] {
+            let mut request = request(Vec::new());
+            request.tools.push(
+                ToolDescriptor::pinned(
+                    "builtin",
+                    "web_search",
+                    "Search the web",
+                    json!({"type":"object"}),
+                )
+                .with_provider_server_tool(projection),
+            );
+            let body = serde_json::to_value(
+                request_body_for_provider(&request, provider).expect("exact native route"),
+            )
+            .expect("serialize request");
+            assert_eq!(body["tools"], json!([{"type":"web_search"}]));
+
+            let wrong_provider = if provider == "openai" {
+                "deepseek"
+            } else {
+                "openai"
+            };
+            assert!(
+                request_body_for_provider(&request, wrong_provider)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("requires provider"),
+                "compatible Responses endpoint must not inherit another provider capability"
+            );
+        }
+    }
+
+    #[test]
+    fn responses_preserve_hosted_search_citations_as_neutral_results() {
+        let response = response_from_value(json!({
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "content": [{
+                    "type": "output_text",
+                    "text": "Current result [1]",
+                    "annotations": [{
+                        "type": "url_citation",
+                        "url": "https://example.test/current",
+                        "title": "Current source",
+                        "start_index": 15,
+                        "end_index": 18
+                    }]
+                }]
+            }]
+        }))
+        .expect("hosted-search response");
+        assert_eq!(response.output.text_content(), "Current result [1]");
+        assert!(matches!(
+            &response.output.blocks[1],
+            ContentBlock::SearchResult { source, title, .. }
+                if source == "https://example.test/current" && title == "Current source"
+        ));
     }
 
     #[test]

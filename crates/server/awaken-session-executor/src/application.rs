@@ -387,21 +387,27 @@ impl RunAttemptExecutor for SessionContextAttemptExecutor {
     }
 }
 
-/// Bridges the explicitly-authored automatic Memory extension into ACP's
-/// request-only context. Standard Skills and MemoryStore bindings do not pass
-/// through this adapter: they use the shared filesystem/semantic-tool delivery
-/// selected for the Session.
+/// Projects process-local ACP attempt context selected during Session assembly.
+/// Automatic Memory contributes request-only context; provider-owned tools
+/// contribute a secret-free launch plan. Standard Skills and MemoryStore
+/// bindings remain on the shared filesystem/semantic-tool delivery path.
 pub(crate) struct AcpContextAttemptExecutor {
     inner: Arc<dyn RunAttemptExecutor>,
     memory: Option<awaken_ext_memory::MemoryRecall>,
+    provider_server_tools: Vec<awaken_runtime_contract::resolved::ProviderServerTool>,
 }
 
 impl AcpContextAttemptExecutor {
     pub(crate) fn new(
         inner: Arc<dyn RunAttemptExecutor>,
         memory: Option<awaken_ext_memory::MemoryRecall>,
+        provider_server_tools: Vec<awaken_runtime_contract::resolved::ProviderServerTool>,
     ) -> Self {
-        Self { inner, memory }
+        Self {
+            inner,
+            memory,
+            provider_server_tools,
+        }
     }
 
     async fn load_context(
@@ -418,6 +424,9 @@ impl AcpContextAttemptExecutor {
         {
             return;
         }
+        context
+            .provider_server_tools
+            .clone_from(&self.provider_server_tools);
         if let Some(memory) = &self.memory
             && let Some(recalled) = memory.context(&activation.input).await
         {
@@ -807,6 +816,7 @@ mod acp_context_tests {
                 Arc::new(memory),
                 awaken_ext_memory::RecallBounds::default(),
             )),
+            vec![awaken_runtime_contract::resolved::ProviderServerTool::OpenAiWebSearch],
         );
 
         let acp = activation("acp:codex");
@@ -814,6 +824,11 @@ mod acp_context_tests {
         let mut acp_context = awaken_runtime_contract::RuntimeRunContext::default();
         loader.load_context(&acp, &mut acp_context).await;
         assert_eq!(acp_context.request_context.len(), 1, "A1");
+        assert_eq!(
+            acp_context.provider_server_tools,
+            [awaken_runtime_contract::resolved::ProviderServerTool::OpenAiWebSearch],
+            "A1 provider execution plan"
+        );
         assert!(
             acp_context.request_context[0]
                 .text_content()
@@ -826,6 +841,7 @@ mod acp_context_tests {
         let mut native_context = awaken_runtime_contract::RuntimeRunContext::default();
         loader.load_context(&native, &mut native_context).await;
         assert!(native_context.request_context.is_empty(), "A2");
+        assert!(native_context.provider_server_tools.is_empty(), "A2");
     }
 }
 

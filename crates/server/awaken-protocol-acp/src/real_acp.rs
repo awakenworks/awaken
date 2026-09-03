@@ -28,10 +28,13 @@ pub fn project_update(update: &SessionUpdate) -> Option<AcpProjectedEvent> {
             id: tool_call.tool_call_id.0.to_string(),
             name: tool_call.title.clone(),
             // Carry the tool's raw arguments through the ACL (the model's request).
-            input: tool_call
-                .raw_input
-                .clone()
-                .unwrap_or(serde_json::Value::Null),
+            input: crate::exact_mcp_tool_arguments(
+                &tool_call.title,
+                &tool_call
+                    .raw_input
+                    .clone()
+                    .unwrap_or(serde_json::Value::Null),
+            ),
         }),
         // A tool-call update surfaces the result once the call reaches a terminal
         // status. The external agent runs the tool in its own OS jail, so this text
@@ -144,6 +147,37 @@ mod tests {
                 name: "read".into(),
                 input: serde_json::Value::Null,
             })
+        );
+    }
+
+    #[test]
+    fn codex_mcp_executor_envelope_projects_exact_tool_arguments() {
+        let mut tool = ToolCall::new("call-mcp", "mcp.awaken_session.write");
+        tool.raw_input = Some(serde_json::json!({
+            "server": "awaken_session",
+            "tool": "write",
+            "arguments": {"path": "outputs/proof.md", "content": "ok"}
+        }));
+        let update = SessionUpdate::ToolCall(tool);
+        assert_eq!(
+            project_update(&update),
+            Some(AcpProjectedEvent::ToolCall {
+                id: "call-mcp".into(),
+                name: "mcp.awaken_session.write".into(),
+                input: serde_json::json!({"path": "outputs/proof.md", "content": "ok"}),
+            })
+        );
+
+        let mut mismatch = ToolCall::new("call-mismatch", "mcp.awaken_session.write");
+        mismatch.raw_input = Some(serde_json::json!({
+            "server": "different",
+            "tool": "write",
+            "arguments": {"path": "unsafe"}
+        }));
+        let projected = project_update(&SessionUpdate::ToolCall(mismatch)).unwrap();
+        assert!(
+            matches!(projected, AcpProjectedEvent::ToolCall { input, .. } if input["server"] == "different"),
+            "a mismatched envelope must remain wrapped and fail closed"
         );
     }
 

@@ -126,6 +126,14 @@ fn compile_with_models(
     candidates: Vec<ResolvedModelCandidate>,
     advisor: Option<ResolvedModelCandidate>,
 ) -> Result<ExecutableAgentSnapshot, CompileError> {
+    if let Some(configuration) = config.model_binding.acp_configuration()
+        && let Err(reason) = configuration.validate_working_directory()
+    {
+        return Err(CompileError::InvalidResolvedModels {
+            agent: config.id.clone(),
+            reason: reason.into(),
+        });
+    }
     config
         .validate_tool_bindings()
         .map_err(|reason| CompileError::InvalidBinding {
@@ -199,6 +207,35 @@ fn compile_with_models(
         {
             descriptors.push(descriptor.clone());
             seen.insert(descriptor.id.clone());
+        }
+    }
+
+    // A provider-server tool executes inside the model provider. Awaken never
+    // receives a callable function boundary that it could durably pause before
+    // dispatch, so `always_ask` would be a false safety promise. Reject that
+    // combination during publication for every execution backend; selecting an
+    // Awaken-hosted provider is the explicit way to retain per-call HITL.
+    if let Some(agent_toolset) = resolved_toolsets.iter().find(|policy| {
+        policy.source == awaken_runtime_contract::agent_bindings::ToolsetSource::Agent
+    }) {
+        for descriptor in &descriptors {
+            let policy = agent_toolset.policy_for(&descriptor.id);
+            if descriptor.provider_server_tool.is_some()
+                && policy.enabled
+                && matches!(
+                    policy.permission,
+                    awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk
+                )
+            {
+                return Err(CompileError::InvalidBinding {
+                    agent: config.id.clone(),
+                    axis: "tools",
+                    reason: format!(
+                        "PROVIDER_SERVER_TOOL_APPROVAL_UNSUPPORTED: provider-native tool {:?} cannot satisfy per-call Awaken approval; select an Awaken-hosted provider or use always_allow",
+                        descriptor.id
+                    ),
+                });
+            }
         }
     }
 
@@ -360,6 +397,18 @@ fn compile_with_models(
         return Err(CompileError::UnsupportedCapability {
             agent: config.id.clone(),
             axis: "background_task",
+        });
+    }
+    // State-machine transitions are executed by the Native model/tool loop.
+    // ACP owns that loop externally, so merely exporting tools cannot make the
+    // transition engine authoritative. Reject instead of publishing a silent
+    // no-op configuration.
+    if matches!(config.kind(), AgentKind::Acp(_) | AgentKind::A2a(_))
+        && config.plugin_ids.iter().any(|id| id == "state_machine")
+    {
+        return Err(CompileError::UnsupportedCapability {
+            agent: config.id.clone(),
+            axis: "state_machine",
         });
     }
 
@@ -605,6 +654,45 @@ mod tests {
                 .fingerprint,
             "execution policy is part of the immutable snapshot identity"
         );
+    }
+
+    #[test]
+    fn provider_server_tool_with_always_ask_is_rejected_before_publication() {
+        use awaken_runtime_contract::agent_bindings::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
+        };
+        use awaken_runtime_contract::resolved::ProviderServerTool;
+
+        let provider_search =
+            tool("web_search").with_provider_server_tool(ProviderServerTool::OpenAiWebSearch);
+        let mut cfg = config(&[]);
+        cfg.toolsets = vec![ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy::default(),
+            overrides: vec![ToolPolicyOverride::new(
+                "web_search",
+                ToolExecutionPolicy {
+                    enabled: true,
+                    permission: ToolPermissionRequirement::AlwaysAsk,
+                },
+            )],
+        }];
+
+        let error = compile(&cfg, std::slice::from_ref(&provider_search)).unwrap_err();
+        assert!(matches!(
+            error,
+            CompileError::InvalidBinding { axis: "tools", .. }
+        ));
+        assert!(
+            error
+                .to_string()
+                .contains("PROVIDER_SERVER_TOOL_APPROVAL_UNSUPPORTED")
+        );
+
+        cfg.toolsets[0].overrides[0].policy.permission = ToolPermissionRequirement::AlwaysAllow;
+        let snapshot = compile(&cfg, &[provider_search]).expect("always_allow is executable");
+        assert_eq!(snapshot.resolved_spec.tool_descriptors.len(), 1);
     }
 
     #[test]
@@ -1014,6 +1102,24 @@ mod tests {
     }
 
     #[test]
+    fn state_machine_is_native_only_and_never_a_silent_acp_configuration() {
+        let mut native = config(&[]);
+        native.plugin_ids = vec!["state_machine".into()];
+        assert!(compile(&native, &[]).is_ok());
+
+        let mut acp = config(&[]);
+        acp.model_binding = ModelSelection::pinned("p", "m", "acp:codex");
+        acp.plugin_ids = vec!["state_machine".into()];
+        assert_eq!(
+            compile(&acp, &[]).unwrap_err(),
+            CompileError::UnsupportedCapability {
+                agent: "agent-1".into(),
+                axis: "state_machine",
+            }
+        );
+    }
+
+    #[test]
     fn every_model_selection_has_one_strict_tagged_wire_shape() {
         let selection = ModelSelection::pinned("p", "m", "b");
         let json = serde_json::to_value(&selection).unwrap();
@@ -1108,6 +1214,7 @@ mod tests {
                 options: [("reasoning_effort".into(), "high".into())]
                     .into_iter()
                     .collect(),
+                working_directory: None,
             },
         )
         .expect("exact ACP selection");
@@ -1290,6 +1397,8 @@ mod tests {
             "C4 native publication ignores ACP-only residue"
         );
         let mut acp = native_acp_residue;
+        acp.plugin_ids.clear();
+        acp.plugin_config.remove("state_machine");
         acp.model_binding = ModelSelection::pinned("p", "m", "acp:claude");
         let acp_snapshot = compile(&acp, &[tool("echo")]).unwrap();
         assert_eq!(

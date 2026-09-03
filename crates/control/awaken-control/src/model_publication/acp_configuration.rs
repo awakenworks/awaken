@@ -10,6 +10,9 @@ pub(super) fn validate_acp_session_configuration(
         binding: binding.clone(),
         reason,
     };
+    configuration
+        .validate_working_directory()
+        .map_err(|reason| unavailable(reason.to_string()))?;
     if let Some(mode) = &configuration.mode
         && !negotiated
             .modes
@@ -100,6 +103,7 @@ mod tests {
             options: [("reasoning_effort".into(), "high".into())]
                 .into_iter()
                 .collect(),
+            working_directory: Some("repo/src".into()),
         };
         assert!(
             validate_acp_session_configuration(&binding, &valid, &negotiated).is_ok(),
@@ -124,6 +128,14 @@ mod tests {
         assert!(
             validate_acp_session_configuration(&binding, &invalid, &negotiated).is_err(),
             "C5"
+        );
+        invalid = AcpSessionConfiguration {
+            working_directory: Some("../outside".into()),
+            ..Default::default()
+        };
+        assert!(
+            validate_acp_session_configuration(&binding, &invalid, &negotiated).is_err(),
+            "C6 path traversal"
         );
     }
 }

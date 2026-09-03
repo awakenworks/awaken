@@ -87,6 +87,27 @@ impl PublishedAcpLaunchResolver {
             })
     }
 
+    fn provider_server_tools(
+        &self,
+        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
+        candidate: &ResolvedModelCandidate,
+    ) -> Result<Vec<awaken_runtime_contract::resolved::ProviderServerTool>, OpenError> {
+        if context.provider_server_tools.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ModelProvisioning::Provider { endpoint, .. } = candidate.provisioning() else {
+            return Err(OpenError(
+                "provider_server_tool_requires_managed_provider_route".into(),
+            ));
+        };
+        self.cli.validate_provider_server_tool_route(
+            &candidate.binding().provider_identity_ref,
+            &endpoint.api_dialect,
+            &context.provider_server_tools,
+        )?;
+        Ok(context.provider_server_tools.clone())
+    }
+
     async fn resolve_model(
         &self,
         activation: &RunActivation,
@@ -146,9 +167,11 @@ impl PublishedAcpLaunchResolver {
         }
         let credentials = match &self.credentials {
             AcpCredentialAuthority::Brokered(materializer) => {
-                return materializer
+                let model = materializer
                     .materialize(self.cli, activation, context)
-                    .await;
+                    .await?;
+                let tools = self.provider_server_tools(context, candidate)?;
+                return Ok(model.with_provider_server_tools(tools));
             }
             AcpCredentialAuthority::Local(credentials) => credentials,
             AcpCredentialAuthority::BackendOwned => {
@@ -188,7 +211,7 @@ impl PublishedAcpLaunchResolver {
                     .into(),
             ));
         }
-        Ok(match acp {
+        let model = match acp {
             Some(acp) => ResolvedModel::managed_with_acp(
                 endpoint.base_url,
                 endpoint.upstream_model,
@@ -202,7 +225,9 @@ impl PublishedAcpLaunchResolver {
                 process_secret,
                 credential_artifact,
             ),
-        })
+        };
+        let tools = self.provider_server_tools(context, candidate)?;
+        Ok(model.with_provider_server_tools(tools))
     }
 
     /// Open the exact thread config home. Failure is terminal: allowing the CLI
@@ -590,6 +615,88 @@ mod tests {
             data_subject_id: None,
             tool_capability_narrowing: Default::default(),
         }
+    }
+
+    fn managed_candidate(
+        provider: &str,
+        dialect: &str,
+        cli: &str,
+    ) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_acp(
+            ModelBinding::new(provider, "published-model", format!("acp:{cli}")),
+            format!("{provider}@1"),
+            format!("{provider}:{dialect}@1"),
+            "ws",
+            None,
+            InferenceEndpoint {
+                adapter_kind: provider.into(),
+                api_dialect: dialect.into(),
+                base_url: "https://provider.example/v1".into(),
+                upstream_model: "upstream-model".into(),
+                processing_placement: None,
+            },
+            test_acp_profile(),
+        )
+        .expect("coherent managed ACP candidate")
+    }
+
+    #[test]
+    fn acp_provider_web_search_requires_exact_tool_provider_dialect_and_cli_delivery() {
+        use awaken_runtime_contract::resolved::ProviderServerTool;
+
+        let codex = PublishedAcpLaunchResolver::backend_owned(
+            *awaken_run_executor_acp::acp_cli("codex").unwrap(),
+            None,
+        );
+        let exact = managed_candidate("openai", "open_ai_responses", "codex");
+        let exact_context = awaken_runtime_contract::RuntimeRunContext::new()
+            .with_provider_server_tools(vec![ProviderServerTool::OpenAiWebSearch]);
+        assert_eq!(
+            codex
+                .provider_server_tools(&exact_context, &exact)
+                .expect("exact Codex Responses delivery"),
+            [ProviderServerTool::OpenAiWebSearch]
+        );
+
+        let mismatch = managed_candidate("openai", "open_ai_responses", "codex");
+        let mismatch_context = awaken_runtime_contract::RuntimeRunContext::new()
+            .with_provider_server_tools(vec![ProviderServerTool::DeepSeekResponsesWebSearch]);
+        assert!(
+            codex
+                .provider_server_tools(&mismatch_context, &mismatch)
+                .unwrap_err()
+                .0
+                .contains("tool requires `deepseek` but model route is `openai`")
+        );
+
+        let wrong_dialect = managed_candidate("openai", "open_ai_chat", "codex");
+        assert!(
+            codex
+                .provider_server_tools(&exact_context, &wrong_dialect)
+                .unwrap_err()
+                .0
+                .contains("dialect_mismatch")
+        );
+
+        let claude = PublishedAcpLaunchResolver::backend_owned(claude(), None);
+        let unverified_cli = managed_candidate("anthropic", "anthropic_messages", "claude");
+        let unverified_context = awaken_runtime_contract::RuntimeRunContext::new()
+            .with_provider_server_tools(vec![ProviderServerTool::AnthropicWebSearch]);
+        assert!(
+            claude
+                .provider_server_tools(&unverified_context, &unverified_cli)
+                .unwrap_err()
+                .0
+                .contains("unsupported")
+        );
+
+        let host = managed_candidate("openai", "open_ai_responses", "codex");
+        assert!(
+            codex
+                .provider_server_tools(&awaken_runtime_contract::RuntimeRunContext::new(), &host,)
+                .expect("host tool stays on MCP export path")
+                .is_empty()
+        );
     }
 
     #[test]

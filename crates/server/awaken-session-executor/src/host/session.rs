@@ -1368,9 +1368,9 @@ impl SharedHost {
                 "Session projections must not rewrite BackgroundTask activation",
             );
             // WebSearch has one configuration/dispatch owner for both execution
-            // backends. Native lets Runtime resolve the plugin once; ACP resolves
-            // the same plugin once and exports that RawTool through MCP. A Session
-            // never constructs both copies.
+            // backends. Native installs the configured plugin. ACP resolves that
+            // same plugin once, then selects either Host MCP export or an exact
+            // provider-owned CLI projection. A Session never constructs both.
             let web_search = if config
                 .resolved_spec
                 .plugin_ids
@@ -1477,23 +1477,84 @@ impl SharedHost {
                 Vec::new()
             };
             let mut acp_tool_exports = Vec::new();
+            let mut acp_provider_server_tools = Vec::new();
+            let mut acp_host_web_tools = Vec::new();
+            let mut acp_tool_grants = None;
             if is_acp {
-                for (name, label, configured) in [
-                    ("awaken_web_search", "WebSearch", web_search),
-                    ("awaken_web_fetch", "WebFetch", web_fetch),
+                let acp_cli_id = match &execution_backend {
+                    awaken_runtime_contract::resolved::Backend::Acp(backend) => backend.cli(),
+                    _ => unreachable!("is_acp is derived from the execution backend"),
+                };
+                for (tool_id, label, configured) in [
+                    ("web_search", "WebSearch", web_search),
+                    ("web_fetch", "WebFetch", web_fetch),
                 ] {
-                    if let Some((export, server)) = self
-                        .export_web_tool_for_acp(name, label, configured)
-                        .await?
-                    {
-                        acp_mcp_servers =
-                            merge_process_local_mcp_servers(acp_mcp_servers, [server])?;
-                        acp_tool_exports.push(export);
+                    if configured.as_ref().is_some_and(|(descriptor, _)| {
+                        descriptor.provider_server_tool.is_some()
+                            && config
+                                .resolved_spec
+                                .plugin_config
+                                .agent
+                                .tool_policy(tool_id)
+                                .is_some_and(|policy| {
+                                    policy.enabled
+                                        && matches!(
+                                            policy.permission,
+                                            awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk
+                                        )
+                                })
+                    }) {
+                        return Err(HostError::bad_request(format!(
+                            "PROVIDER_SERVER_TOOL_APPROVAL_UNSUPPORTED: {label} is executed inside the model provider and cannot satisfy per-call Awaken approval; select an Awaken-hosted provider or change the permission to always_allow"
+                        )));
+                    }
+                    match self.realize_web_tool_for_acp(acp_cli_id, label, configured)? {
+                        crate::web_search::AcpWebToolRealization::NotConfigured => {}
+                        crate::web_search::AcpWebToolRealization::HostTool { descriptor, tool } => {
+                            acp_host_web_tools.push((descriptor, tool));
+                        }
+                        crate::web_search::AcpWebToolRealization::ProviderServer(tool) => {
+                            if !acp_provider_server_tools.contains(&tool) {
+                                acp_provider_server_tools.push(tool);
+                            }
+                        }
                     }
                 }
 
                 let mut descriptors = Vec::new();
                 let mut executors = Vec::new();
+                for (descriptor, tool) in acp_host_web_tools {
+                    descriptors.push(descriptor);
+                    executors.push(tool);
+                }
+                // Project the exact publication-selected Hand subset. The
+                // Session environment supplies rooted executors; the immutable
+                // snapshot supplies model-visible descriptors. Neither side may
+                // independently add a tool.
+                let hand_ids = crate::config::hand_tool_descriptors()
+                    .into_iter()
+                    .map(|descriptor| descriptor.id)
+                    .collect::<std::collections::HashSet<_>>();
+                descriptors.extend(
+                    config
+                        .resolved_spec
+                        .tool_descriptors
+                        .iter()
+                        .filter(|descriptor| hand_ids.contains(&descriptor.id))
+                        .cloned(),
+                );
+                if let Some(environment) = env.as_ref() {
+                    let selected = descriptors
+                        .iter()
+                        .map(|descriptor| descriptor.id.as_str())
+                        .collect::<std::collections::HashSet<_>>();
+                    executors.extend(
+                        environment
+                            .rooted_tools()
+                            .into_iter()
+                            .filter(|tool| selected.contains(tool.id())),
+                    );
+                }
                 if let Some((skill_descriptors, skill_executors)) = semantic_skill_tools.as_ref() {
                     descriptors.extend(skill_descriptors.iter().cloned());
                     executors.extend(skill_executors.iter().cloned());
@@ -1503,12 +1564,27 @@ impl SharedHost {
                     executors.extend(memory.executors.iter().cloned());
                 }
                 if !descriptors.is_empty() {
+                    let grants = Arc::new(crate::acp_tool_export::AcpToolExecutionGrants::new(
+                        descriptors.iter().map(|descriptor| descriptor.id.clone()),
+                    ));
+                    acp_tool_grants = Some(grants.clone());
+                    executors = executors
+                        .into_iter()
+                        .map(|tool| {
+                            Arc::new(crate::acp_tool_export::PermissionGuardedAcpTool::new(
+                                tool,
+                                permission.clone(),
+                                grants.clone(),
+                            ))
+                                as Arc<dyn awaken_runtime_contract::tool::RawTool>
+                        })
+                        .collect();
                     let (servers, exports) = crate::acp_tool_export::export_tools(
                         self.acp_tool_exporter
                             .as_ref()
                             .ok_or_else(|| {
                                 HostError::internal(
-                                    "ACP Session tools require an installed tool-export adapter",
+                                    "ACP_TOOL_BRIDGE_MISSING: ACP Session tools require an installed tool-export adapter",
                                 )
                             })?
                             .as_ref(),
@@ -1517,7 +1593,9 @@ impl SharedHost {
                         executors,
                     )
                     .await
-                    .map_err(HostError::internal)?;
+                    .map_err(|error| {
+                        HostError::internal(format!("ACP_TOOL_BRIDGE_MISSING: {error}"))
+                    })?;
                     acp_mcp_servers = merge_process_local_mcp_servers(acp_mcp_servers, servers)?;
                     acp_tool_exports.extend(exports);
                 }
@@ -1529,6 +1607,9 @@ impl SharedHost {
                     permission,
                     execution_backend.clone(),
                     acp_mcp_servers,
+                    acp_tool_grants.clone().map(|observer| {
+                        observer as Arc<dyn awaken_run_executor_acp::PermissionGrantObserver>
+                    }),
                 )
             });
             let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
@@ -1545,6 +1626,7 @@ impl SharedHost {
                 Arc::new(crate::application::AcpContextAttemptExecutor::new(
                     attempt_executor,
                     acp_memory_recall,
+                    acp_provider_server_tools,
                 ));
             let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
                 Arc::new(crate::application::SessionContextAttemptExecutor::new(

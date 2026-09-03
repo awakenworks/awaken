@@ -1435,6 +1435,7 @@ mod tests {
                 options: [("reasoning_effort".into(), value.into())]
                     .into_iter()
                     .collect(),
+                working_directory: None,
             },
         };
         let resolved = resolver

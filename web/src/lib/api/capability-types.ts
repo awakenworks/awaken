@@ -55,6 +55,15 @@ export interface RuntimeCap {
   kind: "native" | "acp";
   cli?: string | null;
   description: string;
+  features?: {
+    environment_session: "supported" | "conditional" | "unavailable";
+    context_projection: "supported" | "conditional" | "unavailable";
+    awaken_tool_bridge: "supported" | "conditional" | "unavailable";
+    state_machine: "supported" | "conditional" | "unavailable";
+    background_tools: "supported" | "conditional" | "unavailable";
+    working_directory: "supported" | "conditional" | "unavailable";
+    provider_server_tools: "supported" | "conditional" | "unavailable";
+  };
   local?: {
     detected: boolean;
     version?: string | null;
@@ -62,6 +71,10 @@ export interface RuntimeCap {
     reason_code?: string | null;
     remediation?: string | null;
     negotiated?: {
+      protocol_version?: string;
+      mcp_http?: boolean;
+      mcp_sse?: boolean;
+      load_session?: boolean;
       modes: Array<{ native_id: string; name: string; description?: string | null; current: boolean }>;
       config_options: Array<{
         native_id: string;

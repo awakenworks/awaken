@@ -195,6 +195,7 @@ pub struct AcpRunExecutor {
     /// via [`with_permission_policy`](Self::with_permission_policy) to apply org
     /// policy / HITL uniformly across native and ACP runs.
     permission: Arc<dyn PermissionResolver>,
+    permission_grant_observer: Option<Arc<dyn PermissionGrantObserver>>,
     /// Recovers a local-dir CLI's session across directories/machines. Defaults to
     /// no-op (local config home as-is); a host wires a durable, cross-machine one.
     session_home: Arc<dyn SessionHomeProvider>,
@@ -220,6 +221,7 @@ impl AcpRunExecutor {
             policy: SupervisePolicy::default(),
             observer: None,
             permission: Arc::new(AllowAll),
+            permission_grant_observer: None,
             session_home: Arc::new(NoSessionHome),
             session_mcp_servers: None,
         }
@@ -241,7 +243,23 @@ impl AcpRunExecutor {
     /// own allow/reject option.
     #[must_use]
     pub fn with_permission_policy(mut self, policy: Arc<dyn ToolPermissionPolicy>) -> Self {
-        self.permission = Arc::new(NeutralPermissionResolver { policy });
+        self.permission = Arc::new(NeutralPermissionResolver {
+            policy,
+            grant_observer: self.permission_grant_observer.clone(),
+        });
+        self
+    }
+
+    /// Observe a permission that actually became `Allow`. Runtime Host uses this
+    /// to mint a one-shot grant for a Host-exported MCP tool. The MCP endpoint
+    /// consumes that grant before dispatch, so a CLI cannot bypass Awaken HITL by
+    /// calling the loopback endpoint without first asking ACP permission.
+    #[must_use]
+    pub fn with_permission_grant_observer(
+        mut self,
+        observer: Arc<dyn PermissionGrantObserver>,
+    ) -> Self {
+        self.permission_grant_observer = Some(observer);
         self
     }
 
@@ -281,11 +299,26 @@ impl AcpRunExecutor {
         policy: Arc<dyn ToolPermissionPolicy>,
         mcp_servers: &[awaken_protocol_acp::SessionMcpServer],
     ) -> Self {
+        self.for_session_servers_with_grant_observer(policy, mcp_servers, None)
+    }
+
+    #[must_use]
+    pub fn for_session_servers_with_grant_observer(
+        &self,
+        policy: Arc<dyn ToolPermissionPolicy>,
+        mcp_servers: &[awaken_protocol_acp::SessionMcpServer],
+        grant_observer: Option<Arc<dyn PermissionGrantObserver>>,
+    ) -> Self {
+        let grant_observer = grant_observer.or_else(|| self.permission_grant_observer.clone());
         Self {
             source: self.source.clone(),
             policy: self.policy,
             observer: self.observer.clone(),
-            permission: Arc::new(NeutralPermissionResolver { policy }),
+            permission: Arc::new(NeutralPermissionResolver {
+                policy,
+                grant_observer: grant_observer.clone(),
+            }),
+            permission_grant_observer: grant_observer,
             session_home: self.session_home.clone(),
             session_mcp_servers: Some(mcp_servers.to_vec()),
         }
@@ -711,9 +744,13 @@ impl AcpRunExecutor {
             mcp_server_names: &mcp_server_names,
         };
         let base_permission = &aliased_permission as &dyn PermissionResolver;
-        let resumed_permission = permission_resume
-            .as_ref()
-            .map(|decision| ResumedPermissionResolver::new(base_permission, decision));
+        let resumed_permission = permission_resume.as_ref().map(|decision| {
+            ResumedPermissionResolver::new(
+                base_permission,
+                decision,
+                self.permission_grant_observer.as_deref(),
+            )
+        });
 
         loop {
             if let Err(error) = verify_attempt_ownership(context.ownership.as_deref()).await {
@@ -1345,6 +1382,13 @@ fn pause_ticket(activation: &RunActivation, run_id: &RunId, reason: PauseReason)
 /// exact call's one-shot decision. Immediate `Allow`/`Deny` pass straight through.
 struct NeutralPermissionResolver {
     policy: Arc<dyn ToolPermissionPolicy>,
+    grant_observer: Option<Arc<dyn PermissionGrantObserver>>,
+}
+
+/// A notification-only port. It cannot grant authority; it only observes the
+/// final allow verdict produced by Awaken's permission resolver.
+pub trait PermissionGrantObserver: Send + Sync {
+    fn on_allow(&self, call: &ToolCall);
 }
 
 /// Per-Run narrowing in front of the Session's configured ACP authority. Only
@@ -1374,7 +1418,11 @@ fn canonical_permission_tool_id(tool: &str) -> String {
     if server.is_empty() || name.is_empty() {
         return tool.to_string();
     }
-    format!("mcp__{server}__{name}")
+    if server == "awaken_session" {
+        name.to_string()
+    } else {
+        format!("mcp__{server}__{name}")
+    }
 }
 
 #[async_trait]
@@ -1448,12 +1496,13 @@ impl PermissionResolver for AliasedMcpPermissionResolver<'_> {
 #[async_trait]
 impl PermissionResolver for NeutralPermissionResolver {
     async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
-        resolve_neutral_permission(self.policy.as_ref(), ask).await
+        resolve_neutral_permission(self.policy.as_ref(), self.grant_observer.as_deref(), ask).await
     }
 }
 
 async fn resolve_neutral_permission(
     policy: &dyn ToolPermissionPolicy,
+    grant_observer: Option<&dyn PermissionGrantObserver>,
     ask: &PermissionAsk,
 ) -> PermissionVerdict {
     let ctx = ToolCall {
@@ -1462,7 +1511,12 @@ async fn resolve_neutral_permission(
         arguments: ask.arguments.clone(),
     };
     match policy.evaluate(&ctx).await {
-        ToolPermissionVerdict::Allow => PermissionVerdict::Allow,
+        ToolPermissionVerdict::Allow => {
+            if let Some(observer) = grant_observer {
+                observer.on_allow(&ctx);
+            }
+            PermissionVerdict::Allow
+        }
         ToolPermissionVerdict::Deny { .. } => PermissionVerdict::Deny,
         ToolPermissionVerdict::RequireConfirmation { correlation_id } => {
             PermissionVerdict::Await { correlation_id }
@@ -1479,14 +1533,20 @@ struct ResumedPermissionResolver<'a> {
     base: &'a dyn PermissionResolver,
     decision: &'a PermissionResume,
     consumed: std::sync::atomic::AtomicBool,
+    grant_observer: Option<&'a dyn PermissionGrantObserver>,
 }
 
 impl<'a> ResumedPermissionResolver<'a> {
-    fn new(base: &'a dyn PermissionResolver, decision: &'a PermissionResume) -> Self {
+    fn new(
+        base: &'a dyn PermissionResolver,
+        decision: &'a PermissionResume,
+        grant_observer: Option<&'a dyn PermissionGrantObserver>,
+    ) -> Self {
         Self {
             base,
             decision,
             consumed: std::sync::atomic::AtomicBool::new(false),
+            grant_observer,
         }
     }
 }
@@ -1501,6 +1561,13 @@ impl PermissionResolver for ResumedPermissionResolver<'_> {
                 .swap(true, std::sync::atomic::Ordering::AcqRel)
         {
             return if self.decision.allow {
+                if let Some(observer) = self.grant_observer {
+                    observer.on_allow(&ToolCall {
+                        tool_id: canonical_permission_tool_id(&ask.tool),
+                        call_id: ask.call_id.clone(),
+                        arguments: ask.arguments.clone(),
+                    });
+                }
                 PermissionVerdict::Allow
             } else {
                 PermissionVerdict::Deny

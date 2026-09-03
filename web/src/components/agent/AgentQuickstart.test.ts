@@ -5,6 +5,7 @@ import {
   buildAgentDraftBody,
 } from "./AgentEditorChrome";
 import { starterAgentId } from "./AgentQuickstart";
+import type { RuntimeCap } from "../../lib/api/types";
 
 describe("starterAgentId", () => {
   it("fills only a blank draft id and preserves an authored identity", () => {
@@ -38,12 +39,22 @@ describe("agent editor draft derivation", () => {
     // R2 string/id + absent model -> blocked; R3 backend + matching runtime
     // not explicitly undetected -> runnable; R4 absent/undetected backend ->
     // blocked; R5 automatic selection -> runnable iff any model is ready.
-    const runtimes = [{
+    const supportedFeatures: NonNullable<RuntimeCap["features"]> = {
+      environment_session: "supported",
+      context_projection: "supported",
+      awaken_tool_bridge: "supported",
+      state_machine: "unavailable",
+      background_tools: "unavailable",
+      working_directory: "supported",
+      provider_server_tools: "conditional",
+    };
+    const runtimes: RuntimeCap[] = [{
       id: "acp:ready",
       label: "Ready ACP",
       kind: "acp" as const,
       description: "test",
-      local: { detected: true },
+      local: { detected: true, login_state: "available" },
+      features: supportedFeatures,
     }, {
       id: "acp:undetected",
       label: "Undetected ACP",
@@ -55,6 +66,15 @@ describe("agent editor draft derivation", () => {
     expect(agentModelIsRunnable({ id: "ready-model" }, ["ready-model"], runtimes), "R1 id").toBe(true);
     expect(agentModelIsRunnable("missing-model", ["ready-model"], runtimes), "R2").toBe(false);
     expect(agentModelIsRunnable({ mode: "backend_default", backend_ref: "acp:ready" }, [], runtimes), "R3").toBe(true);
+    expect(agentModelIsRunnable({
+      mode: "backend_default",
+      backend_ref: "acp:ready",
+      configuration: { working_directory: "../outside" },
+    }, [], runtimes), "R3 invalid cwd").toBe(false);
+    expect(agentModelIsRunnable({ mode: "backend_default", backend_ref: "acp:ready" }, [], [{
+      ...runtimes[0],
+      features: { ...supportedFeatures, awaken_tool_bridge: "conditional" },
+    }], true), "R3 unverified tool bridge").toBe(false);
     expect(agentModelIsRunnable({ mode: "backend_exact", backend_ref: "acp:undetected", model_ref: "m" }, [], runtimes), "R4").toBe(false);
     expect(agentModelIsRunnable({ mode: "backend_default", backend_ref: "acp:missing" }, [], runtimes), "R4 absent").toBe(false);
     expect(agentModelIsRunnable({ mode: "auto" }, ["ready-model"], runtimes), "R5 ready").toBe(true);

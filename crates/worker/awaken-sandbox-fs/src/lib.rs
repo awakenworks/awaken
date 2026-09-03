@@ -1331,7 +1331,7 @@ pub fn set_relative_directory_mode(
             )
         })?;
     }
-    rustix::fs::fchmod(&directory, rustix::fs::Mode::from_raw_mode(mode)).map_err(io_error)
+    rustix::fs::fchmod(&directory, portable_mode(mode)?).map_err(io_error)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -1383,8 +1383,7 @@ pub fn write_relative_file_atomic(
     let mut stage_file = File::from(descriptor);
     let result = (|| {
         stage_file.write_all(contents)?;
-        rustix::fs::fchmod(stage_file.as_fd(), rustix::fs::Mode::from_raw_mode(mode))
-            .map_err(io_error)?;
+        rustix::fs::fchmod(stage_file.as_fd(), portable_mode(mode)?).map_err(io_error)?;
         stage_file.sync_all()?;
 
         let flags = match rustix::fs::statat(
@@ -1416,6 +1415,17 @@ pub fn write_relative_file_atomic(
         let _ = rustix::fs::unlinkat(&parent, stage.as_str(), rustix::fs::AtFlags::empty());
     }
     result
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn portable_mode(mode: u32) -> std::io::Result<rustix::fs::Mode> {
+    let raw = mode.try_into().map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("file mode {mode:#o} is outside the platform range"),
+        )
+    })?;
+    Ok(rustix::fs::Mode::from_raw_mode(raw))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

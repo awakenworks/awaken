@@ -5,17 +5,27 @@ pub(super) fn directory_entry_names<Fd: std::os::fd::AsFd>(
     directory: Fd,
 ) -> std::io::Result<Vec<std::ffi::CString>> {
     use std::ffi::CString;
-    use std::mem::MaybeUninit;
+    use std::os::unix::ffi::OsStrExt as _;
 
-    let mut buffer = [MaybeUninit::<u8>::uninit(); 8192];
+    // `rustix::fs::RawDir` is Linux-only. Duplicate the already-authorized
+    // descriptor and let cap-std enumerate that exact directory on every Unix
+    // platform; no ambient pathname is reconstructed and the caller retains its
+    // original descriptor for identity checks and unlinkat operations.
+    let duplicate = rustix::io::dup(directory.as_fd()).map_err(io_error)?;
+    let directory = cap_std::fs::Dir::from_std_file(std::fs::File::from(duplicate));
     let mut entries = Vec::<CString>::new();
-    let mut iterator = rustix::fs::RawDir::new(directory.as_fd(), &mut buffer);
-    while let Some(entry) = iterator.next() {
-        let entry = entry.map_err(io_error)?;
-        if entry.file_name().to_bytes() == b"." || entry.file_name().to_bytes() == b".." {
+    for entry in directory.entries()? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name.as_bytes() == b"." || name.as_bytes() == b".." {
             continue;
         }
-        entries.push(entry.file_name().to_owned());
+        entries.push(CString::new(name.as_bytes()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "directory entry contains an interior NUL byte",
+            )
+        })?);
     }
     Ok(entries)
 }

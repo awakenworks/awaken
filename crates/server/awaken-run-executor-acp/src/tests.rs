@@ -38,7 +38,8 @@ async fn acp_permission_titles_use_the_canonical_mcp_tool_identity() {
     // | Rule | ACP title | Policy tool id | Verdict |
     // |---|---|---|---|
     // | M1 | mcp.pilot.set_plan | mcp__pilot__set_plan | allow |
-    // | M2 | bash | bash | allow |
+    // | M2 | mcp.awaken_session.write | write | allow |
+    // | M3 | bash | bash | allow |
     struct ExactPolicy {
         expected: String,
     }
@@ -52,12 +53,14 @@ async fn acp_permission_titles_use_the_canonical_mcp_tool_identity() {
 
     for (rule, title, expected) in [
         ("M1", "mcp.pilot.set_plan", "mcp__pilot__set_plan"),
-        ("M2", "bash", "bash"),
+        ("M2", "mcp.awaken_session.write", "write"),
+        ("M3", "bash", "bash"),
     ] {
         let resolver = NeutralPermissionResolver {
             policy: Arc::new(ExactPolicy {
                 expected: expected.into(),
             }),
+            grant_observer: None,
         };
         assert_eq!(
             resolver
@@ -118,6 +121,7 @@ async fn acp_mcp_server_name_drift_uses_only_conservative_session_alias_consensu
     async fn verdict(pilot: &'static str, browser: &'static str, tool: &str) -> PermissionVerdict {
         let base = NeutralPermissionResolver {
             policy: Arc::new(AliasPolicy { pilot, browser }),
+            grant_observer: None,
         };
         AliasedMcpPermissionResolver {
             base: &base,
@@ -2031,6 +2035,7 @@ async fn neutral_permission_resolver_projects_the_policy_decision() {
     for (decision, want) in cases {
         let resolver = NeutralPermissionResolver {
             policy: Arc::new(FixedPolicy(decision)),
+            grant_observer: None,
         };
         assert_eq!(resolver.resolve(&ask).await, want);
     }
@@ -2116,7 +2121,7 @@ async fn resumed_permission_is_one_shot_and_semantically_exact_across_new_wire_i
         arguments: serde_json::json!({"cmd": "echo approved"}),
         allow: true,
     };
-    let resolver = ResumedPermissionResolver::new(&AskResolver, &decision);
+    let resolver = ResumedPermissionResolver::new(&AskResolver, &decision, None);
     let altered = PermissionAsk {
         tool: "bash".into(),
         call_id: "old-wire-id".into(),
@@ -2146,7 +2151,7 @@ async fn resumed_permission_is_one_shot_and_semantically_exact_across_new_wire_i
         ..decision
     };
     assert_eq!(
-        ResumedPermissionResolver::new(&AskResolver, &denied)
+        ResumedPermissionResolver::new(&AskResolver, &denied, None)
             .resolve(&regenerated)
             .await,
         PermissionVerdict::Deny
@@ -2971,6 +2976,7 @@ async fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
         process_secret: Some(ProcessSecretRequirement::new("lease://projected-host")),
         credential_artifact: None,
         acp: None,
+        provider_server_tools: Vec::new(),
     }));
     // The resolver supplies the config-home path as non-secret per-run env.
     let source = ProjectingChannelSource::new(cli, resolver);
@@ -3034,6 +3040,7 @@ async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_sessio
             process_secret: None,
             credential_artifact: None,
             acp: None,
+            provider_server_tools: Vec::new(),
         })),
     ));
     let e = AcpRunExecutor::new(source);
@@ -3094,6 +3101,7 @@ async fn retained_inline_mcp_credential_is_ignored_before_session_new() {
             process_secret: None,
             credential_artifact: None,
             acp: None,
+            provider_server_tools: Vec::new(),
         })),
     ));
     let e = AcpRunExecutor::new(source);
@@ -3168,6 +3176,7 @@ async fn acp_session_id_is_carried_across_the_per_run_relaunch() {
             process_secret: None,
             credential_artifact: None,
             acp: None,
+            provider_server_tools: Vec::new(),
         })),
     ));
     let e = AcpRunExecutor::new(source);
@@ -3239,6 +3248,7 @@ async fn paused_run_resumes_after_executor_replacement_with_the_committed_sessio
             process_secret: None,
             credential_artifact: None,
             acp: None,
+            provider_server_tools: Vec::new(),
         })),
     ));
     let committed = Arc::new(RecordingCoordinator::default());
@@ -3301,6 +3311,7 @@ async fn projecting_source_reads_the_cli_compact_window_from_config() {
         process_secret: None,
         credential_artifact: None,
         acp: None,
+        provider_server_tools: Vec::new(),
     }));
     let source = ProjectingChannelSource::new(cli, resolver);
 
@@ -3709,6 +3720,7 @@ impl LaunchResolver for MatrixModel {
                 .artifact_path
                 .map(|path| CredentialArtifactRequirement::new("lease://matrix", path)),
             acp: None,
+            provider_server_tools: Vec::new(),
         })
     }
 

@@ -18,7 +18,7 @@ use awaken_runtime_contract::llm::{
 use genai::Client;
 use genai::chat::{
     Binary, ChatMessage, ChatRequest as GenaiChatRequest, ContentPart, MessageContent,
-    ThinkingBlock, Tool as GenaiTool, ToolCall as GenaiToolCall, ToolResponse, Usage,
+    ThinkingBlock, Tool as GenaiTool, ToolCall as GenaiToolCall, ToolName, ToolResponse, Usage,
 };
 
 /// The genai wire adapter, re-exported so a consumer selects a provider wire without
@@ -89,6 +89,7 @@ fn normalize_provider_base_url(adapter: AdapterKind, base_url: String) -> String
 pub struct GenaiExecutor {
     client: Client,
     adapter: Option<AdapterKind>,
+    provider_kind: Option<String>,
     unspecified_reasoning: awaken_runtime_contract::UnspecifiedReasoning,
     timeout: Duration,
     idle_timeout: Duration,
@@ -113,6 +114,7 @@ impl GenaiExecutor {
         Self {
             client,
             adapter,
+            provider_kind: None,
             unspecified_reasoning: Default::default(),
             timeout: DEFAULT_MODEL_RESPONSE_TIMEOUT,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
@@ -153,6 +155,20 @@ impl GenaiExecutor {
             authentication,
             awaken_runtime_contract::UnspecifiedReasoning::ProviderDefault,
         )
+    }
+
+    /// Construct an executor bound to both an exact provider and wire dialect.
+    /// Provider-server tools require this identity; compatible endpoints using
+    /// the same dialect cannot inherit another provider's hosted capabilities.
+    pub fn from_materialized_provider_endpoint(
+        provider_kind: impl Into<String>,
+        adapter: genai::adapter::AdapterKind,
+        base_url: impl Into<String>,
+        authentication: impl Into<String>,
+    ) -> Self {
+        let mut executor = Self::from_materialized_endpoint(adapter, base_url, authentication);
+        executor.provider_kind = Some(provider_kind.into());
+        executor
     }
 
     fn from_materialized_endpoint_with_reasoning(
@@ -198,7 +214,8 @@ impl LlmExecutor for GenaiExecutor {
         use genai::chat::ChatStreamEvent;
 
         let model = request.model_binding.model_ref.clone();
-        let genai_request = to_genai_request_with_adapter(&request, self.adapter)?;
+        let genai_request =
+            to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())?;
 
         // Have genai assemble the committed response for us. It concatenates the text
         // chunks and parses the accumulated tool-argument fragments into a JSON
@@ -387,7 +404,8 @@ impl GenaiExecutor {
         max_tokens_override: Option<u32>,
     ) -> Result<ChatResponse> {
         let model = request.model_binding.model_ref.clone();
-        let genai_request = to_genai_request_with_adapter(&request, self.adapter)?;
+        let genai_request =
+            to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())?;
         let mut options = self.chat_options(&request, false)?;
         if let Some(max_tokens) = max_tokens_override {
             options = options.with_max_tokens(max_tokens);
@@ -603,7 +621,7 @@ pub async fn probe_credential(
 
 /// Map the neutral request onto a `genai::ChatRequest`.
 pub fn to_genai_request(request: &ChatRequest) -> Result<GenaiChatRequest> {
-    to_genai_request_with_adapter(request, None)
+    to_genai_request_with_adapter(request, None, None)
 }
 
 /// Map the neutral request using an explicit provider wire dialect.
@@ -611,12 +629,23 @@ pub fn to_genai_request_for_adapter(
     request: &ChatRequest,
     adapter: AdapterKind,
 ) -> Result<GenaiChatRequest> {
-    to_genai_request_with_adapter(request, Some(adapter))
+    to_genai_request_with_adapter(request, Some(adapter), None)
+}
+
+/// Map using an exact provider and dialect, enabling only that provider's
+/// explicitly selected hosted-tool projections.
+pub fn to_genai_request_for_provider(
+    request: &ChatRequest,
+    provider_kind: &str,
+    adapter: AdapterKind,
+) -> Result<GenaiChatRequest> {
+    to_genai_request_with_adapter(request, Some(adapter), Some(provider_kind))
 }
 
 fn to_genai_request_with_adapter(
     request: &ChatRequest,
     adapter: Option<AdapterKind>,
+    provider_kind: Option<&str>,
 ) -> Result<GenaiChatRequest> {
     let mut messages: Vec<ChatMessage> = Vec::with_capacity(request.messages.len());
     let dialect = transcript_dialect(adapter);
@@ -667,25 +696,53 @@ fn to_genai_request_with_adapter(
         messages.push(genai_message);
     }
 
-    if let Some(tool) = request
-        .tools
-        .iter()
-        .find(|tool| tool.provider_server_tool.is_some())
-    {
-        return Err(Error::Binding(format!(
-            "provider-server tool `{}` requires an exact native adapter",
-            tool.id
-        )));
-    }
     let tools: Vec<GenaiTool> = request
         .tools
         .iter()
         .map(|tool| {
-            GenaiTool::new(tool.id.clone())
+            if let Some(projection) = &tool.provider_server_tool {
+                let provider_kind = provider_kind.ok_or_else(|| {
+                    Error::Binding(format!(
+                        "provider-server tool `{}` requires an exact provider binding",
+                        tool.id
+                    ))
+                })?;
+                if projection.provider_kind() != provider_kind {
+                    return Err(Error::Binding(format!(
+                        "tool `{}` requires provider `{}` but exact route uses `{provider_kind}`",
+                        tool.id,
+                        projection.provider_kind()
+                    )));
+                }
+                let supported = matches!(
+                    (projection, adapter),
+                    (
+                        awaken_runtime_contract::resolved::ProviderServerTool::AnthropicWebSearch,
+                        Some(AdapterKind::Anthropic)
+                    ) | (
+                        awaken_runtime_contract::resolved::ProviderServerTool::DeepSeekAnthropicWebSearch,
+                        Some(AdapterKind::Anthropic)
+                    ) | (
+                        awaken_runtime_contract::resolved::ProviderServerTool::GeminiWebSearch,
+                        Some(AdapterKind::Gemini)
+                    ) | (
+                        awaken_runtime_contract::resolved::ProviderServerTool::VertexWebSearch,
+                        Some(AdapterKind::Vertex)
+                    )
+                );
+                if !supported {
+                    return Err(Error::Binding(format!(
+                        "tool `{}` is not supported by the selected provider dialect",
+                        tool.id
+                    )));
+                }
+                return Ok(GenaiTool::new(ToolName::WebSearch));
+            }
+            Ok(GenaiTool::new(tool.id.clone())
                 .with_description(tool.description.clone())
-                .with_schema(tool.model_parameters())
+                .with_schema(tool.model_parameters()))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     let mut genai_request = GenaiChatRequest::new(messages);
     if !tools.is_empty() {
@@ -1307,12 +1364,13 @@ mod hermetic_tests {
     use awaken_runtime_contract::llm::{
         ChatMessage, ChatRequest, DeltaSink, LlmExecutor, StopReason,
     };
-    use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
+    use awaken_runtime_contract::resolved::{ModelBinding, ProviderServerTool, ToolDescriptor};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::{
-        AdapterKind, CredentialProbe, GenaiExecutor, discover_model_ids,
+        AdapterKind, CredentialProbe, GenaiExecutor, ToolName, discover_model_ids,
         normalize_provider_base_url, probe_credential, to_genai_request,
+        to_genai_request_for_provider,
     };
 
     #[test]
@@ -1463,11 +1521,35 @@ mod hermetic_tests {
         let seen = requests.clone();
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("accepts probe request");
-            let mut buf = [0u8; 8192];
-            let read = socket.read(&mut buf).await.expect("reads probe request");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let read = socket.read(&mut chunk).await.expect("reads probe request");
+                assert!(read > 0, "request closed before its declared body arrived");
+                request.extend_from_slice(&chunk[..read]);
+                let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let header_end = header_end + 4;
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                if request.len() >= header_end + content_length {
+                    request.truncate(header_end + content_length);
+                    break;
+                }
+            }
             seen.lock()
                 .unwrap()
-                .push(String::from_utf8_lossy(&buf[..read]).into_owned());
+                .push(String::from_utf8_lossy(&request).into_owned());
             let response = format!(
                 "{status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
@@ -1613,7 +1695,72 @@ mod hermetic_tests {
             to_genai_request(&request)
                 .unwrap_err()
                 .to_string()
-                .contains("requires an exact native adapter")
+                .contains("requires an exact provider binding")
+        );
+    }
+
+    #[test]
+    fn normalized_provider_web_search_is_exact_and_dialect_bound() {
+        // Positive rows prove the normalized rust-genai WebSearch lowering.
+        // Negative rows prove that protocol compatibility cannot transfer a
+        // hosted capability to Kimi, another provider, or OpenAI Chat.
+        for (provider, adapter, projection) in [
+            (
+                "anthropic",
+                AdapterKind::Anthropic,
+                ProviderServerTool::AnthropicWebSearch,
+            ),
+            (
+                "deepseek",
+                AdapterKind::Anthropic,
+                ProviderServerTool::DeepSeekAnthropicWebSearch,
+            ),
+            (
+                "gemini",
+                AdapterKind::Gemini,
+                ProviderServerTool::GeminiWebSearch,
+            ),
+            (
+                "vertex",
+                AdapterKind::Vertex,
+                ProviderServerTool::VertexWebSearch,
+            ),
+        ] {
+            let request = ChatRequest {
+                model_binding: ModelBinding::new("route", "model", "native"),
+                inference: Default::default(),
+                messages: Vec::new(),
+                tools: vec![weather_tool().with_provider_server_tool(projection.clone())],
+            };
+            let mapped = to_genai_request_for_provider(&request, provider, adapter)
+                .expect("exact provider/dialect route");
+            let tools = mapped.tools.expect("native WebSearch is exposed once");
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].name, ToolName::WebSearch);
+
+            assert!(
+                to_genai_request_for_provider(&request, "kimi", adapter)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("requires provider"),
+                "compatible wire must not inherit {provider} capability"
+            );
+        }
+
+        let request = ChatRequest {
+            model_binding: ModelBinding::new("route", "model", "native"),
+            inference: Default::default(),
+            messages: Vec::new(),
+            tools: vec![
+                weather_tool().with_provider_server_tool(ProviderServerTool::OpenAiWebSearch),
+            ],
+        };
+        assert!(
+            to_genai_request_for_provider(&request, "openai", AdapterKind::OpenAI)
+                .unwrap_err()
+                .to_string()
+                .contains("not supported by the selected provider dialect"),
+            "OpenAI Chat must not masquerade as Responses hosted search"
         );
     }
 
