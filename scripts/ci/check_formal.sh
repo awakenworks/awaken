@@ -249,6 +249,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness allowlist_claim_never_exceeds_its_evidence
   run_kani awaken-sandbox-container --features k8s --solver kissat \
     --harness continuation_claim_selection_is_total_exact_and_non_widening \
+    --harness disabled_continuation_has_no_claim_api_obligation_without_durable_evidence \
     --harness continuation_claim_deletion_requires_exact_uid_and_resource_version
   run_kani awaken-store-schema \
     --harness dense_migration_versions_are_strictly_increasing \

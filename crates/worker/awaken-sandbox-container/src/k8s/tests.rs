@@ -160,6 +160,23 @@ fn continuation_observation_has_one_disposing_authority() {
 }
 
 #[test]
+fn continuation_claim_api_is_required_only_by_an_owned_authority() {
+    /* Claim-observation capability table. Causes: C1 continuation provisioning
+     * is configured; C2 a durable runtime handle expects an exact claim UID.
+     * Effects: E1 query the PVC API so allocation/recovery can fence exact
+     * physical continuity; E2 perform no PVC API call, preserving least
+     * privilege for ephemeral deployments. Rules: A1 !C1+!C2=>E2;
+     * A2 C1+!C2=>E1 (detect configured-policy orphans); A3 !C1+C2=>E1
+     * (finish recovery after policy removal); A4 C1+C2=>E1. A Pod that binds a
+     * claim without C2 is rejected by the preceding immutable-binding check and
+     * therefore never widens this capability rule. */
+    assert!(!continuation_claim_observation_required(false, false), "A1");
+    assert!(continuation_claim_observation_required(true, false), "A2");
+    assert!(continuation_claim_observation_required(false, true), "A3");
+    assert!(continuation_claim_observation_required(true, true), "A4");
+}
+
+#[test]
 fn pod_effect_fence_projection_decision_table_is_total() {
     /* Effect-evidence cause/effect table. Causes: C1 none/all/partial of
      * operation, owner, runtime, epoch, and expiry annotations; C2 numeric

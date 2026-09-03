@@ -304,8 +304,20 @@ impl crate::ManagedHost {
                     .unwrap_or(false));
         if awaiting_adoption {
             // The bound provider substrate is the only physical prior
-            // generation. Adoption must publish it before any File/Skill/Vault
-            // read or owned-path mutation can safely run.
+            // generation. Adoption must publish it before File/Vault reads or
+            // owned-path mutation can safely run. Immutable Skill bytes are a
+            // dispatch-semantic input as well as a later filesystem input,
+            // however: a cold Coordinator must freeze slash-command/context
+            // selection before reserving the Run. Reuse the one pinned Skill
+            // loader here, but deliberately leave the physical effect key and
+            // all provider requirements absent so adoption still owns the sole
+            // complete compilation edge.
+            let versions = self
+                .load_pinned_skill_requirements(transition.desired(), claim)
+                .await?;
+            self.host.session_slots.update(thread, |slot| {
+                slot.skills = Some(versions);
+            });
             return Ok(());
         }
         let effect_key = resource_requirement_effect_key(transition, claim);
@@ -337,12 +349,7 @@ impl crate::ManagedHost {
         }
         let workspace = desired.workspace_id.as_str();
         let resources = &desired.resources;
-        let versions = self
-            .host
-            .skills
-            .load_pinned(workspace, resources.skills(), claim)
-            .await
-            .map_err(skill_store_run_error)?;
+        let versions = self.load_pinned_skill_requirements(desired, claim).await?;
         let compiled = self
             .compile_effective_inputs(thread, workspace, resources, claim)
             .await?;
@@ -357,6 +364,26 @@ impl crate::ManagedHost {
             slot.staged_resource_effect_key = Some(effect_key);
         });
         Ok(())
+    }
+
+    /// Resolve the exact Skill bytes selected by one aggregate-authored
+    /// Resource generation. Both dispatch-only semantic recovery and complete
+    /// physical requirement compilation enter here, so a cold replica cannot
+    /// invent a second catalog or hash-validation path.
+    async fn load_pinned_skill_requirements(
+        &self,
+        desired: &awaken_session_contract::SessionResourceManifest,
+        claim: Option<&awaken_run_ingress::RunClaim>,
+    ) -> Result<Vec<awaken_resource_contract::SkillVersion>, RunError> {
+        self.host
+            .skills
+            .load_pinned(
+                desired.workspace_id.as_str(),
+                desired.resources.skills(),
+                claim,
+            )
+            .await
+            .map_err(skill_store_run_error)
     }
 
     pub(crate) async fn validate_thread_resource_bindings(

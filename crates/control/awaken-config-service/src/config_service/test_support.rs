@@ -497,6 +497,72 @@ impl ConfigRegistry for StalePublishRegistry {
     }
 }
 
+/// Simulates the real active/active race where a reconciler advances the
+/// source exactly once between an unreviewed publish read and its CAS.
+#[derive(Default)]
+struct AdvancingPublishRegistry {
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl ConfigRegistry for AdvancingPublishRegistry {
+    async fn put_config(&self, _c: &AgentConfig) -> Result<(), ConfigStoreError> {
+        Ok(())
+    }
+
+    async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
+        Ok(Some(agent_config(id)))
+    }
+
+    async fn get_config_revision(
+        &self,
+        id: &str,
+    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
+        let revision = if self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            7
+        } else {
+            8
+        };
+        Ok(Some(AgentConfigRevision {
+            config: agent_config(id),
+            revision,
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
+        }))
+    }
+
+    async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+        Ok(Vec::new())
+    }
+
+    async fn put_publication(&self, _p: &StoredPublication) -> Result<(), ConfigStoreError> {
+        panic!("generation-fenced publish must use the atomic method")
+    }
+
+    async fn put_publication_if_config_revision(
+        &self,
+        publication: &StoredPublication,
+        expected_generation: u64,
+    ) -> Result<ConfigWrite, ConfigStoreError> {
+        assert_eq!(publication.source_revision, expected_generation);
+        if expected_generation == 7 {
+            Ok(ConfigWrite::Conflict {
+                current_revision: Some(8),
+            })
+        } else {
+            assert_eq!(expected_generation, 8);
+            Ok(ConfigWrite::Applied { revision: 8 })
+        }
+    }
+
+    async fn get_publication(
+        &self,
+        _fp: &str,
+    ) -> Result<Option<StoredPublication>, ConfigStoreError> {
+        Ok(None)
+    }
+}
+
 /// A scope-bound registry whose reads and writes fail, so the HTTP handlers hit
 /// their 500 / 400 error arms (F19c / F21b).
 struct FailingScopedRegistry;

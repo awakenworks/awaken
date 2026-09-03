@@ -5,6 +5,27 @@
 
 use super::*;
 
+fn refresh_effect_fence(
+    asserted: &ContainerEffectFence,
+    source: Option<&dyn ContainerEffectFenceSource>,
+) -> Result<ContainerEffectFence, pc::SandboxError> {
+    let source = source.ok_or_else(|| {
+        pc::SandboxError::new(
+            "container effect fence expired without a renewable Session authority",
+        )
+    })?;
+    let current = source.current_effect_fence(asserted)?;
+    if !asserted.same_effect_identity(&current)
+        || current.expires_at_unix_ms <= asserted.expires_at_unix_ms
+    {
+        return Err(pc::SandboxError::new(
+            "renewed container effect fence is not a strict successor of the admitted effect",
+        ));
+    }
+    current.validate_live_at(container_runtime_unix_now_ms()?)?;
+    Ok(current)
+}
+
 // ── Provider + Sandbox over the port ────────────────────────────────────────────
 
 /// Realizes [`pc::Sandbox`]es on a [`ContainerRuntime`].
@@ -180,7 +201,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
-        self.create_container_for_effect(spec, None, ContainerRealizationIntent::Create)
+        self.create_container_for_effect(spec, None, None, ContainerRealizationIntent::Create)
             .await
     }
 
@@ -188,6 +209,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         spec: &pc::SandboxSpec,
         effect_fence: Option<&ContainerEffectFence>,
+        effect_fence_source: Option<&dyn ContainerEffectFenceSource>,
         intent: ContainerRealizationIntent,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         if let Some(effect_fence) = effect_fence {
@@ -217,7 +239,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // rejects foreign/newer/duplicate occupants before package build/push or
         // any Resource participant is touched. A second pass below adds the
         // complete immutable fingerprint before workspace mutation.
-        let realization_context = ContainerRealizationContext::new(
+        let initial_realization_context = ContainerRealizationContext::new(
             &spec.scope,
             &adoption_fingerprint,
             effect_fence,
@@ -225,7 +247,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             &create_attempt,
         );
         self.runtime
-            .preflight_create_for_effect(&realization_context, &plan, None)
+            .preflight_create_for_effect(&initial_realization_context, &plan, None)
             .await
             .map_err(err)?;
         if !plan.packages.is_empty() {
@@ -259,7 +281,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // decision owner immediately before any create/replace mutation.
         self.runtime
             .preflight_create_for_effect(
-                &realization_context,
+                &initial_realization_context,
                 &plan,
                 Some(&realization_fingerprint),
             )
@@ -308,27 +330,53 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             }
             return Err(error);
         }
-        let container_id = match self
-            .runtime
-            .create_for_effect(&realization_context, &plan, &realization_fingerprint)
-            .await
-        {
-            Ok(id) => id,
-            Err(RuntimeError::MayHaveCommitted(message)) => {
-                staging.retain_participants_without_cleanup();
-                return Err(err(RuntimeError::MayHaveCommitted(message)));
-            }
-            Err(error) => {
-                if let Err(cleanup_error) = staging
-                    .teardown_memory_after_definite_no_backend_effect()
-                    .await
-                {
-                    staging.retain_participants_without_cleanup();
-                    return Err(pc::SandboxError::new(format!(
-                        "{error}; Memory participant cleanup failed: {cleanup_error}"
-                    )));
+        let mut current_effect_fence = effect_fence.cloned();
+        let container_id = loop {
+            let realization_context = ContainerRealizationContext::new(
+                &spec.scope,
+                &adoption_fingerprint,
+                current_effect_fence.as_ref(),
+                &intent,
+                &create_attempt,
+            );
+            match self
+                .runtime
+                .create_for_effect(&realization_context, &plan, &realization_fingerprint)
+                .await
+            {
+                Ok(id) => break id,
+                Err(RuntimeError::EffectFenceExpired) => {
+                    let Some(asserted) = current_effect_fence.as_ref() else {
+                        staging.retain_participants_without_cleanup();
+                        return Err(pc::SandboxError::new(
+                            "unfenced container realization reported an expired effect fence",
+                        ));
+                    };
+                    let refreshed = refresh_effect_fence(asserted, effect_fence_source);
+                    match refreshed {
+                        Ok(refreshed) => current_effect_fence = Some(refreshed),
+                        Err(error) => {
+                            staging.retain_participants_without_cleanup();
+                            return Err(error);
+                        }
+                    }
                 }
-                return Err(err(error));
+                Err(RuntimeError::MayHaveCommitted(message)) => {
+                    staging.retain_participants_without_cleanup();
+                    return Err(err(RuntimeError::MayHaveCommitted(message)));
+                }
+                Err(error) => {
+                    if let Err(cleanup_error) = staging
+                        .teardown_memory_after_definite_no_backend_effect()
+                        .await
+                    {
+                        staging.retain_participants_without_cleanup();
+                        return Err(pc::SandboxError::new(format!(
+                            "{error}; Memory participant cleanup failed: {cleanup_error}"
+                        )));
+                    }
+                    return Err(err(error));
+                }
             }
         };
         let runtime_handle = match self.runtime.handle_extra(&container_id).await {
@@ -779,10 +827,11 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         &self,
         spec: &pc::SandboxSpec,
         effect_fence: Option<&ContainerEffectFence>,
+        effect_fence_source: Option<&dyn ContainerEffectFenceSource>,
         intent: ContainerRealizationIntent,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         Ok(Arc::new(
-            self.create_container_for_effect(spec, effect_fence, intent)
+            self.create_container_for_effect(spec, effect_fence, effect_fence_source, intent)
                 .await?,
         ))
     }
@@ -894,6 +943,7 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
             self.create_container_for_effect(
                 spec,
                 Some(effect_fence),
+                None,
                 ContainerRealizationIntent::Create,
             )
             .await?,

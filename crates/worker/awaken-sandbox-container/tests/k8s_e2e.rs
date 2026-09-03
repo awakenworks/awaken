@@ -883,6 +883,7 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
         &provider,
         &first_spec,
         Some(&create_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await
@@ -1086,6 +1087,7 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
         &provider,
         &memory_spec,
         Some(&create_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await

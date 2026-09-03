@@ -223,9 +223,12 @@ impl SessionApplication {
             let run_id = command.run_id.clone();
             let operation = session_run_activity_operation_id(&session_id, &run_id);
             // Cause/effect decision table: an existing exact activity receipt is
-            // response-loss truth and outranks current policy; without one, recover
-            // the Session projection before Runtime freezes the dispatch. Reservation
-            // remains non-executable until the exact epoch is activated.
+            // response-loss truth and outranks current policy, but it says nothing
+            // about this process's disposable Runtime projection. Every admission
+            // therefore recovers the authoritative Session projection before Runtime
+            // freezes the dispatch; only activity creation is skipped on receipt
+            // replay. Reservation remains non-executable until the exact epoch is
+            // activated.
             let durable_owner = match self.owner(&session_id).await {
                 Ok(actual_owner) => {
                     if expected_owner.is_some_and(|expected| expected != actual_owner) {
@@ -244,13 +247,12 @@ impl SessionApplication {
                     .map(|(_, epoch)| epoch),
                 None => None,
             };
-            if existing_activity_epoch.is_none() {
-                let owner_scope = durable_owner
-                    .or_else(|| expected_owner.map(str::to_string))
-                    .ok_or_else(|| RunError::bad_request("Session was not found"))?;
-                self.admit_run_session(&owner_scope, &session_id, &agent_id)
-                    .await?;
-            }
+            let owner_scope = durable_owner
+                .as_deref()
+                .or(expected_owner)
+                .ok_or_else(|| RunError::bad_request("Session was not found"))?;
+            self.admit_run_session(owner_scope, &session_id, &agent_id)
+                .await?;
             let reservation = self.runtime().reserve_session_run(command).await?;
             let delivery = |session_activity_epoch| SessionRunDelivery {
                 session_id: session_id.clone(),

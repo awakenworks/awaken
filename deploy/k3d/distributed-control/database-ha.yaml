@@ -29,6 +29,12 @@ metadata: { name: adr71-replication-init }
 data:
   01-replication.sql: |
     CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'adr71-replication';
+    -- The Docker entrypoint first creates POSTGRES_DB on a temporary server
+    -- which is not reachable by the standby. Persist synchronous replication
+    -- only after that bootstrap transaction and every init script can commit;
+    -- the final server restart loads these settings before application writes.
+    ALTER SYSTEM SET synchronous_commit = 'remote_apply';
+    ALTER SYSTEM SET synchronous_standby_names = 'FIRST 1 (awaken_standby)';
   02-replication-hba.sh: |
     #!/bin/bash
     echo 'host replication replicator 0.0.0.0/0 scram-sha-256' >> "$PGDATA/pg_hba.conf"
@@ -57,10 +63,11 @@ spec:
           image: postgres:16
           imagePullPolicy: Never
           # The distributed reliability scenario promises RPO=0 only for API
-          # writes which PostgreSQL acknowledged. remote_apply makes that
-          # promise executable: an acknowledgement waits for the named standby
-          # to persist and replay the WAL record. Production may choose another
-          # policy, but then it must advertise the corresponding non-zero RPO.
+          # writes which PostgreSQL acknowledged. The init script persists
+          # remote_apply after bootstrap, so the final server waits for the
+          # named standby without deadlocking POSTGRES_DB creation. Production
+          # may choose another policy, but then it must advertise the
+          # corresponding non-zero RPO.
           args:
             - postgres
             - -c
@@ -71,10 +78,6 @@ spec:
             - max_wal_senders=10
             - -c
             - wal_keep_size=256MB
-            - -c
-            - synchronous_commit=remote_apply
-            - -c
-            - synchronous_standby_names=FIRST 1 (awaken_standby)
           env:
             - { name: POSTGRES_PASSWORD, value: "test" } # awaken-allow: secret
             - { name: POSTGRES_DB, value: "awaken" }

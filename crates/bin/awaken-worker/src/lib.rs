@@ -132,6 +132,35 @@ pub struct WorkerNodeBuilder {
     credential_observation_ttl: std::time::Duration,
 }
 
+/// Project the physical installation scope shared by every interchangeable
+/// Worker that can realize the same durable Session substrate. Kubernetes owns
+/// a namespace-wide substrate, whereas host-local runtimes retain the existing
+/// persisted Workspace marker. Worker and process incarnation remain
+/// lease/effect-fence facts; including either here would make an exact object
+/// impossible to adopt after reassignment.
+fn worker_realization_namespace(
+    deployment: &awaken_runtime_host::DeploymentConfig,
+) -> Result<awaken_sandbox_container::ContainerRealizationNamespace, WorkerNodeBuildError> {
+    let installation_scope = if deployment.sandbox_tier == awaken_runtime_host::SandboxTier::K8s {
+        std::borrow::Cow::Borrowed(deployment.sandbox.k8s_namespace.as_str())
+    } else {
+        let installation_root = deployment.storage_dir.as_deref().ok_or_else(|| {
+            WorkerNodeBuildError(
+                "container Worker requires DeploymentConfig::storage_dir for stable realization identity"
+                    .into(),
+            )
+        })?;
+        std::borrow::Cow::Owned(
+            awaken_runtime_host::SharedHost::provision_local_workspace_at(installation_root),
+        )
+    };
+    awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
+        "worker-installation",
+        installation_scope.as_ref(),
+    ])
+    .map_err(|error| WorkerNodeBuildError(error.to_string()))
+}
+
 impl WorkerNodeBuilder {
     #[must_use]
     pub fn new(upstream: WorkerUpstream) -> Self {
@@ -461,21 +490,7 @@ impl WorkerNodeBuilder {
             return Ok(self);
         }
         let backend = self.deployment.sandbox_support().1;
-        let installation_root = self.deployment.storage_dir.as_deref().ok_or_else(|| {
-            WorkerNodeBuildError(
-                "container Worker requires DeploymentConfig::storage_dir for stable realization identity"
-                    .into(),
-            )
-        })?;
-        let installation_workspace =
-            awaken_runtime_host::SharedHost::provision_local_workspace_at(installation_root);
-        let realization_namespace =
-            awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
-                "worker-installation",
-                installation_workspace.as_str(),
-                self.upstream.worker_id(),
-            ])
-            .map_err(|error| WorkerNodeBuildError(error.to_string()))?;
+        let realization_namespace = worker_realization_namespace(&self.deployment)?;
         let components = awaken_runtime_host::build_container_environment_for_realization(
             realization_namespace,
             self.deployment.sandbox_tier,

@@ -331,6 +331,12 @@ pub enum RuntimeError {
     /// host binds or prematurely torn-down Memory mounts.
     #[error("container runtime effect may have committed: {0}")]
     MayHaveCommitted(String),
+    /// The current invocation reached another idempotent provider boundary
+    /// after its immutable effect generation was renewed. The caller may retry
+    /// only that same effect with a monotonic fence supplied by the existing
+    /// Session authority; it must retain all staged participants meanwhile.
+    #[error("container runtime effect fence expired before the next provider boundary")]
+    EffectFenceExpired,
 }
 
 impl RuntimeError {
@@ -339,9 +345,25 @@ impl RuntimeError {
     /// adapters cannot erase the stronger outcome.
     pub(crate) fn after_mutation(self) -> Self {
         match self {
-            Self::MayHaveCommitted(_) => self,
+            Self::MayHaveCommitted(_) | Self::EffectFenceExpired => self,
             error => Self::MayHaveCommitted(error.to_string()),
         }
+    }
+}
+
+#[cfg(feature = "k8s")]
+pub(crate) fn validate_runtime_effect_fence(
+    effect_fence: &pc::SandboxEffectFence,
+) -> Result<(), RuntimeError> {
+    effect_fence
+        .validate_identity()
+        .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+    let now = container_runtime_unix_now_ms()
+        .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+    if effect_fence.expired_at(now) {
+        Err(RuntimeError::EffectFenceExpired)
+    } else {
+        Ok(())
     }
 }
 

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_contract::{
     Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
@@ -118,7 +119,11 @@ impl RunApplication for RunApplicationHost {
     }
 
     async fn usage(&self, thread: &str) -> Result<(u64, u64), RunApplicationError> {
-        let usage = self.host.thread_usage(thread).await.total();
-        Ok((usage.prompt_tokens, usage.completion_tokens))
+        let usage = self
+            .host
+            .session_thread_usage(thread, &ThreadId(thread.to_string()))
+            .await
+            .map_err(to_application_error)?;
+        Ok((usage.input_tokens, usage.output_tokens))
     }
 }

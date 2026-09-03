@@ -11,6 +11,8 @@ use awaken_tenancy::ScopeId;
 use super::{ConfigService, publication_build};
 use crate::publication::{PreparedPublication, PublishError};
 
+const UNREVIEWED_PUBLICATION_CAS_ATTEMPTS: usize = 8;
+
 impl ConfigService {
     async fn prepare_publication(
         &self,
@@ -64,8 +66,22 @@ impl ConfigService {
         id: &str,
         catalog: &[ToolDescriptor],
     ) -> Result<StoredPublication, PublishError> {
-        self.publish_at_revisions(workspace, registry, id, catalog, None, None)
-            .await
+        // This command means "publish the current aggregate", unlike the
+        // reviewed variant below which deliberately fences exact revisions. A
+        // resource/config reconciler may advance the source between prepare and
+        // CAS; re-enter the one canonical prepare/persist/register path rather
+        // than reporting failure after that same current publication committed.
+        let mut last_conflict = PublishError::StaleRevision(None);
+        for _ in 0..UNREVIEWED_PUBLICATION_CAS_ATTEMPTS {
+            match self
+                .publish_at_revisions(workspace, registry, id, catalog, None, None)
+                .await
+            {
+                Err(error @ PublishError::StaleRevision(_)) => last_conflict = error,
+                result => return result,
+            }
+        }
+        Err(last_conflict)
     }
 
     /// Publish one reviewed Agent aggregate only when both mutable sources still

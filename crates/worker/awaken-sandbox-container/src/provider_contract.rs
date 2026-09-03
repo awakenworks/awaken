@@ -13,6 +13,31 @@ use awaken_sandbox_control::SandboxControlServicePublisher;
 
 use crate::RuntimeAgentProcess;
 
+/// Process-local projection of the current durable authority for one already
+/// admitted container effect. The source may extend only the renewable expiry
+/// of the asserted effect generation; it cannot assign work or create another
+/// authority. Long-running runtimes consult it only after a provider boundary
+/// reports that the prior fence expired, then replay the same idempotent effect
+/// with the refreshed proof.
+pub trait ContainerEffectFenceSource: Send + Sync {
+    fn current_effect_fence(
+        &self,
+        asserted: &ContainerEffectFence,
+    ) -> Result<ContainerEffectFence, pc::SandboxError>;
+}
+
+impl<F> ContainerEffectFenceSource for F
+where
+    F: Fn(&ContainerEffectFence) -> Result<ContainerEffectFence, pc::SandboxError> + Send + Sync,
+{
+    fn current_effect_fence(
+        &self,
+        asserted: &ContainerEffectFence,
+    ) -> Result<ContainerEffectFence, pc::SandboxError> {
+        self(asserted)
+    }
+}
+
 /// Stable namespace used to discover a provider effect after a Worker process
 /// replacement. Construction is centralized here so adapters cannot disagree
 /// about delimiter escaping, validation, or whether a process incarnation is
@@ -59,45 +84,31 @@ mod realization_namespace_tests {
 
     #[test]
     fn stable_namespace_decision_table_uses_every_installation_fact() {
-        // Cause/effect table: C1 installation workspace equal/different; C2
-        // stable Worker identity equal/different; C3 process incarnation changes;
-        // C4 any stable part is empty. R1 exact C1+C2 produces the same namespace
-        // across C3; R2 either stable fact differs produces a different namespace;
-        // R3 C4 rejects rather than falling back to a process identity.
+        // Cause/effect table: C1 ordered stable installation facts are
+        // equal/different; C2 process incarnation changes; C3 any stable part is
+        // empty. R1 exact C1 produces the same namespace across C2; R2 any C1
+        // difference produces a different namespace; R3 C3 rejects rather than
+        // falling back to a process identity. Callers own which installation
+        // facts are stable; the generic value object owns only exact hashing.
         let first = ContainerRealizationNamespace::from_stable_parts([
             "worker-installation",
             "workspace-a",
-            "worker-a",
         ])
         .unwrap();
         let restarted = ContainerRealizationNamespace::from_stable_parts([
             "worker-installation",
             "workspace-a",
-            "worker-a",
         ])
         .unwrap();
         let other_workspace = ContainerRealizationNamespace::from_stable_parts([
             "worker-installation",
             "workspace-b",
-            "worker-a",
-        ])
-        .unwrap();
-        let other_worker = ContainerRealizationNamespace::from_stable_parts([
-            "worker-installation",
-            "workspace-a",
-            "worker-b",
         ])
         .unwrap();
         assert_eq!(first, restarted, "R1");
         assert_ne!(first, other_workspace, "R2/C1");
-        assert_ne!(first, other_worker, "R2/C2");
         assert!(
-            ContainerRealizationNamespace::from_stable_parts([
-                "worker-installation",
-                "",
-                "worker-a",
-            ])
-            .is_err(),
+            ContainerRealizationNamespace::from_stable_parts(["worker-installation", "",]).is_err(),
             "R3"
         );
     }
@@ -417,6 +428,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         &self,
         spec: &pc::SandboxSpec,
         effect_fence: Option<&ContainerEffectFence>,
+        _effect_fence_source: Option<&dyn ContainerEffectFenceSource>,
         intent: ContainerRealizationIntent,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         if effect_fence.is_some() {

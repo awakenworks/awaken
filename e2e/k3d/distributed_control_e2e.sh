@@ -148,7 +148,11 @@ else
 fi
 IMAGE_ID=$(docker image inspect "$IMAGE" --format '{{.Id}}')
 echo "using immutable test image $IMAGE_ID"
-k3d_create_cluster "$CLUSTER" 3 1
+# An absolute threshold keeps this nested K3d qualification independent of the
+# host volume's total size. Imported role images live in each Docker-backed K3s
+# node's small writable layer, so reserve 128 MiB there; the host runner owns
+# the separate capacity preflight and cleanup policy.
+k3d_create_cluster "$CLUSTER" 3 128Mi
 k3d_import_images "$CLUSTER" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
 # Cause/effect decision table: D1 one default CoreDNS replica + its node stops ->
 # replacement application Pods cannot resolve authority Services; D2 two replicas
@@ -308,7 +312,8 @@ log "7/10 inject single-Pod and in-flight Worker chaos"
 # Cause/effect decision table:
 # C1 one Control/Coordinator Pod removed -> the peer serves the same durable IDs;
 # C2 peer Coordinator commits a Run -> the request owner reads the canonical
-# recovery snapshot and projects exactly one assistant response (never idle-only);
+# recovery snapshot, including the cumulative usage cell, and projects exactly
+# one assistant response (never idle-only or a process-local usage rewind);
 # C3 both Provider replicas are stable + Worker dies after claims -> leases are
 # reclaimed, old epochs are fenced, and every accepted marker reaches one and
 # only one terminal Provider response;
@@ -447,13 +452,16 @@ log "9/10 hard-crash the synchronous PostgreSQL writer and promote its standby"
 # Database failover cause/effect graph:
 # D1 the API acknowledged the preceding durable marker; D2 PostgreSQL reports
 # exactly one synchronous remote_apply standby; D3 the primary container dies
-# without a graceful database shutdown; D4 the standby is promoted and the
-# stable Service is relabelled to it. Effects: E1 every acknowledged fact is
-# present after promotion (RPO=0); E2 application pools reconnect through the
-# same database name; E3 no request is replayed merely because a transport
-# response was ambiguous; E4 a synchronous checkpoint joins promotion before
-# pressure testing. Rules: F1=D1+D2+D3+D4=>E1-E4; F2=!D2 fails before the crash
-# because asynchronous replication cannot support the claimed RPO.
+# without a graceful database shutdown; D4 the standby is promoted; D5 its
+# inherited requirement for the now-absent synchronous peer is removed before
+# the stable Service selects it. Effects: E1 every acknowledged fact is present
+# after promotion (RPO=0); E2 application pools reconnect through the same
+# database name; E3 no request is replayed merely because a transport response
+# was ambiguous; E4 a synchronous checkpoint joins promotion before exposure;
+# E5 new writes continue in explicit single-replica degraded mode. Rules:
+# F1=D1+D2+D3+D4+D5=>E1-E5; F2=!D2 fails before the crash because asynchronous
+# replication cannot support the pre-failure RPO; F3=D4+!D5 must remain
+# unselected because every commit would wait forever for a dead standby.
 SYNC_STANDBYS=$(kubectl -n "$NS" exec postgres-primary-0 -- psql -U postgres -d awaken -tAc \
   "SELECT count(*) FROM pg_stat_replication WHERE application_name = 'awaken_standby' AND sync_state = 'sync'" \
   | tr -d '[:space:]')
@@ -471,13 +479,31 @@ kubectl -n "$NS" scale statefulset/postgres-primary --replicas=0 >/dev/null
 kubectl -n "$NS" wait --for=delete pod/postgres-primary-0 --timeout=120s
 kubectl -n "$NS" exec postgres-standby-0 -- \
   gosu postgres pg_ctl promote -D /var/lib/postgresql/data/pgdata -w
-kubectl -n "$NS" label pod postgres-standby-0 database-role=primary --overwrite >/dev/null
-node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-DATABASE-FAILOVER
-# `pg_ctl promote -w` waits for read/write promotion, not for the recovery
-# checkpoint it starts. An explicit synchronous checkpoint joins that existing
-# database authority and returns only after the new primary is steady for step 10.
+# Promotion preserves the old primary's synchronous-standby policy. Publishing
+# that state would accept connections whose commits can never finish. The
+# failover controller therefore establishes one explicit degraded writer before
+# changing the existing Service selector; applications retain one database URL.
 kubectl -n "$NS" exec postgres-standby-0 -- psql -v ON_ERROR_STOP=1 \
-  -U postgres -d awaken -c 'CHECKPOINT' >/dev/null
+  -U postgres -d awaken \
+  -c "ALTER SYSTEM SET synchronous_standby_names = '';" \
+  -c 'SELECT pg_reload_conf();' \
+  -c 'CHECKPOINT' >/dev/null
+PROMOTED_STATE=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d awaken -Atc \
+  "SELECT (NOT pg_is_in_recovery())::text || ':' || current_setting('synchronous_standby_names')")
+[ "$PROMOTED_STATE" = "true:" ] \
+  || { err "promoted writer did not enter explicit single-replica mode: $PROMOTED_STATE"; exit 1; }
+kubectl -n "$NS" label pod postgres-standby-0 database-role=primary --overwrite >/dev/null
+PROMOTED_IP=$(kubectl -n "$NS" get pod postgres-standby-0 -o jsonpath='{.status.podIP}')
+for _ in $(seq 1 30); do
+  POSTGRES_ENDPOINTS=$(kubectl -n "$NS" get endpoints postgres \
+    -o jsonpath='{range .subsets[*].addresses[*]}{.ip}{"\n"}{end}')
+  [ "$POSTGRES_ENDPOINTS" = "$PROMOTED_IP" ] && break
+  sleep 1
+done
+[ "${POSTGRES_ENDPOINTS:-}" = "$PROMOTED_IP" ] \
+  || { err "stable postgres Service did not select only the promoted writer"; exit 1; }
+wait_roles || { diagnostics; exit 1; }
+node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-DATABASE-FAILOVER
 
 log "10/10 run concurrent pressure through the same endpoint and audit final truth"
 node "$DRIVER" load "$API_URL" "$ENVIRONMENT_ID"

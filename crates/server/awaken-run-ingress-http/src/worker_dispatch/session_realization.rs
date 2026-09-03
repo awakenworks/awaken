@@ -77,15 +77,22 @@ pub(super) async fn session_cleanup_claim_next(
                 request.target.lease_expires_at_unix_ms,
                 authority.now_ms,
             )
-            || request.target.lease_expires_at_unix_ms > registry_expiry
         {
             return Err(RealizationHttpError::from(HostError::bad_request(
                 "Session cleanup recovery claim exceeds authenticated Worker authority",
             )));
         }
+        // The Worker knows its desired Session proof window but not the exact
+        // server-side registry expiry after heartbeat transport latency. Reuse
+        // the same authority projection as ordinary realization renewal: the
+        // authenticated boundary narrows the proposal before the aggregate sees
+        // it. Rejecting an otherwise exact proposal here creates a periodic
+        // recovery blackout near every registry-renewal edge.
+        let mut target = request.target;
+        target.lease_expires_at_unix_ms = target.lease_expires_at_unix_ms.min(registry_expiry);
         let assignment = session_control(&service)
             .map_err(RealizationHttpError::from)?
-            .claim_next_terminal_cleanup(request.target)
+            .claim_next_terminal_cleanup(target)
             .await
             .map_err(RealizationHttpError::from)?;
         Ok(json!({ "assignment": assignment }))

@@ -33,9 +33,17 @@ kubectl kustomize "$REPO_ROOT/deploy/k3d/distributed-control" >"$RENDERED"
 # D7-D1=C1+C2+C3=>E1+E2; missing TLS inputs, health/resources, or the exact edge
 # fails this contract before the live distributed rule runs.
 # D8 acknowledged-write RPO=0 requires one named remote_apply standby and the
-# live scenario must stop the primary CRI container before promotion. Omitting
-# either condition turns the test back into a planned asynchronous switchover
-# which cannot establish the advertised recovery point.
+# live scenario must stop the primary CRI container before promotion. D9 the
+# settings must be persisted by the init script rather than passed to the
+# temporary bootstrap server: otherwise POSTGRES_DB creation waits for a
+# standby which cannot connect until bootstrap finishes. Rules D8=true proves
+# the recovery point; D9=true proves bootstrap remains reachable.
+# D10 Server roles must configure every role-owned store as PostgreSQL. If one
+# is omitted, config resolution silently selects SQLite and creates a second
+# local installation authority that an ephemeral migration Job cannot retain.
+# C1 all six Control stores and both Coordinator stores have explicit URLs;
+# C2 local platform-workspace-id projection is absent. D10+C1+C2 => migration,
+# replicas, and recovery share only the PostgreSQL installation binding.
 # Each assertion owns one observable terminal effect; the manifest remains the
 # sole deployment source of truth.
 grep -q '/usr/local/bin/awaken-worker' "$RENDERED"
@@ -78,6 +86,10 @@ grep -q 'name: worker-tls, port: 3443, targetPort: 3443' <<<"$COORDINATOR_SERVIC
 grep -q 'CREATE ROLE awaken_control LOGIN' "$RENDERED"
 grep -q 'CREATE ROLE awaken_coordinator LOGIN' "$RENDERED"
 ! grep -q 'postgres://postgres:' "$RENDERED"
+[[ "$(grep -c 'data_subject_db = "postgres://awaken_control:' "$RENDERED")" -eq 1 ]]
+[[ "$(grep -c 'captured_content_db = "postgres://awaken_coordinator:' "$RENDERED")" -eq 1 ]]
+! grep -q 'platform-workspace-id' "$RENDERED"
+! grep -q 'name: adr71-installation' "$RENDERED"
 [[ "$(grep -c '^[[:space:]]*startupProbe:' "$RENDERED")" -eq 8 ]]
 [[ "$(grep -c '^[[:space:]]*readinessProbe:' "$RENDERED")" -eq 8 ]]
 [[ "$(grep -c '^[[:space:]]*livenessProbe:' "$RENDERED")" -eq 8 ]]
@@ -119,13 +131,24 @@ grep -q 'create configmap adr71-worker-upstream-ca' "$REPO_ROOT/e2e/k3d/distribu
 grep -q 'create secret tls adr71-worker-upstream-tls' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'name: worker-kube-api' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'crictl stop --timeout 0 "$WORKER_ZERO_CONTAINER"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -q 'synchronous_commit=remote_apply' "$RENDERED"
-grep -q 'synchronous_standby_names=FIRST 1 (awaken_standby)' "$RENDERED"
+grep -q "ALTER SYSTEM SET synchronous_commit = 'remote_apply';" "$RENDERED"
+grep -q "ALTER SYSTEM SET synchronous_standby_names = 'FIRST 1 (awaken_standby)';" "$RENDERED"
+! grep -q -- '- synchronous_commit=remote_apply' "$RENDERED"
+! grep -q -- '- synchronous_standby_names=FIRST 1 (awaken_standby)' "$RENDERED"
 grep -q 'application_name=awaken_standby' "$RENDERED"
 grep -q 'connect_timeout=2' "$RENDERED"
 grep -q 'crictl stop --timeout 0 "$PRIMARY_CONTAINER"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q "sync_state = 'sync'" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q "get endpoints kubernetes" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+# Promotion decision table: P1 the old synchronous writer dies and its standby
+# is promoted -> clear the inherited dead-peer requirement before publication;
+# P2 the promoted Pod is read/write + has an empty synchronous peer set -> one
+# stable Service endpoint may select it; P3 either predicate is false -> fail
+# before any application request. This guards the F1/F3 rules attached to the
+# executable failover scenario instead of introducing a second HA mechanism.
+grep -q "ALTER SYSTEM SET synchronous_standby_names = '';" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q "current_setting('synchronous_standby_names')" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'stable postgres Service did not select only the promoted writer' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'label pod postgres-standby-0 database-role=primary --overwrite' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 ! grep -q 'patch service postgres' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 [[ "$(grep -c -- '- /etc/awaken/control.toml' "$RENDERED")" -eq 1 ]]

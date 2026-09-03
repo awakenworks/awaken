@@ -418,6 +418,29 @@ fn continuation_observation_disposition(
     Ok(ContinuationObservationDisposition::Live)
 }
 
+/// Claim API access is owned only by an enabled continuation policy or an
+/// already-persisted claim incarnation. A PVC-free deployment must not require
+/// ambient PVC read permission merely to observe its ephemeral Pod.
+fn continuation_claim_observation_required(
+    continuation_configured: bool,
+    exact_claim_expected: bool,
+) -> bool {
+    continuation_configured || exact_claim_expected
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn disabled_continuation_has_no_claim_api_obligation_without_durable_evidence() {
+    let continuation_configured: bool = kani::any();
+    let exact_claim_expected: bool = kani::any();
+    let required =
+        continuation_claim_observation_required(continuation_configured, exact_claim_expected);
+    assert_eq!(required, continuation_configured || exact_claim_expected);
+    if !continuation_configured && !exact_claim_expected {
+        assert!(!required);
+    }
+}
+
 /// A Kubernetes-backed [`ContainerRuntime`]. `agent_addr` is the Service endpoint the
 /// runtime dials for the [`AgentChannel`]; `owner` (optional) is the GC owner.
 pub struct K8sRuntime {
@@ -906,6 +929,12 @@ impl K8sRuntime {
             if !binding_matches {
                 return Ok(ContinuationObservationDisposition::Incompatible);
             }
+        }
+        if !continuation_claim_observation_required(
+            self.continuation_volume.is_some(),
+            expected_claim_uid.is_some(),
+        ) {
+            return Ok(ContinuationObservationDisposition::Live);
         }
         let observed_claim = match self.persistent_volume_claims().get(&claim_name).await {
             Ok(claim) => Some(claim),

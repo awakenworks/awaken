@@ -29,6 +29,7 @@ async fn environment(
                 &crate::provisioning::agent_run_sandbox_spec(thread),
                 Some(&effect_fence),
                 None,
+                None,
                 awaken_sandbox_container::ContainerRealizationIntent::Create,
             )
             .await

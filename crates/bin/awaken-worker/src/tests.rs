@@ -6,8 +6,52 @@ use super::{
     CredentialMaterializerSupport, InferenceExecutorMaterializer, ResourceManifestSupport,
     StandardManifestConfig, StandardManifestInputs, WorkerNodeBuilder,
     configured_container_acp_targets, derive_standard_manifest, grace_window,
-    validate_worker_manifest,
+    validate_worker_manifest, worker_realization_namespace,
 };
+
+#[test]
+fn container_realization_namespace_is_installation_wide() {
+    // Cause/effect decision table. Causes: C1 backend is Kubernetes/host-local;
+    // C2 physical Kubernetes namespace or persisted local Workspace is
+    // equal/different; C3 the replacement has a different Worker/process
+    // incarnation. Effects: E1 equal C2 preserves one physical namespace across
+    // C3; E2 different C2 cannot discover another installation's substrate; E3
+    // Kubernetes never substitutes a per-Pod local Workspace for its existing
+    // namespace authority.
+    //
+    // | Rule | C1 | C2 | Effect |
+    // | R1 | Kubernetes | equal namespace | E1+E3 same realization namespace |
+    // | R2 | Kubernetes | different namespace | E2 different realization namespace |
+    // | R3 | host-local | equal/different Workspace | E1/E2 respectively |
+    //
+    // C3 is deliberately absent from the projector's input type: registry
+    // leases and Sandbox effect fences, not object identity, fence incarnations.
+    let kubernetes = |namespace: &str, local_root: &std::path::Path| {
+        let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+        deployment.sandbox_tier = awaken_runtime_host::SandboxTier::K8s;
+        deployment.sandbox.k8s_namespace = namespace.into();
+        deployment.storage_dir = Some(local_root.into());
+        worker_realization_namespace(&deployment).expect("Kubernetes realization namespace")
+    };
+    let first_root = tempfile::tempdir().expect("first Worker root");
+    let replacement_root = tempfile::tempdir().expect("replacement Worker root");
+    let worker_a = kubernetes("installation-a", first_root.path());
+    let replacement = kubernetes("installation-a", replacement_root.path());
+    let other_installation = kubernetes("installation-b", first_root.path());
+    assert_eq!(worker_a, replacement, "R1/E1-E3");
+    assert_ne!(worker_a, other_installation, "R2/E2");
+
+    let local = |root: &std::path::Path| {
+        let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+        deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Docker;
+        deployment.storage_dir = Some(root.into());
+        worker_realization_namespace(&deployment).expect("local realization namespace")
+    };
+    let local_a = tempfile::tempdir().expect("local installation A");
+    let local_b = tempfile::tempdir().expect("local installation B");
+    assert_eq!(local(local_a.path()), local(local_a.path()), "R3/E1");
+    assert_ne!(local(local_a.path()), local(local_b.path()), "R3/E2");
+}
 
 struct SchemeMaterializer;
 

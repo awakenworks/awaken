@@ -107,6 +107,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         &provider,
         &desired,
         Some(&create_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await
@@ -120,6 +121,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         &provider,
         &desired,
         Some(&create_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await
@@ -136,6 +138,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         &provider,
         &changed,
         Some(&create_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await
@@ -356,6 +359,7 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
         &provider,
         &frozen,
         Some(&create_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await
@@ -438,6 +442,7 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
         &provider,
         &frozen,
         Some(&rebuild_fence),
+        None,
         ContainerRealizationIntent::Rebuild {
             source_incarnation,
             source_runtime_handle,
@@ -510,6 +515,7 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         &provider,
         &frozen,
         Some(&first_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await
@@ -537,6 +543,7 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         &provider,
         &frozen,
         Some(&second_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await
@@ -600,6 +607,7 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         &provider,
         &frozen,
         Some(&create_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await
@@ -657,6 +665,7 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         &provider,
         &frozen,
         Some(&foreign_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await
@@ -683,6 +692,7 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         &provider,
         &frozen,
         Some(&create_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await
@@ -744,6 +754,7 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         &provider,
         &frozen,
         Some(&create_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await
@@ -853,6 +864,7 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         &provider,
         &frozen,
         Some(&rebuild_fence),
+        None,
         ContainerRealizationIntent::Rebuild {
             source_incarnation: pod_uid,
             source_runtime_handle,
@@ -944,6 +956,7 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
         provider.as_ref(),
         &frozen,
         Some(&create_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await
@@ -1064,6 +1077,7 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
             rebuild_provider.as_ref(),
             &rebuild_spec,
             Some(&fence),
+            None,
             ContainerRealizationIntent::Rebuild {
                 source_incarnation: rebuild_source_uid,
                 source_runtime_handle: runtime_handle,
@@ -1209,6 +1223,7 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         &provider,
         &frozen,
         Some(&create_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await
@@ -1386,6 +1401,7 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         &provider,
         &frozen,
         Some(&rebuild_fence),
+        None,
         ContainerRealizationIntent::Rebuild {
             source_incarnation: pod_uid,
             source_runtime_handle: runtime_handle,
@@ -1460,6 +1476,7 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
         &plain_provider,
         &frozen,
         Some(&owner_fence),
+        None,
         ContainerRealizationIntent::Create,
     )
     .await
@@ -1502,6 +1519,7 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
         &retained_provider,
         &frozen,
         Some(&foreign_fence),
+        None,
         ContainerRealizationIntent::Create,
     );
     let error = error.await.err().expect("KPV2 foreign effect rejects");

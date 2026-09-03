@@ -709,9 +709,15 @@ impl SharedHost {
                 let spec = self.sandbox_spec_for_provider(thread, provider);
                 let _ = self.validate_session_environment_capabilities(provider, &spec)?;
             }
+            // Reservation is a projection-producing boundary, never an
+            // Environment consumer. A cold Coordinator may legitimately know
+            // the durable Worker-owned binding without having adopted that
+            // substrate in this process; force-defer must therefore outrank the
+            // local adoption precondition. Ordinary execution retains the
+            // stricter rule: policy deferral is allowed only before any binding
+            // exists, and a bound-but-unadopted Environment fails closed below.
             let deferred = retained.is_none()
-                && expected_binding.is_none()
-                && (force_defer_environment || can_defer);
+                && (force_defer_environment || (expected_binding.is_none() && can_defer));
             let env = match retained {
                 Some(existing) => Some(existing),
                 None if a2a_only || deferred => None,

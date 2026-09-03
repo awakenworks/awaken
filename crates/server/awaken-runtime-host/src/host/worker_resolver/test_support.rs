@@ -256,6 +256,7 @@ pub(crate) async fn available_local_environment_binding(
             &spec,
             Some(&create_fence),
             None,
+            None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
         .await
