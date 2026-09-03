@@ -49,7 +49,8 @@ customer backend; the token API neither accepts nor echoes them. An application
 grant contains only:
 
 - allowed `protocols`: `ai-sdk` and/or `ag-ui`;
-- allowed `operations`: `thread.run` and/or `thread.messages.read`;
+- allowed `operations`: `thread.run`, `thread.respond`, and/or
+  `thread.messages.read`;
 - one-to-one `thread_bindings` from an external thread id to an existing Managed
   Session id. The bound Agent is copied from that Session's frozen baseline and
   cannot be supplied as a second authority by the caller.
@@ -61,6 +62,13 @@ bound thread. A Design product should list conversations from its own durable
 `chat_thread_id -> managed_session_id` links, then mint a narrow token for the
 selected links. A service API key remains required for `/v1/sessions` list and
 management operations.
+
+`thread.respond` is an AI SDK-only least-authority capability for answering a
+pending approval or supplying a pending client-tool result on the bound Thread.
+The request's final message must be an assistant message containing an AI SDK
+response state. It cannot append a user message, start unrelated work, target an
+unbound Thread, or use AG-UI. The AI SDK decoder and Runtime still validate the
+response against the Session's committed history and pending tool identity.
 
 ## Backend exchange
 
@@ -95,7 +103,8 @@ Content-Type: application/json
 ```
 
 The issuer rejects missing or foreign-workspace Sessions, unfrozen baselines,
-and terminal Sessions when `thread.run` is requested. Bindings must be complete,
+and terminal Sessions when `thread.run` or `thread.respond` is requested.
+Bindings must be complete,
 unique, one-to-one, limited to 32 per token, and each external or Managed
 Session id is limited to 255 bytes. This bounds the two authoritative Session
 reads required for each binding. Mint reuses the existing Managed Create
