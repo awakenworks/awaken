@@ -137,7 +137,7 @@ pub async fn issue_application_access(
     let permits_run = request
         .operations
         .iter()
-        .any(|operation| operation == "thread.run");
+        .any(|operation| matches!(operation.as_str(), "thread.run" | "thread.respond"));
     let mut thread_bindings = HashMap::new();
     for requested in &request.thread_bindings {
         let owner = match sessions.owner(&requested.managed_session_id).await {
@@ -874,6 +874,14 @@ mod tests {
         )
         .await;
         assert_eq!(terminal_run.status(), StatusCode::CONFLICT);
+
+        let terminal_response = issue(
+            application_access(),
+            repository.clone(),
+            issue_body("sesn_terminal", json!(["thread.respond"])),
+        )
+        .await;
+        assert_eq!(terminal_response.status(), StatusCode::CONFLICT);
 
         let terminal_read = issue(
             application_access(),

@@ -326,6 +326,22 @@ is explicitly closed, future policy changes still update the one Coordinator
 constant and its same profile projection—never a second field, store, or
 fallback.
 
+## Amendment (2026-09-03): Pending AI SDK responses use a least-authority capability
+
+An application grant may include `thread.respond` independently of
+`thread.run`. It is limited to the AI SDK Thread Run route for one bound Thread
+and only when the final message is an assistant message containing a pending
+approval response or client-tool result. The existing application PEP rewrites
+that already-classified request to the narrower operation before grant
+evaluation; there is no second route, credential, proxy, or protocol decoder.
+
+This capability exists so a product can render read-only execution history and
+still resolve a pending action through standard AI SDK message parts without
+granting authority to append an arbitrary user turn. The canonical AI SDK
+decoder and Runtime remain responsible for exact committed-history and pending
+tool validation. Session issuance applies the existing runnable/nonterminal
+fence to both `thread.run` and `thread.respond`.
+
 ## References
 
 - [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) — front-door axis vs
