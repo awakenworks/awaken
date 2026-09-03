@@ -2132,6 +2132,7 @@ dependencies = [
 name = "awaken-sandbox-fs"
 version = "1.0.0"
 dependencies = [
+ "cap-std",
  "rustix 1.1.4",
 ]
 

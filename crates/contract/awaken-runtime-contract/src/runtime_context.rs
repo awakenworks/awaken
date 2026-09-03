@@ -361,6 +361,10 @@ pub struct RuntimeRunContext {
     /// this attempt's dispatch claim, plus its claim-fenced receipt port. This is
     /// live wiring, never an alternative durable authority.
     pub credential_realization: Option<crate::AttemptCredentialRealization>,
+    /// Exact provider-owned tools selected by Session assembly for this attempt.
+    /// Provisioning may validate this plan and an adapter may realize it, but
+    /// neither may reinterpret the originating extension's plugin JSON.
+    pub provider_server_tools: Vec<crate::resolved::ProviderServerTool>,
     /// Process-local plugins bound by the realized Session rather than authored
     /// into the immutable Agent publication. This is the live-wiring seam for
     /// dynamically discovered capabilities such as a claim-prepared MCP server:
@@ -425,6 +429,7 @@ impl RuntimeRunContext {
         // Candidate-specific credential/content bindings never cross Run identity.
         child.credential_realization = None;
         child.model_content_materializer = None;
+        child.provider_server_tools.clear();
         child
     }
 
@@ -442,6 +447,16 @@ impl RuntimeRunContext {
         realization: crate::AttemptCredentialRealization,
     ) -> Self {
         self.credential_realization = Some(realization);
+        self
+    }
+
+    /// Bind the Session's already-resolved provider-tool execution plan.
+    #[must_use]
+    pub fn with_provider_server_tools(
+        mut self,
+        tools: Vec<crate::resolved::ProviderServerTool>,
+    ) -> Self {
+        self.provider_server_tools = tools;
         self
     }
 
@@ -710,7 +725,8 @@ mod child_run_tests {
         let pause = PauseSignal::new();
         let parent = RuntimeRunContext::new()
             .with_pause(pause)
-            .with_live_inbox(LiveInbox::new());
+            .with_live_inbox(LiveInbox::new())
+            .with_provider_server_tools(vec![crate::resolved::ProviderServerTool::OpenAiWebSearch]);
 
         let child = parent.for_child_run();
 
@@ -718,6 +734,11 @@ mod child_run_tests {
         assert!(child.pause.is_none());
         assert!(parent.live_inbox.is_some());
         assert!(child.live_inbox.is_none());
+        assert_eq!(parent.provider_server_tools.len(), 1);
+        assert!(
+            child.provider_server_tools.is_empty(),
+            "a child must resolve provider tools from its own Agent and model route"
+        );
     }
 
     #[test]

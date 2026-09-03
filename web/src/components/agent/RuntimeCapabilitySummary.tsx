@@ -22,7 +22,7 @@ export default function RuntimeCapabilitySummary({
 }) {
   const app = useApp();
   const acp = isAcpModelSelection(model);
-  const support = runtimeCapabilitySupport(acp);
+  const support = runtimeCapabilitySupport(acp, runtime?.features);
   const rows: SupportRow[] = [
     {
       capability: app.t("Environment and durable Session", "Environment 与持久 Session"),
@@ -63,8 +63,8 @@ export default function RuntimeCapabilitySummary({
       support: support.state_concurrency,
       detail: acp
         ? app.t(
-            "They govern tool calls that pass through Awaken. Harness-internal actions are governed by that Harness.",
-            "它们管理经过 Awaken 的工具调用；Harness 内部动作由对应 Harness 管理。",
+            "State-machine configuration is unavailable because the external Harness owns the model/tool loop. Awaken still enforces concurrency on tools it executes.",
+            "状态机配置不可用，因为外部 Harness 掌握模型与工具循环；Awaken 仍对自身执行的工具实施并发控制。",
           )
         : app.t(
             "The Native runtime applies the configured transitions, guards, and concurrency limits directly.",
@@ -96,6 +96,7 @@ export default function RuntimeCapabilitySummary({
     : support === "conditional"
       ? "warn" as const
       : "neutral" as const;
+  const negotiated = runtime?.local?.negotiated;
 
   return (
     <details className="runtime-capability-summary">
@@ -121,6 +122,19 @@ export default function RuntimeCapabilitySummary({
         <div className="banner warn">
           <span>!</span>
           <span>{runtime.local.remediation}</span>
+        </div>
+      )}
+      {acp && support.tools_mcp !== "supported" && (
+        <div className="banner warn" role="alert">
+          <span>!</span>
+          <span>{app.t(
+            negotiated
+              ? "This Harness did not negotiate a compatible MCP transport. Awaken read, write, Memory, Skill, and host Web tools will not be available."
+              : "Tool transport has not been verified yet. Refresh the Harness probe before publishing an Agent that uses Awaken tools.",
+            negotiated
+              ? "该 Harness 未协商到兼容的 MCP 传输；Awaken read、write、Memory、Skill 和 Host Web 工具将不可用。"
+              : "工具传输尚未验证。发布使用 Awaken 工具的 Agent 前，请先刷新 Harness 能力探测。",
+          )}</span>
         </div>
       )}
     </details>

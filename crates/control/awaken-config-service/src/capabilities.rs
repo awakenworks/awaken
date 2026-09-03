@@ -86,6 +86,38 @@ impl RuntimeCapability {
     }
 
     fn to_json(&self) -> Value {
+        let native = self.kind == "native";
+        let awaken_tool_bridge = if native {
+            "unavailable"
+        } else {
+            match self.local.as_ref() {
+                Some(local) if !local.detected => "unavailable",
+                Some(local) => match local.negotiated.as_ref() {
+                    Some(negotiated)
+                        if negotiated
+                            .get("mcp_http")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                            || negotiated
+                                .get("mcp_sse")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false) =>
+                    {
+                        "supported"
+                    }
+                    Some(_) => "unavailable",
+                    None => "conditional",
+                },
+                None => "conditional",
+            }
+        };
+        let provider_server_tools = if native {
+            "supported"
+        } else if self.cli.as_deref() == Some("codex") {
+            "conditional"
+        } else {
+            "unavailable"
+        };
         json!({
             "id": self.id,
             "label": self.label,
@@ -93,6 +125,15 @@ impl RuntimeCapability {
             "cli": self.cli,
             "description": self.description,
             "supported": true,
+            "features": {
+                "environment_session": "supported",
+                "context_projection": "supported",
+                "awaken_tool_bridge": awaken_tool_bridge,
+                "state_machine": if native { "supported" } else { "unavailable" },
+                "background_tools": if native { "supported" } else { "unavailable" },
+                "working_directory": if native { "unavailable" } else { "supported" },
+                "provider_server_tools": provider_server_tools,
+            },
             "local": self.local.as_ref().map(|local| json!({
                 "detected": local.detected,
                 "version": local.version,
@@ -579,8 +620,51 @@ mod tests {
         });
         let json = observed.to_json();
         assert_eq!(json["supported"], true, "C2");
+        assert_eq!(json["features"]["awaken_tool_bridge"], "conditional", "C2");
+        assert_eq!(json["features"]["state_machine"], "unavailable", "C2");
+        assert_eq!(
+            native.to_json()["features"]["state_machine"],
+            "supported",
+            "C1"
+        );
+        assert_eq!(
+            native.to_json()["features"]["provider_server_tools"],
+            "supported",
+            "C1 Native owns the provider request and can project exact hosted tools"
+        );
         assert_eq!(json["local"]["detected"], true, "C2");
         assert_eq!(json["local"]["login_state"], "available", "C2");
+
+        let supported = RuntimeCapability::acp("codex", "Codex", "description").with_local(
+            LocalRuntimeCapability {
+                detected: true,
+                version: Some("1".into()),
+                login_state: Some("available".into()),
+                reason_code: None,
+                remediation: None,
+                negotiated: Some(json!({"mcp_http": true, "mcp_sse": false})),
+            },
+        );
+        assert_eq!(
+            supported.to_json()["features"]["awaken_tool_bridge"],
+            "supported",
+            "C3 negotiated MCP transport makes the bridge executable"
+        );
+        let unsupported = RuntimeCapability::acp("codex", "Codex", "description").with_local(
+            LocalRuntimeCapability {
+                detected: true,
+                version: Some("1".into()),
+                login_state: Some("available".into()),
+                reason_code: None,
+                remediation: None,
+                negotiated: Some(json!({"mcp_http": false, "mcp_sse": false})),
+            },
+        );
+        assert_eq!(
+            unsupported.to_json()["features"]["awaken_tool_bridge"],
+            "unavailable",
+            "C4 a probed Harness without MCP must not advertise Awaken tools"
+        );
     }
 
     #[test]

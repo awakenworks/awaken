@@ -213,6 +213,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("acp") => awaken_scenario_host::build_acp_router(),
         Ok("acp-jsonrpc") => awaken_scenario_host::build_acp_jsonrpc_router().await,
         Ok("acp-permission") => awaken_scenario_host::build_acp_permission_router(),
+        Ok("acp-tool-bridge") => awaken_scenario_host::build_acp_tool_bridge_router().await,
         Ok("acp-control") => awaken_scenario_host::build_acp_control_router(),
         Ok("acp-relaunch-failure") => awaken_scenario_host::build_acp_relaunch_failure_router(),
         Ok("acp-sandboxed") => awaken_scenario_host::build_acp_sandboxed_router().await,
@@ -476,6 +477,7 @@ mod dispatch_tests {
             ("acp", sh::build_acp_router()),
             ("acp-jsonrpc", sh::build_acp_jsonrpc_router().await),
             ("acp-permission", sh::build_acp_permission_router()),
+            ("acp-tool-bridge", sh::build_acp_tool_bridge_router().await),
             (
                 "acp-sandboxed",
                 sh::build_acp_sandboxed_router_with_deployment(local_test_deployment.clone()).await,

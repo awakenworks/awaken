@@ -198,7 +198,10 @@ impl AgentChannelSource for BoundLocalChannelSource {
             // ACP's cwd is separate from the spawned process cwd and is authoritative
             // for the CLI's own file tools. Point it at the same Session environment
             // that owns the staged File/Repository/MemoryStore projections.
-            workspace_cwd: Some(self.sandbox.workspace_cwd()),
+            workspace_cwd: Some(acp_workspace_cwd(
+                &self.sandbox.workspace_cwd(),
+                launch.session_working_directory.as_deref(),
+            )),
             mcp_session_servers,
             session_model: launch.session_model,
             session_mode: launch.session_mode,
@@ -206,6 +209,13 @@ impl AgentChannelSource for BoundLocalChannelSource {
             expected_capability: launch.expected_capability,
         })
     }
+}
+
+fn acp_workspace_cwd(root: &str, relative: Option<&str>) -> String {
+    let Some(relative) = relative else {
+        return root.to_string();
+    };
+    format!("{}/{}", root.trim_end_matches('/'), relative)
 }
 
 fn launch_command(launch: &awaken_run_executor_acp::AcpLaunch) -> pc::Command {
@@ -346,6 +356,7 @@ mod tests {
                 process_secret: None,
                 credential_artifact: None,
                 acp: None,
+                provider_server_tools: Vec::new(),
             })
         }
     }
@@ -403,6 +414,7 @@ mod tests {
                     ),
                 ),
                 acp: None,
+                provider_server_tools: Vec::new(),
             })
         }
 

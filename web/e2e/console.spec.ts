@@ -127,6 +127,71 @@ test("agent editor Build/Advanced stages are data-driven from /v1/capabilities",
   await expect(page.getByLabel("Built-in auxiliary Agent")).toBeChecked();
 });
 
+test("ACP authoring exposes only verified Harness capabilities and validates cwd before Try", async ({ page }) => {
+  await page.route(/\/v1(?:\/workspaces\/[^/]+)?\/capabilities(?:\?|$)/, async (route) => {
+    const response = await route.fetch();
+    const original = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...original,
+        runtimes: [
+          {
+            id: "awaken", label: "Native Awaken", kind: "native", description: "native",
+            features: {
+              environment_session: "supported", context_projection: "supported",
+              awaken_tool_bridge: "unavailable", state_machine: "supported",
+              background_tools: "supported", working_directory: "unavailable",
+              provider_server_tools: "supported",
+            },
+          },
+          {
+            id: "acp:codex", label: "Codex", kind: "acp", cli: "codex", description: "Codex ACP",
+            local: {
+              detected: true, version: "1.1.9", login_state: "available",
+              negotiated: { protocol_version: "1", mcp_http: true, mcp_sse: false, load_session: true, modes: [], config_options: [] },
+            },
+            features: {
+              environment_session: "supported", context_projection: "supported",
+              awaken_tool_bridge: "supported", state_machine: "unavailable",
+              background_tools: "unavailable", working_directory: "supported",
+              provider_server_tools: "conditional",
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/w/default/agents/new");
+  await openBuild(page, "Instructions");
+  await page.getByLabel("Execution runtime").selectOption("acp:codex");
+  await expect(page.getByLabel("ACP working directory")).toBeVisible();
+  await expect(page.getByText("Tools, ToolSets, and MCP", { exact: true })).toBeVisible();
+  await page.getByLabel("ACP working directory").fill("../outside");
+  await expect(page.getByRole("alert").filter({ hasText: /clean relative path/ })).toBeVisible();
+  await page.getByRole("button", { name: /Try draft/ }).click();
+  await expect(page.getByText("Complete the runnable fields to Try")).toBeVisible();
+  await page.getByRole("button", { name: "Close" }).click();
+
+  await page.getByLabel("ACP working directory").fill("repo/src");
+  await openAdvanced(page, "Orchestration");
+  const stateMachine = page.locator(".behavior-card", { hasText: "Agent behavior state machine" });
+  const background = page.locator(".behavior-card", { hasText: "Background tool execution" });
+  await expect(stateMachine.getByRole("switch")).toBeDisabled();
+  await expect(background.getByRole("switch")).toBeDisabled();
+  await expect(stateMachine).toContainText("Unavailable for this runtime");
+});
+
+test("Models gives one actionable ACP installation, login and bridge status view", async ({ page }) => {
+  await page.goto("/w/default/models");
+  const runtimes = page.locator(".card", { hasText: "Agent runtimes & harnesses" });
+  await expect(runtimes).toBeVisible();
+  await expect(runtimes.getByText(/Native Awaken/)).toBeVisible();
+  await expect(runtimes.getByText(/Codex|Claude|Gemini/).first()).toBeVisible();
+  await expect(runtimes.getByText(/Executable|Login required|Not available/).first()).toBeVisible();
+});
+
 test("Agent Release shows immutable published versions newest-first on desktop and mobile", async ({ page, request }) => {
   const id = `version-history-${Date.now()}`;
   const model = `version-history-model-${Date.now()}`;

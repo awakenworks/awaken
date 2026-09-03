@@ -19,10 +19,13 @@ import type {
   ProviderCatalog,
   ProviderConnectionSummary,
   ProviderDriverDescriptor,
+  RuntimeCap,
   Session,
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { useConfigCapabilities } from "../lib/useConfigCapabilities";
+import { useCapabilities } from "../lib/useCapabilities";
+import { runtimeStatus } from "../lib/readiness";
 import {
   cloudModelUiState,
   CloudModelBadge,
@@ -207,6 +210,7 @@ export default function ModelsSurface() {
     queryFn: () => api.get<ProviderCatalog>(ws("/v1/config/catalog")),
   });
   const capabilities = useConfigCapabilities();
+  const runtimeCapabilities = useCapabilities();
   const descriptors = useQuery({
     queryKey: ["provider-descriptors", workspace],
     queryFn: () => api.get<ProviderDriverDescriptor[]>(ws("/v1/config/provider-descriptors")),
@@ -289,6 +293,47 @@ export default function ModelsSurface() {
   }
   return (
     <>
+      <Card>
+        <h2>{app.t("Agent runtimes & harnesses", "Agent Runtime 与 Harness")}</h2>
+        <p className="hint">{app.t(
+          "Runtime capability is separate from model API compatibility. ACP rows report installation, login, version, executable state, and Awaken feature support.",
+          "Runtime 能力与模型 API 兼容性彼此独立。ACP 条目展示安装、登录、版本、可执行状态以及 Awaken 功能支持情况。",
+        )}</p>
+        <div className="stack-list">
+          {(runtimeCapabilities.data?.runtimes ?? []).map((runtime: RuntimeCap) => {
+            const status = runtime.kind === "native" ? "ready" : runtimeStatus(runtime);
+            return (
+              <div className="row" key={runtime.id} style={{ justifyContent: "space-between" }}>
+                <div>
+                  <strong>{runtime.label}</strong>
+                  <div className="mut mono">{runtime.id}{runtime.local?.version ? ` · ${runtime.local.version}` : ""}</div>
+                  {runtime.local?.remediation && status !== "ready" && (
+                    <small className="mut">{runtime.local.remediation}</small>
+                  )}
+                </div>
+                <div className="row">
+                  <Pill tone={status === "ready" ? "ok" : "warn"}>
+                    {status === "ready"
+                      ? app.t("Executable", "可执行")
+                      : status === "login_required"
+                        ? app.t("Login required", "需要登录")
+                        : app.t("Not available", "不可用")}
+                  </Pill>
+                  {runtime.kind === "acp" && runtime.features?.awaken_tool_bridge && (
+                    <Pill tone={runtime.features.awaken_tool_bridge === "supported" ? "ok" : "warn"}>
+                      {runtime.features.awaken_tool_bridge === "supported"
+                        ? app.t("Awaken tools ready", "Awaken 工具就绪")
+                        : runtime.features.awaken_tool_bridge === "conditional"
+                          ? app.t("Tool bridge unverified", "工具桥待验证")
+                          : app.t("Awaken tools unavailable", "Awaken 工具不可用")}
+                    </Pill>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
       {byokEnabled && (descriptors.isPending || credentials.isPending || connections.isPending || catalog.isPending ? (
         <Card>
           <h2>{app.t("Provider connections", "供应商连接")}</h2>

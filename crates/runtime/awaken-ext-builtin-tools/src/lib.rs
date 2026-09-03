@@ -22,11 +22,13 @@ pub use hand::{
     HandToolContext, ReadArgs, ReadTool, WriteArgs, WriteTool,
 };
 pub use web::{
-    AWAKEN_CLOUD_PROVIDER_ID, AWAKEN_DIRECT_PROVIDER_ID, AwakenDirectFetchProvider,
-    BRAVE_PROVIDER_ID, BraveSearchProvider, DUCKDUCKGO_PROVIDER_ID, DuckDuckGoProvider,
-    ManagedGatewayWebProvider, ManagedWebGatewayEndpoint, ManagedWebRouteError,
-    ManagedWebRouteResolver, OPENROUTER_PROVIDER_ID, WEB_FETCH_PLUGIN_ID, WEB_FETCH_TOOL_ID,
-    WEB_SEARCH_PLUGIN_ID, WEB_SEARCH_TOOL_ID, WebDomainFilter, WebFetchArgs, WebFetchConfig,
+    ANTHROPIC_PROVIDER_ID, AWAKEN_CLOUD_PROVIDER_ID, AWAKEN_DIRECT_PROVIDER_ID,
+    AwakenDirectFetchProvider, BRAVE_PROVIDER_ID, BraveSearchProvider,
+    DEEPSEEK_ANTHROPIC_PROVIDER_ID, DEEPSEEK_RESPONSES_PROVIDER_ID, DUCKDUCKGO_PROVIDER_ID,
+    DuckDuckGoProvider, GEMINI_PROVIDER_ID, ManagedGatewayWebProvider, ManagedWebGatewayEndpoint,
+    ManagedWebRouteError, ManagedWebRouteResolver, OPENAI_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
+    VERTEX_PROVIDER_ID, WEB_FETCH_PLUGIN_ID, WEB_FETCH_TOOL_ID, WEB_SEARCH_PLUGIN_ID,
+    WEB_SEARCH_TOOL_ID, WebDomainFilter, WebFetchArgs, WebFetchConfig,
     WebFetchExecutionConfiguration, WebFetchPlugin, WebFetchProvider, WebFetchProviderDescriptor,
     WebFetchRequest, WebProviderTarget, WebSearchArgs, WebSearchConfig,
     WebSearchCredentialRequirement, WebSearchCredentialResolver, WebSearchExecutionConfiguration,

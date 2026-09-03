@@ -25,6 +25,29 @@ use awaken_provisioning_contract as pc;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+/// Codex ACP reports MCP calls as a generic executor envelope. Unwrap only when
+/// the duplicated server/tool identity exactly matches the protocol title;
+/// otherwise retain the whole value so malformed or substituted input cannot
+/// borrow another tool's permission.
+fn exact_mcp_tool_arguments(name: &str, input: &serde_json::Value) -> serde_json::Value {
+    let Some(identity) = name.strip_prefix("mcp.") else {
+        return input.clone();
+    };
+    let Some((server, tool)) = identity.split_once('.') else {
+        return input.clone();
+    };
+    let exact = input.get("server").and_then(serde_json::Value::as_str) == Some(server)
+        && input.get("tool").and_then(serde_json::Value::as_str) == Some(tool);
+    if exact {
+        input
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| input.clone())
+    } else {
+        input.clone()
+    }
+}
+
 /// Official ACP codec projection (`real-acp` feature): the same ACL over the real
 /// `agent-client-protocol` `SessionUpdate`/`StopReason` types.
 #[cfg(feature = "real-acp")]

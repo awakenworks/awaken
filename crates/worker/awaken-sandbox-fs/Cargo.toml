@@ -10,6 +10,7 @@ layer = "infrastructure"
 authority = "sandbox-filesystem"
 
 [dependencies]
+cap-std = "4"
 rustix = { version = "1", features = ["fs"] }
 
 [lints]
