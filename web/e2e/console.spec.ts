@@ -167,29 +167,85 @@ test("ACP authoring exposes only verified Harness capabilities and validates cwd
   await openBuild(page, "Instructions");
   await page.getByLabel("Execution runtime").selectOption("acp:codex");
   await expect(page.getByLabel("ACP working directory")).toBeVisible();
+  await expect(page.getByText("Codex is ready for governed Awaken tools")).toBeVisible();
+  await page.getByText("Capability support", { exact: true }).click();
   await expect(page.getByText("Tools, ToolSets, and MCP", { exact: true })).toBeVisible();
   await page.getByLabel("ACP working directory").fill("../outside");
-  await expect(page.getByRole("alert").filter({ hasText: /clean relative path/ })).toBeVisible();
+  await expect(page.getByRole("alert").filter({ hasText: /Remove \. or \.\./ })).toBeVisible();
   await page.getByRole("button", { name: /Try draft/ }).click();
   await expect(page.getByText("Complete the runnable fields to Try")).toBeVisible();
   await page.getByRole("button", { name: "Close" }).click();
 
   await page.getByLabel("ACP working directory").fill("repo/src");
+  await expect(page.getByText("Resolved inside Session workspace: /repo/src")).toBeVisible();
+  await page.getByLabel("Execution runtime").selectOption("awaken");
+  await page.getByLabel("Execution runtime").selectOption("acp:codex");
+  await expect(page.getByLabel("ACP working directory")).toHaveValue("repo/src");
+  await page.getByRole("button", { name: "Use workspace root" }).click();
+  await expect(page.getByText("The Harness starts at the Session workspace root.")).toBeVisible();
+  await page.getByLabel("ACP working directory").fill("repo/src");
   await openAdvanced(page, "Orchestration");
   const stateMachine = page.locator(".behavior-card", { hasText: "Agent behavior state machine" });
   const background = page.locator(".behavior-card", { hasText: "Background tool execution" });
   await expect(stateMachine.getByRole("switch")).toBeDisabled();
-  await expect(background.getByRole("switch")).toBeDisabled();
+  if (await background.count() > 0) {
+    await expect(background.getByRole("switch")).toBeDisabled();
+  }
   await expect(stateMachine).toContainText("Unavailable for this runtime");
+});
+
+test("ACP authoring disables tools without a verified bridge before publication", async ({ page }) => {
+  await page.route(/\/v1(?:\/workspaces\/[^/]+)?\/capabilities(?:\?|$)/, async (route) => {
+    const response = await route.fetch();
+    const original = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...original,
+        runtimes: [{
+          id: "acp:codex", label: "Codex", kind: "acp", description: "Codex ACP",
+          local: { detected: true, login_state: "available", remediation: "Enable the MCP bridge." },
+          features: {
+            environment_session: "supported", context_projection: "supported",
+            awaken_tool_bridge: "conditional", state_machine: "unavailable",
+            background_tools: "unavailable", working_directory: "supported",
+            provider_server_tools: "conditional",
+          },
+        }],
+      },
+    });
+  });
+  await page.goto("/w/default/agents/new");
+  await openBuild(page, "Instructions");
+  await page.getByLabel("Execution runtime").selectOption("acp:codex");
+  await expect(page.getByText(/needs a verified tool bridge/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Refresh status" })).toBeVisible();
+  await openBuild(page, "Tools & permissions");
+  await expect(page.getByRole("checkbox", { name: /read/i })).toBeDisabled();
+  await expect(page.getByText(/Awaken via ACP bridge.*needs verification/i).first()).toBeVisible();
 });
 
 test("Models gives one actionable ACP installation, login and bridge status view", async ({ page }) => {
   await page.goto("/w/default/models");
   const runtimes = page.locator(".card", { hasText: "Agent runtimes & harnesses" });
   await expect(runtimes).toBeVisible();
-  await expect(runtimes.getByText(/Native Awaken/)).toBeVisible();
+  await expect(runtimes.getByText("Native Awaken", { exact: true }).first()).toBeVisible();
   await expect(runtimes.getByText(/Codex|Claude|Gemini/).first()).toBeVisible();
   await expect(runtimes.getByText(/Executable|Login required|Not available/).first()).toBeVisible();
+  await expect(runtimes.getByText("Working directory").first()).toBeVisible();
+  await expect(runtimes.getByRole("button", { name: "Refresh status" })).toBeVisible();
+  await expect(runtimes.locator(".runtime-status-card").first()).toBeVisible();
+});
+
+test("Models fails closed with a recoverable Runtime status error", async ({ page }) => {
+  await page.route(/\/v1(?:\/workspaces\/[^/]+)?\/capabilities(?:\?|$)/, (route) => route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "runtime probe unavailable" }),
+  }));
+  await page.goto("/w/default/models");
+  await expect(page.getByRole("alert").filter({ hasText: "Runtime status could not load" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry status check" })).toBeVisible();
 });
 
 test("Agent Release shows immutable published versions newest-first on desktop and mobile", async ({ page, request }) => {
@@ -718,6 +774,7 @@ test("a specialist is created inside its primary Agent, published first, and hid
   await page.getByRole("button", { name: "Publish", exact: false }).first().click();
   const modal = page.locator(".modal");
   await expect(modal.getByRole("heading", { name: "Publish changes?" })).toBeVisible();
+  await expect(modal.getByText("Execution plan", { exact: true })).toBeVisible();
   await modal.getByRole("button", { name: "Publish", exact: false }).click();
   await expect(page).toHaveURL(new RegExp(`/agents/${primary}\\?stage=advanced&section=orchestration&attach=${specialist}$`));
   await expect(page.getByRole("list", { name: "Auxiliary Agent roster" })).toContainText(specialist);

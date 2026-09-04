@@ -18,4 +18,3 @@ export type JsonInspectorProps = {
     readonly stringify?: ((value: unknown) => string) | undefined;
 };
 export declare function JsonInspector({ value, collapsed, labels, classes, stringify, }: JsonInspectorProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=json-inspector.d.ts.map

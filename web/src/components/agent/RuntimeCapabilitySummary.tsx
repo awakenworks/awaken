@@ -5,7 +5,9 @@ import {
   type RuntimeSupport as Support,
 } from "../../lib/agent-runtime-capabilities";
 import { useApp } from "../../lib/app-state";
-import { Pill } from "../ui";
+import { protocolHelpPath } from "../../lib/navigation/paths";
+import { Link } from "react-router";
+import { Button, Pill } from "../ui";
 
 interface SupportRow {
   capability: string;
@@ -16,9 +18,13 @@ interface SupportRow {
 export default function RuntimeCapabilitySummary({
   model,
   runtime,
+  updatedAt,
+  onRefresh,
 }: {
   model: AgentConfig["model"];
   runtime?: RuntimeCap;
+  updatedAt?: number;
+  onRefresh?: () => void;
 }) {
   const app = useApp();
   const acp = isAcpModelSelection(model);
@@ -97,15 +103,34 @@ export default function RuntimeCapabilitySummary({
       ? "warn" as const
       : "neutral" as const;
   const negotiated = runtime?.local?.negotiated;
+  const supportedCount = rows.filter((row) => row.support === "supported").length;
+  const unavailableCount = rows.filter((row) => row.support === "unavailable").length;
+  const conditionalCount = rows.filter((row) => row.support === "conditional").length;
+  const bridgeReady = support.tools_mcp === "supported";
 
   return (
-    <details className="runtime-capability-summary">
+    <section className="runtime-capability-panel" aria-label={app.t("Runtime capability support", "Runtime 能力支持")}>
+      <div className={`runtime-capability-overview ${acp && !bridgeReady ? "is-warning" : "is-ready"}`}>
+        <span className="runtime-capability-icon" aria-hidden="true">{acp && !bridgeReady ? "!" : "✓"}</span>
+        <span>
+          <strong>{acp
+            ? bridgeReady
+              ? app.t(`${runtime?.label ?? "ACP"} is ready for governed Awaken tools`, `${runtime?.label ?? "ACP"} 已可使用受治理的 Awaken 工具`)
+              : app.t(`${runtime?.label ?? "ACP"} needs a verified tool bridge`, `${runtime?.label ?? "ACP"} 需要验证工具桥接`)
+            : app.t("Native Awaken provides the complete execution path", "Native Awaken 提供完整执行链路")}</strong>
+          <span>{app.t(
+            `${supportedCount} supported${conditionalCount ? ` · ${conditionalCount} conditional` : ""}${unavailableCount ? ` · ${unavailableCount} unavailable` : ""}`,
+            `${supportedCount} 项支持${conditionalCount ? ` · ${conditionalCount} 项有条件支持` : ""}${unavailableCount ? ` · ${unavailableCount} 项不可用` : ""}`,
+          )}</span>
+        </span>
+      </div>
+      <details className="runtime-capability-summary">
       <summary>
         <span>
           <strong>{app.t("Capability support", "能力支持")}</strong>
           <span className="mut"> · {runtime?.label ?? app.t("Native Awaken", "Native Awaken")}</span>
         </span>
-        <span className="mut">{app.t("View matrix", "查看矩阵")}</span>
+        <span className="mut runtime-capability-toggle">{app.t("View matrix", "查看矩阵")}</span>
       </summary>
       <div className="runtime-capability-grid">
         {rows.map((row) => (
@@ -118,25 +143,33 @@ export default function RuntimeCapabilitySummary({
           </div>
         ))}
       </div>
+      </details>
       {acp && runtime?.local?.remediation && (
         <div className="banner warn">
           <span>!</span>
           <span>{runtime.local.remediation}</span>
         </div>
       )}
-      {acp && support.tools_mcp !== "supported" && (
+      {acp && !bridgeReady && (
         <div className="banner warn" role="alert">
           <span>!</span>
           <span>{app.t(
             negotiated
-              ? "This Harness did not negotiate a compatible MCP transport. Awaken read, write, Memory, Skill, and host Web tools will not be available."
+              ? "This Harness did not negotiate a compatible MCP transport. Awaken read, write, Memory, Skill, and host Web tools will not be available. Choose another ready Runtime or repair the Harness before publishing."
               : "Tool transport has not been verified yet. Refresh the Harness probe before publishing an Agent that uses Awaken tools.",
             negotiated
-              ? "该 Harness 未协商到兼容的 MCP 传输；Awaken read、write、Memory、Skill 和 Host Web 工具将不可用。"
+              ? "该 Harness 未协商到兼容的 MCP 传输；Awaken read、write、Memory、Skill 和 Host Web 工具将不可用。请改用已就绪的 Runtime，或先修复 Harness 再发布。"
               : "工具传输尚未验证。发布使用 Awaken 工具的 Agent 前，请先刷新 Harness 能力探测。",
           )}</span>
         </div>
       )}
-    </details>
+      {acp && (
+        <div className="runtime-capability-actions">
+          {updatedAt ? <span className="mut">{app.t("Last checked", "上次检查")} {new Date(updatedAt).toLocaleTimeString()}</span> : null}
+          {onRefresh && <Button variant="ghost" onClick={onRefresh}>{app.t("Refresh status", "刷新状态")}</Button>}
+          <Link className="btn ghost" to={protocolHelpPath(app.workspaceId, "acp")}>{app.t("Open ACP setup", "打开 ACP 设置")}</Link>
+        </div>
+      )}
+    </section>
   );
 }

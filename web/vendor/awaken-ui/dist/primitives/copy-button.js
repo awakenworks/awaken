@@ -26,4 +26,3 @@ export function CopyButton({ value, label, copiedLabel, icon, copiedIcon, resetA
     const currentLabel = copied ? copiedLabel : label;
     return (_jsx(Button, { type: "button", variant: "icon", className: cx("ui-copy", copied && "is-copied", className), "aria-label": currentLabel, title: currentLabel, onClick: () => void copy(), children: copied ? copiedIcon ?? _jsx("span", { "aria-hidden": "true", children: "\u2713" }) : icon ?? _jsx("span", { "aria-hidden": "true", children: "\u25A1" }) }));
 }
-//# sourceMappingURL=copy-button.js.map

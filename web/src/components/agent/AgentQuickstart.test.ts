@@ -40,6 +40,8 @@ describe("agent editor draft derivation", () => {
     }), "R2 MCP").toBe(true);
     expect(agentNeedsToolBridge({ ...blank, plugin_config: { memory: {} } }), "R2 memory")
       .toBe(true);
+    expect(agentNeedsToolBridge({ ...blank, tools: ["web_search"] }, ["web_search"]), "R3 provider server")
+      .toBe(false);
   });
 
   it("adds the transient permission preset only to the requested authoring body", () => {

@@ -36,8 +36,17 @@ export function buildAgentDraftBody(
   };
 }
 
-export function agentNeedsToolBridge(config: AgentConfig): boolean {
-  return config.tools.length > 0
+export function agentNeedsToolBridge(
+  config: AgentConfig,
+  providerServerTools: readonly string[] = [],
+  selectedTools?: readonly string[],
+): boolean {
+  const providerServer = new Set(providerServerTools);
+  const bridgeOwnedTools = selectedTools
+    ? selectedTools.some((tool) => !providerServer.has(tool))
+      || config.tools.some((tool) => typeof tool === "object" && tool.type !== "agent_toolset_20260401")
+    : config.tools.some((tool) => typeof tool !== "string" || !providerServer.has(tool));
+  return bridgeOwnedTools
     || config.skills.length > 0
     || config.mcp_servers.length > 0
     || Object.hasOwn(config.plugin_config, "memory");

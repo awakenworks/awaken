@@ -19,4 +19,3 @@ export type SegmentedControlProps<T extends string | number | boolean> = {
     readonly activeDataAttribute?: `data-${string}`;
 };
 export declare function SegmentedControl<T extends string | number | boolean>({ options, value, onChange, className, buttonClassName, activeClassName, inactiveClassName, buttonStyle, as: Container, ariaLabel, activeDataAttribute, }: SegmentedControlProps<T>): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=segmented-control.d.ts.map

@@ -58,4 +58,3 @@ export function DialogSurface({ open, onOpenChange, children, rootClassName, pan
                     returnFocusRef.current?.focus();
             }, open: open, children: _jsxs(HeadlessDialog.Portal, { className: "ui-dialog-surface__portal", container: rootRef, children: [overlayClassName ? (_jsx(HeadlessDialog.Backdrop, { className: overlayClassName, onMouseDown: closeOnBackdrop ? () => onOpenChange(false) : undefined })) : null, _jsx(HeadlessDialog.Viewport, { className: "ui-dialog-surface__viewport", children: _jsx(HeadlessDialog.Popup, { ...panelProps, "aria-label": ariaLabel, "aria-labelledby": labelledBy, className: panelClassName, ref: setPanelRef, render: createElement(panelAs), children: children }) })] }) }) }));
 }
-//# sourceMappingURL=dialog-surface.js.map

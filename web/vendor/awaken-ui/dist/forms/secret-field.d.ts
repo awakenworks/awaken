@@ -32,4 +32,3 @@ export interface SecretFieldProps {
 }
 /** Write-only keep/replace/clear editor; stored secret values never enter props. */
 export declare function SecretField({ label, hasStored, onChange, labels, placeholder, classes, }: SecretFieldProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=secret-field.d.ts.map

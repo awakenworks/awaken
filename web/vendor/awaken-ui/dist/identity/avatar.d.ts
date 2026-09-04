@@ -22,4 +22,3 @@ export interface AvatarGroupProps extends HTMLAttributes<HTMLSpanElement> {
     readonly avatarClasses?: AvatarClasses;
 }
 export declare function AvatarGroup({ children, className, overflow, overflowLabel, avatarClasses, ...props }: AvatarGroupProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=avatar.d.ts.map

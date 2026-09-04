@@ -13,4 +13,3 @@ export function ReasoningBlock({ label, children, defaultOpen = false, streaming
     const [open, setOpen] = useState(defaultOpen);
     return (_jsxs("section", { className: cx("ui-chat-reasoning", className), children: [_jsxs("button", { className: classes?.header, type: "button", "aria-expanded": open, onClick: () => setOpen((value) => !value), children: [_jsx("span", { className: classes?.icon, "aria-hidden": "true", children: icon ?? "◇" }), _jsx("span", { children: label }), _jsx("span", { className: cx(classes?.chevron, open && "is-open"), "data-open": open || undefined, "aria-hidden": "true", children: expandIcon ?? (open ? "⌄" : "›") })] }), open ? _jsxs("div", { className: classes?.body, children: [children, streaming ? _jsx("span", { className: classes?.caret, "aria-hidden": "true", children: "\u258D" }) : null] }) : null] }));
 }
-//# sourceMappingURL=status.js.map

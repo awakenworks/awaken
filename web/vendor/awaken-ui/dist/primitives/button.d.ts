@@ -9,4 +9,3 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
     readonly loadingLabel?: string;
 }
 export declare const Button: import("react").ForwardRefExoticComponent<ButtonProps & import("react").RefAttributes<HTMLButtonElement>>;
-//# sourceMappingURL=button.d.ts.map

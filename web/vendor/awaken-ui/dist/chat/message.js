@@ -13,4 +13,3 @@ export function ChatMessage({ role, authorLabel, body, media, timestamp, actions
     const stamp = formatChatTime(timestamp);
     return (_jsxs("article", { className: cx("ui-chat-message", className), "data-role": role, "data-compact": compact || undefined, children: [_jsx("div", { className: cx("ui-chat-message__media", classes?.media), children: media ?? _jsx(Avatar, { label: authorLabel, size: "sm" }) }), _jsxs("div", { className: cx("ui-chat-message__content", classes?.content), children: [_jsxs("header", { className: cx("ui-chat-message__header", classes?.header), children: [_jsx("strong", { className: classes?.author, children: authorLabel }), stamp ? _jsx("time", { className: classes?.time, dateTime: timestamp, children: stamp }) : null, actions] }), body === undefined ? null : _jsx("div", { className: cx("ui-chat-message__body", classes?.body), children: body }), children] })] }));
 }
-//# sourceMappingURL=message.js.map

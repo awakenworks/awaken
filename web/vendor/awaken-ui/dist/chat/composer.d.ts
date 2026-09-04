@@ -35,4 +35,3 @@ export type ChatComposerProps = {
     };
 };
 export declare function ChatComposer({ value, onChange, onSubmit, onStop, busy, disabled, sendMode, placeholder, ariaLabel, sendLabel, stopLabel, hint, leadingActions, sendIcon, stopIcon, className, classes, }: ChatComposerProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=composer.d.ts.map

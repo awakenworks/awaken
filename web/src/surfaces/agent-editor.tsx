@@ -47,6 +47,7 @@ import type {
   ValidationResult,
 } from "../lib/api/types";
 import { reconcileMemoryBinding, shouldEnableMemoryExtraction } from "../lib/agent-memory-binding";
+import { effectiveAgentToolPermission, selectedAgentToolIds } from "../lib/agent-toolsets";
 import {
   AUXILIARY_PARENT_KEY,
   AUXILIARY_ROLE_KEY,
@@ -61,6 +62,7 @@ import { hasSurface, quickstartSessionPath } from "../lib/navigation/paths";
 import { useModels } from "../lib/useModels";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import ModelsSurface from "./models";
+import { webSearchProviderOptions } from "../components/agent/WebSearchBehaviorEditor";
 
 export default function AgentEditorSurface() {
   const app = useApp();
@@ -141,12 +143,29 @@ export default function AgentEditorSurface() {
     && targetId().length > 0
     && (cfg.system ?? "").trim().length > 0;
   const body = () => buildAgentDraftBody(cfg, targetId(), permissionPreset);
+  const agentToolset = caps.data?.toolsets?.find((toolset) => toolset.type === "agent_toolset_20260401");
+  const selectedToolIds = selectedAgentToolIds(cfg.tools, agentToolset?.members ?? []);
+  const providerServerTools = ["web_search", "web_fetch"].filter((toolId) => {
+    const plugin = caps.data?.plugins?.find((candidate) => candidate.id === toolId);
+    const providerId = (cfg.plugin_config[toolId] as { provider_id?: string } | undefined)?.provider_id;
+    return webSearchProviderOptions(plugin?.config_schema)
+      .some((provider) => provider.id === providerId && provider.realization === "provider_server");
+  });
+  const providerApprovalConflict = providerServerTools.some((toolId) =>
+    selectedToolIds.includes(toolId)
+      && effectiveAgentToolPermission(cfg.tools, toolId, agentToolset?.default_config.permission_policy).type === "always_ask");
   const modelIsRunnable = agentModelIsRunnable(
     cfg.model,
     models,
     caps.data?.runtimes ?? [],
-    agentNeedsToolBridge(cfg),
+    agentNeedsToolBridge(cfg, providerServerTools, selectedToolIds),
   );
+  const canPublish = canSave && modelIsRunnable && !providerApprovalConflict;
+  const publishBlockedReason = !canSave ? undefined : !modelIsRunnable
+    ? app.t("The selected model or Runtime does not have a verified execution path.", "所选模型或 Runtime 尚无已验证的执行路径。")
+    : providerApprovalConflict
+      ? app.t("A provider-executed Web tool cannot use per-call Awaken approval.", "由供应商执行的 Web 工具不能使用 Awaken 逐次审批。")
+      : undefined;
 
   const saveConfig = async (): Promise<number | undefined> => {
     const result = await api.put<{ id: string; generation?: number }>(
@@ -502,6 +521,8 @@ export default function AgentEditorSurface() {
         dirty={hasUnsavedChanges}
         status={review.status}
         canSave={canSave}
+        canPublish={canPublish}
+        publishBlockedReason={publishBlockedReason}
         validatePending={validate.isPending}
         savePending={save.isPending}
         publishPending={publish.isPending}
@@ -533,13 +554,15 @@ export default function AgentEditorSurface() {
           config={cfg} baseline={baseline} resources={resourceInputs} resourcesError={resourcesError}
           resourceInputDefaults={caps.data?.resource_inputs?.default_mounts}
           resourceRevision={resourceRevision} isNew={isNew} published={existing.data?.published === true}
-          canRun={managedRuntime && canSave && modelIsRunnable} runPending={quickRun.isPending} publishPending={publish.isPending}
+          canRun={managedRuntime && canPublish} runPending={quickRun.isPending} publishPending={publish.isPending}
           readyModels={models} allModels={allModels} runtimes={caps.data?.runtimes ?? []}
           tools={caps.data?.tools ?? []} plugins={caps.data?.plugins ?? []}
           toolsets={caps.data?.toolsets ?? []}
           credentials={credentials.data ?? []} changed={changed} onPatch={patch} onRawChange={replaceRaw}
           onApplyControlledModifications={() => { setPermissionPreset("controlled_modifications"); setDirty(true); }}
           onManageModels={() => setManageModels(true)}
+          onRefreshRuntimes={() => void caps.refetch()}
+          runtimeUpdatedAt={caps.dataUpdatedAt}
           onReviewRun={(environmentId, task) => { quickRun.reset(); setQuickRunIntent({ environmentId, task }); }}
           onBuilderSectionChange={setBuilderSection} onAdvancedSectionChange={setAdvancedSection}
           onResourcesChange={(inputs) => {
@@ -581,6 +604,9 @@ export default function AgentEditorSurface() {
         quickRunError={quickRun.error instanceof Error ? quickRun.error : undefined}
         showPublish={showPublish}
         publishPending={publish.isPending}
+        runtimes={caps.data?.runtimes ?? []}
+        plugins={caps.data?.plugins ?? []}
+        toolMembers={caps.data?.toolsets?.find((toolset) => toolset.type === "agent_toolset_20260401")?.members ?? []}
         onCloseQuickRun={() => setQuickRunIntent(undefined)}
         onConfirmQuickRun={(intent) => quickRun.mutate(intent)}
         onClosePublish={() => setShowPublish(false)}

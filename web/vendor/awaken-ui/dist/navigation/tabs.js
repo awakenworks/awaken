@@ -58,4 +58,3 @@ export function TabPanel({ value, className, ...props }) {
     const selected = context.value === value;
     return _jsx("div", { ...props, role: "tabpanel", id: partId(context.id, "panel", value), "aria-labelledby": partId(context.id, "tab", value), className: cx("ui-tabs__panel", className), hidden: !selected, tabIndex: 0 });
 }
-//# sourceMappingURL=tabs.js.map

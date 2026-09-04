@@ -15,4 +15,3 @@ export function SuiteSwitcher({ "aria-label": ariaLabel, currentLabel, destinati
 function SuiteItemContent({ description, icon, label, }) {
     return _jsxs(_Fragment, { children: [icon ? _jsx("span", { "aria-hidden": "true", className: "ui-suite-switcher__icon", children: icon }) : null, _jsxs("span", { className: "ui-suite-switcher__copy", children: [_jsx("strong", { children: label }), description ? _jsx("small", { children: description }) : null] })] });
 }
-//# sourceMappingURL=suite-switcher.js.map

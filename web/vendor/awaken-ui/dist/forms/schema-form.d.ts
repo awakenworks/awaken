@@ -35,4 +35,3 @@ export interface SchemaFormProps {
 }
 export declare function stringControlForSchema(schema: JsonSchema): "input" | "textarea";
 export declare function SchemaForm({ schema, value, onChange, labels, className, classes, }: SchemaFormProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=schema-form.d.ts.map

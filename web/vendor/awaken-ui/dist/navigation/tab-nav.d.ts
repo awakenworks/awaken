@@ -8,4 +8,3 @@ export type TabNavItemProps = AnchorHTMLAttributes<HTMLAnchorElement> & {
     readonly render?: ReactElement<AnchorHTMLAttributes<HTMLAnchorElement>>;
 };
 export declare function TabNavItem({ current, render, className, children, ...props }: TabNavItemProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=tab-nav.d.ts.map

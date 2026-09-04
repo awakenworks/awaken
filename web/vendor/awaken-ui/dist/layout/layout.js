@@ -12,4 +12,3 @@ export function Cluster({ className, ...props }) {
 export function SplitPane({ className, ...props }) {
     return _jsx("div", { ...props, className: cx("ui-split-pane", className) });
 }
-//# sourceMappingURL=layout.js.map

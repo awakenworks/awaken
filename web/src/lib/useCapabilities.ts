@@ -15,5 +15,8 @@ export function useCapabilities() {
     queryFn: () => api.get<Capabilities>(ws("/v1/capabilities")),
     staleTime: 2_000,
     refetchInterval: 5_000,
+    // Surface an actionable status quickly while tolerating one transient probe
+    // failure. The five-second poll remains the recovery path after that.
+    retry: 1,
   });
 }

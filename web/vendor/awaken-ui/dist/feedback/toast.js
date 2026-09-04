@@ -40,4 +40,3 @@ function ToastItem({ toast, dismissLabel, onDismiss, icon, }) {
                     onDismiss(toast.id);
                 }, children: toast.action.label })) : null, _jsx("button", { "aria-label": dismissLabel, className: "ui-toast__dismiss", onClick: () => onDismiss(toast.id), type: "button", children: _jsx("span", { "aria-hidden": "true", children: "\u00D7" }) })] }));
 }
-//# sourceMappingURL=toast.js.map

@@ -30,4 +30,3 @@ export type IdentityCardProps = IdentityProps & {
 };
 /** Surface wrapper; routing and domain actions remain consumer-owned. */
 export declare function IdentityCard({ selected, href, onActivate, className, ...identity }: IdentityCardProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=identity.d.ts.map

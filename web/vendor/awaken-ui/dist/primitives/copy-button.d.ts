@@ -9,4 +9,3 @@ export type CopyButtonProps = {
     readonly className?: string;
 };
 export declare function CopyButton({ value, label, copiedLabel, icon, copiedIcon, resetAfter, className, }: CopyButtonProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=copy-button.d.ts.map

@@ -41,6 +41,8 @@ interface Props {
   onApplyControlledModifications: () => void;
   onRawChange: (value: AgentConfig) => void;
   onManageModels: () => void;
+  onRefreshRuntimes?: () => void;
+  runtimeUpdatedAt?: number;
   onReviewRun: (environmentId: string, task: string) => void;
   onBuilderSectionChange: (section: BuilderSection) => void;
   onAdvancedSectionChange: (section: AdvancedSection) => void;
@@ -71,6 +73,8 @@ export default function AgentEditorStages(props: Props) {
         runPending={props.runPending}
         onPatch={props.onPatch}
         onManageModels={props.onManageModels}
+        onRefreshRuntimes={props.onRefreshRuntimes}
+        runtimeUpdatedAt={props.runtimeUpdatedAt}
         onReviewRun={props.onReviewRun}
       />
     );
@@ -97,6 +101,8 @@ export default function AgentEditorStages(props: Props) {
         onPatch={props.onPatch}
         onApplyControlledModifications={props.onApplyControlledModifications}
         onManageModels={props.onManageModels}
+        onRefreshRuntimes={props.onRefreshRuntimes}
+        runtimeUpdatedAt={props.runtimeUpdatedAt}
         onResourcesChange={props.onResourcesChange}
         onRetryResources={props.onRetryResources}
         onValidityChange={props.onIntegrationsValidityChange}

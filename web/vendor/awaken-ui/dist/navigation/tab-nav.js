@@ -13,4 +13,3 @@ export function TabNavItem({ current = false, render, className, children, ...pr
     };
     return _jsx("li", { className: "ui-tab-nav__item", "data-current": current || undefined, children: render ? cloneElement(render, anchorProps) : _jsx("a", { ...anchorProps }) });
 }
-//# sourceMappingURL=tab-nav.js.map

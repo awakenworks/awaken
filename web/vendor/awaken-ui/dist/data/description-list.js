@@ -12,4 +12,3 @@ export function DescriptionTerm({ className, ...props }) {
 export function DescriptionDetails({ className, ...props }) {
     return _jsx("dd", { ...props, className: cx("ui-description-list__details", className) });
 }
-//# sourceMappingURL=description-list.js.map

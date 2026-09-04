@@ -19,4 +19,3 @@ export function BreadcrumbItem(itemProps) {
     }
     return _jsxs("li", { className: "ui-breadcrumbs__item", children: [content, _jsx("span", { className: "ui-breadcrumbs__separator", "aria-hidden": "true", children: separator })] });
 }
-//# sourceMappingURL=breadcrumbs.js.map

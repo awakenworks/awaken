@@ -19,4 +19,3 @@ export function StatCard({ value, label, icon, hint, tone = "neutral", variant =
 export function StatGrid({ className, ...props }) {
     return _jsx("div", { ...props, className: cx("ui-stat-grid", className) });
 }
-//# sourceMappingURL=stat-card.js.map

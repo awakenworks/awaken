@@ -83,11 +83,26 @@ export default function WebSearchBehaviorEditor({
       >
         {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
       </SelectField>
-      <div className="mut" style={{ fontSize: 12 }}>
-        {selected.realization === "provider_server"
-          ? app.t("Executed by the exact model provider. It uses that model route/account; no separate web credential or fallback is stored here. Per-call Awaken approval is unavailable for provider-executed tools.", "由精确的模型供应商执行；复用该模型路由/账户，此处不保存独立 Web 凭证或 fallback。供应商执行的工具不支持 Awaken 逐次审批。")
-          : app.t("Executed by Awaken. Provider accounts are exact credential pins and fail over only before dispatch.", "由 Awaken 执行；供应商账户由精确凭证版本表示，并且仅在请求发出前失败时切换。")}
+      <div className={`web-execution-owner ${selected.realization === "provider_server" ? "is-provider" : "is-awaken"}`} role="status">
+        <span className="web-execution-owner__icon" aria-hidden="true">{selected.realization === "provider_server" ? "↗" : "◆"}</span>
+        <span>
+          <strong>{selected.realization === "provider_server"
+            ? app.t("Executed by the model provider", "由模型供应商执行")
+            : app.t("Executed and governed by Awaken", "由 Awaken 执行与治理")}</strong>
+          <span>{selected.realization === "provider_server"
+            ? app.t("Uses the selected model route and account. No separate Web credential or fallback is stored here, and Awaken cannot pause each remote call for approval.", "复用所选模型的路由与账户；此处不保存独立 Web 凭证或 fallback，Awaken 也无法暂停每次远端调用进行审批。")
+            : app.t("Uses an exact Vault credential revision. Awaken applies tool permissions, audit events, and pre-dispatch fallback.", "使用精确的 Vault 凭证版本；Awaken 会应用工具权限、审计事件与发出请求前的 fallback。")}</span>
+        </span>
       </div>
+      {selected.requiresCredential && eligible.length === 0 && (
+        <div className="banner warn" role="alert">
+          <span>!</span>
+          <span>{app.t(
+            `No active credential is available for ${selected.label}. Add and verify one in Models & providers before publishing.`,
+            `${selected.label} 没有可用的有效凭证。请先在“模型与供应商”中添加并验证凭证，再发布 Agent。`,
+          )}</span>
+        </div>
+      )}
       {selected.requiresCredential && (
         <SelectField
           label={app.t("Vault credential", "Vault 凭证")}

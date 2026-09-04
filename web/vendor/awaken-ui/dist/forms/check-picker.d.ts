@@ -22,4 +22,3 @@ export interface CheckPickerProps {
 }
 /** Controlled multi-select list; option order is preserved in emitted values. */
 export declare function CheckPicker({ options, selected, onChange, empty, className, classes, }: CheckPickerProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=check-picker.d.ts.map

@@ -34,4 +34,3 @@ export function DataGrid({ rows, columns, rowKey, state, labels, filter, onRowCl
                                         ? mobileRowActionLabel(row)
                                         : mobileRowActionLabel })) : null] }, rowKey(row)))), pageRows.length === 0 ? renderEmpty() : null] })) })) : null, pages > 1 ? (_jsxs("div", { className: cx("ui-data-grid__pager", classes?.pager), children: [_jsx("button", { className: classes?.button, disabled: page <= 1, onClick: () => state.setPage(page - 1), type: "button", children: labels.previous }), _jsxs("span", { className: classes?.muted, children: [page, " / ", pages] }), _jsx("button", { className: classes?.button, disabled: page >= pages, onClick: () => state.setPage(page + 1), type: "button", children: labels.next })] })) : null] }));
 }
-//# sourceMappingURL=grid.js.map

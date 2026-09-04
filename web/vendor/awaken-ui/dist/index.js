@@ -46,4 +46,3 @@ export { StatusDot } from "./data/status-dot.js";
 export { StatCard, StatGrid, } from "./data/stat-card.js";
 export { EmptyState, ErrorState, LoadingRow, LoadingState, Skeleton, SkeletonList, SurfaceGate, } from "./feedback/state.js";
 export { InlineNotice, } from "./feedback/inline-notice.js";
-//# sourceMappingURL=index.js.map

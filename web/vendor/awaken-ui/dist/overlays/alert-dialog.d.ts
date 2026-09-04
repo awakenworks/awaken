@@ -41,4 +41,3 @@ export interface AlertDialogProps {
 }
 /** Consequence-explicit confirmation dialog with safe initial focus. */
 export declare function AlertDialog({ cancelLabel, confirmLabel, danger, description, impacts, onConfirm, onOpenChange, open, title, icon, closeLabel, closeIcon, classes, role, }: AlertDialogProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=alert-dialog.d.ts.map

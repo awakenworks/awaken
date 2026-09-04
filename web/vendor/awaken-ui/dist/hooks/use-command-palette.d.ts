@@ -32,4 +32,3 @@ export declare function useCommandPaletteShortcut({ enabled, open, openEventName
  * filtering vocabulary, rendering, execution, status copy, and routing.
  */
 export declare function useCommandPalette<Item>({ open, items, filterItems, onOpenChange, onSelect, onEmptyEnter, }: UseCommandPaletteOptions<Item>): CommandPaletteState<Item>;
-//# sourceMappingURL=use-command-palette.d.ts.map

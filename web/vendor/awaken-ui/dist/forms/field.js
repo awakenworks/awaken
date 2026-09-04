@@ -24,4 +24,3 @@ export function CheckboxField({ label, help, className, ...props }) {
     const helpId = help ? `${id}-help` : undefined;
     return (_jsxs("div", { className: cx("ui-checkbox", className), children: [_jsxs("label", { className: "ui-checkbox__row", htmlFor: id, children: [_jsx("input", { ...props, type: "checkbox", id: id, "aria-describedby": helpId, className: "ui-checkbox__box" }), _jsx("span", { className: "ui-checkbox__label", children: label })] }), help === undefined ? null : _jsx("span", { className: "ui-field__help", id: helpId, children: help })] }));
 }
-//# sourceMappingURL=field.js.map

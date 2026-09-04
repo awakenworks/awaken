@@ -9,4 +9,3 @@ export function AuthoringGuide({ label, steps, onSelect, completeIcon, incomplet
     const currentIndex = Math.max(0, steps.findIndex((step) => !step.complete));
     return (_jsxs("nav", { "aria-label": label, className: cx("ui-authoring-guide", className), children: [steps.map((step, index) => (_jsxs("button", { className: cx("ui-authoring-guide__step", step.complete && "is-complete", index === currentIndex && "is-current"), onClick: () => onSelect(step.key), type: "button", children: [step.complete ? completeIcon : incompleteIcon, _jsxs("span", { children: [index + 1, ". ", step.label] })] }, step.key))), blocked ? _jsx("span", { className: "ui-authoring-guide__blocked", children: blocked }) : null] }));
 }
-//# sourceMappingURL=authoring.js.map

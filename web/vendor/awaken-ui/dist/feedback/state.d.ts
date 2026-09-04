@@ -53,4 +53,3 @@ export type SurfaceGateProps = {
     readonly children: ReactNode;
 };
 export declare function SurfaceGate({ query, isEmpty, loading, loadingContent, error, empty, loadingIcon, errorIcon, emptyIcon, children, }: SurfaceGateProps): ReactNode;
-//# sourceMappingURL=state.d.ts.map

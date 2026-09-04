@@ -30,4 +30,3 @@ export interface DialogProps extends Omit<HTMLAttributes<HTMLDivElement>, "title
  * this component owns modal focus, dismissal, portal, and ARIA structure.
  */
 export declare const Dialog: import("react").ForwardRefExoticComponent<DialogProps & import("react").RefAttributes<HTMLDivElement>>;
-//# sourceMappingURL=dialog.d.ts.map

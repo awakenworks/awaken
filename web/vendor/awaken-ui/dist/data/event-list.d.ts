@@ -12,4 +12,3 @@ export type EventItemProps = HTMLAttributes<HTMLLIElement> & {
 };
 export declare function EventItem({ marker, title, timestamp, metadata, actions, children, className, ...props }: EventItemProps): import("react/jsx-runtime").JSX.Element;
 export declare function EventTime({ className, ...props }: TimeHTMLAttributes<HTMLTimeElement>): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=event-list.d.ts.map

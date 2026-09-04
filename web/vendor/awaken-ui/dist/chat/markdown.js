@@ -106,4 +106,3 @@ function attachCodeCopy(pre, labels) {
         button.removeEventListener("click", click);
     };
 }
-//# sourceMappingURL=markdown.js.map

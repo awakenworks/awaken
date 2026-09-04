@@ -9,4 +9,3 @@ export type ChipProps = BadgeProps & {
     readonly icon?: ReactNode;
 };
 export declare function Chip({ children, className, icon, tone, ...props }: ChipProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=badge.d.ts.map

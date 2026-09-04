@@ -22,4 +22,3 @@ export interface EditorFormProps {
 }
 /** Product-neutral form lifecycle/chrome used inside editor dialogs. */
 export declare function EditorForm({ onSubmit, onCancel, error, errorPrefix, pending, cancelLabel, submitLabel, submitIcon, submitDisabled, children, assistant, classes, }: EditorFormProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=editor-form.d.ts.map

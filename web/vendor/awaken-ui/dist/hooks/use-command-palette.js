@@ -84,4 +84,3 @@ export function useCommandPalette({ open, items, filterItems, onOpenChange, onSe
         onInputKeyDown,
     };
 }
-//# sourceMappingURL=use-command-palette.js.map

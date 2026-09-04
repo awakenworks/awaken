@@ -20,4 +20,3 @@ export function SecretField({ label, hasStored, onChange, labels, placeholder, c
                     onChange({ mode: "replace", value: event.target.value });
                 }, placeholder: placeholder ?? labels.placeholder, type: "password", value: value })) : (_jsx("span", { className: cx("ui-secret-field__status", classes?.status), children: mode === "keep" ? labels.kept : labels.cleared }))] }));
 }
-//# sourceMappingURL=secret-field.js.map

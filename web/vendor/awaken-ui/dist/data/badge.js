@@ -9,4 +9,3 @@ export function StatusPill({ children, className, tone = "neutral", ...props }) 
 export function Chip({ children, className, icon, tone = "neutral", ...props }) {
     return _jsxs("span", { ...props, className: cx("ui-chip", `ui-chip--${tone}`, className), children: [icon, children] });
 }
-//# sourceMappingURL=badge.js.map

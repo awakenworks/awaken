@@ -11,6 +11,8 @@ const cargoTargetDir = process.env.AWAKEN_E2E_CARGO_TARGET_DIR ?? "/tmp/awaken-t
 const backendDataDir = process.env.AWAKEN_E2E_OWNED_DATA_DIR
   ?? mkdtempSync(join(tmpdir(), "awaken-console-e2e."));
 process.env.AWAKEN_E2E_OWNED_DATA_DIR = backendDataDir;
+process.env.AWAKEN_E2E_BACKEND_PORT = String(backendPort);
+process.env.AWAKEN_E2E_CARGO_TARGET_DIR = cargoTargetDir;
 
 // UI e2e: drives the real console (vite dev on :3002, proxying /v1 to a real
 // awaken-server in management mode on :38080). Both are launched as
@@ -43,7 +45,7 @@ export default defineConfig({
       // Browser E2E owns no human who can consume the one-time setup handoff.
       // Exercise application behavior in the explicit no-login deployment mode;
       // local-browser authentication has its own control-plane integration tests.
-      command: `CARGO_TARGET_DIR="${cargoTargetDir}" cargo run --release --quiet -p awaken-cli --bin awaken -- all-in-one --config web/e2e/browser-e2e.toml --port ${backendPort} --data-dir "${backendDataDir}" --no-browser --identity-mode no-login`,
+      command: "node web/e2e/start-backend.mjs",
       cwd: "..",
       url: `${backendUrl}/v1/config/catalog`,
       // A cold Rust build on constrained CI runners can exceed four minutes;

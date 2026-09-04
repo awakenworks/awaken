@@ -32,4 +32,3 @@ export function useChatDraft(key) {
     }, [key]);
     return { value, setValue, clear };
 }
-//# sourceMappingURL=draft.js.map
