@@ -124,6 +124,33 @@ fn owned_binding(owner: &SessionEnvironmentOwner) -> Option<&str> {
     }
 }
 
+fn compatible_durable_projection(
+    owned: &BoundSessionEnvironment,
+    identity: &BoundSessionEnvironmentIdentity,
+    binding: &str,
+) -> bool {
+    let current =
+        serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(&owned.binding);
+    let projected = serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(binding);
+    let same_generation = matches!(
+        (&owned.identity, identity),
+        (
+            BoundSessionEnvironmentIdentity::Durable {
+                generation: current,
+                ..
+            },
+            BoundSessionEnvironmentIdentity::Durable {
+                generation: projected,
+                ..
+            },
+        ) if current == projected
+    );
+    matches!((current, projected), (Ok(current), Ok(projected))
+        if same_generation
+            && current.owned_paths_are_monotonic_to(&projected)
+            && owned.environment.handle() == projected)
+}
+
 impl SessionEnvironmentOwner {
     pub(super) fn install_projection(
         &mut self,
@@ -149,7 +176,7 @@ impl SessionEnvironmentOwner {
             },
             ProjectedEnvironmentOwner::AwaitingAdoption { identity, binding } => {
                 if let Self::Resident(owned) = self
-                    && owned.binding != binding
+                    && (owned.identity != identity || owned.binding != binding)
                 {
                     // A live Resource reservation is the sole durable update
                     // that can change a Resident handle without replacing its
@@ -159,34 +186,29 @@ impl SessionEnvironmentOwner {
                     // monotonic-handle proof, and the exact handle currently
                     // emitted by its retained Arc. No projected string alone can
                     // rebind a process-local owner.
-                    let current = serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(
-                        &owned.binding,
-                    );
-                    let projected = serde_json::from_str::<
-                        awaken_provisioning_contract::SandboxHandle,
-                    >(&binding);
-                    let same_generation = matches!(
-                        (&owned.identity, &identity),
-                        (
-                            BoundSessionEnvironmentIdentity::Durable {
-                                generation: current,
-                                ..
-                            },
-                            BoundSessionEnvironmentIdentity::Durable {
-                                generation: projected,
-                                ..
-                            },
-                        ) if current == projected
-                    );
-                    if let (Ok(current), Ok(projected)) = (current, projected)
-                        && same_generation
-                        && current.owned_paths_are_monotonic_to(&projected)
-                        && owned.environment.handle() == projected
-                    {
+                    if compatible_durable_projection(owned, &identity, &binding) {
                         owned.identity = identity;
                         owned.binding = binding;
                         return Ok(());
                     }
+                }
+                if let Self::Retiring(RetiringSessionEnvironment {
+                    cause: SessionEnvironmentRetirementCause::RealizationRevocation,
+                    owned: RetiringEnvironmentOwner::Bound(owned),
+                }) = self
+                    && (owned.identity != identity || owned.binding != binding)
+                    && compatible_durable_projection(owned, &identity, &binding)
+                {
+                    // Revocation has already closed every local execution path,
+                    // and the lifecycle guard excludes a concurrent retirement
+                    // effect. Advance only the durable receipt identity for the
+                    // same physical generation/Arc so an interrupted Resource
+                    // reservation cannot strand terminal cleanup behind its
+                    // superseded receipt. Other Retiring causes keep their exact
+                    // operation fence and remain strict below.
+                    owned.identity = identity;
+                    owned.binding = binding;
+                    return Ok(());
                 }
                 if let Some(existing) = owned_binding(self)
                     && existing != binding
