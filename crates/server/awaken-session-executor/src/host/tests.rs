@@ -3216,7 +3216,7 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
     let (host, _managed) = dispatch_test_host(raw_host);
 
     let reserved = host
-        .ctx_for_session_reservation("acp-reservation-race", Some("assistant"))
+        .ctx_for_session_coordination("acp-reservation-race", Some("assistant"))
         .await
         .expect("reservation preflight");
     assert!(reserved.env.is_none(), "C1+C2: reservation is effect-free");
@@ -3912,7 +3912,7 @@ async fn generated_compaction_config_survives_claimed_rebuild() {
     let _managed = install_test_dispatch_runtime(&host);
 
     let provisional = host
-        .ctx_for_session_reservation("durable-compact-config", Some("assistant"))
+        .ctx_for_session_coordination("durable-compact-config", Some("assistant"))
         .await
         .expect("C7 reservation context");
     let assert_exact_config = |snapshot: &ExecutableAgentSnapshot, rule: &str| {
@@ -5532,7 +5532,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         .expect("stage frozen Session");
 
     let reservation_error = match host
-        .ctx_for_session_reservation("t-query-after-provisioning-denial", Some("assistant"))
+        .ctx_for_session_coordination("t-query-after-provisioning-denial", Some("assistant"))
         .await
     {
         Ok(_) => panic!("Q1 reservation must reject unsupported limits"),
@@ -7155,7 +7155,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         });
 
     let provisional = host
-        .ctx_for_session_reservation("deferred-managed-filesystem-skill", Some("assistant"))
+        .ctx_for_session_coordination("deferred-managed-filesystem-skill", Some("assistant"))
         .await
         .expect("L9 provisional reservation context");
     assert!(
@@ -7783,14 +7783,15 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
 /// Durable-binding decision table: no binding + no resident Environment permits
 /// first creation; exact binding + adopted/resident permits reuse (covered by the
 /// recovery E2E); exact binding + neither rejects ordinary execution before
-/// provider creation, while the Coordinator-only reservation boundary freezes an
-/// environment-free dispatch context and leaves adoption to the claimed Worker.
+/// provider creation, while Coordinator-only reservation and observation freeze
+/// an environment-free context and leave adoption to the claimed Worker.
 ///
 /// | Rule | durable binding | local adoption | context purpose | Effect |
 /// | B1 | present | absent | execute | reject, no substitute |
 /// | B2 | present | absent | reserve dispatch | env=None, preserve binding |
+/// | B3 | present | absent | observe remote Run | env=None, preserve binding |
 #[tokio::test]
-async fn missing_durable_environment_adoption_is_deferred_only_for_reservation() {
+async fn missing_durable_environment_adoption_is_deferred_only_for_coordination() {
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     host.install_session_environment_owner_projection(
         "binding-corrupt",
@@ -7814,19 +7815,19 @@ async fn missing_durable_environment_adoption_is_deferred_only_for_reservation()
     );
 
     let reserved = host
-        .ctx_for_session_reservation("binding-corrupt", None)
+        .ctx_for_session_coordination("binding-corrupt", None)
         .await
-        .expect("B2 Coordinator-only projection does not adopt Worker substrate");
-    assert!(reserved.env.is_none(), "B2");
+        .expect("B2/B3 Coordinator-only projection does not adopt Worker substrate");
+    assert!(reserved.env.is_none(), "B2/B3");
     assert_eq!(
         host.durable_session_environment_binding("binding-corrupt")
             .as_deref(),
         Some("opaque"),
-        "B2 durable identity is retained",
+        "B2/B3 durable identity is retained",
     );
     assert!(
         host.session_environment("binding-corrupt").await.is_none(),
-        "B2 no substitute or local adoption",
+        "B2/B3 no substitute or local adoption",
     );
 }
 

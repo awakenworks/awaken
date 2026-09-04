@@ -289,7 +289,7 @@ impl SharedHost {
     ) -> Result<CommittedStepReceipt, HostError> {
         let session_id = admission.session_id().to_string();
         let run_id = admission.run_id().clone();
-        let ctx = self.ctx_for(&session_id, None).await?;
+        let ctx = self.ctx_for_session_coordination(&session_id, None).await?;
         let state = activate_and_await_session_run(
             &self.completion,
             &run_id,
@@ -327,7 +327,7 @@ impl SharedHost {
         let session_id = delivery.command.session_id.clone();
         let run_id = delivery.command.expected_run_id.clone();
         let correlation_id = delivery.command.expected_correlation_id.clone();
-        let ctx = self.ctx_for(&session_id, None).await?;
+        let ctx = self.ctx_for_session_coordination(&session_id, None).await?;
         let messages_before = self
             .authoritative_step_snapshot(&ctx, &run_id)
             .await?
