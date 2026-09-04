@@ -72,6 +72,12 @@ enum ArchiveAdmission {
     ForceTerminal,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArchiveCleanupCompletion {
+    Recoverable,
+    Required,
+}
+
 fn pending_event_batch_error() -> SessionPreparationError {
     SessionPreparationError::Rejected(RunError::unavailable_classified(
         "session_event_batch_pending",
@@ -390,13 +396,17 @@ impl SessionApplication {
             archived_at,
             fact,
             ArchiveAdmission::IdleOnly,
+            ArchiveCleanupCompletion::Recoverable,
         )
         .await
     }
 
     /// Force a terminal Session fence for an internal lifecycle owner such as
     /// Dream cleanup. This deliberately bypasses public idle admission while
-    /// retaining the same archive CAS and terminal cleanup implementation.
+    /// retaining the same archive CAS and terminal cleanup implementation. A
+    /// successful response additionally requires the canonical terminal-cleanup
+    /// receipt; callers such as Dream must not publish their own completion
+    /// while a registered Worker still owns that external effect.
     pub async fn force_terminate_session(
         &self,
         session_id: &str,
@@ -408,6 +418,7 @@ impl SessionApplication {
             archived_at,
             fact,
             ArchiveAdmission::ForceTerminal,
+            ArchiveCleanupCompletion::Required,
         )
         .await
     }
@@ -418,6 +429,7 @@ impl SessionApplication {
         archived_at: &str,
         fact: ManagedLifecycleFact,
         admission: ArchiveAdmission,
+        cleanup_completion: ArchiveCleanupCompletion,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         let transition = self
             .commit_archive(session_id, archived_at, fact, admission)
@@ -432,15 +444,31 @@ impl SessionApplication {
         // cannot strand the intent; the attempt only shortens convergence when
         // the current projector is immediately available.
         self.wake_lifecycle_supervisor();
-        if let Err(error) = self
+        let cleanup = self
             .release_terminal_resources(&transition.owner_scope, session_id)
-            .await
-        {
-            tracing::warn!(
-                session = session_id,
-                error = ?error,
-                "Session archive cleanup remains pending for lifecycle recovery"
-            );
+            .await;
+        match (cleanup_completion, cleanup) {
+            (ArchiveCleanupCompletion::Required, Ok(Some(session))) => {
+                if !session
+                    .verified_terminal_cleanup()
+                    .map_err(super::resource_reconciliation::internal)?
+                    .is_completed()
+                {
+                    return Err(SessionPreparationError::Unavailable(
+                        "Session archive cleanup remains pending".into(),
+                    ));
+                }
+            }
+            (ArchiveCleanupCompletion::Required, Ok(None)) => {}
+            (ArchiveCleanupCompletion::Required, Err(error)) => return Err(error),
+            (ArchiveCleanupCompletion::Recoverable, Err(error)) => {
+                tracing::warn!(
+                    session = session_id,
+                    error = ?error,
+                    "Session archive cleanup remains pending for lifecycle recovery"
+                );
+            }
+            (ArchiveCleanupCompletion::Recoverable, Ok(_)) => {}
         }
         Ok(transition)
     }

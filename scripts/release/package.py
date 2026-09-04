@@ -486,8 +486,26 @@ def main(argv: list[str] | None = None) -> int:
         REPOSITORY, binary, companion, target, version, args.output_dir, source_epoch()
     )
     checksum = write_checksum(archive)
+    profile = os.environ.get("AWAKEN_RELEASE_PROFILE", "standard")
+    verification_manifest = archive.with_name(f"{archive.name}.verification.json")
+    subprocess.run(
+        [
+            sys.executable,
+            str(REPOSITORY / "scripts/release/verification_manifest.py"),
+            "generate",
+            "--artifact",
+            str(archive),
+            "--output",
+            str(verification_manifest),
+            "--profile",
+            profile,
+        ],
+        cwd=REPOSITORY,
+        check=True,
+    )
     print(archive)
     print(checksum)
+    print(verification_manifest)
     return 0
 
 

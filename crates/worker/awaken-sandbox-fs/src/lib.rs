@@ -1419,13 +1419,15 @@ pub fn write_relative_file_atomic(
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn portable_mode(mode: u32) -> std::io::Result<rustix::fs::Mode> {
-    let raw = mode.try_into().map_err(|_| {
-        std::io::Error::new(
+    if mode & !0o7777 != 0 {
+        return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("file mode {mode:#o} is outside the platform range"),
-        )
-    })?;
-    Ok(rustix::fs::Mode::from_raw_mode(raw))
+            format!("file mode {mode:#o} contains non-permission bits"),
+        ));
+    }
+    // `RawMode` is u32 on Linux and u16 on macOS. The explicit 12-bit
+    // permission bound above makes this conversion lossless on both targets.
+    Ok(rustix::fs::Mode::from_raw_mode(mode as rustix::fs::RawMode))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

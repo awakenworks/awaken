@@ -218,6 +218,10 @@ production logic.
   authority and physical execution are separate variables: two Workers may
   reclaim/race the former, while an exact predecessor slot remains occupied
   until quiescence and the model checks at most one physical attempt per Thread.
+  The production Runtime cache carries a closed coordination-or-execution
+  purpose. Its Kani-proved admission reducer forbids a coordination envelope
+  from satisfying an execution request even when the frozen publication is
+  identical; the claimed Worker therefore rebuilds the executable context.
 - `ThreadState.tla` covers atomic typed-state batch admission, exact Run-scope
   binding, crash/rejection stuttering, version advancement, deterministic
   materialization, and replay equality. The Rust state selectors are the same
@@ -659,6 +663,25 @@ that Rust file refines the model. Direct implementation evidence is counted only
 when a named Kani harness invokes the production kernel or the real Runtime
 emits a trace checked by `ThreadCommitProjection!TraceIsRefinement`.
 
+Every obligation now also carries the non-overloaded proof_grade,
+claim_scope, bounds, tcb_assumptions, and production_entrypoints contract.
+abstract_model_checked and abstract_theorem_proved make claims about the
+abstract transition system only. production_kernel_proved names a Kani harness
+over code called by production; implementation_refined names the executable
+Runtime-to-model bridge. external_tcb is an explicit dependency rather than a
+proof, and semantic_nonclaim records properties such as LLM output quality for
+which Awaken makes no completeness theorem.
+
+--require-complete remains a compatibility alias for
+--require-evidence-complete; both mean that every formalizable obligation has
+at least linked checked evidence. They do not mean that the product is eligible
+for awaken-verified-v1. The stronger
+scripts/ci/check_formal_coverage.py --require-verified-profile gate selects
+every repository-controlled P0 safety requirement through the canonical
+feature prefixes and requires each obligation to be production_kernel_proved
+or implementation_refined. Its generated gap list is the authority; abstract
+evidence is never promoted to make the gate green.
+
 The formalizable-obligation denominator is not derived from all source code: it
 is the number of manually enumerated rows marked `formalizable` in that ledger.
 To prevent that
@@ -715,6 +738,21 @@ into a repository theorem. Run `scripts/ci/check_feature_coverage.py
 --require-complete` to make
 unverified product requirements or open external assumptions fatal; the normal
 formal gate always validates the inventory and reports those remaining gaps.
+
+Each TCB row additionally owns its required version/configuration fingerprint,
+dependency contract, evidence-validity window, and fail-closed behavior.
+Consequently “zero external evidence gaps” is reported separately from “zero
+external components proved”; the latter remains zero by definition.
+
+scripts/release/verification_manifest.py generates the single proof-carrying
+release manifest from these ledgers. It binds the source commit, archive digest,
+proof-input digest, proof toolchain contract, bounds, exclusions, and every TCB
+contract. The existing release artifact attestation signs the generated file
+with the other dist subjects. AWAKEN_RELEASE_PROFILE=awaken-verified-v1 turns
+package generation into the strong gate; ordinary releases use standard and
+carry the exact non-eligibility gap set without displaying a Verified identity.
+Deployment admission uses validate --require-verified --tcb-evidence; absent,
+expired, duplicated, or fingerprint-mismatched TCB evidence fails closed.
 
 ## Loom concurrency exploration
 

@@ -64,6 +64,24 @@ pub(crate) fn deadline_millis(now_ms: u64, lease_ms: u64) -> u64 {
     normalize_millis(now_ms.saturating_add(lease_ms))
 }
 
+#[cfg(kani)]
+#[kani::proof]
+fn store_deadline_is_monotonic_saturating_and_never_wraps() {
+    // Cause/effect decision table: C1 now is inside/outside the SQL domain; C2
+    // now+lease fits/overflows u64 or the SQL domain. E1 always lies in
+    // 0..=MAX_STORE_MILLIS; E2 never precedes normalized now; E3 equals the
+    // mathematical sum exactly when it fits both bounds. Arbitrary u64 inputs
+    // exhaust all C1/C2 partitions, including both overflow boundaries.
+    let now_ms: u64 = kani::any();
+    let lease_ms: u64 = kani::any();
+    let deadline = deadline_millis(now_ms, lease_ms);
+    assert!(deadline <= MAX_STORE_MILLIS);
+    assert!(deadline >= normalize_millis(now_ms));
+    if now_ms <= MAX_STORE_MILLIS && lease_ms <= MAX_STORE_MILLIS - now_ms {
+        assert_eq!(deadline, now_ms + lease_ms);
+    }
+}
+
 /// A hand-driven clock for deterministic tests.
 #[derive(Debug, Default)]
 pub struct ManualClock {
@@ -86,7 +104,7 @@ impl ManualClock {
     pub fn advance(&self, delta_ms: u64) {
         let _ = self
             .now
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |now| {
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |now| {
                 Some(deadline_millis(now, delta_ms))
             });
     }
@@ -95,5 +113,41 @@ impl ManualClock {
 impl Clock for ManualClock {
     fn now_ms(&self) -> u64 {
         self.now.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manual_clock_atomic_advance_is_exact_and_saturating() {
+        // Cause/effect decision table: C1 current+delta fits the store domain;
+        // C2 it exceeds MAX_STORE_MILLIS; C3 multiple threads race advances.
+        // E1 C1 adds exactly delta; E2 C2 saturates at the canonical maximum;
+        // E3 C3 loses no successful update. R1/R2 cover the numeric boundary
+        // and R3 covers CAS retry under contention.
+        let clock = ManualClock::new(10);
+        clock.advance(7);
+        assert_eq!(clock.now_ms(), 17, "R1");
+        clock.set(MAX_STORE_MILLIS - 1);
+        clock.advance(2);
+        assert_eq!(clock.now_ms(), MAX_STORE_MILLIS, "R2");
+
+        let clock = std::sync::Arc::new(ManualClock::new(0));
+        let threads = (0..4)
+            .map(|_| {
+                let clock = clock.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..250 {
+                        clock.advance(1);
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().expect("R3 clock thread");
+        }
+        assert_eq!(clock.now_ms(), 1_000, "R3");
     }
 }

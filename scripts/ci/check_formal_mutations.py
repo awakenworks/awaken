@@ -102,6 +102,32 @@ def mutate_unchecked_model(case_root: Path) -> None:
     must_fail(case_root, "check_formal_coverage.py", "formal model removed from strict CI")
 
 
+def mutate_missing_proof_grade(case_root: Path) -> None:
+    path = case_root / "formal" / "coverage.json"
+    ledger = json.loads(path.read_text())
+    ledger["obligations"][0].pop("proof_grade")
+    write_json(path, ledger)
+    must_fail(case_root, "check_formal_coverage.py", "proof grade removed")
+
+
+def mutate_false_production_grade(case_root: Path) -> None:
+    path = case_root / "formal" / "coverage.json"
+    ledger = json.loads(path.read_text())
+    row = next(
+        item
+        for item in ledger["obligations"]
+        if item["proof_grade"] == "abstract_model_checked"
+        and not item.get("proof_harnesses")
+    )
+    row["proof_grade"] = "production_kernel_proved"
+    write_json(path, ledger)
+    must_fail(
+        case_root,
+        "check_formal_coverage.py",
+        "abstract model relabeled as production proof",
+    )
+
+
 def mutate_missing_boundary(case_root: Path) -> None:
     path = case_root / "formal" / "proof-boundaries.json"
     ledger = json.loads(path.read_text())
@@ -153,6 +179,19 @@ def mutate_reopened_external_assumption(case_root: Path) -> None:
     )
 
 
+def mutate_missing_tcb_contract(case_root: Path) -> None:
+    path = case_root / "formal" / "assumptions.json"
+    ledger = json.loads(path.read_text())
+    ledger["assumptions"][0].pop("fail_closed_behavior")
+    write_json(path, ledger)
+    must_fail(
+        case_root,
+        "check_feature_coverage.py",
+        "external assumption lost fail-closed contract",
+        "--require-complete",
+    )
+
+
 def mutate_disconnected_product_feature(case_root: Path) -> None:
     path = case_root / "formal" / "features.json"
     ledger = json.loads(path.read_text())
@@ -176,18 +215,22 @@ def mutate_disconnected_product_feature(case_root: Path) -> None:
 def main() -> None:
     # Cause/effect decision table: removing a strict-CI proof, downgrading a
     # claim, detaching a model, omitting/inventing a residual boundary,
-    # orphaning a formal obligation, reopening an external assumption, or
-    # disconnecting a product feature from every end-to-end assurance journey
-    # must each make its existing authoritative gate fail. No mutant may
-    # introduce a second ledger or a test-only acceptance path.
+    # inventing a production proof grade, deleting a proof grade or TCB
+    # fail-closed contract, orphaning a formal obligation, reopening an external
+    # assumption, or disconnecting a product feature from every end-to-end
+    # assurance journey must each make its existing authoritative gate fail. No
+    # mutant may introduce a second ledger or a test-only acceptance path.
     mutations = (
         mutate_removed_harness,
         mutate_downgraded_claim,
         mutate_unchecked_model,
+        mutate_missing_proof_grade,
+        mutate_false_production_grade,
         mutate_missing_boundary,
         mutate_invented_boundary,
         mutate_unlinked_product_obligation,
         mutate_reopened_external_assumption,
+        mutate_missing_tcb_contract,
         mutate_disconnected_product_feature,
     )
     with tempfile.TemporaryDirectory(prefix="awaken-formal-mutations-") as temp:

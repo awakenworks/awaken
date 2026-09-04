@@ -321,6 +321,18 @@ impl DreamStatus {
         matches!(self, Self::Completed | Self::Failed | Self::Canceled)
     }
 
+    /// Project durable Dream state without disclosing success or failure before
+    /// the owning cleanup saga has committed. Cancellation remains immediately
+    /// visible because the cancel command itself owns and reports cleanup.
+    #[must_use]
+    pub const fn public_projection(self, cleanup_pending: bool) -> Self {
+        if cleanup_pending && matches!(self, Self::Completed | Self::Failed) {
+            Self::Running
+        } else {
+            self
+        }
+    }
+
     /// Return the exact next durable state, or reject an invalid transition.
     #[must_use]
     pub const fn transition(self, event: DreamStatusEvent) -> Option<Self> {
@@ -444,6 +456,25 @@ mod dream_status_proofs {
                         ) | (DreamStatus::Running, DreamStatusEvent::Start)
                     )
             ),
+        }
+    }
+
+    #[kani::proof]
+    fn dream_public_terminal_requires_committed_cleanup() {
+        let status_code: u8 = kani::any();
+        let cleanup_pending = kani::any::<bool>();
+        kani::assume(status_code <= 4);
+        let durable = status(status_code);
+        let public = durable.public_projection(cleanup_pending);
+
+        if cleanup_pending && matches!(durable, DreamStatus::Completed | DreamStatus::Failed) {
+            assert_eq!(public, DreamStatus::Running);
+            assert!(!public.is_terminal());
+        } else {
+            assert_eq!(public, durable);
+        }
+        if matches!(public, DreamStatus::Completed | DreamStatus::Failed) {
+            assert!(!cleanup_pending);
         }
     }
 }
@@ -614,6 +645,27 @@ mod tests {
             for event in [Recover, Start, Complete, Fail, Cancel] {
                 assert_eq!(terminal.transition(event), None);
             }
+        }
+    }
+
+    #[test]
+    fn dream_public_projection_waits_for_cleanup_receipt() {
+        // Cause/effect decision table: C1 Completed/Failed with cleanup pending
+        // -> E1 public Running; C2 the same durable terminals after cleanup ->
+        // E2 exact public terminal; C3 Pending/Running/Canceled in either cleanup
+        // state -> E3 unchanged. Constraint: cleanup is an owner-saga receipt,
+        // never a protocol-side status repair.
+        for terminal in [DreamStatus::Completed, DreamStatus::Failed] {
+            assert_eq!(terminal.public_projection(true), DreamStatus::Running, "R1");
+            assert_eq!(terminal.public_projection(false), terminal, "R2");
+        }
+        for status in [
+            DreamStatus::Pending,
+            DreamStatus::Running,
+            DreamStatus::Canceled,
+        ] {
+            assert_eq!(status.public_projection(true), status, "R3");
+            assert_eq!(status.public_projection(false), status, "R3");
         }
     }
 }

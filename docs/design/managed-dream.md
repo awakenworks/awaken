@@ -257,8 +257,10 @@ Exports are canonical transient Files artifacts (`application/x-ndjson`) and are
 as `InlineBytes` under `/mnt/dream/session-transcripts`. They are not injected
 into the initial model context, so the Agent can `Glob`, `Grep`, and `Read` only
 the evidence it needs. Their File ids are stored with the durable preparation and
-deleted through the ordinary File lifecycle after terminal/cancel cleanup; a
-crash leaves `cleanup_pending` so restart retries that same cleanup.
+deleted through the ordinary File lifecycle after terminal/cancel cleanup.
+`cleanup_pending` is the only Dream retry authority: transient cleanup failure
+re-enters the same idempotent cleanup path in-process, while a crash makes
+startup reattach that same path. There is no second receipt or cleanup queue.
 
 ## Mount and Agent capability contract
 
@@ -314,7 +316,9 @@ worker
   -> execute one idempotently identified ordinary user event
   -> revalidate every input (archive/delete during execution is a typed failure)
   -> durably record terminal outcome with cleanup_pending
-  -> archive auxiliary Session, purge hidden snapshot and JSONL Files
+  -> force-archive auxiliary Session; require its exact terminal-cleanup receipt
+  -> if a remote Worker still owns cleanup, retain cleanup_pending and retry
+  -> after the Session receipt, purge hidden snapshot and JSONL Files
   -> clear cleanup_pending; only now publish Completed or Failed
 ```
 
@@ -326,7 +330,22 @@ redispatches them. Deterministic lower-resource ids make preparation idempotent:
 an existing result and Session are adopted, and an already committed Dream trigger
 is not sent twice; a clone left before its catalog
 commit is purged and rebuilt. Terminal jobs are loaded without redispatch.
-Terminal jobs with `cleanup_pending` redispatch cleanup only.
+Terminal jobs with `cleanup_pending` redispatch cleanup only. A successful
+Dream cleanup response means the Session terminal-cleanup receipt is already
+durable; committing only the Session archive fence is a pending result, not
+success. Thus Memory write-through/unmount completion cannot race ahead of the
+public Dream terminal projection. Eventual completion remains conditional on
+the database, Worker, and network becoming available; until then the public
+projection stays `running` rather than claiming unconditional liveness.
+
+Reservation and observation may cache a coordination-only Runtime envelope so
+they can freeze dispatch inputs without realizing physical effects. The claimed
+Worker must replace that envelope even when its publication fingerprint is
+unchanged. Runtime cache admission records this purpose explicitly and consumes
+one proved reducer; it no longer infers authority from `Environment` absence.
+When an optional Dream Agent publication is absent, the generated fallback also
+retains the frozen `awaken_builtin_dream_agent` identity instead of substituting
+the unrelated default `assistant` identity.
 
 Dream policies and their due/success cursors are stored in the same repository.
 The composition root's single 15-second Managed timer first claims due Deployment

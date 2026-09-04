@@ -158,6 +158,27 @@ fn same_durable_generation(
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DurableProjectionIdentityDecision {
+    Exact,
+    SamePhysicalOwnerStutter,
+    Conflict,
+}
+
+const fn durable_projection_identity_decision(
+    identity_is_exact: bool,
+    binding_is_exact: bool,
+    generation_is_exact: bool,
+) -> DurableProjectionIdentityDecision {
+    if identity_is_exact && binding_is_exact {
+        DurableProjectionIdentityDecision::Exact
+    } else if !identity_is_exact && binding_is_exact && generation_is_exact {
+        DurableProjectionIdentityDecision::SamePhysicalOwnerStutter
+    } else {
+        DurableProjectionIdentityDecision::Conflict
+    }
+}
+
 impl SessionEnvironmentOwner {
     pub(super) fn install_projection(
         &mut self,
@@ -262,41 +283,34 @@ impl SessionEnvironmentOwner {
                     // consumed by `publish_prepared` crosses that boundary.
                     Self::Preparing(SessionEnvironmentPreparation::Candidate(_)) => {}
                     Self::Resident(owned) => {
-                        if owned.identity != identity {
-                            // A recovery task may read Resident A, wait on this
-                            // lifecycle guard, and arrive after local adoption
-                            // has committed/published effect B for the same
-                            // immutable physical generation. A cannot roll B
-                            // back and is not an identity conflict: binding plus
-                            // SandboxGeneration are the physical ABA fence.
-                            // Different bindings/generations remain closed.
-                            if owned.binding == binding
-                                && same_durable_generation(&owned.identity, &identity)
-                            {
-                                return Ok(());
+                        match durable_projection_identity_decision(
+                            owned.identity == identity,
+                            owned.binding == binding,
+                            same_durable_generation(&owned.identity, &identity),
+                        ) {
+                            DurableProjectionIdentityDecision::Exact
+                            | DurableProjectionIdentityDecision::SamePhysicalOwnerStutter => {}
+                            DurableProjectionIdentityDecision::Conflict => {
+                                return Err(HostError::internal(
+                                    "resident Session Environment projection changed its durable identity",
+                                ));
                             }
-                            return Err(HostError::internal(
-                                "resident Session Environment projection changed its durable identity",
-                            ));
                         }
                     }
                     Self::Retiring(retiring) => match &retiring.owned {
                         RetiringEnvironmentOwner::Bound(owned) => {
-                            if owned.identity != identity {
-                                // Retiring and Resident are two phases of the
-                                // same physical owner. A peer may commit a new
-                                // adopt effect for that exact binding and
-                                // generation while this process is revoking its
-                                // Hand. Keep the local retirement fence (so a
-                                // stale completion cannot clear a replacement),
-                                // but do not reinterpret the new effect id as a
-                                // different substrate.
-                                if same_durable_generation(&owned.identity, &identity) {
-                                    return Ok(());
+                            match durable_projection_identity_decision(
+                                owned.identity == identity,
+                                owned.binding == binding,
+                                same_durable_generation(&owned.identity, &identity),
+                            ) {
+                                DurableProjectionIdentityDecision::Exact
+                                | DurableProjectionIdentityDecision::SamePhysicalOwnerStutter => {}
+                                DurableProjectionIdentityDecision::Conflict => {
+                                    return Err(HostError::internal(
+                                        "retiring Session Environment projection changed its durable identity",
+                                    ));
                                 }
-                                return Err(HostError::internal(
-                                    "retiring Session Environment projection changed its durable identity",
-                                ));
                             }
                         }
                         RetiringEnvironmentOwner::Unbound(_) => {
@@ -607,6 +621,32 @@ impl SessionEnvironmentOwner {
         });
         Ok(())
     }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn durable_projection_identity_is_exact_or_a_same_physical_owner_stutter() {
+    // Cause/effect decision table:
+    // C1 effect identity is exact; C2 binding is exact; C3 immutable generation
+    // is exact. E1 C1+C2 => Exact. E2 !C1+C2+C3 => stale same-owner stutter.
+    // E3 every remaining combination => Conflict. The eight Boolean rules are
+    // exhausted here; only E1/E2 may be absorbed by Resident or Retiring.
+    let identity_is_exact: bool = kani::any();
+    let binding_is_exact: bool = kani::any();
+    let generation_is_exact: bool = kani::any();
+    let decision = durable_projection_identity_decision(
+        identity_is_exact,
+        binding_is_exact,
+        generation_is_exact,
+    );
+    assert_eq!(
+        decision == DurableProjectionIdentityDecision::Exact,
+        identity_is_exact && binding_is_exact
+    );
+    assert_eq!(
+        decision == DurableProjectionIdentityDecision::SamePhysicalOwnerStutter,
+        !identity_is_exact && binding_is_exact && generation_is_exact
+    );
 }
 
 pub(in crate::host::session) fn committed_identity(

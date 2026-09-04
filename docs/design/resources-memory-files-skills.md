@@ -1181,31 +1181,9 @@ requires the current fence with zero references and leases. E2E scenarios cover
 the resource families from configuration through Session use and recovery to
 release/reclamation.
 
-## First Vertical Slice
+## Roadmap, Non-Goals, and Guardrails
 
-1. Introduce typed bindings and one `SessionInputResolver` without changing
-   storage backends.
-2. Preserve access, reject mount collisions, generate prompts from the effective
-   manifest, and remove the second Host merge.
-3. Make File materialization binary-safe and keep Session working copies outside
-   FileStore mutation.
-4. Add Memory/Repository config versions and platform-managed Repository ids.
-5. Route Memory mount/API/recall/extraction/history/redaction through one
-   `MemoryRepository`; remove blob/harvest.
-6. Add durable activation reconciliation and per-kind reclamation.
-
-## Non-Goals
-
-- no Git commit or tree pinning;
-- no Memory content snapshot or entry-version pinning;
-- no File version layer above content identity;
-- no exact Repository replay after cold sandbox reconstruction;
-- no Project or WorkUnit concept in awaken resources;
-- no IAM policy language inside resource services;
-- no generic store abstraction combining File, Memory, and Repository;
-- no implicit deletion of a remote Git repository.
-
-## Guardrails
-
-G3, G4, G8, G9, G13, G14, G21, G27, G37, G38, and G39 in
-[INVARIANTS](../INVARIANTS.md).
+The bounded delivery sequence, explicit exclusions, and invariant index are
+maintained in the companion
+[Resources, Memory, Files, and Skills roadmap](resources-memory-files-skills-roadmap.md).
+That file is part of this design authority, not a parallel resource model.

@@ -20,6 +20,11 @@ env:
   SIGSTORE_OIDC_ISSUER: https://token.actions.githubusercontent.com
   WORKFLOW_PATH: .github/workflows/release.yml
   CONTAINER_ENGINE: docker
+  # Ordinary releases stay honest. Setting the protected repository variable to
+  # awaken-verified-v1 makes package generation enforce the stronger P0 direct-
+  # proof gate; a candidate with abstract-only obligations cannot be published
+  # with the Verified identity.
+  AWAKEN_RELEASE_PROFILE: ${{ vars.AWAKEN_RELEASE_PROFILE || 'standard' }}
 
 jobs:
   quality:

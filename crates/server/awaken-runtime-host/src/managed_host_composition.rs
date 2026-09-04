@@ -95,15 +95,23 @@ impl ManagedHost {
                             .clone()
                     }),
                     slot.baseline.is_some() || slot.session_dispatch,
+                    slot.runtime
+                        .as_ref()
+                        .is_some_and(|context| context.is_coordination_envelope()),
                 )
             })
-            .unwrap_or((None, false));
+            .unwrap_or((None, false, false));
         match active_projection {
-            (Some(_), true) => Ok(false),
-            (Some(_), false) => Err(RunError::internal(
+            // A coordination envelope owns no execution projection. Even when
+            // it wins the cache race before a Worker claim, the Worker must run
+            // the canonical realization driver and install its lease before
+            // rebuilding an executable context.
+            (_, _, true) => Ok(true),
+            (Some(_), true, false) => Ok(false),
+            (Some(_), false, false) => Err(RunError::internal(
                 "cannot install a frozen Session projection while its Runtime is active",
             )),
-            (None, _) => Ok(true),
+            (None, _, false) => Ok(true),
         }
     }
 

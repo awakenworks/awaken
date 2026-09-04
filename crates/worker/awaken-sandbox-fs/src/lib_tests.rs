@@ -221,13 +221,16 @@ fn atomic_file_publication_decision_table_is_total() {
 fn descriptor_relative_mutation_rejects_substituted_roots_and_symlinks() {
     // Cause/effect table: C1 root identity exact/foreign; C2 target is
     // regular/missing/symlink/hard-linked/directory tree; C3 operation is
-    // write/shred/remove/directory metadata. R1 exact+regular writes complete
+    // write/shred/remove/directory metadata; C4 requested mode contains only
+    // permission bits or also contains a file-type/unknown bit. R1
+    // exact+regular+C4=permission-only writes complete
     // bytes, applies ordinary permission bits through the same dirfd walk,
     // then shreds the same inode; R2 missing shred/remove is idempotent; R3 a
     // symlink or hard-linked file rejects write/shred, and a foreign root
     // rejects every operation, with zero mutation of the aliased target; R4
     // exact-root remove unlinks a symlink name without following it and
-    // recursively removes an exact directory tree.
+    // recursively removes an exact directory tree; R5 C4=extra-bit rejects on
+    // every supported platform before chmod rather than truncating the mode.
     let root = std::env::temp_dir().join(format!(
         "awaken-sandbox-relative-mutation-{}-{}",
         std::process::id(),
@@ -240,6 +243,9 @@ fn descriptor_relative_mutation_rejects_substituted_roots_and_symlinks() {
     let _owned = OwnedDirectory(root.clone());
     let identity = directory_identity_nofollow(&root).unwrap();
     let secret = Path::new("nested/secret");
+
+    assert!(portable_mode(0o7777).is_ok(), "R1 permission-bit ceiling");
+    assert!(portable_mode(0o10000).is_err(), "R5 non-permission bit");
 
     create_relative_directory_all(&root, identity, Path::new("mode-dir")).unwrap();
     set_relative_directory_mode(&root, identity, Path::new("mode-dir"), 0o510)

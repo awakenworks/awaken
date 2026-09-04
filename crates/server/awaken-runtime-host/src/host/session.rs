@@ -9,7 +9,9 @@ mod input_projection;
 
 use super::*;
 pub(super) use crate::config::{SessionToolsetProjection, project_session_tool_override};
-use crate::host::session_ctx::ForegroundRunDelivery;
+use crate::host::session_ctx::{
+    ForegroundRunDelivery, RuntimeContextPurpose, runtime_context_cache_reuse_admitted,
+};
 pub(crate) use content_delivery::SkillDeliveryEvidence;
 pub(super) use input_projection::{ManagedCoordinationRole, project_managed_coordination_surface};
 use input_projection::{
@@ -439,6 +441,11 @@ impl SharedHost {
                 force_defer_environment,
                 recover_revoked_legacy,
             } = request;
+            let requested_purpose = if force_defer_environment {
+                RuntimeContextPurpose::CoordinationEnvelope
+            } else {
+                RuntimeContextPurpose::Execution
+            };
             let lifecycle = self
                 .session_slots
                 .update(thread, |slot| slot.lifecycle.clone());
@@ -455,29 +462,17 @@ impl SharedHost {
                 let cache_matches_attempt = claimed_attempt.as_ref().is_none_or(|attempt| {
                     ctx.runtime_publication_identity.as_ref() == Some(&attempt.identity)
                 });
-                // A reservation preflight can briefly leave an envelope-only ACP
-                // context resident before the claiming Worker reaches this lookup.
-                // ACP execution requires its exact physical Environment; Native
-                // on-tool-use deferral and A2A remain intentionally environment-free.
-                let deferred_acp_context = !force_defer_environment
-                    && ctx.env.is_none()
-                    && ctx
-                        .config
-                        .resolved_spec
-                        .attempt_candidates(None)
-                        .into_iter()
-                        .any(|candidate| {
-                            awaken_runtime_contract::resolved::Backend::from_ref(
-                                &candidate.binding().backend_ref,
-                            )
-                            .is_acp()
-                        });
-                if !cache_matches_attempt || deferred_acp_context {
+                if !runtime_context_cache_reuse_admitted(
+                    cache_matches_attempt,
+                    requested_purpose,
+                    ctx.purpose,
+                ) {
                     // A deferred durable context can survive the crash gap after the
                     // dispatch claim bound a Sandbox but before Session persistence;
                     // likewise, a claim carrying different frozen Runtime inputs
-                    // must rebuild around its exact publication source rather than
-                    // reuse a warm Runtime.
+                    // must rebuild around its exact publication source. A
+                    // coordination-only envelope is never an executable cache hit,
+                    // even when its publication fingerprint is identical.
                     self.session_slots
                         .update(thread, |slot| slot.runtime = None);
                 } else {
@@ -1359,7 +1354,7 @@ impl SharedHost {
             let generated_config = installed.is_none();
             let mut config = installed.unwrap_or_else(|| {
                 server_config(
-                    "assistant",
+                    &selected_agent,
                     &self.inference_routing.model_ref(thread, &self.model_ref),
                     &self.client_tools,
                     &session_delegates,
@@ -1867,6 +1862,7 @@ impl SharedHost {
                 delivery,
                 claimed_worker,
                 runtime_publication_identity,
+                purpose: requested_purpose,
                 config,
                 commit,
                 attempt_context: run_context,

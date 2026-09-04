@@ -59,6 +59,9 @@ pub enum awaken_run_ingress_contract::dispatch::CasOutcome
 pub awaken_run_ingress_contract::dispatch::CasOutcome::Applied
 pub awaken_run_ingress_contract::dispatch::CasOutcome::NotFound
 pub awaken_run_ingress_contract::dispatch::CasOutcome::RevisionMismatch
+pub enum awaken_run_ingress_contract::dispatch::CommitEpochCompletion
+pub awaken_run_ingress_contract::dispatch::CommitEpochCompletion::FailRelease
+pub awaken_run_ingress_contract::dispatch::CommitEpochCompletion::ReturnInner
 pub enum awaken_run_ingress_contract::dispatch::ContinuationAdmission
 pub awaken_run_ingress_contract::dispatch::ContinuationAdmission::Root
 pub awaken_run_ingress_contract::dispatch::ContinuationAdmission::SessionChild(awaken_run_ingress_contract::dispatch::SessionChildAdmission)
@@ -128,6 +131,10 @@ pub awaken_run_ingress_contract::dispatch::Claimed::session_activity_admission_r
 pub struct awaken_run_ingress_contract::dispatch::ClaimedCommitCommand
 pub awaken_run_ingress_contract::dispatch::ClaimedCommitCommand::claim: awaken_run_ingress_contract::dispatch::RunClaim
 pub awaken_run_ingress_contract::dispatch::ClaimedCommitCommand::operation: awaken_agent_contract::thread::commit::operation::CommitOperation
+pub struct awaken_run_ingress_contract::dispatch::CommitEpochBoundary
+impl awaken_run_ingress_contract::dispatch::CommitEpochBoundary
+pub const fn awaken_run_ingress_contract::dispatch::CommitEpochBoundary::held() -> Self
+pub const fn awaken_run_ingress_contract::dispatch::CommitEpochBoundary::settle_inner(self) -> awaken_run_ingress_contract::dispatch::SettledCommitEpochBoundary
 pub struct awaken_run_ingress_contract::dispatch::CommitEpochGuard
 impl awaken_run_ingress_contract::dispatch::CommitEpochGuard
 pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::cancellation_requested(&self) -> bool
@@ -188,6 +195,9 @@ pub awaken_run_ingress_contract::dispatch::SessionChildAdmission::max_unarchived
 impl awaken_run_ingress_contract::dispatch::SessionChildAdmission
 pub fn awaken_run_ingress_contract::dispatch::SessionChildAdmission::new(usize, alloc::vec::Vec<awaken_agent_contract::agent::thread::Id>) -> Self
 pub fn awaken_run_ingress_contract::dispatch::SessionChildAdmission::with_capacity_exempt_threads(self, alloc::vec::Vec<awaken_agent_contract::agent::thread::Id>) -> Self
+pub struct awaken_run_ingress_contract::dispatch::SettledCommitEpochBoundary
+impl awaken_run_ingress_contract::dispatch::SettledCommitEpochBoundary
+pub const fn awaken_run_ingress_contract::dispatch::SettledCommitEpochBoundary::complete(self, bool) -> awaken_run_ingress_contract::dispatch::CommitEpochCompletion
 pub struct awaken_run_ingress_contract::dispatch::SubmitOptions
 pub awaken_run_ingress_contract::dispatch::SubmitOptions::dedupe_key: core::option::Option<alloc::string::String>
 pub awaken_run_ingress_contract::dispatch::SubmitOptions::priority: i64
@@ -376,6 +386,9 @@ pub enum awaken_run_ingress_contract::CasOutcome
 pub awaken_run_ingress_contract::CasOutcome::Applied
 pub awaken_run_ingress_contract::CasOutcome::NotFound
 pub awaken_run_ingress_contract::CasOutcome::RevisionMismatch
+pub enum awaken_run_ingress_contract::CommitEpochCompletion
+pub awaken_run_ingress_contract::CommitEpochCompletion::FailRelease
+pub awaken_run_ingress_contract::CommitEpochCompletion::ReturnInner
 pub enum awaken_run_ingress_contract::ContinuationAdmission
 pub awaken_run_ingress_contract::ContinuationAdmission::Root
 pub awaken_run_ingress_contract::ContinuationAdmission::SessionChild(awaken_run_ingress_contract::dispatch::SessionChildAdmission)
@@ -544,6 +557,10 @@ pub const fn awaken_run_ingress_contract::ClaimedSessionControlError::is_not_rea
 pub fn awaken_run_ingress_contract::ClaimedSessionControlError::new(impl core::convert::Into<alloc::string::String>) -> Self
 impl core::convert::From<awaken_session_contract::session_realization::control_failure::SessionRealizationControlFailure> for awaken_run_ingress_contract::ClaimedSessionControlError
 pub fn awaken_run_ingress_contract::ClaimedSessionControlError::from(awaken_session_contract::session_realization::control_failure::SessionRealizationControlFailure) -> Self
+pub struct awaken_run_ingress_contract::CommitEpochBoundary
+impl awaken_run_ingress_contract::dispatch::CommitEpochBoundary
+pub const fn awaken_run_ingress_contract::dispatch::CommitEpochBoundary::held() -> Self
+pub const fn awaken_run_ingress_contract::dispatch::CommitEpochBoundary::settle_inner(self) -> awaken_run_ingress_contract::dispatch::SettledCommitEpochBoundary
 pub struct awaken_run_ingress_contract::CommitEpochGuard
 impl awaken_run_ingress_contract::dispatch::CommitEpochGuard
 pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::cancellation_requested(&self) -> bool

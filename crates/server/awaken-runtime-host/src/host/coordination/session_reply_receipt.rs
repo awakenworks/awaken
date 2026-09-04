@@ -7,10 +7,65 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SessionReplyReceipt {
+pub(in crate::host) enum SessionReplyReceipt {
     Absent,
     Exact,
     Conflict,
+}
+
+/// Validate one committed tool ticket against its explicitly named execution
+/// authority. This is the only bridge between the neutral ResumeTicket and the
+/// Runtime-owned ToolBatch cell; protocol handlers must not infer ownership
+/// from a projected public event.
+pub(in crate::host) fn validate_awaiting_tool_authority(
+    thread_id: &ThreadId,
+    ticket: &ResumeTicket,
+    state_commands: &[awaken_agent_contract::agent::state::Command],
+) -> Result<(), HostError> {
+    let AwaitTarget::ToolCall {
+        reason, authority, ..
+    } = ticket.target()
+    else {
+        return Err(HostError::internal(
+            "tool authority validation requires a tool-call ticket",
+        ));
+    };
+    let state = Store::rebuild(state_commands);
+    let batch = awaken_runtime_contract::ActiveToolBatch::load(&state)
+        .map_err(|error| HostError::internal(error.to_string()))?;
+    let validate_batch = |batch: &awaken_runtime_contract::ToolBatch| {
+        batch
+            .validate_awaiting_ticket(thread_id, ticket)
+            .map_err(|_| {
+                HostError::bad_request(
+                    "Session Thread awaiting ticket changed after Event admission",
+                )
+            })
+    };
+    match (authority, batch.as_ref()) {
+        // Native/client tools remain owned by one durable ToolBatch; its
+        // complete identity and payload are mandatory.
+        (ToolCallAuthority::RuntimeToolBatch, Some(batch)) => validate_batch(batch),
+        (ToolCallAuthority::RuntimeToolBatch, None) => Err(HostError::internal(
+            "Runtime-owned awaiting tool Run has no ActiveToolBatch",
+        )),
+        // ACP and another opaque attempt executor commit the closed ticket
+        // themselves. Their continuation validates the same ticket and result
+        // kind; a stale Runtime batch is not their authority.
+        (ToolCallAuthority::RunAttemptExecutor, _) => Ok(()),
+        // Historical tickets did not encode their owner. An exact batch proves
+        // Runtime ownership; otherwise only the historically emitted executor
+        // permission shape is recoverable. New writers are always explicit.
+        (ToolCallAuthority::LegacyUnspecified, Some(batch)) => validate_batch(batch),
+        (ToolCallAuthority::LegacyUnspecified, None)
+            if *reason == awaken_agent_contract::agent::awaiting::ToolAwaitReason::Permission =>
+        {
+            Ok(())
+        }
+        (ToolCallAuthority::LegacyUnspecified, None) => Err(HostError::internal(
+            "legacy awaiting tool Run has no recoverable execution authority",
+        )),
+    }
 }
 
 /// Fold one committed ResumeApplied fact into the reply-recovery decision.

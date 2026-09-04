@@ -314,7 +314,7 @@ impl SessionRuntime for ManagedHost {
             .ctx_for_session_coordination(&command.session_id, Some(&command.agent_id))
             .await
             .map_err(to_run_error)?;
-        let reservation_context_is_ephemeral = ctx.env.is_none();
+        let reservation_context_is_ephemeral = ctx.is_coordination_envelope();
         let reservation = async {
             let input = match &ctx.skill_registry {
                 Some(registry) => awaken_ext_skills::expand_slash_commands(
