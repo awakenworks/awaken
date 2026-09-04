@@ -6,4 +6,3 @@ export type StatusDotProps = {
     readonly label?: string;
 };
 export declare function StatusDot({ tone, color, className, title, label }: StatusDotProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=status-dot.d.ts.map

@@ -12,4 +12,3 @@ export function CardBody({ className, ...props }) {
 export function CardFooter({ className, ...props }) {
     return _jsx("div", { ...props, className: cx("ui-card__footer", className) });
 }
-//# sourceMappingURL=card.js.map

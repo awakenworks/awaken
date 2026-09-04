@@ -10,6 +10,8 @@ export default function AgentEditorHeader({
   dirty,
   status,
   canSave,
+  canPublish,
+  publishBlockedReason,
   validatePending,
   savePending,
   publishPending,
@@ -24,6 +26,8 @@ export default function AgentEditorHeader({
   dirty: boolean;
   status: ReviewStatus;
   canSave: boolean;
+  canPublish: boolean;
+  publishBlockedReason?: string;
   validatePending: boolean;
   savePending: boolean;
   publishPending: boolean;
@@ -50,14 +54,15 @@ export default function AgentEditorHeader({
         {status === "fixing" && <Pill tone="agent">✦ {app.t("Agent is fixing the draft…", "Agent 正在修复草稿…")}</Pill>}
         {status === "ready" && <Pill tone="ok">✓ {app.t("Draft checked", "草稿检查通过")}</Pill>}
         {status === "needs_input" && <Pill tone="danger">{app.t("Needs input", "需要处理")}</Pill>}
+        {canSave && !canPublish && <Pill tone="danger" title={publishBlockedReason}>{app.t("Publication blocked", "发布受阻")}</Pill>}
       </span>
       <span className="row">
         <Button variant="ghost" disabled={!canSave || validatePending} onClick={onValidate}>{app.t("Check draft", "检查草稿")}</Button>
         <Button disabled={!canSave || savePending} onClick={onSave} title={app.t("Optional: keep this draft for later", "可选：保存草稿供稍后继续")}>{app.t("Save draft", "保存草稿")}</Button>
         <Button
           variant="primary"
-          disabled={!canSave || publishPending || busy}
-          title={app.t("Saves and checks the draft, then shows the exact changes before publishing", "保存并检查草稿，然后在发布前展示确切差异")}
+          disabled={!canPublish || publishPending || busy}
+          title={publishBlockedReason ?? app.t("Saves and checks the draft, then shows the exact changes before publishing", "保存并检查草稿，然后在发布前展示确切差异")}
           onClick={onPublish}
         >
           {app.t("Review & publish", "审阅并发布")} ➤

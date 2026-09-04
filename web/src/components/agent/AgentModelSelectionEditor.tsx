@@ -8,7 +8,7 @@ import { useApp } from "../../lib/app-state";
 import { protocolHelpPath } from "../../lib/navigation/paths";
 import { runtimeStatus } from "../../lib/readiness";
 import { Link } from "react-router";
-import { useId } from "react";
+import { useEffect, useId, useRef } from "react";
 import RuntimeCapabilitySummary from "./RuntimeCapabilitySummary";
 import { acpWorkingDirectoryIssue } from "../../lib/agent-runtime-capabilities";
 
@@ -19,6 +19,8 @@ interface Props {
   runtimes: RuntimeCap[];
   onChange: (model: AgentConfig["model"]) => void;
   onManage: () => void;
+  onRefreshRuntimes?: () => void;
+  runtimeUpdatedAt?: number;
 }
 
 function providerModelId(model: AgentConfig["model"]): string {
@@ -47,9 +49,15 @@ export default function AgentModelSelectionEditor({
   runtimes,
   onChange,
   onManage,
+  onRefreshRuntimes,
+  runtimeUpdatedAt,
 }: Props) {
   const app = useApp();
+  const runtimeSelectId = useId();
+  const modelSelectId = useId();
+  const workingDirectoryId = useId();
   const workingDirectoryHelpId = useId();
+  const workingDirectoryErrorId = useId();
   const current = providerModelId(model);
   const providerModels =
     current && !readyModels.includes(current) ? [current, ...readyModels] : readyModels;
@@ -66,6 +74,10 @@ export default function AgentModelSelectionEditor({
     : undefined;
   const workingDirectory = selected?.configuration?.working_directory ?? "";
   const workingDirectoryIssue = acpWorkingDirectoryIssue(workingDirectory);
+  const rememberedSelections = useRef(new Map<string, AgentConfig["model"]>());
+  useEffect(() => {
+    rememberedSelections.current.set(runtimeId, model);
+  }, [model, runtimeId]);
   const setConfiguration = (
     configuration: NonNullable<
       Extract<ModelSelection, { mode: "backend_default" | "backend_exact" }>["configuration"]
@@ -75,11 +87,12 @@ export default function AgentModelSelectionEditor({
   };
 
   return (
-    <>
-      <label className="row" style={{ justifyContent: "space-between" }}>
-        <span>{app.t("Execution runtime", "执行 Runtime")}</span>
+    <div className="runtime-selection-editor">
+      <div className="field runtime-selection-field">
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <label htmlFor={runtimeSelectId}>{app.t("Execution runtime", "执行 Runtime")}</label>
         {runtimeId === "awaken" ? (
-          <button className="manage-link" onClick={onManage}>
+          <button type="button" className="manage-link" onClick={onManage}>
             {app.t("Manage models ↗", "管理模型 ↗")}
           </button>
         ) : (
@@ -87,17 +100,25 @@ export default function AgentModelSelectionEditor({
             {app.t("ACP setup ↗", "ACP 设置 ↗")}
           </Link>
         )}
-      </label>
+      </div>
       <select
+        id={runtimeSelectId}
         className="input"
         aria-label={app.t("Execution runtime", "执行 Runtime")}
         value={runtimeId}
         onChange={(event) => {
-          if (event.target.value === "awaken") {
+          rememberedSelections.current.set(runtimeId, model);
+          const target = event.target.value;
+          const remembered = rememberedSelections.current.get(target);
+          if (remembered) {
+            onChange(remembered);
+            return;
+          }
+          if (target === "awaken") {
             onChange({ mode: "auto" });
             return;
           }
-          const next = runtimes.find((candidate) => candidate.id === event.target.value);
+          const next = runtimes.find((candidate) => candidate.id === target);
           const selection = next && defaultSelectionForRuntime(next);
           if (selection) onChange(selection);
         }}
@@ -128,12 +149,15 @@ export default function AgentModelSelectionEditor({
               "所选 ACP Harness 在同一个 Awaken Session 与 Environment 中运行模型循环。",
             )}
       </span>
+      </div>
 
-      <label style={{ marginTop: 12 }}>
+      <div className="field runtime-selection-field">
+      <label htmlFor={modelSelectId}>
         {runtimeId === "awaken" ? app.t("Model", "模型") : app.t("Harness model", "Harness 模型")}
       </label>
       {runtimeId === "awaken" && (providerModels.length > 0) ? (
         <select
+          id={modelSelectId}
           className="input mono"
           aria-label={app.t("Model", "模型")}
           value={selectionValue(model)}
@@ -151,6 +175,7 @@ export default function AgentModelSelectionEditor({
         </select>
       ) : runtimeId !== "awaken" && choices.length > 0 ? (
         <select
+          id={modelSelectId}
           className="input mono"
           aria-label={app.t("Harness model", "Harness 模型")}
           value={harnessModelValue(model)}
@@ -176,6 +201,7 @@ export default function AgentModelSelectionEditor({
           )}</span>
         </div>
       )}
+      </div>
       {selected && runtime?.local?.negotiated && (
         <div className="row" style={{ marginTop: 10, alignItems: "flex-start" }}>
           {runtime.local.negotiated.modes.length > 0 && (
@@ -183,6 +209,7 @@ export default function AgentModelSelectionEditor({
               <label>{app.t("ACP mode", "ACP 模式")}</label>
               <select
                 className="input mono"
+                aria-label={app.t("ACP mode", "ACP 模式")}
                 value={selected.configuration?.mode ?? ""}
                 onChange={(event) => setConfiguration({
                   ...(selected.configuration ?? {}),
@@ -203,6 +230,7 @@ export default function AgentModelSelectionEditor({
                 <label>{option.name}</label>
                 <select
                   className="input mono"
+                  aria-label={option.name}
                   value={selected.configuration?.options?.[option.native_id] ?? ""}
                   onChange={(event) => {
                     const options = { ...(selected.configuration?.options ?? {}) };
@@ -223,40 +251,55 @@ export default function AgentModelSelectionEditor({
         </div>
       )}
       {selected && (
-        <div className="field" style={{ marginTop: 10 }}>
-          <label>{app.t("ACP working directory", "ACP 工作目录")}</label>
-          <input
-            className="input mono"
-            aria-label={app.t("ACP working directory", "ACP 工作目录")}
-            placeholder="repo/subdirectory"
-            value={workingDirectory}
-            aria-invalid={workingDirectoryIssue !== null}
-            aria-describedby={workingDirectoryHelpId}
-            onChange={(event) => {
-              const workingDirectory = event.target.value;
-              setConfiguration({
-                ...(selected.configuration ?? {}),
-                working_directory: workingDirectory || null,
-              });
-            }}
-          />
-          <span id={workingDirectoryHelpId} className="mut" style={{ fontSize: 12 }}>
-            {app.t(
-              "Relative to the Session workspace. Absolute paths, backslashes, and parent traversal are rejected at publication.",
-              "相对于 Session 工作区；发布时会拒绝绝对路径、反斜杠和父目录穿越。",
+        <div className="field acp-working-directory" style={{ marginTop: 10 }}>
+          <div className="field-label-row">
+            <label htmlFor={workingDirectoryId}>{app.t("ACP working directory", "ACP 工作目录")}</label>
+            <span className="field-optional">{app.t("Optional", "可选")}</span>
+          </div>
+          <div className="input-with-action">
+            <input
+              id={workingDirectoryId}
+              className="input mono"
+              aria-label={app.t("ACP working directory", "ACP 工作目录")}
+              placeholder="repo/subdirectory"
+              value={workingDirectory}
+              aria-invalid={workingDirectoryIssue !== null}
+              aria-describedby={workingDirectoryIssue ? `${workingDirectoryHelpId} ${workingDirectoryErrorId}` : workingDirectoryHelpId}
+              onChange={(event) => {
+                const workingDirectory = event.target.value;
+                setConfiguration({
+                  ...(selected.configuration ?? {}),
+                  working_directory: workingDirectory || null,
+                });
+              }}
+            />
+            {workingDirectory && (
+              <button
+                type="button"
+                className="btn ghost compact"
+                onClick={() => setConfiguration({ ...(selected.configuration ?? {}), working_directory: null })}
+              >{app.t("Use workspace root", "使用工作区根目录")}</button>
             )}
+          </div>
+          <span id={workingDirectoryHelpId} className="mut" style={{ fontSize: 12 }}>
+            {workingDirectory
+              ? app.t(`Resolved inside Session workspace: /${workingDirectory}`, `Session 工作区内的解析位置：/${workingDirectory}`)
+              : app.t("The Harness starts at the Session workspace root.", "Harness 将从 Session 工作区根目录启动。")}
           </span>
           {workingDirectoryIssue && (
-            <div className="banner warn" role="alert">
+            <div id={workingDirectoryErrorId} className="banner warn" role="alert">
               <span>!</span>
-              <span>{app.t(
-              workingDirectoryIssue === "too_long"
-                ? "Keep the working directory at 512 characters or fewer."
-                : "Use a clean relative path such as repo/src. Absolute paths, parent traversal, colons, backslashes, and empty path segments are not allowed.",
-              workingDirectoryIssue === "too_long"
-                ? "工作目录不能超过 512 个字符。"
-                : "请输入 repo/src 这类规范相对路径；不允许绝对路径、父目录穿越、冒号、反斜杠或空路径段。",
-              )}</span>
+              <span>{workingDirectoryIssue === "too_long"
+                ? app.t("Keep the working directory at 512 characters or fewer.", "工作目录不能超过 512 个字符。")
+                : workingDirectoryIssue === "absolute"
+                  ? app.t("Use a path relative to the Session workspace, such as repo/src.", "请使用相对于 Session 工作区的路径，例如 repo/src。")
+                  : workingDirectoryIssue === "traversal"
+                    ? app.t("Remove . or .. segments. The working directory cannot leave its Session workspace.", "请移除 . 或 .. 路径段；工作目录不能离开 Session 工作区。")
+                    : workingDirectoryIssue === "backslash"
+                      ? app.t("Use forward slashes, for example repo/src.", "请使用正斜杠，例如 repo/src。")
+                      : workingDirectoryIssue === "empty_segment"
+                        ? app.t("Remove repeated or trailing slashes.", "请移除重复或末尾的斜杠。")
+                        : app.t("Colons are not allowed in a portable Session working directory.", "可移植的 Session 工作目录中不允许使用冒号。")}</span>
             </div>
           )}
         </div>
@@ -269,7 +312,12 @@ export default function AgentModelSelectionEditor({
           )}
         </span>
       )}
-      <RuntimeCapabilitySummary model={model} runtime={selectedRuntime} />
-    </>
+      <RuntimeCapabilitySummary
+        model={model}
+        runtime={selectedRuntime}
+        updatedAt={runtimeUpdatedAt}
+        onRefresh={onRefreshRuntimes}
+      />
+    </div>
   );
 }

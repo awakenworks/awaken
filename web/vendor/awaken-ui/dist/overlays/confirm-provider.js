@@ -48,4 +48,3 @@ export function ConfirmProvider({ children }) {
                         settle(false);
                 }, open: true })) : null] }));
 }
-//# sourceMappingURL=confirm-provider.js.map

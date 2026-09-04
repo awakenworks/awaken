@@ -31,4 +31,3 @@ export interface SuiteSwitcherProps {
  * behavior and the one consistent product/destination layout.
  */
 export declare function SuiteSwitcher({ "aria-label": ariaLabel, currentLabel, destinations, placement, products, trigger, }: SuiteSwitcherProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=suite-switcher.d.ts.map

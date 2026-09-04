@@ -18,4 +18,3 @@ export type TabPanelProps = HTMLAttributes<HTMLDivElement> & {
     readonly children?: ReactNode;
 };
 export declare function TabPanel({ value, className, ...props }: TabPanelProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=tabs.d.ts.map

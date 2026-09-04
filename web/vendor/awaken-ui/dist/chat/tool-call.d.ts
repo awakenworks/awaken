@@ -46,4 +46,3 @@ export type ToolCallGroupProps = {
 };
 export declare function aggregateToolCallTone(calls: ReadonlyArray<ToolCallView>): ToolCallTone;
 export declare function ToolCallGroup({ calls, summaryLabel, labels, defaultOpen, icon, expandIcon, className, classes, callClasses }: ToolCallGroupProps): import("react/jsx-runtime").JSX.Element | null;
-//# sourceMappingURL=tool-call.d.ts.map

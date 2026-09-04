@@ -9,4 +9,3 @@ export function EventItem({ marker, title, timestamp, metadata, actions, childre
 export function EventTime({ className, ...props }) {
     return _jsx("time", { ...props, className: cx("ui-event-list__time", className) });
 }
-//# sourceMappingURL=event-list.js.map

@@ -32,4 +32,3 @@ function StateBlock({ action, actions, body, className, icon, title, tone }) {
                 : action ? _jsx(Button, { onClick: action.onClick, variant: tone === "danger" ? "danger" : "secondary", children: action.label })
                     : null, actions] });
 }
-//# sourceMappingURL=state.js.map

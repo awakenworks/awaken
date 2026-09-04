@@ -1,4 +1,4 @@
-import type { AgentConfig, InputBinding } from "../../lib/api/types";
+import type { AgentConfig, AgentToolsetMemberCap, InputBinding, PluginCap, RuntimeCap } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 import { Button, Card, Modal } from "../ui";
 import ConfigDiff from "./ConfigDiff";
@@ -23,6 +23,9 @@ export default function AgentPublicationModals({
   onConfirmQuickRun,
   onClosePublish,
   onConfirmPublish,
+  runtimes,
+  plugins,
+  toolMembers,
 }: {
   config: AgentConfig;
   baseline: Partial<AgentConfig>;
@@ -37,6 +40,9 @@ export default function AgentPublicationModals({
   onConfirmQuickRun: (intent: QuickRunIntent) => void;
   onClosePublish: () => void;
   onConfirmPublish: () => void;
+  runtimes: RuntimeCap[];
+  plugins: PluginCap[];
+  toolMembers: AgentToolsetMemberCap[];
 }) {
   const app = useApp();
   const { generation: _generation, ...reviewedConfig } = config;
@@ -71,6 +77,9 @@ export default function AgentPublicationModals({
             resourceRevision={resourceRevision}
             resources={resources}
             config={config}
+            runtimes={runtimes}
+            plugins={plugins}
+            toolMembers={toolMembers}
           />
           <Card style={{ marginTop: 12 }}>
             <div><strong>{app.t("Environment", "Environment")}</strong> · <code>{quickRunIntent.environmentId}</code></div>
@@ -111,6 +120,9 @@ export default function AgentPublicationModals({
             resourceRevision={resourceRevision}
             resources={resources}
             config={config}
+            runtimes={runtimes}
+            plugins={plugins}
+            toolMembers={toolMembers}
           />
           <div style={{ marginTop: 16 }}>
             <strong>{app.t("Agent configuration changes", "Agent 配置差异")}</strong>

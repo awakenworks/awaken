@@ -27,4 +27,3 @@ export declare function MenuPopover(props: MenuPopoverProps): import("react/jsx-
  * close-after-action contracts used across products.
  */
 export declare function Popover({ children, content, placement, closeOnContentClick, "aria-label": ariaLabel, role, className, contentClassName, contentId, rootProps, closeOnMouseLeave, open: controlledOpen, defaultOpen, onOpenChange, }: PopoverProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=popover.d.ts.map

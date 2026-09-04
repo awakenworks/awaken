@@ -5,4 +5,3 @@ export type GuardedAction = (action: () => void) => boolean;
  * and any router-specific blocker integration.
  */
 export declare function useUnsavedChangesGuard(dirty: boolean, message: string): GuardedAction;
-//# sourceMappingURL=use-unsaved-changes-guard.d.ts.map

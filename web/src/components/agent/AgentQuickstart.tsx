@@ -100,6 +100,8 @@ export default function AgentQuickstart({
   runPending,
   onPatch,
   onManageModels,
+  onRefreshRuntimes,
+  runtimeUpdatedAt,
   onReviewRun,
 }: {
   config: AgentConfig;
@@ -115,6 +117,8 @@ export default function AgentQuickstart({
   runPending: boolean;
   onPatch: (patch: Partial<AgentConfig>) => void;
   onManageModels: () => void;
+  onRefreshRuntimes?: () => void;
+  runtimeUpdatedAt?: number;
   onReviewRun: (environmentId: string, task: string) => void;
 }) {
   const app = useApp();
@@ -228,6 +232,8 @@ export default function AgentQuickstart({
             readyModels={readyModels}
             allModels={allModels}
             runtimes={runtimes}
+            onRefreshRuntimes={onRefreshRuntimes}
+            runtimeUpdatedAt={runtimeUpdatedAt}
             onChange={(model) => onPatch({ model })}
             onManage={onManageModels}
           />

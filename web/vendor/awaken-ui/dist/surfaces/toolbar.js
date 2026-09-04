@@ -9,4 +9,3 @@ export function ToolbarLead({ className, ...props }) {
 export function ToolbarSpacer({ className, ...props }) {
     return _jsx("div", { ...props, "aria-hidden": "true", className: cx("surface-toolbar__spacer", className) });
 }
-//# sourceMappingURL=toolbar.js.map

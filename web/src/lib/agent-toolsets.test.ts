@@ -7,6 +7,7 @@ import type {
   AgentToolsetMemberCap,
 } from "./api/types";
 import {
+  effectiveAgentToolPermission,
   controlledModificationMemberNames,
   mcpDefaultConfig,
   mcpIntegrationsValid,
@@ -16,6 +17,7 @@ import {
   renameMcpIntegrationReferences,
   renameMcpToolset,
   selectedAgentToolIds,
+  withAgentToolPermission,
   withSelectedAgentTools,
 } from "./agent-toolsets";
 
@@ -305,5 +307,19 @@ describe("canonical Agent toolset authoring", () => {
         typeof tool === "object" && tool.type === "agent_toolset_20260401",
     );
     expect(alternateCapability?.configs?.[0]?.permission_policy?.type).toBe("always_ask");
+  });
+});
+
+describe("Agent tool permission projection", () => {
+  it("reads inherited permission and updates only the requested member", () => {
+    const tools: AgentTool[] = [{
+      type: "agent_toolset_20260401",
+      default_config: { enabled: false, permission_policy: { type: "always_ask" } },
+      configs: [{ name: "web_search", enabled: true, permission_policy: { type: "always_ask" } }],
+    }];
+    expect(effectiveAgentToolPermission(tools, "web_search").type).toBe("always_ask");
+    const updated = withAgentToolPermission(tools, "web_search", { type: "always_allow" });
+    expect(effectiveAgentToolPermission(updated, "web_search").type).toBe("always_allow");
+    expect(effectiveAgentToolPermission(tools, "web_search").type).toBe("always_ask");
   });
 });

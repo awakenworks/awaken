@@ -22,4 +22,3 @@ export function useUnsavedChangesGuard(dirty, message) {
         return true;
     }, [dirty, message]);
 }
-//# sourceMappingURL=use-unsaved-changes-guard.js.map

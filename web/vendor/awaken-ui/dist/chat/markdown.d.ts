@@ -17,4 +17,3 @@ export type ChatMarkdownProps = {
     readonly rootRef?: RefObject<HTMLDivElement | null>;
 };
 export declare function ChatMarkdown({ body, copyCodeLabel, copiedCodeLabel, copyFailedLabel, className, sanitizedHtml, rootRef, }: ChatMarkdownProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=markdown.d.ts.map

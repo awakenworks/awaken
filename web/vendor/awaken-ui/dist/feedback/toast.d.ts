@@ -26,4 +26,3 @@ export type ToastProviderProps = {
     readonly renderIcon?: (tone: ToastTone) => ReactNode;
 };
 export declare function ToastProvider({ children, defaultDuration, errorDuration, dismissLabel, regionLabel, renderIcon, }: ToastProviderProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=toast.d.ts.map

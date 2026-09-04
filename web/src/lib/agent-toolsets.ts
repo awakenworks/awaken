@@ -188,6 +188,44 @@ function effectivePermission(
     ?? advertisedToolsetDefault;
 }
 
+export function effectiveAgentToolPermission(
+  tools: readonly AgentTool[],
+  member: string,
+  advertisedDefault: AgentToolPermissionPolicy = { type: "always_ask" },
+): AgentToolPermissionPolicy {
+  const toolset = tools.find(isAgentToolset);
+  const config = toolset?.configs?.find((entry) => entry.name === member);
+  return effectivePermission(toolset, config, advertisedDefault);
+}
+
+export function withAgentToolPermission(
+  tools: readonly AgentTool[],
+  member: string,
+  permission: AgentToolPermissionPolicy,
+): AgentTool[] {
+  let found = false;
+  const updated = tools.map((tool) => {
+    if (!isAgentToolset(tool)) return tool;
+    found = true;
+    const configs = tool.configs ?? [];
+    const existing = configs.findIndex((entry) => entry.name === member);
+    if (existing < 0) {
+      return { ...tool, configs: [...configs, { name: member, enabled: true, permission_policy: permission }] };
+    }
+    return {
+      ...tool,
+      configs: configs.map((entry, index) => index === existing
+        ? { ...entry, permission_policy: permission }
+        : entry),
+    };
+  });
+  return found ? updated : [...updated, {
+    type: "agent_toolset_20260401",
+    default_config: { enabled: false, permission_policy: { type: "always_ask" } },
+    configs: [{ name: member, enabled: true, permission_policy: permission }],
+  }];
+}
+
 /** Project the mixed wire union into the ids consumed by the existing picker. */
 export function selectedAgentToolIds(
   tools: readonly AgentTool[],

@@ -9,4 +9,3 @@ export function PanelHeader({ className, ...props }) {
 export function PanelBody({ className, ...props }) {
     return _jsx("div", { ...props, className: cx("ui-panel__body", className) });
 }
-//# sourceMappingURL=panel.js.map

@@ -16,4 +16,3 @@ export function Avatar({ label, size = "md", src, initials, children, classes, c
 export function AvatarGroup({ children, className, overflow = 0, overflowLabel = (count) => `+${count}`, avatarClasses, ...props }) {
     return (_jsxs("span", { ...props, className: cx("ui-avatar-group", className), children: [children, overflow > 0 ? (_jsx(Avatar, { className: "ui-avatar--overflow", initials: `+${overflow}`, label: overflowLabel(overflow), ...(avatarClasses ? { classes: avatarClasses } : {}) })) : null] }));
 }
-//# sourceMappingURL=avatar.js.map

@@ -28,4 +28,3 @@ export interface DrawerProps extends Omit<HTMLAttributes<HTMLDivElement>, "title
 }
 /** A modal side panel for detail and management surfaces. */
 export declare const Drawer: import("react").ForwardRefExoticComponent<DrawerProps & import("react").RefAttributes<HTMLDivElement>>;
-//# sourceMappingURL=drawer.d.ts.map

@@ -4,4 +4,3 @@ export declare function useChatDraft(key: string): {
     readonly setValue: (next: string) => void;
     readonly clear: () => void;
 };
-//# sourceMappingURL=draft.d.ts.map

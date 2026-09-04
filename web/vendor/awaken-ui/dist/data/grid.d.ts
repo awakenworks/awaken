@@ -59,4 +59,3 @@ export interface DataGridProps<Row> {
     readonly classes?: DataGridClasses;
 }
 export declare function DataGrid<Row>({ rows, columns, rowKey, state, labels, filter, onRowClick, pageSize, loading, toolbar, mobileCards, mobileRowActionLabel, renderMobileLoading, renderLoading, renderEmpty, classes, }: DataGridProps<Row>): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=grid.d.ts.map

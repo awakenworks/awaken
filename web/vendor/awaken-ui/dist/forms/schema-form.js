@@ -74,4 +74,3 @@ export function SchemaForm({ schema, value, onChange, labels, className, classes
     const controlId = `schema-${useId().replaceAll(":", "")}`;
     return (_jsx("div", { className: cx("ui-schema", classes?.root, className), children: _jsx(SchemaNode, { schema: schema, value: value, onChange: onChange, controlId: controlId, labels: labels, classes: classes }) }));
 }
-//# sourceMappingURL=schema-form.js.map
