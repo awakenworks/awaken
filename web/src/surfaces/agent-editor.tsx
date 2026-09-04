@@ -5,9 +5,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import AgentEditorHeader from "../components/agent/AgentEditorHeader";
 import {
-  agentModelIsRunnable,
-  AgentEditorStageNavigation,
-  AgentValidationIssues,
+  agentModelIsRunnable, agentNeedsToolBridge,
+  AgentEditorStageNavigation, AgentValidationIssues,
   AttachedAgentContext,
   BLANK_AGENT_CONFIG,
   buildAgentDraftBody,
@@ -146,15 +145,11 @@ export default function AgentEditorSurface() {
     && targetId().length > 0
     && (cfg.system ?? "").trim().length > 0;
   const body = () => buildAgentDraftBody(cfg, targetId(), permissionPreset);
-  const requiresToolBridge = cfg.tools.length > 0
-    || cfg.skills.length > 0
-    || cfg.mcp_servers.length > 0
-    || Object.hasOwn(cfg.plugin_config, "memory");
   const modelIsRunnable = agentModelIsRunnable(
     cfg.model,
     models,
     caps.data?.runtimes ?? [],
-    requiresToolBridge,
+    agentNeedsToolBridge(cfg),
   );
 
   const saveConfig = async (): Promise<number | undefined> => {

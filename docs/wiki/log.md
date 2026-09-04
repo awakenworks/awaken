@@ -749,3 +749,12 @@
 - Integrated the existing CAS-safe terminal Repository publication authority
   into the same candidate release line; no second publication state machine was
   introduced.
+
+## 2026-09-04 — Separate foreground observation from Worker Environment ownership
+
+- Unified Coordinator reservation and committed-result observation on one
+  environment-free coordination context.
+- Kept durable Environment binding projection on the Coordinator while leaving
+  physical adoption and execution exclusively on the claimed Worker.
+- Added the resident-binding second-Run causal row so request-context cache
+  invalidation cannot reintroduce a Coordinator Environment demand.

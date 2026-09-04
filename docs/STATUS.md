@@ -44,6 +44,7 @@ consistent vocabulary. This affects the documentation layers differently:
 | `INVARIANTS.md` | Ready | Guardrails are mechanical and reviewable |
 | `requirements-coverage.md` | Ready | Maps all required areas to bounded contexts and packaging rules |
 | `design/architecture-overview.md` | Ready | Maps the implemented Control/Coordinator/Resources/Worker boundaries, aggregate ownership, lifecycle processors, and runtime/server seams |
+| `design/acp-harness-capability-and-tool-bridge.md` | Runtime-owned | Defines ACP capability projection, the governed Session tool bridge, approval replay safety, and portable working-directory constraints |
 | `design/config-to-run-execution-flow.md` | Ready | Owns static Agent/Environment publication, role-scoped database/migration ownership, Deployment/Session creation, and request execution through per-kind materialization, commit, and HTTP/SSE response |
 | `design/config-publication-lifecycle.md` | Ready | Owns Control publication and Coordinator executable-registration semantics, idempotency, recovery, and failure rules without a parallel whole-catalog install model |
 | `design/protocol-adapter-boundaries.md` | Product-owned | Defines public protocol adapter mapping, conformance, and unsupported management boundaries |
@@ -95,6 +96,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `requirements-coverage.md` | Coverage map | Not required | n/a |
 | `formal-verification-expansion.md` | Coverage report | Not required | n/a |
 | `design/architecture-overview.md` | Navigation / context map | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
+| `design/acp-harness-capability-and-tool-bridge.md` | Design narrative | Not required | n/a |
 | `design/config-to-run-execution-flow.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/config-publication-lifecycle.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/protocol-adapter-boundaries.md` | Product/downstream mapping | Not required | n/a |

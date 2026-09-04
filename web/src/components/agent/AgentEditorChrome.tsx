@@ -36,6 +36,13 @@ export function buildAgentDraftBody(
   };
 }
 
+export function agentNeedsToolBridge(config: AgentConfig): boolean {
+  return config.tools.length > 0
+    || config.skills.length > 0
+    || config.mcp_servers.length > 0
+    || Object.hasOwn(config.plugin_config, "memory");
+}
+
 export function agentModelIsRunnable(
   model: AgentConfig["model"],
   readyModels: readonly string[],
