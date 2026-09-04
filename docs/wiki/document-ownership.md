@@ -95,6 +95,7 @@ Source documents own behavior. Wiki pages own retrieval facts only.
 | [architecture-overview.md](../design/architecture-overview.md) | bounded contexts, domain vocabulary, and cross-context boundaries | [index.md](index.md) |
 | [acp-harness-capability-and-tool-bridge.md](../design/acp-harness-capability-and-tool-bridge.md) | ACP Harness capability projection, governed Session tool bridge, approvals, replay safety, and workspace-relative working directory | [index.md](index.md) |
 | [brain-hand-coverage.md](../design/brain-hand-coverage.md) | ADR-0044/0045 test-coverage report | [index.md](index.md) |
+| [acp-harness-capability-and-tool-bridge.md](../design/acp-harness-capability-and-tool-bridge.md) | ACP runtime capability projection, Session MCP tool bridge, approval, and portable working-directory contract | [tool-and-capability-facts.md](tool-and-capability-facts.md) |
 | [distributed-acp-execution.md](../design/distributed-acp-execution.md) | cell-based distributed ACP execution | [index.md](index.md) |
 | [remote-worker-protocol.md](../design/remote-worker-protocol.md) | P0/P1/P2 remote Worker protocol, ownership, interactions, failure semantics, storage choices, and verification plan | [index.md](index.md) |
 | [config-to-run-execution-flow.md](../design/config-to-run-execution-flow.md) | canonical configuration-to-application and request-to-committed-response paths, with existing, modified, and new boundary work | [config-to-run-execution-flow-facts.md](config-to-run-execution-flow-facts.md) |

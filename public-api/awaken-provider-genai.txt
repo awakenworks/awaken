@@ -14,6 +14,7 @@ pub awaken_provider_genai::ModelDiscoveryError::Unsupported(genai::adapter::adap
 pub struct awaken_provider_genai::GenaiExecutor
 impl awaken_provider_genai::GenaiExecutor
 pub fn awaken_provider_genai::GenaiExecutor::from_materialized_endpoint(genai::adapter::adapter_kind::AdapterKind, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_provider_genai::GenaiExecutor::from_materialized_provider_endpoint(impl core::convert::Into<alloc::string::String>, genai::adapter::adapter_kind::AdapterKind, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_provider_genai::GenaiExecutor::with_client(genai::client::client_types::Client) -> Self
 pub fn awaken_provider_genai::GenaiExecutor::with_client_for_adapter(genai::client::client_types::Client, genai::adapter::adapter_kind::AdapterKind) -> Self
 pub fn awaken_provider_genai::GenaiExecutor::with_idle_timeout(self, core::time::Duration) -> Self
@@ -37,3 +38,4 @@ pub fn awaken_provider_genai::map_usage(&genai::chat::usage::Usage) -> awaken_ag
 pub async fn awaken_provider_genai::probe_credential(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, &str) -> awaken_provider_genai::CredentialProbe
 pub fn awaken_provider_genai::to_genai_request(&awaken_runtime_contract::llm::ChatRequest) -> awaken_runtime_contract::llm::Result<genai::chat::chat_request::ChatRequest>
 pub fn awaken_provider_genai::to_genai_request_for_adapter(&awaken_runtime_contract::llm::ChatRequest, genai::adapter::adapter_kind::AdapterKind) -> awaken_runtime_contract::llm::Result<genai::chat::chat_request::ChatRequest>
+pub fn awaken_provider_genai::to_genai_request_for_provider(&awaken_runtime_contract::llm::ChatRequest, &str, genai::adapter::adapter_kind::AdapterKind) -> awaken_runtime_contract::llm::Result<genai::chat::chat_request::ChatRequest>

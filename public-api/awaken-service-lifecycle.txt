@@ -1,4 +1,16 @@
 pub mod awaken_service_lifecycle
+#[repr(u8)] pub enum awaken_service_lifecycle::ProcessRole
+pub awaken_service_lifecycle::ProcessRole::AllInOne = 0
+pub awaken_service_lifecycle::ProcessRole::Control = 1
+pub awaken_service_lifecycle::ProcessRole::Coordinator = 2
+pub awaken_service_lifecycle::ProcessRole::Worker = 3
+impl awaken_service_lifecycle::ProcessRole
+pub const fn awaken_service_lifecycle::ProcessRole::as_str(self) -> &'static str
+pub const fn awaken_service_lifecycle::ProcessRole::from_discriminant(u8) -> core::option::Option<Self>
+pub const fn awaken_service_lifecycle::ProcessRole::mounts_managed_runtime(self) -> bool
+pub const fn awaken_service_lifecycle::ProcessRole::owns_startup_component(self, awaken_service_lifecycle::StartupComponent) -> bool
+pub fn awaken_service_lifecycle::ProcessRole::parse(&str) -> core::result::Result<Self, alloc::string::String>
+pub const fn awaken_service_lifecycle::ProcessRole::startup_role(self) -> core::option::Option<awaken_service_lifecycle::StartupRole>
 #[repr(u8)] pub enum awaken_service_lifecycle::StartupComponent
 pub awaken_service_lifecycle::StartupComponent::Control = 0
 pub awaken_service_lifecycle::StartupComponent::Coordinator = 2

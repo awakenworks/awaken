@@ -244,7 +244,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
     ) -> Result<bool, EnvironmentStoreError> {
         if self
             .fail_acknowledgements
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
                 remaining.checked_sub(1)
             })
             .is_ok()

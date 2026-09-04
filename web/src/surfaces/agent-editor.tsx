@@ -1,5 +1,3 @@
-// Agent authoring is progressively disclosed as Quickstart → Build → Advanced.
-// The three stages edit one lossless draft; Save/Validate/Try/Publish remain global.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
@@ -8,7 +6,7 @@ import {
   agentModelIsRunnable, agentNeedsToolBridge,
   AgentEditorStageNavigation, AgentValidationIssues,
   AttachedAgentContext,
-  BLANK_AGENT_CONFIG,
+  BLANK_AGENT_CONFIG as BLANK,
   buildAgentDraftBody,
 } from "../components/agent/AgentEditorChrome";
 import AgentEditorStages from "../components/agent/AgentEditorStages";
@@ -63,8 +61,6 @@ import { hasSurface, quickstartSessionPath } from "../lib/navigation/paths";
 import { useModels } from "../lib/useModels";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import ModelsSurface from "./models";
-
-const BLANK = BLANK_AGENT_CONFIG;
 
 export default function AgentEditorSurface() {
   const app = useApp();
@@ -187,7 +183,6 @@ export default function AgentEditorSurface() {
     setResourcesDirty(false);
     return saved.revision;
   };
-
   const review = useAgentDraftReview({
     agentId: targetId(),
     config: cfg,

@@ -55,6 +55,7 @@ pub enum CommittedOutcome {
 pub enum Error {
     ActiveDefinitionConflict { outcome_id: Id },
     Busy { outcome_id: Id },
+    WorkerRunning { run_id: RunId },
     WorkerAwaiting { run_id: RunId },
     Domain(String),
     Persistence(String),
@@ -75,6 +76,9 @@ impl std::fmt::Display for Error {
                 "Worker Thread already has active Outcome {}",
                 outcome_id.0
             ),
+            Self::WorkerRunning { run_id } => {
+                write!(formatter, "Outcome Worker {} is already running", run_id.0)
+            }
             Self::WorkerAwaiting { run_id } => write!(
                 formatter,
                 "Outcome Worker {} awaits external input; resume it before driving the Outcome",
@@ -398,9 +402,10 @@ impl<'a> Controller<'a> {
         kind: WorkerRunKind,
         run_id: RunId,
     ) -> Result<WorkerExecution, Error> {
-        if let Some(state) = self.reader.run_state(&run_id)
-            && state != RunState::Running
-        {
+        if self.reader.run_state(&run_id) == Some(RunState::Running) {
+            return Err(Error::WorkerRunning { run_id });
+        }
+        if let Some(state) = self.reader.run_state(&run_id) {
             let transcript = self.reader.committed_messages(self.thread_id);
             let input_id = worker_input_id(&aggregate.state.outcome_id, iteration);
             let message_start = transcript
@@ -447,9 +452,10 @@ impl<'a> Controller<'a> {
         aggregate: &Aggregate,
         run_id: RunId,
     ) -> Result<RunState, Error> {
-        if let Some(state) = self.reader.run_state(&run_id)
-            && state != RunState::Running
-        {
+        if self.reader.run_state(&run_id) == Some(RunState::Running) {
+            return Err(Error::WorkerRunning { run_id });
+        }
+        if let Some(state) = self.reader.run_state(&run_id) {
             return Ok(state);
         }
         let activation = RunActivation::new(

@@ -385,6 +385,10 @@ mod tests {
     /// | DH2 | no | any | exact Durable revocation | Ready | no claimed transition |
     /// | DH3 | yes | Continuity | foreign/non-Ready | any | retain exact fence |
     #[tokio::test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "requires Linux mount-namespace path fidelity"
+    )]
     async fn claimed_ready_durable_revocation_adopts_a_fresh_hand_and_runtime() {
         use awaken_session_contract::SessionProjectionSynchronizer as _;
 

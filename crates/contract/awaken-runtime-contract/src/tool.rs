@@ -721,6 +721,11 @@ impl ToolExecutionWave {
     }
 
     #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.start == self.end
+    }
+
+    #[must_use]
     pub const fn range(self) -> std::ops::Range<usize> {
         self.start..self.end
     }
@@ -1391,6 +1396,12 @@ mod recovery_tests {
                 ToolExecutionWave { start: 4, end: 6 },
             ],
             "R3-R6"
+        );
+        assert!(
+            tool_execution_waves(&claims, 3)
+                .into_iter()
+                .all(|wave| !wave.is_empty()),
+            "every canonical execution wave is nonempty"
         );
     }
 }

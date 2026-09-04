@@ -133,6 +133,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/plugin-configuration.md` | Role owner | Required | self |
 | `design/distributed-acp-execution.md` | Design narrative | Not required | n/a |
 | `design/brain-hand-coverage.md` | Coverage report | Not required | n/a |
+| `design/acp-harness-capability-and-tool-bridge.md` | Product/downstream mapping | Not required | n/a |
 | `adr/0001-documentation-model-and-vocabulary-alignment.md` | Decision record | Not required | n/a |
 | `adr/0002-resolver-role-demarcation.md` | Decision record | Not required | n/a |
 | `adr/0003-deferred-work-mechanism-selection.md` | Decision record | Not required | n/a |

@@ -8,12 +8,11 @@ use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_dream_application::{
     DreamCancellation, DreamExecutor, DreamFailure, DreamPreparation, DreamRequest,
 };
-use awaken_provisioning_contract::{
-    MemoryWriteConsistency, MountAccess, MountLifetime, MountRequirement, MountSource,
-};
+use awaken_provisioning_contract::{MountAccess, MountLifetime, MountRequirement, MountSource};
 use awaken_resource_contract::{
-    CreateMemoryStoreCommand, ExecutionResourceResolver, FileApplicationService, Memory,
-    MemoryRepository, MemoryStoreApplicationService, MemoryStoreId, ResourceState,
+    BindingId, CreateMemoryStoreCommand, ExecutionResourceResolver, FileApplicationService,
+    InputBinding, InputResourceId, Memory, MemoryRepository, MemoryStoreApplicationService,
+    MemoryStoreId, ResourceAccess, ResourceState,
 };
 use awaken_session_application::{CreateProfiledSessionCommand, SessionApplication};
 use awaken_session_contract::{
@@ -89,24 +88,6 @@ struct MemoryStoreContentSnapshot {
     files: Vec<Memory>,
 }
 
-#[derive(Clone)]
-struct ExclusiveMemoryStoreWriterLease {
-    workspace_id: String,
-    result_memory_store_id: String,
-}
-
-impl ExclusiveMemoryStoreWriterLease {
-    async fn release(&self, stores: &dyn MemoryStoreApplicationService) {
-        let _ = stores
-            .set_state(
-                &self.workspace_id,
-                &self.result_memory_store_id,
-                ResourceState::Active,
-            )
-            .await;
-    }
-}
-
 pub(crate) struct BuiltInDreamAgent {
     sessions: Arc<SessionApplication>,
     memory: Arc<dyn MemoryRepository>,
@@ -178,38 +159,7 @@ impl BuiltInDreamAgent {
     ) -> Result<String, DreamFailure> {
         let session_id = format!("sesn_dream_{}", request.job_id);
         let tools = dream_tool_configuration();
-        let mut mounts = vec![
-            MountRequirement {
-                mount_id: format!("{}-input-memory", request.job_id),
-                source: MountSource::MemoryStore {
-                    store_id: snapshot_store_id.into(),
-                    materialization_reference: None,
-                    write_consistency: MemoryWriteConsistency::ProviderDefault,
-                },
-                mount_path: "/mnt/dream/input-memory".into(),
-                // The source authority was already frozen into a private
-                // snapshot store. Mounting that disposable snapshot read-write
-                // preserves caller-source immutability even on Workdir providers
-                // that cannot enforce an OS-level read-only mount.
-                access: MountAccess::ReadWrite,
-                lifetime: MountLifetime::PerRun,
-                required: true,
-            },
-            MountRequirement {
-                mount_id: format!("{}-output-memory", request.job_id),
-                source: MountSource::MemoryStore {
-                    store_id: result_store_id.into(),
-                    materialization_reference: None,
-                    // FUSE writes through immediately; copy-only providers
-                    // harvest atomically during terminal Session disposal.
-                    write_consistency: MemoryWriteConsistency::ProviderDefault,
-                },
-                mount_path: "/mnt/dream/output-memory".into(),
-                access: MountAccess::ReadWrite,
-                lifetime: MountLifetime::PerRun,
-                required: true,
-            },
-        ];
+        let mut mounts = Vec::new();
         mounts.extend(
             transcripts
                 .into_iter()
@@ -242,12 +192,53 @@ impl BuiltInDreamAgent {
                 mutation_policy: awaken_session_contract::SessionMutationPolicy::Frozen,
                 agent_id: request.agent_id.clone(),
                 source_revision: None,
-                environment_id: None,
+                // Dream is a filesystem workflow. Pin the built-in local
+                // Environment so typed Memory inputs lower to mounts instead of
+                // selecting the semantic-tools delivery path.
+                environment_id: Some(
+                    awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID.into(),
+                ),
                 model: Some(request.model.id.clone()),
                 mounts,
                 env: Vec::new(),
                 prompts,
-                resource_inputs: Vec::new(),
+                resource_inputs: vec![
+                    awaken_session_contract::SessionInputAttachment {
+                        binding: InputBinding {
+                            binding_id: BindingId::from(format!(
+                                "dream:{}:input-memory",
+                                request.job_id
+                            )),
+                            target: InputResourceId::MemoryStore(MemoryStoreId::from(
+                                snapshot_store_id,
+                            )),
+                            mount_path: "/mnt/dream/input-memory".into(),
+                            // This is a private snapshot, not the caller's source
+                            // store. Read-write keeps copy-backed providers usable
+                            // while source/output separation preserves caller data
+                            // even where the provider cannot enforce a read-only
+                            // filesystem mount.
+                            access: ResourceAccess::ReadWrite,
+                            instructions: None,
+                        },
+                        replaces: None,
+                    },
+                    awaken_session_contract::SessionInputAttachment {
+                        binding: InputBinding {
+                            binding_id: BindingId::from(format!(
+                                "dream:{}:output-memory",
+                                request.job_id
+                            )),
+                            target: InputResourceId::MemoryStore(MemoryStoreId::from(
+                                result_store_id,
+                            )),
+                            mount_path: "/mnt/dream/output-memory".into(),
+                            access: ResourceAccess::ReadWrite,
+                            instructions: None,
+                        },
+                        replaces: None,
+                    },
+                ],
                 mcp_candidates: Vec::new(),
                 repositories: Vec::new(),
                 network_restriction: Some(awaken_session_contract::SessionNetworkPolicy::None),
@@ -269,34 +260,21 @@ impl BuiltInDreamAgent {
             DreamOutputBehavior::CreateNew => format!("mem_result_{}", request.job_id),
             DreamOutputBehavior::UpdateExisting { memory_store_id } => memory_store_id.clone(),
         };
-        match &request.output_behavior {
-            // An in-place Dream suspends its source store before creating the
-            // session. Restore it even when later preparation fails, otherwise
-            // one failed run can strand a caller-owned store as unavailable.
-            DreamOutputBehavior::UpdateExisting { .. } => {
-                ExclusiveMemoryStoreWriterLease {
-                    workspace_id: request.workspace_id.clone(),
-                    result_memory_store_id: result_id.clone(),
-                }
-                .release(self.stores.as_ref())
+        if matches!(request.output_behavior, DreamOutputBehavior::CreateNew) && !retain_result {
+            let _ = self
+                .stores
+                .set_state(&request.workspace_id, &result_id, ResourceState::Deleted)
                 .await;
-            }
-            DreamOutputBehavior::CreateNew if retain_result => {
-                ExclusiveMemoryStoreWriterLease {
-                    workspace_id: request.workspace_id.clone(),
-                    result_memory_store_id: result_id.clone(),
-                }
-                .release(self.stores.as_ref())
-                .await;
-            }
-            DreamOutputBehavior::CreateNew => {
-                let _ = self
-                    .stores
-                    .set_state(&request.workspace_id, &result_id, ResourceState::Deleted)
-                    .await;
-                let _ = self.memory.purge_store(&result_id).await;
-            }
+            let _ = self.memory.purge_store(&result_id).await;
         }
+        let _ = self
+            .stores
+            .set_state(
+                &request.workspace_id,
+                &format!("mem_snapshot_{}", request.job_id),
+                ResourceState::Deleted,
+            )
+            .await;
         let _ = self
             .memory
             .purge_store(&format!("mem_snapshot_{}", request.job_id))
@@ -412,6 +390,29 @@ impl DreamExecutor for BuiltInDreamAgent {
         if matches!(request.output_behavior, DreamOutputBehavior::CreateNew) {
             let _ = self.memory.purge_store(&result_id).await;
         }
+        if self
+            .stores
+            .get(&request.workspace_id, &snapshot_id)
+            .await
+            .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?
+            .is_none()
+        {
+            self.stores
+                .create(CreateMemoryStoreCommand {
+                    workspace_id: request.workspace_id.clone(),
+                    id: Some(MemoryStoreId::from(snapshot_id.clone())),
+                    name: "Dream input snapshot".into(),
+                    description: format!("Private input snapshot for {}", request.job_id),
+                    metadata: BTreeMap::from([(
+                        "awaken.dream_job_id".into(),
+                        request.job_id.clone(),
+                    )]),
+                    initial_state: ResourceState::Active,
+                    retention_policy: Default::default(),
+                })
+                .await
+                .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
+        }
         let snapshot = MemoryStoreContentSnapshot {
             snapshot_memory_store_id: snapshot_id.clone(),
             files: self
@@ -452,18 +453,17 @@ impl DreamExecutor for BuiltInDreamAgent {
                         "awaken.dream_job_id".into(),
                         request.job_id.clone(),
                     )]),
-                    initial_state: ResourceState::Suspended,
+                    // A frozen Session binding does not exempt an executing
+                    // handle from live Resource validation. Keep the result
+                    // active throughout the Run and publish the Dream reference
+                    // only through DreamProcess lifecycle truth.
+                    initial_state: ResourceState::Active,
                     retention_policy: Default::default(),
                 })
                 .await
                 .map_err(|error| {
                     DreamFailure::new("memory_store_org_limit_exceeded", error.to_string())
                 })?;
-        } else {
-            self.stores
-                .set_state(&request.workspace_id, &result_id, ResourceState::Suspended)
-                .await
-                .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         }
         let (transcripts, transcript_file_ids) = self.export_transcripts(request).await?;
         let session_id = match self

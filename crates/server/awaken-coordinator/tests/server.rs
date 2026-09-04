@@ -520,7 +520,8 @@ async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate()
     assert!(
         !awaiting_again_events
             .iter()
-            .any(|event| event["type"] == "span.outcome_evaluation_end")
+            .any(|event| event["type"] == "span.outcome_evaluation_end"),
+        "R2 must remain awaiting before evaluation: {awaiting_again_events:?}"
     );
     assert_eq!(
         last_event_of_type(awaiting_again_events, "session.status_idle")["stop_reason"]["type"],
