@@ -1670,6 +1670,17 @@ pub trait ContainerRuntime: Send + Sync {
         self.uses_host_live_input_bind()
     }
 
+    /// Recover the exact provider-owned staging root from an already-running
+    /// host-bind realization. Docker and Podman derive this only from the
+    /// immutable container mount table; runtimes without that evidence retain
+    /// the fail-closed default.
+    async fn recovered_host_staging_root(
+        &self,
+        _container_id: &str,
+    ) -> Result<Option<std::path::PathBuf>, RuntimeError> {
+        Ok(None)
+    }
+
     async fn project_live_input(
         &self,
         _container_id: &str,

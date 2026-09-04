@@ -31,8 +31,8 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{
-    FP, RecordingMetrics, SNAP, THREAD, TICKET, activation, schedule_runtime, text_runtime,
-    text_runtime_with_metrics, tool_runtime,
+    FP, RecordingMetrics, SNAP, THREAD, TICKET, activation, activation_on, counting_text_runtime,
+    schedule_runtime, text_runtime, text_runtime_with_metrics, tool_runtime,
 };
 
 struct RecordingSettlementObserver {
@@ -1644,6 +1644,48 @@ async fn reconciliation_repairs_committed_terminal_awaiting_and_expired_rows() {
 }
 
 #[tokio::test]
+async fn reconciliation_repairs_released_pending_terminal_without_execution() {
+    use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
+
+    // Causes: C1 terminal commit exists; C2 post-commit queue settlement failed;
+    // C3 the now-quiescent mutation claim was released to Pending. Effects: E1
+    // the canonical terminal reconciler claims immediately without lease expiry;
+    // E2 it settles Done once; E3 no executor call occurs.
+    //
+    // | committed | row | physical slot | effect |
+    // |---|---|---|---|
+    // | terminal | Pending | empty | E1 + E2 + E3 |
+    let (runtime, infers) = counting_text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
+    let activation = activation_on("released-terminal", "released-terminal-thread");
+    store
+        .enqueue(RunDispatch::new(activation.clone()))
+        .await
+        .expect("C2/C3 released row");
+    commit_run(
+        commit.as_ref(),
+        &activation.thread_id,
+        RunDisposition::ended(activation.run_id.clone(), EndCause::NaturalEnd),
+        Vec::new(),
+        Vec::new(),
+    )
+    .await
+    .expect("C1 terminal truth");
+
+    assert_eq!(
+        ingress
+            .reconcile_committed_terminals(harness::clock(0), 1)
+            .await
+            .expect("E1 reconcile"),
+        vec![(activation.run_id, RunState::Ended(EndCause::NaturalEnd))],
+    );
+    assert_eq!(store.dispatch_count(), 0, "E2");
+    assert_eq!(infers.load(Ordering::SeqCst), 0, "E3");
+}
+
+#[tokio::test]
 async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
     // Test design. Causes: C1 a Run owns committed ticket correlation A; C2 input
     // arrives with stale correlation B; C3 matching A later arrives. Effects: E1
@@ -1907,11 +1949,20 @@ async fn durable_cancel_invokes_the_selected_executor_before_terminal_commit() {
 #[tokio::test]
 async fn committed_cancel_is_settled_without_duplicate_after_crash() {
     // Test design. Causes: C1 cancel intent is claimed and commits Cancelled; C2
-    // the Worker crashes before settling; C3 recovery reclaims after expiry.
-    // Effects: E1 C3 settles Done from committed cancellation; E2 no second cancel
-    // commit or model execution occurs. Constraint/Invariant: committed terminal
-    // truth dominates the still-leased dispatch. Decision rule: reproduce the
-    // exact post-commit/pre-settle crash and assert one terminal fact.
+    // the Worker crashes before settling; C3 an ordinary pool claim wins the
+    // recovery race after expiry; C4 a backend cancel executor is installed.
+    // Effects: E1 C3 settles Done from committed cancellation; E2 C4 is never
+    // entered; E3 no second cancel commit or model execution occurs.
+    // Constraint/Invariant: committed terminal truth dominates the still-leased
+    // dispatch before every physical effect.
+    //
+    // | Rule | committed terminal | ordinary recovery claim | backend present | Expected |
+    // |---|---|---|---|---|
+    // | TC1 | yes | yes | yes | E1 + E2 + E3 |
+    //
+    // Decision rule TC1 reproduces the exact post-commit/pre-settle crash and
+    // makes the generic pool route, rather than the dedicated terminal scanner,
+    // own the replacement claim.
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -1941,14 +1992,15 @@ async fn committed_cancel_is_settled_without_duplicate_after_crash() {
     );
     assert_eq!(store.dispatch_count(), 1, "crash left intent for recovery");
 
-    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
+    let selected = Arc::new(RecordingAttemptExecutor::default());
+    let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "restarted-worker");
+    worker.install_attempt_executor(selected.clone());
     assert_eq!(
-        ingress
-            .recover(harness::clock(1_001))
-            .await
-            .expect("recovery"),
-        vec![(run.clone(), RunState::Ended(EndCause::Cancelled))]
+        worker.tick(harness::clock(1_001)).await.expect("recovery"),
+        Some((run.clone(), RunState::Ended(EndCause::Cancelled)))
     );
+    assert_eq!(selected.cancels.load(Ordering::SeqCst), 0, "TC1/E2");
+    assert_eq!(selected.executes.load(Ordering::SeqCst), 0, "TC1/E3");
     assert_eq!(store.dispatch_count(), 0);
     let record =
         awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run(

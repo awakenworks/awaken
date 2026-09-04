@@ -828,9 +828,15 @@ async function main() {
     brain = spawnBrain();
     await waitForPort(PORT, 60_000, brain);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
-    // Crash-adoption rule: C1 prior marker exists; C2 replacement adopts the
-    // exact container; C3 new exact receipt is admitted. Only a marker after C3
-    // proves the replacement ACP path; the prior marker is ineligible.
+    // Crash-adoption decision rule: C1 the prior marker and exact physical
+    // container exist; C2 its immutable fingerprints, successor effect fence,
+    // and provider-owned live-input staging bind all match; C3 the frozen
+    // Memory projection is copy-backed; C4 the replacement admits a new exact
+    // User Event receipt. C1+C2+C3+C4 => E1 adopt the same container, E2 run the
+    // replacement ACP path once, E3 commit a marker after C4, and E4 retain one
+    // terminal Memory reconciliation/cleanup owner. Missing or foreign C2, or a
+    // non-reconstructible C3, must fail closed without replacement or replay;
+    // the prior marker is ineligible for E3.
     const resumedReceipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'resume the adopted container' }] }],
       betas: BETAS,

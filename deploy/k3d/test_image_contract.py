@@ -53,19 +53,21 @@ def main() -> None:
     product_resources = (product / "resources.yaml").read_text()
     assert 'resources: ["networkpolicies"]' in product_resources
     assert 'verbs: ["get", "list", "watch"]' in product_resources
-    # Continuation-volume/RBAC cause-effect decision table. C1 the overlay omits
-    # k8s_continuation_volume; C2 its runtime Role omits an exact PVC rule. E1 no
-    # dormant PVC mutation authority is granted. Rule KRB1: C1+C2 => E1. Enabling
-    # the capability must change both causes together and grant only
-    # persistentvolumeclaims create/get/delete in that overlay.
-    for overlay_resources in (resources, product_resources):
-        active_yaml = "\n".join(
-            line
-            for line in overlay_resources.splitlines()
-            if not line.lstrip().startswith("#")
-        )
-        assert "k8s_continuation_volume" not in active_yaml
-        assert 'resources: ["persistentvolumeclaims"]' not in active_yaml
+    # Continuation-volume/RBAC cause-effect decision table. C1 distributed
+    # recovery binds the canonical retained PVC; C2 its Worker must allocate,
+    # observe by UID, and finally dispose that claim. C3 product-backend does not
+    # own that proven recovery flow. Effects: E1 C1+C2 grants only
+    # create/get/delete; E2 C3 retains no dormant PVC authority. KRB1=C1+C2=>E1;
+    # KRB2=C3=>E2. Pod update remains a separate rule and must not widen PVCs.
+    assert 'resources: ["persistentvolumeclaims"]' in resources
+    assert 'verbs: ["create", "get", "delete"]' in resources
+    product_active_yaml = "\n".join(
+        line
+        for line in product_resources.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert "k8s_continuation_volume" not in product_active_yaml
+    assert 'resources: ["persistentvolumeclaims"]' not in product_active_yaml
     assert '/usr/local/bin/awaken-control", "database", "migrate"' in resources
     assert 'command: ["/usr/local/bin/awaken-server"]' in resources
     assert '/usr/local/bin/awaken-coordinator", "database", "migrate"' in resources
@@ -75,8 +77,12 @@ def main() -> None:
     # Installation-intent decision table: DB1 a repeatable rollout manifest ->
     # ordinary exact-only migration and no retained initialization authority;
     # DB2 a fresh disposable E2E cluster -> one explicit audited initialization
-    # Job per role, then the same ordinary Jobs converge. The fixture helper
-    # reuses the role commands and is not a second deployment manifest.
+    # Job per role, then the same ordinary Jobs converge; DB3 every short-lived
+    # migration/initialization Pod sees the same immutable local installation
+    # coordinate as its long-running role Pod. Effects: E1 rollout manifests
+    # retain no initialization grant; E2 both phases bind PostgreSQL under the
+    # one ConfigMap-owned coordinate instead of a Pod-local marker. The fixture
+    # helper reuses the role commands and is not a second deployment manifest.
     assert "--initialize-installation" not in resources
     assert resources.count("suspend: true") == 2
     e2e = (
@@ -87,6 +93,14 @@ def main() -> None:
     assert '"--initialize-installation", "--initialization-reference"' in e2e
     assert 'patch job/control-migrate' in e2e
     assert 'patch job/coordinator-migrate' in e2e
+    for role in ("control", "coordinator"):
+        marker_mount = (
+            f"mountPath: /var/lib/awaken/{role}/platform-workspace-id, "
+            "subPath: platform-workspace-id, readOnly: true"
+        )
+        assert resources.count(marker_mount) == 2
+    assert "mountPath: /var/lib/awaken/$role/platform-workspace-id" in e2e
+    assert e2e.count("configMap: { name: adr71-installation }") == 1
     # I4 the deterministic Control fixture changes only the publication resolver:
     # the scenario adapter consumes the deployment's one explicit Control config
     # and assembles the canonical split-Control application. The former HOME

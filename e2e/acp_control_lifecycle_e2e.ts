@@ -144,6 +144,7 @@ async function main(): Promise<void> {
   let server = spawnServer('acp-control', PORT, {
     SESSION_DEPLOYMENT_STORAGE_DIR: storage,
     SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
     AWAKEN_DISPATCH_DAEMON: '1',
   }).server;
   try {
@@ -212,6 +213,7 @@ async function main(): Promise<void> {
     server = spawnServer('acp-relaunch-failure', PORT, {
       SESSION_DEPLOYMENT_STORAGE_DIR: failureStorage,
       SESSION_DEPLOYMENT_INGRESS: 'durable',
+      SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
       AWAKEN_DISPATCH_DAEMON: '1',
     }).server;
     await waitForPort(PORT, 180_000, server);

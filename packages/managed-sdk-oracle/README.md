@@ -205,7 +205,7 @@ evidence from drifting from the external expectation:
   every nested union branch, optional-field omission, closed field, finite
   literal, array item, map value, nullable response, page, binary body, and SSE
   wrapper. All 3,827 witnesses traverse both the real synchronous and
-  asynchronous Python 1.2 generated clients, `httpx2` transport, media
+  asynchronous current Python generated clients, `httpx2` transport, media
   dispatcher, and response converter. The return annotation's Pydantic JSON
   Schema is independently normalized and compared property-for-property, so
   permissive `BaseModel` extra-field retention cannot impersonate a declared
@@ -215,7 +215,7 @@ evidence from drifting from the external expectation:
   equal its input witness exactly; values inside an installed declaration also
   make every Pydantic serializer warning fatal. The sole reviewed upstream type
   variance is fail-closed: six Work
-  operations share `BetaSelfHostedWork.data`, whose Python 1.2 annotation omits
+  operations share `BetaSelfHostedWork.data`, whose current Python annotation omits
   the official `healthcheck` union branch. The original two-branch wire
   witnesses still decode in both client modes, while the live Python poller
   helper separately drains both `healthcheck` and `session`; if Anthropic fixes
@@ -248,7 +248,7 @@ evidence from drifting from the external expectation:
   wheel filters canonical Managed event names in its own generic parser; 0.100+
   must decode message and terminal replay. The last Beta-only and first GA
   Files/Skills releases own
-  the two additional projection-cutover cells; the current 1.2 behavior remains
+  the two additional projection-cutover cells; the current behavior remains
   owned by the deeper runtime/recovery driver instead of being run twice.
 
 `config/anchors.json` selects exact SDK releases and assigns each a stable role.

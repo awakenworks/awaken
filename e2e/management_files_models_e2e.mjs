@@ -35,7 +35,7 @@ async function drain(pagePromise) {
 
 async function main() {
   try {
-    await withScenarioServer('management-providers', 'mcp', 38134, async (baseUrl, upstream) => {
+    await withScenarioServer('management-providers', 'mcp', Number(process.env.E2E_PORT), async (baseUrl, upstream) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // -- Files: upload → delete → 404 -------------------------------------

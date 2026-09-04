@@ -199,7 +199,9 @@ mod tests {
         // cold reader can recover call/tool identity without a ticket table row.
         // Decision rule R1=C1=>E1, which guarantees E2 under C2. Constraint: the
         // audit fact is existing Runtime commit truth, not a second ticket owner.
-        use crate::agent::awaiting::{AwaitTarget, PendingTool, ToolAwaitReason};
+        use crate::agent::awaiting::{
+            AwaitTarget, PendingTool, ToolAwaitReason, ToolCallAuthority,
+        };
         let target = AwaitTarget::ToolCall {
             reason: ToolAwaitReason::Permission,
             call_id: "call-1".into(),
@@ -207,6 +209,7 @@ mod tests {
                 tool_id: "shell".into(),
                 arguments: serde_json::json!({"command": "pwd"}),
             },
+            authority: ToolCallAuthority::RuntimeToolBatch,
         };
         let draft: Draft = RunEvent::RunStateChanged {
             state: RunState::Awaiting,

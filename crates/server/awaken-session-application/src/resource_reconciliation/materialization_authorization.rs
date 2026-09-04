@@ -1,0 +1,54 @@
+//! Session-root authorization for ordinary Resource materialization.
+
+use awaken_session_contract::{
+    SessionRealizationControlFailure, SessionResourceMaterializationIntent,
+};
+
+use crate::{SessionApplication, realization::repository_control};
+
+impl SessionApplication {
+    pub(crate) async fn authorize_resource_materialization_intent_from_root(
+        &self,
+        intent: &SessionResourceMaterializationIntent,
+    ) -> Result<String, SessionRealizationControlFailure> {
+        let session = self
+            .session_repository()
+            .get(intent.session_id())
+            .await
+            .map_err(repository_control)?;
+        if session.is_terminal() {
+            return Err(SessionRealizationControlFailure::Terminal);
+        }
+        if session.realization.as_ref() != Some(intent.lease()) {
+            return Err(SessionRealizationControlFailure::StaleOwnership);
+        }
+        // A pending replacement is exclusive: while it exists, the prior active
+        // generation cannot be reopened under the new realization lease. When
+        // no replacement is pending, the active generation is the exact durable
+        // truth needed to rebuild a lost Worker projection.
+        let authoritative = session
+            .resources
+            .pending
+            .as_ref()
+            .unwrap_or(&session.resources.active);
+        let exact_target = session.resources.revision == intent.resource_revision()
+            && match intent.target() {
+                awaken_session_contract::SessionResourceMaterializationTarget::Input(input) => {
+                    authoritative.inputs().contains(input)
+                }
+                awaken_session_contract::SessionResourceMaterializationTarget::Skill(binding) => {
+                    authoritative.skills().contains(binding)
+                }
+            };
+        if !exact_target {
+            return Err(SessionRealizationControlFailure::Invalid(
+                "Session Resource materialization intent does not match the authoritative generation"
+                    .into(),
+            ));
+        }
+        self.session_repository()
+            .owner(intent.session_id())
+            .await
+            .map_err(repository_control)
+    }
+}

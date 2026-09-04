@@ -38,7 +38,7 @@ use authority::{
     terminal_cleanup_worker_requirements, verify_lease,
 };
 use control::RefreshedSessionRealizationControl;
-use recovery_backoff::session_recovery_delay;
+use recovery_backoff::{SessionRecoveryTrigger, next_session_recovery_delay};
 
 /// One timing policy for every realization owned by the co-located Runtime.
 /// Terminal cleanup uses the same lease horizon but renews at one third of it
@@ -155,6 +155,16 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
                     prepare_session,
                 },
             )
+            .await
+    }
+
+    async fn invalidate_session_realization_lease(
+        &self,
+        session_id: &str,
+        lease: &SessionRealizationLease,
+    ) -> Result<(), RunError> {
+        self.runtime
+            .invalidate_session_realization_lease(session_id, lease)
             .await
     }
 }
@@ -388,10 +398,10 @@ impl SessionApplication {
             );
         }
         loop {
-            let recovery_due = tokio::select! {
+            let recovery_trigger = tokio::select! {
                 () = cancellation.cancelled() => break,
-                _ = self.lifecycle_wakeup.notified() => true,
-                _ = tokio::time::sleep_until(next_recovery) => true,
+                _ = self.lifecycle_wakeup.notified() => Some(SessionRecoveryTrigger::ExternalWake),
+                _ = tokio::time::sleep_until(next_recovery) => Some(SessionRecoveryTrigger::Scheduled),
                 _ = interval.tick() => {
                     if let Err(error) = self
                         .renew_due_session_realizations(now_unix_ms())
@@ -411,13 +421,12 @@ impl SessionApplication {
                             "Session WorkQueue dispatch remains pending"
                         );
                     }
-                    false
+                    None
                 }
             };
-            if !recovery_due {
+            let Some(recovery_trigger) = recovery_trigger else {
                 continue;
-            }
-
+            };
             // The sole recovery cycle composes Resource, realization,
             // Event-batch, and Outcome reconciliation. Await it as a distinct
             // Tokio task so its first poll begins at the scheduler boundary;
@@ -436,8 +445,14 @@ impl SessionApplication {
             } else {
                 recovery_failure_streak.saturating_add(1)
             };
-            next_recovery =
-                tokio::time::Instant::now() + session_recovery_delay(recovery_failure_streak);
+            let now = tokio::time::Instant::now();
+            let existing_remaining = next_recovery.saturating_duration_since(now);
+            next_recovery = now
+                + next_session_recovery_delay(
+                    recovery_trigger,
+                    existing_remaining,
+                    recovery_failure_streak,
+                );
         }
         Ok(())
     }

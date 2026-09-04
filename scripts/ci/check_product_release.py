@@ -47,12 +47,14 @@ def validate(
     # Decision table: R1 complete single graph -> accept; R2 missing artifact/job
     # edge -> reject; R3 competing release workflow -> reject; R4 Management
     # image/Compose drift -> reject; R5 POSIX installer verification drift ->
-    # reject; R6 Windows installer verification drift -> reject.
+    # reject; R6 Windows installer verification drift -> reject; R7 only the
+    # canonical local quality workflow may be reused without an action SHA.
     required_workflow = (
         "name: release-awaken",
         '- "v*.*.*"',
         "group: release-awaken-${{ github.ref }}",
         "quality:",
+        "uses: ./.github/workflows/quality.yml",
         "binary_packages:",
         "sandbox_image:",
         "management_image:",
@@ -76,7 +78,10 @@ def validate(
     for line in workflow.splitlines():
         stripped = line.strip()
         if stripped.startswith("uses:"):
-            reference = stripped.split("#", 1)[0].rsplit("@", 1)[-1].strip()
+            action = stripped.split("#", 1)[0].removeprefix("uses:").strip()
+            if action == "./.github/workflows/quality.yml":
+                continue
+            reference = action.rsplit("@", 1)[-1].strip()
             if len(reference) != 40 or any(char not in "0123456789abcdef" for char in reference):
                 failures.append(f"release workflow action is not pinned: {stripped}")
     if release_workflows != (".github/workflows/release.yml",):
@@ -209,6 +214,13 @@ class ProductReleaseCheckerTests(unittest.TestCase):
                     "Get-FileHash -Algorithm SHA256", "Write-Host skipped"
                 ),
                 inputs[8],
+            ),
+            (
+                inputs[0].replace(
+                    "uses: ./.github/workflows/quality.yml",
+                    "uses: ./.github/workflows/quality-copy.yml",
+                ),
+                *inputs[1:],
             ),
         )
         for rule, mutation in enumerate(mutations, 2):

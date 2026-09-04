@@ -132,8 +132,19 @@ fn compatible_durable_projection(
     let current =
         serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(&owned.binding);
     let projected = serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(binding);
-    let same_generation = matches!(
-        (&owned.identity, identity),
+    let same_generation = same_durable_generation(&owned.identity, identity);
+    matches!((current, projected), (Ok(current), Ok(projected))
+        if same_generation
+            && current.owned_paths_are_monotonic_to(&projected)
+            && owned.environment.handle() == projected)
+}
+
+fn same_durable_generation(
+    current: &BoundSessionEnvironmentIdentity,
+    projected: &BoundSessionEnvironmentIdentity,
+) -> bool {
+    matches!(
+        (current, projected),
         (
             BoundSessionEnvironmentIdentity::Durable {
                 generation: current,
@@ -144,11 +155,7 @@ fn compatible_durable_projection(
                 ..
             },
         ) if current == projected
-    );
-    matches!((current, projected), (Ok(current), Ok(projected))
-        if same_generation
-            && current.owned_paths_are_monotonic_to(&projected)
-            && owned.environment.handle() == projected)
+    )
 }
 
 impl SessionEnvironmentOwner {
@@ -186,7 +193,9 @@ impl SessionEnvironmentOwner {
                     // monotonic-handle proof, and the exact handle currently
                     // emitted by its retained Arc. No projected string alone can
                     // rebind a process-local owner.
-                    if compatible_durable_projection(owned, &identity, &binding) {
+                    if owned.binding != binding
+                        && compatible_durable_projection(owned, &identity, &binding)
+                    {
                         owned.identity = identity;
                         owned.binding = binding;
                         return Ok(());
@@ -197,6 +206,7 @@ impl SessionEnvironmentOwner {
                     owned: RetiringEnvironmentOwner::Bound(owned),
                 }) = self
                     && (owned.identity != identity || owned.binding != binding)
+                    && owned.binding != binding
                     && compatible_durable_projection(owned, &identity, &binding)
                 {
                     // Revocation has already closed every local execution path,
@@ -253,6 +263,18 @@ impl SessionEnvironmentOwner {
                     Self::Preparing(SessionEnvironmentPreparation::Candidate(_)) => {}
                     Self::Resident(owned) => {
                         if owned.identity != identity {
+                            // A recovery task may read Resident A, wait on this
+                            // lifecycle guard, and arrive after local adoption
+                            // has committed/published effect B for the same
+                            // immutable physical generation. A cannot roll B
+                            // back and is not an identity conflict: binding plus
+                            // SandboxGeneration are the physical ABA fence.
+                            // Different bindings/generations remain closed.
+                            if owned.binding == binding
+                                && same_durable_generation(&owned.identity, &identity)
+                            {
+                                return Ok(());
+                            }
                             return Err(HostError::internal(
                                 "resident Session Environment projection changed its durable identity",
                             ));
@@ -261,6 +283,17 @@ impl SessionEnvironmentOwner {
                     Self::Retiring(retiring) => match &retiring.owned {
                         RetiringEnvironmentOwner::Bound(owned) => {
                             if owned.identity != identity {
+                                // Retiring and Resident are two phases of the
+                                // same physical owner. A peer may commit a new
+                                // adopt effect for that exact binding and
+                                // generation while this process is revoking its
+                                // Hand. Keep the local retirement fence (so a
+                                // stale completion cannot clear a replacement),
+                                // but do not reinterpret the new effect id as a
+                                // different substrate.
+                                if same_durable_generation(&owned.identity, &identity) {
+                                    return Ok(());
+                                }
                                 return Err(HostError::internal(
                                     "retiring Session Environment projection changed its durable identity",
                                 ));

@@ -379,6 +379,7 @@ async fn reconnect_hydrates_a_valid_persisted_optional_resume_ticket() {
                 tool_id: "tool-1".into(),
                 arguments: serde_json::json!({"cmd": "true"}),
             },
+            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::LegacyUnspecified,
         }
     );
 }
@@ -761,6 +762,58 @@ async fn authoritative_latest_and_wait_track_cross_replica_runs() {
         .expect("latest wait exists");
     assert_eq!(run_id.0, "run-latest");
     assert_eq!(latest_ticket.run_id.0, "run-latest");
+}
+
+#[tokio::test]
+async fn authoritative_state_tracks_cross_replica_commits() {
+    /*
+     * State-read cause/effect decision table.
+     * Causes: C1 an observer hydrates before a peer commit; C2 the peer commits
+     * one Thread-scoped cumulative-usage state command; C3 no local commit ever
+     * advances the observer projection. Effects: E1 the compatibility view
+     * remains empty, proving the stale-replica precondition; E2 the authoritative
+     * read returns the exact durable command once and in commit order. Rule
+     * S1=C1+C2+C3=>E1+E2. This covers budget admission after Coordinator restart
+     * without introducing a second usage ledger or synchronizing peer caches.
+     */
+    let Some(pool) = schema_pool("t_authoritative_state").await else {
+        return;
+    };
+    let observer = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .expect("observer");
+    let peer = PostgresCommitCoordinator::with_existing_pool(pool)
+        .await
+        .expect("peer");
+    let thread = ThreadId("thread-state-peer".into());
+    let command = StateCommand::set(
+        Scope::Thread,
+        MergePolicy::Commutative,
+        "__usage",
+        serde_json::json!({"by_model":{"model-a":{"prompt_tokens":2,"completion_tokens":2}}}),
+    );
+    peer.commit(ThreadCommit {
+        thread_id: thread.clone(),
+        run: ended("run-state-peer"),
+        messages: vec![],
+        state: vec![command.clone()],
+        events: vec![],
+    })
+    .await
+    .expect("peer state commit");
+
+    assert!(
+        CommittedThreadView::committed_state(&observer, &thread).is_empty(),
+        "S1/E1 observer compatibility projection remains stale"
+    );
+    assert_eq!(
+        observer
+            .authoritative_committed_state(&thread)
+            .await
+            .expect("S1 authoritative state read"),
+        vec![command],
+        "S1/E2 shared committed state bypasses the observer projection"
+    );
 }
 
 #[tokio::test]

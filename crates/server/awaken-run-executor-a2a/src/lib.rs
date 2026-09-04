@@ -34,8 +34,8 @@ use awaken_protocol_a2a::TaskState;
 use awaken_protocol_a2a::client::{get_task, send_message, try_cancel_task};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
-    Cancellation, Error, ExecutorCapabilities, Result, RunAttemptExecutor, RunExecutor, Wait,
-    verify_attempt_ownership,
+    AttemptRecoveryMode, Cancellation, Error, ExecutorCapabilities, Result, RunAttemptExecutor,
+    RunExecutor, Wait, verify_attempt_ownership,
 };
 use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
 use awaken_runtime_contract::resolved::ResolvedModelCandidate;
@@ -1635,6 +1635,75 @@ mod tests {
         assert_eq!(
             restored_task_reference(&context, &activation).unwrap(),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn physical_attempt_recovery_requires_an_exact_committed_task_binding() {
+        // Cause C1: committed state contains a complete A2A task reference.
+        // Cause C2: its endpoint matches the immutable publication binding.
+        // Effect E1: only C1+C2 selects continuation handoff; all other rows
+        // retain predecessor quiescence and cannot repeat `message:send`.
+        //
+        // | Rule | C1 | C2 | Effect |
+        // |---|---|---|---|
+        // | R1 | no | n/a | require predecessor quiescence |
+        // | R2 | yes | no | require predecessor quiescence |
+        // | R3 | yes | yes | continue durable remote operation |
+        let executor = A2aRunExecutor::over_http();
+        let activation = activation("a2a:http://remote.invalid");
+        let empty = RuntimeRunContext::new();
+        assert_eq!(
+            executor.physical_attempt_recovery(&activation, &empty),
+            AttemptRecoveryMode::RequirePredecessorQuiescence,
+            "R1"
+        );
+
+        let rec = Arc::new(Rec::default());
+        let context = RuntimeRunContext::new()
+            .with_commit(rec.clone())
+            .with_reader(rec.clone());
+        commit_boundary(
+            &context,
+            &activation,
+            RunDisposition::running(activation.run_id.clone()),
+            Vec::new(),
+            vec![
+                task_reference_state(&TaskReference {
+                    endpoint: "http://other.invalid".into(),
+                    task_id: "task-7".into(),
+                    context_id: "ctx-7".into(),
+                })
+                .unwrap(),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            executor.physical_attempt_recovery(&activation, &context),
+            AttemptRecoveryMode::RequirePredecessorQuiescence,
+            "R2"
+        );
+        commit_boundary(
+            &context,
+            &activation,
+            RunDisposition::running(activation.run_id.clone()),
+            Vec::new(),
+            vec![
+                task_reference_state(&TaskReference {
+                    endpoint: "http://remote.invalid".into(),
+                    task_id: "task-7".into(),
+                    context_id: "ctx-7".into(),
+                })
+                .unwrap(),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            executor.physical_attempt_recovery(&activation, &context),
+            AttemptRecoveryMode::ContinueDurableRemoteOperation,
+            "R3"
         );
     }
 

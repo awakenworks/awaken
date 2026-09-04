@@ -91,6 +91,15 @@ stop local polling while provider-side work continues. The physical slot remains
 occupied until the Future explicitly returns. No timeout or destructor fabricates
 that terminal fact.
 
+A committed A2A task identity supplies a narrower continuation proof. When the
+complete Run-scoped `TaskReference` matches the immutable remote endpoint, the
+A2A leaf classifies recovered execution as continuation-only: it reattaches with
+`tasks/get` and cannot submit `message:send` again. The Worker then asks the one
+Dispatch aggregate to atomically hand its physical slot from the predecessor to
+the exact current claim. Every other executor and every incomplete/mismatched
+reference keeps the fail-closed quiescence rule. Control still owns the slot,
+claim, and transaction; the Worker contributes only the executor-specific proof.
+
 ## 2026-08-12 amendment
 
 The former late Worker-authored Session-input design is superseded. Managed

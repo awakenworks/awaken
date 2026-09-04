@@ -201,6 +201,15 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             )
             .await
             .map_err(crate::managed_adapter_error::to_run_error)?;
+        // A Control-synchronized projection is the same complete Managed
+        // Session authority as a co-located SessionRuntime installation. Mark
+        // that existing ownership only after every frozen fact is installed;
+        // otherwise the later claimed resolver mistakes an empty compatibility
+        // envelope for ordinary desired state and drains Control's active MCP
+        // generation.
+        self.host
+            .session_slots
+            .update(session_id, |slot| slot.session_dispatch = true);
         drop(lifecycle_guard);
         let published_snapshot = self
             .host
@@ -292,9 +301,20 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
                         awaken_session_contract::FrozenResourceTransitionUse::ApplyEffects,
                     )?,
                     self.claim,
+                    Some(lease),
                 )
                 .await?;
         }
+        Ok(())
+    }
+
+    async fn invalidate_session_realization_lease(
+        &self,
+        session_id: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        self.host
+            .invalidate_session_realization_lease(session_id, lease);
         Ok(())
     }
 }

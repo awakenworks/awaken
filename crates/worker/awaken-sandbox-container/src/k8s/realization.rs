@@ -2,7 +2,7 @@ use std::fmt::Debug;
 use std::time::Duration;
 
 use awaken_provisioning_contract as pc;
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::core::v1::{Container, Pod, PodSpec, Toleration, Volume};
 use kube::api::PostParams;
 use kube::{Api, Resource, ResourceExt};
 use serde::Serialize;
@@ -14,6 +14,154 @@ use crate::RuntimeError;
 const REALIZATION_DIGEST_ANNOTATION: &str = "awaken.dev/realization-digest";
 const POD_READY_TIMEOUT: Duration = Duration::from_secs(120);
 const POD_READY_POLL: Duration = Duration::from_millis(250);
+
+fn normalize_volume(volume: &mut Volume) {
+    if let Some(config) = volume.config_map.as_mut()
+        && config.default_mode == Some(0o644)
+    {
+        config.default_mode = None;
+    }
+    if let Some(secret) = volume.secret.as_mut()
+        && secret.default_mode == Some(0o644)
+    {
+        secret.default_mode = None;
+    }
+    if let Some(claim) = volume.persistent_volume_claim.as_mut()
+        && claim.read_only == Some(false)
+    {
+        claim.read_only = None;
+    }
+}
+
+fn default_image_pull_policy(container: &Container) -> &'static str {
+    let image = container.image.as_deref().unwrap_or_default();
+    let last_component = image.rsplit('/').next().unwrap_or_default();
+    if !last_component.contains(':') || last_component.ends_with(":latest") {
+        "Always"
+    } else {
+        "IfNotPresent"
+    }
+}
+
+fn normalize_container(container: &mut Container) {
+    if container.env.as_ref().is_some_and(Vec::is_empty) {
+        container.env = None;
+    }
+    if container
+        .resources
+        .as_ref()
+        .is_some_and(|resources| resources == &Default::default())
+    {
+        container.resources = None;
+    }
+    if container.termination_message_path.as_deref() == Some("/dev/termination-log") {
+        container.termination_message_path = None;
+    }
+    if container.termination_message_policy.as_deref() == Some("File") {
+        container.termination_message_policy = None;
+    }
+    if container.image_pull_policy.as_deref() == Some(default_image_pull_policy(container)) {
+        container.image_pull_policy = None;
+    }
+    if let Some(mounts) = container.volume_mounts.as_mut() {
+        for mount in mounts {
+            if mount.read_only == Some(false) {
+                mount.read_only = None;
+            }
+        }
+    }
+}
+
+/// Remove only Kubernetes-documented API defaults before comparing one desired
+/// Pod projection with an admitted Pod. Scheduling-only fields are removed
+/// solely from an observed Pod; every executable, security, mount, and resource
+/// field remains part of the exact structural equality check.
+pub(crate) fn normalize_pod_spec(spec: &mut PodSpec, observed_pod: bool) {
+    for container in &mut spec.containers {
+        normalize_container(container);
+    }
+    if let Some(containers) = spec.init_containers.as_mut() {
+        for container in containers {
+            normalize_container(container);
+        }
+    }
+    if let Some(volumes) = spec.volumes.as_mut() {
+        for volume in volumes {
+            normalize_volume(volume);
+        }
+    }
+    if spec.dns_policy.as_deref() == Some("ClusterFirst") {
+        spec.dns_policy = None;
+    }
+    if spec.enable_service_links == Some(true) {
+        spec.enable_service_links = None;
+    }
+    if spec.scheduler_name.as_deref() == Some("default-scheduler") {
+        spec.scheduler_name = None;
+    }
+    if spec.service_account.as_deref() == Some("default") {
+        spec.service_account = None;
+    }
+    if spec.service_account_name.as_deref() == Some("default") {
+        spec.service_account_name = None;
+    }
+    if spec.termination_grace_period_seconds == Some(30) {
+        spec.termination_grace_period_seconds = None;
+    }
+    if spec.preemption_policy.as_deref() == Some("PreemptLowerPriority") {
+        spec.preemption_policy = None;
+    }
+    if spec.image_pull_secrets.as_ref().is_some_and(Vec::is_empty) {
+        spec.image_pull_secrets = None;
+    }
+    if spec
+        .security_context
+        .as_ref()
+        .is_some_and(|context| context == &Default::default())
+    {
+        spec.security_context = None;
+    }
+    if observed_pod {
+        spec.node_name = None;
+        if spec.priority == Some(0) {
+            spec.priority = None;
+        }
+        if spec.host_users == Some(true) {
+            spec.host_users = None;
+        }
+        if spec.set_hostname_as_fqdn == Some(false) {
+            spec.set_hostname_as_fqdn = None;
+        }
+        if spec.share_process_namespace == Some(false) {
+            spec.share_process_namespace = None;
+        }
+        if spec.host_network == Some(false) {
+            spec.host_network = None;
+        }
+        if spec.host_pid == Some(false) {
+            spec.host_pid = None;
+        }
+        if spec.host_ipc == Some(false) {
+            spec.host_ipc = None;
+        }
+        if let Some(tolerations) = spec.tolerations.as_mut() {
+            tolerations.retain(|toleration| !default_no_execute_toleration(toleration));
+            if tolerations.is_empty() {
+                spec.tolerations = None;
+            }
+        }
+    }
+}
+
+fn default_no_execute_toleration(toleration: &Toleration) -> bool {
+    matches!(
+        toleration.key.as_deref(),
+        Some("node.kubernetes.io/not-ready" | "node.kubernetes.io/unreachable")
+    ) && toleration.operator.as_deref() == Some("Exists")
+        && toleration.effect.as_deref() == Some("NoExecute")
+        && toleration.toleration_seconds == Some(300)
+        && toleration.value.is_none()
+}
 
 /// Stamp the exact desired Kubernetes object before its first API write. A retry
 /// may reuse an existing object only when this immutable realization fingerprint
@@ -416,10 +564,73 @@ pub(super) async fn await_pod_ready(api: &Api<Pod>, name: &str) -> Result<(), Ru
 mod tests {
     use k8s_openapi::api::core::v1::{
         Container, ContainerState, ContainerStateRunning, ContainerStateTerminated,
-        ContainerStateWaiting, ContainerStatus, PodSpec, PodStatus,
+        ContainerStateWaiting, ContainerStatus, PersistentVolumeClaimVolumeSource, PodSpec,
+        PodStatus, Volume, VolumeMount,
     };
 
     use super::*;
+
+    #[test]
+    fn pod_api_default_normalization_preserves_semantic_differences() {
+        // Cause/effect graph: C1 apiserver adds documented container, pull,
+        // scheduling, and false read-only defaults; C2 the desired security
+        // projection is unchanged/changed. Effects: E1 C1+C2 unchanged yields
+        // one identical normalized PodSpec; E2 any changed security field stays
+        // unequal. Rules N1 defaults only=>E1; N2 defaults+privilege change=>E2.
+        let mut desired = PodSpec {
+            containers: vec![Container {
+                name: "agent".into(),
+                image: Some("sandbox:v1".into()),
+                env: Some(Vec::new()),
+                volume_mounts: Some(vec![VolumeMount {
+                    name: "state".into(),
+                    mount_path: "/state".into(),
+                    read_only: Some(false),
+                    ..Default::default()
+                }]),
+                security_context: Some(k8s_openapi::api::core::v1::SecurityContext {
+                    allow_privilege_escalation: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            volumes: Some(vec![Volume {
+                name: "state".into(),
+                persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+                    claim_name: "claim".into(),
+                    read_only: Some(false),
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let mut observed = desired.clone();
+        let container = &mut observed.containers[0];
+        container.image_pull_policy = Some("IfNotPresent".into());
+        container.resources = Some(Default::default());
+        container.termination_message_path = Some("/dev/termination-log".into());
+        container.termination_message_policy = Some("File".into());
+        observed.node_name = Some("worker-a".into());
+        observed.dns_policy = Some("ClusterFirst".into());
+        observed.enable_service_links = Some(true);
+        observed.scheduler_name = Some("default-scheduler".into());
+        observed.service_account = Some("default".into());
+        observed.service_account_name = Some("default".into());
+        observed.termination_grace_period_seconds = Some(30);
+        observed.preemption_policy = Some("PreemptLowerPriority".into());
+        observed.priority = Some(0);
+
+        normalize_pod_spec(&mut desired, false);
+        normalize_pod_spec(&mut observed, true);
+        assert_eq!(observed, desired, "N1/E1");
+
+        observed.containers[0]
+            .security_context
+            .as_mut()
+            .unwrap()
+            .allow_privilege_escalation = Some(true);
+        assert_ne!(observed, desired, "N2/E2");
+    }
 
     fn pod(phase: &str, ready: bool, waiting: Option<&str>) -> Pod {
         Pod {

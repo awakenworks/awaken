@@ -1059,7 +1059,7 @@ async function main() {
     assert.ok(!badEvents.some((event) => event.type === 'session.thread_created'));
 
     console.log('E2E PASS: fixed Managed multi-Agent coordination via TS SDK.');
-  }, { SESSION_DEPLOYMENT_SANDBOX_TIER: 'local' });
+  }, { SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace' });
 
   await withScenarioServer(
     'delegate',
@@ -1094,7 +1094,7 @@ async function main() {
         'M13 root receives only the stable generic failure',
       );
     },
-    { SESSION_DEPLOYMENT_SANDBOX_TIER: 'local' },
+    { SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace' },
     { upstream: { failModel: 'fake-advisor' } },
   );
 
@@ -1210,7 +1210,7 @@ async function main() {
       assert.ok(!serialized.includes('independent advisor advice'), 'M14/E3 no in-flight advice leaks');
     },
     {
-      SESSION_DEPLOYMENT_SANDBOX_TIER: 'local',
+      SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
       SESSION_DEPLOYMENT_STORAGE_DIR: `${E2E_HOME_ROOT}/managed-advisor-cancel`,
     },
     { upstream: { delayMs: 4_000 } },

@@ -149,14 +149,16 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
   if (delta.declarations.added.length > 0 || delta.declarations.removed.length > 0) {
     throw new Error('candidate adds or removes scoped declaration files; review the SDK scope');
   }
-  const supportedDeclaration = /^(?:beta\/(?:files(?:\/|\.d\.ts$)|skills(?:\/|\.d\.ts$)|webhooks\.d\.ts$)|managed\/(?:lib\/sessions\/accumulate|tools\/agent-toolset\/(?:node(?:\.browser)?|skills))\.d\.ts$)/u;
+  const supportedDeclaration = /^(?:beta\/(?:agents\/agents|deployment-runs|deployments|dreams|files|memory-stores\/memories|sessions\/(?:events|sessions)|skills|user-profiles|webhooks)\.d\.ts$|beta\/(?:files|skills)\/.*\.d\.ts$|managed\/(?:lib\/sessions\/accumulate|tools\/agent-toolset\/(?:node(?:\.browser)?|skills))\.d\.ts$)/u;
   const unsupportedDeclaration = delta.declarations.changed.find(
     ({ path }) => !supportedDeclaration.test(path),
   );
   if (unsupportedDeclaration) {
     throw new Error(`${unsupportedDeclaration.path} changed outside the latest runtime canary`);
   }
-  if (delta.runtime.added.length > 0 || delta.runtime.removed.length > 0) {
+  const recognizedAddedRuntime = new Set(['internal/node.mjs']);
+  if (delta.runtime.added.some(({ path }) => !recognizedAddedRuntime.has(path))
+    || delta.runtime.removed.length > 0) {
     throw new Error('candidate adds or removes Managed runtime dependencies; add explicit behavior ownership');
   }
   const recognizedRemovedExports = new Set([
@@ -168,13 +170,17 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
   }
   const runtimeOwners = [
     /^(?:core\/middleware|internal\/(?:errors|parse|uploads))\.mjs$/u,
+    /^core\/credentials\.mjs$/u,
+    /^internal\/(?:file-store|node)\.mjs$/u,
+    /^lib\/credentials\/(?:credential-chain|identity-token|types|user-oauth)\.mjs$/u,
+    /^lib\/middleware\.mjs$/u,
     /^lib\/sessions\/accumulate\.mjs$/u,
     /^resources\/beta\/(?:files|webhooks)\.mjs$/u,
     /^resources\/beta\/skills\/(?:skills|versions)\.mjs$/u,
-    /^tools\/agent-toolset\/(?:node|skills)\.mjs$/u,
+    /^tools\/agent-toolset\/(?:fs-util|memories|node|skills)\.mjs$/u,
     /^version\.mjs$/u,
   ];
-  const unsupportedRuntime = delta.runtime.changed.find(
+  const unsupportedRuntime = [...delta.runtime.added, ...delta.runtime.changed].find(
     ({ path }) => !runtimeOwners.some((owner) => owner.test(path)),
   );
   if (unsupportedRuntime) {

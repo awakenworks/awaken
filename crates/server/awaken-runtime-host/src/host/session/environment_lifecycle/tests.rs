@@ -335,10 +335,10 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
     // the same durable generation; C4 the projected handle names the same or a
     // different substrate. Effects: E1 C1+C2+C3+same substrate atomically
     // advances identity+binding on that one owner while retaining the Arc; C5 a
-    // later root receipt advances only the effect identity after the same handle
-    // was already projected. E2 a foreign substrate is rejected with the owner
-    // unchanged; E3 C5 advances the receipt without mistaking the same physical
-    // generation for an ABA replacement. Exact replay is already covered by
+    // delayed root observation carries another effect identity after the same
+    // handle was already projected. E2 a foreign substrate is rejected with the
+    // owner unchanged; E3 C5 is absorbed without rolling the locally published
+    // identity backward. Exact replay is already covered by
     // ordinary projection tests, and the provisioning contract owns
     // path-loss/legacy/different-generation negatives.
     //
@@ -389,11 +389,11 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
             identity: same_binding_identity.clone(),
             binding: reserved_binding.clone(),
         })
-        .expect("P3 absorb the later receipt for the same physical handle");
+        .expect("P3 absorb an unordered receipt for the same physical handle");
     assert!(matches!(
         &owner,
         SessionEnvironmentOwner::Resident(owned)
-            if owned.identity == same_binding_identity
+            if owned.identity == reserved_identity
                 && owned.binding == reserved_binding
                 && Arc::ptr_eq(&owned.environment, &resident_environment)
     ));
@@ -418,7 +418,7 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
     assert!(matches!(
         &owner,
         SessionEnvironmentOwner::Resident(owned)
-            if owned.identity == same_binding_identity
+            if owned.identity == reserved_identity
                 && owned.binding == reserved_binding
                 && Arc::ptr_eq(&owned.environment, &resident_environment)
     ));
@@ -429,12 +429,12 @@ async fn realization_revocation_absorbs_only_a_compatible_durable_receipt() {
     // Revoked-owner cause/effect graph. C1 a durable Resident enters the sole
     // RealizationRevocation phase; C2 Control has committed a later Resource
     // receipt for the same generation and exact physical Arc; C3 a projection
-    // instead names a different generation. E1 C1+C2 advances identity/binding
-    // while preserving the Retiring cause and Arc, allowing canonical terminal
-    // takeover; E2 C1+C3 rejects and preserves the exact revoked owner.
+    // instead names a different generation. E1 C1+C2 absorbs the unordered
+    // receipt while preserving the exact Retiring fence and Arc; E2 C1+C3
+    // rejects and preserves that revoked owner.
     //
     // | Rule | cause | generation/handle | Effect |
-    // | V1 | realization revocation | same | E1 |
+    // | V1 | realization revocation | same | E1, retain fence |
     // | V2 | realization revocation | different | E2 |
     let thread = "revoked-resource-receipt";
     let root = tempfile::tempdir().unwrap();
@@ -442,7 +442,7 @@ async fn realization_revocation_absorbs_only_a_compatible_durable_receipt() {
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.handle()).unwrap();
     let mut owner = resident(thread, environment.clone());
-    owner
+    let retirement = owner
         .begin_retirement(
             SessionEnvironmentRetirementCause::RealizationRevocation,
             RetirementSelection::Current,
@@ -459,17 +459,13 @@ async fn realization_revocation_absorbs_only_a_compatible_durable_receipt() {
             identity: replacement.clone(),
             binding: binding.clone(),
         })
-        .expect("V1 same physical generation advances its receipt");
+        .expect("V1 same physical generation absorbs its receipt");
     let retained = owner.clone();
-    assert!(matches!(
-        &owner,
-        SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
-            cause: SessionEnvironmentRetirementCause::RealizationRevocation,
-            owned: RetiringEnvironmentOwner::Bound(owned),
-        }) if owned.identity == replacement
-            && owned.binding == binding
-            && Arc::ptr_eq(&owned.environment, &environment)
-    ));
+    assert!(
+        matches!(&owner, SessionEnvironmentOwner::Retiring(current)
+            if current.exact_matches(&retirement)),
+        "V1 unordered same-binding observation retains the exact retirement fence"
+    );
 
     assert!(
         owner

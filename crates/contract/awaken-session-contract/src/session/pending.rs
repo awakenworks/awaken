@@ -36,6 +36,7 @@ impl Pending {
                 reason: reason @ (ToolAwaitReason::Permission | ToolAwaitReason::ClientExecution),
                 call_id,
                 tool,
+                ..
             } => Some(Self {
                 tool_use_id: call_id.clone(),
                 name: tool.tool_id.clone(),

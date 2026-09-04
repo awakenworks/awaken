@@ -100,9 +100,9 @@ async function main() {
     // | config     | resolved | read   | Vault page, file token| exact     |
     // | profile    | resolved | read   | Vault page, named file| exact     |
     // | profile clone|resolved| read   | shared lazy resolution | exact     |
-    for (const { role, version, Client } of CLIENTS) {
+    for (const { role, version, root: packageRoot, Client } of CLIENTS) {
       const label = `${role}:${version}`;
-      const projectsWorkspace = projectsWorkspaceResponseContext(version);
+      const projectsWorkspace = projectsWorkspaceResponseContext(packageRoot);
       const invalid = new Client({
         apiKey: `invalid-${version}`, // awaken-allow: secret
         baseURL: running.baseUrl,
@@ -397,7 +397,7 @@ async function main() {
       workspace,
       'post-denial verification retains the authenticated Workspace',
     );
-    if (projectsWorkspaceResponseContext(current.version)) {
+    if (projectsWorkspaceResponseContext(current.root)) {
       assert.equal(
         verification.workspace_id,
         workspace,

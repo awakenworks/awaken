@@ -11,7 +11,7 @@ import { USER_PROFILES_BETA, withScenarioServer, pass } from './harness.mjs';
 const PROFILE_HEADERS = { 'anthropic-beta': USER_PROFILES_BETA };
 
 async function main() {
-  await withScenarioServer('management', 'mcp', 38192, async (baseUrl) => {
+  await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseUrl) => {
     const id = 'dsub_consent_e2e';
 
     // Gate decision rule: missing beta => 400 before application effects;

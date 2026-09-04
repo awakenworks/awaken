@@ -25,6 +25,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
+import { withoutAmbientProviderKeys } from './process_environment.mjs';
 import {
   cleanupFixtureTree,
   initializeE2EInstallation,
@@ -60,12 +61,7 @@ function awakenProcessEnv(extraEnv = {}) {
   // This production-composition test authors its credential through the
   // provider-connections boundary below.  Do not let a developer/CI runner's
   // unrelated provider keys trip the product's intentional ambient-key guard.
-  return Object.fromEntries(
-    Object.entries({ ...process.env, ...extraEnv }).filter(([name]) => {
-      const normalized = name.toUpperCase();
-      return normalized !== 'API_KEY' && !normalized.endsWith('_API_KEY');
-    }),
-  );
+  return withoutAmbientProviderKeys({ ...process.env, ...extraEnv });
 }
 
 function startAwaken(bin, port, configPath, childEnv) {

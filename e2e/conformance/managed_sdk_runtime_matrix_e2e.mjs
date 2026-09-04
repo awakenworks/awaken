@@ -16,7 +16,9 @@ import {
 import { pass, waitForSessionEventReceipt, withScenarioServer } from '../harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const CLIENTS = (await loadConformanceClients()).map(({ version, Client }) => [version, Client]);
+const CLIENTS = (await loadConformanceClients()).map(({ version, Client, root }) => (
+  [version, Client, root]
+));
 
 async function drain(items) {
   const values = [];
@@ -25,7 +27,7 @@ async function drain(items) {
 }
 
 async function exerciseResponseContext(baseURL, clientSpec) {
-  const [version, Client] = clientSpec;
+  const [version, Client, root] = clientSpec;
   const client = new Client({ apiKey: 'e2e-dummy', baseURL, maxRetries: 0 });
   let session;
   try {
@@ -57,7 +59,7 @@ async function exerciseResponseContext(baseURL, clientSpec) {
     assert.ok(workspaceID, `${version}: response workspace id`);
     assert.equal(created.request_id, requestID, `${version}: withResponse request id`);
     assert.equal(session._request_id, requestID, `${version}: parsed request id`);
-    const projectsWorkspace = projectsWorkspaceResponseContext(version);
+    const projectsWorkspace = projectsWorkspaceResponseContext(root);
     assert.equal(
       'workspace_id' in created,
       projectsWorkspace,
@@ -166,13 +168,13 @@ async function exerciseCell(baseURL, runtime, creatorSpec, operatorSpec) {
   }
 }
 
-await withScenarioServer('acp', 'echo', 38187, async (baseURL) => {
+await withScenarioServer('acp', 'echo', Number(process.env.E2E_PORT), async (baseURL) => {
   for (const client of CLIENTS) await exerciseResponseContext(baseURL, client);
   for (const runtime of ['native', 'acp']) {
     for (const creator of CLIENTS) {
       for (const operator of CLIENTS) await exerciseCell(baseURL, runtime, creator, operator);
     }
   }
-});
+}, { SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace' });
 
 console.log(`E2E PASS: ${CLIENTS.length ** 2} SDK handoffs preserve Native and ACP Session behavior.`);

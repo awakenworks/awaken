@@ -70,11 +70,12 @@ async function main() {
     // Port distinct from managed_durable_e2e (38170): that test restarts its
     // server and its process-level dispatch pool lingers briefly on the port, so
     // sharing 38170 cross-contaminates in a full-suite run. 38185 is unshared.
-    await withScenarioServer('acp', 'echo', 38185, async (baseUrl) => {
+    await withScenarioServer('acp', 'echo', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // Cause graph / decision rules shared with the native case below:
-      // selected backend (ACP/native) + valid create-time user.message -> create
+      // C0=the Scenario binds the Namespace SessionEnvironment required by an
+      // opaque ACP process; selected backend (ACP/native) + valid create-time user.message -> create
       // returns running -> the common Session event executor persists the input ->
       // the selected runtime emits its own reply -> Session idles.
       //
@@ -190,7 +191,7 @@ async function main() {
         );
       }
       pass('ACP driver failures classify + render (malformed frame + truncation)');
-    });
+    }, { SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace' });
 
     console.log('E2E PASS: ACP-runtime selection + relaunch (R3/R4/R7) via the managed API.');
     process.exitCode = 0;

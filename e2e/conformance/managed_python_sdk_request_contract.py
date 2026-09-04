@@ -38,6 +38,7 @@ MANAGED_SDK_ANCHOR_VERSIONS = frozenset({
     "1.0.0",
     "1.1.0",
     "1.2.0",
+    "1.3.0",
 })
 WORKSPACE_RESPONSE_CONTEXT_VERSIONS = frozenset({
     "0.124.0",
@@ -45,6 +46,7 @@ WORKSPACE_RESPONSE_CONTEXT_VERSIONS = frozenset({
     "1.0.0",
     "1.1.0",
     "1.2.0",
+    "1.3.0",
 })
 CREDENTIAL_PROVIDER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0"}
 ENVIRONMENT_HELPER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0", "0.100.0"}
@@ -91,7 +93,7 @@ UNICODE_WORKER_HEADER_REJECTING_VERSIONS = frozenset(
         "0.125.0",
     }
 )
-MULTIPART_HEADER_NAME_REJECTING_VERSIONS = frozenset({"1.0.0", "1.1.0"})
+MULTIPART_HEADER_NAME_REJECTING_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0"})
 HTTP_FIELD_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 
 
@@ -541,9 +543,10 @@ def _invalid_multipart_header_field(
     version: str,
     keyword: dict[str, object],
 ) -> str | None:
-    # 1.0 and 1.1 expose the four-part FileTypes declaration unchanged but
+    # 1.0 through 1.2 expose the four-part FileTypes declaration unchanged but
     # httpx2 rejects a non-token custom multipart header name before transport.
-    # 0.x httpx accepts the witness; 1.2 normalizes the upload representation.
+    # 0.x httpx accepts the witness; 1.3 derives a basename for a tuple whose
+    # filename is absent and normalizes the upload representation.
     if version not in MULTIPART_HEADER_NAME_REJECTING_VERSIONS:
         return None
     matches = [

@@ -11,13 +11,17 @@ export function detachSessionCommandFixture(seed) {
   return request;
 }
 
-// Credential-only worker scenarios need an ordinary Run, not merely a generic
-// dispatch that still asks a Worker to realize Session-owned inputs.
+// Credential-only worker scenarios need an ordinary Run, not a Session command.
+// Preserve the seed's exact Resource envelope: it is the existing proof that a
+// cold Worker may realize Empty -> desired even when desired is empty. The
+// frozen Runtime projection is also an execution input, not Session-command
+// identity; `detachSessionCommandFixture` is the single ownership boundary for
+// both values. Removing either used to work only because background admission
+// eagerly created a sandbox before enqueue, which made this fixture depend on a
+// second physical-effect owner.
 export function ordinaryRunDispatchFixture(seed, runId, threadId) {
   const request = detachSessionCommandFixture(seed);
   request.activation.run_id = runId;
   request.activation.thread_id = threadId;
-  delete request.session_resources;
-  delete request.session_runtime;
   return request;
 }

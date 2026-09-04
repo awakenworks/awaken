@@ -12,9 +12,10 @@ const empty = () => ({ added: [], removed: [], changed: [] });
 
 test('candidate delta ownership fails closed outside exercised change points', () => {
   // Cause/effect graph: C1 no operation is added/removed; C2 only existing Beta
-  // Files/Skills request signatures change; C3 only Files/Skills/Webhooks
-  // declaration contents change in place; C4 any other delta. Effects: E1 reuse
-  // the generic candidate runtime proof; E2 require a new explicit owner.
+  // Files/Skills request signatures change; C3 only declarations and runtime
+  // modules with an executable owner change in place, except the one reviewed
+  // Node facade addition; C4 any other delta. Effects: E1 reuse the exact
+  // candidate runtime proof; E2 require a new explicit owner.
   // Decision rule D1 C1+C2+C3->E1; D2 C4->E2. This prevents a green smoke of
   // unchanged calls from certifying a newly added or unrelated SDK capability.
   const owned = {
@@ -26,6 +27,9 @@ test('candidate delta ownership fails closed outside exercised change points', (
       ...empty(),
       changed: [
         { path: 'beta/files.d.ts' },
+        { path: 'beta/agents/agents.d.ts' },
+        { path: 'beta/dreams.d.ts' },
+        { path: 'beta/user-profiles.d.ts' },
         { path: 'beta/skills/versions.d.ts' },
         { path: 'beta/webhooks.d.ts' },
         { path: 'managed/lib/sessions/accumulate.d.ts' },
@@ -35,13 +39,20 @@ test('candidate delta ownership fails closed outside exercised change points', (
     },
     runtime: {
       ...empty(),
+      added: [{ path: 'internal/node.mjs' }],
       changed: [
+        { path: 'core/credentials.mjs' },
         { path: 'core/middleware.mjs' },
+        { path: 'internal/file-store.mjs' },
         { path: 'internal/uploads.mjs' },
+        { path: 'lib/credentials/identity-token.mjs' },
+        { path: 'lib/middleware.mjs' },
         { path: 'lib/sessions/accumulate.mjs' },
         { path: 'resources/beta/files.mjs' },
         { path: 'resources/beta/skills/versions.mjs' },
         { path: 'resources/beta/webhooks.mjs' },
+        { path: 'tools/agent-toolset/fs-util.mjs' },
+        { path: 'tools/agent-toolset/memories.mjs' },
         { path: 'tools/agent-toolset/node.mjs' },
         { path: 'version.mjs' },
       ],

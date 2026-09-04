@@ -117,6 +117,7 @@ fn ticket(thread: &ThreadId, run: &RunId) -> ResumeTicket {
                 tool_id: "conf-tool".into(),
                 arguments: serde_json::json!({}),
             },
+            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
         },
     )
 }

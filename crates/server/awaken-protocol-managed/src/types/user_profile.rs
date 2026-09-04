@@ -70,7 +70,7 @@ pub struct CurrentUserProfile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_type: Option<AccessType>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub relationship: Option<Relationship>,
+    pub external_user_onboarded_at: Option<String>,
 }
 
 /// The response is selected solely by the explicit beta capability carried on
@@ -106,6 +106,8 @@ pub struct UserProfileCreateParams {
     #[serde(default)]
     pub external_id: Option<String>,
     #[serde(default)]
+    pub external_user_onboarded_at: Option<String>,
+    #[serde(default)]
     pub metadata: BTreeMap<String, String>,
     #[serde(default)]
     pub name: Option<String>,
@@ -134,6 +136,8 @@ pub struct UserProfileUpdateParams {
     pub access_type: Option<Option<AccessType>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
     pub external_id: Option<Option<String>>,
+    #[serde(default)]
+    pub external_user_onboarded_at: Option<String>,
     #[serde(default)]
     pub metadata: Option<BTreeMap<String, String>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]

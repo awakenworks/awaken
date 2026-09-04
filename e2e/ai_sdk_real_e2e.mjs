@@ -31,7 +31,7 @@ async function main() {
     return;
   }
   try {
-    await withServer('real', 38145, async (base) => {
+    await withServer('real', Number(process.env.E2E_PORT), async (base) => {
       const chat = newChat(base, 'sdk-real');
       await chat.sendMessage({ text: 'Reply with exactly the single word: pong' });
       const text = replyText(chat).trim();

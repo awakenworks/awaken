@@ -290,6 +290,209 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
     assert_eq!(committed.resources.active, desired, "M2/E2");
 }
 
+/// Resource-staging authorization cause/effect graph: C1 the Session
+/// root is nonterminal; C2 the asserted realization lease exactly equals the
+/// current root; C3 revision, target kind, and full resolved input/Skill equal
+/// the authoritative generation; C4 a replacement is pending. Effects: E1
+/// return the root-owned Workspace; E2 stale ownership; E3 invalid frozen
+/// input; E4 terminal denial. Pending is exclusive when present; otherwise the
+/// active generation supports cold Worker reconstruction. No Run claim or
+/// parallel staging state is synthesized.
+///
+/// | Rule | C1 | C2 | C3 | C4 | Effect |
+/// |---|---|---|---|---|---|
+/// | R1 | yes | yes | yes | yes | E1 pending target |
+/// | R2 | yes | no | any | any | E2 |
+/// | R3 | yes | yes | no | any | E3 |
+/// | R4 | no | any | any | any | E4 |
+/// | R5 | yes | yes | yes | no | E1 active rebuild target |
+#[tokio::test]
+async fn resource_authority_is_the_exact_pending_session_generation() {
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "worker-resource-memory".into(),
+        runtime_incarnation: "worker-resource-memory:1:boot".into(),
+        epoch: 7,
+        expires_at_unix_ms: u64::MAX,
+    };
+    let input = awaken_session_contract::ResolvedInput {
+        binding_id: awaken_resource_contract::BindingId::from("pending-memory"),
+        source: awaken_session_contract::ResolvedInputSource::MemoryStore {
+            memory_store_id: awaken_resource_contract::MemoryStoreId::from("memory-pending"),
+            config: awaken_resource_contract::MemoryStoreConfigVersion {
+                memory_store_id: awaken_resource_contract::MemoryStoreId::from("memory-pending"),
+                version: awaken_resource_contract::ConfigVersion::INITIAL,
+                retention_policy: Default::default(),
+            },
+        },
+        mount_path: "/memory/pending".into(),
+        access: awaken_resource_contract::ResourceAccess::ReadOnly,
+        instructions: None,
+    };
+    let file = file_resources("file-pending").inputs()[0].clone();
+    let skill = skill_resources("skill-pending").skills()[0].clone();
+    let desired = awaken_session_contract::ResolvedSessionResources::try_new(
+        vec![input.clone(), file.clone()],
+        vec![skill.clone()],
+    )
+    .expect("pending Memory, File, and Skill targets");
+    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("resource Memory authority repository"),
+    );
+    for (session_id, terminal, active) in [
+        ("resource-memory-current", false, false),
+        ("resource-memory-active", false, true),
+        ("resource-memory-terminal", true, false),
+    ] {
+        let mut session = persisted(
+            session_id,
+            true,
+            if terminal { "terminated" } else { "idle" },
+        );
+        session.realization = Some(lease.clone());
+        session
+            .resources
+            .prepare(session_id, desired.clone())
+            .expect("prepare exact Memory generation");
+        if active {
+            session
+                .resources
+                .commit()
+                .expect("commit active generation");
+        }
+        create(repo.as_ref(), session).await;
+    }
+    let application = application(repo, Arc::new(RecordingEnvironmentSource::default()));
+    let exact = awaken_session_contract::SessionResourceMaterializationIntent::try_new(
+        "resource-memory-current",
+        1,
+        input.clone(),
+        lease.clone(),
+    )
+    .expect("exact pending Memory intent");
+    assert_eq!(
+        application
+            .authorize_resource_materialization_intent(&exact)
+            .await
+            .expect("R1/E1 exact root authority"),
+        "workspace",
+        "R1/E1"
+    );
+    let exact_active = awaken_session_contract::SessionResourceMaterializationIntent::try_new(
+        "resource-memory-active",
+        1,
+        input.clone(),
+        lease.clone(),
+    )
+    .expect("exact active rebuild intent");
+    assert_eq!(
+        application
+            .authorize_resource_materialization_intent(&exact_active)
+            .await
+            .expect("R5/E1 exact active rebuild authority"),
+        "workspace",
+        "R5/E1"
+    );
+    let exact_file = awaken_session_contract::SessionResourceMaterializationIntent::try_new(
+        "resource-memory-current",
+        1,
+        file,
+        lease.clone(),
+    )
+    .expect("exact pending File intent");
+    let exact_skill = awaken_session_contract::SessionResourceMaterializationIntent::try_new_skill(
+        "resource-memory-current",
+        1,
+        skill.clone(),
+        lease.clone(),
+    )
+    .expect("exact pending Skill intent");
+    for intent in [&exact_file, &exact_skill] {
+        assert_eq!(
+            application
+                .authorize_resource_materialization_intent(intent)
+                .await
+                .expect("R1/E1 exact non-Memory authority"),
+            "workspace",
+            "R1/E1"
+        );
+    }
+
+    let stale = awaken_session_contract::SessionResourceMaterializationIntent::try_new(
+        "resource-memory-current",
+        1,
+        input.clone(),
+        awaken_session_contract::SessionRealizationLease {
+            epoch: lease.epoch + 1,
+            ..lease.clone()
+        },
+    )
+    .expect("foreign lease intent");
+    assert!(
+        matches!(
+            application
+                .authorize_resource_materialization_intent(&stale)
+                .await,
+            Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership)
+        ),
+        "R2/E2"
+    );
+
+    let wrong_revision = awaken_session_contract::SessionResourceMaterializationIntent::try_new(
+        "resource-memory-current",
+        2,
+        input.clone(),
+        lease.clone(),
+    )
+    .expect("wrong revision remains structurally valid");
+    let mut wrong_input = input.clone();
+    wrong_input.mount_path = "/memory/foreign".into();
+    let wrong_input = awaken_session_contract::SessionResourceMaterializationIntent::try_new(
+        "resource-memory-current",
+        1,
+        wrong_input,
+        lease.clone(),
+    )
+    .expect("foreign input remains structurally valid");
+    let mut foreign_skill = skill;
+    foreign_skill.version += 1;
+    let wrong_skill = awaken_session_contract::SessionResourceMaterializationIntent::try_new_skill(
+        "resource-memory-current",
+        1,
+        foreign_skill,
+        lease.clone(),
+    )
+    .expect("foreign Skill remains structurally valid");
+    for intent in [&wrong_revision, &wrong_input, &wrong_skill] {
+        assert!(
+            matches!(
+                application
+                    .authorize_resource_materialization_intent(intent)
+                    .await,
+                Err(awaken_session_contract::SessionRealizationControlFailure::Invalid(_))
+            ),
+            "R3/E3"
+        );
+    }
+
+    let terminal = awaken_session_contract::SessionResourceMaterializationIntent::try_new(
+        "resource-memory-terminal",
+        1,
+        input,
+        lease,
+    )
+    .expect("terminal-root intent");
+    assert!(
+        matches!(
+            application
+                .authorize_resource_materialization_intent(&terminal)
+                .await,
+            Err(awaken_session_contract::SessionRealizationControlFailure::Terminal)
+        ),
+        "R4/E4"
+    );
+}
+
 fn profiled_policy_manifest(
     file: &str,
     skill_version: u64,

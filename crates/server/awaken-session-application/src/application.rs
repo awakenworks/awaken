@@ -895,6 +895,10 @@ async fn self_hosted_work_environment(
 
 #[async_trait::async_trait]
 impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionApplication {
+    fn request_lifecycle_reconciliation(&self) {
+        SessionApplication::request_lifecycle_reconciliation(self);
+    }
+
     async fn acquire_session_work(
         &self,
         session_id: &str,

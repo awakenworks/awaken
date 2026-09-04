@@ -148,6 +148,38 @@ impl RunExecutor for A2aRunExecutor {
 
 #[async_trait]
 impl RunAttemptExecutor for A2aRunExecutor {
+    fn physical_attempt_recovery(
+        &self,
+        activation: &RunActivation,
+        context: &RuntimeRunContext,
+    ) -> AttemptRecoveryMode {
+        // Cause C1: the recovered Run has a complete committed A2A TaskReference.
+        // Cause C2: that reference is bound to the publication-frozen endpoint.
+        // Effect E1: C1+C2 permits replacing only the Dispatch physical slot;
+        // `execute` then uses `tasks/get` and cannot repeat `message:send`.
+        // Effect E2: every absent, malformed, non-remote, or mismatched reference
+        // retains the generic predecessor-quiescence fence.
+        //
+        // | Rule | C1 | C2 | Recovery mode |
+        // |---|---|---|---|
+        // | R1 | yes | yes | continue durable remote operation |
+        // | R2 | no | n/a | require predecessor quiescence |
+        // | R3 | yes | no | require predecessor quiescence |
+        let continuation_is_bound = (|| {
+            let candidate = remote_candidate_of(activation).ok()?;
+            let endpoint = endpoint_of(candidate).ok()?;
+            let reference = restored_task_reference(context, activation).ok()??;
+            ensure_endpoint(&reference, &endpoint).ok()?;
+            Some(())
+        })()
+        .is_some();
+        if continuation_is_bound {
+            AttemptRecoveryMode::ContinueDurableRemoteOperation
+        } else {
+            AttemptRecoveryMode::RequirePredecessorQuiescence
+        }
+    }
+
     async fn resume(
         &self,
         activation: RunActivation,

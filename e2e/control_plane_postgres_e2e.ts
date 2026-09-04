@@ -75,6 +75,10 @@ function start(directory: string, databaseUrl: string): ChildProcess {
     workspace: WORKSPACE,
     identityMode: 'no-login',
     controlSealKey: SEAL_KEY,
+    // Installation identity rule: this positive PostgreSQL fixture names its
+    // exact platform Workspace in the canonical typed config. Scenario process
+    // metadata cannot substitute for that durable installation binding.
+    fields: { expected_platform_workspace_id: WORKSPACE },
     databases: {
       catalog_db: databaseUrl,
       credential_db: databaseUrl,
@@ -154,12 +158,14 @@ async function main(): Promise<void> {
   let server = start(directory, database.url);
 
   try {
-    // Startup cause/effect graph: C1 all five Postgres repositories reachable;
+    // Startup cause/effect graph: C0 exact platform Workspace installation
+    // binding; C1 all five Postgres repositories reachable;
     // C2 production child remains live; C3 listener appears before the bounded
     // monotonic deadline. Effects: E1 proceed only for C1+C2+C3; E2 a terminal
     // child reports its exact exit immediately; E3 a live-but-stalled child
-    // fails at 120s. Decision table: R1 C1+C2+C3 -> drive persistence; R2 !C2
-    // -> E2; R3 C2+!C3 -> E3. The same rules are applied after replacement.
+    // fails at 120s. Decision table: R0 !C0 -> reject before startup;
+    // R1 C0+C1+C2+C3 -> drive persistence; R2 !C2 -> E2;
+    // R3 C0+C2+!C3 -> E3. The same rules are applied after replacement.
     await waitForPort(PORT, 120_000, server);
 
     let response = await request('POST', '/v1/config/provider-connections', {

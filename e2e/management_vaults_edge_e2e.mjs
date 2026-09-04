@@ -20,7 +20,7 @@ async function req(base, method, uri, body) {
 }
 
 async function main() {
-  await withScenarioServer('management', 'mcp', 38263, async (base) => {
+  await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (base) => {
     // Create a real vault.
     let r = await req(base, 'POST', '/v1/vaults', { display_name: 'edge vault' });
     assert.ok([200, 201].includes(r.status), `create vault -> 2xx (got ${r.status})`);

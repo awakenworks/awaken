@@ -44,6 +44,13 @@ kubectl kustomize "$REPO_ROOT/deploy/k3d/distributed-control" >"$RENDERED"
 # C1 all six Control stores and both Coordinator stores have explicit URLs;
 # C2 local platform-workspace-id projection is absent. D10+C1+C2 => migration,
 # replicas, and recovery share only the PostgreSQL installation binding.
+# D11 replicated Worker identity: C1 each Worker otherwise owns a distinct
+# emptyDir; C2 the installation ConfigMap owns one platform-workspace-id; C3
+# that single key is mounted read-only at the Worker data-root identity path.
+# E1 every replica derives the same ContainerRealizationNamespace; E2 a fresh
+# Worker can validate and adopt another replica's exact durable Sandbox handle.
+# D11-D1=C1+C2+C3=>E1+E2; omitting the shared subPath reproduces the cross-Worker
+# provider-effective adoption-fingerprint conflict caught by the live chaos rule.
 # Each assertion owns one observable terminal effect; the manifest remains the
 # sole deployment source of truth.
 grep -q '/usr/local/bin/awaken-worker' "$RENDERED"
@@ -108,6 +115,23 @@ grep -q 'k8s_namespace = "awaken-adr71"' "$RENDERED"
 grep -q 'container_image = "awaken-sandbox:local"' "$RENDERED"
 grep -q 'serviceAccountName: worker-runtime' "$RENDERED"
 grep -q 'name: worker-runtime' "$RENDERED"
+# Keep this assertion scoped to the Worker StatefulSet: Control and Coordinator
+# intentionally consume the same authority at their own role-specific paths.
+WORKER_STATEFULSET="$(sed -n '/^kind: StatefulSet$/,/^---$/p' "$RENDERED" \
+  | sed -n '/^  name: worker$/,$p')"
+grep -q 'mountPath: /var/lib/awaken/worker/platform-workspace-id' <<<"$WORKER_STATEFULSET"
+grep -q 'subPath: platform-workspace-id' <<<"$WORKER_STATEFULSET"
+grep -q 'name: workspace' <<<"$WORKER_STATEFULSET"
+grep -q 'name: adr71-installation' <<<"$WORKER_STATEFULSET"
+# Continuation-RBAC table: a retained Session needs C1 PVC create, C2 exact UID
+# observation, and C3 terminal delete. E1 all three render in one PVC-only rule;
+# E2 update/list/watch remain absent from that rule. KRB1=C1+C2+C3=>E1+E2.
+WORKER_PVC_RULE="$(sed -n '/^kind: Role$/,/^---$/p' "$RENDERED" \
+  | grep -A5 -- '- persistentvolumeclaims')"
+grep -q -- '- create' <<<"$WORKER_PVC_RULE"
+grep -q -- '- get' <<<"$WORKER_PVC_RULE"
+grep -q -- '- delete' <<<"$WORKER_PVC_RULE"
+! grep -Eq -- '- (update|list|watch)' <<<"$WORKER_PVC_RULE"
 grep -q 'path: /admin/drain' "$RENDERED"
 grep -q 'terminationGracePeriodSeconds: 20' "$RENDERED"
 # Cause/effect rule: adopted Pod owner transfer requires update in addition to
@@ -130,7 +154,6 @@ grep -q 'tls_identity_fixture.mjs' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.s
 grep -q 'create configmap adr71-worker-upstream-ca' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'create secret tls adr71-worker-upstream-tls' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'name: worker-kube-api' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -q 'crictl stop --timeout 0 "$WORKER_ZERO_CONTAINER"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q "ALTER SYSTEM SET synchronous_commit = 'remote_apply';" "$RENDERED"
 grep -q "ALTER SYSTEM SET synchronous_standby_names = 'FIRST 1 (awaken_standby)';" "$RENDERED"
 ! grep -q -- '- synchronous_commit=remote_apply' "$RENDERED"
@@ -139,6 +162,12 @@ grep -q 'application_name=awaken_standby' "$RENDERED"
 grep -q 'connect_timeout=2' "$RENDERED"
 grep -q 'crictl stop --timeout 0 "$PRIMARY_CONTAINER"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q "sync_state = 'sync'" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+# Crash-semantics ownership rule: the distributed black-box lane may prove
+# Worker incarnation replacement, but it must not demand replay of an opaque
+# in-flight provider call without the terminal receipt required by ADR-0024.
+# The dedicated physical-attempt suites own that fail-closed decision table.
+! grep -q 'ADR71-CHAOS-SLOW' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+! grep -q 'WORKER_ZERO_CONTAINER' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q "get endpoints kubernetes" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 # Promotion decision table: P1 the old synchronous writer dies and its standby
 # is promoted -> clear the inherited dead-peer requirement before publication;

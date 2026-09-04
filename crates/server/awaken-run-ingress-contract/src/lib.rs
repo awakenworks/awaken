@@ -48,8 +48,8 @@ pub use dispatch::{
 };
 pub use dispatch_transition::{
     CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition,
-    PhysicalAttemptSlot, PhysicalAttemptTransition, begin_physical_attempt,
-    finish_physical_attempt, retry_exhaustion_eligible,
+    PhysicalAttemptSlot, PhysicalAttemptTransition, RelinquishTransition, begin_physical_attempt,
+    finish_physical_attempt, handoff_physical_attempt, retry_exhaustion_eligible,
 };
 pub use operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
@@ -87,6 +87,11 @@ pub use worker_transport::{
 #[allow(clippy::large_enum_variant)]
 pub enum ResourceOperationFence {
     Run(RunClaim),
+    SessionMaterialization(awaken_session_contract::SessionResourceMaterializationIntent),
+    RepositoryPublication {
+        command: Box<awaken_session_contract::SessionRepositoryPublicationCommand>,
+        lease: awaken_session_contract::SessionRealizationLease,
+    },
     CheckpointRelease(awaken_session_contract::SessionEnvironmentOperation),
     Terminal(awaken_session_contract::SessionTerminalCleanupEffect),
 }

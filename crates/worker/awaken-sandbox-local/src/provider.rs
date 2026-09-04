@@ -192,6 +192,48 @@ impl LocalProvider {
             .expect("memory mounter lock poisoned") = Some(mounter);
     }
 
+    /// Project the handle-visible fields from the frozen creation spec. This is
+    /// the single owner for new Local handle payloads; create and handle-less
+    /// terminal recovery must not derive these fields independently.
+    fn project_spec_handle_fields(
+        sandbox: &mut LocalSandbox,
+        spec: &pc::SandboxSpec,
+    ) -> Result<(), pc::SandboxError> {
+        sandbox.deny_egress = spec.deny_tool_egress;
+        sandbox.base_env.clone_from(&spec.env);
+        sandbox.continuation_excluded_paths = spec
+            .mounts
+            .iter()
+            .filter(|mount| {
+                matches!(
+                    mount.source,
+                    pc::MountSource::Secret { .. }
+                        | pc::MountSource::MemoryStore { .. }
+                        | pc::MountSource::CacheVolume { .. }
+                )
+            })
+            .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+            .collect::<Result<_, _>>()?;
+        Ok(())
+    }
+
+    /// Restore every handle-visible field from durable provider evidence. All
+    /// Local reopen paths use this projection so an exact handle cannot drift
+    /// merely because the in-memory wrapper was reconstructed.
+    fn project_durable_handle_fields(
+        sandbox: &mut LocalSandbox,
+        payload: &pc::LocalSandboxHandleV1,
+    ) -> Result<(), pc::SandboxError> {
+        sandbox.base_env.clone_from(&payload.base_env);
+        sandbox.deny_egress = payload.deny_tool_egress;
+        sandbox.continuation_excluded_paths = payload
+            .continuation_excluded_paths
+            .iter()
+            .map(|path| sandbox.root.resolve(path).map_err(err))
+            .collect::<Result<_, _>>()?;
+        Ok(())
+    }
+
     /// Realize a sandbox and return the concrete [`LocalSandbox`], so a caller can
     /// use the tool-transparent [`LocalSandbox::spawn_agent`] capability. The trait
     /// `create` delegates here and boxes the result.
@@ -254,8 +296,7 @@ impl LocalProvider {
             .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
             .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
             .collect::<Result<_, _>>()?;
-        sandbox.deny_egress = spec.deny_tool_egress;
-        sandbox.base_env.clone_from(&spec.env);
+        Self::project_spec_handle_fields(&mut sandbox, spec)?;
         *sandbox
             .owned_paths
             .lock()
@@ -264,20 +305,6 @@ impl LocalProvider {
             .iter()
             .map(|mount| mount.mount_path.clone())
             .collect();
-        sandbox.continuation_excluded_paths = spec
-            .mounts
-            .iter()
-            .filter(|mount| {
-                matches!(
-                    mount.source,
-                    pc::MountSource::Secret { .. }
-                        | pc::MountSource::MemoryStore { .. }
-                        | pc::MountSource::CacheVolume { .. }
-                )
-            })
-            .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
-            .collect::<Result<_, _>>()?;
-
         // Ready is a completed physical attempt, not permission to reconcile
         // provider-owned paths again. Rebuild the response only from the exact
         // durable receipt while the retained-parent lock proves the same root.
@@ -510,13 +537,7 @@ impl LocalProvider {
             root,
             Some(handle.clone()),
         );
-        sandbox.base_env.clone_from(&payload.base_env);
-        sandbox.deny_egress = payload.deny_tool_egress;
-        sandbox.continuation_excluded_paths = payload
-            .continuation_excluded_paths
-            .iter()
-            .map(|path| sandbox.root.resolve(path).map_err(err))
-            .collect::<Result<_, _>>()?;
+        Self::project_durable_handle_fields(&mut sandbox, payload)?;
         Ok(sandbox)
     }
 
@@ -532,7 +553,7 @@ impl LocalProvider {
         terminal_effect_fence: &pc::SandboxEffectFence,
     ) -> Result<Option<LocalSandbox>, pc::SandboxError> {
         let fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
-        let (id, outputs_path, base_env, owned_paths) = if let Some(handle) = handle {
+        let (id, outputs_path, durable_payload, owned_paths) = if let Some(handle) = handle {
             let payload = handle.local_payload()?;
             if handle.realization_fingerprint() != Some(&fingerprint)
                 || payload.outputs_path != spec.outputs_path
@@ -543,23 +564,23 @@ impl LocalProvider {
                 ));
             }
             (
-                handle.sandbox_id.as_str(),
-                payload.outputs_path.as_str(),
-                payload.base_env.clone(),
+                handle.sandbox_id.clone(),
+                payload.outputs_path.clone(),
+                Some(payload.clone()),
                 handle.owned_paths().unwrap_or_default().to_vec(),
             )
         } else {
             (
-                spec.scope.as_str(),
-                spec.outputs_path.as_str(),
-                spec.env.clone(),
+                spec.scope.clone(),
+                spec.outputs_path.clone(),
+                None,
                 spec.mounts
                     .iter()
                     .map(|mount| mount.mount_path.clone())
                     .collect(),
             )
         };
-        let mut sandbox = self.build(id, outputs_path);
+        let mut sandbox = self.build(&id, &outputs_path);
         sandbox.secret_paths = spec
             .mounts
             .iter()
@@ -603,7 +624,11 @@ impl LocalProvider {
             .terminal_removal
             .lock()
             .expect("terminal removal lock poisoned") = Some(removal);
-        sandbox.base_env = base_env;
+        if let Some(payload) = durable_payload.as_ref() {
+            Self::project_durable_handle_fields(&mut sandbox, payload)?;
+        } else {
+            Self::project_spec_handle_fields(&mut sandbox, spec)?;
+        }
         *sandbox
             .owned_paths
             .lock()
@@ -649,12 +674,7 @@ impl LocalProvider {
             Some((evidence, _)) => crate::realization_marker::LiveRealization::Current(evidence),
             None => crate::realization_marker::LiveRealization::LegacyAdopted,
         };
-        sandbox.base_env.clone_from(&payload.base_env);
-        sandbox.continuation_excluded_paths = payload
-            .continuation_excluded_paths
-            .iter()
-            .map(|path| sandbox.root.resolve(path).map_err(err))
-            .collect::<Result<_, _>>()?;
+        Self::project_durable_handle_fields(&mut sandbox, payload)?;
         if let Some(spec) = spec {
             sandbox.secret_paths = spec
                 .mounts

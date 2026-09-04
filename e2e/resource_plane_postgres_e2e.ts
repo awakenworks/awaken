@@ -15,6 +15,7 @@ import {
   cleanupFixtureTree,
   managedFileUploadForm,
   managedWorkspaceClient,
+  postgresDatabaseName,
   spawnProduction,
   stopServer,
   waitForPort,
@@ -31,13 +32,17 @@ const MANAGED_BETA = 'managed-agents-2026-04-01';
 const MEMORY_BETA = 'agent-memory-2026-07-22';
 const SKILLS_BETA = 'skills-2025-10-02';
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const INHERITED_DATABASE_URL = process.env.SESSION_DEPLOYMENT_DATABASE_URL;
+const PROBE_DATABASE = INHERITED_DATABASE_URL
+  ? postgresDatabaseName(INHERITED_DATABASE_URL)
+  : 'awaken';
 
 function docker(...args: string[]): string {
   return execFileSync('docker', args, { cwd: ROOT, encoding: 'utf8' }).trim();
 }
 
 async function postgres(): Promise<{ container: string; url: string; owned: boolean }> {
-  const inheritedUrl = process.env.SESSION_DEPLOYMENT_DATABASE_URL;
+  const inheritedUrl = INHERITED_DATABASE_URL;
   const inheritedContainer = process.env.AWAKEN_E2E_POSTGRES_CONTAINER;
   if (inheritedUrl && inheritedContainer) {
     return { container: inheritedContainer, url: inheritedUrl, owned: false };
@@ -73,6 +78,11 @@ function start(directory: string, databaseUrl: string): ChildProcess {
   return spawnProduction(directory, PORT, {
     workspace: WORKSPACE,
     controlSealKey: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+    // Installation identity rule: every positive PostgreSQL deployment binds
+    // the exact platform Workspace through the canonical typed config. Missing
+    // or mismatched identity is a separate negative startup outcome, never an
+    // implicit inference from scenario-only process metadata.
+    fields: { expected_platform_workspace_id: WORKSPACE },
     databases: {
       resource_database_url: databaseUrl,
       sessions_db: databaseUrl,
@@ -228,7 +238,7 @@ function assertNoLocalResourceTruth(directory: string): void {
 }
 
 function psql(container: string, sql: string): string {
-  return docker('exec', container, 'psql', '-U', 'postgres', '-d', 'awaken', '-At', '-c', sql);
+  return docker('exec', container, 'psql', '-U', 'postgres', '-d', PROBE_DATABASE, '-At', '-c', sql);
 }
 
 function sqlLiteral(value: string): string {
@@ -451,7 +461,8 @@ async function publishAgent(endpoint: string, memoryStoreId: string): Promise<vo
 }
 
 async function main(): Promise<void> {
-  // Test design (PostgreSQL resource plane). Causes: C1=File/Memory/Skill/policy
+  // Test design (PostgreSQL resource plane). Causes: C0=the installation is
+  // explicitly bound to Workspace A; C1=File/Memory/Skill/policy
   // state is authored in Workspace A; C2=a replacement process uses the same
   // PostgreSQL stores; C3=Workspace B or an archived/corrupt resource is used;
   // C4=a registered Worker realizes the frozen manifest. Effects: E1=all valid
@@ -459,8 +470,8 @@ async function main(): Promise<void> {
   // sandbox/model effect; E3=C4 completes one Managed Run and cleanup receipt.
   // Constraints/invariant: PostgreSQL repositories are the sole shared truth;
   // process-local directories and Worker projections never become authorities.
-  // Decision rules: G1=C1=>E1; G2=C1+C2=>E1; G3=C3=>E2;
-  // G4=C1+C2+C4=>E1+E3.
+  // Decision rules: G0=!C0=>reject before startup; G1=C0+C1=>E1;
+  // G2=C0+C1+C2=>E1; G3=C0+C3=>E2; G4=C0+C1+C2+C4=>E1+E3.
   const pg = await postgres();
   const upstream = await startFakeAnthropic('resource-e2e-model-key', {
     behavior: 'memory',

@@ -25,6 +25,7 @@ import { snapshotExecutable } from '../executable_snapshot.mjs';
 import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
 import {
   auditRequestTypesFromPackageRoot,
+  extractRequestContractsFromPackageRoot,
   extractResponseContractsFromPackageRoot,
 } from '../../packages/managed-sdk-oracle/src/extract-wire-contracts.mjs';
 import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
@@ -111,6 +112,11 @@ const responseContracts = extractResponseContractsFromPackageRoot(
   scope,
   selectedOperations.map(({ id }) => id),
 );
+const requestContracts = extractRequestContractsFromPackageRoot(
+  sdkRoot,
+  scope,
+  selectedOperations.map(({ id }) => id),
+);
 const sdkModule = await import(pathToFileURL(path.join(sdkRoot, 'index.mjs')));
 const helperMethods = managedTsSdkHelperMethods(new sdkModule.default({
   apiKey: 'behavior-owner-helper-inventory', // awaken-allow: secret
@@ -142,25 +148,22 @@ for (const root of [
     operationBetaUniverse.set(operation.id, values);
   }
 }
-// Historical SDKs execute their own exact generated request code. Identical
-// request coordinates receive the current additive wire contract because the
-// API never versions by User-Agent. A changed beta capability selects a
-// distinct public projection and therefore retains that anchor's exact response
-// contract. Both branches stay closed and declaration-derived.
-let wireResponseContracts;
-if (historicalSubset) {
-  const currentResponseContracts = extractResponseContractsFromPackageRoot(
-    canonicalRoot,
-    scope,
-    selectedOperations.map(({ id }) => id),
-  );
-  wireResponseContracts = projectWireResponseContracts({
-    selectedOperations,
-    currentOperations,
-    selectedResponseContracts: responseContracts,
-    currentResponseContracts,
-  });
-}
+// Every SDK executes its exact generated request code. Identical request
+// coordinates receive the declaration-derived additive wire contract because
+// the API never versions by User-Agent. A changed beta capability selects a
+// distinct public projection. This applies equally to historical anchors and
+// a forward candidate whose response declaration changed in place.
+const currentResponseContracts = extractResponseContractsFromPackageRoot(
+  canonicalRoot,
+  scope,
+  selectedOperations.map(({ id }) => id),
+);
+const wireResponseContracts = projectWireResponseContracts({
+  selectedOperations,
+  currentOperations,
+  selectedResponseContracts: responseContracts,
+  currentResponseContracts,
+});
 const behaviorManifest = managedTsMethodManifestForOperations(selectedOperations, {
   allowHistoricalSubset: historicalSubset,
   helperMethods,
@@ -180,6 +183,19 @@ const currentUserProfiles = officialBetaResourceProjection(currentOperations, 'u
 const userProfilesProjection = selectedUserProfiles.capability === currentUserProfiles.capability
   ? 'current'
   : 'legacy';
+function requestOwnsProperty(operationID, property) {
+  const params = requestContracts[operationID]?.parameters.find(({ name }) => name === 'params');
+  const owns = (value) => value?.kind === 'object'
+    ? Object.hasOwn(value.properties, property)
+    : value?.kind === 'union' && value.variants.some(owns);
+  return owns(params?.value);
+}
+const userProfilesRelationship = requestOwnsProperty('beta.userProfiles.create', 'relationship');
+const userProfilesOnboardedAt = requestOwnsProperty(
+  'beta.userProfiles.create',
+  'external_user_onboarded_at',
+);
+const userProfilesOrderBy = requestOwnsProperty('beta.userProfiles.list', 'order_by');
 const selectedOperationIDs = new Set(selectedOperations.map(({ id }) => id));
 const owners = [...new Set(behaviorManifest.map(({ owner }) => owner))].sort();
 const OWNER_TIMEOUT_MS = Number(process.env.AWAKEN_MANAGED_OWNER_TIMEOUT_MS ?? 180_000);
@@ -220,6 +236,9 @@ async function executeOwner(owner, receiptFile, resolutionFile, ownerEnvironment
         AWAKEN_MANAGED_SDK_RESOLUTION_FILE: resolutionFile,
         AWAKEN_MANAGED_SDK_SKILLS_PROJECTION: skillsProjection,
         AWAKEN_MANAGED_SDK_USER_PROFILES_PROJECTION: userProfilesProjection,
+        AWAKEN_MANAGED_SDK_USER_PROFILES_RELATIONSHIP: userProfilesRelationship ? '1' : '0',
+        AWAKEN_MANAGED_SDK_USER_PROFILES_ONBOARDED_AT: userProfilesOnboardedAt ? '1' : '0',
+        AWAKEN_MANAGED_SDK_USER_PROFILES_ORDER_BY: userProfilesOrderBy ? '1' : '0',
         AWAKEN_MANAGED_SDK_HAS_GA_FILES: selectedOperationIDs.has('files.upload') ? '1' : '0',
         AWAKEN_MANAGED_SDK_HAS_GA_SKILLS: selectedOperationIDs.has('skills.create') ? '1' : '0',
         AWAKEN_MANAGED_SDK_HAS_DREAMS: selectedOperationIDs.has('beta.dreams.create') ? '1' : '0',

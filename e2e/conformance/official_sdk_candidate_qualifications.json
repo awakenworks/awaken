@@ -99,6 +99,55 @@
           ]
         }
       ]
+    },
+    {
+      "baseline_version": "0.122.0",
+      "candidate_version": "0.123.0",
+      "module": "@anthropic-ai/sdk-candidate",
+      "package_integrity": "sha512-Y9oX9mPNGZClHQOFqrWRk43Srcu/UHuPq3rfxxOq7JgW0gi+lJA2MAOK4Ul3k/+AUrwRWFJvd0tK3oC0Pw25dw==",
+      "delta_fingerprint": "5c2f3cfeaa8c7054590ca970210c74c4ac62060b0b061b3b32aedc4aaab439fc",
+      "evidence_groups": [
+        {
+          "owner": "candidate.managed-type-change-points",
+          "coordinates": [
+            "declarations:changed:beta/agents/agents.d.ts",
+            "declarations:changed:beta/deployment-runs.d.ts",
+            "declarations:changed:beta/deployments.d.ts",
+            "declarations:changed:beta/dreams.d.ts",
+            "declarations:changed:beta/memory-stores/memories.d.ts",
+            "declarations:changed:beta/sessions/events.d.ts",
+            "declarations:changed:beta/sessions/sessions.d.ts",
+            "declarations:changed:beta/user-profiles.d.ts"
+          ]
+        },
+        {
+          "owner": "candidate.node-runtime-facade",
+          "coordinates": [
+            "runtime:added:internal/node.mjs",
+            "runtime:changed:core/credentials.mjs",
+            "runtime:changed:internal/file-store.mjs",
+            "runtime:changed:lib/credentials/credential-chain.mjs",
+            "runtime:changed:lib/credentials/identity-token.mjs",
+            "runtime:changed:lib/credentials/types.mjs",
+            "runtime:changed:lib/credentials/user-oauth.mjs",
+            "runtime:changed:tools/agent-toolset/fs-util.mjs",
+            "runtime:changed:tools/agent-toolset/memories.mjs",
+            "runtime:changed:tools/agent-toolset/skills.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.refusal-fallback-middleware",
+          "coordinates": [
+            "runtime:changed:lib/middleware.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.core-transport",
+          "coordinates": [
+            "runtime:changed:version.mjs"
+          ]
+        }
+      ]
     }
   ]
 }

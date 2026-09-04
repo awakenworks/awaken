@@ -507,6 +507,7 @@ impl SessionRuntime for RehydrateFake {
                                 tool_id: pending.name,
                                 arguments: pending.input,
                             },
+                            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
                         },
                     ),
                 }

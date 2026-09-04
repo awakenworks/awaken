@@ -34,7 +34,7 @@ async function main() {
   // Decision rules: E1=C1(valid)+C2(valid); E2=C1/C2(invalid or inconsistent);
   // E3=E1+C3; E4=E1+C4.
   try {
-    await withScenarioServer('management', 'mcp', 38148, async (baseUrl) => {
+    await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // -- Environment CRUD --------------------------------------------------

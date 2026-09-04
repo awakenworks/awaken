@@ -300,6 +300,21 @@ test('the release canary reaches both official TypeScript and Python SDK oracles
     new URL('./managed_python_sdk_runtime_e2e.mjs', import.meta.url),
     'utf8',
   );
+  // Cross-language authority decision table:
+  // TS current == Python shape -> generate both Python contract corpora from
+  // the current TS oracle; TS candidate adds a field first -> candidate stays
+  // on the TS-only qualification axis and cannot widen Python witnesses.
+  // Effect: the Python gate changes only when its own reviewed oracle advances.
+  assert.match(
+    pythonRunner,
+    /upstream-oracle\.generated\.json'[\s\S]*\.current\.module/u,
+    'Python contract generation is pinned to the current TS oracle, not the registry candidate',
+  );
+  assert.doesNotMatch(
+    pythonRunner,
+    /const module = '@anthropic-ai\/sdk-candidate'/u,
+    'a quarantined TS candidate cannot become the Python contract authority',
+  );
   assert.match(
     pythonRunner,
     /const responseContracts = writePythonResponseContracts\(temporary\);[\s\S]*writePythonRequestContracts\(temporary\)[\s\S]*exercisePythonRequestContracts\(python, requestContracts\)[\s\S]*exercisePythonResponseContracts\(python, responseContracts\)[\s\S]*await withScenarioServer/u,

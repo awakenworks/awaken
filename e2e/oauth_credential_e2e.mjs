@@ -8,7 +8,12 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  fakeAnthropicServerEnv,
+  withServer,
+  pass,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -19,13 +24,9 @@ const MINTED_KEY = 'oauth-minted-key'; // awaken-allow: secret
 async function main() {
   const upstream = await startFakeAnthropic(MINTED_KEY);
   try {
-    process.env.ANTHROPIC_BASE_URL = `${upstream.url}/v1/`;
-    process.env.ANTHROPIC_MODEL = 'fake-haiku';
-    // A deliberately WRONG ambient key: if the run authenticated with this instead
+    // A deliberately WRONG explicit process key: if the run authenticated with this instead
     // of the OAuth-minted token, the upstream would 401. Success proves it did not.
-    process.env.ANTHROPIC_API_KEY = 'sk-not-the-minted-key'; // awaken-allow: secret
-
-    await withServer('oauth-resolved', 38270, async (baseUrl) => {
+    await withServer('oauth-resolved', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const session = await client.beta.sessions.create({
         agent: 'assistant',
@@ -60,7 +61,9 @@ async function main() {
       assert.equal(upstream.unauthorized, 0, 'the OAuth-minted token authenticated (no 401s)');
       assert.ok(upstream.requests.length >= 1, 'the upstream served the OAuth-credentialed inference');
       pass('an OAuth-kind credential mints its token via the helper and authenticates the run (#5)');
-    });
+    }, fakeAnthropicServerEnv(upstream, {
+      ANTHROPIC_API_KEY: 'sk-not-the-minted-key', // awaken-allow: secret
+    }));
 
     console.log('E2E PASS: OAuth credential materialization over the real wire (#5).');
     process.exitCode = 0;

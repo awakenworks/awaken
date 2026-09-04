@@ -210,18 +210,19 @@ pub trait DispatchQueue: Send + Sync {
         capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError>;
 
-    /// Claim one quiescent `awaiting` row or expired `running` lease after the
-    /// committed Run authority has already proved that the same `run_id` is
-    /// terminal.
+    /// Claim one quiescent unleased `pending`/`awaiting` row or expired `running`
+    /// lease after the committed Run authority has already proved that the same
+    /// `run_id` is terminal. A `pending` row is the canonical immediate-retry
+    /// shape after a post-commit settlement failure released its mutation claim.
     ///
     /// This is the repair-side entry into the ordinary fenced settlement path:
     /// it never reads or accepts Run outcome truth, never executes the Run, and
     /// skips execution placement/credential admission because the caller will
     /// only redeliver terminal observers and call [`settle`](Self::settle) with
-    /// `Done`. Implementations must claim only an unleased `awaiting` row whose
-    /// Thread has no running dispatch, or a `running` row whose lease is strictly
-    /// expired. A live lease, missing, pending, superseded, or dead-lettered row
-    /// returns `None`.
+    /// `Done`. Implementations must claim only an unleased `pending`/`awaiting`
+    /// row whose Thread has no running dispatch, or a `running` row whose lease
+    /// is strictly expired. A live lease, missing, superseded, or dead-lettered
+    /// row returns `None`.
     async fn claim_for_terminal_recovery(
         &self,
         _run_id: &RunId,
@@ -293,6 +294,24 @@ pub trait DispatchQueue: Send + Sync {
         ))
     }
 
+    /// Atomically hand a predecessor's physical slot to this exact current
+    /// claim after the selected executor proved it can continue the already
+    /// committed remote operation without submitting its initiating effect.
+    ///
+    /// This is not crash/lease expiry. Callers without such durable executor
+    /// evidence must use [`begin_attempt`](Self::begin_attempt) and remain
+    /// blocked until predecessor quiescence. Empty and exact slots are handled
+    /// idempotently; a non-current claim is fenced.
+    async fn handoff_attempt(
+        &self,
+        _claim: &RunClaim,
+        _now_ms: u64,
+    ) -> Result<AttemptAdmission, DispatchError> {
+        Err(DispatchError::Rejected(
+            "dispatch backend does not support durable attempt handoff".to_string(),
+        ))
+    }
+
     /// Acknowledge that the physical executor future owned by `claim` has
     /// returned. This intentionally accepts the exact predecessor epoch after a
     /// durable reclaim: it can only clear its own execution slot and grants no
@@ -310,7 +329,11 @@ pub trait DispatchQueue: Send + Sync {
     /// queue and then discover that a subordinate authority (for example an
     /// Environment's single active Session Work lease) is temporarily busy.
     /// The complete claim fences the rollback, so a stale Worker cannot release
-    /// a replacement owner's Run. Pending input and attempt count are preserved.
+    /// a replacement owner's Run. An exact physical attempt owned by this claim
+    /// still fences rollback, but a predecessor's independently persisted slot
+    /// does not: the mutation claim returns to `pending` while that stale slot is
+    /// preserved and continues to block executor entry. Pending input and attempt
+    /// count are preserved.
     async fn relinquish_claim(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         Err(DispatchError::Rejected(
             "dispatch backend does not support claim relinquish".to_string(),

@@ -30,16 +30,16 @@ import {
   withServer,
 } from './harness.mjs';
 import { ACP_RUNTIME_IDS } from './acp_runtime_profiles.mjs';
+import { sqliteRows } from './sqlite.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 const PORT = Number(process.env.E2E_PORT);
 const ROOT = path.join(os.tmpdir(), `awaken-managed-native-acp-matrix-${process.pid}`);
-const INTERRUPT_READY_DIR = path.join(ROOT, 'interrupt-ready');
+const DISPATCH_DATABASE = path.join(ROOT, 'store', 'dispatch.db');
 const SERVER_ENV = {
   SESSION_DEPLOYMENT_STORAGE_DIR: path.join(ROOT, 'store'),
   SESSION_DEPLOYMENT_SANDBOX_DIR: path.join(ROOT, 'sandboxes'),
-  AWAKEN_MATRIX_INTERRUPT_READY_DIR: INTERRUPT_READY_DIR,
 };
 const CASES = Object.freeze([
   Object.freeze({ runtime: 'native', agent: 'matrix-native', kind: 'native' }),
@@ -157,7 +157,6 @@ async function waitForInitial(client, sessionId, marker, initialText) {
 async function exerciseDirectMatrix() {
   cleanupFixtureTree(ROOT);
   fs.mkdirSync(ROOT, { recursive: true });
-  fs.mkdirSync(INTERRUPT_READY_DIR, { recursive: true });
   let running = spawnServer('acp-jsonrpc', PORT, SERVER_ENV);
   const sessions = new Map();
   try {
@@ -358,17 +357,17 @@ async function exerciseDirectMatrix() {
 
     // Test design D5, applied to every ACP row.
     // Causes: C1=slow active ACP prompt with an exact User receipt; C2=official
-    // user.interrupt; C3=later valid User turn. Effects: E1=C1 emits its exact
-    // readiness witness and its receipt processes after interruption; E2=C2 kills
+    // user.interrupt; C3=later valid User turn. Effects: E1=C1 owns one exact
+    // durable physical-attempt slot and its receipt processes after interruption; E2=C2 kills
     // the owned subprocess and returns idle without its late marker; E3=C3 succeeds.
-    // Constraint: readiness only synchronizes the control edge; receipt completion
-    // and all behavioral effects are asserted from committed events, never timing. Decision rules:
+    // Constraint: the canonical dispatch row is the readiness witness, so the
+    // test neither bypasses SessionEnvironment with a host-path side channel nor
+    // guesses from timing. Receipt completion and all behavioral effects are
+    // asserted from committed state/events. Decision rules:
     // D5-I(C1+C2)->E1+E2; D5-R(D5-I+C3)->E3.
     for (const runtime of ACP_RUNTIME_IDS) {
       const sessionId = sessions.get(runtime).id;
       const before = await listEvents(client, sessionId);
-      const readyPath = path.join(INTERRUPT_READY_DIR, runtime);
-      fs.rmSync(readyPath, { force: true });
       const active = client.beta.sessions.events.send(sessionId, {
         events: [{
           type: 'user.message',
@@ -379,9 +378,26 @@ async function exerciseDirectMatrix() {
       const [activeReceipt] = await Promise.all([
         active.then((receipt) => receipt.data[0]),
         waitForValue(
-          () => fs.existsSync(readyPath),
-          (ready) => ready,
-          `${runtime}: slow ACP prompt to reach its blocking branch`,
+          () => {
+            try {
+              return sqliteRows(
+                DISPATCH_DATABASE,
+                `SELECT status, active_attempt_owner, active_attempt_epoch, sandbox
+                   FROM runtime_dispatch
+                  WHERE thread_id = ?
+                  ORDER BY created_at DESC
+                  LIMIT 1`,
+                sessionId,
+              )[0] ?? null;
+            } catch {
+              return null;
+            }
+          },
+          (row) => row?.status === 'running'
+            && typeof row.active_attempt_owner === 'string'
+            && row.active_attempt_epoch !== null
+            && row.sandbox !== null,
+          `${runtime}: exact sandboxed ACP physical attempt to become active`,
           { timeoutMs: 10_000, pollMs: 10 },
         ),
       ]);
@@ -613,7 +629,7 @@ async function exerciseDelegationMatrix() {
       );
       pass(`${row.runtime}: delegated child uses common Managed lifecycle`);
     }
-  });
+  }, { SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace' });
 }
 
 async function main() {

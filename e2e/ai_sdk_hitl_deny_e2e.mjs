@@ -34,7 +34,7 @@ async function settle(chat, effect) {
 }
 
 async function main() {
-  await withScenarioServer('management-probe', 'probe', 38147, async (base) => {
+  await withScenarioServer('management-probe', 'probe', Number(process.env.E2E_PORT), async (base) => {
     await publishAlwaysAskManagementProbeAgent(base, 'assistant', ['write'], ['read']);
     const { threadId, headers } = await createCrossProtocolApplicationThread(base);
     const rawResponses = [];

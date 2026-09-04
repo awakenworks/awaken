@@ -16,7 +16,12 @@ import {
   waitForValue,
 } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
-import { sqliteExec, sqliteRows } from './sqlite.mjs';
+import {
+  parseDurableJson,
+  sqliteExec,
+  sqliteRows,
+  stringifyDurableJson,
+} from './sqlite.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38436);
 const WORKSPACE = `activation-recovery-${process.pid}`;
@@ -136,7 +141,7 @@ function sessionRow(database, sessionId) {
   );
   assert.equal(rows.length, 1, `missing durable Session ${sessionId}`);
   assert.ok(rows[0].aggregate_json, `Session ${sessionId} has no canonical aggregate`);
-  const envelope = JSON.parse(rows[0].aggregate_json);
+  const envelope = parseDurableJson(rows[0].aggregate_json);
   assert.equal(envelope.format, 'awaken.session.v1');
   const aggregate = envelope.aggregate;
   return {
@@ -173,7 +178,7 @@ function updateSessionRow(database, sessionId, status, resources) {
   };
   sqliteExec(
     database,
-    `UPDATE managed_session SET aggregate_json=${sqlQuote(JSON.stringify({
+    `UPDATE managed_session SET aggregate_json=${sqlQuote(stringifyDurableJson({
       ...row.envelope,
       aggregate,
     }))}
@@ -233,7 +238,7 @@ function persistTerminalRelease(database, sessionId) {
   };
   sqliteExec(
     database,
-    `UPDATE managed_session SET aggregate_json=${sqlQuote(JSON.stringify({
+    `UPDATE managed_session SET aggregate_json=${sqlQuote(stringifyDurableJson({
       ...row.envelope,
       aggregate,
     }))}

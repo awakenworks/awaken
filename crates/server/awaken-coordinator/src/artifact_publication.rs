@@ -146,6 +146,12 @@ impl ArtifactPublisher<ArtifactPublicationFence> for ClaimFencedArtifactPublishe
         publication: ArtifactPublication<ArtifactPublicationFence>,
     ) -> Result<ArtifactPublicationReceipt, ArtifactPublicationError> {
         let _guard = match publication.fence.as_ref() {
+            Some(ArtifactPublicationFence::SessionMaterialization(_))
+            | Some(ArtifactPublicationFence::RepositoryPublication { .. }) => {
+                return Err(ArtifactPublicationError::new(
+                    "Session Resource materialization cannot publish Artifacts",
+                ));
+            }
             Some(ArtifactPublicationFence::Run(claim)) => {
                 if publication.idempotency_scope.is_some() {
                     return Err(ArtifactPublicationError::new(

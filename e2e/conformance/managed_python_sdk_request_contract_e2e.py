@@ -16,7 +16,7 @@ from managed_python_sdk_wire import normalized_name, semantic_request
 DISCOVER_VARIANCES = os.environ.get("AWAKEN_MANAGED_REQUEST_DISCOVER_VARIANCES") == "1"
 
 # Official-SDK request variance ledger. TypeScript 0.122 admits `null` for these
-# query fields and serializes it as an empty query value; Python 1.2 admits the
+# query fields and serializes it as an empty query value; Python 1.2+ admits the
 # same value but omits the query pair. This is deliberately an exact set rather
 # than a general null normalizer: adding/removing an SDK variance, moving the
 # field, or changing any other wire component fails the gate and requires review.
@@ -242,7 +242,7 @@ def variance_summary(variance: dict[str, Any]) -> dict[str, Any]:
 
 
 def exercise_sync(bundle: dict[str, Any]) -> tuple[int, int]:
-    # Metamorphic relation P0: the exact Python 1.2 sync resource graph receives
+    # Metamorphic relation P0: the exact current Python sync resource graph receives
     # the same language-neutral field witness that the official TS candidate
     # encoded. P1: httpx2 MockTransport observes the completed request after the
     # SDK's aliases, transforms, JSON/multipart encoder and headers. Effect E1:

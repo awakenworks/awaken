@@ -28,7 +28,7 @@ tracing = "0.1"
 # these dependencies target-scoped lets non-Linux hosts compile and use
 # copy+harvest without requiring an optional FUSE SDK merely to build the fallback.
 [target.'cfg(target_os = "linux")'.dependencies]
-fuser = { version = "0.15", default-features = false, optional = true }
+fuser = { version = "0.16", default-features = false, optional = true }
 libc = { version = "0.2", optional = true }
 
 [dev-dependencies]

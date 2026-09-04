@@ -22,7 +22,7 @@ from managed_python_sdk_request_contract import (
 CONTRACTS = os.environ["AWAKEN_MANAGED_PYTHON_RESPONSE_CONTRACTS"]
 BINARY_BODY = b"managed-response-contract"
 
-# Exact upstream Python 1.2 declaration variance. The official runtime keeps
+# Exact upstream Python 1.2+ declaration variance. The official runtime keeps
 # unknown literal values and the Python poller is separately exercised against
 # both work kinds, but its generated `BetaSelfHostedWork.data` annotation still
 # names only `BetaSessionWorkData`. Paths point to the original TS declaration
@@ -694,7 +694,7 @@ async def exercise_async(
 
 def main() -> None:
     # Cross-language response causal graph:
-    # C1 every Python 1.2 generated operation maps injectively to the reviewed
+    # C1 every current Python generated operation maps injectively to the reviewed
     # TypeScript 0.122 declaration for the same public protocol; C2 the schema
     # generator includes every field and one independent witness for every
     # nested union branch and optional-field omission; C3 real sync and async

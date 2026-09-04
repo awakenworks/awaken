@@ -102,7 +102,7 @@ async function main() {
   process.env.ANTHROPIC_MODEL = 'must-not-be-selected';
   const directory = await startModelDirectory('sk-admin-e2e'); // awaken-allow: secret
   try {
-    await withScenarioServer('management', 'mcp', 38150, async (base) => {
+    await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (base) => {
       // Cause/effect decision table for G36's single persisted input path:
       // E1 provider env present -> proposal route absent and catalog unchanged;
       // E2 explicit Provider Connection write -> catalog/credential facts appear.

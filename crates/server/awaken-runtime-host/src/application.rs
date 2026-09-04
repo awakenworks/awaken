@@ -176,6 +176,13 @@ fn realization_renewal_failure_disposition(
     }
 }
 
+fn failed_realization_invalidates_projection(
+    current: &awaken_session_contract::SessionRealizationLease,
+    failed: &awaken_session_contract::SessionRealizationLease,
+) -> bool {
+    awaken_session_contract::realization_lease_generation_authorizes(current, failed)
+}
+
 fn terminal_cleanup_drive_error(
     session_id: &str,
     error: awaken_session_contract::SessionRealizationDriveError,
@@ -259,6 +266,62 @@ mod realization_renewal_tests {
             ),
             RenewalFailureDisposition::RevokeImmediately
         );
+    }
+
+    #[test]
+    fn failed_realization_invalidates_only_its_local_generation() {
+        // Failure-projection cause/effect graph: C1 owner, incarnation, and
+        // epoch match; C2 the local expiry is equal/later than the admitted
+        // effect; C3 a replacement generation is already installed. Effects:
+        // E1 invalidate the failed/renewed local projection; E2 preserve a
+        // regressed or replacement projection. The aggregate remains the lease
+        // authority and the Runtime keeps no parallel failure state.
+        //
+        // | Rule | C1 | C2 | C3 | Effect |
+        // | F1 exact | yes | equal | no | E1 |
+        // | F2 renewed | yes | later | no | E1 |
+        // | F3 regressed | yes | earlier | no | E2 |
+        // | F4 replacement | no | any | yes | E2 |
+        let failed = awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a/boot-1".into(),
+            epoch: 7,
+            expires_at_unix_ms: 10,
+        };
+        for (rule, current, expected) in [
+            ("F1", failed.clone(), true),
+            (
+                "F2",
+                awaken_session_contract::SessionRealizationLease {
+                    expires_at_unix_ms: 20,
+                    ..failed.clone()
+                },
+                true,
+            ),
+            (
+                "F3",
+                awaken_session_contract::SessionRealizationLease {
+                    expires_at_unix_ms: 9,
+                    ..failed.clone()
+                },
+                false,
+            ),
+            (
+                "F4",
+                awaken_session_contract::SessionRealizationLease {
+                    epoch: 8,
+                    expires_at_unix_ms: 20,
+                    ..failed.clone()
+                },
+                false,
+            ),
+        ] {
+            assert_eq!(
+                failed_realization_invalidates_projection(&current, &failed),
+                expected,
+                "{rule}"
+            );
+        }
     }
 }
 
@@ -368,6 +431,14 @@ impl awaken_runtime_contract::execution::RunExecutor for SessionContextAttemptEx
 
 #[async_trait::async_trait]
 impl RunAttemptExecutor for SessionContextAttemptExecutor {
+    fn physical_attempt_recovery(
+        &self,
+        activation: &RunActivation,
+        context: &awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::AttemptRecoveryMode {
+        self.inner.physical_attempt_recovery(activation, context)
+    }
+
     async fn resume(
         &self,
         activation: RunActivation,
@@ -457,6 +528,14 @@ impl awaken_runtime_contract::execution::RunExecutor for AcpContextAttemptExecut
 
 #[async_trait::async_trait]
 impl RunAttemptExecutor for AcpContextAttemptExecutor {
+    fn physical_attempt_recovery(
+        &self,
+        activation: &RunActivation,
+        context: &awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::AttemptRecoveryMode {
+        self.inner.physical_attempt_recovery(activation, context)
+    }
+
     async fn resume(
         &self,
         activation: RunActivation,
@@ -868,6 +947,32 @@ impl crate::SharedHost {
             slot.realization_changed.clone()
         });
         changed.notify_waiters();
+    }
+
+    /// Remove only the failed local projection of one exact realization
+    /// generation. A renewed same-generation projection is also invalidated,
+    /// because the aggregate failure command authorizes the shorter admitted
+    /// effect and expires that whole owner/incarnation/epoch generation. A
+    /// replacement generation is never touched.
+    pub(crate) fn invalidate_session_realization_lease(
+        &self,
+        session_id: &str,
+        failed: &awaken_session_contract::SessionRealizationLease,
+    ) {
+        let changed =
+            self.session_slots.update(session_id, |slot| {
+                if slot.realization_lease.as_ref().is_some_and(|current| {
+                    failed_realization_invalidates_projection(current, failed)
+                }) {
+                    slot.realization_lease = None;
+                    Some(slot.realization_changed.clone())
+                } else {
+                    None
+                }
+            });
+        if let Some(changed) = changed {
+            changed.notify_waiters();
+        }
     }
 
     /// Authorize an MCP effect admitted before a same-epoch lease extension.
@@ -1445,8 +1550,22 @@ impl crate::SharedHost {
             })
             .unwrap_or(FrozenResourceTransitionInstallDecision::Stage);
         if transition_install == FrozenResourceTransitionInstallDecision::Reject {
+            let existing = self
+                .session_slots
+                .read(thread, |slot| slot.resource_transition.clone())
+                .flatten();
+            let existing_revision = existing
+                .as_ref()
+                .map(|transition| transition.desired().revision);
+            let incoming_previous_matches = existing
+                .as_ref()
+                .is_some_and(|existing| existing.desired() == resource_transition.previous());
             return Err(crate::HostError::internal(format!(
-                "thread {thread} cannot replace its current Session Resource projection"
+                "thread {thread} cannot replace its current Session Resource projection \
+                 (mode {resource_mode:?}, existing desired revision {existing_revision:?}, \
+                 incoming {}->{}, previous matches existing desired: {incoming_previous_matches})",
+                resource_transition.previous().revision,
+                resource_transition.desired().revision,
             )));
         }
         // Resource installation owns generation equality and fencing. Claimed
@@ -1458,6 +1577,7 @@ impl crate::SharedHost {
                 thread,
                 &resource_transition,
                 claim,
+                realization_lease.as_ref(),
                 projection.environment.binding().is_some(),
             )
             .await

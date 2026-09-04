@@ -248,6 +248,7 @@ mod tests {
                 tool_id: "tool-1".into(),
                 arguments: serde_json::json!({}),
             },
+            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
         }
     }
 

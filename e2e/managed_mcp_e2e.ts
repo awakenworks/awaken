@@ -52,7 +52,7 @@ async function main(): Promise<void> {
     close(): Promise<void>;
   } = await startCalcFixture(CALC_TOKEN);
   try {
-    await withScenarioServer('management', 'mcp', 38190, async (baseUrl: string) => {
+    await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseUrl: string) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // Create the losing credential first so the former global minimum-id

@@ -914,6 +914,7 @@ impl AcpRunExecutor {
                                 tool_id: ask.tool,
                                 arguments: ask.arguments,
                             },
+                            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RunAttemptExecutor,
                         },
                     )
                     .with_delegation_origin(activation.delegation_origin.clone())

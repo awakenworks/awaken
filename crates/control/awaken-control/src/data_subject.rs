@@ -270,6 +270,7 @@ mod tests {
                 relationship: UserProfileRelationship::External,
                 access_type: None,
                 external_id: None,
+                external_user_onboarded_at: None,
                 name: None,
             })
             .await

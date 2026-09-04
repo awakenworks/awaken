@@ -119,6 +119,7 @@ async function main() {
   const environment = {
     SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR,
     ...realServerEnv('delegating', upstream, { mode: 'delegate' }),
+    SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
   };
   let server;
   try {

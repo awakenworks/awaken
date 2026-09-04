@@ -113,6 +113,22 @@ authoritative provider terminal receipt. Process/Pod termination can prove only
 process-bound tool/Sandbox work. This chooses safety over availability when
 external work cannot be proven stopped.
 
+One continuation case is stronger than terminal receipt: an A2A executor may
+recover a complete committed `TaskReference` whose endpoint matches the frozen
+publication. Its recovered `execute` path performs only `tasks/get`; it cannot
+repeat the initiating `message:send`. The leaf executor may therefore request
+`handoff_attempt`, which atomically replaces the predecessor slot with the exact
+current claim in the same Dispatch row. Missing, malformed, or endpoint-mismatched
+state, a fresh send, and A2A resume all retain ordinary blocking. This is neither
+lease-expiry cleanup nor a generic process-crash bypass.
+
+```text
+claim A -> begin A -> message:send -> commit exact TaskReference
+process A crashes while polling -> lease expires -> claim B
+executor B proves exact committed continuation
+handoff B replaces slot A -> tasks/get (never message:send) -> finish B
+```
+
 The slot is not another lease or state machine. Claim, attempt admission,
 settlement, retry exhaustion, and dead-lettering mutate the same Dispatch row in
 one backend transaction. `ThreadCommit` remains the sole execution-result truth.
@@ -141,6 +157,7 @@ remote Worker claims with run_id + lease_epoch
 
 every local or remote durable executor call
   -> begin exact physical slot
+  -> or, only for a proved committed continuation, atomically hand off that slot
   -> model/tool/Sandbox future returns
   -> finish exact physical slot
   -> then settle/relinquish may remove or release the row

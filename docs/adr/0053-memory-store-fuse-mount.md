@@ -118,7 +118,7 @@ The existing `memory_store_api.rs` HTTP facade is repointed at
 ### D2 — Port the FUSE server (`awaken-sandbox-memoryd`), swapping the transport
 
 A new crate in the **`server` bucket** (`worker ⊥ resources`, so a crate that calls
-a resources-tier store cannot be `worker`). It depends on `fuser 0.15` (feature
+a resources-tier store cannot be `worker`). It depends on `fuser 0.16` (feature
 `fuse`, default on), `awaken-memory-store` (the `MemoryRepository` port), and the
 provisioning contract. `fuser` is added to `check_crate_boundaries.py`'s
 the metadata-derived context/layer rules.

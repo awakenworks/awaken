@@ -237,7 +237,7 @@ async function configureModelDirectory(baseURL, upstreamURL) {
 await withScenarioServer(
   'management',
   'mcp',
-  38188,
+  Number(process.env.E2E_PORT),
   async (baseURL) => {
     for (const creator of CLIENTS) {
       for (const operator of CLIENTS) {
@@ -250,7 +250,7 @@ await withScenarioServer(
 await withScenarioServer(
   'management-providers',
   'mcp',
-  38191,
+  Number(process.env.E2E_PORT),
   async (baseURL, upstream) => {
     await configureModelDirectory(baseURL, upstream.url);
     const oldest = qualifiedClient(QUALIFIED_CLIENTS, 'oldest_supported');

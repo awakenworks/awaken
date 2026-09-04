@@ -1,6 +1,6 @@
 //! Read-first exact restore observation and terminal orphan disposal.
 
-use k8s_openapi::api::core::v1::{Container, PersistentVolumeClaim, Pod};
+use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod};
 use kube::ResourceExt as _;
 
 use super::names::continuation_claim_name;
@@ -14,47 +14,17 @@ fn verify_plan(plan: &ContainerPlan, expected: &str) -> Result<(), RuntimeError>
     }
 }
 
-fn verify_container_projection(expected: &Container, observed: &Container) -> bool {
-    expected.name == observed.name
-        && expected.image == observed.image
-        && expected.command == observed.command
-        && expected.args == observed.args
-        && expected.env == observed.env
-        && expected.ports == observed.ports
-        && expected.volume_mounts == observed.volume_mounts
-        && expected.security_context == observed.security_context
-        && expected.readiness_probe == observed.readiness_probe
-        && expected.liveness_probe == observed.liveness_probe
-        && expected.startup_probe == observed.startup_probe
-        && expected.resources == observed.resources
-}
-
 pub(super) fn verify_pod_projection(expected: &Pod, observed: &Pod) -> Result<(), RuntimeError> {
-    let expected_spec = expected
+    let mut expected_spec = expected
         .spec
-        .as_ref()
+        .clone()
         .ok_or_else(|| backend("desired Kubernetes restore Pod has no specification"))?;
-    let observed_spec = observed
+    let mut observed_spec = observed
         .spec
-        .as_ref()
+        .clone()
         .ok_or_else(|| backend("observed Kubernetes restore Pod has no specification"))?;
-    let exact_containers = expected_spec.containers.len() == observed_spec.containers.len()
-        && expected_spec.containers.iter().all(|expected| {
-            observed_spec
-                .containers
-                .iter()
-                .find(|observed| observed.name == expected.name)
-                .is_some_and(|observed| verify_container_projection(expected, observed))
-        });
-    let expected_init = expected_spec.init_containers.as_deref().unwrap_or_default();
-    let observed_init = observed_spec.init_containers.as_deref().unwrap_or_default();
-    let exact_init = expected_init.len() == observed_init.len()
-        && expected_init.iter().all(|expected| {
-            observed_init
-                .iter()
-                .find(|observed| observed.name == expected.name)
-                .is_some_and(|observed| verify_container_projection(expected, observed))
-        });
+    realization::normalize_pod_spec(&mut expected_spec, false);
+    realization::normalize_pod_spec(&mut observed_spec, true);
     let expected_labels = expected.metadata.labels.as_ref();
     let observed_labels = observed.metadata.labels.as_ref();
     let exact_labels = expected_labels.is_some_and(|expected| {
@@ -65,18 +35,7 @@ pub(super) fn verify_pod_projection(expected: &Pod, observed: &Pod) -> Result<()
     });
     if expected.metadata.name != observed.metadata.name
         || !exact_labels
-        || !exact_containers
-        || !exact_init
-        || expected_spec.volumes != observed_spec.volumes
-        || expected_spec.security_context != observed_spec.security_context
-        || expected_spec.restart_policy != observed_spec.restart_policy
-        || expected_spec.automount_service_account_token
-            != observed_spec.automount_service_account_token
-        || expected_spec.image_pull_secrets != observed_spec.image_pull_secrets
-        || observed_spec.host_network == Some(true)
-        || observed_spec.host_pid == Some(true)
-        || observed_spec.host_ipc == Some(true)
-        || observed_spec.share_process_namespace == Some(true)
+        || expected_spec != observed_spec
     {
         return Err(backend(
             "Kubernetes restore Pod differs from the complete immutable security projection",
@@ -100,7 +59,10 @@ pub(super) fn verify_claim_projection(
     if expected.metadata.name != observed.metadata.name
         || expected_spec.access_modes != observed_spec.access_modes
         || expected_spec.resources != observed_spec.resources
-        || expected_spec.storage_class_name != observed_spec.storage_class_name
+        || !claim_storage_class_matches(
+            expected_spec.storage_class_name.as_deref(),
+            observed_spec.storage_class_name.as_deref(),
+        )
         || expected_spec.volume_mode != observed_spec.volume_mode
     {
         return Err(backend(
@@ -108,6 +70,46 @@ pub(super) fn verify_claim_projection(
         ));
     }
     realization::verify_realization(expected, observed)
+}
+
+/// An omitted desired storage class delegates exactly one choice to the
+/// apiserver's defaulting admission. A named class remains byte-exact; an empty
+/// admitted class is never a valid default projection.
+fn claim_storage_class_matches(expected: Option<&str>, observed: Option<&str>) -> bool {
+    match expected {
+        Some(expected) => observed == Some(expected),
+        None => observed.is_none_or(|observed| !observed.trim().is_empty()),
+    }
+}
+
+#[cfg(test)]
+mod claim_projection_tests {
+    use super::claim_storage_class_matches;
+
+    #[test]
+    fn storage_class_defaulting_decision_table_is_exact() {
+        // Cause/effect graph: C1 the desired PVC names a class or delegates to
+        // apiserver defaulting; C2 the observed class is absent, non-empty, or
+        // empty. Effects: E1 an explicit class must match byte-for-byte; E2 a
+        // delegated class accepts either no default or one concrete admitted
+        // default; E3 an empty admitted name fails closed. Rules are all six
+        // meaningful rows below; the live restore test owns the API mutation.
+        assert!(
+            claim_storage_class_matches(Some("fast"), Some("fast")),
+            "R1/E1"
+        );
+        assert!(
+            !claim_storage_class_matches(Some("fast"), Some("slow")),
+            "R2/E1"
+        );
+        assert!(!claim_storage_class_matches(Some("fast"), None), "R3/E1");
+        assert!(
+            claim_storage_class_matches(None, Some("local-path")),
+            "R4/E2"
+        );
+        assert!(claim_storage_class_matches(None, None), "R5/E2");
+        assert!(!claim_storage_class_matches(None, Some("  ")), "R6/E3");
+    }
 }
 
 struct Observation {
@@ -281,7 +283,11 @@ pub(super) async fn dispose(
     let name = pod_name(&runtime_id);
     if let Some(observation) = observe(runtime, id, plan, plan_fingerprint, evidence).await? {
         let handle = continuation::handle_extra(&observation.pod)?;
-        return runtime.remove_with_handle(&name, handle.as_ref()).await;
+        let (pod_uid, claim_uid) = super::runtime_contract::deletion_incarnation(handle.as_ref())?;
+        let authorization = continuation::PodCleanupAuthorization::Restoration(evidence.clone());
+        return runtime
+            .remove_bound(&name, pod_uid, claim_uid, Some(&authorization))
+            .await;
     }
     if continuation::claim_required(plan, runtime.continuation_volume.is_some()) {
         let claim_name = continuation_claim_name(&runtime_id);

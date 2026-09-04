@@ -20,6 +20,11 @@ export async function exerciseUserProfileChangePoint({
   assert.equal(currentProfile.id, profileID, 'current anchor retrieves the fixture');
   assert.equal(currentProfile.access_type, expectedAccessType, 'current access model');
   assert.equal(
+    Object.hasOwn(currentProfile, 'relationship'),
+    false,
+    'current projection excludes the legacy relationship field',
+  );
+  assert.equal(
     legacyProfile.relationship,
     expectedAccessType === 'application' ? 'external' : 'resold',
     'legacy relationship projects the same access model',

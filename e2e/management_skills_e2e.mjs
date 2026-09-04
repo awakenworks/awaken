@@ -59,7 +59,7 @@ async function uploadRaw(baseUrl, files) {
 
 async function main() {
   try {
-    await withScenarioServer('management', 'mcp', 38142, async (baseUrl) => {
+    await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // Causes: Skills collection request has no selector, only an unrelated

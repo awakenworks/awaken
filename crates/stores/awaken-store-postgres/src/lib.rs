@@ -436,6 +436,30 @@ impl PostgresCommitCoordinator {
             .collect()
     }
 
+    /// Read a thread's complete state-command log from committed PostgreSQL
+    /// truth. Active-active peers use this for usage and state-derived policy;
+    /// their process-local projections advance only for commits they applied.
+    pub async fn authoritative_committed_state(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<StateCommand>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "SELECT data FROM {NS}_state_command WHERE thread_id = $1 ORDER BY id"
+        ))
+        .bind(&thread_id.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| StoreError::Read(error.to_string()))?;
+        rows.into_iter()
+            .map(|row| {
+                let Json(command): Json<StateCommand> = row
+                    .try_get("data")
+                    .map_err(|error| StoreError::Read(error.to_string()))?;
+                Ok(command)
+            })
+            .collect()
+    }
+
     /// Query durable PostgreSQL truth directly instead of consulting the
     /// process-local projection. Collision checks must see commits from peers.
     pub async fn authoritative_thread_exists(

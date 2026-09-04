@@ -248,10 +248,17 @@ impl SharedHost {
         kind: awaken_session_contract::SessionEnvironmentEffectKind,
         source_binding: Option<&str>,
     ) -> Result<AuthorizedSessionEnvironmentEffect, HostError> {
-        let realization = self
+        let (realization, claimed_ordinary_run) = self
             .session_slots
-            .read(thread, |slot| slot.realization_lease.clone())
-            .flatten();
+            .read(thread, |slot| {
+                let realization = slot.realization_lease.clone();
+                let claimed_ordinary_run = realization.is_none()
+                    && slot.dispatch_claim.is_some()
+                    && !slot.session_dispatch
+                    && slot.baseline.is_none();
+                (realization, claimed_ordinary_run)
+            })
+            .unwrap_or_default();
         let environment_fingerprint = self
             .session_slots
             .read(thread, |slot| {
@@ -273,7 +280,16 @@ impl SharedHost {
             .read()
             .expect("environment binding sink lock poisoned")
             .clone();
+        // A claimed ordinary Run and a Managed Session already have distinct
+        // durable owners. The former fences its local Environment through the
+        // Run claim and `DispatchQueue::bind_sandbox`; only the latter may ask
+        // the Session root to authorize/persist an aggregate Environment effect.
+        // Sending an ordinary Run to a remote Session sink cannot be authorized
+        // (it has no realization lease) and duplicates the queue-owned binding.
         let authorization = match sink {
+            Some(_) if claimed_ordinary_run => {
+                awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned
+            }
             Some(sink) => sink
                 .authorize(&intent)
                 .await
@@ -524,10 +540,12 @@ impl SharedHost {
                     "Session Environment creation requires an exact Resource transition",
                 )
             })?;
-        let claim = self
+        let (claim, realization_lease) = self
             .session_slots
-            .read(thread, |slot| slot.dispatch_claim.clone())
-            .flatten();
+            .read(thread, |slot| {
+                (slot.dispatch_claim.clone(), slot.realization_lease.clone())
+            })
+            .unwrap_or_default();
         let rebuild_source = self
             .session_slots
             .read(thread, |slot| slot.environment_rebuild_source.clone())
@@ -565,6 +583,7 @@ impl SharedHost {
             thread,
             &transition,
             claim.as_ref(),
+            realization_lease.as_ref(),
         )
         .await
         .map_err(|error| HostError::internal(error.to_string()))?;
@@ -654,14 +673,17 @@ impl SharedHost {
         {
             return Ok(environment);
         }
-        let claim = self
+        let (claim, realization_lease) = self
             .session_slots
-            .read(thread, |slot| slot.dispatch_claim.clone())
-            .flatten();
+            .read(thread, |slot| {
+                (slot.dispatch_claim.clone(), slot.realization_lease.clone())
+            })
+            .unwrap_or_default();
         self.apply_dispatched_resource_transition_under_lifecycle(
             thread,
             &transition,
             claim.as_ref(),
+            realization_lease.as_ref(),
         )
         .await
         .map_err(|error| HostError::internal(error.to_string()))?;

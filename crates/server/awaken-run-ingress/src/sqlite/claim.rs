@@ -135,7 +135,9 @@ pub(super) fn claim_exact_transaction_with_mode(
         ExactClaimMode::TerminalRecovery => {
             format!(
                 "((d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?2) \
-                 OR (d.status = 'awaiting' AND d.lease_owner IS NULL AND d.lease_until IS NULL \
+                 OR (d.status IN ('pending', 'awaiting') \
+                 AND d.lease_owner IS NULL AND d.lease_until IS NULL \
+                 AND d.active_attempt_epoch IS NULL \
                  AND {no_running_peer})) AND ?3 IS NULL"
             )
         }

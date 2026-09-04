@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -99,8 +100,12 @@ const agentToolset = await import(
 );
 const {
   betaAgentToolset20260401,
+  SessionMemoryStores,
   setupSkills,
 } = agentToolset;
+const { betaRefusalFallbackMiddleware } = await import(
+  pathToFileURL(resolve(packageRoot, 'lib/middleware.mjs'))
+);
 const managedExports = managedExportFingerprintFromPackageRoot(packageRoot, scope);
 const hasResolveSkillVersion = managedExports.exports.some(
   ({ id }) => id === 'tools/agent-toolset/node.mjs#resolveSkillVersion',
@@ -126,6 +131,21 @@ const candidateRecordingFetch = recordingFetch(
 const runtimeChanged = (runtimePath) => candidateDelta.runtime.changed.some(
   ({ path }) => path === runtimePath,
 );
+const runtimeAdded = (runtimePath) => candidateDelta.runtime.added.some(
+  ({ path }) => path === runtimePath,
+);
+const declarationChanged = new Set(candidateDelta.declarations.changed.map(({ path }) => path));
+const managedTypeChangePaths = [
+  'beta/agents/agents.d.ts',
+  'beta/deployment-runs.d.ts',
+  'beta/deployments.d.ts',
+  'beta/dreams.d.ts',
+  'beta/memory-stores/memories.d.ts',
+  'beta/sessions/events.d.ts',
+  'beta/sessions/sessions.d.ts',
+  'beta/user-profiles.d.ts',
+];
+const managedTypesV123 = managedTypeChangePaths.every((path) => declarationChanged.has(path));
 const MISSING_FILE_ID = 'file_missing';
 const webhookProfile = exerciseOfficialWebhookContract(Anthropic);
 completeBehaviorOwner('candidate.webhook-helpers');
@@ -134,8 +154,10 @@ compileOfficialSdkChangePoints(packageRoot, {
   skillsProjection: betaSkills.projection,
   parseUnverified: webhookProfile.parseUnverified,
   resolveSkillVersion: hasResolveSkillVersion,
+  managedTypesV123,
 });
 completeBehaviorOwner('candidate.typescript-change-points');
+if (managedTypesV123) completeBehaviorOwner('candidate.managed-type-change-points');
 
 async function drain(pagePromise) {
   const rows = [];
@@ -202,6 +224,275 @@ async function exerciseSdkCoreTransport() {
   assert.equal(requests, 1, 'T1 exact request');
   completeBehaviorOwner('candidate.core-transport');
   pass(`registry SDK ${manifest.version} preserves exact transport identity`);
+}
+
+async function exerciseSdkNodeRuntimeFacade() {
+  const changedPaths = [
+    'core/credentials.mjs',
+    'internal/file-store.mjs',
+    'lib/credentials/credential-chain.mjs',
+    'lib/credentials/identity-token.mjs',
+    'lib/credentials/types.mjs',
+    'lib/credentials/user-oauth.mjs',
+    'tools/agent-toolset/fs-util.mjs',
+    'tools/agent-toolset/memories.mjs',
+    'tools/agent-toolset/skills.mjs',
+  ];
+  if (!runtimeAdded('internal/node.mjs')
+    && !changedPaths.some((runtimePath) => runtimeChanged(runtimePath))) return;
+
+  // Cause/effect graph: C1 the candidate centralizes every Node builtin behind
+  // internal/node; C2 credential/profile readers, confined file stores, atomic
+  // tool writes, Memory mounts, and Skill setup consume that facade. Effects:
+  // E1 exact module capabilities remain callable; E2 credentials remain private
+  // and resolve from the selected profile; E3 file/memory bytes and hashes are
+  // unchanged. Decision rules N1 C1+C2->E1+E2+E3; N2 a missing facade export,
+  // browser stub leak, path error, or changed byte result fails this owner.
+  const nodeFacade = await import(pathToFileURL(resolve(packageRoot, 'internal/node.mjs')));
+  assert.equal(typeof nodeFacade.fs.promises.readFile, 'function', 'N1 Node fs facade');
+  assert.equal(typeof nodeFacade.crypto.createHash, 'function', 'N1 Node crypto facade');
+  assert.equal(typeof nodeFacade.path.join, 'function', 'N1 Node path facade');
+  assert.equal(typeof nodeFacade.stream.promises.pipeline, 'function', 'N1 Node stream facade');
+  assert.equal(typeof nodeFacade.child_process.execFile, 'function', 'N1 Node process facade');
+  assert.equal(typeof nodeFacade.util.promisify, 'function', 'N1 Node util facade');
+
+  const { openFileStore } = await import(
+    pathToFileURL(resolve(packageRoot, 'internal/file-store.mjs'))
+  );
+  const { defaultCredentials } = await import(
+    pathToFileURL(resolve(packageRoot, 'lib/credentials/credential-chain.mjs'))
+  );
+  const { identityTokenFromFile } = await import(
+    pathToFileURL(resolve(packageRoot, 'lib/credentials/identity-token.mjs'))
+  );
+  const { writeCredentialsFileAtomic } = await import(
+    pathToFileURL(resolve(packageRoot, 'lib/credentials/types.mjs'))
+  );
+  const { atomicWriteFile } = await import(
+    pathToFileURL(resolve(packageRoot, 'tools/agent-toolset/fs-util.mjs'))
+  );
+  const root = mkdtempSync(resolve(tmpdir(), 'awaken-candidate-node-facade-'));
+  const previousConfigDirectory = process.env.ANTHROPIC_CONFIG_DIR;
+  try {
+    const credentialsDirectory = resolve(root, 'credentials');
+    const credentialsPath = resolve(credentialsDirectory, 'fixture.json');
+    const identityPath = resolve(root, 'identity-token');
+    mkdirSync(resolve(root, 'configs'), { recursive: true });
+    await writeCredentialsFileAtomic(credentialsPath, {
+      version: '1.0',
+      type: 'oauth_token',
+      access_token: 'candidate-oauth-token', // awaken-allow: secret
+    });
+    writeFileSync(identityPath, 'candidate-identity-token\n', { mode: 0o600 });
+    writeFileSync(resolve(root, 'configs/fixture.json'), JSON.stringify({
+      version: '1.0',
+      authentication: { type: 'user_oauth' },
+      base_url: 'https://candidate.invalid',
+      workspace_id: 'workspace_candidate',
+    }), { mode: 0o600 });
+    process.env.ANTHROPIC_CONFIG_DIR = root;
+    const credentials = await defaultCredentials({
+      baseURL: 'https://ignored.invalid',
+      fetch: globalThis.fetch,
+      userAgent: 'candidate-node-canary',
+    }, 'fixture');
+    assert.ok(credentials, 'N1 selected profile resolves credentials');
+    assert.equal(credentials.baseURL, 'https://candidate.invalid', 'N1 profile API host');
+    assert.deepEqual(credentials.extraHeaders, {
+      'anthropic-workspace-id': 'workspace_candidate',
+    }, 'N1 profile Workspace header');
+    assert.deepEqual(await credentials.provider(), {
+      token: 'candidate-oauth-token', // awaken-allow: secret (synthetic canary fixture)
+      expiresAt: null,
+    }, 'N1 user OAuth file result');
+    assert.equal(
+      await identityTokenFromFile(identityPath)(),
+      'candidate-identity-token',
+      'N1 rotating identity-token file result',
+    );
+
+    const store = await openFileStore(resolve(root, 'store'), { utf8: true });
+    await store.createRoot();
+    await store.put('/nested/value.txt', 'candidate-bytes');
+    assert.equal(
+      new TextDecoder().decode(await store.get('/nested/value.txt')),
+      'candidate-bytes',
+      'N1 confined FileStore bytes',
+    );
+    assert.equal(
+      await store.hashFile('/nested/value.txt'),
+      nodeFacade.crypto.createHash('sha256').update('candidate-bytes').digest('hex'),
+      'N1 FileStore uses the facade hash without semantic drift',
+    );
+    await store.dispose();
+
+    const atomicPath = resolve(root, 'atomic.txt');
+    await atomicWriteFile(atomicPath, 'atomic-candidate');
+    assert.equal(readFileSync(atomicPath, 'utf8'), 'atomic-candidate', 'N1 atomic tool write');
+
+    const memoryClient = {
+      beta: { memoryStores: { memories: {
+        list() {
+          return { async *[Symbol.asyncIterator]() {} };
+        },
+      } } },
+    };
+    const memories = new SessionMemoryStores(memoryClient, { workdir: root });
+    await memories.download({
+      resources: [{
+        type: 'memory_store',
+        memory_store_id: 'mem_candidate',
+        name: 'candidate',
+        access: 'read_write',
+      }],
+    });
+    assert.equal(
+      readFileSync(resolve(root, 'memory/candidate/.anthropic-memory-store'), 'utf8'),
+      'version 1\nmem_candidate',
+      'N1 Memory helper writes the canonical marker through FileStore',
+    );
+    await memories.dispose();
+  } finally {
+    if (previousConfigDirectory === undefined) delete process.env.ANTHROPIC_CONFIG_DIR;
+    else process.env.ANTHROPIC_CONFIG_DIR = previousConfigDirectory;
+    rmSync(root, { recursive: true, force: true });
+  }
+  completeBehaviorOwner('candidate.node-runtime-facade');
+  pass(`registry SDK ${manifest.version} preserves the centralized Node runtime facade`);
+}
+
+function sseResponse(events) {
+  return new Response(events.map((event) => (
+    `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+  )).join(''), { headers: { 'content-type': 'text/event-stream' } });
+}
+
+async function exerciseRefusalFallbackMiddleware() {
+  if (!runtimeChanged('lib/middleware.mjs')) return;
+
+  // Cause/effect decision table:
+  // | input history / fallback hop                 | expected effect |
+  // | already-empty assistant message             | preserved       |
+  // | fallback-only replay message                | removed         |
+  // | accepted streaming hop start transformation | terminal delta  |
+  // C1/C2 separate an intentional empty payload from one emptied by stripping;
+  // C3 the fallback message_start is suppressed during stream splicing. E1
+  // prevents data loss, E2 prevents replaying private seam blocks, and E3 keeps
+  // input_transformations observable on the one public terminal event.
+  const logger = { debug() {}, info() {}, warn() {}, error() {} };
+  const history = [
+    { role: 'assistant', content: [], output_config: { effort: 'high' } },
+    { role: 'assistant', content: [{ type: 'fallback', from: {}, to: {}, trigger: {} }] },
+    { role: 'user', content: [{ type: 'text', text: 'continue' }] },
+  ];
+  const bodies = [];
+  const nonStreaming = betaRefusalFallbackMiddleware([{ model: 'fallback-model' }]);
+  const nonStreamingResponse = await nonStreaming(
+    { headers: new Headers(), body: JSON.stringify({ model: 'primary-model', messages: history }) },
+    async (request) => {
+      bodies.push(JSON.parse(request.body));
+      if (bodies.length === 1) {
+        return new Response(JSON.stringify({
+          type: 'message',
+          model: 'primary-model',
+          content: [],
+          stop_reason: 'refusal',
+          stop_details: {
+            type: 'refusal',
+            category: 'policy',
+            fallback_credit_token: 'credit-non-streaming', // awaken-allow: secret (synthetic canary fixture)
+          },
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({
+        type: 'message',
+        model: 'fallback-model',
+        content: [{ type: 'text', text: 'served' }],
+        stop_reason: 'end_turn',
+      }), { headers: { 'content-type': 'application/json' } });
+    },
+    {
+      logger,
+      options: {
+        method: 'post',
+        path: '/v1/messages?beta=true',
+        body: { model: 'primary-model', messages: history },
+        stream: false,
+      },
+      parse: (response) => response.clone().json(),
+    },
+  );
+  assert.equal((await nonStreamingResponse.json()).content[0].type, 'fallback', 'M1 seam block');
+  assert.equal(bodies.length, 2, 'M1 exactly one fallback request');
+  assert.deepEqual(
+    bodies[1].messages,
+    [history[0], history[2]],
+    'M1 preserves an originally empty message and removes a fallback-only replay',
+  );
+
+  const transformations = [{ type: 'candidate_input_transformation' }];
+  let streamHop = 0;
+  const streaming = betaRefusalFallbackMiddleware([{ model: 'fallback-model' }]);
+  const spliced = await streaming(
+    {
+      headers: new Headers(),
+      body: JSON.stringify({ model: 'primary-model', messages: [history[2]], stream: true }),
+    },
+    async () => {
+      streamHop += 1;
+      if (streamHop === 1) {
+        return sseResponse([
+          { type: 'message_start', message: {
+            model: 'primary-model', usage: { input_tokens: 1, output_tokens: 0 },
+          } },
+          { type: 'message_delta', delta: {
+            stop_reason: 'refusal',
+            stop_sequence: null,
+            stop_details: {
+              type: 'refusal',
+              category: 'policy',
+              fallback_credit_token: 'credit-streaming', // awaken-allow: secret (synthetic canary fixture)
+              fallback_has_prefill_claim: false,
+            },
+          }, usage: { output_tokens: 1 } },
+          { type: 'message_stop' },
+        ]);
+      }
+      return sseResponse([
+        { type: 'message_start', message: {
+          model: 'fallback-model',
+          usage: { input_tokens: 2, output_tokens: 0 },
+          input_transformations: transformations,
+        } },
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'served' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: {
+          stop_reason: 'end_turn', stop_sequence: null,
+        }, usage: { output_tokens: 1 } },
+        { type: 'message_stop' },
+      ]);
+    },
+    {
+      logger,
+      options: {
+        method: 'post',
+        path: '/v1/messages?beta=true',
+        body: { model: 'primary-model', messages: [history[2]], stream: true },
+        stream: true,
+      },
+      parse: (response) => response.clone().json(),
+    },
+  );
+  const events = (await spliced.text()).split('\n')
+    .filter((line) => line.startsWith('data: '))
+    .map((line) => JSON.parse(line.slice(6)));
+  const terminal = events.find((event) => event.type === 'message_delta'
+    && event.delta?.stop_reason === 'end_turn');
+  assert.deepEqual(terminal?.input_transformations, transformations, 'M2 spliced transformation');
+  assert.equal(streamHop, 2, 'M2 exactly one streaming fallback request');
+  completeBehaviorOwner('candidate.refusal-fallback-middleware');
+  pass(`registry SDK ${manifest.version} preserves refusal fallback history and stream metadata`);
 }
 
 async function exerciseSdkHelperRuntime() {
@@ -445,7 +736,7 @@ async function exerciseGeneratedFileDownload() {
   // generated artifact for the latter without manufacturing a test-only File
   // record or granting uploads a production-invalid capability. Dream remains
   // owned by its canonical behavior scenario; it is fixture setup here.
-  await withServer('dream', 38193, async (baseURL) => {
+  await withServer('dream', Number(process.env.E2E_PORT), async (baseURL) => {
     const client = new Anthropic({
       apiKey: 'e2e-dummy',
       baseURL,
@@ -859,9 +1150,11 @@ async function exerciseBetaGaRecovery() {
 }
 
 await exerciseSdkCoreTransport();
+await exerciseSdkNodeRuntimeFacade();
+await exerciseRefusalFallbackMiddleware();
 await exerciseSdkHelperRuntime();
 
-await withRealServer('echo', 38190, async (baseURL) => {
+await withRealServer('echo', Number(process.env.E2E_PORT), async (baseURL) => {
   // Cause/effect graph: C0=Session Event send returns one exact durable
   // receipt; C1=the registry-latest generated Session and Memory
   // methods use their default beta/header behavior; C2=the echo topology owns
@@ -1009,7 +1302,7 @@ await withRealServer('echo', 38190, async (baseURL) => {
 // manufacturing a second route in that topology. Do not pass `betas`: the
 // generated SDK method's own version header is the runtime behavior under review
 // (0.117.1 emits the legacy selector; 0.120.0 emits the access_type selector).
-await withScenarioServer('management', 'mcp', 38191, async (baseURL) => {
+await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseURL) => {
   // Cause/effect graph: C3=UserProfiles remains Control-owned and absent from
   // echo; C4=the latest SDK supplies its own default version selector. Effect is
   // a create/retrieve round-trip decoded with access_type + relationship.
@@ -1022,9 +1315,15 @@ await withScenarioServer('management', 'mcp', 38191, async (baseURL) => {
   const profile = await client.beta.userProfiles.create({
     access_type: 'application',
     external_id: `latest-sdk-${manifest.version}`,
+    ...(managedTypesV123
+      ? { external_user_onboarded_at: '2026-09-03T01:02:03Z' }
+      : {}),
   });
   assert.equal(profile.access_type, 'application');
-  assert.equal(profile.relationship, 'external');
+  assert.equal(profile.relationship, undefined);
+  if (managedTypesV123) {
+    assert.equal(profile.external_user_onboarded_at, '2026-09-03T01:02:03Z');
+  }
   const response = await client.beta.userProfiles.retrieve(profile.id).withResponse();
   assert.equal(response.data.id, profile.id);
   assert.equal(typeof response.workspace_id, 'string', '0.120 workspace response header');

@@ -150,11 +150,15 @@ function runDriver(python, driver, baseURL, { args = [], extraEnv = {} } = {}) {
 
 function writePythonResponseContracts(temporary) {
   // One authority projection: Python ids differ only by generator spelling;
-  // response structure comes exclusively from the adjacent declaration of the
-  // reviewed TypeScript 0.122 candidate, whose transport change-point delta is
-  // already proven identical to Python 1.2. No handwritten response corpus can
-  // drift.
-  const module = '@anthropic-ai/sdk-candidate';
+  // response structure comes exclusively from the current TypeScript oracle,
+  // already proven transport-equivalent to the current Python oracle. A newer
+  // independently qualified candidate must not widen another language's
+  // request or response contract before that Python wheel declares the same
+  // field and both current anchors are promoted.
+  const module = JSON.parse(readFileSync(
+    resolve(REPO, 'contracts/anthropic-managed/upstream-oracle.generated.json'),
+    'utf8',
+  )).current.module;
   const sdk = resolveSdkPackage(module);
   const scope = JSON.parse(readFileSync(SCOPE, 'utf8'));
   const typescriptOperations = extractOperations(module, scope).operations;
@@ -184,11 +188,15 @@ function writePythonResponseContracts(temporary) {
 }
 
 async function writePythonRequestContracts(temporary) {
-  // One declaration and one executable authority: the reviewed TS 0.122
-  // candidate supplies both its finite request graph and generated serializer.
+  // One declaration and one executable authority: the current TS oracle
+  // supplies both its finite request graph and generated serializer.
   // Python operation ids are an injective spelling projection only; every
   // witness retains the TS-emitted semantic Request as its expected result.
-  const module = '@anthropic-ai/sdk-candidate';
+  // A newer TS candidate remains on its own qualification axis.
+  const module = JSON.parse(readFileSync(
+    resolve(REPO, 'contracts/anthropic-managed/upstream-oracle.generated.json'),
+    'utf8',
+  )).current.module;
   const sdk = resolveSdkPackage(module);
   const scope = JSON.parse(readFileSync(SCOPE, 'utf8'));
   const operations = extractOperations(module, scope).operations;

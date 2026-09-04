@@ -6,7 +6,12 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  fakeAnthropicServerEnv,
+  withServer,
+  pass,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -54,10 +59,7 @@ async function main() {
   const upstream = await startFakeAnthropic(FAKE_KEY, { models: ['fake-haiku'] });
   try {
     // ---- arm 1: AWAKEN_MODEL_MODE=real over the fake upstream --------------
-    process.env.ANTHROPIC_API_KEY = FAKE_KEY;
-    process.env.ANTHROPIC_BASE_URL = `${upstream.url}/v1/`;
-    process.env.ANTHROPIC_MODEL = 'fake-haiku';
-    await withServer('real', 38194, async (baseUrl) => {
+    await withServer('real', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       await sendAndCommit(client, session.id, 'first turn');
@@ -85,16 +87,13 @@ async function main() {
         'the tool result went back through the wire',
       );
       pass('tool_use round-trip: upstream tool call -> glob -> tool_result -> final text');
-    });
+    }, fakeAnthropicServerEnv(upstream, { ANTHROPIC_API_KEY: FAKE_KEY }));
     assert.ok(upstream.requests.length >= 2, 'the upstream served the chat turns');
     assert.equal(upstream.unauthorized, 0, 'the key rode every chat request');
     pass(`upstream served ${upstream.requests.length} authorized /messages calls`);
 
     // ---- arm 2: the credential-validation probe, valid + invalid -----------
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_BASE_URL;
-    delete process.env.ANTHROPIC_MODEL;
-    await withServer('management', 38195, async (base) => {
+    await withServer('management', Number(process.env.E2E_PORT), async (base) => {
       let r = await req(base, 'POST', '/v1/config/provider-connections', {
         idempotency_key: 'managed-fake-upstream-provider-connection',
         workspace_id: 'ws',

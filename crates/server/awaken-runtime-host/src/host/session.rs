@@ -10,6 +10,7 @@ mod input_projection;
 use super::*;
 pub(super) use crate::config::{SessionToolsetProjection, project_session_tool_override};
 use crate::host::session_ctx::ForegroundRunDelivery;
+pub(crate) use content_delivery::SkillDeliveryEvidence;
 pub(super) use input_projection::{ManagedCoordinationRole, project_managed_coordination_surface};
 use input_projection::{
     merge_acp_mcp_servers, merge_process_local_mcp_servers, pre_authorized_tool_ids,
@@ -355,6 +356,30 @@ impl SharedHost {
         .await
     }
 
+    /// Build an ordinary Thread context from one exact immutable snapshot while
+    /// deliberately omitting physical Environment realization. Callers must
+    /// first prove that the snapshot has no executable capability that needs a
+    /// Sandbox; this adapter only selects the existing deferred branch and does
+    /// not create a second context-construction path.
+    pub(crate) async fn ctx_for_environment_free_snapshot(
+        &self,
+        thread: &str,
+        agent: &str,
+        published_snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
+    ) -> Result<Arc<SessionCtx>, HostError> {
+        self.ctx_for_snapshot_with_attempt(
+            thread,
+            Some(agent),
+            SessionOpenRequest {
+                published_snapshot: Some(published_snapshot),
+                claimed_attempt: None,
+                force_defer_environment: true,
+                recover_revoked_legacy: false,
+            },
+        )
+        .await
+    }
+
     pub(crate) async fn ctx_for_claimed_snapshot(
         &self,
         thread: &str,
@@ -551,6 +576,21 @@ impl SharedHost {
                 .session_slots
                 .read(thread, |slot| slot.skills.clone())
                 .flatten();
+            // Reservation is metadata-only on a cold Coordinator. The aggregate
+            // Resource transition already owns the exact immutable Skill pins,
+            // while the claim-owning Worker remains the sole reader/validator of
+            // bundle bytes after Environment adoption.
+            let deferred_skill_bindings =
+                (force_defer_environment && frozen_skill_versions.is_none()).then(|| {
+                    self.session_slots
+                        .read(thread, |slot| {
+                            slot.resource_transition
+                                .as_ref()
+                                .map(|transition| transition.desired().resources.skills().to_vec())
+                        })
+                        .flatten()
+                        .unwrap_or_default()
+                });
             if !session_dispatch && frozen_skill_versions.is_none() {
                 self.skills
                     .reload_cache_in(&workspace)
@@ -689,7 +729,10 @@ impl SharedHost {
             let content_delivery = self.select_content_delivery(
                 thread,
                 installed.as_ref(),
-                frozen_skill_versions.as_deref(),
+                deferred_skill_bindings.as_deref().map_or_else(
+                    || SkillDeliveryEvidence::Materialized(frozen_skill_versions.as_deref()),
+                    SkillDeliveryEvidence::DeferredBindings,
+                ),
             )?;
             let can_defer = self.can_defer_session_environment(
                 thread,

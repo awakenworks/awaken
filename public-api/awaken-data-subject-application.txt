@@ -66,6 +66,7 @@ pub fn awaken_data_subject_application::ConsentRecord::from(&awaken_data_subject
 pub struct awaken_data_subject_application::CreateUserProfileCommand
 pub awaken_data_subject_application::CreateUserProfileCommand::access_type: core::option::Option<awaken_data_subject_application::UserProfileAccessType>
 pub awaken_data_subject_application::CreateUserProfileCommand::external_id: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::CreateUserProfileCommand::external_user_onboarded_at: core::option::Option<i64>
 pub awaken_data_subject_application::CreateUserProfileCommand::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_data_subject_application::CreateUserProfileCommand::name: core::option::Option<alloc::string::String>
 pub awaken_data_subject_application::CreateUserProfileCommand::org: alloc::string::String
@@ -76,6 +77,7 @@ pub awaken_data_subject_application::DataSubject::consents: alloc::vec::Vec<awak
 pub awaken_data_subject_application::DataSubject::created_at: i64
 pub awaken_data_subject_application::DataSubject::erased_at: core::option::Option<i64>
 pub awaken_data_subject_application::DataSubject::external_id: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::DataSubject::external_user_onboarded_at: core::option::Option<i64>
 pub awaken_data_subject_application::DataSubject::id: awaken_runtime_contract::data_subject::DataSubjectId
 pub awaken_data_subject_application::DataSubject::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_data_subject_application::DataSubject::name: core::option::Option<alloc::string::String>
@@ -145,6 +147,7 @@ pub fn awaken_data_subject_application::SystemDataSubjectClock::now_millis(&self
 pub struct awaken_data_subject_application::UpdateUserProfileCommand
 pub awaken_data_subject_application::UpdateUserProfileCommand::access_type: core::option::Option<core::option::Option<awaken_data_subject_application::UserProfileAccessType>>
 pub awaken_data_subject_application::UpdateUserProfileCommand::external_id: core::option::Option<awaken_data_subject_application::UserProfileFieldUpdate<alloc::string::String>>
+pub awaken_data_subject_application::UpdateUserProfileCommand::external_user_onboarded_at: core::option::Option<i64>
 pub awaken_data_subject_application::UpdateUserProfileCommand::metadata: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>>
 pub awaken_data_subject_application::UpdateUserProfileCommand::name: core::option::Option<awaken_data_subject_application::UserProfileFieldUpdate<alloc::string::String>>
 pub awaken_data_subject_application::UpdateUserProfileCommand::relationship: core::option::Option<awaken_data_subject_application::UserProfileRelationship>
@@ -153,6 +156,7 @@ pub struct awaken_data_subject_application::UserProfileRecord
 pub awaken_data_subject_application::UserProfileRecord::access_type: core::option::Option<awaken_data_subject_application::UserProfileAccessType>
 pub awaken_data_subject_application::UserProfileRecord::created_at: i64
 pub awaken_data_subject_application::UserProfileRecord::external_id: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::UserProfileRecord::external_user_onboarded_at: core::option::Option<i64>
 pub awaken_data_subject_application::UserProfileRecord::id: alloc::string::String
 pub awaken_data_subject_application::UserProfileRecord::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_data_subject_application::UserProfileRecord::name: core::option::Option<alloc::string::String>

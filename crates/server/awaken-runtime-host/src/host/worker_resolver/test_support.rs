@@ -56,7 +56,7 @@ pub(crate) fn test_activation(thread: &str, run: &str) -> RunActivation {
     )
 }
 
-pub(super) fn deferred_environment() -> awaken_session_contract::EnvironmentSnapshot {
+pub(crate) fn deferred_environment() -> awaken_session_contract::EnvironmentSnapshot {
     awaken_session_contract::EnvironmentSnapshot {
         environment_id: "lazy-env".into(),
         revision: awaken_session_contract::EnvironmentRevision(1),

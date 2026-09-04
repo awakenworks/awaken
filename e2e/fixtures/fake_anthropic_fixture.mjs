@@ -701,7 +701,18 @@ export function startFakeAnthropic(apiKey, opts = {}) {
   } = opts;
   const reply_of = BEHAVIORS[behavior];
   if (!reply_of) throw new Error(`unknown fake-anthropic behavior: ${behavior}`);
-  const state = { requests: [], arrivals: [], unauthorized: 0, attempts: 0, received: 0 };
+  // `receivedRequests` is the arrival-side ledger; `requests` below is the
+  // terminal-response ledger. Keeping both in this one canonical wire fixture
+  // lets crash tests distinguish an in-flight request from an acknowledged one
+  // without adding a second fake provider or inferring identity from a count.
+  const state = {
+    requests: [],
+    receivedRequests: [],
+    arrivals: [],
+    unauthorized: 0,
+    attempts: 0,
+    received: 0,
+  };
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
@@ -733,6 +744,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       // C2, while selecting C2 yields exactly one initial/revision/judge/ack
       // family and keeps failArrivalKind scoped to the current request.
       const arrivalUser = lastUserText(arrival);
+      state.receivedRequests.push({ lastUserText: arrivalUser });
       const arrivalKind = arrivalUser.includes('Evaluate this Outcome input') ? 'outcome-judge'
         : arrivalUser.includes('Revise the deliverable') ? 'outcome-revision'
           : arrivalUser.includes('iteration limit was reached') ? 'outcome-ack'
@@ -778,6 +790,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
         url: req.url,
         model: parsed.model,
         stream: !!parsed.stream,
+        lastUserText: arrivalUser,
         // Test-only request evidence. Dynamic Session System
         // context is carried on the Anthropic top-level `system` field; keeping
         // its text in this existing request ledger lets lifecycle E2E prove the
@@ -818,6 +831,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
         resolve({
           url: `http://127.0.0.1:${port}`,
           requests: state.requests,
+          receivedRequests: state.receivedRequests,
           arrivals: state.arrivals,
           get unauthorized() {
             return state.unauthorized;

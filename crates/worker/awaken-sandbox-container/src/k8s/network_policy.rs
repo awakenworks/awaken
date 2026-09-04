@@ -143,7 +143,7 @@ fn has_exact_labels(selector: &LabelSelector, expected: &BTreeMap<String, String
 }
 
 fn has_exact_namespace(selector: Option<&LabelSelector>) -> bool {
-    selector.is_none_or(|selector| {
+    selector.is_some_and(|selector| {
         selector
             .match_expressions
             .as_ref()
@@ -325,10 +325,12 @@ mod tests {
     #[test]
     fn exact_live_policy_graph_is_required_without_additive_widening() {
         // Cause/effect graph: C1 exact sandbox deny exists; C2 open-only allow
-        // exists; C3 another egress policy selects restricted Pods. Effect E1
-        // advertise/admit isolation iff C1+C2+!C3. Rules: P1 canonical=>E1;
-        // P2 missing deny=>reject; P3 namespace-wide allow=>reject; P4 an
-        // explicit sandbox exclusion preserves E1.
+        // exists; C3 another egress policy selects restricted Pods; C4 the
+        // allowlist peer has exactly one explicit, non-wildcard namespace.
+        // Effect E1 advertise/admit isolation iff C1+C2+!C3+C4. Rules: P1
+        // canonical=>E1; P2 missing deny=>reject; P3 namespace-wide allow=>
+        // reject; P4 absent namespace selector=>reject; P5 an explicit sandbox
+        // exclusion preserves E1.
         let canonical = canonical();
         assert!(attests_contract(&canonical), "P1");
         assert!(attests_allowlist_contract(&canonical), "P1 allowlist");
@@ -361,6 +363,23 @@ mod tests {
             "a wildcard namespace can select an attacker-controlled gateway"
         );
 
+        let mut missing_namespace = canonical.clone();
+        missing_namespace[2]
+            .spec
+            .as_mut()
+            .unwrap()
+            .egress
+            .as_mut()
+            .unwrap()[0]
+            .to
+            .as_mut()
+            .unwrap()[0]
+            .namespace_selector = None;
+        assert!(
+            !attests_allowlist_contract(&missing_namespace),
+            "P4 an absent namespace selector spans every namespace"
+        );
+
         let mut excluded = canonical;
         excluded.push(policy(
             "dns-egress",
@@ -375,6 +394,6 @@ mod tests {
             &["Egress"],
             Some(vec![NetworkPolicyEgressRule::default()]),
         ));
-        assert!(attests_contract(&excluded), "P4");
+        assert!(attests_contract(&excluded), "P5");
     }
 }

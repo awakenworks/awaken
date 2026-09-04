@@ -141,9 +141,9 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Arc::new(awaken_scenario_host::ReviseModel),
             "revise",
         ),
-        Ok("outcome-matrix") => awaken_scenario_host::build_outcome_matrix_router(),
+        Ok("outcome-matrix") => awaken_scenario_host::build_outcome_matrix_router().await,
         Ok("custom") => awaken_scenario_host::build_custom_router(),
-        Ok("delegate") => awaken_scenario_host::build_delegation_router(),
+        Ok("delegate") => awaken_scenario_host::build_delegation_router().await,
         Ok("statemachine") => awaken_scenario_host::build_statemachine_router(),
         Ok("statemachine-rich") => awaken_scenario_host::build_statemachine_rich_router(),
         Ok("config") => awaken_scenario_host::build_config_router().await,
@@ -214,15 +214,20 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("delegate-remote") => awaken_scenario_host::build_remote_delegation_router(),
         Ok("vision") => awaken_scenario_host::build_vision_router(),
         Ok("model-route") => awaken_scenario_host::build_model_route_router(),
-        Ok("acp") => awaken_scenario_host::build_acp_router(),
+        // Compatibility name only: both `acp` and `acp-sandboxed` resolve to
+        // the one SessionEnvironment-owned ACP fixture. Keeping a direct Host
+        // subprocess here would reopen the placement authority ADR-0073 removed.
+        Ok("acp") => awaken_scenario_host::build_acp_sandboxed_router().await,
         Ok("acp-jsonrpc") => awaken_scenario_host::build_acp_jsonrpc_router().await,
-        Ok("acp-permission") => awaken_scenario_host::build_acp_permission_router(),
+        Ok("acp-permission") => awaken_scenario_host::build_acp_permission_router().await,
         Ok("acp-tool-bridge") => awaken_scenario_host::build_acp_tool_bridge_router().await,
-        Ok("acp-control") => awaken_scenario_host::build_acp_control_router(),
-        Ok("acp-relaunch-failure") => awaken_scenario_host::build_acp_relaunch_failure_router(),
+        Ok("acp-control") => awaken_scenario_host::build_acp_control_router().await,
+        Ok("acp-relaunch-failure") => {
+            awaken_scenario_host::build_acp_relaunch_failure_router().await
+        }
         Ok("acp-sandboxed") => awaken_scenario_host::build_acp_sandboxed_router().await,
         Ok("acp-container") => awaken_scenario_host::build_acp_container_router().await,
-        Ok("acp-gateway") => awaken_scenario_host::build_acp_gateway_router(),
+        Ok("acp-gateway") => awaken_scenario_host::build_acp_gateway_router().await,
         Ok("acp-managed-mcp") => awaken_scenario_host::build_acp_managed_mcp_router().await,
         Ok("acp-real-mcp") => awaken_scenario_host::build_acp_real_mcp_router().await,
         Ok("memory") => {
@@ -470,7 +475,10 @@ mod dispatch_tests {
                 sh::build_router(std::sync::Arc::new(sh::ReviseModel), "revise"),
             ),
             ("custom", sh::build_custom_router()),
-            ("delegate", sh::build_delegation_router()),
+            (
+                "delegate",
+                sh::build_delegation_router_with_deployment(local_test_deployment.clone()).await,
+            ),
             ("statemachine", sh::build_statemachine_router()),
             ("statemachine-rich", sh::build_statemachine_rich_router()),
             ("schedule", sh::build_schedule_router()),
@@ -478,15 +486,28 @@ mod dispatch_tests {
             ("skills-durable", sh::build_skills_durable_router().await),
             ("vision", sh::build_vision_router()),
             ("model-route", sh::build_model_route_router()),
-            ("acp", sh::build_acp_router()),
-            ("acp-jsonrpc", sh::build_acp_jsonrpc_router().await),
-            ("acp-permission", sh::build_acp_permission_router()),
+            (
+                "acp",
+                sh::build_acp_sandboxed_router_with_deployment(local_test_deployment.clone()).await,
+            ),
+            (
+                "acp-jsonrpc",
+                sh::build_acp_jsonrpc_router_with_deployment(local_test_deployment.clone()).await,
+            ),
+            (
+                "acp-permission",
+                sh::build_acp_permission_router_with_deployment(local_test_deployment.clone())
+                    .await,
+            ),
             ("acp-tool-bridge", sh::build_acp_tool_bridge_router().await),
             (
                 "acp-sandboxed",
                 sh::build_acp_sandboxed_router_with_deployment(local_test_deployment.clone()).await,
             ),
-            ("acp-gateway", sh::build_acp_gateway_router()),
+            (
+                "acp-gateway",
+                sh::build_acp_gateway_router_with_deployment(local_test_deployment.clone()).await,
+            ),
             ("memory", sh::build_memory_router().await),
             ("memory-resource", sh::build_memory_resource_router()),
             (

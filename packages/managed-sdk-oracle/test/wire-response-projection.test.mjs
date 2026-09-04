@@ -19,22 +19,26 @@ function operation(betas) {
 test('wire response projection follows request identity rather than SDK version', () => {
   // Causal decision table:
   // S=same verb/path/query/beta capability; D=different capability.
-  // S -> current additive response contract because the server sees identical
-  // input bytes and cannot branch on User-Agent. D -> selected historical
+  // S -> the declaration-derived union of current and selected response
+  // contracts because the server sees identical input bytes and cannot branch
+  // on User-Agent. D -> selected historical
   // contract because the capability header names a distinct public projection.
   // Missing contracts fail closed before a behavior receipt can be admitted.
   const selectedResponseContracts = { 'beta.files.list': legacyContract };
   const currentResponseContracts = { 'beta.files.list': currentContract };
   const currentOperations = [operation([])];
 
-  assert.equal(projectWireResponseContracts({
+  assert.deepEqual(projectWireResponseContracts({
     selectedOperations: [operation([])],
     currentOperations,
     selectedResponseContracts,
     currentResponseContracts,
-  })['beta.files.list'], currentContract, 'S');
+  })['beta.files.list'], {
+    kind: 'json',
+    schema: { kind: 'union', variants: ['current', 'legacy'] },
+  }, 'S');
 
-  assert.equal(projectWireResponseContracts({
+  assert.deepEqual(projectWireResponseContracts({
     selectedOperations: [operation([
       'managed-agents-2026-04-01',
       'files-api-2025-04-14',
@@ -46,7 +50,10 @@ test('wire response projection follows request identity rather than SDK version'
     ])],
     selectedResponseContracts,
     currentResponseContracts,
-  })['beta.files.list'], currentContract, 'capability order and duplication do not select a schema');
+  })['beta.files.list'], {
+    kind: 'json',
+    schema: { kind: 'union', variants: ['current', 'legacy'] },
+  }, 'capability order and duplication do not select a schema');
 
   assert.equal(projectWireResponseContracts({
     selectedOperations: [operation(['files-api-2025-04-14'])],

@@ -106,7 +106,7 @@ function assertAddTurn(events, sum) {
 async function main() {
   const fixture = await startCalcFixture(CALC_TOKEN);
   try {
-    await withScenarioServer('management', 'mcp', 38191, async (base) => {
+    await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (base) => {
       // --- author the binding through the admin config plane ---
       // Credential decision rule C0: the canonical MCP audience plus Bearer
       // usage authorizes only this target; an undescribed source must fail

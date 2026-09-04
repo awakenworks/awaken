@@ -48,7 +48,7 @@ async function main() {
   try {
     await withRealServer(
       'echo',
-      38194,
+      Number(process.env.E2E_PORT),
       async (base) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
       const consent = await fetch(`${base}/v1/user_profiles/dsub_full/consent`, {

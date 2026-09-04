@@ -506,9 +506,7 @@ pub(super) async fn prepare_runtime_routers(
         .with_skill_catalog_application(resource_application.skill_catalog_application())
         .with_local_workspace(platform_workspace.clone())
         .with_web_search_provider_registry(web_search_providers)
-        .with_acp_tool_exporter(Arc::new(
-            awaken_coordinator::mcp_export::SessionToolExporter,
-        ))
+        .with_acp_tool_exporter(Arc::new(awaken_worker::SessionToolExporter))
         .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(
             credential_materializer.clone(),
         ))

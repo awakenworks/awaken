@@ -8,6 +8,7 @@
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
+use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator, Error, OperationCoordinator,
@@ -184,6 +185,16 @@ impl HostCommit {
         match self {
             HostCommit::Local(store) => store.authoritative_committed_messages(thread_id).await,
             HostCommit::Remote(remote) => Ok(remote.projection.committed_messages(thread_id)),
+        }
+    }
+
+    pub(crate) async fn authoritative_committed_state(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<StateCommand>, String> {
+        match self {
+            HostCommit::Local(store) => store.authoritative_committed_state(thread_id).await,
+            HostCommit::Remote(remote) => Ok(remote.projection.committed_state(thread_id)),
         }
     }
 

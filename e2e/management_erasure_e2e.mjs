@@ -11,7 +11,7 @@ import { USER_PROFILES_BETA, withScenarioServer, pass } from './harness.mjs';
 const PROFILE_HEADERS = { 'anthropic-beta': USER_PROFILES_BETA };
 
 async function main() {
-  await withScenarioServer('management', 'mcp', 38191, async (baseUrl) => {
+  await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseUrl) => {
     const unknown = await fetch(`${baseUrl}/v1/user_profiles/dsub_missing/erasure`, {
       method: 'POST',
       headers: PROFILE_HEADERS,

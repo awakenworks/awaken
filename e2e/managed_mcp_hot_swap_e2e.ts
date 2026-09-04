@@ -95,7 +95,7 @@ async function main(): Promise<void> {
   const fixtureB = await startCalcFixture(TOKEN_B);
   const rejecting = await startRejectingMcp();
   try {
-    await withScenarioServer('management', 'mcp', 38207, async (baseUrl: string) => {
+    await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseUrl: string) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const vault = await client.beta.vaults.create({ display_name: 'hot swap', betas: BETAS });
       for (const [url, token] of [[fixtureA.url, TOKEN_A], [fixtureB.url, TOKEN_B]]) {

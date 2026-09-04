@@ -52,7 +52,7 @@ async function json(baseUrl, method, route, body) {
 
 async function main() {
   try {
-    await withScenarioServer('management', 'mcp', 38144, async (baseUrl) => {
+    await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // Version-projection invariant: SDK calls omit `betas` so each exact

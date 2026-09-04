@@ -43,7 +43,7 @@ async function main() {
     (baseUrl.includes('api.kimi.com/coding') ? 'kimi-for-coding' : 'claude-3-5-haiku-latest');
 
   try {
-    await withScenarioServer('management', 'mcp', 38160, async (base) => {
+    await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (base) => {
       // A tested connection discovers the live model and stores the key once.
       let r = await req(base, 'POST', '/v1/config/provider-connections', {
         idempotency_key: 'management-validate-provider-connection',

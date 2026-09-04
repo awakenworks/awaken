@@ -48,7 +48,7 @@ async function settle(chat, effect) {
 
 async function main() {
   // --- multi-turn: the Chat threads history across native sendMessage calls ---
-  await withRealServer('echo', 38141, async (base) => {
+  await withRealServer('echo', Number(process.env.E2E_PORT), async (base) => {
     const chat = newChat(base, 'sdk-mt');
     await chat.sendMessage({ text: 'first message' });
     assert.ok(replyText(chat).includes('first message'), `turn 1: ${replyText(chat)}`);
@@ -58,7 +58,7 @@ async function main() {
   });
 
   // --- multimodal: an image attached via the native `files` param reaches the model ---
-  await withRealServer('vision', 38142, async (base) => {
+  await withRealServer('vision', Number(process.env.E2E_PORT), async (base) => {
     const chat = newChat(base, 'sdk-img');
     await chat.sendMessage({
       text: 'what color is this',
@@ -121,7 +121,7 @@ async function main() {
 
   // --- HITL: a tool needing approval awaits; `Chat.addToolApprovalResponse` submits the
   // decision and (via sendAutomaticallyWhen) auto-resends, completing the run ---
-  await withScenarioServer('management-probe', 'probe', 38143, async (base) => {
+  await withScenarioServer('management-probe', 'probe', Number(process.env.E2E_PORT), async (base) => {
     await publishAlwaysAskManagementProbeAgent(base, 'assistant', ['write'], ['read']);
     const { threadId, headers } = await createCrossProtocolApplicationThread(base);
     const rawResponses = [];

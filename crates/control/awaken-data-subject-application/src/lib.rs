@@ -170,6 +170,11 @@ pub struct DataSubject {
     /// The developer's own id for this subject (join key, not enforced unique).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
+    /// When the platform reports that the represented user completed onboarding.
+    /// This belongs to the existing DataSubject aggregate so protocol projections
+    /// cannot create a second profile-shaped source of truth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_user_onboarded_at: Option<i64>,
     /// Opaque application metadata projected by protocol adapters.
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
@@ -204,6 +209,7 @@ impl DataSubject {
             id,
             org: org.into(),
             external_id: None,
+            external_user_onboarded_at: None,
             metadata: BTreeMap::new(),
             relationship: UserProfileRelationship::default(),
             access_type: None,
@@ -411,6 +417,7 @@ pub struct CreateUserProfileCommand {
     pub relationship: UserProfileRelationship,
     pub access_type: Option<UserProfileAccessType>,
     pub external_id: Option<String>,
+    pub external_user_onboarded_at: Option<i64>,
     pub name: Option<String>,
 }
 
@@ -421,6 +428,7 @@ pub struct UpdateUserProfileCommand {
     pub access_type: Option<Option<UserProfileAccessType>>,
     pub trust_grants: Option<BTreeMap<String, UserProfileTrustGrant>>,
     pub external_id: Option<UserProfileFieldUpdate<String>>,
+    pub external_user_onboarded_at: Option<i64>,
     pub name: Option<UserProfileFieldUpdate<String>>,
 }
 
@@ -440,6 +448,7 @@ pub struct UserProfileRecord {
     pub access_type: Option<UserProfileAccessType>,
     pub trust_grants: BTreeMap<String, UserProfileTrustGrant>,
     pub external_id: Option<String>,
+    pub external_user_onboarded_at: Option<i64>,
     pub name: Option<String>,
     pub revision: u64,
 }
@@ -455,6 +464,7 @@ impl From<&DataSubject> for UserProfileRecord {
             access_type: subject.access_type,
             trust_grants: subject.trust_grants.clone(),
             external_id: subject.external_id.clone(),
+            external_user_onboarded_at: subject.external_user_onboarded_at,
             name: subject.name.clone(),
             revision: subject.revision,
         }
@@ -575,6 +585,7 @@ impl DataSubjectApplication {
             subject.relationship = command.relationship;
             subject.access_type = command.access_type;
             subject.external_id = command.external_id.clone();
+            subject.external_user_onboarded_at = command.external_user_onboarded_at;
             subject.name = command.name.clone();
             match self.repo.create(subject.clone()).await {
                 Ok(()) => return Ok(UserProfileRecord::from(&subject)),
@@ -621,6 +632,10 @@ impl DataSubjectApplication {
                 };
                 changed |= subject.external_id != external_id;
                 subject.external_id = external_id;
+            }
+            if let Some(external_user_onboarded_at) = command.external_user_onboarded_at {
+                changed |= subject.external_user_onboarded_at != Some(external_user_onboarded_at);
+                subject.external_user_onboarded_at = Some(external_user_onboarded_at);
             }
             if let Some(name) = &command.name {
                 let name = match name {

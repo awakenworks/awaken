@@ -45,7 +45,7 @@ async function sendRun(client, sessionId, text) {
 }
 
 async function main() {
-  await withScenarioServer('compaction', 'compaction', 38198, async (baseUrl) => {
+  await withScenarioServer('compaction', 'compaction', Number(process.env.E2E_PORT), async (baseUrl) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
     const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 

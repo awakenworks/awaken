@@ -1,5 +1,5 @@
 {
-  "current_oracle": "0.122.0",
+  "current_oracle": "0.123.0",
   "schema_version": 1,
   "supported_sdk_anchors": [
     {
@@ -45,10 +45,10 @@
       "managed_export_fingerprint": "ccaa28658729c9ccab5ec52398847d0ea6cb8101381fe570899373b333d1c49d",
       "operation_fingerprint": "701ee5399eb5cdc42aaa4606904862d73bed85a39de5e1fa5f1e9feb28050f8c",
       "role": "current_oracle",
-      "runtime_file_count": 112,
-      "runtime_fingerprint": "2e976bde253b7ccea8ceea51ac3b9a9a75745fc438721f5f41eb7ff3a54e6d01",
-      "type_fingerprint": "89200b55bb7be293b12847c4123ebb6a0753ffb96258ea77df8cd7f053901fb4",
-      "version": "0.122.0"
+      "runtime_file_count": 113,
+      "runtime_fingerprint": "f134d5efde08ae4c3f3e44972938b8b568db4715a4984ff3cb7246b9214d5a0c",
+      "type_fingerprint": "f3392e76f49314fbd117bf4ae6fea86690fd756e2c699644f5ac430f44c7cebc",
+      "version": "0.123.0"
     }
   ]
 }

@@ -256,7 +256,13 @@ async function runJudge(judge: RuntimeKind, port: number) {
         await verifyDefinitionBoundaries(baseUrl);
       }
     },
-    { AWAKEN_OUTCOME_JUDGE_RUNTIME: judge },
+    {
+      AWAKEN_OUTCOME_JUDGE_RUNTIME: judge,
+      // Outcome ACP Worker/Judge launches now use the same capability-owning
+      // SessionEnvironment as production. Namespace is the portable fixture
+      // substrate that preserves its opaque logical workspace paths.
+      SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
+    },
   );
 }
 

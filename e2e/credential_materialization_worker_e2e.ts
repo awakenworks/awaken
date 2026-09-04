@@ -24,6 +24,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deploymentEnv, spawnServer, stopServer, waitForPort } from './harness.mjs';
+// @ts-ignore -- shared JavaScript fixture intentionally serves TS scenarios.
+import { withoutAmbientProviderKeys } from './process_environment.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import {
   nativeProviderCandidateFixture,
@@ -238,6 +240,19 @@ async function main() {
       claimed.request,
       `${claimed.request.activation.run_id}-materialized`,
       THREAD,
+    );
+    // Resource-realization decision rule: C1 the seed carries the exact
+    // Resource envelope; C2 Session command ownership is detached. R1=C1+C2
+    // => E1 the ordinary cold Worker may prove Empty -> desired without a
+    // coordinator-created sandbox. Missing C1 must fail before credential or
+    // provider execution rather than infer a physical generation.
+    assert.ok(
+      dispatch.session_resources,
+      'R1/E1 ordinary cold execution retains its exact Resource transition proof',
+    );
+    assert.ok(
+      dispatch.session_runtime,
+      'R1/E1 ordinary cold execution retains its frozen Runtime projection',
     );
     // The seed selected `echo-model`; this scenario replaces the complete
     // publication candidate with `fake-worker-model`. Keeping the old override
@@ -482,7 +497,10 @@ async function main() {
     ].join('\n'));
     worker = spawn(workerBinary(), ['--config', workerConfig, '--server', WORKER_BASE], {
       cwd: ROOT,
-      env: { ...process.env, AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1' },
+      env: {
+        ...withoutAmbientProviderKeys(process.env),
+        AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1',
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     worker.stdout.on('data', (chunk) => (output += chunk.toString()));

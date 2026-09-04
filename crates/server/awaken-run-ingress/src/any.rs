@@ -547,6 +547,14 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, begin_attempt(claim, now_ms))
     }
 
+    async fn handoff_attempt(
+        &self,
+        claim: &RunClaim,
+        now_ms: u64,
+    ) -> Result<crate::AttemptAdmission, DispatchError> {
+        delegate!(self, handoff_attempt(claim, now_ms))
+    }
+
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         delegate!(self, finish_attempt(claim))
     }

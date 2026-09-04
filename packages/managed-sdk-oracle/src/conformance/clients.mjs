@@ -7,13 +7,22 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const anchorsPath = path.join(packageRoot, 'config/anchors.json');
-const workspaceResponseProjectionVersions = new Set(['0.121.0', '0.122.0']);
 
-// This is a reviewed official-SDK capability boundary, not server version
-// routing. Candidate admission fails closed until its response projection has
-// been classified alongside the exact package anchor.
-export function projectsWorkspaceResponseContext(version) {
-  return workspaceResponseProjectionVersions.has(version);
+// The installed declaration graph is the one response-capability authority.
+// Keeping a parallel version list here made registry-candidate qualification
+// reject a capability the exact package already declared and implemented.
+export function projectsWorkspaceResponseContext(root) {
+  const owns = [
+    ['core/error.d.ts', /\breadonly workspaceID:/u],
+    ['core/api-promise.d.ts', /\bworkspace_id:/u],
+    ['internal/parse.d.ts', /\b_workspace_id\?:/u],
+  ].map(([relativePath, declaration]) => declaration.test(
+    fs.readFileSync(path.join(root, relativePath), 'utf8'),
+  ));
+  if (!owns.every((value) => value === owns[0])) {
+    throw new Error('official SDK response-context declarations disagree on Workspace projection');
+  }
+  return owns[0];
 }
 
 export function readSdkMatrix() {

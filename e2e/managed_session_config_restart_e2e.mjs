@@ -75,7 +75,8 @@ async function main() {
     // The Config publication is the execution authority for the non-default
     // Agent. Merely accepting `agent: coder` in the Session DTO must not invent
     // an executable publication or fall back to `assistant`.
-    await publishManagementAgent(a.baseUrl, 'coder', {
+    const coderId = 'coder';
+    await publishManagementAgent(a.baseUrl, coderId, {
       name: 'Durable coder fixture',
       system: 'Reply normally.',
       max_steps: 4,
@@ -96,16 +97,15 @@ async function main() {
       id: `portable-lazy-${process.pid}`,
       provisioning: 'on_tool_use',
     });
-
     const created = await c.beta.sessions.create({
-      agent: 'coder',
+      agent: coderId,
       title: 'Durable session',
       metadata: { team: 'research' },
       environment_id: environment.id,
       betas: BETAS,
     });
     assert.equal(created.title, 'Durable session', 'title accepted at create');
-    assert.equal(created.agent.id, 'coder', 'agent id accepted at create');
+    assert.equal(created.agent.id, coderId, 'published agent id accepted at create');
 
     // Commit a turn so a durable transcript exists (the rehydration precondition).
     const firstReceipt = await c.beta.sessions.events.send(created.id, {
@@ -184,8 +184,8 @@ async function main() {
     const restored = await c.beta.sessions.retrieve(created.id, { betas: BETAS });
     assert.equal(
       restored.agent.id,
-      'coder',
-      'agent id restored from the durable session repo (not the "assistant" placeholder)',
+      coderId,
+      'published agent id restored from the durable session repo (not the "assistant" placeholder)',
     );
     assert.equal(restored.title, 'Durable session', 'title restored across the restart');
     assert.equal(

@@ -82,9 +82,6 @@ async fn distributed_provider_message(
         .and_then(|message| message.get("content"))
         .map(message_text)
         .unwrap_or_default();
-    if text.contains("ADR71-CHAOS-SLOW") {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    }
     let reply = format!("ADR71-PROVIDER:{text}");
     if request.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
         return anthropic_text_stream(&request, &reply);

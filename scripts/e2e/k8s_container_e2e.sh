@@ -118,6 +118,137 @@ k3d_import_images \
 kubectl -n kube-system rollout restart deploy/local-path-provisioner >/dev/null
 kubectl -n kube-system rollout status deploy/local-path-provisioner --timeout=120s
 
+# Live cross-namespace allowlist cause/effect decision table:
+# C1 the client is selected by the canonical default-deny and exact allowlist
+# policy; C2 the destination namespace is the fixed `awaken-cloud` authority;
+# C3 the destination Pod has the egress-gateway role; C4 the TCP port is 8081.
+# E1 C1+C2+C3+C4 reaches the gateway; E2 changing only C3 is denied; E3
+# changing only C2 is denied. Rules KNP1 exact tuple=>E1, KNP2 exact namespace
+# plus decoy role=>E2, KNP3 foreign namespace plus copied role=>E3. Waiting for
+# KNP1 before the negative probes fences policy-controller propagation, so a
+# timeout cannot be misreported as successful isolation.
+log "proving live cross-namespace egress allowlist boundaries"
+kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: awaken-cloud
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: attacker-controlled
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: egress-gateway
+  namespace: awaken-cloud
+  labels:
+    app.kubernetes.io/component: egress-gateway
+spec:
+  restartPolicy: Never
+  containers:
+    - name: http
+      image: ${FIXTURE_IMAGE}
+      imagePullPolicy: Never
+      command: ["sh", "-c"]
+      args: ["mkdir -p /www && echo gateway-ok >/www/index.html && exec httpd -f -p 8081 -h /www"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: role-decoy
+  namespace: awaken-cloud
+  labels:
+    app.kubernetes.io/component: role-decoy
+spec:
+  restartPolicy: Never
+  containers:
+    - name: http
+      image: ${FIXTURE_IMAGE}
+      imagePullPolicy: Never
+      command: ["sh", "-c"]
+      args: ["mkdir -p /www && echo decoy >/www/index.html && exec httpd -f -p 8081 -h /www"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: copied-gateway-role
+  namespace: attacker-controlled
+  labels:
+    app.kubernetes.io/component: egress-gateway
+spec:
+  restartPolicy: Never
+  containers:
+    - name: http
+      image: ${FIXTURE_IMAGE}
+      imagePullPolicy: Never
+      command: ["sh", "-c"]
+      args: ["mkdir -p /www && echo attacker >/www/index.html && exec httpd -f -p 8081 -h /www"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: allowlist-client
+  labels:
+    app: awaken-sandbox
+    awaken-egress: allowlist
+spec:
+  restartPolicy: Never
+  containers:
+    - name: client
+      image: ${FIXTURE_IMAGE}
+      imagePullPolicy: Never
+      command: ["sh", "-c", "sleep 600"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: awaken-sandbox-allowlist-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: awaken-sandbox
+      awaken-egress: allowlist
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: awaken-cloud
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: egress-gateway
+      ports:
+        - protocol: TCP
+          port: 8081
+EOF
+kubectl -n awaken-cloud wait --for=condition=Ready pod/egress-gateway pod/role-decoy --timeout=120s
+kubectl -n attacker-controlled wait --for=condition=Ready pod/copied-gateway-role --timeout=120s
+kubectl wait --for=condition=Ready pod/allowlist-client --timeout=120s
+gateway_ip="$(kubectl -n awaken-cloud get pod egress-gateway -o jsonpath='{.status.podIP}')"
+decoy_ip="$(kubectl -n awaken-cloud get pod role-decoy -o jsonpath='{.status.podIP}')"
+attacker_ip="$(kubectl -n attacker-controlled get pod copied-gateway-role -o jsonpath='{.status.podIP}')"
+gateway_response=""
+for _ in $(seq 1 30); do
+  gateway_response="$(kubectl exec allowlist-client -- wget -q -T 2 -O - "http://${gateway_ip}:8081" 2>/dev/null || true)"
+  [ "$gateway_response" = "gateway-ok" ] && break
+  sleep 1
+done
+[ "$gateway_response" = "gateway-ok" ] || {
+  echo "KNP1 exact cross-namespace gateway tuple was not reachable" >&2
+  exit 1
+}
+if kubectl exec allowlist-client -- wget -q -T 3 -O - "http://${decoy_ip}:8081" >/dev/null 2>&1; then
+  echo "KNP2 same-namespace decoy role bypassed the egress allowlist" >&2
+  exit 1
+fi
+if kubectl exec allowlist-client -- wget -q -T 3 -O - "http://${attacker_ip}:8081" >/dev/null 2>&1; then
+  echo "KNP3 foreign namespace with copied gateway role bypassed the egress allowlist" >&2
+  exit 1
+fi
+
 log "running the k8s e2e test"
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8s_it -- --nocapture
 # These scenarios deliberately share one small, offline cluster and exercise

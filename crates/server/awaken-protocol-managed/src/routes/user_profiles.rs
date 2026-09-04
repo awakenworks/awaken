@@ -165,6 +165,18 @@ fn check_len(field: &str, value: Option<&str>) -> Result<(), WireError> {
     Ok(())
 }
 
+fn parse_external_user_onboarded_at(value: Option<&str>) -> Result<Option<i64>, WireError> {
+    value
+        .map(|value| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .map(|timestamp| timestamp.timestamp_millis())
+                .map_err(|_| {
+                    bad_request("external_user_onboarded_at must be an RFC 3339 timestamp")
+                })
+        })
+        .transpose()
+}
+
 fn relationship_to_application(value: Relationship) -> UserProfileRelationship {
     match value {
         Relationship::External => UserProfileRelationship::External,
@@ -275,7 +287,9 @@ fn project(record: UserProfileRecord, projection: UserProfileProjection) -> User
         UserProfileProjection::Current => UserProfile::Current(CurrentUserProfile {
             core,
             access_type,
-            relationship: Some(relationship),
+            external_user_onboarded_at: record
+                .external_user_onboarded_at
+                .map(|value| awaken_session_contract::epoch_millis_to_rfc3339(value.max(0) as u64)),
         }),
     }
 }
@@ -289,6 +303,8 @@ async fn create_profile(
     reject_current_only_field(projection, params.access_type.is_some())?;
     check_len("external_id", params.external_id.as_deref())?;
     check_len("name", params.name.as_deref())?;
+    let external_user_onboarded_at =
+        parse_external_user_onboarded_at(params.external_user_onboarded_at.as_deref())?;
     if let (Some(access_type), Some(relationship)) = (params.access_type, params.relationship) {
         validate_access_relationship(access_type, relationship)?;
     }
@@ -304,6 +320,7 @@ async fn create_profile(
             relationship: relationship_to_application(relationship),
             access_type: params.access_type.map(access_type_to_application),
             external_id: params.external_id,
+            external_user_onboarded_at,
             name: params.name,
         })
         .await
@@ -334,6 +351,14 @@ enum UserProfileListOrder {
     Desc,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum UserProfileListOrderBy {
+    #[default]
+    CreatedAt,
+    Name,
+}
+
 impl std::str::FromStr for UserProfileListOrder {
     type Err = &'static str;
 
@@ -358,6 +383,8 @@ struct UserProfileListParams {
         deserialize_with = "crate::types::page::deserialize_optional_query_value"
     )]
     order: Option<UserProfileListOrder>,
+    #[serde(default)]
+    order_by: Option<UserProfileListOrderBy>,
 }
 
 async fn list_profiles(
@@ -371,6 +398,20 @@ async fn list_profiles(
         .list_user_profiles(&state.org)
         .await
         .map_err(error_response)?;
+    if matches!(query.order_by, Some(UserProfileListOrderBy::Name)) {
+        data.sort_by(|left, right| {
+            (
+                left.name.as_deref().unwrap_or(""),
+                left.created_at,
+                left.id.as_str(),
+            )
+                .cmp(&(
+                    right.name.as_deref().unwrap_or(""),
+                    right.created_at,
+                    right.id.as_str(),
+                ))
+        });
+    }
     if matches!(query.order, Some(UserProfileListOrder::Desc)) {
         data.reverse();
     }
@@ -400,6 +441,8 @@ async fn update_profile(
             .as_ref()
             .and_then(|value| value.as_deref()),
     )?;
+    let external_user_onboarded_at =
+        parse_external_user_onboarded_at(params.external_user_onboarded_at.as_deref())?;
     check_len(
         "name",
         params.name.as_ref().and_then(|value| value.as_deref()),
@@ -444,6 +487,7 @@ async fn update_profile(
                 access_type,
                 trust_grants,
                 external_id: field_update(params.external_id),
+                external_user_onboarded_at,
                 name: field_update(params.name),
             },
         )

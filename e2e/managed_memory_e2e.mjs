@@ -42,7 +42,7 @@ async function turn(client, sessionId, text) {
 }
 
 async function main() {
-  await withScenarioServer('memory', 'memory', 38197, async (baseUrl) => {
+  await withScenarioServer('memory', 'memory', Number(process.env.E2E_PORT), async (baseUrl) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
     const store = await scenarioMemoryStore(client, MEMORY_HEADERS);
     const session = () => client.beta.sessions.create({

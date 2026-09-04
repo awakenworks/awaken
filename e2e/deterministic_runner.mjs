@@ -20,10 +20,14 @@ import {
   WORKER_BIN_ENV,
   cargoExecutable,
   cargoScenarioHostBundle,
+  checkoutLocalCargoEnvironment,
   requirePrebuiltExecutable,
   scenarioHandCompanionPath,
 } from './cargo_binary.mjs';
 import { snapshotExecutable } from './executable_snapshot.mjs';
+import { withoutAmbientProviderKeys } from './process_environment.mjs';
+
+export { withoutAmbientProviderKeys } from './process_environment.mjs';
 
 const E2E_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(E2E_ROOT, '..');
@@ -178,19 +182,15 @@ export function validPrebuiltManifest(
     && manifest.binaries?.worker === fileDigest(worker);
 }
 
-// Remove only provider API-key variables rejected by the production process.
-// Deterministic scenarios inject their own fixture credentials at the exact
-// child boundary they exercise; a developer or CI runner's ambient secrets are
-// neither test inputs nor valid Awaken credential sources.
-export function withoutAmbientProviderKeys(environment) {
-  return Object.fromEntries(Object.entries(environment).filter(([name]) => {
-    const normalized = name.toUpperCase();
-    return normalized !== 'API_KEY' && !normalized.endsWith('_API_KEY');
-  }));
-}
-
 export function preparedEnvironment(environment, explicitDirectory) {
-  const cleanEnvironment = withoutAmbientProviderKeys(environment);
+  // Leaf scenarios such as eval_e2e invoke Cargo after the canonical binaries
+  // have been snapshotted. They must inherit the same checkout-local artifact
+  // boundary as the one Cargo resolver, or an external user-level target-dir
+  // can supply same-name artifacts built from a different worktree.
+  const cleanEnvironment = checkoutLocalCargoEnvironment(
+    REPO_ROOT,
+    withoutAmbientProviderKeys(environment),
+  );
   const inheritedAwaken = requirePrebuiltExecutable(AWAKEN_BIN_ENV, cleanEnvironment);
   const inheritedScenarioHost = requirePrebuiltExecutable(SCENARIO_HOST_BIN_ENV, cleanEnvironment);
   const inheritedWorker = requirePrebuiltExecutable(WORKER_BIN_ENV, cleanEnvironment);

@@ -300,14 +300,30 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
     write_response(&mut stream, "200 OK", &response);
 }
 
-fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
-    write!(
+fn write_response(mut stream: impl Write, status: &str, body: &str) {
+    let result = write!(
         stream,
         "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         body.len(),
     )
-    .unwrap();
-    stream.write_all(body.as_bytes()).unwrap();
+    .and_then(|()| stream.write_all(body.as_bytes()));
+    if let Err(error) = result {
+        // A lifecycle request may be cancelled after this fixture has read the
+        // complete request but before it writes the response (for example when
+        // provider evidence loss terminates the heartbeat future). That peer no
+        // longer owns a response. Keep the fake upstream alive for the ensuing
+        // drain/deregister calls, while every non-disconnect I/O fault remains a
+        // fixture failure.
+        if !matches!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::NotConnected
+        ) {
+            panic!("fake worker upstream response failed: {error}");
+        }
+    }
 }
 
 fn json_u64_field(body: &str, field: &str) -> u64 {
@@ -435,8 +451,24 @@ fn read_request(stream: &mut TcpStream) -> RequestRead {
 mod tests {
     use super::*;
 
+    struct FailingWriter(std::io::ErrorKind);
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(self.0))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn peer_close_before_http_headers_is_not_a_fixture_failure() {
+        // Decision table F1: C1 peer closes before a complete request => E1
+        // read-side handler returns; no response is owned and the listener stays
+        // available. C2 complete request + connected peer is covered by every
+        // lifecycle integration test below.
         let upstream = FakeWorkerUpstream::start();
         let address = upstream
             .url()
@@ -446,5 +478,33 @@ mod tests {
         drop(stream);
         std::thread::sleep(Duration::from_millis(20));
         drop(upstream);
+    }
+
+    #[test]
+    fn peer_close_after_a_complete_request_does_not_kill_the_fixture() {
+        // Response-write decision table: F2 C1 complete request + peer-disconnect
+        // write error => E1 retire only that response and keep serving; F3 C1 +
+        // any other I/O error => E2 fail the fixture. Constraint: cancellation
+        // does not make arbitrary write faults successful. Real connected writes
+        // are exercised by the lifecycle tests that use this one helper.
+        for kind in [
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::NotConnected,
+        ] {
+            write_response(FailingWriter(kind), "200 OK", "{}");
+        }
+        assert!(
+            std::panic::catch_unwind(|| {
+                write_response(
+                    FailingWriter(std::io::ErrorKind::PermissionDenied),
+                    "200 OK",
+                    "{}",
+                );
+            })
+            .is_err(),
+            "F3/E2 unexpected I/O faults remain visible"
+        );
     }
 }

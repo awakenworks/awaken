@@ -17,6 +17,34 @@ use crate::host::SharedHost;
 use crate::run_exec::BoundRunExecutor;
 use crate::store::HostCommit;
 
+/// A Judge can omit a physical Environment only when its complete immutable
+/// execution surface is environment-free. Inference-only Native/A2A routes do
+/// not need a Sandbox; ACP owns a CLI process and every executable integration
+/// keeps the ordinary Session Environment path.
+fn environment_free_judge(snapshot: &ExecutableAgentSnapshot) -> bool {
+    let agent = &snapshot.resolved_spec.plugin_config.agent;
+    snapshot.resolved_spec.tool_descriptors.is_empty()
+        && snapshot.resolved_spec.plugin_ids.is_empty()
+        && agent.mcp_servers.is_empty()
+        && agent.skills.is_empty()
+        && agent.delegates.is_empty()
+        && agent.advisor.is_none()
+        && agent.toolsets.is_empty()
+        && snapshot
+            .resolved_spec
+            .attempt_candidates(None)
+            .into_iter()
+            .all(|candidate| {
+                matches!(
+                    awaken_runtime_contract::resolved::Backend::from_ref(
+                        &candidate.binding().backend_ref,
+                    ),
+                    awaken_runtime_contract::resolved::Backend::Native
+                        | awaken_runtime_contract::resolved::Backend::Remote(_)
+                )
+            })
+}
+
 /// Host integration of the extension-owned Agent Grader. It resolves the fresh
 /// Grader Thread and supplies Host backend/durable context; prompt, identity,
 /// recovery, restrictions, and parsing remain in `awaken-ext-goal`.
@@ -34,15 +62,24 @@ impl Grader for HostAgentGrader<'_> {
         input: &GradingInput,
     ) -> Result<Grade, GraderError> {
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
-        let context = self
-            .host
-            // The Judge is a tool-less internal Run, not a public Session root.
-            // Build its frozen execution envelope without manufacturing an
-            // unfenced physical Environment that no Session aggregate can own
-            // or recover after a process crash.
-            .ctx_for_session_coordination(&thread.0, None)
-            .await
-            .map_err(|error| GraderError::Execution(error.to_string()))?;
+        let context = if environment_free_judge(snapshot) {
+            self.host
+                .ctx_for_environment_free_snapshot(
+                    &thread.0,
+                    &snapshot.root_agent_id.0,
+                    snapshot.clone(),
+                )
+                .await
+        } else {
+            self.host
+                .ctx_for_snapshot(
+                    &thread.0,
+                    Some(&snapshot.root_agent_id.0),
+                    Some(snapshot.clone()),
+                )
+                .await
+        }
+        .map_err(|error| GraderError::Execution(error.to_string()))?;
         let executor = BoundRunExecutor::new(self.host, context.clone())
             .with_cancellation_mirror(self.worker_cancel.clone());
         AgentGrader::new(&executor, context.commit.as_ref(), RuntimeRunContext::new())
@@ -163,6 +200,42 @@ mod tests {
             worker_state: serde_json::json!({"version": 2}),
             evidence: Vec::new(),
         }
+    }
+
+    #[test]
+    fn only_inference_only_non_acp_judges_omit_the_environment() {
+        // Cause/effect graph: C1 the immutable Judge has no tools, plugins,
+        // MCP, Skills, delegation, advisor, or tool policy; C2 every inference
+        // route is Native/A2A; C3 one executable integration is present; C4 an
+        // ACP route is present. Effects: E1 omit the redundant physical
+        // Environment; E2 retain the canonical Environment path. Decision
+        // table: R1=C1+C2=>E1; R2=C3=>E2; R3=C4=>E2. This prevents a crash from
+        // stranding an unfenced legacy Judge Sandbox without weakening the
+        // provider's foreign-root fail-closed invariant.
+        let inference_only = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
+        assert!(environment_free_judge(&inference_only), "R1/E1");
+
+        let with_tool = ExecutableAgentSnapshot::builder("judge-tool")
+            .model(awaken_runtime_contract::ModelBinding::new(
+                "default", "stub", "default",
+            ))
+            .tool(awaken_runtime_contract::resolved::ToolDescriptor::pinned(
+                "test",
+                "shell",
+                "shell",
+                serde_json::json!({"type": "object"}),
+            ))
+            .build();
+        assert!(!environment_free_judge(&with_tool), "R2/E2");
+
+        let acp = ExecutableAgentSnapshot::builder("judge-acp")
+            .model(awaken_runtime_contract::ModelBinding::new(
+                "default",
+                "stub",
+                "acp:fixture",
+            ))
+            .build();
+        assert!(!environment_free_judge(&acp), "R3/E2");
     }
 
     #[tokio::test]

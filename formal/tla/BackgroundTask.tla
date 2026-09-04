@@ -1,7 +1,8 @@
 -------------------------- MODULE BackgroundTask --------------------------
 EXTENDS Naturals
 
-CONSTANTS Workers, Lease, MaxAttempts, MaxTime, RemoteIds, PollIntervals
+CONSTANTS Workers, Lease, MaxAttempts, MaxTime, MaxStateVersion,
+          RemoteIds, PollIntervals
 
 Phases == {"Requested", "Running", "Waiting", "Cancelling", "Ended"}
 Modes == {"Replay", "NeverReplay"}
@@ -12,11 +13,17 @@ PollDelays == {0} \cup PollIntervals
 
 VARIABLES phase, owner, epoch, expires, now, mode, terminalReason,
           continuation, pollInterval, continuationHistory,
-          completionOwner, completionEpoch, completionReason
+          completionOwner, completionEpoch, completionReason,
+          committedStateVersion, localStateVersion, observedStateVersion,
+          observedCommittedVersion, observationSource
 
-vars == <<phase, owner, epoch, expires, now, mode, terminalReason,
-          continuation, pollInterval, continuationHistory,
-          completionOwner, completionEpoch, completionReason>>
+taskVars == <<phase, owner, epoch, expires, now, mode, terminalReason,
+              continuation, pollInterval, continuationHistory,
+              completionOwner, completionEpoch, completionReason>>
+observationVars == <<committedStateVersion, localStateVersion,
+                     observedStateVersion, observedCommittedVersion,
+                     observationSource>>
+vars == <<taskVars, observationVars>>
 
 Init ==
     /\ phase = "Requested"
@@ -32,6 +39,11 @@ Init ==
     /\ completionOwner = "None"
     /\ completionEpoch = 0
     /\ completionReason = "None"
+    /\ committedStateVersion = 0
+    /\ localStateVersion = 0
+    /\ observedStateVersion = 0
+    /\ observedCommittedVersion = 0
+    /\ observationSource = "None"
 
 Start(worker) ==
     /\ phase = "Requested"
@@ -235,7 +247,7 @@ FoldCompletion ==
     /\ completionEpoch' = 0
     /\ completionReason' = "None"
 
-Next ==
+TaskNext ==
     \/ \E worker \in Workers : Start(worker)
     \/ Tick
     \/ \E worker \in Workers, observedEpoch \in 0..MaxAttempts :
@@ -264,6 +276,34 @@ Next ==
     \/ LoseCompletion
     \/ FoldCompletion
 
+\* A peer may advance shared committed state without advancing this process's
+\* disposable projection. Terminal observation reads the shared authority; no
+\* transition can select LocalProjection as a terminal decision source.
+PeerCommitsState ==
+    /\ committedStateVersion < MaxStateVersion
+    /\ committedStateVersion' = committedStateVersion + 1
+    /\ UNCHANGED <<taskVars, localStateVersion, observedStateVersion,
+                    observedCommittedVersion, observationSource>>
+
+RefreshLocalProjection ==
+    /\ localStateVersion < committedStateVersion
+    /\ localStateVersion' = committedStateVersion
+    /\ UNCHANGED <<taskVars, committedStateVersion, observedStateVersion,
+                    observedCommittedVersion, observationSource>>
+
+ObserveAuthoritativeCommittedState ==
+    /\ observedStateVersion' = committedStateVersion
+    /\ observedCommittedVersion' = committedStateVersion
+    /\ observationSource' = "CommittedAuthority"
+    /\ UNCHANGED <<taskVars, committedStateVersion, localStateVersion>>
+
+Next ==
+    \/ /\ TaskNext
+       /\ UNCHANGED observationVars
+    \/ PeerCommitsState
+    \/ RefreshLocalProjection
+    \/ ObserveAuthoritativeCommittedState
+
 Spec == Init /\ [][Next]_vars
 
 TypeOK ==
@@ -280,6 +320,11 @@ TypeOK ==
     /\ completionOwner \in Workers \cup {"None"}
     /\ completionEpoch \in Nat
     /\ completionReason \in {"None", "Succeeded", "Failed"}
+    /\ committedStateVersion \in 0..MaxStateVersion
+    /\ localStateVersion \in 0..MaxStateVersion
+    /\ observedStateVersion \in 0..MaxStateVersion
+    /\ observedCommittedVersion \in 0..MaxStateVersion
+    /\ observationSource \in {"None", "CommittedAuthority"}
 
 OwnerExistsExactlyWhileLive ==
     (owner \in Workers) <=> (phase \in LivePhases)
@@ -320,5 +365,12 @@ CompletionProjectionIsComplete ==
 
 CompletionProjectionNeverOutlivesItsAttemptSpace ==
     completionReason # "None" => completionEpoch <= MaxAttempts
+
+LocalProjectionNeverLeadsCommittedAuthority ==
+    localStateVersion <= committedStateVersion
+
+TerminalObservationUsesExactCommittedSnapshot ==
+    observationSource = "CommittedAuthority" =>
+        observedStateVersion = observedCommittedVersion
 
 =============================================================================

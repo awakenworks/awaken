@@ -12,7 +12,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::Store;
-use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_ext_background_task::{
     BackgroundTaskCompletion, BackgroundTaskEnd, BackgroundTaskId, BackgroundTaskLifecycle,
     BackgroundTaskSupervisor, BackgroundTaskWaitCandidate, BackgroundWait, TaskFence,
@@ -325,7 +324,27 @@ impl BackgroundTaskTerminalObserver {
             return;
         }
         let tool_kind = resolved.kind;
-        let state = Store::rebuild(&self.commit.committed_state(&thread_id));
+        let state = match self.commit.authoritative_committed_state(&thread_id).await {
+            Ok(state) => Store::rebuild(&state),
+            Err(error) => {
+                self.supervisor.complete(
+                    task_id.clone(),
+                    Self::completion(
+                        fence.clone(),
+                        Err(format!("read committed background task state: {error}")),
+                    ),
+                );
+                publish_attention(
+                    self.attention.clone(),
+                    &thread_id,
+                    &task_id,
+                    &fence,
+                    BackgroundAttention::Terminal,
+                )
+                .await;
+                return;
+            }
+        };
         let supervisor = self.supervisor.clone();
         let attention = self.attention.clone();
         let class = BackgroundWorkClass::SharedEnvironment {
@@ -531,7 +550,27 @@ impl BackgroundTaskTerminalObserver {
             .await;
             return;
         }
-        let state = Store::rebuild(&self.commit.committed_state(&thread_id));
+        let state = match self.commit.authoritative_committed_state(&thread_id).await {
+            Ok(state) => Store::rebuild(&state),
+            Err(error) => {
+                self.supervisor.complete(
+                    task_id.clone(),
+                    Self::completion(
+                        fence.clone(),
+                        Err(format!("read committed background task state: {error}")),
+                    ),
+                );
+                publish_attention(
+                    self.attention.clone(),
+                    &thread_id,
+                    &task_id,
+                    &fence,
+                    BackgroundAttention::Terminal,
+                )
+                .await;
+                return;
+            }
+        };
         let supervisor = self.supervisor.clone();
         let attention = self.attention.clone();
         let class = BackgroundWorkClass::SharedEnvironment {
@@ -746,7 +785,12 @@ impl BackgroundTaskTerminalObserver {
     }
 
     async fn reconcile(&self, terminal: &CommittedTerminalRun) -> Result<(), String> {
-        let state = Store::rebuild(&self.commit.committed_state(&terminal.thread_id));
+        let state = Store::rebuild(
+            &self
+                .commit
+                .authoritative_committed_state(&terminal.thread_id)
+                .await?,
+        );
         for task in tasks_from_state(&state).map_err(|error| error.to_string())? {
             match &task.lifecycle {
                 BackgroundTaskLifecycle::Running { attempt }

@@ -228,13 +228,13 @@ async fn caller_owned_run_identity_is_exact(store: &dyn DispatchQueue, ns: &str)
     );
 }
 
-/// Committed-terminal recovery cause/effect graph. Causes: C1 the target is
-/// quiescent Awaiting; C2 a distinct fresh peer is Pending; C3 a distinct peer is
-/// Running; C4 the target is Pending or has a live repair lease; C5 the repair
-/// lease expires after a recovery-process crash; C6 the recovery claim epoch is
-/// current. Effects: E1 ordinary input-free claims and fresh peers remain queued;
-/// E2 terminal recovery reclaims the exact Awaiting target only when no peer is
-/// Running; E3 C3/C4 leave the target untouched; E4 reclaiming C5 advances the
+/// Committed-terminal recovery cause/effect graph. Causes: C1 the target is a
+/// quiescent unleased Pending or Awaiting row; C2 a distinct fresh peer is
+/// Pending; C3 a distinct peer is Running; C4 the target has a live repair lease;
+/// C5 the repair lease expires after a recovery-process crash; C6 the recovery
+/// claim epoch is current. Effects: E1 ordinary input-free claims and fresh peers
+/// remain queued; E2 terminal recovery claims the exact target only when no peer
+/// is Running; E3 C3/C4 leave the target untouched; E4 reclaiming C5 advances the
 /// epoch and fences the crashed owner; E5 current Done emits the existing
 /// completion tombstone and releases the fresh peer. The Run authority is outside
 /// this store test; callers invoke recovery only after committed RunState::Ended.
@@ -243,10 +243,12 @@ async fn caller_owned_run_identity_is_exact(store: &dyn DispatchQueue, ns: &str)
 /// |---|---|---|---|---|
 /// | T1 | Awaiting | none/Pending | none | E1 |
 /// | T2 | Awaiting | Running | none | E3 |
-/// | T3 | Awaiting | Pending | none | E2 |
-/// | T4 | Running(repair) | Pending | live/boundary | E3 |
-/// | T5 | Running(repair) | Pending | expired | E2+E4 |
-/// | T6 | Running(repair) | Pending | current | E5 |
+/// | T3 | Pending | none | none | E2, not crash-labelled |
+/// | T4 | Pending | none | occupied | E3 until exact physical ACK, then E2 |
+/// | T5 | Awaiting | Pending | none | E2 |
+/// | T6 | Running(repair) | Pending | live/boundary | E3 |
+/// | T7 | Running(repair) | Pending | expired | E2+E4 |
+/// | T8 | Running(repair) | Pending | current | E5 |
 async fn committed_terminal_recovery_reuses_fenced_settlement(
     store: &dyn DispatchQueue,
     ns: &str,
@@ -368,13 +370,87 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         .enqueue(pending)
         .await
         .expect("enqueue pending control");
+    let pending_repair = store
+        .claim_for_terminal_recovery(&pending_id, "pending-repair", LEASE_MS, 60_003)
+        .await
+        .expect("pending recovery query")
+        .expect("T3: quiescent Pending is terminal-recovery claimable");
+    assert!(!pending_repair.recovered, "T3 is not crash recovery");
+    assert_eq!(
+        store
+            .settle(
+                &pending_id,
+                pending_repair.lease.epoch,
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("settle pending repair"),
+        SettleOutcome::Applied,
+        "T3"
+    );
+
+    let occupied = dispatch(ns, "terminal-occupied", "terminal-occupied-thread");
+    let occupied_id = occupied.run_id().clone();
+    store.enqueue(occupied).await.expect("enqueue occupied row");
+    let occupied_claim = store
+        .claim_run(
+            &occupied_id,
+            "occupied-owner",
+            LEASE_MS,
+            60_004,
+            &Default::default(),
+        )
+        .await
+        .expect("claim occupied row")
+        .expect("occupied row is initially runnable");
+    let occupied_claim = RunClaim::from(&occupied_claim.lease);
+    assert_eq!(
+        store
+            .begin_attempt(&occupied_claim, 60_004)
+            .await
+            .expect("begin occupied attempt"),
+        AttemptAdmission::Applied,
+        "T4"
+    );
+    store
+        .cancel(&occupied_id)
+        .await
+        .expect("cancel occupied row")
+        .expect("occupied row remains present");
     assert!(
         store
-            .claim_for_terminal_recovery(&pending_id, "repair", LEASE_MS, 60_003)
+            .claim_for_terminal_recovery(&occupied_id, "occupied-repair", LEASE_MS, 60_005)
             .await
-            .expect("pending recovery query")
+            .expect("occupied recovery query")
             .is_none(),
-        "T4: pending rows are not terminal-recovery claimable"
+        "T4: physical ownership fences terminal recovery"
+    );
+    assert_eq!(
+        store
+            .finish_attempt(&occupied_claim)
+            .await
+            .expect("finish occupied attempt"),
+        SettleOutcome::Applied,
+        "T4"
+    );
+    let after_ack = store
+        .claim_for_terminal_recovery(&occupied_id, "occupied-repair", LEASE_MS, 60_005)
+        .await
+        .expect("post-ACK recovery query")
+        .expect("T4: exact physical ACK makes the Pending row claimable");
+    assert_eq!(
+        store
+            .settle(
+                &occupied_id,
+                after_ack.lease.epoch,
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("settle occupied recovery"),
+        SettleOutcome::Applied,
+        "T4"
     );
 
     let repair = store
@@ -394,7 +470,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
             .await
             .expect("peer claim during repair")
             .is_none(),
-        "T3/T4: the repair claim remains the sole Running writer"
+        "T5/T6: the repair claim remains the sole Running writer"
     );
     assert!(
         store
@@ -402,7 +478,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
             .await
             .expect("running repair claim query")
             .is_none(),
-        "T4: a currently claimed repair row cannot be claimed twice"
+        "T6: a currently claimed repair row cannot be claimed twice"
     );
     if clock.exact_boundary_is_controllable() {
         clock.set(repair.lease.expires_ms);
@@ -417,7 +493,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
                 .await
                 .expect("repair claim at lease boundary")
                 .is_none(),
-            "T4: a lease remains live at its exact expiry boundary"
+            "T6: a lease remains live at its exact expiry boundary"
         );
     }
     clock.advance_past(repair.lease.expires_ms).await;
@@ -437,7 +513,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
             .await
             .expect("stale repair settle"),
         SettleOutcome::Fenced,
-        "T5"
+        "T7"
     );
     let cursor = store
         .completion_events_after(0, usize::MAX)
@@ -456,14 +532,14 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
             .await
             .expect("current repair settle"),
         SettleOutcome::Applied,
-        "T6"
+        "T8"
     );
     let completion = store
         .completion_events_after(cursor, 1)
         .await
         .expect("repair completion");
-    assert_eq!(completion.len(), 1, "T6");
-    assert_eq!(completion[0].run_id, awaiting_id, "T6");
+    assert_eq!(completion.len(), 1, "T8");
+    assert_eq!(completion[0].run_id, awaiting_id, "T8");
 
     let peer_claim = store
         .claim_run(
@@ -482,30 +558,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
             .await
             .expect("settle released peer"),
         SettleOutcome::Applied,
-        "T6"
-    );
-    let pending_claim = store
-        .claim_run(
-            &pending_id,
-            "pending-cleanup",
-            LEASE_MS,
-            60_006 + LEASE_MS + 3,
-            &Default::default(),
-        )
-        .await
-        .expect("claim pending control after its negative rule")
-        .expect("pending control remains ordinary work");
-    assert_eq!(
-        store
-            .settle(
-                &pending_id,
-                pending_claim.lease.epoch,
-                DispatchOutcome::Done,
-                &[],
-            )
-            .await
-            .expect("settle pending control"),
-        SettleOutcome::Applied
+        "T8"
     );
 }
 

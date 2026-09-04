@@ -25,7 +25,8 @@ use std::process::ExitCode;
 
 use awaken_sandbox::bridge::{AcpBridge, parse_acp_args};
 use awaken_sandbox_fs::{
-    directory_identity_nofollow, publish_directory_noreplace, read_regular_tree_nofollow,
+    PathEntry, classify_nofollow, directory_identity_nofollow, publish_directory_noreplace,
+    read_regular_tree_nofollow,
 };
 
 struct OwnedCheckDirectory(std::path::PathBuf);
@@ -190,9 +191,20 @@ fn write_tree_archive(
     root: &std::path::Path,
     output: &mut dyn std::io::Write,
 ) -> Result<(), String> {
-    let identity = directory_identity_nofollow(root).map_err(|error| error.to_string())?;
-    let files = read_regular_tree_nofollow(root, identity, std::path::Path::new(""))
-        .map_err(|error| error.to_string())?;
+    // Keep this process adapter aligned with the canonical nofollow reader:
+    // an absent requested tree is an empty projection, while a present path
+    // must still be one exact directory. Calling directory_identity_nofollow
+    // first used to turn an ordinary absent Skill directory into a fatal scan.
+    let files = match classify_nofollow(root).map_err(|error| error.to_string())? {
+        PathEntry::Absent => Vec::new(),
+        PathEntry::Directory(identity) => {
+            read_regular_tree_nofollow(root, identity, std::path::Path::new(""))
+                .map_err(|error| error.to_string())?
+        }
+        PathEntry::RegularFile | PathEntry::Symlink | PathEntry::Other => {
+            return Err("tree root is not one nofollow directory".into());
+        }
+    };
     let mut archive = tar::Builder::new(output);
     for file in files {
         let mut header = tar::Header::new_gnu();

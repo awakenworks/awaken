@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
-use k8s_openapi::api::core::v1::{ConfigMap, Container, Pod, PodSpec, Toleration, Volume};
+use k8s_openapi::api::core::v1::{ConfigMap, Pod, PodSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use serde::{Deserialize, Serialize};
 
@@ -115,7 +115,7 @@ fn normalized_template(
         .as_ref()
         .and_then(|spec| spec.template.spec.clone())
         .ok_or_else(|| K8sPackageRealizationError::invalid("package Job has no Pod template"))?;
-    normalize_pod_spec(&mut template, false);
+    crate::k8s::realization::normalize_pod_spec(&mut template, false);
     let mut labels = job
         .spec
         .as_ref()
@@ -162,7 +162,7 @@ fn verify_job_pod(
         .spec
         .clone()
         .ok_or_else(|| K8sPackageRealizationError::invalid("package Job Pod has no spec"))?;
-    normalize_pod_spec(&mut actual_spec, true);
+    crate::k8s::realization::normalize_pod_spec(&mut actual_spec, true);
     if expected_labels != actual_labels || expected_spec != actual_spec {
         return Err(K8sPackageRealizationError::invalid(
             "package Job Pod differs from the exact Job template",
@@ -1163,122 +1163,6 @@ pub(crate) fn stamp_package_config_map(config: &mut ConfigMap) -> Result<(), Run
     Ok(())
 }
 
-fn normalize_volume(volume: &mut Volume) {
-    if let Some(config) = volume.config_map.as_mut()
-        && config.default_mode == Some(0o644)
-    {
-        config.default_mode = None;
-    }
-    if let Some(secret) = volume.secret.as_mut()
-        && secret.default_mode == Some(0o644)
-    {
-        secret.default_mode = None;
-    }
-}
-
-fn normalize_container(container: &mut Container) {
-    if container
-        .resources
-        .as_ref()
-        .is_some_and(|resources| resources == &Default::default())
-    {
-        container.resources = None;
-    }
-    if container.termination_message_path.as_deref() == Some("/dev/termination-log") {
-        container.termination_message_path = None;
-    }
-    if container.termination_message_policy.as_deref() == Some("File") {
-        container.termination_message_policy = None;
-    }
-}
-
-fn normalize_pod_spec(spec: &mut PodSpec, observed_pod: bool) {
-    for container in &mut spec.containers {
-        normalize_container(container);
-    }
-    if let Some(containers) = spec.init_containers.as_mut() {
-        for container in containers {
-            normalize_container(container);
-        }
-    }
-    if let Some(volumes) = spec.volumes.as_mut() {
-        for volume in volumes {
-            normalize_volume(volume);
-        }
-    }
-    if spec.dns_policy.as_deref() == Some("ClusterFirst") {
-        spec.dns_policy = None;
-    }
-    if spec.enable_service_links == Some(true) {
-        spec.enable_service_links = None;
-    }
-    if spec.scheduler_name.as_deref() == Some("default-scheduler") {
-        spec.scheduler_name = None;
-    }
-    if spec.service_account.as_deref() == Some("default") {
-        spec.service_account = None;
-    }
-    if spec.service_account_name.as_deref() == Some("default") {
-        spec.service_account_name = None;
-    }
-    if spec.termination_grace_period_seconds == Some(30) {
-        spec.termination_grace_period_seconds = None;
-    }
-    if spec.preemption_policy.as_deref() == Some("PreemptLowerPriority") {
-        spec.preemption_policy = None;
-    }
-    if spec.image_pull_secrets.as_ref().is_some_and(Vec::is_empty) {
-        spec.image_pull_secrets = None;
-    }
-    if spec
-        .security_context
-        .as_ref()
-        .is_some_and(|context| context == &Default::default())
-    {
-        spec.security_context = None;
-    }
-    if observed_pod {
-        spec.node_name = None;
-        if spec.priority == Some(0) {
-            spec.priority = None;
-        }
-        if spec.host_users == Some(true) {
-            spec.host_users = None;
-        }
-        if spec.set_hostname_as_fqdn == Some(false) {
-            spec.set_hostname_as_fqdn = None;
-        }
-        if spec.share_process_namespace == Some(false) {
-            spec.share_process_namespace = None;
-        }
-        if spec.host_network == Some(false) {
-            spec.host_network = None;
-        }
-        if spec.host_pid == Some(false) {
-            spec.host_pid = None;
-        }
-        if spec.host_ipc == Some(false) {
-            spec.host_ipc = None;
-        }
-        if let Some(tolerations) = spec.tolerations.as_mut() {
-            tolerations.retain(|toleration| !default_no_execute_toleration(toleration));
-            if tolerations.is_empty() {
-                spec.tolerations = None;
-            }
-        }
-    }
-}
-
-fn default_no_execute_toleration(toleration: &Toleration) -> bool {
-    matches!(
-        toleration.key.as_deref(),
-        Some("node.kubernetes.io/not-ready" | "node.kubernetes.io/unreachable")
-    ) && toleration.operator.as_deref() == Some("Exists")
-        && toleration.effect.as_deref() == Some("NoExecute")
-        && toleration.toleration_seconds == Some(300)
-        && toleration.value.is_none()
-}
-
 fn normalize_controller_labels(labels: &mut Option<BTreeMap<String, String>>) {
     if let Some(labels) = labels {
         for key in [
@@ -1330,7 +1214,7 @@ fn normalized_job_spec(job: &Job) -> Result<JobSpec, RuntimeError> {
             .labels,
     );
     if let Some(pod) = spec.template.spec.as_mut() {
-        normalize_pod_spec(pod, false);
+        crate::k8s::realization::normalize_pod_spec(pod, false);
     }
     Ok(spec)
 }

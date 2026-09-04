@@ -27,7 +27,7 @@ async function main() {
   const fixtureResponse = await fetch('https://placehold.co/256x256/FF0000/FF0000.png');
   assert.equal(fixtureResponse.status, 200, 'load live red PNG fixture');
   const fixture = Buffer.from(await fixtureResponse.arrayBuffer());
-  await withServer('real', 38338, async (baseUrl: string) => {
+  await withServer('real', Number(process.env.E2E_PORT), async (baseUrl: string) => {
     const client = new Anthropic({ apiKey: 'e2e-local-only', baseURL: baseUrl }); // awaken-allow: secret
     const file = await client.beta.files.upload({
       file: await toFile(fixture, 'live-red.png', {

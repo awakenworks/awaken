@@ -273,7 +273,7 @@ def exercise_accumulator_contract() -> None:
 
 
 def exercise_beta_ga_handoff() -> None:
-    # Beta/GA change-point graph: Python 1.2 beta Files/Skills deliberately sends
+    # Beta/GA change-point graph: Python 1.2+ beta Files/Skills deliberately sends
     # `beta=true` without old dated pins and decodes GA-shaped DTOs. A resource
     # created through one root is retrieved/versioned/deleted through the other.
     # Effects: shared identity and persistence, distinct generated Python model
@@ -345,7 +345,7 @@ def exercise_webhook_decoder() -> None:
 
 def prepare_recovery(state_path: Path) -> None:
     # Test design: python_sdk_resource_recovery
-    # Recovery causal graph, phase A: C1=the exact Python 1.2 projections create
+    # Recovery causal graph, phase A: C1=the exact current Python projections create
     # four independently persisted aggregates; C2=the Session receipt reaches a
     # terminal durable event batch before shutdown. Effect E1=only stable ids
     # and semantic expectations cross the process boundary—no Python object,
@@ -454,7 +454,7 @@ def main() -> None:
     parser.add_argument("state", nargs="?", type=Path)
     args = parser.parse_args()
     assert_locked_environment()
-    assert anthropic.__version__ == "1.2.0"
+    assert anthropic.__version__ == "1.3.0"
     if args.mode != "full":
         if args.state is None:
             raise AssertionError(f"{args.mode} requires a state path")

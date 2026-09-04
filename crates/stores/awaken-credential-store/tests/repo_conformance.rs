@@ -1036,7 +1036,20 @@ mod postgres {
     }
 
     async fn schema_pool(schema: &'static str) -> Option<PgPool> {
-        let admin = match PgPool::connect(&database_url()).await {
+        // Pool-budget cause/effect table for this integration-test binary:
+        // C1 Rust runs the independent schema tests concurrently; C2 each
+        // fixture uses an unconstrained sqlx pool; C3 PostgreSQL has a finite
+        // connection budget. C1+C2+C3 previously allowed sibling fixtures to
+        // consume the budget and made an unrelated CREATE SCHEMA time out.
+        // The admin phase needs exactly one connection; a scenario pool needs
+        // at most four (the largest lock/race witness is bounded below that).
+        // R1 admin => max 1; R2 scenario => max 4; R3 explicit in-test races
+        // remain concurrent and must not be serialized by the harness.
+        let admin = match PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url())
+            .await
+        {
             Ok(pool) => pool,
             Err(err) => {
                 println!("[skip] no Postgres reachable: {err}");
@@ -1052,6 +1065,7 @@ mod postgres {
             .expect("create schema");
         admin.close().await;
         PgPoolOptions::new()
+            .max_connections(4)
             .after_connect(move |conn, _meta| {
                 Box::pin(async move {
                     conn.execute(format!("SET search_path = {schema}").as_str())

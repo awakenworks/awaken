@@ -60,7 +60,7 @@ mod network_policy;
 mod pod_projection;
 mod pod_security;
 mod process;
-mod realization;
+pub(crate) mod realization;
 mod restore;
 mod runtime_contract;
 mod sandbox_control;
@@ -384,6 +384,8 @@ fn continuation_observation_disposition(
     if !pod_present && expected_uid.is_some() {
         return if observed_terminating && effect_fenced {
             Ok(ContinuationObservationDisposition::Disposing)
+        } else if effect_fenced {
+            Err(backend(continuation::ORPHANED_LIVE_CLAIM_ERROR))
         } else {
             Ok(ContinuationObservationDisposition::Incompatible)
         };
@@ -1143,7 +1145,7 @@ impl K8sRuntime {
         container_id: &str,
         persisted_pod_uid: Option<&str>,
         persisted_claim_uid: Option<&str>,
-        authorization: Option<&pc::SandboxDisposalAuthorization>,
+        authorization: Option<&continuation::PodCleanupAuthorization>,
     ) -> Result<(), RuntimeError> {
         let effect_fenced = authorization.is_some();
         let pods = self.pods();
@@ -1253,7 +1255,7 @@ impl K8sRuntime {
                 )
             })?;
             Some(
-                continuation::acquire_pod_cleanup_gate(
+                continuation::acquire_pod_cleanup_gate_with_authorization(
                     &pods,
                     &observed_pod,
                     persisted_pod_uid.expect("retained bound Pod has persisted UID"),
@@ -1276,7 +1278,7 @@ impl K8sRuntime {
 
         if let Some(pending) = pending_pod_cleanup.as_mut() {
             let current = pods.get(container_id).await.map_err(backend)?;
-            *pending = continuation::acquire_pod_cleanup_gate(
+            *pending = continuation::acquire_pod_cleanup_gate_with_authorization(
                 &pods,
                 &current,
                 persisted_pod_uid.expect("retained bound Pod has persisted UID"),

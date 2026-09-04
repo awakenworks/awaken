@@ -17,7 +17,7 @@ import Anthropic from '@anthropic-ai/sdk';
 // @ts-ignore shared E2E harness is intentionally JavaScript.
 import { cleanupFixtureTree, deploymentEnv, pass, realServerEnv, spawnServer, startUpstream, stopServer, waitForPort } from './harness.mjs';
 // @ts-ignore Node SQLite helper is intentionally JavaScript.
-import { sqliteRows, sqliteRun } from './sqlite.mjs';
+import { parseDurableJson, sqliteRows, sqliteRun, stringifyDurableJson } from './sqlite.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'] as const;
 const PORT = Number(process.env.E2E_PORT ?? 38_675);
@@ -80,7 +80,7 @@ async function main() {
       'SELECT aggregate_json, revision FROM managed_session WHERE session_id = ?',
       session.id,
     )[0] as { aggregate_json: string; revision: number };
-    const envelope = JSON.parse(sessionRow.aggregate_json);
+    const envelope = parseDurableJson(sessionRow.aggregate_json);
     assert.equal(envelope.format, 'awaken.session.v1', 'fixture starts from current explicit format');
     const legacySession = envelope.aggregate;
     delete legacySession.event_batches;
@@ -88,7 +88,7 @@ async function main() {
     sqliteRun(
       database,
       'UPDATE managed_session SET aggregate_json = ? WHERE session_id = ?',
-      JSON.stringify(legacySession),
+      stringifyDurableJson(legacySession),
       session.id,
     );
     sqliteRun(
@@ -167,7 +167,7 @@ async function main() {
     await stopServer(server);
     server = null;
 
-    const rewrittenSession = JSON.parse((sqliteRows(
+    const rewrittenSession = parseDurableJson((sqliteRows(
       database,
       'SELECT aggregate_json FROM managed_session WHERE session_id = ?',
       session.id,

@@ -290,7 +290,7 @@ async function exerciseRawHeaders(baseURL) {
   pass('literal HTTP headers preserve repeats/order/OWS and reject malformed or oversized values');
 }
 
-await withScenarioServer('management', 'mcp', 38189, async (baseURL) => {
+await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseURL) => {
   const apiKey = 'e2e-dummy';
   for (const creator of CLIENTS) {
     for (const operator of CLIENTS) {

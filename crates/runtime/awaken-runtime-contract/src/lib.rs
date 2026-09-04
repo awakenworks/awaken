@@ -66,9 +66,9 @@ pub use delegation::{
     RunDelegationService, RunDelegations,
 };
 pub use execution::{
-    A2A_RUNTIME_CAPABILITY, AttemptExecutorRegistry, AttemptExecutorRegistryError, Cancellation,
-    ExecutorCapabilities, NATIVE_RUNTIME_CAPABILITY, RunAttemptExecutor, RunExecutor, Wait,
-    execution_capability,
+    A2A_RUNTIME_CAPABILITY, AttemptExecutorRegistry, AttemptExecutorRegistryError,
+    AttemptRecoveryMode, Cancellation, ExecutorCapabilities, NATIVE_RUNTIME_CAPABILITY,
+    RunAttemptExecutor, RunExecutor, Wait, execution_capability,
 };
 pub use inference::InferenceExecutorMaterializer;
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};

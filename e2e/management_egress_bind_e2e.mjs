@@ -17,7 +17,7 @@ const BETAS = ['managed-agents-2026-04-01'];
 
 async function main() {
   try {
-    await withScenarioServer('management', 'mcp', 38166, async (base) => {
+    await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (base) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
       // -- environment networking policy → session binds (egress resolved) -----

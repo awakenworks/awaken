@@ -20,7 +20,7 @@ async function main() {
     return;
   }
   try {
-    await withServer('real-resolved', 38151, async (baseUrl) => {
+    await withServer('real-resolved', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const session = await client.beta.sessions.create({
         agent: 'assistant',

@@ -329,6 +329,61 @@ fn apply_active_batch_coordination_results(
     Ok(())
 }
 
+/// Validate one committed tool ticket against its explicitly named execution
+/// authority. This is the only bridge between the neutral ResumeTicket and the
+/// Runtime-owned ToolBatch cell; protocol handlers must not infer ownership
+/// from a projected public event.
+pub(super) fn validate_awaiting_tool_authority(
+    thread_id: &ThreadId,
+    ticket: &ResumeTicket,
+    state_commands: &[awaken_agent_contract::agent::state::Command],
+) -> Result<(), HostError> {
+    let AwaitTarget::ToolCall {
+        reason, authority, ..
+    } = ticket.target()
+    else {
+        return Err(HostError::internal(
+            "tool authority validation requires a tool-call ticket",
+        ));
+    };
+    let state = Store::rebuild(state_commands);
+    let batch = awaken_runtime_contract::ActiveToolBatch::load(&state)
+        .map_err(|error| HostError::internal(error.to_string()))?;
+    let validate_batch = |batch: &awaken_runtime_contract::ToolBatch| {
+        batch
+            .validate_awaiting_ticket(thread_id, ticket)
+            .map_err(|_| {
+                HostError::bad_request(
+                    "Session Thread awaiting ticket changed after Event admission",
+                )
+            })
+    };
+    match (authority, batch.as_ref()) {
+        // Native/client tools remain owned by one durable ToolBatch; its
+        // complete identity and payload are mandatory.
+        (ToolCallAuthority::RuntimeToolBatch, Some(batch)) => validate_batch(batch),
+        (ToolCallAuthority::RuntimeToolBatch, None) => Err(HostError::internal(
+            "Runtime-owned awaiting tool Run has no ActiveToolBatch",
+        )),
+        // ACP and another opaque attempt executor commit the closed ticket
+        // themselves. Their continuation validates the same ticket and result
+        // kind; a stale Runtime batch is not their authority.
+        (ToolCallAuthority::RunAttemptExecutor, _) => Ok(()),
+        // Historical tickets did not encode their owner. An exact batch proves
+        // Runtime ownership; otherwise only the historically emitted executor
+        // permission shape is recoverable. New writers are always explicit.
+        (ToolCallAuthority::LegacyUnspecified, Some(batch)) => validate_batch(batch),
+        (ToolCallAuthority::LegacyUnspecified, None)
+            if *reason == awaken_agent_contract::agent::awaiting::ToolAwaitReason::Permission =>
+        {
+            Ok(())
+        }
+        (ToolCallAuthority::LegacyUnspecified, None) => Err(HostError::internal(
+            "legacy awaiting tool Run has no recoverable execution authority",
+        )),
+    }
+}
+
 impl SharedHost {
     /// Resolve a public reply to the one currently committed Awaiting ticket.
     /// Thread recovery remains the authority; the Session event identity and
@@ -390,17 +445,21 @@ impl SharedHost {
             ));
         }
         let ticket = ticket.ticket.clone();
-        let state = Store::rebuild(&snapshot.state);
-        let batch = awaken_runtime_contract::ActiveToolBatch::load(&state)
-            .map_err(|error| HostError::internal(error.to_string()))?
-            .ok_or_else(|| HostError::internal("Awaiting tool Run has no ActiveToolBatch"))?;
-        batch
-            .validate_awaiting_ticket(&thread_id, &ticket)
-            .map_err(|_| {
-                HostError::bad_request(
-                    "Session Thread awaiting ticket changed after Event admission",
-                )
-            })?;
+        match ticket.target() {
+            AwaitTarget::ToolCall { .. } => {
+                validate_awaiting_tool_authority(&thread_id, &ticket, &snapshot.state)?
+            }
+            // RemoteInput deliberately has no local ToolBatch: its exact Run,
+            // Thread, correlation and call id are closed inside ResumeTicket,
+            // and `check_pending` below validates the public `agent_input`
+            // projection plus client-result kind against that same ticket.
+            AwaitTarget::RemoteInput { .. } => {}
+            AwaitTarget::Pause(_) => {
+                return Err(HostError::bad_request(
+                    "Session Thread awaiting ticket is not externally answerable",
+                ));
+            }
+        }
         self.check_pending(
             &ticket,
             &command.tool_use_id,
@@ -1005,10 +1064,11 @@ impl SharedHost {
         thread_id: &ThreadId,
     ) -> Result<awaken_agent_contract::ThreadDisposition, HostError> {
         let commit = self.commit_for_read(session_id).await?;
-        awaken_agent_contract::thread_disposition_from_committed_state(
-            &commit.committed_state(thread_id),
-        )
-        .map_err(|error| {
+        let state = commit
+            .authoritative_committed_state(thread_id)
+            .await
+            .map_err(HostError::internal)?;
+        awaken_agent_contract::thread_disposition_from_committed_state(&state).map_err(|error| {
             HostError::internal(format!(
                 "recover disposition for Session Thread {:?}: {error}",
                 thread_id.0

@@ -788,6 +788,7 @@ async fn profile_commands_are_org_fenced_and_patch_one_aggregate() {
             relationship: UserProfileRelationship::External,
             access_type: None,
             external_id: Some("external-a".into()),
+            external_user_onboarded_at: None,
             name: None,
         })
         .await
@@ -831,6 +832,7 @@ async fn profile_commands_are_org_fenced_and_patch_one_aggregate() {
                     },
                 )])),
                 external_id: None,
+                external_user_onboarded_at: Some(150),
                 name: Some(UserProfileFieldUpdate::Replace("Alice".into())),
             },
         )
@@ -841,6 +843,7 @@ async fn profile_commands_are_org_fenced_and_patch_one_aggregate() {
     assert!(!updated.metadata.contains_key("drop"));
     assert_eq!(updated.metadata["keep"], "2");
     assert_eq!(updated.relationship, UserProfileRelationship::Resold);
+    assert_eq!(updated.external_user_onboarded_at, Some(150));
     assert_eq!(updated.name.as_deref(), Some("Alice"));
     assert_eq!(
         updated.trust_grants["calendar"].status,
@@ -874,6 +877,7 @@ async fn enrollment_hmac_and_expiry_decision_table() {
             relationship: UserProfileRelationship::External,
             access_type: None,
             external_id: None,
+            external_user_onboarded_at: None,
             name: None,
         })
         .await
@@ -1010,6 +1014,7 @@ async fn stale_profile_writer_retries_without_losing_consent() {
             relationship: UserProfileRelationship::External,
             access_type: None,
             external_id: None,
+            external_user_onboarded_at: None,
             name: None,
         })
         .await

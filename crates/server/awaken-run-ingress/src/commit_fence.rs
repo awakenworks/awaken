@@ -74,8 +74,19 @@ impl ClaimedRunCommit for GuardedRunCommit {
         };
         validate_commit_dispatch_binding(guard.request(), &commit)
             .map_err(CommitError::Rejected)?;
-        // `guard` intentionally remains alive across the await.
-        self.inner.commit(commit).await
+        // Cause/effect decision table for the cross-aggregate lock boundary:
+        // C1 the Thread commit succeeds/fails; C2 the backend guard releases
+        // synchronously/asynchronously. Every rule keeps the guard across the
+        // commit and awaits its exact release before returning. A release error
+        // is surfaced even after an idempotent Thread commit so a caller cannot
+        // mistake a still-locked dispatch row for an available recovery slot.
+        // R1/R2 C1=* + C2=* => commit result only after release; R3 release
+        // error => explicit indeterminate commit error, never early success.
+        let committed = self.inner.commit(commit).await;
+        guard.release().await.map_err(|error| {
+            CommitError::Rejected(format!("commit claim lock release failed: {error}"))
+        })?;
+        committed
     }
 }
 

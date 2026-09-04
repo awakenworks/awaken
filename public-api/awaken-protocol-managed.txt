@@ -1145,7 +1145,7 @@ pub awaken_protocol_managed::types::user_profile::UserProfile::Legacy(awaken_pro
 pub struct awaken_protocol_managed::types::user_profile::CurrentUserProfile
 pub awaken_protocol_managed::types::user_profile::CurrentUserProfile::access_type: core::option::Option<awaken_protocol_managed::types::user_profile::AccessType>
 pub awaken_protocol_managed::types::user_profile::CurrentUserProfile::core: awaken_protocol_managed::types::user_profile::UserProfileCore
-pub awaken_protocol_managed::types::user_profile::CurrentUserProfile::relationship: core::option::Option<awaken_protocol_managed::types::user_profile::Relationship>
+pub awaken_protocol_managed::types::user_profile::CurrentUserProfile::external_user_onboarded_at: core::option::Option<alloc::string::String>
 pub struct awaken_protocol_managed::types::user_profile::EnrollmentUrl
 pub awaken_protocol_managed::types::user_profile::EnrollmentUrl::expires_at: alloc::string::String
 pub awaken_protocol_managed::types::user_profile::EnrollmentUrl::object_type: &'static str
@@ -1167,12 +1167,14 @@ pub awaken_protocol_managed::types::user_profile::UserProfileCore::updated_at: a
 pub struct awaken_protocol_managed::types::user_profile::UserProfileCreateParams
 pub awaken_protocol_managed::types::user_profile::UserProfileCreateParams::access_type: core::option::Option<awaken_protocol_managed::types::user_profile::AccessType>
 pub awaken_protocol_managed::types::user_profile::UserProfileCreateParams::external_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::user_profile::UserProfileCreateParams::external_user_onboarded_at: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::user_profile::UserProfileCreateParams::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_managed::types::user_profile::UserProfileCreateParams::name: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::user_profile::UserProfileCreateParams::relationship: core::option::Option<awaken_protocol_managed::types::user_profile::Relationship>
 pub struct awaken_protocol_managed::types::user_profile::UserProfileUpdateParams
 pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::access_type: core::option::Option<core::option::Option<awaken_protocol_managed::types::user_profile::AccessType>>
 pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::external_id: core::option::Option<core::option::Option<alloc::string::String>>
+pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::external_user_onboarded_at: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::metadata: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>>
 pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::name: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::relationship: core::option::Option<core::option::Option<awaken_protocol_managed::types::user_profile::Relationship>>

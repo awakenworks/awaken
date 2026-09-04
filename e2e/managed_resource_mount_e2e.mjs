@@ -35,7 +35,7 @@ const EXECUTION_OR_TERMINAL_EVENT_TYPES = new Set([
 ]);
 
 async function main() {
-  await withRealServer('echo', 38272, async (base, upstream) => {
+  await withRealServer('echo', Number(process.env.E2E_PORT), async (base, upstream) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
     // Supply: a content-addressed file + a memory store.

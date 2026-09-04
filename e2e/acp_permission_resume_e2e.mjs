@@ -49,12 +49,15 @@ async function main() {
   // Test design (allow/deny arms). Causes: C0=the Session override explicitly
   // freezes bash=always_ask; C1=ACP parks on one qualified agent.tool_use;
   // C2=the client confirms allow; C3=the client confirms deny.
+  // C4=the fixture selects the path-faithful Namespace substrate.
   // Effects: E1=requires_action names exactly that public Event; E2=C2 resumes
   // the same call and commits ALLOWED; E3=C3 selects rejection and commits
-  // DENIED; both arms terminate at end_turn. Constraints/invariant: the raw ACP
-  // call id is never client authority and each decision is single-use.
-  // Decision rules: P1=C1+C2=>E1+E2; P2=C1+C3=>E1+E3.
-  await withServer('acp-permission', 38182, async (baseUrl) => {
+  // DENIED; E4=C4 admits the opaque ACP process into the one Session-owned
+  // Environment; both arms terminate at end_turn. Constraints/invariant: the
+  // raw ACP call id is never client authority and each decision is single-use.
+  // Decision rules: P1=C1+C2+C4=>E1+E2+E4; P2=C1+C3+C4=>E1+E3+E4;
+  // !C4=>fail closed before launch (covered by Host capability tests).
+  await withServer('acp-permission', Number(process.env.E2E_PORT), async (baseUrl) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
     const allowed = await startAcpPermissionAwait(client, BETAS);
@@ -89,7 +92,7 @@ async function main() {
     pass('ACP deny selects the agent reject option and the Run still reaches a terminal boundary');
 
     console.log('E2E PASS: ACP permission wait + allow/deny resume over the Managed TS API.');
-  });
+  }, { SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace' });
 }
 
 main().catch((error) => {

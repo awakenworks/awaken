@@ -37,6 +37,12 @@ assert.match(
   'invalid selected SDK User Profiles projection',
 );
 const currentUserProfiles = USER_PROFILES_PROJECTION === 'current';
+const supportsRelationship =
+  (process.env.AWAKEN_MANAGED_SDK_USER_PROFILES_RELATIONSHIP ?? '1') === '1';
+const supportsOnboardedAt =
+  (process.env.AWAKEN_MANAGED_SDK_USER_PROFILES_ONBOARDED_AT ?? '0') === '1';
+const supportsOrderBy =
+  (process.env.AWAKEN_MANAGED_SDK_USER_PROFILES_ORDER_BY ?? '0') === '1';
 const selectedUserProfilesBeta = currentUserProfiles
   ? CURRENT_USER_PROFILES_BETA
   : USER_PROFILES_BETA;
@@ -57,7 +63,7 @@ async function drain(pagePromise) {
 
 async function main() {
   try {
-    await withScenarioServer('management', 'mcp', 38136, async (baseUrl) => {
+    await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       const missingBeta = await fetch(`${baseUrl}/v1/user_profiles`, {
@@ -82,13 +88,19 @@ async function main() {
       const profile = await client.beta.userProfiles.create({
         external_id: 'end-user-42',
         name: 'Acme Corp',
-        relationship: 'resold',
+        ...(currentUserProfiles ? { access_type: 'passthrough' } : { relationship: 'resold' }),
+        ...(supportsOnboardedAt
+          ? { external_user_onboarded_at: '2026-09-03T01:02:03Z' }
+          : {}),
         metadata: { tier: 'gold' },
       });
       assert.equal(profile.type, 'user_profile');
       assert.ok(profile.id.startsWith('uprof_'), `id: ${profile.id}`);
-      assert.equal(profile.relationship, 'resold');
-      assert.equal(profile.access_type, undefined);
+      assert.equal(profile.relationship, currentUserProfiles ? undefined : 'resold');
+      assert.equal(profile.access_type, currentUserProfiles ? 'passthrough' : undefined);
+      if (supportsOnboardedAt) {
+        assert.equal(profile.external_user_onboarded_at, '2026-09-03T01:02:03Z');
+      }
       assert.ok(profile.trust_grants && typeof profile.trust_grants === 'object');
       pass('beta.userProfiles.create -> BetaUserProfile');
 
@@ -103,17 +115,19 @@ async function main() {
           name: 'Resold Company',
         });
         assert.equal(accessProfile.access_type, 'passthrough');
-        assert.equal(accessProfile.relationship, 'resold');
+        assert.equal(accessProfile.relationship, undefined);
         const applicationProfile = await client.beta.userProfiles.update(accessProfile.id, {
           access_type: 'application',
         });
         assert.equal(applicationProfile.access_type, 'application');
-        assert.equal(applicationProfile.relationship, 'external');
-        const legacyProfile = await client.beta.userProfiles.update(accessProfile.id, {
-          relationship: 'resold',
-        });
-        assert.equal(legacyProfile.access_type, undefined);
-        assert.equal(legacyProfile.relationship, 'resold');
+        assert.equal(applicationProfile.relationship, undefined);
+        if (supportsRelationship) {
+          const legacyProfile = await client.beta.userProfiles.update(accessProfile.id, {
+            relationship: 'resold',
+          });
+          assert.equal(legacyProfile.access_type, undefined);
+          assert.equal(legacyProfile.relationship, undefined);
+        }
         const conflictingAccess = await fetch(`${baseUrl}/v1/user_profiles/${accessProfile.id}`, {
           method: 'POST',
           headers: {
@@ -144,8 +158,19 @@ async function main() {
           'access with cleared relationship',
         );
         const afterConflictingAccess = await client.beta.userProfiles.retrieve(accessProfile.id);
-        assert.equal(afterConflictingAccess.access_type, undefined);
-        assert.equal(afterConflictingAccess.relationship, 'resold');
+        assert.equal(
+          afterConflictingAccess.access_type,
+          supportsRelationship ? undefined : 'application',
+        );
+        assert.equal(afterConflictingAccess.relationship, undefined);
+        const legacyProjection = await fetch(`${baseUrl}/v1/user_profiles/${accessProfile.id}`, {
+          headers: { 'anthropic-beta': USER_PROFILES_BETA },
+        });
+        assert.equal(legacyProjection.status, 200, 'legacy vocabulary reads the same aggregate');
+        assert.equal(
+          (await legacyProjection.json()).relationship,
+          supportsRelationship ? 'resold' : 'external',
+        );
       } else {
         const rejectedLegacyAccess = await fetch(`${baseUrl}/v1/user_profiles`, {
           method: 'POST',
@@ -210,11 +235,17 @@ async function main() {
       const cleared = await client.beta.userProfiles.update(profile.id, {
         external_id: null,
         name: null,
-        relationship: null,
+        ...(supportsRelationship ? { relationship: null } : {}),
+        ...(supportsOnboardedAt
+          ? { external_user_onboarded_at: '2026-09-03T04:05:06Z' }
+          : {}),
       });
       assert.equal(cleared.external_id, undefined);
       assert.equal(cleared.name, undefined);
-      assert.equal(cleared.relationship, 'external');
+      assert.equal(cleared.relationship, currentUserProfiles ? undefined : 'external');
+      if (supportsOnboardedAt) {
+        assert.equal(cleared.external_user_onboarded_at, '2026-09-03T04:05:06Z');
+      }
       assert.deepEqual(cleared.trust_grants, {});
       pass('beta.userProfiles.update -> explicit null is distinct from omission');
 
@@ -237,6 +268,26 @@ async function main() {
         headers: { 'anthropic-beta': selectedUserProfilesBeta },
       });
       await assertInvalidRequest(invalidOrder, /order/u, 'invalid order');
+      if (supportsOrderBy) {
+        await client.beta.userProfiles.create({ name: 'Zulu' });
+        await client.beta.userProfiles.create({ name: 'Alpha' });
+        const byName = await drain(client.beta.userProfiles.list({
+          order: 'asc', order_by: 'name',
+        }));
+        assert.ok(
+          byName.findIndex(({ name }) => name === 'Alpha')
+            < byName.findIndex(({ name }) => name === 'Zulu'),
+          'candidate order_by=name sorts before cursor pagination',
+        );
+        const byNameDescending = await drain(client.beta.userProfiles.list({
+          order: 'desc', order_by: 'name',
+        }));
+        assert.deepEqual(
+          byNameDescending.map(({ id }) => id),
+          [...byName].reverse().map(({ id }) => id),
+          'candidate order desc reverses the selected name ordering',
+        );
+      }
       pass(`beta.userProfiles.list order -> PageCursor<BetaUserProfile> (${ascending.length})`);
 
       const enroll = await client.beta.userProfiles.createEnrollmentURL(profile.id);

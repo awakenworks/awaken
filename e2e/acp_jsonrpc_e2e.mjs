@@ -11,12 +11,15 @@ import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   managedAgentWithAlwaysAskTools,
-  withServer,
   pass,
+  spawnServer,
+  stopServer,
+  waitForPort,
   waitForSessionEventReceipt,
 } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
+const PORT = Number(process.env.E2E_PORT ?? 38172);
 
 async function listEvents(client, sessionId) {
   const events = [];
@@ -68,7 +71,15 @@ async function main() {
   // Decision rules: A1=C1(ACP)+inline=>E1; A2=A1+oversized=>E2;
   // A3=A1+C3=>E3; N1=C1(Native)+oversized=>E2+E4.
   try {
-    await withServer('acp-jsonrpc', 38172, async (baseUrl) => {
+    // Substrate decision table: catalog ACP + Namespace => tool-transparent,
+    // path-faithful Session Environment; catalog ACP + Local => fail closed;
+    // Native shares the selected Environment and remains the control arm. This
+    // substrate-specific suite must not use the generic Local-only wrapper.
+    const { server, baseUrl } = spawnServer('acp-jsonrpc', PORT, {
+      SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
+    });
+    try {
+      await waitForPort(PORT, 180_000, server);
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // The published ACP Agent drives the fake agent over official
@@ -208,7 +219,9 @@ async function main() {
         `N1 Native model used a builtin tool to read/count the complete spill, got ${JSON.stringify(texts)}`,
       );
       pass('a Native builtin-tool result is stored whole and consumed through preview + sandbox path');
-    });
+    } finally {
+      await stopServer(server);
+    }
 
     console.log('E2E PASS: official ACP JSON-RPC codec end-to-end via the managed API.');
     process.exitCode = 0;

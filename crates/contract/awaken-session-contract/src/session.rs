@@ -9,7 +9,6 @@ pub use run_coordination::{
     DelegatedRun, DelegatedRunSnapshot, SessionBudgetResumeDelivery,
     SessionBudgetResumeDisposition, SessionBudgetResumeTicket,
 };
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -18,114 +17,9 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecyclePage};
 
-/// The result of running one settled Step (a new Run, or a resume).
-///
-/// `state` reuses the run's sole lifecycle authority instead of storing a second
-/// terminal classification. It is private: callers can construct only
-/// `Awaiting` or `Ended` outcomes, so `Running` cannot escape a step boundary.
-#[derive(Debug, Clone)]
-pub struct StepOutcome {
-    pub new_messages: Vec<Message>,
-    /// Exact identity of the committed Run when supplied by a durable runtime.
-    /// Protocol projections use it only to deduplicate the same terminal fact
-    /// observed locally and through the committed lifecycle feed.
-    run_id: Option<RunId>,
-    state: RunState,
-    pending: Option<Pending>,
-    await_reason: Option<awaken_agent_contract::agent::awaiting::AwaitReason>,
-    delegated_runs: Vec<DelegatedRun>,
-}
-
-impl StepOutcome {
-    #[must_use]
-    pub fn awaiting(messages: Vec<Message>, pending: Option<Pending>) -> Self {
-        Self {
-            new_messages: messages,
-            run_id: None,
-            state: RunState::Awaiting,
-            pending,
-            await_reason: None,
-            delegated_runs: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn ended(messages: Vec<Message>, cause: EndCause) -> Self {
-        Self {
-            new_messages: messages,
-            run_id: None,
-            state: RunState::Ended(cause),
-            pending: None,
-            await_reason: None,
-            delegated_runs: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn state(&self) -> &RunState {
-        &self.state
-    }
-
-    #[must_use]
-    pub fn with_run_id(mut self, run_id: RunId) -> Self {
-        self.run_id = Some(run_id);
-        self
-    }
-
-    #[must_use]
-    pub fn run_id(&self) -> Option<&RunId> {
-        self.run_id.as_ref()
-    }
-
-    /// Neutral terminal fact derived from the authoritative Run state.
-    #[must_use]
-    pub fn terminal_event(&self) -> awaken_agent_contract::event::Fact {
-        awaken_agent_contract::event::terminal(
-            &self.state,
-            self.pending
-                .as_ref()
-                .map(|pending| (pending.tool_use_id.as_str(), pending.client_executed)),
-        )
-    }
-
-    #[must_use]
-    pub fn pending(&self) -> Option<&Pending> {
-        self.pending.as_ref()
-    }
-
-    #[must_use]
-    pub fn with_await_reason(
-        mut self,
-        reason: awaken_agent_contract::agent::awaiting::AwaitReason,
-    ) -> Self {
-        self.await_reason = Some(reason);
-        self
-    }
-
-    #[must_use]
-    pub fn await_reason(&self) -> Option<&awaken_agent_contract::agent::awaiting::AwaitReason> {
-        self.await_reason.as_ref()
-    }
-
-    #[must_use]
-    pub fn failure(&self) -> Option<&Failure> {
-        match &self.state {
-            RunState::Ended(EndCause::Error(failure)) => Some(failure),
-            RunState::Running | RunState::Awaiting | RunState::Ended(_) => None,
-        }
-    }
-
-    #[must_use]
-    pub fn with_delegated_runs(mut self, delegated_runs: Vec<DelegatedRun>) -> Self {
-        self.delegated_runs = delegated_runs;
-        self
-    }
-
-    #[must_use]
-    pub fn delegated_runs(&self) -> &[DelegatedRun] {
-        &self.delegated_runs
-    }
-}
+// Keep StepOutcome's public defining path at `session::StepOutcome` while its
+// implementation remains physically split below the repository file limit.
+include!("session/step_outcome.rs");
 
 /// A human-in-the-loop tool decision, delivered by `user.tool_confirmation`.
 pub use awaken_agent_contract::agent::awaiting::PermissionDecision as ToolPermissionDecision;
@@ -492,6 +386,18 @@ pub trait SessionRuntime: Send + Sync {
         Err(RunError::unavailable(
             "runtime does not implement Session realization lease renewal",
         ))
+    }
+
+    /// Forget one failed realization fence from disposable Runtime state. The
+    /// aggregate remains the sole lease authority: this hook only prevents a
+    /// later retry from authorizing effects with a lease that Control has
+    /// already failed or may have failed before losing its response.
+    async fn invalidate_session_realization_lease(
+        &self,
+        _thread: &str,
+        _lease: &crate::SessionRealizationLease,
+    ) -> Result<(), RunError> {
+        Ok(())
     }
 
     /// Install the durable callback used at the exact sandbox creation boundary.
@@ -1880,6 +1786,7 @@ mod tests {
             reason,
             call_id: "call".into(),
             tool: concrete(),
+            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
         };
         let exact_tool = |client_executed| {
             Some(Pending {

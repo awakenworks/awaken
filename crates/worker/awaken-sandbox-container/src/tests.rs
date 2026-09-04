@@ -1196,12 +1196,13 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
             &handle,
             Some(broker.clone()),
             false,
+            None,
         )
         .is_err(),
         "E4 host-bind attempt cannot reconstruct participants"
     );
     assert!(
-        ContainerCleanupState::recovered_native(&sandbox_spec, &handle, None, true,).is_err(),
+        ContainerCleanupState::recovered_native(&sandbox_spec, &handle, None, true, None).is_err(),
         "E4 missing broker"
     );
     let mut different = sandbox_spec.clone();
@@ -1210,8 +1211,14 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
     };
     *store_id = "different-store".into();
     assert!(
-        ContainerCleanupState::recovered_native(&different, &handle, Some(broker.clone()), true,)
-            .is_err(),
+        ContainerCleanupState::recovered_native(
+            &different,
+            &handle,
+            Some(broker.clone()),
+            true,
+            None,
+        )
+        .is_err(),
         "E4 frozen Memory identity mismatch"
     );
     assert_eq!(

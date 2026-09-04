@@ -8,7 +8,12 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  fakeAnthropicServerEnv,
+  withServer,
+  pass,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -17,10 +22,7 @@ const FAKE_KEY = 'sk-fake-resolved-key'; // awaken-allow: secret
 async function main() {
   const upstream = await startFakeAnthropic(FAKE_KEY);
   try {
-    process.env.ANTHROPIC_API_KEY = FAKE_KEY;
-    process.env.ANTHROPIC_BASE_URL = `${upstream.url}/v1/`;
-    process.env.ANTHROPIC_MODEL = 'fake-haiku';
-    await withServer('real-resolved', 38241, async (baseUrl) => {
+    await withServer('real-resolved', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const session = await client.beta.sessions.create({
         agent: 'assistant',
@@ -52,7 +54,7 @@ async function main() {
       assert.ok(text.includes('FAKE:resolve me'), `the resolver-backed executor hit the wire: ${text}`);
       assert.ok(upstream.requests.length >= 1, 'the fake upstream received the resolved inference call');
       pass('config → resolve → run drove the resolver-backed executor over the wire');
-    });
+    }, fakeAnthropicServerEnv(upstream, { ANTHROPIC_API_KEY: FAKE_KEY }));
     console.log('E2E PASS: resolver-backed provider path over a fake upstream (config → resolve → run).');
     process.exitCode = 0;
   } catch (err) {

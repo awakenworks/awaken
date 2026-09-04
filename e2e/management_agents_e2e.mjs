@@ -68,7 +68,7 @@ async function json(baseUrl, method, route, body) {
 
 async function main() {
   try {
-    await withScenarioServer('management-agents', 'default', 38138, async (baseUrl) => {
+    await withScenarioServer('management-agents', 'default', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       const agent = await client.beta.agents.create({

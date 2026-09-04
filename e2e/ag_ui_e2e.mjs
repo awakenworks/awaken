@@ -54,7 +54,7 @@ async function reply(agent) {
 
 async function main() {
   // --- multi-turn: the same agent instance keeps its threadId across runs ---
-  await withRealServer('echo', 38121, async (base) => {
+  await withRealServer('echo', Number(process.env.E2E_PORT), async (base) => {
     const agent = newAgent(base);
     agent.messages = [{ id: 'u1', role: 'user', content: 'first message' }];
     const r1 = await reply(agent);
@@ -66,7 +66,7 @@ async function main() {
   });
 
   // --- multimodal: an image input part travels to the model ---
-  await withRealServer('vision', 38122, async (base) => {
+  await withRealServer('vision', Number(process.env.E2E_PORT), async (base) => {
     const agent = newAgent(base);
     agent.messages = [
       {
@@ -85,7 +85,7 @@ async function main() {
 
   // --- HITL: a tool needing approval awaits; delivering its result (approval) as a
   // `role: "tool"` message resumes the run to completion ---
-  await withScenarioServer('management-probe', 'probe', 38123, async (base) => {
+  await withScenarioServer('management-probe', 'probe', Number(process.env.E2E_PORT), async (base) => {
     await publishAlwaysAskManagementProbeAgent(base, 'assistant', ['write'], ['read']);
     const { threadId, headers } = await createCrossProtocolApplicationThread(base);
     const agent = newAgent(base, { threadId, headers });
@@ -110,7 +110,7 @@ async function main() {
   // --- streaming tool calls: a tool call is delivered mid-run as the AG-UI
   // streaming sequence TOOL_CALL_START -> TOOL_CALL_ARGS -> TOOL_CALL_END (not
   // buffered to the end), captured live through the client's event subscriber ---
-  await withRealServer('probe', 38125, async (base) => {
+  await withRealServer('probe', Number(process.env.E2E_PORT), async (base) => {
     const agent = newAgent(base);
     agent.messages = [{ id: 'u1', role: 'user', content: 'remember' }];
     const seen = [];
@@ -127,7 +127,7 @@ async function main() {
 
   // --- unsupported semantics fail explicitly: accepting `context` and silently
   // dropping it would make the SDK report a successful run with different behavior.
-  await withRealServer('echo', 38126, async (base) => {
+  await withRealServer('echo', Number(process.env.E2E_PORT), async (base) => {
     const agent = newAgent(base);
     agent.messages = [{ id: 'u1', role: 'user', content: 'must not run' }];
     const seen = [];
