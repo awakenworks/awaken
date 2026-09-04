@@ -11,7 +11,7 @@ import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 const FAKE_KEY = 'sk-fake-agui-key'; // awaken-allow: secret
 
 async function main() {
-  const upstream = await startFakeAnthropic(FAKE_KEY);
+  const upstream = await startFakeAnthropic(FAKE_KEY, { behavior: 'reasoning' });
   try {
     process.env.ANTHROPIC_API_KEY = FAKE_KEY;
     process.env.ANTHROPIC_BASE_URL = `${upstream.url}/v1/`;
@@ -19,7 +19,16 @@ async function main() {
     await withServer('real', 38246, async (base) => {
       const agent = new HttpAgent({ url: `${base}/v1/ag-ui/agents/assistant` });
       agent.messages = [{ id: 'u1', role: 'user', content: 'over ag-ui' }];
-      const res = await agent.runAgent();
+      const events = [];
+      /* Official-client decision table. Causes: C1 the real provider stream
+       * yields multiple private reasoning deltas; C2 public text follows; C3
+       * @ag-ui/client 0.0.57 verifies/applies the SSE. Effects: E1 one balanced
+       * reasoning phase; E2 its id is stable and differs from the text id; E3
+       * phase end precedes text start; E4 no private bytes enter client messages;
+       * E5 the public answer completes. Rule R1 C1+C2+C3=>E1..E5. */
+      const res = await agent.runAgent(undefined, {
+        onEvent: ({ event }) => events.push(event),
+      });
       const produced = res?.newMessages ?? [];
       const last = produced[produced.length - 1];
       const text =
@@ -28,7 +37,23 @@ async function main() {
           : (last?.content ?? []).map((c) => c.text ?? '').join('');
       assert.ok(upstream.requests.length >= 1, 'the fake upstream received the ag-ui-driven inference call');
       assert.ok(text.includes('FAKE:over ag-ui'), `ag-ui carried the wire reply: ${text}`);
-      pass('ag-ui adapter carried a real (wire) model turn end to end');
+      const eventTypes = events.map((event) => event.type);
+      const reasoningStarts = events.filter((event) => event.type === 'REASONING_START');
+      const reasoningEnds = events.filter((event) => event.type === 'REASONING_END');
+      const textStart = events.find((event) => event.type === 'TEXT_MESSAGE_START');
+      assert.equal(reasoningStarts.length, 1, `one reasoning phase starts: ${JSON.stringify(events)}`);
+      assert.equal(reasoningEnds.length, 1, `one reasoning phase ends: ${JSON.stringify(events)}`);
+      assert.equal(reasoningStarts[0].messageId, reasoningEnds[0].messageId);
+      assert.notEqual(reasoningStarts[0].messageId, textStart?.messageId);
+      assert.ok(
+        eventTypes.indexOf('REASONING_END') < eventTypes.indexOf('TEXT_MESSAGE_START'),
+        `reasoning closes before text: ${JSON.stringify(events)}`,
+      );
+      assert.ok(
+        !JSON.stringify({ events, produced }).includes('PRIVATE-REASONING'),
+        'private reasoning bytes never reach AG-UI events or messages',
+      );
+      pass('official @ag-ui/client accepted a private reasoning phase followed by public text');
     });
     console.log('E2E PASS: ag-ui adapter drives the real provider path over a fake upstream.');
     process.exitCode = 0;

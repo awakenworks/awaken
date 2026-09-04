@@ -21,7 +21,7 @@ use crate::types::AgUiEvent;
 /// `TOOL_CALL_END`, `TOOL_CALL_RESULT`); `delta()` projects live increments
 /// (`TEXT_MESSAGE_*`, `TOOL_CALL_START`/`TOOL_CALL_ARGS`) as the run streams. It
 /// holds the stream's thread/run ids and mints tool-result message ids, plus the
-/// live-prefix bookkeeping (`open_text`, `text_seq`, `tools`).
+/// live-prefix bookkeeping (`open_text`, `open_reasoning`, sequences, `tools`).
 pub struct AgUiEncoder {
     thread_id: String,
     run_id: String,
@@ -36,6 +36,10 @@ pub struct AgUiEncoder {
     /// The id of the open live text message, if a text run is currently streaming.
     open_text: Option<String>,
     text_seq: usize,
+    /// The private reasoning phase currently announced to AG-UI. Reasoning
+    /// bytes stay private; only a balanced start/end lifecycle is projected.
+    open_reasoning: Option<String>,
+    reasoning_seq: usize,
     /// Call ids that emitted `TOOL_CALL_START` live, with the exact visible
     /// prefix used to reconcile the committed name/arguments at completion.
     tools: BTreeMap<String, (String, String)>,
@@ -52,6 +56,8 @@ impl AgUiEncoder {
             streamed_text: false,
             open_text: None,
             text_seq: 0,
+            open_reasoning: None,
+            reasoning_seq: 0,
             tools: BTreeMap::new(),
         }
     }
@@ -59,6 +65,13 @@ impl AgUiEncoder {
     fn close_text(&mut self) -> Vec<AgUiEvent> {
         match self.open_text.take() {
             Some(message_id) => vec![AgUiEvent::TextMessageEnd { message_id }],
+            None => Vec::new(),
+        }
+    }
+
+    fn close_reasoning(&mut self) -> Vec<AgUiEvent> {
+        match self.open_reasoning.take() {
+            Some(message_id) => vec![AgUiEvent::ReasoningEnd { message_id }],
             None => Vec::new(),
         }
     }
@@ -111,6 +124,7 @@ impl AgUiEncoder {
             .map(|pending| (pending.tool_use_id.as_str(), pending.client_executed));
         let events = fold_messages(&outcome.new_messages, pending);
         let mut output = self.fact(&Fact::RunStarted);
+        output.extend(self.close_reasoning());
         output.extend(self.close_text());
         let mut mismatch = None;
 
@@ -174,6 +188,7 @@ impl AgUiEncoder {
             return Vec::new();
         }
         let mut output = self.fact(&Fact::RunStarted);
+        output.extend(self.close_reasoning());
         output.extend(self.close_text());
         for (tool_call_id, _) in std::mem::take(&mut self.tools) {
             output.push(AgUiEvent::ToolCallEnd { tool_call_id });
@@ -270,7 +285,8 @@ impl Transcoder for AgUiEncoder {
             ),
             // An internal continuation-guard round is not an AG-UI wire frame; the
             // committed fold never emits it into this stream.
-            // Reasoning is not in the AG-UI vocabulary; drop the marker.
+            // A committed presence marker cannot reconstruct a live phase, so
+            // replay stays content-only; live ReasoningDelta owns START/END.
             Fact::Continuation { .. } | Fact::AssistantThinking => Vec::new(),
         }
     }
@@ -282,7 +298,7 @@ impl Transcoder for AgUiEncoder {
         match delta {
             Delta::TextDelta { delta } => {
                 self.streamed_text = true;
-                let mut out = Vec::new();
+                let mut out = self.close_reasoning();
                 let id = match &self.open_text {
                     Some(id) => id.clone(),
                     None => {
@@ -307,7 +323,8 @@ impl Transcoder for AgUiEncoder {
                 name,
                 args_delta,
             } => {
-                let mut out = self.close_text();
+                let mut out = self.close_reasoning();
+                out.extend(self.close_text());
                 if !self.tools.contains_key(id) {
                     self.tools.insert(id.clone(), (name.clone(), String::new()));
                     out.push(AgUiEvent::ToolCallStart {
@@ -326,8 +343,18 @@ impl Transcoder for AgUiEncoder {
                 }
                 out
             }
-            // Reasoning is not projected to the AG-UI live prefix (opt-in tier).
-            Delta::ReasoningDelta { .. } => Vec::new(),
+            // Announce a bounded phase without exposing private reasoning bytes.
+            // Its id has a distinct namespace from every text message id.
+            Delta::ReasoningDelta { .. } => {
+                let mut out = self.close_text();
+                if self.open_reasoning.is_none() {
+                    let message_id = format!("{}-reasoning-{}", self.run_id, self.reasoning_seq);
+                    self.reasoning_seq += 1;
+                    self.open_reasoning = Some(message_id.clone());
+                    out.push(AgUiEvent::ReasoningStart { message_id });
+                }
+                out
+            }
         }
     }
 }
@@ -519,16 +546,85 @@ mod tests {
         );
     }
 
-    /// AG-UI renders no reasoning fragments: `Delta::ReasoningDelta` is dropped
-    /// (the completed thinking block, once modeled, folds into an assistant
-    /// message — Axis 10b). Mirrors ai-sdk's `delta_reasoning_is_not_projected`.
     #[test]
-    fn delta_reasoning_is_not_projected() {
+    fn reasoning_uses_a_private_balanced_phase_separate_from_text_and_tools() {
+        /* Reasoning transition decision table. Causes: C1 first reasoning
+         * delta; C2 later reasoning delta in the same phase; C3 public text;
+         * C4 a later reasoning phase; C5 tool delta. Effects: E1 one
+         * REASONING_START with a reasoning-only id; E2 no reasoning content;
+         * E3 REASONING_END before text/tool; E4 text has a different id; E5
+         * text closes before a new reasoning phase. Rules: R1 C1=>E1+E2;
+         * R2 C1+C2=>no duplicate start+E2; R3 C1+C3=>E3+E4; R4
+         * C3+C4=>E5+E1; R5 C4+C5=>E3 before TOOL_CALL_START. */
         let mut enc = AgUiEncoder::new("t1", "r1");
-        let out = enc.delta(&Delta::ReasoningDelta {
-            delta: "hmm".into(),
+        let mut out = enc.delta(&Delta::ReasoningDelta {
+            delta: "private-one".into(),
         });
-        assert!(out.is_empty(), "reasoning projected {out:?}");
+        out.extend(enc.delta(&Delta::ReasoningDelta {
+            delta: "private-two".into(),
+        }));
+        out.extend(enc.delta(&Delta::TextDelta {
+            delta: "answer".into(),
+        }));
+        assert_eq!(
+            out,
+            vec![
+                AgUiEvent::ReasoningStart {
+                    message_id: "r1-reasoning-0".into(),
+                },
+                AgUiEvent::ReasoningEnd {
+                    message_id: "r1-reasoning-0".into(),
+                },
+                AgUiEvent::TextMessageStart {
+                    message_id: "r1-msg-0".into(),
+                    role: "assistant".into(),
+                },
+                AgUiEvent::TextMessageContent {
+                    message_id: "r1-msg-0".into(),
+                    delta: "answer".into(),
+                },
+            ]
+        );
+        assert!(
+            !serde_json::to_string(&out).unwrap().contains("private"),
+            "private reasoning bytes reached the wire: {out:?}"
+        );
+
+        let reopened = enc.delta(&Delta::ReasoningDelta {
+            delta: "private-three".into(),
+        });
+        assert_eq!(
+            reopened,
+            vec![
+                AgUiEvent::TextMessageEnd {
+                    message_id: "r1-msg-0".into(),
+                },
+                AgUiEvent::ReasoningStart {
+                    message_id: "r1-reasoning-1".into(),
+                },
+            ]
+        );
+        let tool = enc.delta(&Delta::ToolCallDelta {
+            id: "call-1".into(),
+            name: "read".into(),
+            args_delta: "{}".into(),
+        });
+        assert_eq!(
+            tool,
+            vec![
+                AgUiEvent::ReasoningEnd {
+                    message_id: "r1-reasoning-1".into(),
+                },
+                AgUiEvent::ToolCallStart {
+                    tool_call_id: "call-1".into(),
+                    tool_call_name: "read".into(),
+                },
+                AgUiEvent::ToolCallArgs {
+                    tool_call_id: "call-1".into(),
+                    delta: "{}".into(),
+                },
+            ]
+        );
     }
 
     /// A continuation-guard round (steering) is an audit lifecycle fact
@@ -1013,6 +1109,46 @@ mod tests {
         assert!(encode_history(&messages).is_empty());
     }
 
+    #[test]
+    fn history_replay_drops_private_thinking_without_losing_public_text() {
+        /* AG-UI reload decision table. Causes: C1 committed assistant content
+         * contains Thinking plus Text; C2 it contains only Thinking. Effects:
+         * E1 C1 replays one assistant message with public text; E2 C2 replays
+         * no empty message; E3 neither rule leaks thinking bytes or invents a
+         * live reasoning phase. Rules: R1 C1=>E1+E3; R2 C2=>E2+E3. */
+        let messages = vec![
+            Message::new(
+                Id("a1".into()),
+                Role::Assistant,
+                vec![
+                    ContentBlock::Thinking {
+                        text: "private-history".into(),
+                        signature: None,
+                    },
+                    ContentBlock::text("public history"),
+                ],
+            ),
+            Message::new(
+                Id("a2".into()),
+                Role::Assistant,
+                vec![ContentBlock::Thinking {
+                    text: "private-only".into(),
+                    signature: None,
+                }],
+            ),
+        ];
+        let encoded = encode_history(&messages);
+        assert_eq!(
+            encoded,
+            vec![json!({
+                "id": "a1",
+                "role": "assistant",
+                "content": "public history",
+            })]
+        );
+        assert!(!serde_json::to_string(&encoded).unwrap().contains("private"));
+    }
+
     // Post the projection change: an assistant message whose only block is an
     // empty-string Text is dropped by `fold_messages`, so the AG-UI stream
     // brackets the run with RUN_STARTED/RUN_FINISHED and emits no spurious
@@ -1248,21 +1384,23 @@ mod tests {
         // start` is one independent branch selecting `all output, state, side-effect, error, and
         // terminal assertions below hold together`; a multi-row decision table is not applicable,
         // and sibling tests own alternate causes.
-        // CE-AG3/AG4: RUN_STARTED plus a non-projected reasoning delta is not a
-        // visible assistant prefix. Completion emits committed text and neither
-        // repeats RUN_STARTED nor drops the answer.
+        // Decision table rule CE-AG3/AG4: RUN_STARTED plus private reasoning is
+        // a lifecycle prefix, not public assistant text. Completion closes the
+        // same reasoning id before committed text, neither repeats RUN_STARTED
+        // nor drops the answer, and then reaches exactly one terminal event.
         let outcome = StepOutcome::ended(
             vec![Message::text(Id("a1".into()), Role::Assistant, "answer")],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
         );
         let mut encoder = AgUiEncoder::new("t1", "r1");
         assert_eq!(encoder.fact(&Fact::RunStarted).len(), 1);
-        assert!(
-            encoder
-                .delta(&Delta::ReasoningDelta {
-                    delta: "hmm".into()
-                })
-                .is_empty()
+        assert_eq!(
+            encoder.delta(&Delta::ReasoningDelta {
+                delta: "hmm".into()
+            }),
+            vec![AgUiEvent::ReasoningStart {
+                message_id: "r1-reasoning-0".into(),
+            }]
         );
         let events = encoder.complete(&outcome);
         assert!(
@@ -1273,6 +1411,72 @@ mod tests {
         assert!(events.iter().any(
             |event| matches!(event, AgUiEvent::TextMessageContent { delta, .. } if delta == "answer")
         ));
+        assert_eq!(
+            events.first(),
+            Some(&AgUiEvent::ReasoningEnd {
+                message_id: "r1-reasoning-0".into(),
+            })
+        );
+        assert!(matches!(events.last(), Some(AgUiEvent::RunFinished { .. })));
+    }
+
+    #[test]
+    fn failure_closes_reasoning_before_terminal_and_rejects_late_deltas() {
+        /* Failure decision table. Causes: C1 reasoning is open; C2 the stream
+         * fails; C3 content arrives after failure. Effects: E1 close the exact
+         * reasoning id; E2 emit one classified RUN_ERROR after E1; E3 terminal
+         * state is absorbing. Rule R1 C1+C2=>E1 then E2; R2 C2+C3=>E3. */
+        let mut encoder = AgUiEncoder::new("t1", "r1");
+        encoder.fact(&Fact::RunStarted);
+        encoder.delta(&Delta::ReasoningDelta {
+            delta: "private".into(),
+        });
+        assert_eq!(
+            encoder.fail_with_code("inference_failed", "upstream failed"),
+            vec![
+                AgUiEvent::ReasoningEnd {
+                    message_id: "r1-reasoning-0".into(),
+                },
+                AgUiEvent::RunError {
+                    message: "upstream failed".into(),
+                    code: Some("inference_failed".into()),
+                },
+            ]
+        );
+        assert!(
+            encoder
+                .delta(&Delta::ReasoningDelta {
+                    delta: "late private".into(),
+                })
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn reasoning_only_success_closes_without_an_empty_text_message() {
+        /* Reasoning-only success rule. Causes: C1 a reasoning phase is open;
+         * C2 the committed successful outcome has no public assistant text.
+         * Effects: E1 close the exact reasoning id; E2 emit RUN_FINISHED after
+         * E1; E3 emit no TEXT_MESSAGE frame. This is one independent rule;
+         * text and failure terminals are covered by the adjacent table rows. */
+        let mut encoder = AgUiEncoder::new("t1", "r1");
+        encoder.fact(&Fact::RunStarted);
+        encoder.delta(&Delta::ReasoningDelta {
+            delta: "private-only".into(),
+        });
+        let events = encoder.complete(&StepOutcome::ended(Vec::new(), EndCause::NaturalEnd));
+        assert_eq!(
+            events,
+            vec![
+                AgUiEvent::ReasoningEnd {
+                    message_id: "r1-reasoning-0".into(),
+                },
+                AgUiEvent::RunFinished {
+                    thread_id: "t1".into(),
+                    run_id: "r1".into(),
+                },
+            ]
+        );
     }
 
     #[test]

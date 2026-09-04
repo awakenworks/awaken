@@ -48,6 +48,16 @@ pub enum AgUiEvent {
         #[serde(rename = "messageId")]
         message_id: String,
     },
+    #[serde(rename = "REASONING_START")]
+    ReasoningStart {
+        #[serde(rename = "messageId")]
+        message_id: String,
+    },
+    #[serde(rename = "REASONING_END")]
+    ReasoningEnd {
+        #[serde(rename = "messageId")]
+        message_id: String,
+    },
     #[serde(rename = "TOOL_CALL_START")]
     ToolCallStart {
         #[serde(rename = "toolCallId")]
@@ -310,6 +320,29 @@ mod tests {
             })
             .unwrap(),
             json!({ "type": "TEXT_MESSAGE_END", "messageId": "m1" })
+        );
+    }
+
+    #[test]
+    fn reasoning_phase_frames_pin_camel_case_field_names() {
+        /* Cause/effect graph and decision table. Cause C1 is the opening or
+         * closing edge of a private reasoning phase. Effects E1/E2 are the
+         * exact AG-UI event name and camelCase `messageId`; E3 is the absence
+         * of a content field. R1 start=>REASONING_START+E2+E3; R2
+         * end=>REASONING_END+E2+E3. */
+        assert_eq!(
+            serde_json::to_value(AgUiEvent::ReasoningStart {
+                message_id: "reasoning-1".into(),
+            })
+            .unwrap(),
+            json!({ "type": "REASONING_START", "messageId": "reasoning-1" })
+        );
+        assert_eq!(
+            serde_json::to_value(AgUiEvent::ReasoningEnd {
+                message_id: "reasoning-1".into(),
+            })
+            .unwrap(),
+            json!({ "type": "REASONING_END", "messageId": "reasoning-1" })
         );
     }
 

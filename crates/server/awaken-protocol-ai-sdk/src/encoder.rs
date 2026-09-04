@@ -1385,6 +1385,44 @@ mod tests {
     }
 
     #[test]
+    fn history_replay_drops_private_thinking_without_losing_public_text() {
+        /* AI SDK reload decision table. Causes: C1 committed assistant content
+         * contains Thinking plus Text; C2 it contains only Thinking. Effects:
+         * E1 C1 replays one public text part; E2 C2 replays no empty message;
+         * E3 replay leaks no private bytes and creates no synthetic live phase.
+         * Rules: R1 C1=>E1+E3; R2 C2=>E2+E3. */
+        let messages = vec![
+            Message::new(
+                Id("a1".into()),
+                Role::Assistant,
+                vec![
+                    ContentBlock::Thinking {
+                        text: "private-history".into(),
+                        signature: None,
+                    },
+                    ContentBlock::text("public history"),
+                ],
+            ),
+            Message::new(
+                Id("a2".into()),
+                Role::Assistant,
+                vec![ContentBlock::Thinking {
+                    text: "private-only".into(),
+                    signature: None,
+                }],
+            ),
+        ];
+        let encoded = encode_history(&messages, None);
+        assert_eq!(encoded.len(), 1);
+        assert_eq!(encoded[0]["id"], "a1");
+        assert_eq!(
+            encoded[0]["parts"],
+            json!([{ "type": "text", "text": "public history" }])
+        );
+        assert!(!serde_json::to_string(&encoded).unwrap().contains("private"));
+    }
+
+    #[test]
     fn history_preserves_the_runtime_owned_current_tool_wait() {
         /* Reload projection decision table. C1 the unmatched call is the
          * current built-in wait; C2 it is the current client wait; C3 no wait

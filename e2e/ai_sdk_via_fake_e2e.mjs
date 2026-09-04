@@ -28,7 +28,7 @@ function replyText(chat) {
 }
 
 async function main() {
-  const upstream = await startFakeAnthropic(FAKE_KEY);
+  const upstream = await startFakeAnthropic(FAKE_KEY, { behavior: 'reasoning' });
   try {
     process.env.ANTHROPIC_API_KEY = FAKE_KEY;
     process.env.ANTHROPIC_BASE_URL = `${upstream.url}/v1/`;
@@ -37,9 +37,21 @@ async function main() {
       const chat = newChat(base, 'sdk-fake');
       await chat.sendMessage({ text: 'over ai-sdk' });
       const text = replyText(chat).trim();
+      /* Official-client reasoning rule: provider Thinking plus Text causes a
+       * contentless bounded reasoning part and one public answer; private
+       * reasoning bytes must not enter the assembled UIMessage. The Rust
+       * encoder decision table owns exact phase ordering and failure edges. */
       assert.ok(text.includes('FAKE:over ai-sdk'), `ai-sdk carried the wire reply: ${JSON.stringify(text)}`);
+      assert.ok(
+        (chat.lastMessage?.parts ?? []).some((part) => part.type === 'reasoning'),
+        `AI SDK assembled the reasoning lifecycle: ${JSON.stringify(chat.lastMessage)}`,
+      );
+      assert.ok(
+        !JSON.stringify(chat.lastMessage).includes('PRIVATE-REASONING'),
+        'private reasoning bytes never reach the AI SDK UIMessage',
+      );
       assert.ok(upstream.requests.length >= 1, 'the fake upstream received the ai-sdk-driven inference call');
-      pass('ai-sdk adapter carried a real (wire) model turn end to end');
+      pass('AI SDK client accepted private reasoning followed by the public answer');
     });
     console.log('E2E PASS: ai-sdk adapter drives the real provider path over a fake upstream.');
     process.exitCode = 0;
