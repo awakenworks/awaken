@@ -611,7 +611,7 @@ fn register_replaces_the_threads_staged_set() {
         StagedResources {
             mounts: vec![resource_mount("a.md"), resource_mount("b.md")],
             prompts: vec!["first".into()],
-            memory_prompts: Vec::new(),
+            resource_prompts: Vec::new(),
             binding_checks: Vec::new(),
             repositories: vec![repository_activation("repo-a")],
         },
@@ -622,7 +622,7 @@ fn register_replaces_the_threads_staged_set() {
         StagedResources {
             mounts: vec![resource_mount("c.md")],
             prompts: vec!["second".into()],
-            memory_prompts: Vec::new(),
+            resource_prompts: Vec::new(),
             binding_checks: Vec::new(),
             repositories: Vec::new(),
         },

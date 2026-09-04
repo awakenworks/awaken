@@ -1090,11 +1090,20 @@ mod completion_tests {
         .expect("coherent trusted ACP candidate");
         let mut workdir = frozen.clone();
         workdir.sandbox = Default::default();
+        workdir.sandbox.host_access = awaken_provisioning_contract::HostAccessPolicy::TrustedHost;
         workdir.network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
         workdir.packages = Default::default();
-        let trusted = remote_worker_placement(&trusted, Some(&workdir), None, true);
+        let trusted_resources = repository_manifest();
+        let trusted =
+            remote_worker_placement(&trusted, Some(&workdir), Some(&trusted_resources), true);
         assert_eq!(trusted.sandbox.isolation, IsolationClass::Workdir, "R3");
         assert!(!trusted.sandbox.tool_transparent, "R3");
+        assert!(!trusted.sandbox.enforced_readonly, "R3 advisory access");
+        assert_eq!(
+            trusted.sandbox_backend.as_deref(),
+            Some(awaken_dispatch::TRUSTED_HOST_SANDBOX_BACKEND),
+            "R3 exact Worker backend"
+        );
 
         let mut remote = host_models();
         remote.model_binding = ResolvedModelCandidate::try_remote(

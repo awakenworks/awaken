@@ -36,6 +36,15 @@ pub(crate) enum SessionEnvironment {
 }
 
 impl SessionEnvironment {
+    pub(crate) fn agent_path_view(&self) -> crate::managed_resource_projection::AgentPathView {
+        match self {
+            Self::Workdir(_) => crate::managed_resource_projection::AgentPathView::WorkdirRelative,
+            Self::Namespace { .. } | Self::Container { .. } => {
+                crate::managed_resource_projection::AgentPathView::SandboxAbsolute
+            }
+        }
+    }
+
     #[must_use]
     pub(crate) fn workdir(sandbox: LocalSandbox) -> Self {
         Self::Workdir(Arc::new(sandbox))
@@ -101,8 +110,13 @@ impl SessionEnvironment {
         previous: &[pc::MountRequirement],
         next: &[pc::MountRequirement],
     ) -> Result<(), pc::SandboxError> {
-        pc::validate_mount_requirements(next, &self.capabilities())
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        let capabilities = self.capabilities();
+        if matches!(self, Self::Workdir(sandbox) if sandbox.has_trusted_host_access()) {
+            pc::validate_trusted_host_mount_requirements(next, &capabilities)
+        } else {
+            pc::validate_mount_requirements(next, &capabilities)
+        }
+        .map_err(|error| pc::SandboxError::new(error.to_string()))?;
         if previous != next
             && let Self::Container { sandbox, .. } = self
             && !sandbox.supports_live_mount_replacement(previous, next)

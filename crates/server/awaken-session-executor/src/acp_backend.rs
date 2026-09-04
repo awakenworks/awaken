@@ -211,8 +211,8 @@ impl crate::host::SharedHost {
         session_home: Option<Arc<dyn SessionHomeProvider>>,
     ) -> Self {
         if self.backend_owned_session_provider.is_none() {
-            let provider =
-                crate::session_environment::SessionEnvironmentProvider::workdir_with_agent_stderr(
+            let provider = crate::session_environment::SessionEnvironmentProvider::
+                trusted_host_workdir_with_agent_stderr(
                     session_sandbox_base(&self.deployment).join("backend-owned"),
                     self.deployment.sandbox.inherit_agent_stderr,
                 );
@@ -333,6 +333,15 @@ impl crate::host::SharedHost {
                 .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
         }
         let namespace_hand_bin = namespace_hand_path.to_string_lossy().into_owned();
+        if deployment.trusted_host_enabled() && host.backend_owned_session_provider.is_none() {
+            host.backend_owned_session_provider = Some(
+                crate::session_environment::SessionEnvironmentProvider::
+                    trusted_host_workdir_with_agent_stderr(
+                        base.join("trusted-host"),
+                        deployment.sandbox.inherit_agent_stderr,
+                    ),
+            );
+        }
         host.session_provider = if let Some(provider) =
             crate::session_environment::SessionEnvironmentProvider::for_host_tier(
                 tier,
@@ -378,7 +387,11 @@ impl crate::host::SharedHost {
         };
         host.session_provider_explicit = true;
         if let Some(mounter) = host.memory_mounter() {
-            host.session_provider.install_memory_mounter(mounter);
+            host.session_provider
+                .install_memory_mounter(mounter.clone());
+            if let Some(provider) = &host.backend_owned_session_provider {
+                provider.install_memory_mounter(mounter);
+            }
         }
         host
     }

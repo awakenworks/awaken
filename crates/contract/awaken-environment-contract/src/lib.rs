@@ -21,6 +21,10 @@ pub struct CreateEnvironmentCommand {
     pub metadata: BTreeMap<String, String>,
     pub scope: Option<String>,
     pub config: EnvironmentConfig,
+    /// Optional exact sandbox-policy version selected atomically with this
+    /// Environment revision. Protocols that do not expose Awaken extensions
+    /// leave it absent and retain their existing wire contract.
+    pub sandbox_policy: Option<EnvironmentSandboxPolicyRef>,
 }
 
 /// Control command port for authoring canonical Environment definitions.
@@ -43,6 +47,7 @@ impl CreateEnvironmentCommand {
             &self.metadata,
             &self.scope,
             &self.config,
+            &self.sandbox_policy,
         ))
     }
 }
@@ -91,6 +96,8 @@ pub enum CreateEnvironmentError {
 pub enum EnvironmentStoreError {
     #[error(transparent)]
     InvalidConfig(#[from] InvalidEnvironmentConfig),
+    #[error("Environment revision changed before the update was committed")]
+    RevisionConflict,
     #[error("Environment store failed: {0}")]
     Backend(String),
 }
@@ -393,7 +400,7 @@ impl EnvItem {
 
 /// A metadata/config update patch: present fields replace; a `metadata` key mapped
 /// to `null` deletes it.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct EnvUpdate {
     pub name: Option<String>,
     /// Omission preserves, `Clear` stores absence, and `Replace` stores text.
@@ -415,7 +422,7 @@ pub enum EnvironmentFieldUpdate<T> {
 /// Atomic mutation vocabulary for the official Environment update semantics.
 /// It is deliberately owned beside `EnvironmentConfig` so every store applies
 /// omitted-field preservation identically under its existing update lock.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum EnvironmentConfigMutation {
     Replace(EnvironmentConfig),
     PatchCloud {
@@ -424,7 +431,7 @@ pub enum EnvironmentConfigMutation {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum EnvironmentNetworkingMutation {
     Reset,
     Unrestricted,
@@ -435,7 +442,7 @@ pub enum EnvironmentNetworkingMutation {
     },
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct EnvironmentPackagesMutation {
     pub reset: bool,
     pub apt: Option<EnvironmentFieldUpdate<Vec<String>>>,
@@ -621,6 +628,7 @@ pub trait EnvRegistry: Send + Sync {
             metadata,
             scope,
             config,
+            sandbox_policy: None,
         })
         .await
         .map(CreateEnvironmentOutcome::into_item)
@@ -642,11 +650,13 @@ pub trait EnvRegistry: Send + Sync {
     ) -> Result<Option<EnvItem>, EnvironmentStoreError>;
     /// Whether `id` exists (archived or not).
     async fn exists(&self, id: &str) -> Result<bool, EnvironmentStoreError>;
-    /// Apply an update patch to an active definition; `None` when `id` does not
-    /// exist or the definition is already archived. Archive is terminal.
+    /// Compare-and-apply an update patch to an active definition. The store must
+    /// reject a stale `expected_revision` in the same transaction or lock that
+    /// advances the current row. `None` means `id` does not exist or is archived.
     async fn update(
         &self,
         id: &str,
+        expected_revision: EnvironmentRevision,
         patch: EnvUpdate,
     ) -> Result<Option<EnvItem>, EnvironmentStoreError>;
     /// Archive `id` (stamps `archived_at`); `None` when it does not exist.

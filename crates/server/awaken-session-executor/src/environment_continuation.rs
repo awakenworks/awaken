@@ -546,7 +546,7 @@ impl ManagedHost {
             .unwrap_or(&awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor);
         let provider = self
             .host
-            .session_environment_provider(provisioning)
+            .session_environment_provider_for_thread(&thread, provisioning)
             .map_err(to_run_error)?;
         let spec = self.host.sandbox_spec_for_provider(&thread, provider);
         let handle = provider

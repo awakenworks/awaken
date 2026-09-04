@@ -113,8 +113,11 @@ default, not an implicit downgrade after an isolation request. Explicit
 shared and multi-tenant deployments must select a container/Kubernetes Worker.
 On a trusted workstation, explicitly selecting `sandbox_tier = "local"` on any
 OS permits installed ACP CLIs and shell programs to run as host child processes,
-while rooted tools and managed resources remain confined to the Session
-workspace authority.
+while managed resources retain the Session workspace as their logical authority.
+The process itself is not confined to that tree. A Namespace/Container Worker
+may report the additional exact backend only through
+`sandbox_trusted_host_enabled = true`; a Session still has to freeze an explicit
+TrustedHost Environment policy before placement can select it.
 
 ## Managed model and coordinator compatibility
 

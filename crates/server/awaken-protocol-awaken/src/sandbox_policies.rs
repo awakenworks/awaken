@@ -1,5 +1,6 @@
 //! Awaken sandbox execution-policy authoring protocol.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use awaken_environment_application::{EnvironmentApplication, EnvironmentApplicationError};
@@ -23,6 +24,7 @@ pub fn environment_extensions_router(
     sandbox_policies: Option<Arc<dyn SandboxExecutionPolicyStore>>,
 ) -> Router {
     Router::new()
+        .route("/v1/awaken/environments", post(create_environment))
         .route(
             "/v1/awaken/sandbox-execution-policies",
             post(create_sandbox_policy),
@@ -76,6 +78,22 @@ struct SandboxPolicyPublish {
 struct SandboxPolicyBindingInput {
     policy_id: String,
     version: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnvironmentCreateInput {
+    command_id: String,
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    scope: Option<String>,
+    config: awaken_environment_contract::EnvironmentConfig,
+    #[serde(default)]
+    sandbox_policy: Option<SandboxPolicyBindingInput>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
@@ -174,6 +192,32 @@ async fn get_exact_sandbox_policy(
     Ok(Json(policy))
 }
 
+async fn create_environment(
+    State(state): State<Arc<EnvironmentExtensionsState>>,
+    Json(input): Json<EnvironmentCreateInput>,
+) -> Result<(StatusCode, Json<awaken_environment_contract::EnvItem>), StatusCode> {
+    let sandbox_policy = input.sandbox_policy.map(|reference| {
+        awaken_environment_contract::EnvironmentSandboxPolicyRef {
+            policy_id: reference.policy_id,
+            version: reference.version,
+        }
+    });
+    let item = state
+        .application
+        .create(awaken_environment_contract::CreateEnvironmentCommand {
+            command_id: input.command_id,
+            name: input.name,
+            description: input.description,
+            metadata: input.metadata,
+            scope: input.scope,
+            config: input.config,
+            sandbox_policy,
+        })
+        .await
+        .map_err(map_application_error)?;
+    Ok((StatusCode::CREATED, Json(item)))
+}
+
 async fn bind_environment_sandbox_policy(
     State(state): State<Arc<EnvironmentExtensionsState>>,
     Path(environment_id): Path<String>,
@@ -231,14 +275,19 @@ fn map_application_error(error: EnvironmentApplicationError) -> StatusCode {
         EnvironmentApplicationError::Policy(error) => map_policy_error(error),
         EnvironmentApplicationError::PolicyStoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         EnvironmentApplicationError::Create(
+            awaken_environment_contract::CreateEnvironmentError::IdempotencyConflict,
+        ) => StatusCode::CONFLICT,
+        EnvironmentApplicationError::Create(
             awaken_environment_contract::CreateEnvironmentError::InvalidConfig(_),
         )
         | EnvironmentApplicationError::Store(
             awaken_environment_contract::EnvironmentStoreError::InvalidConfig(_),
         ) => StatusCode::UNPROCESSABLE_ENTITY,
+        EnvironmentApplicationError::Store(
+            awaken_environment_contract::EnvironmentStoreError::RevisionConflict,
+        ) => StatusCode::CONFLICT,
         EnvironmentApplicationError::Create(
-            awaken_environment_contract::CreateEnvironmentError::IdempotencyConflict
-            | awaken_environment_contract::CreateEnvironmentError::Store(_),
+            awaken_environment_contract::CreateEnvironmentError::Store(_),
         )
         | EnvironmentApplicationError::Registration(_)
         | EnvironmentApplicationError::Store(
@@ -303,6 +352,13 @@ mod tests {
             map_application_error(EnvironmentApplicationError::PolicyStoreUnavailable),
             StatusCode::SERVICE_UNAVAILABLE
         );
+        assert_eq!(
+            map_application_error(EnvironmentApplicationError::Create(
+                awaken_environment_contract::CreateEnvironmentError::IdempotencyConflict,
+            )),
+            StatusCode::CONFLICT,
+            "C5a conflicting command replay is a domain conflict"
+        );
         // C5b a domain-invalid Environment is a client error regardless of
         // whether it is rejected on create or update -> E5b 422.
         assert_eq!(
@@ -321,6 +377,14 @@ mod tests {
             )),
             StatusCode::UNPROCESSABLE_ENTITY
         );
+        // C5c another author advances the Environment after policy validation
+        // -> E5c 409, so the caller retries against the new aggregate revision.
+        assert_eq!(
+            map_application_error(EnvironmentApplicationError::Store(
+                awaken_environment_contract::EnvironmentStoreError::RevisionConflict,
+            )),
+            StatusCode::CONFLICT
+        );
         // C6 outbox unavailable or structurally inconsistent -> E6 503; callers
         // must not observe authoring success before executable acknowledgement.
         assert_eq!(
@@ -334,6 +398,120 @@ mod tests {
                 "x".into()
             )),
             StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_create_selects_an_exact_policy_atomically() {
+        // Cause/effect graph: C1 Environment kind={self_hosted,cloud}; C2 exact
+        // policy={trusted_host,missing}; C3 binding={present,absent}. Effects:
+        // E1 a compatible exact version is persisted in revision 1 and returned;
+        // E2 missing policy -> 404 and no Environment fact; E3 cloud+trusted ->
+        // 422 and no Environment fact. Constraints: trusted_host requires both
+        // self_hosted and workdir, and creation cannot expose a create-then-bind
+        // intermediate state.
+        //
+        // | Rule | C1          | C2           | C3      | Effect |
+        // | R1   | self_hosted | trusted_host | present | E1     |
+        // | R2   | self_hosted | missing      | present | E2     |
+        // | R3   | cloud       | trusted_host | present | E3     |
+        let store =
+            Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default());
+        store
+            .create(SandboxExecutionPolicy {
+                id: SandboxExecutionPolicyId("trusted-local".into()),
+                version: SandboxExecutionPolicyVersion::INITIAL,
+                config: awaken_provisioning_contract::SandboxOverride {
+                    isolation: Some(awaken_provisioning_contract::IsolationClass::Workdir),
+                    host_access: awaken_provisioning_contract::HostAccessPolicy::TrustedHost,
+                    ..Default::default()
+                },
+                provisioning: Default::default(),
+                idle_retention: Default::default(),
+                disabled: false,
+            })
+            .await
+            .unwrap();
+        let envs = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let application = Arc::new(EnvironmentApplication::new(
+            envs.clone(),
+            Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog)),
+            Some(store.clone()),
+        ));
+        let app = environment_extensions_router(application, Some(store));
+        let create =
+            |command_id: &'static str, config: serde_json::Value, policy_id: &'static str| {
+                Request::post("/v1/awaken/environments")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "command_id": command_id,
+                            "name": command_id,
+                            "config": config,
+                            "sandbox_policy": {"policy_id": policy_id, "version": 1}
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap()
+            };
+
+        let response = app
+            .clone()
+            .oneshot(create(
+                "R1",
+                serde_json::json!({"type": "self_hosted"}),
+                "trusted-local",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED, "R1");
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let created: awaken_environment_contract::EnvItem = serde_json::from_slice(&body).unwrap();
+        assert_eq!(created.revision.0, 1, "R1");
+        assert_eq!(
+            created.sandbox_policy,
+            Some(awaken_environment_contract::EnvironmentSandboxPolicyRef {
+                policy_id: "trusted-local".into(),
+                version: 1,
+            }),
+            "R1"
+        );
+
+        let missing = app
+            .clone()
+            .oneshot(create(
+                "R2",
+                serde_json::json!({"type": "self_hosted"}),
+                "missing",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND, "R2");
+        let incompatible = app
+            .oneshot(create(
+                "R3",
+                serde_json::json!({
+                    "type": "cloud",
+                    "networking": {"type": "unrestricted"},
+                    "packages": {}
+                }),
+                "trusted-local",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            incompatible.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "R3"
+        );
+        assert_eq!(
+            awaken_environment_contract::EnvRegistry::list_all(envs.as_ref())
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "R2/R3 must not persist partial Environments"
         );
     }
 
@@ -360,6 +538,7 @@ mod tests {
                 metadata: Default::default(),
                 scope: None,
                 config: awaken_environment_contract::EnvironmentConfig::SelfHosted,
+                sandbox_policy: None,
             })
             .await
             .expect("create the unbound Environment fixture");

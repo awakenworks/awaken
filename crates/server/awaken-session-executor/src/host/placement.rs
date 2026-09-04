@@ -215,27 +215,44 @@ pub fn remote_worker_placement(
     let has_readonly_input = resource_facts.has_readonly_input();
     let has_credentialed_repository = resource_facts.has_credentialed_repository();
     let requires_local_environment = requires_local_environment(models);
+    let requires_trusted_host = requires_local_environment
+        && environment.is_some_and(|environment| {
+            environment.sandbox.host_access
+                == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
+        });
     let requires_opaque_process = crate::provisioning::model_candidates_require_opaque_process(
         std::iter::once(&models.model_binding).chain(models.model_candidates.iter()),
     );
     if requires_local_environment {
-        placement.sandbox = environment.map_or_else(
-            || {
-                crate::provisioning::session_sandbox_projection(
-                    &crate::provisioning::default_session_sandbox_spec("worker-placement"),
-                    has_repository,
-                    requires_opaque_process,
-                )
-                .1
-            },
-            |environment| {
-                crate::provisioning::sandbox_requirements(
-                    environment,
-                    has_repository,
-                    requires_opaque_process,
-                )
-            },
-        );
+        placement.sandbox = if requires_trusted_host {
+            // TrustedHost is an exact Worker backend, not a weaker isolation
+            // floor. Its Workdir does not claim path/read-only/network/limit
+            // guarantees; the backend id below prevents a stronger isolated
+            // provider from being substituted and losing host identity.
+            awaken_provisioning_contract::SandboxRequirements::default()
+        } else {
+            environment.map_or_else(
+                || {
+                    crate::provisioning::session_sandbox_projection(
+                        &crate::provisioning::default_session_sandbox_spec("worker-placement"),
+                        has_repository,
+                        requires_opaque_process,
+                    )
+                    .1
+                },
+                |environment| {
+                    crate::provisioning::sandbox_requirements(
+                        environment,
+                        has_repository,
+                        requires_opaque_process,
+                    )
+                },
+            )
+        };
+        if requires_trusted_host {
+            placement.sandbox_backend =
+                Some(awaken_dispatch::TRUSTED_HOST_SANDBOX_BACKEND.to_string());
+        }
         if let Some(environment) = environment {
             placement.resources = crate::provisioning::sandbox_resource_requests(environment);
         }
@@ -253,7 +270,11 @@ pub fn remote_worker_placement(
         }
     }
     if resources.is_some() {
-        placement.sandbox.enforced_readonly |= has_readonly_input;
+        // Read-only remains an access intent inside TrustedHost, but cannot be
+        // advertised as an enforced Worker guarantee.
+        if !requires_trusted_host {
+            placement.sandbox.enforced_readonly |= has_readonly_input;
+        }
         placement
             .required_capabilities
             .insert(awaken_dispatch::SESSION_RESOURCES_CAPABILITY.to_string());

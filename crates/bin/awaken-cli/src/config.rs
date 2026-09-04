@@ -970,12 +970,13 @@ mod tests {
         //
         // | Rule | file values | Effect |
         // |---|---|---|
-        // | S1 | all omitted | fail-closed fallback, no pool/proxy, default namespace/tools |
+        // | S1 | all omitted | trusted host disabled, fail-closed fallback, no pool/proxy, default namespace/tools |
         // | S2 | all explicit valid | exact typed values projected losslessly |
         // | S3 | Hand idle seconds = 0 | disable Worker-local idle hibernation |
         let defaults = resolve(FileConfig::default(), ConfigOverrides::default())
             .runtime
             .sandbox;
+        assert!(!defaults.trusted_host_enabled, "S1");
         assert!(!defaults.allow_local_fallback, "S1");
         assert_eq!(defaults.warm_pool_size, 0, "S1");
         assert_eq!(defaults.warm_pool_total_size, 16, "S1");
@@ -1001,6 +1002,7 @@ mod tests {
 
         let selected = resolve(
             FileConfig {
+                sandbox_trusted_host_enabled: Some(true),
                 sandbox_allow_local_fallback: Some(true),
                 sandbox_warm_pool_size: Some(3),
                 sandbox_warm_pool_total_size: Some(7),
@@ -1026,6 +1028,7 @@ mod tests {
         )
         .runtime
         .sandbox;
+        assert!(selected.trusted_host_enabled, "S2");
         assert!(selected.allow_local_fallback, "S2");
         assert_eq!(selected.warm_pool_size, 3, "S2");
         assert_eq!(selected.warm_pool_total_size, 7, "S2");

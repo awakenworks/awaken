@@ -253,6 +253,21 @@ impl SharedHost {
             crate::session_slot::ManagedContentDelivery::SemanticTools
         };
         if delivery == crate::session_slot::ManagedContentDelivery::SemanticTools
+            && self
+                .session_slots
+                .read(thread, |slot| {
+                    slot.resources
+                        .resource_prompts
+                        .iter()
+                        .any(crate::managed_resource_projection::ResourcePromptProjection::requires_filesystem_delivery)
+                })
+                .unwrap_or(false)
+        {
+            return Err(HostError::bad_request(
+                "MemoryStore instructions reference a filesystem path, but this Session disables filesystem delivery",
+            ));
+        }
+        if delivery == crate::session_slot::ManagedContentDelivery::SemanticTools
             && !managed_session
         {
             let frozen_requires_filesystem =

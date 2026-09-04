@@ -18,8 +18,8 @@ use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrationError, ExecutableEnvironmentWithdrawal,
 };
 use awaken_provisioning_contract::{
-    SandboxExecutionPolicyError, SandboxExecutionPolicyRef, SandboxExecutionPolicyStore,
-    SandboxExecutionPolicyVersion,
+    HostAccessPolicy, SandboxExecutionPolicy, SandboxExecutionPolicyError,
+    SandboxExecutionPolicyRef, SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -80,23 +80,46 @@ impl EnvironmentApplication {
         &self,
         item: EnvItem,
     ) -> Result<ExecutableEnvironmentRegistration, EnvironmentApplicationError> {
-        let sandbox_policy = match (&self.sandbox_policies, &item.sandbox_policy) {
-            (Some(store), Some(reference)) => Some(
-                store
-                    .get_exact(&SandboxExecutionPolicyRef {
-                        id: awaken_provisioning_contract::SandboxExecutionPolicyId(
-                            reference.policy_id.clone(),
-                        ),
-                        version: SandboxExecutionPolicyVersion(reference.version),
-                    })
-                    .await?,
-            ),
-            (None, Some(_)) => {
-                return Err(EnvironmentApplicationError::PolicyStoreUnavailable);
-            }
-            (_, None) => None,
-        };
+        let sandbox_policy = self
+            .validate_environment_policy(&item.config, item.sandbox_policy.as_ref())
+            .await?;
         Ok(ExecutableEnvironmentRegistration::new(item, sandbox_policy))
+    }
+
+    async fn validate_environment_policy(
+        &self,
+        config: &EnvironmentConfig,
+        reference: Option<&EnvironmentSandboxPolicyRef>,
+    ) -> Result<Option<SandboxExecutionPolicy>, EnvironmentApplicationError> {
+        let Some(reference) = reference else {
+            return Ok(None);
+        };
+        let store = self
+            .sandbox_policies
+            .as_ref()
+            .ok_or(EnvironmentApplicationError::PolicyStoreUnavailable)?;
+        let policy = store
+            .get_exact(&SandboxExecutionPolicyRef {
+                id: awaken_provisioning_contract::SandboxExecutionPolicyId(
+                    reference.policy_id.clone(),
+                ),
+                version: SandboxExecutionPolicyVersion(reference.version),
+            })
+            .await?;
+        if policy.disabled {
+            return Err(EnvironmentApplicationError::Policy(
+                SandboxExecutionPolicyError::Disabled,
+            ));
+        }
+        policy.validate()?;
+        if policy.config.host_access == HostAccessPolicy::TrustedHost && !config.is_self_hosted() {
+            return Err(EnvironmentApplicationError::Policy(
+                SandboxExecutionPolicyError::Invalid(
+                    "trusted_host access requires a self_hosted Environment".into(),
+                ),
+            ));
+        }
+        Ok(Some(policy))
     }
 
     async fn deliver_intent(
@@ -194,6 +217,8 @@ impl EnvironmentApplication {
         &self,
         command: CreateEnvironmentCommand,
     ) -> Result<EnvItem, EnvironmentApplicationError> {
+        self.validate_environment_policy(&command.config, command.sandbox_policy.as_ref())
+            .await?;
         let item = self.envs.create_once(command).await?.into_item();
         self.deliver_revision(&item, false).await?;
         Ok(item)
@@ -268,7 +293,21 @@ impl EnvironmentApplication {
         environment_id: &str,
         patch: EnvUpdate,
     ) -> Result<EnvItem, EnvironmentApplicationError> {
-        let item = self.update_active(environment_id, patch).await?;
+        self.ensure_mutable(environment_id)?;
+        let mut candidate = self
+            .envs
+            .get(environment_id)
+            .await?
+            .ok_or(EnvironmentApplicationError::NotFound)?;
+        let expected_revision = candidate.revision;
+        candidate
+            .apply(patch.clone())
+            .map_err(EnvironmentStoreError::from)?;
+        self.validate_environment_policy(&candidate.config, candidate.sandbox_policy.as_ref())
+            .await?;
+        let item = self
+            .update_active(environment_id, expected_revision, patch)
+            .await?;
         self.deliver_revision(&item, false).await?;
         Ok(item)
     }
@@ -298,19 +337,23 @@ impl EnvironmentApplication {
         reference: SandboxExecutionPolicyRef,
     ) -> Result<EnvItem, EnvironmentApplicationError> {
         self.ensure_active(environment_id).await?;
-        let store = self
-            .sandbox_policies
-            .as_ref()
-            .ok_or(EnvironmentApplicationError::PolicyStoreUnavailable)?;
-        let policy = store.get_exact(&reference).await?;
-        if policy.disabled {
-            return Err(EnvironmentApplicationError::Policy(
-                SandboxExecutionPolicyError::Disabled,
-            ));
-        }
+        let current = self
+            .envs
+            .get(environment_id)
+            .await?
+            .ok_or(EnvironmentApplicationError::NotFound)?;
+        self.validate_environment_policy(
+            &current.config,
+            Some(&EnvironmentSandboxPolicyRef {
+                policy_id: reference.id.0.clone(),
+                version: reference.version.0,
+            }),
+        )
+        .await?;
         let item = self
             .update_active(
                 environment_id,
+                current.revision,
                 EnvUpdate {
                     sandbox_policy: Some(EnvironmentFieldUpdate::Replace(
                         EnvironmentSandboxPolicyRef {
@@ -329,10 +372,15 @@ impl EnvironmentApplication {
     async fn update_active(
         &self,
         environment_id: &str,
+        expected_revision: EnvironmentRevision,
         patch: EnvUpdate,
     ) -> Result<EnvItem, EnvironmentApplicationError> {
         self.ensure_mutable(environment_id)?;
-        match self.envs.update(environment_id, patch).await? {
+        match self
+            .envs
+            .update(environment_id, expected_revision, patch)
+            .await?
+        {
             Some(item) => Ok(item),
             None => match self.envs.get(environment_id).await? {
                 Some(item) if item.archived_at.is_some() => {
@@ -415,6 +463,7 @@ mod tests {
             metadata: Default::default(),
             scope: None,
             config: EnvironmentConfig::SelfHosted,
+            sandbox_policy: None,
         }
     }
 
@@ -524,6 +573,7 @@ mod tests {
                 metadata: Default::default(),
                 scope: None,
                 config: EnvironmentConfig::SelfHosted,
+                sandbox_policy: None,
             })
             .await
             .expect("R1");
@@ -586,6 +636,7 @@ mod tests {
                 metadata: Default::default(),
                 scope: None,
                 config: EnvironmentConfig::SelfHosted,
+                sandbox_policy: None,
             })
             .await;
         assert!(
@@ -840,6 +891,7 @@ mod tests {
                 metadata: Default::default(),
                 scope: None,
                 config: EnvironmentConfig::SelfHosted,
+                sandbox_policy: None,
             })
             .await
             .unwrap();
@@ -992,6 +1044,7 @@ mod tests {
                 metadata: Default::default(),
                 scope: None,
                 config: EnvironmentConfig::SelfHosted,
+                sandbox_policy: None,
             })
             .await
             .expect("T1");

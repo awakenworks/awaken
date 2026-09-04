@@ -410,3 +410,30 @@ read-only capability fails closed instead of silently projecting a writable copy
   `awaken-managed-contract` (DTOs), `awaken-management-contract`
   (`MountRequirement`/`RealizedMount`), `awaken-capability` (`reconcile`).
 - [INVARIANTS.md](../INVARIANTS.md) — G3, G9, G13, G16, G21.
+
+## Amendment — 2026-09-05: configurable provider-relative resource prompt variables
+
+`ResolvedInput` remains the sole resource-binding authority and its existing
+optional `instructions` is the configuration surface; no global template store
+or backend-specific prompt track is added. The one resource prompt projection
+renders File, MemoryStore, and Repository bindings for Native and ACP alike and
+supports only these namespaced variables:
+`{{awaken.workspace}}`, `{{awaken.outputs}}`,
+`{{awaken.resource.binding}}`, `{{awaken.resource.path}}`,
+`{{awaken.resource.directory}}`, `{{awaken.resource.logical_path}}`, and
+`{{awaken.resource.access}}`. Unknown or unterminated `awaken.*` variables fail
+before realization; unrelated braces remain authored text.
+
+The frozen logical mount is never replaced by a host-absolute path. Namespace
+and Container render sandbox-absolute POSIX paths. TrustedHost/Workdir renders
+relative paths with the platform separator so the process resolves them from
+its working directory without sending the operator's private root through the
+model prompt; `{{awaken.workspace}}` is `.` in that mode. Filesystem Memory
+mounts keep their typed access intent there, but read-only is explicitly
+advisory because an unconfined host Agent can mutate it; isolated Workdir
+admission still rejects the same request, while Namespace/Container retain
+enforced read-only. Filesystem Memory renders a mount instruction; semantic Memory
+renders binding-scoped memory-tool instructions and rejects templates that use
+workspace, outputs, path, or directory variables. Thus path choice occurs only
+after the single Session Environment is known, while resource identity, access,
+instructions, and generation remain pinned by the existing binding.

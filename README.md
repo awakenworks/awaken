@@ -86,12 +86,20 @@ set the one deployment authority in `~/.awaken/config.toml` (on Windows,
 sandbox_tier = "local"
 ```
 
+A Worker whose primary tier remains Namespace/Container can additionally opt in
+to exact host execution with `sandbox_trusted_host_enabled = true`. In both
+cases the Environment must bind a `trusted_host` + `workdir` execution policy;
+the setting only advertises Worker capability and never silently changes an
+isolated Environment.
+
 The Local adapter launches ACP CLIs and shell commands as host child processes
 with the Session workspace as their working directory. Files, repositories,
 MemoryStores, Skills, and outputs still enter through Agent resource bindings;
-Local mode does not expose arbitrary host paths or create a second resource
-authority. Use an MCP server when an existing local service should be called
-without filesystem access.
+prompts receive only provider-relative paths and no second resource authority
+is created. The child is nevertheless unconfined and can access anything the
+host user can access, so TrustedHost is never a cloud or multi-tenant boundary.
+Use an MCP server when an existing local service should be called through a
+narrower capability instead of ambient filesystem access.
 
 The Console guides one canonical path:
 

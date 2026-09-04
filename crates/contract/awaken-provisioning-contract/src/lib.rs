@@ -52,8 +52,9 @@ pub use lease::{
     decide_lease_action, egress_permitted, reconcile_adoption, reconcile_and_apply,
 };
 pub use prepare::{
-    EnvironmentPlan, PrepareError, prepare_environment, validate_adopted_sandbox_control_services,
-    validate_mount_requirements, validate_sandbox_control_services,
+    EnvironmentPlan, PrepareError, prepare_environment, prepare_trusted_host_environment,
+    validate_adopted_sandbox_control_services, validate_mount_requirements,
+    validate_sandbox_control_services, validate_trusted_host_mount_requirements,
 };
 pub use sandbox::{
     BlobSource, CheckpointObjectMetadata, ContainerContinuationHandle, ContainerSandboxHandleV1,
@@ -78,10 +79,11 @@ pub use sandbox::{
     validate_repository_sandbox_adoption_layout, validate_repository_sandbox_layout,
 };
 pub use spec::{
-    Command, EnvironmentKind, FilesystemContinuity, MaterializedCommand, MaterializedEnvValue,
-    MaterializedEnvVar, RootfsSource, SandboxCapacityShapeId, SandboxCheckpointExpiryBehavior,
-    SandboxIdleRetentionMode, SandboxIdleRetentionPolicy, SandboxOverride, SandboxProvisioning,
-    SandboxRealizationFingerprint, SandboxSpec, Stdio, materialize_process_command,
+    Command, EnvironmentKind, FilesystemContinuity, HostAccessPolicy, MaterializedCommand,
+    MaterializedEnvValue, MaterializedEnvVar, RootfsSource, SandboxCapacityShapeId,
+    SandboxCheckpointExpiryBehavior, SandboxIdleRetentionMode, SandboxIdleRetentionPolicy,
+    SandboxOverride, SandboxProvisioning, SandboxRealizationFingerprint, SandboxSpec, Stdio,
+    materialize_process_command,
 };
 pub use vocab::{
     Artifact, CacheVolumeLocation, EnvValue, EnvVar, EnvVisibility, MemoryWriteConsistency,
