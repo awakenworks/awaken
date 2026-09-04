@@ -35,4 +35,3 @@ export function ToolCallGroup({ calls, summaryLabel, labels, defaultOpen, icon, 
         return null;
     return (_jsxs("div", { className: cx("ui-chat-tool-group", className), "data-tone": tone, children: [_jsxs("button", { className: classes?.header, type: "button", "aria-expanded": open, onClick: () => setOpen((value) => !value), children: [_jsx("span", { className: classes?.icon, "aria-hidden": "true", children: icon ?? "◇" }), _jsx("span", { className: classes?.summary, children: summaryLabel }), _jsx("i", { className: classes?.dot, "aria-hidden": "true" }), _jsx("span", { className: cx(classes?.chevron, open && "is-open"), "data-open": open || undefined, "aria-hidden": "true", children: expandIcon ?? (open ? "⌄" : "›") })] }), open ? _jsx("div", { className: classes?.body, children: calls.map((call) => _jsx(ToolCallCard, { ...call, labels: labels, classes: callClasses }, call.id)) }) : null] }));
 }
-//# sourceMappingURL=tool-call.js.map

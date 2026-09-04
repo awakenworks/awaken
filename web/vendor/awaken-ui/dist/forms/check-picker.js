@@ -12,4 +12,3 @@ export function CheckPicker({ options, selected, onChange, empty = "—", classN
     }
     return (_jsx("div", { className: cx("ui-check-picker", classes?.root, className), children: options.map((option) => (_jsxs("label", { className: cx("ui-check-picker__row", classes?.row), children: [_jsx("input", { checked: selected.includes(option.id), disabled: option.disabled, onChange: () => toggle(option.id), type: "checkbox" }), _jsx("span", { className: cx("ui-check-picker__label", classes?.label), children: option.label ?? option.id }), option.description ? (_jsx("span", { className: cx("ui-check-picker__description", classes?.description), children: option.description })) : null] }, option.id))) }));
 }
-//# sourceMappingURL=check-picker.js.map

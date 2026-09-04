@@ -8,4 +8,3 @@ export type InlineNoticeProps = Omit<HTMLAttributes<HTMLDivElement>, "title"> & 
     readonly details?: ReactNode;
 };
 export declare function InlineNotice({ tone, title, icon, actions, details, children, className, ...props }: InlineNoticeProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=inline-notice.d.ts.map

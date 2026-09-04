@@ -13,4 +13,3 @@ export type ChatMessageListProps = {
 };
 /** Follows streaming output only while the reader remains near the bottom. */
 export declare function ChatMessageList({ children, ariaLabel, jumpLabel, busy, className, viewportClassName, jumpClassName, jumpIcon, }: ChatMessageListProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=message-list.d.ts.map

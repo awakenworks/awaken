@@ -47,4 +47,3 @@ export { StatusDot, type StatusDotProps } from "./data/status-dot.js";
 export { StatCard, StatGrid, type StatCardProps, type StatTone, } from "./data/stat-card.js";
 export { EmptyState, ErrorState, LoadingRow, LoadingState, Skeleton, SkeletonList, SurfaceGate, type GateQuery, type StateAction, type StateProps, type SurfaceGateProps, } from "./feedback/state.js";
 export { InlineNotice, type InlineNoticeProps, type InlineNoticeTone, } from "./feedback/inline-notice.js";
-//# sourceMappingURL=index.d.ts.map

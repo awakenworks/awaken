@@ -21,4 +21,3 @@ export type ChatMessageProps = {
     };
 };
 export declare function ChatMessage({ role, authorLabel, body, media, timestamp, actions, children, compact, className, classes, }: ChatMessageProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=message.d.ts.map

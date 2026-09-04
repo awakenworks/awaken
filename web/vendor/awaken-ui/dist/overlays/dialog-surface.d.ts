@@ -19,4 +19,3 @@ export interface DialogSurfaceProps {
  * portal lifecycle, scroll locking, and focus restoration.
  */
 export declare function DialogSurface({ open, onOpenChange, children, rootClassName, panelClassName, overlayClassName, panelAs, panelRef, labelledBy, ariaLabel, closeOnBackdrop, panelProps, }: DialogSurfaceProps): import("react/jsx-runtime").JSX.Element | null;
-//# sourceMappingURL=dialog-surface.d.ts.map

@@ -52,6 +52,12 @@ function fmtObservedAt(timestamp: number): string {
   });
 }
 
+function runtimeFeatureLabel(value: "supported" | "conditional" | "unavailable", zh: boolean): string {
+  if (value === "supported") return zh ? "支持" : "Supported";
+  if (value === "conditional") return zh ? "待验证" : "Conditional";
+  return zh ? "不可用" : "Unavailable";
+}
+
 interface CloudLoginStatus {
   state: "sign_in_required" | "authorizing" | "authenticated" | "failed";
   authorize_url?: string;
@@ -294,24 +300,49 @@ export default function ModelsSurface() {
   return (
     <>
       <Card>
-        <h2>{app.t("Agent runtimes & harnesses", "Agent Runtime 与 Harness")}</h2>
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap" }}>
+          <h2>{app.t("Agent runtimes & harnesses", "Agent Runtime 与 Harness")}</h2>
+          <div className="row">
+            {runtimeCapabilities.dataUpdatedAt > 0 && <span className="mut" style={{ fontSize: 11 }}>{app.t("Last checked", "上次检查")} {new Date(runtimeCapabilities.dataUpdatedAt).toLocaleTimeString()}</span>}
+            <Button variant="ghost" disabled={runtimeCapabilities.isFetching} onClick={() => void runtimeCapabilities.refetch()}>
+              {runtimeCapabilities.isFetching ? app.t("Checking…", "检查中…") : app.t("Refresh status", "刷新状态")}
+            </Button>
+          </div>
+        </div>
         <p className="hint">{app.t(
           "Runtime capability is separate from model API compatibility. ACP rows report installation, login, version, executable state, and Awaken feature support.",
           "Runtime 能力与模型 API 兼容性彼此独立。ACP 条目展示安装、登录、版本、可执行状态以及 Awaken 功能支持情况。",
         )}</p>
-        <div className="stack-list">
+        {runtimeCapabilities.isPending ? (
+          <div aria-label={app.t("Loading Agent runtimes", "正在加载 Agent Runtime")}><Skeleton height={96} /></div>
+        ) : runtimeCapabilities.isError ? (
+          <div className="runtime-status-empty">
+            <div className="empty-state error-text" role="alert">{app.t(
+              "Runtime status could not load. Agent execution compatibility cannot be verified yet.",
+              "无法加载 Runtime 状态，暂时不能验证 Agent 执行兼容性。",
+            )}</div>
+            <Button variant="ghost" onClick={() => void runtimeCapabilities.refetch()}>{app.t("Retry status check", "重试状态检查")}</Button>
+          </div>
+        ) : (runtimeCapabilities.data?.runtimes ?? []).length === 0 ? (
+          <div className="empty-state">{app.t("No Agent runtimes were reported by this deployment.", "此部署未报告任何 Agent Runtime。")}</div>
+        ) : (
+        <div className="runtime-status-list">
           {(runtimeCapabilities.data?.runtimes ?? []).map((runtime: RuntimeCap) => {
             const status = runtime.kind === "native" ? "ready" : runtimeStatus(runtime);
             return (
-              <div className="row" key={runtime.id} style={{ justifyContent: "space-between" }}>
-                <div>
-                  <strong>{runtime.label}</strong>
+              <article className="runtime-status-card" key={runtime.id}>
+                <div className="runtime-status-main">
+                  <div className="runtime-status-title">
+                    <span className={`runtime-status-dot is-${status}`} aria-hidden="true" />
+                    <strong>{runtime.label}</strong>
+                    <Pill tone={runtime.kind === "native" ? "neutral" : "ok"}>{runtime.kind === "native" ? app.t("Native Awaken", "Native Awaken") : "ACP"}</Pill>
+                  </div>
                   <div className="mut mono">{runtime.id}{runtime.local?.version ? ` · ${runtime.local.version}` : ""}</div>
                   {runtime.local?.remediation && status !== "ready" && (
-                    <small className="mut">{runtime.local.remediation}</small>
+                    <div className="runtime-remediation"><span aria-hidden="true">→</span><small>{runtime.local.remediation}</small></div>
                   )}
                 </div>
-                <div className="row">
+                <div className="runtime-status-badges" aria-label={app.t(`${runtime.label} status`, `${runtime.label} 状态`)}>
                   <Pill tone={status === "ready" ? "ok" : "warn"}>
                     {status === "ready"
                       ? app.t("Executable", "可执行")
@@ -329,10 +360,23 @@ export default function ModelsSurface() {
                     </Pill>
                   )}
                 </div>
-              </div>
+                {runtime.features && (
+                  <div className="runtime-feature-strip">
+                    {([
+                      [app.t("Session", "Session"), runtime.features.environment_session],
+                      [app.t("Working directory", "工作目录"), runtime.features.working_directory],
+                      [app.t("State machine", "状态机"), runtime.features.state_machine],
+                      [app.t("Provider Web", "Provider Web"), runtime.features.provider_server_tools],
+                    ] as const).map(([label, value]) => (
+                      <span key={label}>{label} <Pill tone={value === "supported" ? "ok" : value === "conditional" ? "warn" : "neutral"}>{runtimeFeatureLabel(value, app.locale === "zh")}</Pill></span>
+                    ))}
+                  </div>
+                )}
+              </article>
             );
           })}
         </div>
+        )}
       </Card>
       {byokEnabled && (descriptors.isPending || credentials.isPending || connections.isPending || catalog.isPending ? (
         <Card>

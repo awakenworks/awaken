@@ -8,4 +8,3 @@ export function EditorForm({ onSubmit, onCancel, error, errorPrefix, pending, ca
         return form;
     return (_jsxs("div", { className: cx("ui-editor-form-split", classes?.split), children: [_jsx("div", { className: cx("ui-editor-form-split__form", classes?.formPane), children: form }), _jsx("div", { className: cx("ui-editor-form-split__assistant", classes?.assistantPane), children: assistant })] }));
 }
-//# sourceMappingURL=editor-form.js.map

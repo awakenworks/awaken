@@ -14,4 +14,3 @@ export type ChatApprovalProps = {
 };
 /** Product-neutral human-in-the-loop decision embedded in a transcript. */
 export declare function ChatApproval({ title, description, note, onNoteChange, noteLabel, notePlaceholder, approveLabel, rejectLabel, onApprove, onReject, pending, }: ChatApprovalProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=approval.d.ts.map

@@ -16,4 +16,3 @@ export type BreadcrumbItemProps = BreadcrumbItemBaseProps & ((HTMLAttributes<HTM
 }));
 export declare function BreadcrumbItem(itemProps: BreadcrumbItemProps): import("react/jsx-runtime").JSX.Element;
 export {};
-//# sourceMappingURL=breadcrumbs.d.ts.map

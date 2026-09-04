@@ -5,4 +5,3 @@ export declare function TableBody({ className, ...props }: HTMLAttributes<HTMLDi
 export declare function TableRow({ className, ...props }: HTMLAttributes<HTMLDivElement>): import("react/jsx-runtime").JSX.Element;
 export declare function TableHeaderCell({ className, ...props }: HTMLAttributes<HTMLSpanElement>): import("react/jsx-runtime").JSX.Element;
 export declare function TableCell({ className, ...props }: HTMLAttributes<HTMLSpanElement>): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=table.d.ts.map

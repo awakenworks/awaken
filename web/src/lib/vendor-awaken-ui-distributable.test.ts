@@ -1,10 +1,17 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { SuiteSwitcher } from "@awaken/ui";
 import { describe, expect, it } from "vitest";
 
 const runtimeIndexUrl = new URL("../../vendor/awaken-ui/dist/index.js", import.meta.url);
 const typeIndexUrl = new URL("../../vendor/awaken-ui/dist/index.d.ts", import.meta.url);
 const relativeExport = /^\s*export(?:\s+type)?\s+(?:\*|\{[^}]*\})\s+from\s+["'](\.[^"']+\.js)["'];?/gm;
+
+function filesBelow(url: URL): URL[] {
+  return readdirSync(url, { withFileTypes: true }).flatMap((entry) => {
+    const child = new URL(`${entry.name}${entry.isDirectory() ? "/" : ""}`, url);
+    return entry.isDirectory() ? filesBelow(child) : [child];
+  });
+}
 
 function relativeExportTargets(source: string): string[] {
   return [...source.matchAll(relativeExport)].map((match) => match[1]);
@@ -51,5 +58,13 @@ describe("vendored @awaken/ui distributable closure", () => {
     expect(missingRelativeExports(missing, typeIndexUrl, true)).toEqual([
       "./navigation/not-present.js",
     ]); // V4
+  });
+
+  it("does not publish dangling source-map references", () => {
+    const dist = new URL("../../vendor/awaken-ui/dist/", import.meta.url);
+    const dangling = filesBelow(dist)
+      .filter((url) => /\.(?:js|d\.ts)$/.test(url.pathname))
+      .filter((url) => readFileSync(url, "utf8").includes("sourceMappingURL="));
+    expect(dangling.map((url) => url.pathname)).toEqual([]);
   });
 });

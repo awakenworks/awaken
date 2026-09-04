@@ -28,4 +28,3 @@ export type ReasoningBlockProps = {
     };
 };
 export declare function ReasoningBlock({ label, children, defaultOpen, streaming, icon, expandIcon, className, classes, }: ReasoningBlockProps): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=status.d.ts.map

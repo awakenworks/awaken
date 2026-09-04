@@ -38,4 +38,3 @@ export interface AuthoringGuideProps<Key extends string> {
     readonly className?: string;
 }
 export declare function AuthoringGuide<Key extends string>({ label, steps, onSelect, completeIcon, incompleteIcon, blocked, className, }: AuthoringGuideProps<Key>): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=authoring.d.ts.map

@@ -18,4 +18,3 @@ export function TableHeaderCell({ className, ...props }) {
 export function TableCell({ className, ...props }) {
     return _jsx("span", { ...props, className: cx("ui-table__td", className), role: "cell" });
 }
-//# sourceMappingURL=table.js.map

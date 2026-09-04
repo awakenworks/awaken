@@ -69,4 +69,3 @@ export function Popover({ children, content, placement = "bottom-start", closeOn
                                 })
                                 : undefined, onKeyDown: onPanelKeyDown, ref: setPanelRef, role: role, children: content }) }) })] }) }));
 }
-//# sourceMappingURL=popover.js.map

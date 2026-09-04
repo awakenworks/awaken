@@ -17,4 +17,3 @@ export declare function useConfirm(): Confirm;
 export declare function ConfirmProvider({ children }: {
     readonly children: ReactNode;
 }): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=confirm-provider.d.ts.map

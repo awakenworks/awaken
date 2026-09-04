@@ -14,4 +14,3 @@ export function IdentityCard({ selected = false, href, onActivate, className, ..
     const interactive = href !== undefined || onActivate !== undefined;
     return (_jsx("article", { className: cx("ui-identity-card", className), "data-interactive": interactive || undefined, "data-selected": selected || undefined, children: href !== undefined ? (_jsx("a", { className: "ui-identity-card__target", href: href, onClick: onActivate, children: content })) : onActivate !== undefined ? (_jsx("button", { className: "ui-identity-card__target", type: "button", onClick: onActivate, children: content })) : content }));
 }
-//# sourceMappingURL=identity.js.map

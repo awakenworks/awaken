@@ -21,4 +21,3 @@ export type ChatMessageView = {
     readonly reasoningStreaming?: boolean;
     readonly accessory?: ReactNode;
 };
-//# sourceMappingURL=model.d.ts.map

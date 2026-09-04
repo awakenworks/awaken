@@ -40,4 +40,3 @@ export function ChatMessageList({ children, ariaLabel, jumpLabel, busy = false, 
                     scrollToBottom("smooth");
                 }, children: [_jsx("span", { "aria-hidden": "true", children: jumpIcon ?? "↓" }), " ", jumpLabel] })) : null] }));
 }
-//# sourceMappingURL=message-list.js.map

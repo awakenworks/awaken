@@ -9,4 +9,3 @@ export function Switch({ className, label, onChange, onCheckedChange, ...props }
     };
     return (_jsx("input", { ...props, type: "checkbox", role: "switch", "aria-label": props["aria-label"] ?? label, className: cx("ui-switch", className), onChange: handleChange }));
 }
-//# sourceMappingURL=switch.js.map

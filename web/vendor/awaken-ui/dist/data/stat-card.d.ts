@@ -15,4 +15,3 @@ export interface StatCardProps {
 }
 export declare function StatCard({ value, label, icon, hint, tone, variant, onClick, className, ariaLabel, render, }: StatCardProps): import("react/jsx-runtime").JSX.Element;
 export declare function StatGrid({ className, ...props }: HTMLAttributes<HTMLDivElement>): import("react/jsx-runtime").JSX.Element;
-//# sourceMappingURL=stat-card.d.ts.map
