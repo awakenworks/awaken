@@ -116,6 +116,19 @@ fn user(id: &str, text: &str) -> Message {
 fn assistant(id: &str, text: &str) -> Message {
     Message::text(Id(id.into()), Role::Assistant, text)
 }
+fn assistant_with_thinking(id: &str, reasoning: &str, text: &str) -> Message {
+    Message {
+        id: Id(id.into()),
+        role: Role::Assistant,
+        content: vec![
+            ContentBlock::Thinking {
+                text: reasoning.into(),
+                signature: None,
+            },
+            ContentBlock::text(text),
+        ],
+    }
+}
 fn assistant_tool(id: &str, call: &str, name: &str, input: serde_json::Value) -> Message {
     Message {
         id: Id(id.into()),
@@ -302,6 +315,68 @@ fn assistant_text_is_visible_on_every_wire() {
         "hello there"
     );
     assert!(task.history.iter().any(|m| m.text() == "hello there"));
+}
+
+#[test]
+fn committed_thinking_preserves_public_outcome_without_leaking_private_content() {
+    /* Cross-protocol committed-projection decision table. Causes: C1 one
+     * assistant message has Thinking plus public Text; C2 the target is a
+     * message stream (AI SDK/AG-UI), snapshot (A2A), or Managed event stream.
+     * Effects: E1 every protocol exposes public text exactly once; E2 no wire
+     * contains reasoning bytes; E3 Managed alone emits its contentless
+     * agent.thinking marker; E4 snapshot/message-stream replay invents no live
+     * reasoning lifecycle. Rules: R1 C1+AI/AG/A2A=>E1+E2+E4; R2
+     * C1+Managed=>E1+E2+E3. */
+    let outcome = finished(vec![assistant_with_thinking(
+        "a1",
+        "private-chain-of-thought",
+        "public answer",
+    )]);
+
+    let ai = ai_events(&outcome);
+    assert_eq!(
+        ai.iter()
+            .filter(|event| matches!(event, UIStreamEvent::TextDelta { delta, .. } if delta == "public answer"))
+            .count(),
+        1
+    );
+    assert!(!format!("{ai:?}").contains("private-chain-of-thought"));
+
+    let agui = agui_events(&outcome);
+    assert_eq!(
+        agui
+            .iter()
+            .filter(|event| matches!(event, AgUiEvent::TextMessageContent { delta, .. } if delta == "public answer"))
+            .count(),
+        1
+    );
+    assert!(!format!("{agui:?}").contains("private-chain-of-thought"));
+
+    let task = a2a::encode_task("t1", &outcome.new_messages, &outcome);
+    assert_eq!(task.history.len(), 1);
+    assert_eq!(task.history[0].text(), "public answer");
+    assert!(!format!("{task:?}").contains("private-chain-of-thought"));
+
+    let managed = managed_events(&outcome);
+    assert_eq!(
+        managed
+            .iter()
+            .filter(|event| matches!(event, OutboundKind::AgentThinking {}))
+            .count(),
+        1
+    );
+    assert_eq!(
+        managed
+            .iter()
+            .filter(|event| matches!(
+                event,
+                OutboundKind::AgentMessage { content }
+                    if content.iter().any(|block| matches!(block, ContentBlock::Text { text } if text == "public answer"))
+            ))
+            .count(),
+        1
+    );
+    assert!(!format!("{managed:?}").contains("private-chain-of-thought"));
 }
 
 #[test]

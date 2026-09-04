@@ -9,7 +9,7 @@ import { withRealServer, pass } from './harness.mjs';
 
 async function main() {
   try {
-    await withRealServer('default', 38247, async (base, upstream) => {
+    await withRealServer('reasoning', 38247, async (base, upstream) => {
       const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
       const r = await client.sendMessage({
         message: {
@@ -22,7 +22,14 @@ async function main() {
       });
       assert.ok(upstream.requests.length >= 1, 'the fake upstream received the a2a-driven inference call');
       assert.ok(JSON.stringify(r).includes('FAKE:over a2a'), `a2a carried the wire reply: ${JSON.stringify(r)}`);
-      pass('a2a adapter carried a real (wire) model turn end to end');
+      /* A2A snapshot rule: provider Thinking plus Text produces one public
+       * answer snapshot and never serializes the private Thinking block. The
+       * encoder unit decision table separately covers Thinking-only history. */
+      assert.ok(
+        !JSON.stringify(r).includes('PRIVATE-REASONING'),
+        `private reasoning never reached the A2A Task: ${JSON.stringify(r)}`,
+      );
+      pass('A2A client received only the public answer from a reasoning response');
     });
     console.log('E2E PASS: a2a adapter drives the real provider path over a fake upstream.');
     process.exitCode = 0;

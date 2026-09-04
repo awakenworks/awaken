@@ -299,19 +299,41 @@ mod tests {
     }
 
     #[test]
-    fn history_projection_keeps_only_text_from_mixed_content() {
-        let history = [AgentMessage {
-            id: MessageId("a1".into()),
-            role: Role::Assistant,
-            content: vec![
-                ContentBlock::image_url("https://x/y.png"),
-                ContentBlock::text("described"),
-            ],
-        }];
+    fn history_projection_keeps_public_text_and_drops_private_thinking() {
+        /* A2A snapshot decision table. Causes: C1 an assistant row contains
+         * private Thinking plus public Text; C2 a row contains only Thinking.
+         * Effects: E1 C1 produces one Agent message containing only public
+         * text; E2 C2 produces no history/status message; E3 no thinking bytes
+         * reach the snapshot. Rules: R1 C1=>E1+E3; R2 C2=>E2+E3. A2A remains
+         * snapshot-only and reuses the canonical `blocks_text` projection. */
+        let history = [
+            AgentMessage {
+                id: MessageId("a1".into()),
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Thinking {
+                        text: "private-reasoning".into(),
+                        signature: None,
+                    },
+                    ContentBlock::image_url("https://x/y.png"),
+                    ContentBlock::text("described"),
+                ],
+            },
+            AgentMessage {
+                id: MessageId("a2".into()),
+                role: Role::Assistant,
+                content: vec![ContentBlock::Thinking {
+                    text: "private-only".into(),
+                    signature: None,
+                }],
+            },
+        ];
         let task = encode_task("t", &history, &outcome(false, None));
-        // The image is dropped from the A2A projection; the text survives.
-        assert_eq!(task.status.message.unwrap().text(), "described");
+        // Image and Thinking are dropped; only public text survives.
+        assert_eq!(task.status.message.as_ref().unwrap().text(), "described");
+        assert_eq!(task.history.len(), 1);
         assert_eq!(task.history[0].parts.len(), 1);
+        assert!(!format!("{task:?}").contains("private"));
     }
 
     #[test]
