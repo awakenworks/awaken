@@ -60,7 +60,8 @@ async fn a2a_message_send_over_a_live_kimi_model() {
         awaken_provider_genai::AdapterKind::Anthropic,
         base,
         key,
-    );
+    )
+    .expect("explicit client construction");
     let app = build_router(Arc::new(executor), model);
 
     // One A2A Run against the live model. The prompt steers a short, tool-free

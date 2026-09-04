@@ -182,6 +182,7 @@ async fn stalled_stream_times_out_as_a_retryable_timeout() {
     let base_url = spawn_sse_server(StreamFixture::AnthropicStall).await;
     let executor =
         GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
+            .expect("explicit client construction")
             .with_idle_timeout(Duration::from_millis(300));
 
     // Without the idle timeout the consumption loop would hang forever; the
@@ -207,6 +208,7 @@ async fn heartbeating_unfinished_stream_obeys_the_total_call_deadline() {
     let base_url = spawn_sse_server(StreamFixture::AnthropicHeartbeat).await;
     let executor =
         GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
+            .expect("explicit client construction")
             .with_timeout(Duration::from_millis(300))
             .with_idle_timeout(Duration::from_secs(5));
 
@@ -236,6 +238,7 @@ async fn transport_heartbeats_do_not_count_as_model_progress() {
     let base_url = spawn_sse_server(StreamFixture::AnthropicHeartbeat).await;
     let executor =
         GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
+            .expect("explicit client construction")
             .with_timeout(Duration::from_secs(5))
             .with_idle_timeout(Duration::from_millis(300));
 
@@ -263,6 +266,7 @@ async fn protocol_end_completes_without_waiting_for_transport_eof() {
     let base_url = spawn_sse_server(StreamFixture::OpenAiCompleteAfterEmptyChoices).await;
     let executor =
         GenaiExecutor::from_materialized_endpoint(AdapterKind::OpenAI, base_url, "test-key")
+            .expect("explicit client construction")
             .with_idle_timeout(Duration::from_secs(5));
 
     let result = tokio::time::timeout(
@@ -284,6 +288,7 @@ async fn openai_empty_choice_heartbeats_do_not_defeat_the_idle_timeout() {
     let base_url = spawn_sse_server(StreamFixture::OpenAiEmptyChoiceStall).await;
     let executor =
         GenaiExecutor::from_materialized_endpoint(AdapterKind::OpenAI, base_url, "test-key")
+            .expect("explicit client construction")
             .with_timeout(Duration::from_secs(5))
             .with_idle_timeout(Duration::from_millis(300));
 
@@ -307,6 +312,7 @@ async fn openai_empty_terminal_response_fails_closed() {
     let base_url = spawn_sse_server(StreamFixture::OpenAiEmptyTerminal).await;
     let executor =
         GenaiExecutor::from_materialized_endpoint(AdapterKind::OpenAI, base_url, "test-key")
+            .expect("explicit client construction")
             .with_idle_timeout(Duration::from_secs(2));
 
     let error = executor

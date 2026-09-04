@@ -18,7 +18,7 @@ use awaken_runtime_contract::llm::{
 use genai::Client;
 use genai::chat::{
     Binary, ChatMessage, ChatRequest as GenaiChatRequest, ContentPart, MessageContent,
-    ThinkingBlock, Tool as GenaiTool, ToolCall as GenaiToolCall, ToolName, ToolResponse, Usage,
+    Tool as GenaiTool, ToolCall as GenaiToolCall, ToolName, ToolResponse, Usage,
 };
 
 /// The genai wire adapter, re-exported so a consumer selects a provider wire without
@@ -148,7 +148,7 @@ impl GenaiExecutor {
         adapter: genai::adapter::AdapterKind,
         base_url: impl Into<String>,
         authentication: impl Into<String>,
-    ) -> Self {
+    ) -> Result<Self> {
         Self::from_materialized_endpoint_with_reasoning(
             adapter,
             base_url,
@@ -165,10 +165,10 @@ impl GenaiExecutor {
         adapter: genai::adapter::AdapterKind,
         base_url: impl Into<String>,
         authentication: impl Into<String>,
-    ) -> Self {
-        let mut executor = Self::from_materialized_endpoint(adapter, base_url, authentication);
+    ) -> Result<Self> {
+        let mut executor = Self::from_materialized_endpoint(adapter, base_url, authentication)?;
         executor.provider_kind = Some(provider_kind.into());
-        executor
+        Ok(executor)
     }
 
     fn from_materialized_endpoint_with_reasoning(
@@ -176,7 +176,7 @@ impl GenaiExecutor {
         base_url: impl Into<String>,
         authentication: impl Into<String>,
         unspecified_reasoning: awaken_runtime_contract::UnspecifiedReasoning,
-    ) -> Self {
+    ) -> Result<Self> {
         use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
         use genai::{ModelIden, ServiceTarget};
 
@@ -192,10 +192,13 @@ impl GenaiExecutor {
         );
         let client = Client::builder()
             .with_service_target_resolver(resolver)
-            .build();
+            .build()
+            .map_err(|error| {
+                Error::Binding(format!("provider client could not be constructed: {error}"))
+            })?;
         let mut executor = Self::with_client_for_adapter(client, adapter);
         executor.unspecified_reasoning = unspecified_reasoning;
-        executor
+        Ok(executor)
     }
 }
 
@@ -582,9 +585,12 @@ pub async fn probe_credential(
 ) -> CredentialProbe {
     use awaken_runtime_contract::resolved::ModelBinding;
 
-    let executor =
+    let Ok(executor) =
         GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, api_key)
-            .with_timeout(Duration::from_secs(30));
+    else {
+        return CredentialProbe::Unknown;
+    };
+    let executor = executor.with_timeout(Duration::from_secs(30));
     let request = ChatRequest {
         model_binding: ModelBinding {
             provider_identity_ref: "probe".into(),
@@ -663,7 +669,7 @@ fn to_genai_request_with_adapter(
             .content
             .iter()
             .map(|block| to_genai_part(block, dialect))
-            .collect::<Result<Vec<_>>>()?
+            .collect::<Result<Vec<Vec<_>>>>()?
             .into_iter()
             .flatten()
             .collect();
@@ -751,12 +757,13 @@ fn to_genai_request_with_adapter(
     Ok(genai_request)
 }
 
-/// Map one neutral content block onto a `genai` content part. Text maps to text;
-/// an image maps to a `Binary` (base64 inline or a URL the provider fetches).
-fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> Result<Option<ContentPart>> {
+/// Map one neutral content block onto zero or more `genai` content parts. The
+/// official SDK represents signed thinking as an adjacent signature/reasoning
+/// pair, while every other neutral block projects to at most one part.
+fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> Result<Vec<ContentPart>> {
     match (project_part_kind(dialect, neutral_part_kind(block)), block) {
         (ProviderPartKind::Text, ContentBlock::Text { text }) => {
-            Ok(Some(ContentPart::Text(text.clone())))
+            Ok(vec![ContentPart::Text(text.clone())])
         }
         (
             ProviderPartKind::Text,
@@ -766,19 +773,21 @@ fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> Result<Opt
                 content,
                 ..
             },
-        ) => Ok(Some(ContentPart::Text(format!(
+        ) => Ok(vec![ContentPart::Text(format!(
             "{title}\nSource: {source}\n{}",
             content
                 .iter()
                 .map(|part| part.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n")
-        )))),
-        (ProviderPartKind::Text, ContentBlock::ToolReference { tool_name }) => Ok(Some(
-            ContentPart::Text(format!("Deferred tool `{tool_name}` is now available.")),
-        )),
+        ))]),
+        (ProviderPartKind::Text, ContentBlock::ToolReference { tool_name }) => {
+            Ok(vec![ContentPart::Text(format!(
+                "Deferred tool `{tool_name}` is now available."
+            ))])
+        }
         (ProviderPartKind::Binary, ContentBlock::Image { source }) => {
-            Ok(Some(ContentPart::Binary(to_genai_binary(source)?)))
+            Ok(vec![ContentPart::Binary(to_genai_binary(source)?)])
         }
         (
             ProviderPartKind::Binary,
@@ -787,10 +796,10 @@ fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> Result<Opt
                 title,
                 context,
             },
-        ) if dialect == TranscriptDialect::Anthropic => Ok(Some(ContentPart::from_custom(
+        ) if dialect == TranscriptDialect::Anthropic => Ok(vec![ContentPart::from_custom(
             anthropic_content::document(source, title.as_deref(), context.as_deref())?,
             None,
-        ))),
+        )]),
         (ProviderPartKind::Binary, ContentBlock::Document { source, .. }) => {
             let part = match source {
                 DocumentSource::Base64 { media_type, data } => {
@@ -808,15 +817,15 @@ fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> Result<Opt
                     )));
                 }
             };
-            Ok(Some(part))
+            Ok(vec![part])
         }
         (ProviderPartKind::ToolCall, ContentBlock::ToolUse { id, name, input }) => {
-            Ok(Some(ContentPart::ToolCall(GenaiToolCall {
+            Ok(vec![ContentPart::ToolCall(GenaiToolCall {
                 call_id: id.clone(),
                 fn_name: name.clone(),
                 fn_arguments: input.clone(),
                 thought_signatures: None,
-            })))
+            })])
         }
         (
             ProviderPartKind::ToolResponse,
@@ -825,7 +834,7 @@ fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> Result<Opt
                 content,
                 is_error,
             },
-        ) if dialect == TranscriptDialect::Anthropic => Ok(Some(ContentPart::from_custom(
+        ) if dialect == TranscriptDialect::Anthropic => Ok(vec![ContentPart::from_custom(
             serde_json::json!({
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
@@ -836,7 +845,7 @@ fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> Result<Opt
                 "is_error": is_error,
             }),
             None,
-        ))),
+        )]),
         (
             ProviderPartKind::ToolResponse,
             ContentBlock::ToolResult {
@@ -844,25 +853,34 @@ fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> Result<Opt
                 content,
                 ..
             },
-        ) => Ok(Some(ContentPart::ToolResponse(ToolResponse::new(
+        ) => Ok(vec![ContentPart::ToolResponse(ToolResponse::new(
             tool_use_id.clone(),
             extract_text(content),
-        )))),
+        ))]),
         (
             ProviderPartKind::Reasoning | ProviderPartKind::SignedThinking,
             ContentBlock::Thinking { text, signature },
-        ) => Ok(Some(
+        ) => Ok(
             match project_thinking(dialect, text.clone(), signature.clone()) {
                 ThinkingProjection::Signed {
                     thinking,
-                    signature,
-                } => ContentPart::Thinking(ThinkingBlock::new(thinking, signature)),
+                    signature: Some(signature),
+                } => vec![
+                    ContentPart::ThoughtSignature(signature),
+                    ContentPart::ReasoningContent(thinking),
+                ],
+                // A signature is required to replay Anthropic thinking. Dropping
+                // one unsigned block here preserves any other valid pairs instead
+                // of making the SDK reject the whole unequal-length set.
+                ThinkingProjection::Signed {
+                    signature: None, ..
+                } => Vec::new(),
                 ThinkingProjection::Reasoning(reasoning) => {
-                    ContentPart::ReasoningContent(reasoning)
+                    vec![ContentPart::ReasoningContent(reasoning)]
                 }
             },
-        )),
-        (ProviderPartKind::Omitted, ContentBlock::Redacted) => Ok(None),
+        ),
+        (ProviderPartKind::Omitted, ContentBlock::Redacted) => Ok(Vec::new()),
         _ => unreachable!("closed transcript projection returned a mismatched part kind"),
     }
 }
@@ -1095,25 +1113,31 @@ pub fn map_stop_reason(reason: &genai::chat::StopReason) -> Result<StopReason> {
 /// Map a provider response onto neutral content blocks, preserving the order of text
 /// and tool requests so an interleaved response (text + tool call + text) survives.
 pub fn map_assistant_output(content: &MessageContent) -> AssistantOutput {
-    let blocks = content
-        .iter()
-        .filter_map(|part| match part {
-            ContentPart::Text(text) => Some(ContentBlock::text(text.clone())),
-            ContentPart::ToolCall(call) => Some(ContentBlock::tool_use(
+    let mut blocks = Vec::new();
+    let mut parts = content.iter().peekable();
+    while let Some(part) = parts.next() {
+        match part {
+            ContentPart::Text(text) => blocks.push(ContentBlock::text(text.clone())),
+            ContentPart::ToolCall(call) => blocks.push(ContentBlock::tool_use(
                 call.call_id.clone(),
                 call.fn_name.clone(),
                 call.fn_arguments.clone(),
             )),
-            ContentPart::ReasoningContent(reasoning) => {
-                Some(ContentBlock::thinking(reasoning.clone()))
+            ContentPart::ThoughtSignature(signature) => {
+                if let Some(ContentPart::ReasoningContent(reasoning)) = parts.peek() {
+                    blocks.push(ContentBlock::signed_thinking(
+                        (*reasoning).clone(),
+                        Some(signature.clone()),
+                    ));
+                    parts.next();
+                }
             }
-            ContentPart::Thinking(thinking) => Some(ContentBlock::signed_thinking(
-                thinking.thinking.clone(),
-                thinking.signature.clone(),
-            )),
-            _ => None,
-        })
-        .collect();
+            ContentPart::ReasoningContent(reasoning) => {
+                blocks.push(ContentBlock::thinking(reasoning.clone()));
+            }
+            _ => {}
+        }
+    }
     AssistantOutput::from_blocks(blocks)
 }
 
@@ -1775,6 +1799,7 @@ mod hermetic_tests {
         let base_url = spawn_sse_server(tool_stream_body()).await;
         let executor =
             GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
+                .expect("explicit client construction")
                 .with_idle_timeout(Duration::from_secs(5));
 
         let request = ChatRequest {

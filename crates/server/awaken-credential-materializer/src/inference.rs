@@ -95,14 +95,14 @@ pub fn executor_from_materialized_endpoint_for_provider(
         "openai" => awaken_provider_genai::AdapterKind::OpenAI,
         other => return Err(ResolvedExecutorError::UnsupportedAdapter(other.to_string())),
     };
-    Ok(Arc::new(
-        awaken_provider_genai::GenaiExecutor::from_materialized_provider_endpoint(
-            provider_kind,
-            adapter,
-            base_url,
-            credential.expose_secret(),
-        ),
-    ))
+    awaken_provider_genai::GenaiExecutor::from_materialized_provider_endpoint(
+        provider_kind,
+        adapter,
+        base_url,
+        credential.expose_secret(),
+    )
+    .map(|executor| Arc::new(executor) as Arc<dyn LlmExecutor>)
+    .map_err(|error| ResolvedExecutorError::ExecutorBuild(error.to_string()))
 }
 
 /// Worker/host adapter for one immutable candidate set. Direct and brokered

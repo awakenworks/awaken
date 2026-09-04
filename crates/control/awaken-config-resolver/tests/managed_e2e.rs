@@ -191,7 +191,8 @@ async fn managed_full_chain_calls_real_model() {
         awaken_provider_genai::AdapterKind::Anthropic,
         inference.base_url.clone().unwrap(),
         inference.credential.as_ref().unwrap().expose_secret(),
-    );
+    )
+    .expect("resolved provider client construction");
     let request = ChatRequest {
         model_binding: ModelBinding {
             provider_identity_ref: inference.triple.provider_id.clone(),

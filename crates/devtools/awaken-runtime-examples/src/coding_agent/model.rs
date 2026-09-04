@@ -35,13 +35,13 @@ pub fn build_executor() -> anyhow::Result<Arc<dyn LlmExecutor>> {
             AdapterKind::OpenAI,
             "https://api.openai.com/v1",
             key,
-        )
+        )?
     } else if let Some(key) = env_nonempty("ANTHROPIC_API_KEY") {
         GenaiExecutor::from_materialized_endpoint(
             AdapterKind::Anthropic,
             "https://api.anthropic.com/v1",
             key,
-        )
+        )?
     } else {
         anyhow::bail!("set an explicit provider credential for the coding-agent example")
     };
@@ -96,8 +96,9 @@ fn custom_client(
 
     // A generous default token budget: reasoning models spend tokens thinking
     // before they emit a tool call, and the provider sends no per-call limit.
-    Ok(Client::builder()
+    Client::builder()
         .with_service_target_resolver(resolver)
         .with_chat_options(ChatOptions::default().with_max_tokens(8192))
-        .build())
+        .build()
+        .map_err(Into::into)
 }

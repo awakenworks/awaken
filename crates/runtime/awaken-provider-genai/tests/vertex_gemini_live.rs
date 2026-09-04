@@ -31,6 +31,7 @@ fn live_executor() -> GenaiExecutor {
         format!("https://{host}/v1/projects/{project}/locations/{location}/"),
         token,
     )
+    .expect("explicit client construction")
 }
 
 #[tokio::test]

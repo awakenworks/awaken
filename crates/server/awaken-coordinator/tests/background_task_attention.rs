@@ -350,7 +350,8 @@ async fn live_model_observes_background_completion_through_the_system_attention_
         },
     };
     let model: Arc<dyn LlmExecutor> = Arc::new(
-        awaken_provider_genai::GenaiExecutor::from_materialized_endpoint(adapter, base, key),
+        awaken_provider_genai::GenaiExecutor::from_materialized_endpoint(adapter, base, key)
+            .expect("explicit client construction"),
     );
     let events = exercise_background_attention(model, &model_ref, Duration::from_secs(90)).await;
     assert_completion_chain(&events);

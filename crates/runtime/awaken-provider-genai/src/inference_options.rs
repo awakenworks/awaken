@@ -149,7 +149,8 @@ mod tests {
             AdapterKind::OpenAI,
             "https://api.deepseek.com",
             "fixture-key",
-        );
+        )
+        .expect("explicit client construction");
         assert!(
             compatible
                 .chat_options(&controlled_request(Default::default()), true)

@@ -35,7 +35,8 @@ fn live_host() -> Option<(SharedHost, String)> {
         awaken_provider_genai::AdapterKind::Anthropic,
         base,
         key,
-    );
+    )
+    .expect("explicit client construction");
     Some((SharedHost::new(Arc::new(executor), model.clone()), model))
 }
 
