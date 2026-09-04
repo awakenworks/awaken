@@ -191,7 +191,7 @@ async-trait = "0.1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 tokio-util = "0.7"
 url = "2.5"
-genai = { git = "https://github.com/awakenworks/rust-genai.git", rev = "d025c7b175de6086001c562df761c86029435b62" }
+genai = { git = "https://github.com/awakenworks/rust-genai.git", rev = "da7b568fb413b3197acc13c93f334884f97c81ad" }
 axum = "0.8"
 # Property-based (lightweight formal) verification: dev-only. Encodes universally-
 # quantified invariants (tenant-isolation fence, lease-reclaim monotonicity, archive/

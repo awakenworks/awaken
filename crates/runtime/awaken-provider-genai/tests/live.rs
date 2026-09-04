@@ -58,7 +58,8 @@ fn live_executor() -> (GenaiExecutor, String) {
     };
     let model = std::env::var("AWAKEN_GENAI_MODEL").unwrap_or_else(|_| default_model.to_string());
     (
-        GenaiExecutor::from_materialized_endpoint(adapter, base_url, key),
+        GenaiExecutor::from_materialized_endpoint(adapter, base_url, key)
+            .expect("explicit client construction"),
         model,
     )
 }
@@ -255,7 +256,8 @@ fn live_deepseek_anthropic_executor() -> (GenaiExecutor, String) {
             awaken_provider_genai::AdapterKind::Anthropic,
             "https://api.deepseek.com/anthropic",
             key,
-        ),
+        )
+        .expect("explicit client construction"),
         model,
     )
 }
@@ -382,7 +384,8 @@ async fn live_deepseek_openai_chat_reasoning_tool_round_trip() {
         awaken_provider_genai::AdapterKind::OpenAI,
         "https://api.deepseek.com/v1",
         key,
-    );
+    )
+    .expect("explicit client construction");
 
     assert_deepseek_reasoning_tool_round_trip(
         &executor,
@@ -416,7 +419,8 @@ async fn live_deepseek_openai_chat_three_large_tool_rounds() {
         awaken_provider_genai::AdapterKind::OpenAI,
         "https://api.deepseek.com/v1",
         key,
-    );
+    )
+    .expect("explicit client construction");
 
     assert_deepseek_three_large_tool_rounds(&executor, model, TestTransport::Buffered).await;
 }
@@ -434,7 +438,8 @@ async fn live_deepseek_openai_chat_streaming_three_large_tool_rounds() {
         awaken_provider_genai::AdapterKind::OpenAI,
         "https://api.deepseek.com/v1",
         key,
-    );
+    )
+    .expect("explicit client construction");
 
     assert_deepseek_three_large_tool_rounds(&executor, model, TestTransport::Streaming).await;
 }

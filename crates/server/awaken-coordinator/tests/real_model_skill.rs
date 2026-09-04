@@ -122,7 +122,8 @@ async fn kimi_discovers_reads_and_follows_a_skill() {
         awaken_provider_genai::AdapterKind::Anthropic,
         base,
         key,
-    );
+    )
+    .expect("explicit client construction");
     let app = build_router_with_managed_skills(Arc::new(executor), model, vec![codeword]).await;
     let id = create_session(&app).await;
 
