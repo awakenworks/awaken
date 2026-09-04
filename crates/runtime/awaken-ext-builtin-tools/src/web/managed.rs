@@ -226,7 +226,7 @@ impl WebSearchProvider for ManagedGatewayWebProvider {
     async fn search(
         &self,
         request: WebSearchRequest,
-        credential: Option<&CredentialMaterial>,
+        credential: Option<&Credential>,
     ) -> Result<Vec<WebSearchResult>, ToolError> {
         if credential.is_some() {
             return Err(ToolError::Execution(
@@ -302,7 +302,7 @@ impl WebFetchProvider for ManagedGatewayWebProvider {
     async fn fetch(
         &self,
         request: WebFetchRequest,
-        credential: Option<&CredentialMaterial>,
+        credential: Option<&Credential>,
         domain_filter: Option<&WebDomainFilter>,
     ) -> Result<String, ToolError> {
         if domain_filter.is_some() {
@@ -504,9 +504,10 @@ mod tests {
                         options: json!({"route_ref":"web-search:brave@7"}),
                         user_location: None,
                     },
-                    Some(&CredentialMaterial::secret(
-                        awaken_runtime_contract::RedactedString::new("must-not-pass"),
-                    )),
+                    Some(&Credential::Header {
+                        name: "X-Forbidden".into(),
+                        value: "must-not-pass".into(),
+                    }),
                 )
                 .await
                 .is_err(),
