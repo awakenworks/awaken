@@ -48,7 +48,6 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `requirements-coverage.md` | Coverage map | Not required | n/a |
 | `formal-verification-expansion.md` | Coverage report | Not required | n/a |
 | `design/architecture-overview.md` | Navigation / context map | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
-| `design/acp-harness-capability-and-tool-bridge.md` | Design narrative | Not required | n/a |
 | `design/config-to-run-execution-flow.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/config-publication-lifecycle.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/protocol-adapter-boundaries.md` | Product/downstream mapping | Not required | n/a |
@@ -74,6 +73,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/web-ui.md` | Product/downstream mapping | Not required | n/a |
 | `design/credentials-and-vaults.md` | Product/downstream mapping | Not required | n/a |
 | `design/resources-memory-files-skills.md` | Role owner | Required | self |
+| `design/resources-memory-files-skills-roadmap.md` | Delegated boundary narrative | Delegated | [resources-memory-files-skills.md](design/resources-memory-files-skills.md#resource-input-component-catalog) |
 | `design/observability-eval-dataset-boundary.md` | Product/downstream mapping | Not required | n/a |
 | `design/prompt-skill-optimization-data-contracts.md` | Proposed implementation contract | Not required | n/a |
 | `design/prompt-skill-optimization-state-machine.md` | Proposed lifecycle owner | Not required | n/a |
@@ -84,7 +84,6 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/plugin-configuration.md` | Role owner | Required | self |
 | `design/distributed-acp-execution.md` | Design narrative | Not required | n/a |
 | `design/brain-hand-coverage.md` | Coverage report | Not required | n/a |
-| `design/acp-harness-capability-and-tool-bridge.md` | Product/downstream mapping | Not required | n/a |
 | `adr/0001-documentation-model-and-vocabulary-alignment.md` | Decision record | Not required | n/a |
 | `adr/0002-resolver-role-demarcation.md` | Decision record | Not required | n/a |
 | `adr/0003-deferred-work-mechanism-selection.md` | Decision record | Not required | n/a |

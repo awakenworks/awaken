@@ -10,6 +10,59 @@ pub(crate) struct RuntimePublicationIdentity {
     pub(crate) publication_fingerprint: String,
 }
 
+/// Process-local authority carried by a cached Session context. Coordination
+/// may freeze and observe a durable Run but must never execute it; only a
+/// context rebuilt at an execution boundary may own physical effects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RuntimeContextPurpose {
+    CoordinationEnvelope,
+    Execution,
+}
+
+/// Closed cache-admission kernel. Publication equality is necessary but not
+/// sufficient: a coordination envelope deliberately omits execution
+/// realization, so an execution request must rebuild even when every immutable
+/// publication fingerprint is equal.
+#[must_use]
+pub(crate) const fn runtime_context_cache_reuse_admitted(
+    cache_matches_attempt: bool,
+    requested: RuntimeContextPurpose,
+    cached: RuntimeContextPurpose,
+) -> bool {
+    cache_matches_attempt
+        && !matches!(
+            (requested, cached),
+            (
+                RuntimeContextPurpose::Execution,
+                RuntimeContextPurpose::CoordinationEnvelope
+            )
+        )
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn coordination_envelope_never_satisfies_execution_cache_admission() {
+    let cache_matches_attempt = kani::any::<bool>();
+    let requested = if kani::any::<bool>() {
+        RuntimeContextPurpose::CoordinationEnvelope
+    } else {
+        RuntimeContextPurpose::Execution
+    };
+    let cached = if kani::any::<bool>() {
+        RuntimeContextPurpose::CoordinationEnvelope
+    } else {
+        RuntimeContextPurpose::Execution
+    };
+    let admitted = runtime_context_cache_reuse_admitted(cache_matches_attempt, requested, cached);
+
+    assert_eq!(
+        admitted,
+        cache_matches_attempt
+            && !(requested == RuntimeContextPurpose::Execution
+                && cached == RuntimeContextPurpose::CoordinationEnvelope)
+    );
+}
+
 impl RuntimePublicationIdentity {
     pub(crate) fn from_publications(
         root: &ExecutableAgentSnapshot,
@@ -94,6 +147,7 @@ pub(crate) struct SessionCtx {
     /// work such as asynchronous Session continuations.
     pub(crate) claimed_worker: Arc<awaken_dispatch::DispatchWorker<AnyDispatchStore>>,
     pub(crate) runtime_publication_identity: Option<RuntimePublicationIdentity>,
+    pub(crate) purpose: RuntimeContextPurpose,
     pub(crate) config: ExecutableAgentSnapshot,
     pub(crate) commit: Arc<HostCommit>,
     /// Canonical topology-independent attempt capabilities. Direct execution
@@ -140,6 +194,15 @@ pub(crate) struct SessionCtx {
 }
 
 impl SessionCtx {
+    pub(crate) fn is_coordination_envelope(&self) -> bool {
+        let is_coordination_envelope = self.purpose == RuntimeContextPurpose::CoordinationEnvelope;
+        debug_assert!(
+            !is_coordination_envelope || self.env.is_none(),
+            "coordination envelopes must remain physically unrealized"
+        );
+        is_coordination_envelope
+    }
+
     pub(crate) fn resume_activation(
         &self,
         ticket: &awaken_agent_contract::agent::awaiting::ResumeTicket,
@@ -174,6 +237,47 @@ impl SessionCtx {
         match &self.stream_checkpoint {
             Some(checkpoint) => context.with_stream_checkpoint(checkpoint.clone()),
             None => context,
+        }
+    }
+}
+
+#[cfg(test)]
+mod cache_admission_tests {
+    use super::*;
+
+    #[test]
+    fn runtime_context_cache_admission_decision_table_is_exact() {
+        // Causes: C1 publication/attempt identity matches; C2 request is
+        // coordination/execution; C3 cached context is coordination/execution.
+        // Effects: E1 reuse, E2 rebuild. Constraint: coordination may reuse an
+        // execution context read-only, but execution can never reuse an
+        // envelope that was intentionally built without physical authority.
+        // Rules: R1 !C1=>E2; R2 C1+coordination+any=>E1;
+        // R3 C1+execution+execution=>E1;
+        // R4 C1+execution+coordination=>E2.
+        for cache_matches_attempt in [false, true] {
+            for requested in [
+                RuntimeContextPurpose::CoordinationEnvelope,
+                RuntimeContextPurpose::Execution,
+            ] {
+                for cached in [
+                    RuntimeContextPurpose::CoordinationEnvelope,
+                    RuntimeContextPurpose::Execution,
+                ] {
+                    let expected = cache_matches_attempt
+                        && !(requested == RuntimeContextPurpose::Execution
+                            && cached == RuntimeContextPurpose::CoordinationEnvelope);
+                    assert_eq!(
+                        runtime_context_cache_reuse_admitted(
+                            cache_matches_attempt,
+                            requested,
+                            cached,
+                        ),
+                        expected,
+                        "C1={cache_matches_attempt} C2={requested:?} C3={cached:?}"
+                    );
+                }
+            }
         }
     }
 }

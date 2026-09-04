@@ -20,6 +20,7 @@ use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use crate::dispatch::{ClaimedCommitCommand, DispatchQueue, RunClaim};
 use crate::{RecoveryProjection, RunDispatch};
 pub use awaken_dispatch_contract::ClaimedRunCommit;
+use awaken_dispatch_contract::{CommitEpochBoundary, CommitEpochCompletion};
 
 /// Verify that committed logical Run/Thread truth belongs to the dispatch whose
 /// exact claim is currently fenced. Both embedded and remote workers cross this
@@ -82,11 +83,17 @@ impl ClaimedRunCommit for GuardedRunCommit {
         // mistake a still-locked dispatch row for an available recovery slot.
         // R1/R2 C1=* + C2=* => commit result only after release; R3 release
         // error => explicit indeterminate commit error, never early success.
+        let boundary = CommitEpochBoundary::held();
         let committed = self.inner.commit(commit).await;
-        guard.release().await.map_err(|error| {
-            CommitError::Rejected(format!("commit claim lock release failed: {error}"))
-        })?;
-        committed
+        let boundary = boundary.settle_inner();
+        let release = guard.release().await;
+        match boundary.complete(release.is_ok()) {
+            CommitEpochCompletion::ReturnInner => committed,
+            CommitEpochCompletion::FailRelease => Err(CommitError::Rejected(format!(
+                "commit claim lock release failed: {}",
+                release.expect_err("release failure decision requires an error")
+            ))),
+        }
     }
 }
 

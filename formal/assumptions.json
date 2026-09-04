@@ -1,16 +1,372 @@
 {
   "version": 1,
   "assumptions": [
-    {"id":"external.eventual_network_delivery","obligation":"external.eventual_network_delivery","kind":"liveness","integration_evidence":["e2e/durable_soak_fairness_e2e.mjs","e2e/remote_worker_recovery_e2e.ts"],"runtime_evidence":[{"kind":"metric","name":"awaken_control_registration_pending_domains","path":"crates/bin/awaken-cli/src/process_admin.rs"}],"status":"evidenced","reliability_objective":{"indicator":"accepted durable activities settle or remain explicitly actionable","target":0.999,"window_days":30,"max_burn_rate":2.0,"recovery_time_seconds":300,"recovery_point_seconds":0,"scope":"release_qualification_not_customer_sla","drill_evidence":["e2e/durable_soak_fairness_e2e.mjs","e2e/remote_worker_recovery_e2e.ts"]}},
-    {"id":"external.exactly_once_side_effects","obligation":"external.exactly_once_side_effects","kind":"external_effect","integration_evidence":["crates/server/awaken-webhook-managed/tests/crud.rs","crates/server/awaken-coordinator/tests/webhook_live_session_e2e.rs"],"runtime_evidence":[{"kind":"durable_state","name":"pending_lifecycle","path":"crates/server/awaken-webhook-managed/tests/crud.rs"}],"status":"evidenced","reliability_objective":{"indicator":"stable effect identities have at most one committed receiver outcome","target":1.0,"window_days":30,"max_burn_rate":1.0,"recovery_time_seconds":300,"recovery_point_seconds":0,"scope":"release_qualification_not_customer_sla","drill_evidence":["crates/server/awaken-webhook-managed/tests/crud.rs"]}},
-    {"id":"external.database_engine_correctness","obligation":"external.database_engine_correctness","kind":"infrastructure","integration_evidence":["crates/stores/awaken-store-conformance/src/lib.rs","crates/stores/awaken-credential-store/tests/repo_conformance.rs","e2e/managed_session_config_restart_e2e.mjs","scripts/ci/postgres_recovery_drill.sh"],"runtime_evidence":[],"status":"evidenced","reliability_objective":{"indicator":"acknowledged committed facts survive restart and point-in-time restore with referenced immutable objects intact","target":1.0,"window_days":30,"max_burn_rate":1.0,"recovery_time_seconds":900,"recovery_point_seconds":0,"scope":"release_qualification_not_customer_sla","drill_evidence":["crates/stores/awaken-store-sqlite/tests/failure_atomicity.rs","e2e/managed_session_config_restart_e2e.mjs","scripts/ci/postgres_recovery_drill.sh"]}},
-    {"id":"external.llm_semantics","obligation":"external.llm_semantics","kind":"semantic","integration_evidence":["crates/devtools/awaken-eval/README.md","e2e/eval_e2e.mjs"],"runtime_evidence":[],"status":"evidenced"},
-    {"id":"external.provider_revocation_propagation","obligation":"external.provider_revocation_propagation","kind":"liveness","integration_evidence":["e2e/credential_materialization_worker_e2e.ts","crates/control/awaken-credential-vault/tests/material_set_lifecycle.rs"],"runtime_evidence":[{"kind":"state","name":"credential_observations","path":"crates/contract/awaken-worker-contract/src/lib.rs"}],"status":"evidenced","reliability_objective":{"indicator":"revoked provider material stops authorizing new attempts","target":1.0,"window_days":30,"max_burn_rate":1.0,"recovery_time_seconds":120,"recovery_point_seconds":0,"scope":"release_qualification_not_customer_sla","drill_evidence":["e2e/credential_materialization_worker_e2e.ts"]}},
-    {"id":"external.mcp_busy_acp_revocation_propagation_and_process_termination","obligation":"external.mcp_busy_acp_revocation_propagation_and_process_termination","kind":"liveness","integration_evidence":["e2e/acp_managed_mcp_e2e.mjs","crates/server/awaken-session-executor/src/host/tests.rs","formal/README.md"],"runtime_evidence":[{"kind":"state","name":"McpProjectionState::Draining","path":"crates/server/awaken-session-executor/src/mcp.rs"}],"status":"evidenced","reliability_objective":{"indicator":"revoked busy MCP processes enter draining and terminate","target":1.0,"window_days":30,"max_burn_rate":1.0,"recovery_time_seconds":120,"recovery_point_seconds":0,"scope":"release_qualification_not_customer_sla","drill_evidence":["e2e/acp_managed_mcp_e2e.mjs","crates/server/awaken-session-executor/src/host/tests.rs"]}},
-    {"id":"external.container_and_kernel_isolation","obligation":"external.container_and_kernel_isolation","kind":"infrastructure","integration_evidence":["crates/worker/awaken-sandbox-container/tests/k8s_e2e.rs","crates/worker/awaken-sandbox-container/tests/docker_e2e.rs"],"runtime_evidence":[],"status":"evidenced","reliability_objective":{"indicator":"sandbox capability and isolation probes fail closed","target":1.0,"window_days":30,"max_burn_rate":1.0,"recovery_time_seconds":300,"recovery_point_seconds":0,"scope":"release_qualification_not_customer_sla","drill_evidence":["crates/worker/awaken-sandbox-container/tests/k8s_e2e.rs","crates/worker/awaken-sandbox-container/tests/docker_e2e.rs"]}},
-    {"id":"external.orchestrator_correctness","obligation":"external.orchestrator_correctness","kind":"infrastructure","integration_evidence":["crates/worker/awaken-sandbox-container/tests/k8s_it.rs","e2e/remote_worker_recovery_e2e.ts"],"runtime_evidence":[],"status":"evidenced","reliability_objective":{"indicator":"lost worker ownership is fenced and replacement makes progress","target":0.999,"window_days":30,"max_burn_rate":2.0,"recovery_time_seconds":300,"recovery_point_seconds":0,"scope":"release_qualification_not_customer_sla","drill_evidence":["e2e/remote_worker_recovery_e2e.ts"]}},
-    {"id":"external.performance_and_long_run_stability","obligation":"external.performance_and_long_run_stability","kind":"operational","integration_evidence":["e2e/managed_soak_e2e.mjs","e2e/durable_soak_fairness_e2e.mjs"],"runtime_evidence":[{"kind":"metric","name":"awaken_dispatch_queue_depth","path":"crates/runtime/awaken-observability/src/metrics.rs"}],"status":"evidenced","reliability_objective":{"indicator":"accepted soak workload drains without loss duplicate or starvation","target":0.999,"window_days":30,"max_burn_rate":2.0,"recovery_time_seconds":300,"recovery_point_seconds":0,"scope":"release_qualification_not_customer_sla","drill_evidence":["e2e/managed_soak_e2e.mjs","e2e/durable_soak_fairness_e2e.mjs"]}},
-    {"id":"external.telemetry_delivery_and_retention","obligation":"external.telemetry_delivery_and_retention","kind":"operational","integration_evidence":["e2e/trace_capture_e2e.mjs","e2e/trace_backends_e2e.mjs"],"runtime_evidence":[{"kind":"log","name":"OTLP tracer init failed; continuing without trace export","path":"crates/runtime/awaken-observability/src/otel.rs"}],"status":"evidenced","reliability_objective":{"indicator":"secret-free trace evidence is exported or failure is explicit","target":0.99,"window_days":30,"max_burn_rate":2.0,"recovery_time_seconds":600,"recovery_point_seconds":300,"scope":"release_qualification_not_customer_sla","drill_evidence":["e2e/trace_capture_e2e.mjs","e2e/trace_backends_e2e.mjs"]}},
-    {"id":"external.worker_host_executor_equivalence","obligation":"external.worker_host_executor_equivalence","kind":"supply_chain","integration_evidence":["deploy/k3d/test_image_contract.py","e2e/managed_worker_poller_compat_e2e.mjs","e2e/hand_brain_remote_worker_e2e.ts"],"runtime_evidence":[],"status":"evidenced","reliability_objective":{"indicator":"released worker image preserves host execution contract","target":1.0,"window_days":30,"max_burn_rate":1.0,"recovery_time_seconds":900,"recovery_point_seconds":0,"scope":"release_qualification_not_customer_sla","drill_evidence":["deploy/k3d/test_image_contract.py","e2e/managed_worker_poller_compat_e2e.mjs"]}}
-  ]
+    {
+      "id": "external.eventual_network_delivery",
+      "obligation": "external.eventual_network_delivery",
+      "kind": "liveness",
+      "integration_evidence": [
+        "e2e/durable_soak_fairness_e2e.mjs",
+        "e2e/remote_worker_recovery_e2e.ts"
+      ],
+      "runtime_evidence": [
+        {
+          "kind": "metric",
+          "name": "awaken_control_registration_pending_domains",
+          "path": "crates/bin/awaken-cli/src/process_admin.rs"
+        }
+      ],
+      "status": "evidenced",
+      "reliability_objective": {
+        "indicator": "accepted durable activities settle or remain explicitly actionable",
+        "target": 0.999,
+        "window_days": 30,
+        "max_burn_rate": 2.0,
+        "recovery_time_seconds": 300,
+        "recovery_point_seconds": 0,
+        "scope": "release_qualification_not_customer_sla",
+        "drill_evidence": [
+          "e2e/durable_soak_fairness_e2e.mjs",
+          "e2e/remote_worker_recovery_e2e.ts"
+        ]
+      },
+      "version_and_configuration_contract": "Network path, DNS, peer and retry configuration fingerprint.",
+      "dependency_contract": "Accepted messages are eventually delivered while the declared fairness window remains valid.",
+      "evidence_validity": {
+        "maximum_age_seconds": 2592000,
+        "requires_exact_runtime_fingerprint": true
+      },
+      "fail_closed_behavior": "Keep durable work actionable; never synthesize delivery or success."
+    },
+    {
+      "id": "external.exactly_once_side_effects",
+      "obligation": "external.exactly_once_side_effects",
+      "kind": "external_effect",
+      "integration_evidence": [
+        "crates/server/awaken-webhook-managed/tests/crud.rs",
+        "crates/server/awaken-coordinator/tests/webhook_live_session_e2e.rs"
+      ],
+      "runtime_evidence": [
+        {
+          "kind": "durable_state",
+          "name": "pending_lifecycle",
+          "path": "crates/server/awaken-webhook-managed/tests/crud.rs"
+        }
+      ],
+      "status": "evidenced",
+      "reliability_objective": {
+        "indicator": "stable effect identities have at most one committed receiver outcome",
+        "target": 1.0,
+        "window_days": 30,
+        "max_burn_rate": 1.0,
+        "recovery_time_seconds": 300,
+        "recovery_point_seconds": 0,
+        "scope": "release_qualification_not_customer_sla",
+        "drill_evidence": [
+          "crates/server/awaken-webhook-managed/tests/crud.rs"
+        ]
+      },
+      "version_and_configuration_contract": "Remote effect endpoint, protocol revision and idempotency contract fingerprint.",
+      "dependency_contract": "A stable operation identity returns one replayable receiver outcome.",
+      "evidence_validity": {
+        "maximum_age_seconds": 2592000,
+        "requires_exact_runtime_fingerprint": true
+      },
+      "fail_closed_behavior": "Enter pending or indeterminate; never blindly replay an opaque effect."
+    },
+    {
+      "id": "external.database_engine_correctness",
+      "obligation": "external.database_engine_correctness",
+      "kind": "infrastructure",
+      "integration_evidence": [
+        "crates/stores/awaken-store-conformance/src/lib.rs",
+        "crates/stores/awaken-credential-store/tests/repo_conformance.rs",
+        "e2e/managed_session_config_restart_e2e.mjs",
+        "scripts/ci/postgres_recovery_drill.sh"
+      ],
+      "runtime_evidence": [],
+      "status": "evidenced",
+      "reliability_objective": {
+        "indicator": "acknowledged committed facts survive restart and point-in-time restore with referenced immutable objects intact",
+        "target": 1.0,
+        "window_days": 30,
+        "max_burn_rate": 1.0,
+        "recovery_time_seconds": 900,
+        "recovery_point_seconds": 0,
+        "scope": "release_qualification_not_customer_sla",
+        "drill_evidence": [
+          "crates/stores/awaken-store-sqlite/tests/failure_atomicity.rs",
+          "e2e/managed_session_config_restart_e2e.mjs",
+          "scripts/ci/postgres_recovery_drill.sh"
+        ]
+      },
+      "version_and_configuration_contract": "Database engine exact version, transaction/isolation settings and schema digest.",
+      "dependency_contract": "Committed transactions, row locks, CAS predicates and durability follow the configured engine contract.",
+      "evidence_validity": {
+        "maximum_age_seconds": 2592000,
+        "requires_exact_runtime_fingerprint": true
+      },
+      "fail_closed_behavior": "Refuse Verified admission or writes when the engine/configuration cannot be authenticated."
+    },
+    {
+      "id": "external.llm_semantics",
+      "obligation": "external.llm_semantics",
+      "kind": "semantic",
+      "integration_evidence": [
+        "crates/devtools/awaken-eval/README.md",
+        "e2e/eval_e2e.mjs"
+      ],
+      "runtime_evidence": [],
+      "status": "evidenced",
+      "version_and_configuration_contract": "Provider, model revision and request-policy fingerprint.",
+      "dependency_contract": "No semantic correctness theorem is claimed for model output.",
+      "evidence_validity": {
+        "maximum_age_seconds": 2592000,
+        "requires_exact_runtime_fingerprint": true
+      },
+      "fail_closed_behavior": "Treat every model output as an untrusted proposal and reapply all authority gates."
+    },
+    {
+      "id": "external.provider_revocation_propagation",
+      "obligation": "external.provider_revocation_propagation",
+      "kind": "liveness",
+      "integration_evidence": [
+        "e2e/credential_materialization_worker_e2e.ts",
+        "crates/control/awaken-credential-vault/tests/material_set_lifecycle.rs"
+      ],
+      "runtime_evidence": [
+        {
+          "kind": "state",
+          "name": "credential_observations",
+          "path": "crates/contract/awaken-worker-contract/src/lib.rs"
+        }
+      ],
+      "status": "evidenced",
+      "reliability_objective": {
+        "indicator": "revoked provider material stops authorizing new attempts",
+        "target": 1.0,
+        "window_days": 30,
+        "max_burn_rate": 1.0,
+        "recovery_time_seconds": 120,
+        "recovery_point_seconds": 0,
+        "scope": "release_qualification_not_customer_sla",
+        "drill_evidence": [
+          "e2e/credential_materialization_worker_e2e.ts"
+        ]
+      },
+      "version_and_configuration_contract": "Provider credential endpoint, revision and revocation-policy fingerprint.",
+      "dependency_contract": "Provider-side revocation eventually prevents new use under the declared window.",
+      "evidence_validity": {
+        "maximum_age_seconds": 2592000,
+        "requires_exact_runtime_fingerprint": true
+      },
+      "fail_closed_behavior": "Stop new attempts and retain an actionable revocation state when freshness expires."
+    },
+    {
+      "id": "external.mcp_busy_acp_revocation_propagation_and_process_termination",
+      "obligation": "external.mcp_busy_acp_revocation_propagation_and_process_termination",
+      "kind": "liveness",
+      "integration_evidence": [
+        "e2e/acp_managed_mcp_e2e.mjs",
+        "crates/server/awaken-session-executor/src/host/tests.rs",
+        "formal/README.md"
+      ],
+      "runtime_evidence": [
+        {
+          "kind": "state",
+          "name": "McpProjectionState::Draining",
+          "path": "crates/server/awaken-session-executor/src/mcp.rs"
+        }
+      ],
+      "status": "evidenced",
+      "reliability_objective": {
+        "indicator": "revoked busy MCP processes enter draining and terminate",
+        "target": 1.0,
+        "window_days": 30,
+        "max_burn_rate": 1.0,
+        "recovery_time_seconds": 120,
+        "recovery_point_seconds": 0,
+        "scope": "release_qualification_not_customer_sla",
+        "drill_evidence": [
+          "e2e/acp_managed_mcp_e2e.mjs",
+          "crates/server/awaken-session-executor/src/host/tests.rs"
+        ]
+      },
+      "version_and_configuration_contract": "ACP/MCP protocol version, process image and termination-policy fingerprint.",
+      "dependency_contract": "Revoked busy children drain and terminate within the declared window.",
+      "evidence_validity": {
+        "maximum_age_seconds": 2592000,
+        "requires_exact_runtime_fingerprint": true
+      },
+      "fail_closed_behavior": "Keep the generation draining and deny new calls until termination is observed."
+    },
+    {
+      "id": "external.container_and_kernel_isolation",
+      "obligation": "external.container_and_kernel_isolation",
+      "kind": "infrastructure",
+      "integration_evidence": [
+        "crates/worker/awaken-sandbox-container/tests/k8s_e2e.rs",
+        "crates/worker/awaken-sandbox-container/tests/docker_e2e.rs"
+      ],
+      "runtime_evidence": [],
+      "status": "evidenced",
+      "reliability_objective": {
+        "indicator": "sandbox capability and isolation probes fail closed",
+        "target": 1.0,
+        "window_days": 30,
+        "max_burn_rate": 1.0,
+        "recovery_time_seconds": 300,
+        "recovery_point_seconds": 0,
+        "scope": "release_qualification_not_customer_sla",
+        "drill_evidence": [
+          "crates/worker/awaken-sandbox-container/tests/k8s_e2e.rs",
+          "crates/worker/awaken-sandbox-container/tests/docker_e2e.rs"
+        ]
+      },
+      "version_and_configuration_contract": "Linux kernel, container runtime, sandbox image and security-policy fingerprint.",
+      "dependency_contract": "Configured namespaces, mounts, seccomp and capabilities enforce the declared isolation contract.",
+      "evidence_validity": {
+        "maximum_age_seconds": 2592000,
+        "requires_exact_runtime_fingerprint": true
+      },
+      "fail_closed_behavior": "Refuse sandbox activation and Verified status when an isolation probe or fingerprint fails."
+    },
+    {
+      "id": "external.orchestrator_correctness",
+      "obligation": "external.orchestrator_correctness",
+      "kind": "infrastructure",
+      "integration_evidence": [
+        "crates/worker/awaken-sandbox-container/tests/k8s_it.rs",
+        "e2e/remote_worker_recovery_e2e.ts"
+      ],
+      "runtime_evidence": [],
+      "status": "evidenced",
+      "reliability_objective": {
+        "indicator": "lost worker ownership is fenced and replacement makes progress",
+        "target": 0.999,
+        "window_days": 30,
+        "max_burn_rate": 2.0,
+        "recovery_time_seconds": 300,
+        "recovery_point_seconds": 0,
+        "scope": "release_qualification_not_customer_sla",
+        "drill_evidence": [
+          "e2e/remote_worker_recovery_e2e.ts"
+        ]
+      },
+      "version_and_configuration_contract": "Kubernetes distribution/version and effective workload-policy fingerprint.",
+      "dependency_contract": "Replacement, scheduling and volume semantics preserve fenced ownership assumptions.",
+      "evidence_validity": {
+        "maximum_age_seconds": 2592000,
+        "requires_exact_runtime_fingerprint": true
+      },
+      "fail_closed_behavior": "Fence the lost owner and keep work pending/actionable until replacement is authenticated."
+    },
+    {
+      "id": "external.performance_and_long_run_stability",
+      "obligation": "external.performance_and_long_run_stability",
+      "kind": "operational",
+      "integration_evidence": [
+        "e2e/managed_soak_e2e.mjs",
+        "e2e/durable_soak_fairness_e2e.mjs"
+      ],
+      "runtime_evidence": [
+        {
+          "kind": "metric",
+          "name": "awaken_dispatch_queue_depth",
+          "path": "crates/runtime/awaken-observability/src/metrics.rs"
+        }
+      ],
+      "status": "evidenced",
+      "reliability_objective": {
+        "indicator": "accepted soak workload drains without loss duplicate or starvation",
+        "target": 0.999,
+        "window_days": 30,
+        "max_burn_rate": 2.0,
+        "recovery_time_seconds": 300,
+        "recovery_point_seconds": 0,
+        "scope": "release_qualification_not_customer_sla",
+        "drill_evidence": [
+          "e2e/managed_soak_e2e.mjs",
+          "e2e/durable_soak_fairness_e2e.mjs"
+        ]
+      },
+      "version_and_configuration_contract": "Workload profile, capacity envelope and deployment configuration fingerprint.",
+      "dependency_contract": "The declared workload stays within measured latency, drain and stability objectives.",
+      "evidence_validity": {
+        "maximum_age_seconds": 2592000,
+        "requires_exact_runtime_fingerprint": true
+      },
+      "fail_closed_behavior": "Leave work actionable and remove Verified availability claims when the envelope is exceeded."
+    },
+    {
+      "id": "external.telemetry_delivery_and_retention",
+      "obligation": "external.telemetry_delivery_and_retention",
+      "kind": "operational",
+      "integration_evidence": [
+        "e2e/trace_capture_e2e.mjs",
+        "e2e/trace_backends_e2e.mjs"
+      ],
+      "runtime_evidence": [
+        {
+          "kind": "log",
+          "name": "OTLP tracer init failed; continuing without trace export",
+          "path": "crates/runtime/awaken-observability/src/otel.rs"
+        }
+      ],
+      "status": "evidenced",
+      "reliability_objective": {
+        "indicator": "secret-free trace evidence is exported or failure is explicit",
+        "target": 0.99,
+        "window_days": 30,
+        "max_burn_rate": 2.0,
+        "recovery_time_seconds": 600,
+        "recovery_point_seconds": 300,
+        "scope": "release_qualification_not_customer_sla",
+        "drill_evidence": [
+          "e2e/trace_capture_e2e.mjs",
+          "e2e/trace_backends_e2e.mjs"
+        ]
+      },
+      "version_and_configuration_contract": "Telemetry backend/version, exporter and retention-policy fingerprint.",
+      "dependency_contract": "Secret-free evidence is exported and retained for the declared window.",
+      "evidence_validity": {
+        "maximum_age_seconds": 2592000,
+        "requires_exact_runtime_fingerprint": true
+      },
+      "fail_closed_behavior": "Expose evidence loss and remove audit/Verified claims that require unavailable evidence."
+    },
+    {
+      "id": "external.worker_host_executor_equivalence",
+      "obligation": "external.worker_host_executor_equivalence",
+      "kind": "supply_chain",
+      "integration_evidence": [
+        "deploy/k3d/test_image_contract.py",
+        "e2e/managed_worker_poller_compat_e2e.mjs",
+        "e2e/hand_brain_remote_worker_e2e.ts"
+      ],
+      "runtime_evidence": [],
+      "status": "evidenced",
+      "reliability_objective": {
+        "indicator": "released worker image preserves host execution contract",
+        "target": 1.0,
+        "window_days": 30,
+        "max_burn_rate": 1.0,
+        "recovery_time_seconds": 900,
+        "recovery_point_seconds": 0,
+        "scope": "release_qualification_not_customer_sla",
+        "drill_evidence": [
+          "deploy/k3d/test_image_contract.py",
+          "e2e/managed_worker_poller_compat_e2e.mjs"
+        ]
+      },
+      "version_and_configuration_contract": "Worker image digest, host binary digest and protocol/capability fingerprint.",
+      "dependency_contract": "The selected worker implements the exact executor contract frozen by the Session.",
+      "evidence_validity": {
+        "maximum_age_seconds": 2592000,
+        "requires_exact_runtime_fingerprint": true
+      },
+      "fail_closed_behavior": "Reject assignment or profile admission when digests or capabilities do not match."
+    }
+  ],
+  "tcb_contract_schema_version": 1
 }

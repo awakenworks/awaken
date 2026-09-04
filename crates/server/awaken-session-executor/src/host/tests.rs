@@ -3223,8 +3223,9 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
     // the replacement owns a physical Environment; E3 Skill tools cross the
     // existing ACP MCP export boundary. Decision table:
     // ACP+C1-C5=>E1+E2+E3; ACP+C1-C3+split-Workdir=>fail before effects (owned by
-    // `projected_acp_rejects_a_provider_with_split_tool_and_process_paths`);
-    // Native on-tool-use/A2A contexts remain eligible for environment-free reuse.
+    // `projected_acp_rejects_a_provider_with_split_tool_and_process_paths`).
+    // Every execution request rebuilds a coordination envelope; Native
+    // on-tool-use/A2A may remain physically deferred only after that rebuild.
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
         .resolved_model(
             awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
@@ -7244,10 +7245,10 @@ async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
 /// Skill version; C3 reservation must remain side-effect free; C4 the
 /// claimed/local execution context is built afterward.
 /// Effects: E1 C1+C2+C3 projects the stable `SKILL.md` path without creating an
-/// Environment; E2 C1+C2+C4 eagerly creates the Environment and materializes
-/// that exact path. Constraint: reservation and execution share one Skill
-/// projection; semantic tools are never a fallback for a missing provisional
-/// directory.
+/// Environment; E2 C1+C2+C4 rejects the resident coordination envelope as an
+/// execution cache hit, eagerly creates the Environment, and materializes that
+/// exact path. Constraint: reservation and execution share one Skill projection;
+/// semantic tools are never a fallback for a missing provisional directory.
 ///
 /// | Rule | read | selected Skill | phase | Environment | path/body |
 /// |---|---|---|---|---|---|
@@ -7324,8 +7325,6 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         "L9/E1 generated dispatch snapshot freezes the selected catalog"
     );
 
-    host.evict_session_for_rebuild("deferred-managed-filesystem-skill")
-        .await;
     let executable = host
         .ctx_for_snapshot(
             "deferred-managed-filesystem-skill",
@@ -7334,6 +7333,10 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         )
         .await
         .expect("L10 claimed-style executable context");
+    assert!(
+        !Arc::ptr_eq(&provisional, &executable),
+        "L10/E2 execution must replace the resident coordination envelope"
+    );
     let environment = executable.env.as_ref().expect("L10/E2 eager Environment");
     let files = environment
         .scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR)
@@ -22633,13 +22636,16 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
     // Causes: C1 a cold Session has a frozen non-default Agent projection and an
     // internal history read carries no repeated Agent argument; C2 the caller
     // repeats the same Agent; C3 it asserts a different Agent. Effects: E1/E2
-    // resolve the exact publication; E3 fail closed before constructing Runtime.
+    // resolve the exact publication; C4 the frozen Agent has no optional
+    // publication; E3 fail closed before constructing Runtime; E4 generate the
+    // fallback snapshot with the frozen Agent identity rather than `assistant`.
     //
     // Decision table:
     // | rule | projected Agent | requested Agent | result                  |
     // | R1   | agent-a         | absent          | exact agent-a snapshot  |
     // | R2   | agent-a         | agent-a         | exact agent-a snapshot  |
     // | R3   | agent-a         | assistant       | projection mismatch     |
+    // | R4   | built-in        | absent          | fallback id is built-in |
     let snapshot = crate::config::server_config(
         "agent-a",
         "stub",
@@ -22691,6 +22697,31 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
         Err(error) => error,
     };
     assert!(error.to_string().contains("projection"), "R3");
+
+    let fallback_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    install_test_session_application(&fallback_host);
+    install_test_dispatch_runtime(&fallback_host)
+        .install_test_session_init(
+            "cold-built-in",
+            awaken_session_contract::SessionInit {
+                workspace_id: fallback_host.local_workspace().into(),
+                agent_id: "built-in-agent".into(),
+                delegate_ids: Vec::new(),
+                tools: None,
+                resource_revision: 0,
+                resources: Default::default(),
+                model: Some("stub".into()),
+                runtime: Some("default".into()),
+                environment: on_tool_use_environment(),
+            },
+        )
+        .await
+        .expect("R4 project optional unpublished Agent baseline");
+    let fallback = fallback_host
+        .ctx_for_session_coordination("cold-built-in", None)
+        .await
+        .expect("R4 build the generated fallback snapshot");
+    assert_eq!(fallback.config.root_agent_id.0, "built-in-agent", "R4/E4");
 }
 
 #[tokio::test]

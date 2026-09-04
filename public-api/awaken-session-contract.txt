@@ -246,6 +246,7 @@ pub awaken_session_contract::DreamStatus::Pending
 pub awaken_session_contract::DreamStatus::Running
 impl awaken_session_contract::DreamStatus
 pub fn awaken_session_contract::DreamStatus::is_terminal(&self) -> bool
+pub const fn awaken_session_contract::DreamStatus::public_projection(self, bool) -> Self
 pub const fn awaken_session_contract::DreamStatus::transition(self, awaken_session_contract::DreamStatusEvent) -> core::option::Option<Self>
 pub enum awaken_session_contract::DreamStatusEvent
 pub awaken_session_contract::DreamStatusEvent::Cancel
