@@ -704,9 +704,12 @@ mod tests {
 
     #[test]
     fn platform_capabilities_expose_the_schema() {
-        // Cause/effect: installed provider descriptors derive one plugin schema
-        // and exact tool bound. The free provider is the first authoring default;
-        // paid provider authentication remains the common CredentialUsage wire.
+        // Cause/effect: the two direct, six native provider-server, and one
+        // OpenRouter provider-server descriptors derive one nine-branch plugin
+        // schema and exact tool bound. The free provider remains the first
+        // authoring default; paid provider authentication stays on the common
+        // CredentialUsage wire. A descriptor addition/removal intentionally
+        // changes this public authoring contract and must update this assertion.
         let caps = platform_plugin_capabilities();
         assert!(
             caps.iter()
@@ -725,7 +728,7 @@ mod tests {
         let branches = web.config_schema.as_ref().unwrap()["oneOf"]
             .as_array()
             .unwrap();
-        assert_eq!(branches.len(), 3);
+        assert_eq!(branches.len(), 9);
         assert_eq!(
             branches[0]["properties"]["provider_id"]["const"],
             "duckduckgo"

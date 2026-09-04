@@ -24,7 +24,7 @@ pub use acp_scenarios::{
     build_acp_container_router, build_acp_control_router, build_acp_jsonrpc_router,
     build_acp_managed_mcp_router, build_acp_permission_router, build_acp_real_mcp_router,
     build_acp_relaunch_failure_router, build_acp_router, build_acp_sandboxed_router,
-    build_acp_sandboxed_router_with_deployment,
+    build_acp_sandboxed_router_with_deployment, build_acp_tool_bridge_router,
 };
 pub use delegation::build_delegation_router;
 pub use deployment::{install_scenario_runtime_authority, scenario_deployment};

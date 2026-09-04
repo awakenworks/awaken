@@ -1369,8 +1369,7 @@ mod tests {
     use super::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         FailSessionRealization, RenewSessionRealization, SessionProjectionInstallMode,
-        SessionRealizationControl, SessionRealizationControlDisposition,
-        SessionRealizationControlFailure, SessionRealizationDirective,
+        SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
         SessionTerminalCleanupPreparationAuthorization, realization_generation_authorizes,
         realization_lease_authorizes, realization_lease_is_live_at,
     };

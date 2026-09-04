@@ -309,7 +309,7 @@ impl SessionRuntime for ManagedHost {
             .await?;
         let ctx = self
             .host
-            .ctx_for_session_reservation(&command.session_id, Some(&command.agent_id))
+            .ctx_for_session_coordination(&command.session_id, Some(&command.agent_id))
             .await
             .map_err(to_run_error)?;
         let reservation_context_is_ephemeral = ctx.env.is_none();

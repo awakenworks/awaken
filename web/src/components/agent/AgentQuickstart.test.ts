@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   agentModelIsRunnable,
+  agentNeedsToolBridge,
   BLANK_AGENT_CONFIG,
   buildAgentDraftBody,
 } from "./AgentEditorChrome";
@@ -20,6 +21,27 @@ describe("starterAgentId", () => {
 });
 
 describe("agent editor draft derivation", () => {
+  it("requires the governed bridge exactly when the draft selects bridge-owned capabilities", () => {
+    // Cause/effect decision table: R1 no tool/skill/MCP/memory configuration ->
+    // direct model execution needs no bridge; R2 any one of those four sources
+    // -> require a runtime that advertises the Awaken tool bridge. Testing each
+    // source independently prevents an authoring surface from silently making
+    // one capability runnable through a weaker execution path.
+    const blank = { ...BLANK_AGENT_CONFIG };
+    expect(agentNeedsToolBridge(blank), "R1").toBe(false);
+    expect(agentNeedsToolBridge({
+      ...blank,
+      tools: [{ type: "custom", name: "review", description: "test", input_schema: {} }],
+    }), "R2 tool").toBe(true);
+    expect(agentNeedsToolBridge({ ...blank, skills: ["review"] }), "R2 skill").toBe(true);
+    expect(agentNeedsToolBridge({
+      ...blank,
+      mcp_servers: [{ name: "repo", url: "https://mcp.example.test" }],
+    }), "R2 MCP").toBe(true);
+    expect(agentNeedsToolBridge({ ...blank, plugin_config: { memory: {} } }), "R2 memory")
+      .toBe(true);
+  });
+
   it("adds the transient permission preset only to the requested authoring body", () => {
     // Cause/effect decision table: R1 no preset -> replace the route-owned id
     // without adding permission_preset; R2 controlled preset -> add that exact

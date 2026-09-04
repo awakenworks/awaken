@@ -85,6 +85,14 @@ Worker uses the same claim-fenced commit transport to append
 Coordinator-owned clock and retry limit select this claim; a remote Worker never
 supplies either value.
 
+The Coordinator's foreground reservation and completion observer share one
+environment-free coordination context. It may retain a durable Environment
+binding as projection truth, but it never adopts or requires that physical
+substrate. Only the claimed Worker's realization path turns the binding into a
+process-local owner. This distinction is required after the first Run changes
+the request-context projection: rebuilding an observer cache must not turn a
+successful resident Worker Environment into a Coordinator execution demand.
+
 The remote Worker pool is the sole retry-exhaustion scheduler in a
 coordinator-only topology. Coordinator maintenance repairs already committed
 terminals but does not compete for special claims. With no Worker, an expired
@@ -148,6 +156,7 @@ are Worker effects derived from committed inputs.
 | stale attempt | live | stale/wrong | yes | reject before effects |
 | incomplete creation | live | live | no | fail closed |
 | response loss | same | same epoch | yes | idempotent replay |
+| second foreground Run, Worker Environment resident | live | live exact | yes | Coordinator observes through an environment-free context; Worker reuses/adopts the binding |
 | terminal Session | none | none | terminal | no new Work |
 
 ## 10. Remote Worker Component Catalog

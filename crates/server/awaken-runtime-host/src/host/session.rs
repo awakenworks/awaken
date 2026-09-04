@@ -310,11 +310,12 @@ impl SharedHost {
         self.ctx_for_snapshot(thread, agent, None).await
     }
 
-    /// Build only the immutable dispatch envelope for a Session User Run. A
-    /// first reservation must not realize the physical Environment: that effect
-    /// belongs to the Worker that later claims the activated row. Existing
-    /// resident contexts are reused unchanged.
-    pub(crate) async fn ctx_for_session_reservation(
+    /// Build the Coordinator's projection/commit context for Session admission
+    /// or foreground observation without consuming the physical Environment.
+    /// That substrate belongs to the Worker that claims the activated row; a
+    /// Coordinator may know its durable binding but must neither adopt it nor
+    /// require a process-local owner. Existing resident contexts are reused.
+    pub(crate) async fn ctx_for_session_coordination(
         &self,
         thread: &str,
         agent: Option<&str>,
