@@ -12,9 +12,10 @@
 // H3 a dynamic MCP Brain call succeeds and leaves binding null;
 // H4 the first Sandbox call observes no binding before dispatch;
 // H5 C=the first built-in Hand call runs under the local on_tool_use policy;
-// E=one nonempty Session-owned sandbox_id and exact local_v1 payload are durable
-// before the successful result; K=the closed payload schema is the sole provider
-// discriminator, so the deleted top-level provider_kind must remain absent.
+// E=one nonempty Session-owned sandbox_id and exact current local_v2 payload are
+// durable before the successful result; K=the closed payload schema is the sole
+// provider discriminator, so the deleted top-level provider_kind must remain
+// absent. Legacy local_v1 remains decode-only and is not a valid new realization.
 // Decision: C with a successful result requires every E while preserving K.
 
 import assert from 'node:assert/strict';
@@ -174,7 +175,11 @@ async function main(): Promise<void> {
           'H5 binding has a nonempty Sandbox id',
         );
         assert.equal(handle.sandbox_id, hand.id, 'H5 Sandbox is Session-owned');
-        assert.equal(handle.payload?.schema, 'local_v1', 'H5 binding records the exact local payload');
+        assert.equal(
+          handle.payload?.schema,
+          'local_v2',
+          'H5 binding records the exact current local payload',
+        );
         assert.equal(
           Object.hasOwn(handle, 'provider_kind'),
           false,

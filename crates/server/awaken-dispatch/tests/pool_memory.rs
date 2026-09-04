@@ -21,8 +21,9 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{
     Clock, CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchMaintenance, DispatchPool,
-    DispatchQueue, DispatchServiceConfig, DispatchWorker, Error, Inbox, ManualClock,
-    MemoryDispatchStore, PendingInput, RunDispatch, SystemClock, WakeSignal, WorkerResolver,
+    DispatchQueue, DispatchServiceConfig, DispatchSettlementError, DispatchSettlementObserver,
+    DispatchWorker, Error, Inbox, LocalWakeSignal, ManualClock, MemoryDispatchStore, PendingInput,
+    RunClaim, RunDispatch, SessionChildAdmission, SystemClock, WakeSignal, WorkerResolver,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::resume::ResumeResult;
@@ -31,7 +32,7 @@ use awaken_store_inmem::MemoryCommitCoordinator;
 use harness::{
     FlakyDispatchStore, activation, activation_on, blocking_tool_runtime,
     blocking_tool_runtime_with_entry_signal, concurrency_tracking_tool_runtime,
-    multi_tool_blocking_runtime, text_runtime, tool_runtime,
+    counting_text_runtime, multi_tool_blocking_runtime, text_runtime, tool_runtime,
 };
 
 type MemWorker = DispatchWorker<MemoryDispatchStore>;
@@ -420,11 +421,97 @@ async fn idle_pool_uses_one_fallback_poller_independent_of_execution_capacity() 
 }
 
 #[tokio::test]
+async fn settled_predecessor_rearms_a_same_thread_successor_after_a_peer_consumes_the_edge() {
+    use std::sync::atomic::Ordering;
+
+    // Cause/effect graph: C1 two durable Runs share one Thread; C2 the first Run
+    // is still executing; C3 an idle peer consumes the success handoff and finds
+    // C1's successor ineligible; C4 the predecessor settles; C5 no external wake
+    // and a one-hour fallback. E1 C2+C3 never runs the successor concurrently;
+    // E2 C4 re-arms one local permit and drains it without waiting for C5.
+    //
+    // | Rule | predecessor | peer edge | predecessor settled | external/poll | Effect |
+    // |---|---|---|---|---|---|
+    // | S1 | live | consumed | no | none | E1 successor remains queued |
+    // | S2 | ended | consumed | yes | none | E2 successor starts promptly |
+    // Constraint: the durable store remains the claim authority; the permit is
+    // only a liveness hint and cannot bypass same-Thread exclusion.
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, ran) = blocking_tool_runtime(release.clone());
+    let store = Arc::new(FlakyDispatchStore::new(0));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = Arc::new(DispatchWorker::new(
+        runtime,
+        store.clone(),
+        commit.clone(),
+        "settlement-rearm",
+    ));
+    let mut first = activation("settlement-rearm-first");
+    first.input[0].id = awaken_agent_contract::agent::message::Id("rearm-m1".into());
+    let mut second = activation("settlement-rearm-second");
+    second.input[0].id = awaken_agent_contract::agent::message::Id("rearm-m2".into());
+    store.enqueue(RunDispatch::new(first)).await.unwrap();
+    store.enqueue(RunDispatch::new(second)).await.unwrap();
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(SystemClock),
+        "settlement-rearm",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(3_600),
+            ..Default::default()
+        },
+        Arc::new(FlakyResolver { worker }),
+        2,
+        Arc::new(BlackholeWake),
+    );
+
+    assert!(
+        wait_for(|| ran.load(Ordering::SeqCst) == 1).await,
+        "S1 first entered"
+    );
+    assert!(
+        wait_for(|| store.claim_attempts() >= 2).await,
+        "S1 idle peer consumed the handoff and observed no eligible successor"
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "S1/E1");
+
+    release.add_permits(1);
+    assert!(
+        wait_for(|| ran.load(Ordering::SeqCst) == 2).await,
+        "S2/E2 settlement rearmed the successor before the fallback poll"
+    );
+    release.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if store.list_dispatches().await.unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("S2 queue drained to idle");
+    for run_id in ["settlement-rearm-first", "settlement-rearm-second"] {
+        assert!(
+            matches!(
+                CommittedThreadView::run(&*commit, &RunId(run_id.into())).map(|run| run.state),
+                Some(RunState::Ended(_))
+            ),
+            "S2 {run_id} reached terminal committed truth"
+        );
+    }
+    pool.shutdown().await;
+}
+
+#[tokio::test]
 async fn special_claim_error_blocks_the_same_tick_ordinary_claim() {
     // Cause/effect table: B1 special claim errors -> that drain tick returns an
-    // error and ordinary claim count stays zero; B2 later special claim succeeds
-    // with no exhausted row -> ordinary execution may proceed. This prevents a
-    // transient policy/read failure from bypassing retry exhaustion admission.
+    // error and ordinary claim count stays zero; B2 the shared backoff elapses
+    // with no external wake and a one-hour poll -> the retained self-retry first
+    // rechecks special admission, then ordinary execution may proceed. This
+    // prevents a transient policy/read failure from bypassing retry exhaustion
+    // admission or being stranded behind the coarse fallback.
     let store = Arc::new(FlakyDispatchStore::new(0).with_retry_exhaustion_failures(1));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(DispatchWorker::new(
@@ -443,7 +530,7 @@ async fn special_claim_error_blocks_the_same_tick_ordinary_claim() {
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
-            poll_interval: Duration::from_millis(150),
+            poll_interval: Duration::from_secs(3_600),
             ..Default::default()
         },
         Arc::new(FlakyResolver { worker }),
@@ -457,6 +544,88 @@ async fn special_claim_error_blocks_the_same_tick_ordinary_claim() {
     assert_eq!(store.claim_attempts(), 0, "B1");
     assert!(wait_for(|| commit.commit_count() >= 1).await, "B2");
     assert!(store.claim_attempts() >= 1, "B2");
+    pool.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_post_commit_observation_relinquishes_and_self_retries() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FailOnceObserver(AtomicUsize);
+
+    #[async_trait]
+    impl DispatchSettlementObserver for FailOnceObserver {
+        async fn before_settle(
+            &self,
+            _dispatch: &RunDispatch,
+            _claim: &RunClaim,
+            _committed_state: &RunState,
+            _cancellation_requested: bool,
+        ) -> Result<(), DispatchSettlementError> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(DispatchSettlementError("projection not ready".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    // Causes: C1 execution committed terminal truth; C2 its settlement observer
+    // fails once; C3 no external wake and the fallback poll is one hour; C4 the
+    // physical attempt has already quiesced. Effects: E1 the exact mutation
+    // claim is relinquished without deleting the row; E2 the pool self-retries;
+    // E3 committed truth is not executed twice; E4 the second observation
+    // settles the row. If a physical slot were still active, its independent
+    // fence would block executor re-entry (covered by the physical-attempt suite).
+    //
+    // | Rule | commit | observer | physical slot | Effect |
+    // | R1 | terminal | fails | quiesced | E1+E2+E3 |
+    // | R2 | terminal | succeeds | quiesced | E4 |
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let observer = Arc::new(FailOnceObserver(AtomicUsize::new(0)));
+    let (runtime, infers) = counting_text_runtime();
+    let worker = Arc::new(
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "observer-worker")
+            .with_settlement_observer(observer.clone()),
+    );
+    store
+        .enqueue_session_child(
+            RunDispatch::new(activation("observer-retry"))
+                .for_session(ThreadId("parent-session".into()))
+                .with_session_activity_epoch(1),
+            SessionChildAdmission::new(25, Vec::new()),
+        )
+        .await
+        .expect("admit coordinated run");
+    let wake = Arc::new(LocalWakeSignal::new());
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(SystemClock),
+        "observer-worker",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(3_600),
+            ..DispatchServiceConfig::default()
+        },
+        Arc::new(MapResolver {
+            workers: HashMap::from([("parent-session".to_string(), worker)]),
+        }),
+        1,
+        wake,
+    );
+    pool.notify().await;
+
+    let drained = wait_for(|| store.dispatch_count() == 0).await;
+    assert!(
+        drained,
+        "R2/E4 rows={:?} observations={} commits={}",
+        store.list_dispatches().await.unwrap(),
+        observer.0.load(Ordering::SeqCst),
+        commit.commit_count(),
+    );
+    assert_eq!(observer.0.load(Ordering::SeqCst), 2, "R1/R2");
+    assert_eq!(infers.load(Ordering::SeqCst), 1, "R1/E3");
     pool.shutdown().await;
 }
 
@@ -630,8 +799,9 @@ async fn pool_stops_its_only_renewal_guard_after_resolution_failure() {
     // Cause/effect rule RG3: C1 the Pool owns one renewal guard while Worker
     // resolution is gated; C2 resolution returns no Worker. Effects: E1 exactly
     // one renewal occurs while blocked; E2 the failed resolution relinquishes
-    // the claim and drops that guard; E3 later virtual time adds no renewal.
-    // Decision rule RG3=C1+C2=>E1+E2+E3.
+    // the claim and drops that guard; C3 graceful drain closes new admission;
+    // E3 later virtual time adds no renewal from the failed claim.
+    // Decision rule RG3=C1+C2+C3=>E1+E2+E3.
     // Constraint/Invariant: resolution failure relinquishes the same exact claim
     // and terminates its sole guard before another Worker may claim it.
     let store = Arc::new(FlakyDispatchStore::new(0));
@@ -669,9 +839,17 @@ async fn pool_stops_its_only_renewal_guard_after_resolution_failure() {
 
     release.add_permits(1);
     assert!(
-        yield_until(|| store.claim_attempts() >= 1).await,
-        "RG3 resolver returned to drain"
+        wait_for_async(|| {
+            let store = store.clone();
+            async move {
+                store.list_dispatches().await.unwrap()[0].state
+                    == awaken_dispatch::DispatchState::Pending
+            }
+        })
+        .await,
+        "RG3 resolver failure relinquished the exact claim"
     );
+    pool.begin_drain().await;
     for _ in 0..10 {
         tokio::task::yield_now().await;
     }
@@ -2287,6 +2465,59 @@ async fn session_work_backpressure_relinquishes_once_then_retries_with_a_floor()
             .is_some(),
         "B1 remains durable and immediately reclaimable"
     );
+    pool.shutdown().await;
+}
+
+#[tokio::test]
+async fn session_work_backpressure_rearms_one_retry_after_the_floor() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Cause/effect graph: C1 the only initial permit reaches NotReady; C2 no
+    // external/local queue wake follows; C3 the 250 ms admission floor elapses.
+    // E1 no reacquisition occurs before C3; E2 the same durable row is retried
+    // after C3. This is the restart row where Session projection completion is
+    // local state and therefore emits no queue edge.
+    //
+    // | Rule | initial permit | later wake | floor elapsed | Effect |
+    // |---|---|---|---|---|
+    // | N1 | yes | no | no | exactly one attempt |
+    // | N2 | yes | no | yes | E2 one rate-limited retry |
+    let store = Arc::new(MemoryDispatchStore::new());
+    store
+        .enqueue(RunDispatch::new(activation("session-work-rearm")))
+        .await
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let pool = DispatchPool::spawn_with_wake(
+        store,
+        Arc::new(SystemClock),
+        "waiting-owner",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(30),
+            ..Default::default()
+        },
+        Arc::new(NotReadyResolver {
+            calls: calls.clone(),
+        }),
+        1,
+        Arc::new(BlackholeWake),
+    );
+
+    assert!(
+        wait_for(|| calls.load(Ordering::SeqCst) == 1).await,
+        "N1 initial attempt"
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "N1 floor");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while calls.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("N2 rate-limited self-wake");
+
     pool.shutdown().await;
 }
 

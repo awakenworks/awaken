@@ -804,10 +804,20 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
     // retries before/after the C root CAS. M4 both CAS orders return the same
     // durable provider predecessor C; shorter/foreign input has zero marker
     // mutation. M5 only C4 permits the separate C->D physical-disposal port,
-    // which removes the exact root without repeating Memory reconciliation.
+    // which removes the exact root without repeating Memory reconciliation. C6
+    // the durable payload contains non-default base env, egress denial, and a
+    // continuation exclusion. M6 cold reconstruction re-emits that exact handle;
+    // omission or spec-derived drift in any payload field is a test failure.
     let tmp = tempfile::tempdir().unwrap();
     let provider = LocalProvider::new(tmp.path());
-    let mut spec = workdir_spec("terminal-memory-copy", false);
+    let mut spec = workdir_spec("terminal-memory-copy", true);
+    spec.env.push(pc::EnvVar {
+        name: "TERMINAL_RECOVERY".into(),
+        value: pc::EnvValue::Inline {
+            value: "exact".into(),
+        },
+        visibility: pc::EnvVisibility::Process,
+    });
     spec.mounts.push(pc::MountRequirement {
         mount_id: "memory".into(),
         source: pc::MountSource::MemoryStore {
@@ -857,8 +867,8 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         previous: pc::LocalSandboxHandleV1 {
             outputs_path: spec.outputs_path.clone(),
             base_env: spec.env.clone(),
-            continuation_excluded_paths: Vec::new(),
-            deny_tool_egress: false,
+            continuation_excluded_paths: vec!["memory".into()],
+            deny_tool_egress: true,
         },
         realization_fingerprint: fingerprint,
         effect_fence: create.clone(),
@@ -903,6 +913,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         std::slice::from_ref(&evidence),
         "M1"
     );
+    assert_eq!(pc::Sandbox::handle(&cold), handle, "C6/M6 exact handle");
 
     assert!(
         cold.prepare_disposal_for_effect(&terminal).await.is_err(),

@@ -137,6 +137,7 @@ fn managed_cancellation_routes_missing_external_waits_to_batch_recovery() {
             tool_id: "write".into(),
             arguments: serde_json::json!({}),
         },
+        authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
     });
     let external = ticket(AwaitTarget::ToolCall {
         reason: ToolAwaitReason::ClientExecution,
@@ -145,6 +146,7 @@ fn managed_cancellation_routes_missing_external_waits_to_batch_recovery() {
             tool_id: "client-tool".into(),
             arguments: serde_json::json!({}),
         },
+        authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
     });
     let manual = ticket(AwaitTarget::Pause(
         awaken_agent_contract::agent::awaiting::PauseReason::Manual,
@@ -247,6 +249,7 @@ fn only_a_recovered_claim_that_will_execute_records_a_reschedule() {
                             tool_id: "scheduled-action".into(),
                             arguments: serde_json::Value::Null,
                         },
+                        authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
                     },
                     "scheduled",
                 )),

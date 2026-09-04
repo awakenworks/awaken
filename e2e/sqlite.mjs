@@ -46,6 +46,28 @@ export function sqliteScalar(database, sql, ...parameters) {
   return Object.values(row)[0];
 }
 
+// Durable aggregates contain u64 lease sentinels that are outside JavaScript's
+// safe integer range. Fault-injection and upgrade fixtures may edit one field,
+// but they must round-trip every unrelated durable field byte-accurately. The
+// reviver's source token is the authority for integer primitives; strings,
+// decimals, and exponent notation retain normal JSON semantics.
+export function parseDurableJson(json) {
+  return JSON.parse(json, (_key, value, context) => {
+    if (typeof value === 'number'
+      && !Number.isSafeInteger(value)
+      && /^-?\d+$/.test(context.source)) {
+      return BigInt(context.source);
+    }
+    return value;
+  });
+}
+
+export function stringifyDurableJson(value) {
+  return JSON.stringify(value, (_key, field) => (
+    typeof field === 'bigint' ? JSON.rawJSON(field.toString()) : field
+  ));
+}
+
 function filesUnder(root) {
   const pending = [root];
   const found = [];

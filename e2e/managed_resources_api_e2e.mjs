@@ -32,7 +32,7 @@ async function request(baseUrl, method, route, body) {
 
 async function main() {
   try {
-    await withRealServer('echo', 38138, async (baseUrl) => {
+    await withRealServer('echo', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // ── Files API: upload → metadata → input-download denial → idempotency ─────

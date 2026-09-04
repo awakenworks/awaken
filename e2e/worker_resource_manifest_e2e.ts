@@ -26,6 +26,7 @@ import {
 } from './harness.mjs';
 import { cargoExecutable } from './cargo_binary.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
 import {
   nativeProviderCandidateFixture,
   providerCredentialTargetFixture,
@@ -486,18 +487,27 @@ async function enqueueAndAwait(request: any, seedWorkerId: string): Promise<void
 
 async function main(): Promise<void> {
   // Test design (remote Worker resource manifest). Causes: C1=the claimed Run
-  // carries frozen File/Skill/Memory inputs and exact Workspace; C2=attach/detach
-  // operations succeed or fail; C3=Workspace mismatches or Memory is archived;
+  // carries frozen File/Skill/Memory inputs and exact Workspace; C2=cold
+  // realization succeeds or fails; C3=Workspace mismatches or Memory is archived;
   // C4=Worker capability/placement satisfies the request. Effects: E1=valid
   // inputs plus the Agent's explicit filesystem toolset materialize exact
-  // bytes/tree/mount in one sandbox; E2=detach removes
-  // only that projection; E3=C3/C4-invalid remains retryable and creates no
+  // bytes/tree/mount in one sandbox; E2=C3/C4-invalid remains retryable and creates no
   // sandbox/model effect. Constraints/invariant: the dispatch activation plus
   // frozen resource envelope is the sole Worker authority; control-plane lookup
-  // cannot widen it. Decision rules: M1=C1+C2+C4=>E1+E2;
-  // M2=C1+C3=>E3; M3=C1+!C4=>E3. A selected filesystem-backed Skill with no
+  // cannot widen it. Decision rules: M1=C1+C2+C4=>E1;
+  // M2=C1+C3=>E2; M3=C1+!C4=>E2. Live replacement is deliberately absent:
+  // it belongs to the Managed Session aggregate's previous->desired transition,
+  // not this ordinary Queue-envelope fixture. C0=the canonical sandbox image is locally
+  // available; !C0 builds it through the shared image authority before any
+  // database/Session effect, so the scenario never depends on suite order.
+  // A selected filesystem-backed Skill with no
   // filesystem tool is the separate fail-closed S2 rule beside its authoring
   // fixture; this positive scenario must not acquire capability from resources.
+  ensureCanonicalSandboxImage({
+    engine: 'docker',
+    image: SESSION_IMAGE,
+    repoRoot: ROOT,
+  });
   const database = await postgres();
   const upstream = await startFakeAnthropic(SEED_KEY, { models: [SEED_MODEL] });
   const configStorage = mkdtempSync(path.join(tmpdir(), 'awaken-resource-config-'));
@@ -532,6 +542,12 @@ async function main(): Promise<void> {
       // listeners exposes internal mutation routes; omitting C2 strands remote
       // work. Separate bases plus real Worker completion detect both failures.
       fields: {
+        // Installation identity decision table: C1 PostgreSQL Server role and
+        // C2 exact scenario Workspace -> E1 initialization binds that value in
+        // the canonical config/store/marker triple. C1 + missing/mismatched C2
+        // must fail before startup; this positive resource test must not rely on
+        // a generated marker to choose authority after migration.
+        expected_platform_workspace_id: WORKSPACE,
         run_local_pool: false,
         internal_bind: `127.0.0.1:${INTERNAL_PORT}`,
         // Seed-selection decision table: both registered Workers satisfy the
@@ -679,37 +695,6 @@ async function main(): Promise<void> {
     await waitForContainerFile(sandboxContainer, projectedFile, FILE_BYTES);
     await waitForContainerFile(sandboxContainer, projectedSkill, SKILL_BINARY);
 
-    // An explicit empty successor is semantically meaningful: it must route to a
-    // resource-capable worker and remove the projection from the live Session.
-    await enqueueAndAwait(
-      runRequest(
-        seedClaim.request,
-        'detach',
-        resourceEnvelope(undefined, WORKSPACE, undefined, undefined, 2),
-      ),
-      seedWorker.id,
-    ).catch((error) => {
-      throw new Error(
-        `${error instanceof Error ? error.message : error}\nworker output:\n${workerOutput}`,
-      );
-    });
-    await waitForContainerFile(sandboxContainer, projectedFile, undefined);
-    await waitForContainerFile(sandboxContainer, '/workspace/.skills', undefined);
-
-    // Rebinding uses the same immutable shared File bytes; neither the cell nor
-    // worker consults a node-local resource copy or current Agent defaults.
-    await enqueueAndAwait(
-      runRequest(
-        seedClaim.request,
-        'reattach',
-        resourceEnvelope(fileId, WORKSPACE, skill, undefined, 3),
-        THREAD,
-        [skill.skill_id],
-      ),
-      seedWorker.id,
-    );
-    await waitForContainerFile(sandboxContainer, projectedFile, FILE_BYTES);
-    await waitForContainerFile(sandboxContainer, projectedSkill, SKILL_BINARY);
     for (const relative of ['files.db', 'memory_fs.db', 'resources.db', 'skills']) {
       assert.equal(
         fs.existsSync(path.join(workerStorage, relative)),
@@ -801,7 +786,7 @@ async function main(): Promise<void> {
 
     assert.ok(!workerOutput.includes(FILE_BYTES.toString()), 'worker logs do not expose File bytes');
     console.log(
-      'WORKER RESOURCE MANIFEST TS E2E PASS: frozen File/Skill/Memory realization, exact-tree detach, live Memory deny, capability placement, and cross-Workspace failure crossed real cell/worker processes.',
+      'WORKER RESOURCE MANIFEST TS E2E PASS: frozen File/Skill/Memory realization, live Memory deny, capability placement, and cross-Workspace failure crossed real cell/worker processes.',
     );
   } finally {
     if (worker) await stopServer(worker).catch(() => {});

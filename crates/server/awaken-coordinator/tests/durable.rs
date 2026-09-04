@@ -50,7 +50,7 @@ async fn host_over(dir: &std::path::Path, process: &str) -> Arc<SharedHost> {
     )
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     // Causes: the fixtures below establish `awaiting run survives a restart and` with the concrete
     // inputs, state, dependencies, and failure triggers used by this case.
@@ -67,9 +67,12 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     // Restart-recovery FMECA / cause-effect decision table:
     // C1=Coordinator injects an authority and the canonical dispatch Session
     // Runtime, C2=the replacement opens the same durable root, C3=each simulated
-    // process owns a distinct process-local sandbox root. R1 C1+C2+C3 -> awaiting
-    // ticket and history recover; R2 !C1 -> fail closed/no implicit Host store;
-    // R3 C1+!C2 -> clean independent state.
+    // process owns a distinct process-local sandbox root, C4=the production-like
+    // multi-thread runtime can yield while a synchronous domain port enters its
+    // async SQLite adapter. R1 C1+C2+C3+C4 -> awaiting ticket and history
+    // recover; R2 !C1 -> fail closed/no implicit Host store; R3 C1+!C2 -> clean
+    // independent state; R4 !C4 -> the canonical bridge fails fast rather than
+    // deadlocking (proved by awaken-sql-storage's current-thread test).
     // This case proves R1 end to end; the in-memory case below proves the R2/R3
     // non-recovery effect without reintroducing a second Host-owned store path.
     // 1. First "process": execute a Run that awaits on the client tool, then drop the

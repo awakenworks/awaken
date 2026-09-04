@@ -37,7 +37,7 @@ function toolset(session) {
 async function main() {
   try {
     // --- echo: built-in toolset fold, empty everything else ---
-    await withServer('echo', 38101, async (client) => {
+    await withServer('echo', Number(process.env.E2E_PORT), async (client) => {
       const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       const ts = toolset(s);
       // The toolset carries a resolved `default_config` (required by the SDK): the
@@ -91,7 +91,7 @@ async function main() {
     });
 
     // --- custom: a client tool appears as a `custom` tool definition ---
-    await withServer('custom', 38102, async (client) => {
+    await withServer('custom', Number(process.env.E2E_PORT), async (client) => {
       const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       toolset(s); // built-in toolset still present
       const custom = s.agent.tools.find((x) => x.type === 'custom');
@@ -102,7 +102,7 @@ async function main() {
     });
 
     // --- delegate: the roster becomes a coordinator multiagent object ---
-    await withServer('delegate', 38103, async (client) => {
+    await withServer('delegate', Number(process.env.E2E_PORT), async (client) => {
       const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       assert.equal(s.agent.multiagent.type, 'coordinator');
       assert.ok(

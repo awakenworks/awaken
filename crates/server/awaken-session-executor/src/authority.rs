@@ -10,6 +10,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord};
+use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, OperationCoordinator};
@@ -51,6 +52,14 @@ pub trait LocalCommit:
         thread_id: &ThreadId,
     ) -> Result<Vec<Message>, String>;
 
+    /// Read the complete committed state from the selected authority. Shared
+    /// stores must bypass a process-local projection because peer commits can
+    /// advance usage, tool, and lifecycle cells after this process starts.
+    async fn authoritative_committed_state(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<StateCommand>, String>;
+
     async fn authoritative_open_wait_for_thread(
         &self,
         thread: &ThreadId,
@@ -79,6 +88,12 @@ pub trait LocalCommitQueries<S>: Send + Sync {
         store: &S,
         thread_id: &ThreadId,
     ) -> Result<Vec<Message>, String>;
+
+    async fn authoritative_committed_state(
+        &self,
+        store: &S,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<StateCommand>, String>;
 
     async fn authoritative_open_wait_for_thread(
         &self,
@@ -149,6 +164,14 @@ where
         Ok(store.committed_messages(thread_id))
     }
 
+    async fn authoritative_committed_state(
+        &self,
+        store: &S,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<StateCommand>, String> {
+        Ok(store.committed_state(thread_id))
+    }
+
     async fn authoritative_open_wait_for_thread(
         &self,
         store: &S,
@@ -194,6 +217,15 @@ where
     ) -> Result<Vec<Message>, String> {
         self.queries
             .authoritative_committed_messages(self.store.as_ref(), thread_id)
+            .await
+    }
+
+    async fn authoritative_committed_state(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<StateCommand>, String> {
+        self.queries
+            .authoritative_committed_state(self.store.as_ref(), thread_id)
             .await
     }
 

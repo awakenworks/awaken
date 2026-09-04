@@ -7,17 +7,19 @@
 // DefineOutcome arrives while C1 is active; C4=the process dies after a Worker
 // commit and during Judge execution; C5=terminal/inactive aggregates are scanned
 // after restart; C6=User interrupt targets an active Outcome; C7=Judge decision,
-// schema, or Provider execution fails. Effects: E1=C1 is processed without
+// schema, or Provider execution fails; C8=the pinned Judge is inference-only and
+// therefore owns no physical Environment capability. Effects: E1=C1 is processed without
 // duplicate execution; E2=C3 remains unprocessed/retryable until C1 terminates;
 // E3=C4 resumes the exact id/binding without another define or repeated Worker;
 // E4=C5 causes no new work; E5=C6 projects one interrupted terminal report;
 // its exact interrupt receipt returns without any non-interrupted terminal report;
 // E6=decision failure is a terminal report, while infrastructure/schema failures
-// project no partial Outcome spans. Decision table:
+// project no partial Outcome spans; E7=C8 creates no redundant legacy Sandbox,
+// so crash recovery cannot be blocked by an unfenced retained Judge root. Decision table:
 // | Rule | Cause | Effect |
 // | R1 | C1+C2 | E1 one Outcome, one initial Worker |
 // | R2 | C1+C3 | E2 then two ordered terminal Outcomes |
-// | R3 | C1+C4 | E3 |
+// | R3 | C1+C4+C8 | E3+E7 |
 // | R4 | C5 terminal/inactive | E4 |
 // | R5 | C1+C6 at Worker/Judge/ack | E5 |
 // | R6 | C7 decision / infrastructure | failed report / E6 |
@@ -133,6 +135,7 @@ async function interruptAt(
   const upstream = await startUpstream('revise', { delayMs: 700 });
   const spawned = spawnServer('outcome-matrix', port, {
     ...realServerEnv('revise', upstream, { mode: 'outcome-matrix' }),
+    SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
     AWAKEN_OUTCOME_JUDGE_RUNTIME: 'native',
   });
   try {
@@ -192,6 +195,7 @@ async function judgeDecisionAndSchemaPaths(port: number) {
   const upstream = await startUpstream('revise');
   const spawned = spawnServer('outcome-matrix', port, {
     ...realServerEnv('revise', upstream, { mode: 'outcome-matrix' }),
+    SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
     AWAKEN_OUTCOME_JUDGE_RUNTIME: 'native',
   });
   try {
@@ -251,6 +255,7 @@ async function executionFailurePath(port: number, failedKind: FailedArrivalKind)
   });
   const spawned = spawnServer('outcome-matrix', port, {
     ...realServerEnv('revise', upstream, { mode: 'outcome-matrix' }),
+    SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
     AWAKEN_OUTCOME_JUDGE_RUNTIME: 'native',
   });
   try {
@@ -287,6 +292,7 @@ async function competingOutcomeCommands(port: number) {
   const upstream = await startUpstream('revise', { delayMs: 350 });
   const spawned = spawnServer('outcome-matrix', port, {
     ...realServerEnv('revise', upstream, { mode: 'outcome-matrix' }),
+    SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
     AWAKEN_OUTCOME_JUDGE_RUNTIME: 'native',
     SESSION_DEPLOYMENT_STORAGE_DIR: storage,
   });
@@ -361,6 +367,7 @@ async function recoverAfterJudgeCrash(port: number) {
   const upstream = await startUpstream('revise', { delayMs: 700 });
   const environment = {
     ...realServerEnv('revise', upstream, { mode: 'outcome-matrix' }),
+    SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
     AWAKEN_OUTCOME_JUDGE_RUNTIME: 'native',
     SESSION_DEPLOYMENT_STORAGE_DIR: storage,
   };

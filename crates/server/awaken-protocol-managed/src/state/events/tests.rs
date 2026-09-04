@@ -1098,6 +1098,7 @@ impl SessionRuntime for LifecycleRuntime {
                                 tool_id: pending.name,
                                 arguments: pending.input,
                             },
+                            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
                         },
                     ),
                 },
@@ -9385,6 +9386,124 @@ async fn synthetic_pending_tool_uses_the_awaiting_commit_as_its_projection_ancho
         cold.iter().filter(|event| event.id == tool_id).count(),
         1,
         "S2/E3 stable cold identity"
+    );
+}
+
+#[tokio::test]
+async fn closed_remote_wait_projects_its_answerable_event_before_terminal_history() {
+    // Cause C1: a remote-input Awaiting fact commits without a ToolUse message.
+    // Cause C2: cancellation closes the same Run before Managed first observes
+    // either lifecycle fact. Effect E1: cold projection reconstructs one
+    // source-qualified `agent_input` before the historical RequiresAction idle;
+    // E2: the later cancellation still closes the interval as EndTurn.
+    //
+    // | Rule | Awaiting observed first | later terminal | ToolUse message | Effect |
+    // |---|---|---|---|---|
+    // | H1 | no | yes | no | E1+E2 |
+    // | H2 | yes | any | no | existing synthetic-pending test |
+    let runtime = LifecycleRuntime::default();
+    let state = ManagedState::new(runtime.clone()).with_config_source(Arc::new(
+        FrozenToolFamilyProfiles::uniform(
+            "coder",
+            &[],
+            FrozenTestToolFamily::Custom,
+            "agent_input",
+        ),
+    ));
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let run = RunId("run-closed-remote-wait".into());
+    let target = awaken_agent_contract::agent::awaiting::AwaitTarget::RemoteInput {
+        reason: awaken_agent_contract::agent::awaiting::RemoteInputReason::UserInput,
+        call_id: "closed-remote-task".into(),
+    };
+    let draft: awaken_agent_contract::audit::draft::Draft =
+        awaken_agent_contract::audit::run_event::RunEvent::RunStateChanged {
+            state: RunState::Awaiting,
+            await_reason: Some(target.reason()),
+            await_target: Some(target),
+        }
+        .into();
+    runtime
+        .audit_events
+        .lock()
+        .unwrap()
+        .push(awaken_agent_contract::audit::record::Record {
+            sequence: 2,
+            run_id: run.clone(),
+            kind: draft.kind,
+            payload: draft.payload,
+        });
+    let mut awaiting = lifecycle(
+        2,
+        &session.id,
+        &run,
+        RunLifecycleEventKind::Awaiting,
+        RunState::Awaiting,
+    );
+    awaiting.await_reason = Some(awaken_agent_contract::agent::awaiting::AwaitReason::UserInput);
+    runtime.lifecycle.lock().unwrap().extend([
+        lifecycle(
+            1,
+            &session.id,
+            &run,
+            RunLifecycleEventKind::Running,
+            RunState::Running,
+        ),
+        awaiting,
+        lifecycle(
+            3,
+            &session.id,
+            &run,
+            RunLifecycleEventKind::Cancelled,
+            RunState::Ended(EndCause::Cancelled),
+        ),
+    ]);
+    runtime
+        .include_runs_in_snapshot
+        .store(true, Ordering::SeqCst);
+
+    state.refresh_committed_events(&session.id).await.unwrap();
+    let events = state
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data;
+    let tool = events
+        .iter()
+        .find(|event| {
+            matches!(
+                &event.kind,
+                OutboundKind::AgentCustomToolUse { name, .. } if name == "agent_input"
+            )
+        })
+        .expect("H1/E1 historical answerable event");
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.kind,
+            OutboundKind::SessionThreadStatusIdle {
+                stop_reason: StopReason::RequiresAction { event_ids },
+                ..
+            } if event_ids == std::slice::from_ref(&tool.id)
+        )),
+        "H1/E1 historical Awaiting refers to the qualified event"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event.kind,
+            OutboundKind::SessionThreadStatusIdle {
+                stop_reason: StopReason::EndTurn,
+                ..
+            }
+        )),
+        "H1/E2 terminal interval closes"
     );
 }
 

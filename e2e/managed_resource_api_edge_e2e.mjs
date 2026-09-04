@@ -35,7 +35,7 @@ async function createSession(base, resources) {
 }
 
 async function main() {
-  await withRealServer('echo', 38265, async (base) => {
+  await withRealServer('echo', Number(process.env.E2E_PORT), async (base) => {
     for (const uri of [
       '/v1/files/file_ghost',
       '/v1/files/file_ghost/content',

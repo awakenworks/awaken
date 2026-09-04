@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use awaken_coordinator::SkillSpec;
 use awaken_scenario_host::{
-    EchoModel, build_custom_router, build_delegation_router, build_router_with_skills,
+    EchoModel, build_custom_router, build_delegation_router_with_deployment,
+    build_router_with_skills,
 };
 use axum::Router;
 use axum::body::Body;
@@ -131,7 +132,9 @@ async fn managed_session_advertises_custom_tools() {
 /// detects that high-severity compatibility regression.
 #[tokio::test]
 async fn managed_session_advertises_multiagent_roster() {
-    let app = build_delegation_router();
+    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+    let app = build_delegation_router_with_deployment(deployment).await;
     let session = create_session(&app).await;
 
     assert_eq!(session["agent"]["multiagent"]["type"], "coordinator");

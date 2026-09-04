@@ -16,7 +16,7 @@ async function req(base, method, uri, rawBody, json = true) {
 }
 
 async function main() {
-  await withScenarioServer('management', 'mcp', 38251, async (base) => {
+  await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (base) => {
     // Missing rows across namespaces → 404.
     for (const uri of [
       '/v1/config/agents/ghost',

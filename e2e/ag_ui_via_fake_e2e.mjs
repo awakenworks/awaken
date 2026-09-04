@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { HttpAgent } from '@ag-ui/client';
-import { withServer, pass } from './harness.mjs';
+import { fakeAnthropicServerEnv, withServer, pass } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const FAKE_KEY = 'sk-fake-agui-key'; // awaken-allow: secret
@@ -13,10 +13,7 @@ const FAKE_KEY = 'sk-fake-agui-key'; // awaken-allow: secret
 async function main() {
   const upstream = await startFakeAnthropic(FAKE_KEY, { behavior: 'reasoning' });
   try {
-    process.env.ANTHROPIC_API_KEY = FAKE_KEY;
-    process.env.ANTHROPIC_BASE_URL = `${upstream.url}/v1/`;
-    process.env.ANTHROPIC_MODEL = 'fake-haiku';
-    await withServer('real', 38246, async (base) => {
+    await withServer('real', Number(process.env.E2E_PORT), async (base) => {
       const agent = new HttpAgent({ url: `${base}/v1/ag-ui/agents/assistant` });
       agent.messages = [{ id: 'u1', role: 'user', content: 'over ag-ui' }];
       const events = [];
@@ -54,7 +51,7 @@ async function main() {
         'private reasoning bytes never reach AG-UI events or messages',
       );
       pass('official @ag-ui/client accepted a private reasoning phase followed by public text');
-    });
+    }, fakeAnthropicServerEnv(upstream, { ANTHROPIC_API_KEY: FAKE_KEY }));
     console.log('E2E PASS: ag-ui adapter drives the real provider path over a fake upstream.');
     process.exitCode = 0;
   } catch (err) {

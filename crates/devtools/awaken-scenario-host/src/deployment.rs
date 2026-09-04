@@ -192,12 +192,6 @@ fn scenario_deployment_from(
     deployment
 }
 
-/// The one scenario-only storage input. Scenario startup must consume this
-/// helper or the complete typed deployment instead of rediscovering process state.
-pub(crate) fn scenario_storage_dir() -> Option<std::path::PathBuf> {
-    scenario_deployment().storage_dir
-}
-
 pub(crate) fn resource_host(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,

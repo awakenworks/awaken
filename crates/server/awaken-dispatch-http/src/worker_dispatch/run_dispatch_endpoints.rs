@@ -250,6 +250,30 @@ pub(super) async fn begin_attempt(
     respond(result)
 }
 
+pub(super) async fn handoff_attempt(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<AttemptExecutionReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let authority =
+            claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
+        if authority.owner != request.claim.owner {
+            return Err(HostError::bad_request(
+                "authenticated Worker does not own the durable continuation claim",
+            ));
+        }
+        let admission = service
+            .dispatch
+            .handoff_attempt(&request.claim, authority.now_ms)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(json!({ "admission": admission }))
+    }
+    .await;
+    respond(result)
+}
+
 pub(super) async fn finish_attempt(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,

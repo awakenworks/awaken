@@ -1438,6 +1438,14 @@ impl SessionRealizationControl for SessionApplication {
         self.fail_session_realization_after_refresh(command).await
     }
 
+    async fn authorize_resource_materialization_intent(
+        &self,
+        intent: &awaken_session_contract::SessionResourceMaterializationIntent,
+    ) -> Result<String, SessionRealizationControlFailure> {
+        self.authorize_resource_materialization_intent_from_root(intent)
+            .await
+    }
+
     async fn claim_next_terminal_cleanup(
         &self,
         target: awaken_session_contract::SessionRealizationTarget,

@@ -65,7 +65,7 @@ async fn beta_capability_selects_one_exact_user_profile_projection() {
     // | selector | access_type request | response fields | effect |
     // | 03-24    | absent              | relationship    | accept |
     // | 03-24    | present             | n/a             | reject before write |
-    // | 08-18    | present             | access_type + relationship | accept |
+    // | 08-18    | present             | access_type, no legacy field | accept |
     // | both     | any                 | n/a             | reject as ambiguous |
     //
     // Cross-projection invariant: reading the current-created aggregate through
@@ -78,18 +78,61 @@ async fn beta_capability_selects_one_exact_user_profile_projection() {
         "POST",
         "/v1/user_profiles",
         current,
-        Some(json!({ "access_type": "passthrough", "name": "Resold" })),
+        Some(json!({
+            "access_type": "passthrough",
+            "name": "Resold",
+            "external_user_onboarded_at": "2026-09-03T01:02:03Z"
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(created["access_type"], "passthrough");
-    assert_eq!(created["relationship"], "resold");
+    assert!(created.get("relationship").is_none());
+    assert_eq!(
+        created["external_user_onboarded_at"],
+        "2026-09-03T01:02:03Z"
+    );
     let id = created["id"].as_str().unwrap();
 
     let (status, legacy) = call(&app, "GET", &format!("/v1/user_profiles/{id}"), None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(legacy.get("access_type").is_none());
+    assert!(legacy.get("external_user_onboarded_at").is_none());
     assert_eq!(legacy["relationship"], "resold");
+
+    let (status, alpha) = call_with_beta(
+        &app,
+        "POST",
+        "/v1/user_profiles",
+        current,
+        Some(json!({ "access_type": "application", "name": "Alpha" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, by_name) = call_with_beta(
+        &app,
+        "GET",
+        "/v1/user_profiles?order_by=name&order=asc",
+        current,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(by_name["data"][0]["id"], alpha["id"]);
+
+    let (status, _) = call_with_beta(
+        &app,
+        "POST",
+        "/v1/user_profiles",
+        current,
+        Some(json!({ "external_user_onboarded_at": "not-a-timestamp" })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "invalid timestamp is pre-write"
+    );
 
     let (status, _) = call(
         &app,
@@ -129,6 +172,9 @@ async fn malformed_user_profile_query_uses_anthropic_error_envelope() {
             .as_str()
             .is_some_and(|message| message.contains("order"))
     );
+    let (status, body) = call(&app(), "GET", "/v1/user_profiles?order_by=updated_at", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["type"], "invalid_request_error");
 }
 
 // Test design: user_profile_crud_and_metadata_merge

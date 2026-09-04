@@ -810,6 +810,8 @@ fn permission_ticket(activation: &RunActivation) -> ResumeTicket {
                 tool_id: "bash".into(),
                 arguments: serde_json::json!({}),
             },
+            authority:
+                awaken_agent_contract::agent::awaiting::ToolCallAuthority::RunAttemptExecutor,
         },
     )
 }

@@ -46,7 +46,7 @@ mod terminal_repository_publication;
 
 use run_dispatch_endpoints::{
     begin_attempt, claim, claim_new_run, claim_retry_exhausted, claim_run, deliver_and_claim,
-    enqueue, finish_attempt, relinquish, renew, resolve_session_run_reservation,
+    enqueue, finish_attempt, handoff_attempt, relinquish, renew, resolve_session_run_reservation,
 };
 use session_coordination::{
     session_agent_send, session_agent_settle, session_agents_list, session_model_request_admit,
@@ -328,6 +328,21 @@ struct ClaimAuthority {
     snapshot: Option<WorkerSnapshot>,
 }
 
+fn heartbeat_changes_placement(
+    previous: Option<&awaken_dispatch::RegisteredWorker>,
+    heartbeat: &awaken_dispatch::WorkerHeartbeat,
+) -> bool {
+    let Some(previous) = previous else {
+        return false;
+    };
+    let snapshot = &previous.snapshot;
+    snapshot.state.accepts_work() != heartbeat.ready
+        || snapshot.in_flight != heartbeat.in_flight
+        || snapshot.warm_environment_shapes != heartbeat.warm_environment_shapes
+        || snapshot.credential_observations != heartbeat.credential_observations
+        || snapshot.acp_capability_observations != heartbeat.acp_capability_observations
+}
+
 async fn claim_authority(
     service: &WorkerDispatchService,
     worker: &VerifiedWorkerContext,
@@ -446,6 +461,7 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/dispatch/claim_run", post(claim_run))
         .route("/v1/worker/dispatch/renew", post(renew))
         .route("/v1/worker/dispatch/attempt/begin", post(begin_attempt))
+        .route("/v1/worker/dispatch/attempt/handoff", post(handoff_attempt))
         .route("/v1/worker/dispatch/attempt/finish", post(finish_attempt))
         .route("/v1/worker/dispatch/relinquish", post(relinquish))
         .route(
@@ -934,7 +950,19 @@ async fn heartbeat_worker(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         verify_worker_identity(&worker, &request.identity).map_err(HostError::bad_request)?;
-        let mutation = directory(&service)?
+        let worker_directory = directory(&service)?;
+        // Placement evidence is read only to decide whether to nudge the one
+        // existing Session lifecycle supervisor. The registry mutation below
+        // remains the authority; a rejected heartbeat never publishes a hint.
+        let placement_changed = worker_directory
+            .current(&request.identity.worker_id)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?
+            .as_ref()
+            .is_some_and(|previous| {
+                heartbeat_changes_placement(Some(previous), &request.heartbeat)
+            });
+        let mutation = worker_directory
             .heartbeat(
                 &request.identity,
                 request.heartbeat,
@@ -943,6 +971,16 @@ async fn heartbeat_worker(
             )
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
+        if mutation == awaken_dispatch::RegistryMutation::Applied
+            && placement_changed
+            && let Some(session_work) = service.session_work.as_ref()
+        {
+            tracing::debug!(
+                worker_id = %request.identity.worker_id,
+                "Worker placement evidence changed; waking Session lifecycle reconciliation"
+            );
+            session_work.request_lifecycle_reconciliation();
+        }
         let lease_ttl_ms = (mutation == awaken_dispatch::RegistryMutation::Applied)
             .then_some(service.registry_ttl_ms);
         Ok(json!({

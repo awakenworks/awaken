@@ -89,9 +89,31 @@ fn docker_realization(
             labels.get(SANDBOX_EFFECT_EXPIRY_LABEL).map(String::as_str),
         )?,
         attempt_id: labels.get(SANDBOX_ATTEMPT_LABEL).cloned(),
-        recovery: ExistingRealizationRecovery::CurrentAttemptOnly,
+        recovery: if docker_host_staging_root(info).is_ok() {
+            ExistingRealizationRecovery::Reconstructible
+        } else {
+            ExistingRealizationRecovery::CurrentAttemptOnly
+        },
         phase,
     })
+}
+
+fn docker_host_staging_root(info: &ContainerInspectResponse) -> Result<PathBuf, RuntimeError> {
+    let live_inputs = info
+        .mounts
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .find(|mount| mount.destination.as_deref() == Some(crate::LIVE_INPUTS_ROOT))
+        .and_then(|mount| mount.source.as_deref())
+        .map(PathBuf::from)
+        .ok_or_else(|| backend("Docker container has no managed live-input root bind"))?;
+    let staging_root = live_inputs
+        .parent()
+        .ok_or_else(|| backend("Docker live-input root has no staging parent"))?
+        .to_path_buf();
+    crate::restore_target::retained_host_staging_path(staging_root.clone())?;
+    Ok(staging_root)
 }
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
@@ -974,6 +996,18 @@ impl ContainerRuntime for DockerRuntime {
 
     fn uses_host_live_input_bind(&self) -> bool {
         true
+    }
+
+    async fn recovered_host_staging_root(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<PathBuf>, RuntimeError> {
+        let info = self
+            .docker
+            .inspect_container(container_id, None)
+            .await
+            .map_err(backend)?;
+        docker_host_staging_root(&info).map(Some)
     }
 
     async fn project_live_input(

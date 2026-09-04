@@ -157,15 +157,7 @@ pub struct ManagedHost {
     credential_refresh_factory: Option<Arc<dyn CredentialRefreshFactory>>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
     repository_binding_verifier:
-        Option<Arc<dyn RepositoryBindingVerifier<awaken_dispatch::RunClaim>>>,
-    repository_publication_binding_verifier: Option<
-        Arc<
-            dyn RepositoryBindingVerifier<(
-                awaken_session_contract::SessionRepositoryPublicationCommand,
-                awaken_session_contract::SessionRealizationLease,
-            )>,
-        >,
-    >,
+        Option<Arc<dyn RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>>>,
     mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
 }
 
@@ -258,6 +250,16 @@ impl SessionRuntime for ManagedHost {
             ));
         }
         self.host.install_session_realization_lease(thread, lease);
+        Ok(())
+    }
+
+    async fn invalidate_session_realization_lease(
+        &self,
+        thread: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<(), RunError> {
+        self.host
+            .invalidate_session_realization_lease(thread, lease);
         Ok(())
     }
 
@@ -943,7 +945,7 @@ impl SessionRuntime for ManagedHost {
         thread: &str,
         transition: &awaken_session_contract::SessionResourceTransition,
     ) -> Result<(), RunError> {
-        self.apply_session_inputs_with_context(thread, transition, None)
+        self.apply_session_inputs_with_context(thread, transition, None, None)
             .await
     }
 

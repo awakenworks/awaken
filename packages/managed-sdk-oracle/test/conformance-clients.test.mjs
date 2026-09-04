@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +10,7 @@ import {
   installedPackageVersion,
   loadConformanceClients,
   loadQualifiedClients,
+  projectsWorkspaceResponseContext,
   qualifiedClient,
   readSdkMatrix,
   validateSdkMatrix,
@@ -16,6 +18,40 @@ import {
 import { exerciseUserProfileChangePoint } from '../src/conformance/user-profile-change-point.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+
+test('Workspace response projection is derived from one declaration graph', () => {
+  // Cause/effect graph: C1 error, promise, and parsed-object declarations all
+  // expose Workspace context; C2 none expose it; C3 the declaration surfaces
+  // disagree. Effects: E1 true, E2 false, E3 fail closed. Decision rules:
+  // W1 C1->E1; W2 C2->E2; W3 C3->E3. A candidate can therefore gain the
+  // capability without editing a redundant version table.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-sdk-workspace-projection-'));
+  const write = (relativePath, source) => {
+    const target = path.join(root, relativePath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, source);
+  };
+  try {
+    write('core/error.d.ts', 'readonly workspaceID: string;');
+    write('core/api-promise.d.ts', 'workspace_id: string;');
+    write('internal/parse.d.ts', '_workspace_id?: string;');
+    assert.equal(projectsWorkspaceResponseContext(root), true, 'W1/E1');
+
+    write('core/error.d.ts', 'readonly requestID: string;');
+    write('core/api-promise.d.ts', 'request_id: string;');
+    write('internal/parse.d.ts', '_request_id?: string;');
+    assert.equal(projectsWorkspaceResponseContext(root), false, 'W2/E2');
+
+    write('core/error.d.ts', 'readonly workspaceID: string;');
+    assert.throws(
+      () => projectsWorkspaceResponseContext(root),
+      /declarations disagree/u,
+      'W3/E3',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('the Open anchor matrix is the only executable SDK version authority', async () => {
   // Cause/effect graph M1: exact package aliases plus unique semantic roles
@@ -167,14 +203,15 @@ function profiles(accessType) {
   };
   return {
     legacy: { ...stable, relationship },
-    current: { ...stable, relationship, access_type: accessType },
+    current: { ...stable, access_type: accessType },
   };
 }
 
 for (const accessType of ['application', 'passthrough']) {
   test(`User Profiles ${accessType} change point preserves one semantic aggregate`, async () => {
     // Cause/effect graph U1/U2: each legacy relationship and current
-    // access_type pair must project one identity and stable metadata.
+    // access_type pair must project one identity and stable metadata while the
+    // current wire excludes the legacy field.
     const fixture = profiles(accessType);
     await exerciseUserProfileChangePoint({
       profileID: fixture.current.id,
@@ -187,13 +224,14 @@ for (const accessType of ['application', 'passthrough']) {
 
 test('User Profiles change point rejects semantic, identity, and metadata drift', async () => {
   // Negative decision table U3: decoding both SDK responses is insufficient;
-  // wrong mapping, identity drift, metadata drift, and an open access enum all
-  // fail closed.
+  // wrong mapping, identity drift, metadata drift, a retained legacy field,
+  // and an open access enum all fail closed.
   const fixture = profiles('application');
   const cases = [
     [{ ...fixture.legacy, relationship: 'resold' }, fixture.current, /legacy relationship/u],
     [fixture.legacy, { ...fixture.current, id: 'uprof_other' }, /current anchor/u],
     [fixture.legacy, { ...fixture.current, metadata: { tier: 'drift' } }, /metadata remains stable/u],
+    [fixture.legacy, { ...fixture.current, relationship: 'external' }, /excludes the legacy/u],
   ];
   for (const [legacy, current, pattern] of cases) {
     await assert.rejects(

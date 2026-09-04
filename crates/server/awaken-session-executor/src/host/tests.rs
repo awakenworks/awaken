@@ -669,26 +669,29 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
         previous_nonempty: bool,
         desired_nonempty: bool,
         claimed: bool,
+        runtime_projection: bool,
         accepted: bool,
     }
 
     // Missing-projection cause/effect decision table:
     // C1 no dispatch claim; C2 no Managed dispatch marker; C3 no frozen
     // baseline; C4 previous == desired; C5 desired revision is zero; C6 both
-    // endpoint Resource sets are empty. E1 admits the direct no-op into the
-    // canonical apply path; E2 rejects before File/Skill/Repository compilation.
+    // endpoint Resource sets are empty; C7 a frozen Runtime projection exists.
+    // E1 admits the direct no-op or projected claimed Run into the canonical
+    // apply path; E2 rejects before File/Skill/Repository compilation.
     // C2+C3 are fixed true for every row because an installed Managed marker or
     // baseline already uses the ordinary projection branch. Explicit fixture
     // branches materialize each C6 endpoint without obscuring its empty/nonempty
     // cause behind boolean combinators.
     //
-    // | Rule | C1 | C4 | C5 | C6 | Effect |
-    // | D1 | T | T | T | T | E1 |
-    // | D2 | F | T | T | T | E2 |
-    // | D3 | T | F | F | T | E2 |
-    // | D4 | T | T | F | T | E2 |
-    // | D5 | T | T | T | F | E2 |
-    // | D6 | T | F | T | F | E2 |
+    // | Rule | C1 | C4 | C5 | C6 | C7 | Effect |
+    // | D1 | T | T | T | T | F | E1 |
+    // | D2 | F | T | T | T | F | E2 |
+    // | D3 | T | F | F | T | F | E2 |
+    // | D4 | T | T | F | T | F | E2 |
+    // | D5 | T | T | T | F | F | E2 |
+    // | D6 | T | F | T | F | F | E2 |
+    // | D7 | F | T | T | T | T | E1 |
     let rules = [
         Rule {
             id: "D1-direct-empty-rev0-noop",
@@ -697,6 +700,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
             previous_nonempty: false,
             desired_nonempty: false,
             claimed: false,
+            runtime_projection: false,
             accepted: true,
         },
         Rule {
@@ -706,6 +710,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
             previous_nonempty: false,
             desired_nonempty: false,
             claimed: true,
+            runtime_projection: false,
             accepted: false,
         },
         Rule {
@@ -715,6 +720,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
             previous_nonempty: false,
             desired_nonempty: false,
             claimed: false,
+            runtime_projection: false,
             accepted: false,
         },
         Rule {
@@ -724,6 +730,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
             previous_nonempty: false,
             desired_nonempty: false,
             claimed: false,
+            runtime_projection: false,
             accepted: false,
         },
         Rule {
@@ -733,6 +740,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
             previous_nonempty: true,
             desired_nonempty: true,
             claimed: false,
+            runtime_projection: false,
             accepted: false,
         },
         Rule {
@@ -742,7 +750,18 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
             previous_nonempty: false,
             desired_nonempty: true,
             claimed: false,
+            runtime_projection: false,
             accepted: false,
+        },
+        Rule {
+            id: "D7-claimed-with-runtime-projection",
+            previous_revision: 0,
+            desired_revision: 0,
+            previous_nonempty: false,
+            desired_nonempty: false,
+            claimed: true,
+            runtime_projection: true,
+            accepted: true,
         },
     ];
 
@@ -781,6 +800,10 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
             owner: "claimed-worker".into(),
             epoch: 1,
         });
+        if rule.runtime_projection {
+            host.install_environment_projection(&thread, &on_tool_use_environment())
+                .unwrap_or_else(|error| panic!("{} installs C7: {error}", rule.id));
+        }
         assert_eq!(
             host.session_slots
                 .read(&thread, |slot| (
@@ -794,7 +817,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
         );
 
         let result = host
-            .apply_dispatched_resource_transition(&thread, &transition, claim.as_ref())
+            .apply_dispatched_resource_transition(&thread, &transition, claim.as_ref(), None)
             .await;
         if rule.accepted {
             result.unwrap_or_else(|error| panic!("{} must admit E1: {error}", rule.id));
@@ -866,13 +889,15 @@ fn effective_repository(
 struct FixedRepositoryTransport(awaken_resource_contract::RepositoryTransport);
 
 #[async_trait::async_trait]
-impl crate::RepositoryBindingVerifier<awaken_dispatch::RunClaim> for FixedRepositoryTransport {
+impl crate::RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>
+    for FixedRepositoryTransport
+{
     async fn verify(
         &self,
         _workspace_id: &str,
         _repository_id: &str,
         _config_version: awaken_resource_contract::ConfigVersion,
-        _claim: Option<&awaken_dispatch::RunClaim>,
+        _authority: Option<&awaken_dispatch::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::RepositoryTransport,
         awaken_resource_contract::RepositoryBindingVerifierError,
@@ -884,7 +909,7 @@ impl crate::RepositoryBindingVerifier<awaken_dispatch::RunClaim> for FixedReposi
 struct SequencedRepositoryTransport(AtomicUsize);
 
 #[async_trait::async_trait]
-impl crate::RepositoryBindingVerifier<awaken_dispatch::RunClaim>
+impl crate::RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>
     for SequencedRepositoryTransport
 {
     async fn verify(
@@ -892,7 +917,7 @@ impl crate::RepositoryBindingVerifier<awaken_dispatch::RunClaim>
         _workspace_id: &str,
         _repository_id: &str,
         _config_version: awaken_resource_contract::ConfigVersion,
-        _claim: Option<&awaken_dispatch::RunClaim>,
+        _authority: Option<&awaken_dispatch::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::RepositoryTransport,
         awaken_resource_contract::RepositoryBindingVerifierError,
@@ -913,7 +938,7 @@ impl crate::RepositoryBindingVerifier<awaken_dispatch::RunClaim>
 struct GatewayThenDirectRepositoryTransport(AtomicUsize);
 
 #[async_trait::async_trait]
-impl crate::RepositoryBindingVerifier<awaken_dispatch::RunClaim>
+impl crate::RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>
     for GatewayThenDirectRepositoryTransport
 {
     async fn verify(
@@ -921,7 +946,7 @@ impl crate::RepositoryBindingVerifier<awaken_dispatch::RunClaim>
         _workspace_id: &str,
         _repository_id: &str,
         _config_version: awaken_resource_contract::ConfigVersion,
-        _claim: Option<&awaken_dispatch::RunClaim>,
+        _authority: Option<&awaken_dispatch::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::RepositoryTransport,
         awaken_resource_contract::RepositoryBindingVerifierError,
@@ -1501,13 +1526,15 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
     struct ConstructorFileSource;
 
     #[async_trait::async_trait]
-    impl crate::FileContentSource<awaken_dispatch::RunClaim> for ConstructorFileSource {
+    impl crate::FileContentSource<awaken_dispatch::ResourceOperationFence>
+        for ConstructorFileSource
+    {
         async fn read(
             &self,
             workspace_id: &str,
             file_id: &str,
             _purpose: &awaken_resource_contract::FileReadPurpose,
-            _claim: Option<&awaken_dispatch::RunClaim>,
+            _claim: Option<&awaken_dispatch::ResourceOperationFence>,
         ) -> Result<
             Option<awaken_resource_contract::ResolvedFileContent>,
             awaken_resource_contract::FileContentSourceError,
@@ -1837,30 +1864,40 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     struct FailingRepositoryVerifier;
 
     #[async_trait::async_trait]
-    impl crate::RepositoryBindingVerifier<awaken_dispatch::RunClaim> for RepositoryClaimRecorder {
+    impl crate::RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>
+        for RepositoryClaimRecorder
+    {
         async fn verify(
             &self,
             _workspace_id: &str,
             _repository_id: &str,
             _config_version: awaken_resource_contract::ConfigVersion,
-            claim: Option<&awaken_dispatch::RunClaim>,
+            authority: Option<&awaken_dispatch::ResourceOperationFence>,
         ) -> Result<
             awaken_resource_contract::RepositoryTransport,
             awaken_resource_contract::RepositoryBindingVerifierError,
         > {
-            self.0.lock().unwrap().push(claim.cloned());
+            self.0
+                .lock()
+                .unwrap()
+                .push(authority.and_then(|authority| match authority {
+                    awaken_dispatch::ResourceOperationFence::Run(claim) => Some(claim.clone()),
+                    _ => None,
+                }));
             Ok(awaken_resource_contract::RepositoryTransport::Direct)
         }
     }
 
     #[async_trait::async_trait]
-    impl crate::RepositoryBindingVerifier<awaken_dispatch::RunClaim> for FailingRepositoryVerifier {
+    impl crate::RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>
+        for FailingRepositoryVerifier
+    {
         async fn verify(
             &self,
             _workspace_id: &str,
             _repository_id: &str,
             _config_version: awaken_resource_contract::ConfigVersion,
-            _claim: Option<&awaken_dispatch::RunClaim>,
+            _authority: Option<&awaken_dispatch::ResourceOperationFence>,
         ) -> Result<
             awaken_resource_contract::RepositoryTransport,
             awaken_resource_contract::RepositoryBindingVerifierError,
@@ -3240,6 +3277,75 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
 }
 
 #[tokio::test]
+async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
+    // Cause/effect decision table: C1 the durable Session projection names a
+    // Resident Environment; C2 this Coordinator has no adopted physical owner;
+    // C3 the caller is reservation or execution. Effects: E1 reservation builds
+    // only the immutable dispatch envelope and creates/adopts no Environment;
+    // E2 execution remains fail-closed until the claiming Worker adopts the
+    // exact binding. Rules: R1=C1+C2+reservation=>E1;
+    // R2=C1+C2+execution=>E2. The same context constructor owns both rules, so
+    // this test does not introduce a second topology or recovery mechanism.
+    let thread = "worker-owned-reservation";
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    install_test_session_application(&host);
+    let managed = install_test_dispatch_runtime(&host);
+    managed
+        .install_complete_test_session(
+            thread,
+            awaken_session_contract::SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "assistant".into(),
+                delegate_ids: Vec::new(),
+                tools: None,
+                resource_revision: 0,
+                resources: Default::default(),
+                model: None,
+                runtime: None,
+                environment: session_environment(
+                    awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                    serde_json::json!({}),
+                ),
+            },
+        )
+        .await
+        .expect("install Worker-owned Session projection");
+    host.install_session_environment_owner_projection(
+        thread,
+        host.local_workspace(),
+        &awaken_session_contract::SessionEnvironmentState::Resident {
+            binding: "worker-owned-binding".into(),
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        },
+    )
+    .expect("project exact durable Worker binding");
+
+    let reserved = host
+        .ctx_for_session_coordination(thread, Some("assistant"))
+        .await
+        .expect("R1 reservation does not require local adoption");
+    assert!(reserved.env.is_none(), "R1/E1 no physical Environment");
+    assert!(host.session_environment(thread).await.is_none(), "R1/E1");
+
+    host.evict_session_for_rebuild(thread).await;
+    let error = match host
+        .ctx_for_snapshot(thread, Some("assistant"), Some(reserved.config.clone()))
+        .await
+    {
+        Ok(_) => panic!("R2 execution must await exact Worker adoption"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .message
+            .contains("durable Environment was not adopted before context construction"),
+        "R2/E2: {error:?}"
+    );
+}
+
+#[tokio::test]
 async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environment() {
     use awaken_dispatch::{DispatchQueue as _, RunDispatch};
 
@@ -3377,7 +3483,9 @@ async fn managed_interrupt_signals_the_registered_attempt_only_after_durable_int
         }
     }
 
-    // Cause/effect graph: C1 a Session-affined Run is actively blocked inside
+    // Cause/effect graph: C0 the application installs one complete frozen
+    // Session projection before its co-located pool claims work; C1 a
+    // Session-affined Run is actively blocked inside
     // an opaque attempt; C2 Worker RAII registered its exact cancellation token
     // in the Session Runtime; C3 the Managed Event path has direct foreground
     // delivery and no `active_run`/`cancel` hint, while its Run still executes
@@ -3392,7 +3500,7 @@ async fn managed_interrupt_signals_the_registered_attempt_only_after_durable_int
     //
     // | Rule | active row | exact registration | foreground ingress/hint | interrupt | Effects |
     // |---|---|---|---|---|---|
-    // | L1 | leased | yes | direct/absent | accepted | E1 + E2 + E3 |
+    // | L1 | C0 + leased | yes | direct/absent | accepted | E1 + E2 + E3 |
     let thread = "managed-live-cancel";
     let run_id = RunId("managed-live-cancel-run".into());
     let dispatch = Arc::new(
@@ -3416,6 +3524,7 @@ async fn managed_interrupt_signals_the_registered_attempt_only_after_durable_int
     host.deployment.durable = false;
     let host = Arc::new(host);
     install_recording_session_application(&host);
+    let managed = install_test_dispatch_runtime(&host);
     host.ensure_dispatch_pool();
 
     let mut activation =
@@ -3427,11 +3536,23 @@ async fn managed_interrupt_signals_the_registered_attempt_only_after_durable_int
                 "",
                 "a2a:http://blocking.invalid",
             ),
-            awaken_tenancy::ScopeId::from("default"),
+            awaken_tenancy::ScopeId::from(host.local_workspace()),
             None,
             "sha256:blocking-remote",
         )
         .expect("coherent blocking remote candidate");
+    activation
+        .snapshot
+        .recompute_fingerprint()
+        .expect("coherent blocking remote snapshot");
+    crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
+        &managed,
+        thread,
+        host.local_workspace(),
+        crate::host::worker_resolver::test_support::deferred_environment(),
+        &activation.snapshot,
+    )
+    .await;
     dispatch
         .enqueue(
             RunDispatch::new(activation)
@@ -6710,7 +6831,7 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
     .await
     .expect_err("S2 selected Skill without frozen bytes fails closed");
     assert!(
-        missing.message.contains("no frozen version bytes"),
+        missing.message.contains("neither frozen version bytes"),
         "S2: {missing}"
     );
     let missing_system = missing_observed
@@ -7516,6 +7637,75 @@ impl awaken_session_contract::SessionEnvironmentBindingSink for BindingOrderSink
 // persistence -> retain the exact hidden Candidate and retry the same Store
 // port; definite failure remains retryable with that Candidate and publishes
 // nothing. Repository tests own CAS/idempotence at the aggregate.
+#[tokio::test]
+async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root() {
+    // Causes: C1 a current Run claim is installed; C2 Session admission/baseline
+    // is absent or present; C3 a Session binding sink is configured. Effects:
+    // E1 ordinary execution returns Unowned without calling the Session root;
+    // E2 Managed execution calls that root. The later create path binds E1 to
+    // the exact Run claim through DispatchQueue::bind_sandbox.
+    //
+    // | Rule | C1 | C2 Session | C3 | Effect |
+    // | R1   | Y  | N          | Y  | E1     |
+    // | R2   | Y  | Y          | Y  | E2     |
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let sink = Arc::new(BindingOrderSink {
+        host: Arc::downgrade(&host),
+        authorize_calls: AtomicUsize::new(0),
+        calls: AtomicUsize::new(0),
+        observed_before_publish: std::sync::atomic::AtomicBool::new(false),
+        fail: false,
+        require_realization: false,
+        owned_session_id: None,
+        committed_environment: None,
+    });
+    install_test_dispatch_runtime(&host).install_environment_binding_sink(sink.clone());
+    let thread = "claimed-ordinary-environment-authority";
+    host.session_slots.update(thread, |slot| {
+        slot.dispatch_claim = Some(awaken_dispatch::RunClaim {
+            run_id: RunId("claimed-ordinary-run".into()),
+            owner: "worker-a".into(),
+            epoch: 1,
+        });
+    });
+
+    let ordinary = host
+        .authorize_environment_effect_before_io(
+            thread,
+            awaken_session_contract::SessionEnvironmentEffectKind::Create,
+            None,
+        )
+        .await
+        .expect("R1 ordinary authorization");
+    assert!(
+        matches!(
+            ordinary.authorization,
+            awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned
+        ),
+        "R1/E1"
+    );
+    assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 0, "R1/E1");
+
+    host.session_slots
+        .update(thread, |slot| slot.session_dispatch = true);
+    let managed = host
+        .authorize_environment_effect_before_io(
+            thread,
+            awaken_session_contract::SessionEnvironmentEffectKind::Create,
+            None,
+        )
+        .await
+        .expect("R2 Managed authorization");
+    assert!(
+        matches!(
+            managed.authorization,
+            awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized
+        ),
+        "R2/E2"
+    );
+    assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 1, "R2/E2");
+}
+
 #[tokio::test]
 async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use_it() {
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
@@ -14907,6 +15097,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
                 tool_id: "write".into(),
                 arguments: serde_json::json!({"path": "answer.txt"}),
             },
+            authority: ToolCallAuthority::RuntimeToolBatch,
         },
     );
     commit
@@ -15328,6 +15519,260 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     assert_eq!(follow_up.pending, vec![follow_up_input], "CR5/E7");
 }
 
+#[test]
+fn tool_reply_authority_decision_table_preserves_runtime_and_executor_owners() {
+    // Causes: C1 authority is Runtime/Executor/Legacy; C2 an exact Runtime
+    // ToolBatch is present/absent; C3 the legacy reason is permission/client.
+    // Effects: E1 Runtime requires and validates its exact batch; E2 Executor
+    // ignores any stale Runtime cell and keeps its closed ticket authoritative;
+    // E3 legacy exact batch is validated; E4 legacy permission without a batch
+    // remains upgrade-resumable; E5 ambiguous legacy client waits fail closed.
+    //
+    // | Rule | Authority | Batch | Reason | Effect |
+    // |---|---|---|---|---|
+    // | A1 | Runtime | exact | permission | E1 accept |
+    // | A2 | Runtime | absent | permission | E1 reject |
+    // | A3 | Executor | absent/stale | permission | E2 accept |
+    // | A4 | Legacy | exact | permission | E3 accept |
+    // | A5 | Legacy | absent | permission | E4 accept |
+    // | A6 | Legacy | absent | client | E5 reject |
+    use awaken_agent_contract::agent::awaiting::{PendingTool, ToolAwaitReason};
+
+    let thread = ThreadId("authority-thread".into());
+    let run = RunId("authority-run".into());
+    let ticket = |authority, reason| {
+        ResumeTicket::new(
+            "authority-correlation",
+            run.clone(),
+            thread.clone(),
+            "authority-snapshot",
+            "authority-catalog",
+            AwaitTarget::ToolCall {
+                reason,
+                call_id: "authority-call".into(),
+                tool: PendingTool {
+                    tool_id: "bash".into(),
+                    arguments: serde_json::json!({"command": "true"}),
+                },
+                authority,
+            },
+        )
+    };
+    let runtime = ticket(
+        ToolCallAuthority::RuntimeToolBatch,
+        ToolAwaitReason::Permission,
+    );
+    let exact_state = [awaiting_tool_batch_state(
+        &run,
+        &runtime,
+        awaken_runtime_contract::ToolWaitKind::ToolPermission,
+    )];
+    assert!(
+        super::coordination::validate_awaiting_tool_authority(&thread, &runtime, &exact_state)
+            .is_ok(),
+        "A1/E1"
+    );
+    assert!(
+        super::coordination::validate_awaiting_tool_authority(&thread, &runtime, &[]).is_err(),
+        "A2/E1"
+    );
+
+    let executor = ticket(
+        ToolCallAuthority::RunAttemptExecutor,
+        ToolAwaitReason::Permission,
+    );
+    for (rule, state) in [("A3a", &[][..]), ("A3b", &exact_state[..])] {
+        assert!(
+            super::coordination::validate_awaiting_tool_authority(&thread, &executor, state)
+                .is_ok(),
+            "{rule}/E2"
+        );
+    }
+    let legacy_permission = ticket(
+        ToolCallAuthority::LegacyUnspecified,
+        ToolAwaitReason::Permission,
+    );
+    assert!(
+        super::coordination::validate_awaiting_tool_authority(
+            &thread,
+            &legacy_permission,
+            &exact_state,
+        )
+        .is_ok(),
+        "A4/E3"
+    );
+    assert!(
+        super::coordination::validate_awaiting_tool_authority(&thread, &legacy_permission, &[])
+            .is_ok(),
+        "A5/E4"
+    );
+    let legacy_client = ticket(
+        ToolCallAuthority::LegacyUnspecified,
+        ToolAwaitReason::ClientExecution,
+    );
+    assert!(
+        super::coordination::validate_awaiting_tool_authority(&thread, &legacy_client, &[])
+            .is_err(),
+        "A6/E5"
+    );
+}
+
+#[tokio::test]
+async fn remote_input_reply_uses_its_ticket_without_inventing_a_tool_batch() {
+    // Cause C1: AwaitTarget is a local ToolCall or protocol-owned RemoteInput.
+    // Cause C2: the public reply call id and client-result kind match the ticket.
+    // Effect E1: ToolCall additionally requires an exact ActiveToolBatch; E2:
+    // RemoteInput succeeds from its closed ticket and no parallel batch exists;
+    // E3: a mismatched remote call id is rejected.
+    //
+    // | Rule | C1 | C2 | Durable batch | Effect |
+    // |---|---|---|---|---|
+    // | R1 | ToolCall | yes | absent | reject (E1) |
+    // | R2 | RemoteInput | yes | absent by design | accept (E2) |
+    // | R3 | RemoteInput | no | absent by design | reject (E3) |
+    use awaken_agent_contract::agent::awaiting::{
+        AwaitTarget, PendingTool, RemoteInputReason, ResumeTicket, ToolAwaitReason,
+    };
+    use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
+    use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
+
+    let thread = ThreadId("remote-input-reply-session".into());
+    let run_id = RunId("remote-input-reply-run".into());
+    let host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
+    let commit = host
+        .commit_for_read(&thread.0)
+        .await
+        .expect("remote input commit partition");
+    commit
+        .commit(ThreadCommit::assemble(
+            thread.clone(),
+            RunDisposition::running(run_id.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("remote input Running");
+    let ticket = ResumeTicket::new(
+        "remote-input-correlation",
+        run_id.clone(),
+        thread.clone(),
+        "remote-input-snapshot",
+        "remote-input-catalog",
+        AwaitTarget::RemoteInput {
+            reason: RemoteInputReason::UserInput,
+            call_id: "remote-task-7".into(),
+        },
+    );
+    commit
+        .commit(ThreadCommit::assemble(
+            thread.clone(),
+            RunDisposition::awaiting(ticket.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("R2 RemoteInput without ToolBatch");
+    let command = awaken_session_contract::SessionThreadToolReplyCommand {
+        session_id: thread.0.clone(),
+        tool_request_event_id: Some("remote-input-event".into()),
+        expected_thread_version: None,
+        target: awaken_session_contract::SessionThreadTarget::Primary,
+        expected_run_id: run_id,
+        expected_correlation_id: ticket.correlation_id.clone(),
+        tool_use_id: "remote-task-7".into(),
+        reply: awaken_session_contract::SessionThreadToolReply::Result {
+            content: vec![ContentBlock::text("README.md")],
+            is_error: false,
+        },
+        accompanying_system: None,
+    };
+    assert!(
+        host.validated_session_thread_tool_reply(&command)
+            .await
+            .is_ok(),
+        "R2/E2"
+    );
+    let mut stale = command;
+    stale.tool_use_id = "another-task".into();
+    assert!(
+        host.validated_session_thread_tool_reply(&stale)
+            .await
+            .is_err(),
+        "R3/E3"
+    );
+
+    let tool_thread = ThreadId("missing-tool-batch-session".into());
+    let tool_run = RunId("missing-tool-batch-run".into());
+    let tool_host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
+    let tool_commit = tool_host
+        .commit_for_read(&tool_thread.0)
+        .await
+        .expect("tool commit partition");
+    tool_commit
+        .commit(ThreadCommit::assemble(
+            tool_thread.clone(),
+            RunDisposition::running(tool_run.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("tool Running");
+    let tool_ticket = ResumeTicket::new(
+        "missing-tool-batch-correlation",
+        tool_run.clone(),
+        tool_thread.clone(),
+        "missing-tool-batch-snapshot",
+        "missing-tool-batch-catalog",
+        AwaitTarget::ToolCall {
+            reason: ToolAwaitReason::ClientExecution,
+            call_id: "client-call".into(),
+            tool: PendingTool {
+                tool_id: "client-tool".into(),
+                arguments: serde_json::json!({}),
+            },
+            authority: ToolCallAuthority::RuntimeToolBatch,
+        },
+    );
+    tool_commit
+        .commit(ThreadCommit::assemble(
+            tool_thread.clone(),
+            RunDisposition::awaiting(tool_ticket.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("R1 ToolCall without ToolBatch");
+    let tool_command = awaken_session_contract::SessionThreadToolReplyCommand {
+        session_id: tool_thread.0.clone(),
+        tool_request_event_id: Some("missing-tool-batch-event".into()),
+        expected_thread_version: None,
+        target: awaken_session_contract::SessionThreadTarget::Primary,
+        expected_run_id: tool_run,
+        expected_correlation_id: tool_ticket.correlation_id,
+        tool_use_id: "client-call".into(),
+        reply: awaken_session_contract::SessionThreadToolReply::Result {
+            content: vec![ContentBlock::text("result")],
+            is_error: false,
+        },
+        accompanying_system: None,
+    };
+    assert!(
+        tool_host
+            .validated_session_thread_tool_reply(&tool_command)
+            .await
+            .is_err(),
+        "R1/E1"
+    );
+}
+
 #[tokio::test]
 async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
     // Constraint/Invariant: the authoritative inputs and ownership boundaries
@@ -15395,6 +15840,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
                 tool_id: "client_lookup".into(),
                 arguments: serde_json::json!({"query": "answer"}),
             },
+            authority: ToolCallAuthority::RuntimeToolBatch,
         },
     );
     commit
@@ -15927,6 +16373,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
                 tool_id: "write".into(),
                 arguments: serde_json::json!({"path":"requires-action.txt"}),
             },
+            authority: ToolCallAuthority::RuntimeToolBatch,
         },
     );
     action_commit
@@ -16768,6 +17215,56 @@ impl awaken_resource_contract::MemoryMaterializationReferenceEncoder<awaken_disp
 
 impl
     awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+        awaken_session_contract::SessionResourceMaterializationIntent,
+    > for RecordingTerminalMemoryReferenceEncoder
+{
+    fn encode(
+        &self,
+        workspace_id: &str,
+        memory_store_id: &str,
+        config_version: awaken_resource_contract::ConfigVersion,
+        access: awaken_resource_contract::ResourceAccess,
+        fence: &awaken_session_contract::SessionResourceMaterializationIntent,
+    ) -> Result<String, awaken_resource_contract::MemoryMaterializationReferenceError> {
+        let awaken_session_contract::SessionResourceMaterializationTarget::Input(input) =
+            fence.target()
+        else {
+            return Err(
+                awaken_resource_contract::MemoryMaterializationReferenceError::new(
+                    "realization Memory encoder did not receive a Memory input",
+                ),
+            );
+        };
+        let awaken_session_contract::ResolvedInputSource::MemoryStore { config, .. } =
+            &input.source
+        else {
+            return Err(
+                awaken_resource_contract::MemoryMaterializationReferenceError::new(
+                    "realization Memory encoder did not receive a Memory input",
+                ),
+            );
+        };
+        if workspace_id != "realization-workspace"
+            || memory_store_id != "realization-memory-store"
+            || config_version != config.version
+            || access != input.access
+            || fence.session_id() != "realization-memory-session"
+            || fence.resource_revision() != 5
+            || fence.lease().owner != "realization-memory-worker"
+        {
+            return Err(
+                awaken_resource_contract::MemoryMaterializationReferenceError::new(
+                    "realization Memory encoder received a foreign frozen input",
+                ),
+            );
+        }
+        self.events.lock().unwrap().push("encode-realization-v3");
+        Ok("realization-v3-reference".into())
+    }
+}
+
+impl
+    awaken_resource_contract::MemoryMaterializationReferenceEncoder<
         awaken_session_contract::SessionTerminalMemoryIntent,
     > for RecordingTerminalMemoryReferenceEncoder
 {
@@ -16792,6 +17289,154 @@ impl
         self.events.lock().unwrap().push("encode-terminal-v2");
         Ok("terminal-v2-reference".into())
     }
+}
+
+#[tokio::test]
+async fn remote_memory_staging_uses_the_session_realization_lease_without_a_run_claim() {
+    // Cause/effect graph: C1 the Host is a registered Worker with remote
+    // Resource transport; C2 a Run claim is absent/present; C3 an exact Session
+    // realization tuple is absent/present. Effects: E1 RunV1 remains preferred
+    // when C2 exists; E2 C2 absent+C3 present derives one V3 reference from the
+    // complete frozen input; E3 neither fence fails before mount publication.
+    //
+    // | Rule | Run claim | realization tuple | Effect |
+    // |---|---|---|---|
+    // | R1 | present | any | E1 |
+    // | R2 | absent | present | E2 |
+    // | R3 | absent | absent | E3 |
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .with_worker_upstream(awaken_worker_transport_security::WorkerUpstream::new(
+                "http://coordinator.invalid",
+            ))
+            .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
+                events: events.clone(),
+            })),
+    );
+    let managed = crate::ManagedHost::new(host);
+    let input = awaken_session_contract::ResolvedInput {
+        binding_id: awaken_resource_contract::BindingId::from("realization-memory"),
+        source: awaken_session_contract::ResolvedInputSource::MemoryStore {
+            memory_store_id: awaken_resource_contract::MemoryStoreId::from(
+                "realization-memory-store",
+            ),
+            config: awaken_resource_contract::MemoryStoreConfigVersion {
+                memory_store_id: awaken_resource_contract::MemoryStoreId::from(
+                    "realization-memory-store",
+                ),
+                version: awaken_resource_contract::ConfigVersion(3),
+                retention_policy: Default::default(),
+            },
+        },
+        mount_path: "/memory/realization".into(),
+        access: awaken_resource_contract::ResourceAccess::ReadOnly,
+        instructions: None,
+    };
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "realization-memory-worker".into(),
+        runtime_incarnation: "realization-memory-worker:1:boot".into(),
+        epoch: 2,
+        expires_at_unix_ms: u64::MAX,
+    };
+    let desired = awaken_session_contract::SessionResourceManifest::at_revision(
+        "realization-workspace",
+        5,
+        awaken_session_contract::ResolvedSessionResources::try_new(vec![input.clone()], Vec::new())
+            .expect("R2 exact Memory manifest"),
+    );
+    let transition = awaken_session_contract::SessionResourceTransition::new(
+        awaken_session_contract::SessionResourceManifest::at_revision(
+            "realization-workspace",
+            0,
+            Default::default(),
+        ),
+        desired,
+    )
+    .expect("R2 exact aggregate transition");
+    managed
+        .stage_prevalidated_resource_transition_under_resource_projection(
+            "realization-memory-session",
+            &transition,
+            None,
+            Some(&lease),
+            false,
+        )
+        .await
+        .expect("R2/E2 realization-fenced remote Memory staging");
+    let staged = managed
+        .host
+        .session_slots
+        .read("realization-memory-session", |slot| slot.resources.clone())
+        .expect("R2/E2 staged slot");
+    let awaken_provisioning_contract::MountSource::MemoryStore {
+        materialization_reference,
+        ..
+    } = &staged.mounts[0].source
+    else {
+        panic!("R2/E2 exact typed Memory mount")
+    };
+    assert_eq!(
+        materialization_reference.as_deref(),
+        Some("realization-v3-reference"),
+        "R2/E2"
+    );
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &["encode-realization-v3"],
+        "R2/E2 only the realization encoder"
+    );
+
+    managed
+        .stage_prevalidated_resource_transition_under_resource_projection(
+            "realization-memory-session",
+            &transition,
+            None,
+            Some(&lease),
+            false,
+        )
+        .await
+        .expect("R2 exact lease replay reuses its compiled projection");
+    assert_eq!(events.lock().unwrap().len(), 1, "R2 exact cache replay");
+    let renewed = awaken_session_contract::SessionRealizationLease {
+        expires_at_unix_ms: lease.expires_at_unix_ms - 1,
+        ..lease.clone()
+    };
+    managed
+        .stage_prevalidated_resource_transition_under_resource_projection(
+            "realization-memory-session",
+            &transition,
+            None,
+            Some(&renewed),
+            false,
+        )
+        .await
+        .expect("R2 renewed lease recompiles its transport reference");
+    assert_eq!(
+        events.lock().unwrap().len(),
+        2,
+        "R2 lease generation is part of the cache authority"
+    );
+
+    let error = match managed
+        .stage_prevalidated_resource_transition_under_resource_projection(
+            "unfenced-realization-memory-session",
+            &transition,
+            None,
+            None,
+            false,
+        )
+        .await
+    {
+        Ok(_) => panic!("R3/E3 unfenced remote Memory staging must fail"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .message
+            .contains("dispatch claim or Session realization lease"),
+        "R3/E3: {error:?}"
+    );
 }
 
 struct RecordingTerminalMemoryMounter {
@@ -21328,7 +21973,10 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     // | M2 | yes | yes | yes | yes | E1 filesystem-only Skill projection |
     // | M3 | yes | yes | no  | yes | E3 reject; no semantic fallback |
     // | M4 | yes | no  | no  | yes | E4 semantic non-Skill content allowed |
-    // | M5 | yes | bound | any | no | E3 missing selected version rejected |
+    // | M5 | yes | bound | any | no | E3 missing selected evidence rejected |
+    // | M6 | yes | bound | yes | deferred binding | E1 metadata-only reservation |
+    // | M7 | yes | other | any | deferred binding | E3 mismatched pin rejected |
+    use super::session::SkillDeliveryEvidence;
     use crate::session_slot::ManagedContentDelivery;
     use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
@@ -21360,8 +22008,12 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         slot.tools = Some(deny_filesystem());
     });
     assert_eq!(
-        host.select_content_delivery("direct-semantic", None, None)
-            .expect("M1 direct compatibility projection"),
+        host.select_content_delivery(
+            "direct-semantic",
+            None,
+            SkillDeliveryEvidence::Materialized(None),
+        )
+        .expect("M1 direct compatibility projection"),
         ManagedContentDelivery::SemanticTools,
         "M1/E2"
     );
@@ -21370,8 +22022,12 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         slot.session_dispatch = true;
     });
     assert_eq!(
-        host.select_content_delivery("managed-filesystem", None, Some(&frozen))
-            .expect("M2 Managed filesystem projection"),
+        host.select_content_delivery(
+            "managed-filesystem",
+            None,
+            SkillDeliveryEvidence::Materialized(Some(&frozen)),
+        )
+        .expect("M2 Managed filesystem projection"),
         ManagedContentDelivery::ManagedFilesystem,
         "M2/E1"
     );
@@ -21381,7 +22037,11 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         slot.tools = Some(deny_filesystem());
     });
     let denied = host
-        .select_content_delivery("managed-denied", None, Some(&frozen))
+        .select_content_delivery(
+            "managed-denied",
+            None,
+            SkillDeliveryEvidence::Materialized(Some(&frozen)),
+        )
         .expect_err("M3 must not construct the semantic Skill adapter");
     assert!(
         denied
@@ -21397,7 +22057,11 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     });
     assert_eq!(
         empty_host
-            .select_content_delivery("managed-no-skill", None, Some(&[]))
+            .select_content_delivery(
+                "managed-no-skill",
+                None,
+                SkillDeliveryEvidence::Materialized(Some(&[])),
+            )
             .expect("M4 keeps semantic delivery available to non-Skill content"),
         ManagedContentDelivery::SemanticTools,
         "M4/E4"
@@ -21413,15 +22077,81 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
             .model(test_model_binding())
             .agent_bindings(awaken_runtime_contract::agent_bindings::AgentBindings {
                 skills: vec![awaken_agent_contract::AgentSkillBinding::custom("think")],
+                toolsets: vec![ToolsetPolicy {
+                    source: ToolsetSource::Agent,
+                    default: ToolExecutionPolicy::default(),
+                    overrides: Vec::new(),
+                }],
                 ..Default::default()
             })
             .build();
     let missing = empty_host
-        .select_content_delivery("managed-missing-freeze", Some(&selected_snapshot), None)
+        .select_content_delivery(
+            "managed-missing-freeze",
+            Some(&selected_snapshot),
+            SkillDeliveryEvidence::Materialized(None),
+        )
         .expect_err("M5 rejects an incomplete Managed projection");
     assert!(
-        missing.to_string().contains("has no frozen version bytes"),
+        missing
+            .to_string()
+            .contains("has neither frozen version bytes nor a deferred aggregate binding"),
         "M5/E3: {missing}"
+    );
+
+    let binding = awaken_session_contract::ResolvedSkillBinding {
+        kind: awaken_agent_contract::AgentSkillKind::Custom,
+        skill_id: "think".into(),
+        version: 1,
+        bundle_sha256: "sha256:think".into(),
+    };
+    empty_host
+        .session_slots
+        .update("managed-deferred-freeze", |slot| {
+            slot.session_dispatch = true
+        });
+    assert_eq!(
+        empty_host
+            .select_content_delivery(
+                "managed-deferred-freeze",
+                Some(&selected_snapshot),
+                SkillDeliveryEvidence::DeferredBindings(std::slice::from_ref(&binding)),
+            )
+            .expect("M6 accepts the aggregate pin without loading bytes"),
+        ManagedContentDelivery::ManagedFilesystem,
+        "M6/E1"
+    );
+
+    let other_snapshot =
+        awaken_runtime_contract::ExecutableAgentSnapshot::builder("managed-other-skill")
+            .model(test_model_binding())
+            .agent_bindings(awaken_runtime_contract::agent_bindings::AgentBindings {
+                skills: vec![awaken_agent_contract::AgentSkillBinding::custom("other")],
+                toolsets: vec![ToolsetPolicy {
+                    source: ToolsetSource::Agent,
+                    default: ToolExecutionPolicy::default(),
+                    overrides: Vec::new(),
+                }],
+                ..Default::default()
+            })
+            .build();
+    empty_host
+        .session_slots
+        .update("managed-deferred-mismatch", |slot| {
+            slot.session_dispatch = true
+        });
+    let mismatch = empty_host
+        .select_content_delivery(
+            "managed-deferred-mismatch",
+            Some(&other_snapshot),
+            SkillDeliveryEvidence::DeferredBindings(std::slice::from_ref(&binding)),
+        )
+        .expect_err("M7 rejects an unrelated aggregate pin");
+    assert!(
+        mismatch
+            .to_string()
+            .contains("has neither frozen version bytes nor a deferred aggregate binding"),
+        "M7/E3: {mismatch}"
     );
 }
 
@@ -21453,8 +22183,12 @@ fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
         slot.content_delivery = Some(ManagedContentDelivery::ManagedFilesystem)
     });
     assert_eq!(
-        host.select_content_delivery("filesystem-session", Some(&restricted), None)
-            .expect("CD2 reuses physical Session delivery"),
+        host.select_content_delivery(
+            "filesystem-session",
+            Some(&restricted),
+            super::session::SkillDeliveryEvidence::Materialized(None),
+        )
+        .expect("CD2 reuses physical Session delivery"),
         ManagedContentDelivery::ManagedFilesystem,
         "CD2/E2"
     );
@@ -21484,8 +22218,12 @@ fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
         "CD3 later snapshot would independently derive filesystem delivery"
     );
     assert_eq!(
-        host.select_content_delivery("semantic-session", None, None)
-            .expect("CD3 reuses physical Session delivery"),
+        host.select_content_delivery(
+            "semantic-session",
+            None,
+            super::session::SkillDeliveryEvidence::Materialized(None),
+        )
+        .expect("CD3 reuses physical Session delivery"),
         ManagedContentDelivery::SemanticTools,
         "CD3/E2"
     );

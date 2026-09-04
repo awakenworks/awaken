@@ -24,7 +24,7 @@ function replyText(res) {
 
 async function main() {
   // --- multi-turn: a shared contextId threads the conversation ---
-  await withRealServer('echo', 38151, async (base) => {
+  await withRealServer('echo', Number(process.env.E2E_PORT), async (base) => {
     const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
     const modernClient = await new ClientFactory().createFromUrl(base, '/v1/a2a/agent-card');
     const extendedCard = await modernClient.getAgentCard();
@@ -155,7 +155,7 @@ async function main() {
   // --- HITL: a tool needing approval awaits the task (input-required); a follow-up
   // message on the same context carries an explicit structured approval and the
   // task completes; plain text is never interpreted as authorization ---
-  await withScenarioServer('management-probe', 'probe', 38153, async (base) => {
+  await withScenarioServer('management-probe', 'probe', Number(process.env.E2E_PORT), async (base) => {
     await publishAlwaysAskManagementProbeAgent(base, 'assistant', ['write'], ['read']);
     const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
     const awaiting = await client.sendMessage({
@@ -198,7 +198,7 @@ async function main() {
   // | yes         | any      | push set/get/list| one config; credentials never echo   |
   // | yes         | any      | push delete      | config absent on the next read       |
   // | no          | -        | get/cancel       | stable SDK task-not-found failure    |
-  await withScenarioServer('management-probe', 'probe', 38154, async (base) => {
+  await withScenarioServer('management-probe', 'probe', Number(process.env.E2E_PORT), async (base) => {
     await publishAlwaysAskManagementProbeAgent(base, 'assistant', ['write'], ['read']);
     const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
     const awaiting = await client.sendMessage({
@@ -275,7 +275,7 @@ async function main() {
   // Decision table:
   // | execution | first event | live output         | terminal event |
   // | succeeds  | working task| artifact-update(s)  | completed/final|
-  await withRealServer('echo', 38155, async (base) => {
+  await withRealServer('echo', Number(process.env.E2E_PORT), async (base) => {
     const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
     const events = [];
     for await (const event of client.sendMessageStream({
@@ -297,7 +297,7 @@ async function main() {
   });
 
   // --- multimodal: a `file` image part travels to the model ---
-  await withRealServer('vision', 38152, async (base) => {
+  await withRealServer('vision', Number(process.env.E2E_PORT), async (base) => {
     const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
     const res = await client.sendMessage({
       message: {

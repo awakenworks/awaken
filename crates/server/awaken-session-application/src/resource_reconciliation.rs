@@ -18,6 +18,7 @@ use super::{
     realization::{mutation_control, repository_control},
 };
 
+mod materialization_authorization;
 mod purge_guard;
 mod repository_reference;
 mod terminal_cleanup;

@@ -19,7 +19,7 @@ ASSUME /\ Workers # {} /\ Operations # {} /\ Hashes # {}
        /\ MaxVersion \in Nat \ {0}
 
 WorkerStates == {"Absent", "Ready", "Draining", "Quiesced"}
-DispatchStates == {"Pending", "Leased", "Awaiting", "Removed"}
+DispatchStates == {"Pending", "Leased", "TerminalLeased", "Awaiting", "Removed"}
 RunStates == {"Running", "Awaiting", "Ended"}
 ResponseStates == {"Idle", "Available", "Lost", "Acknowledged", "Rejected"}
 Signals == {"None", "Input", "Cancellation"}
@@ -131,7 +131,7 @@ Claim(w) ==
                     lastTruthWriter>>
 
 Expire ==
-    /\ dispatchState = "Leased" /\ leaseLive
+    /\ dispatchState \in {"Leased", "TerminalLeased"} /\ leaseLive
     /\ leaseLive' = FALSE
     /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, owner,
                     leaseEpoch, snapshotLoaded, snapshotEpoch, workerProjection,
@@ -155,8 +155,28 @@ Reclaim(w) ==
                     acknowledgedVersion, pendingSignal, consumedSignalVersion,
                     lastTruthWriter>>
 
+\* A terminal commit and dispatch settlement are deliberately separate durable
+\* boundaries. After the mutation lease expires, either the dedicated scanner
+\* or the ordinary pool may acquire this recovery-only claim. The abstract
+\* TerminalLeased state records that committed truth was checked before the
+\* claim; it is not a second production queue state.
+ClaimTerminalRecovery(w) ==
+    /\ w \in Workers /\ workerState[w] = "Ready"
+    /\ dispatchState = "Leased" /\ ~leaseLive /\ runState = "Ended"
+    /\ leaseEpoch < MaxEpoch
+    /\ dispatchState' = "TerminalLeased" /\ owner' = w
+    /\ leaseEpoch' = leaseEpoch + 1 /\ leaseLive' = TRUE
+    /\ snapshotLoaded' = [snapshotLoaded EXCEPT ![w] = FALSE]
+    /\ executing' = executing \ {w}
+    /\ UNCHANGED <<workerState, workerIncarnation, snapshotEpoch,
+                    workerProjection, committedLog, runState, endedOnce,
+                    receiptHash, receiptVersion, pendingOperation, pendingHash,
+                    pendingEpoch, pendingExpectedVersion, responseState,
+                    acknowledgedVersion, pendingSignal, consumedSignalVersion,
+                    lastTruthWriter>>
+
 Abandon ==
-    /\ dispatchState = "Leased" /\ ~leaseLive
+    /\ dispatchState = "Leased" /\ ~leaseLive /\ runState # "Ended"
     /\ dispatchState' = IF runState = "Awaiting" THEN "Awaiting" ELSE "Pending"
     /\ owner' = NoWorker
     /\ UNCHANGED <<workerState, workerIncarnation, leaseEpoch, leaseLive,
@@ -168,7 +188,8 @@ Abandon ==
                     lastTruthWriter>>
 
 Snapshot(w) ==
-    /\ w = owner /\ leaseLive /\ dispatchState = "Leased"
+    /\ w = owner /\ leaseLive
+    /\ dispatchState \in {"Leased", "TerminalLeased"}
     /\ workerState[w] = "Ready"
     /\ snapshotLoaded' = [snapshotLoaded EXCEPT ![w] = TRUE]
     /\ snapshotEpoch' = [snapshotEpoch EXCEPT ![w] = leaseEpoch]
@@ -182,6 +203,7 @@ Snapshot(w) ==
 
 Execute(w) ==
     /\ w = owner /\ leaseLive /\ dispatchState = "Leased"
+    /\ runState # "Ended"
     /\ workerState[w] = "Ready"
     /\ snapshotLoaded[w] /\ snapshotEpoch[w] = leaseEpoch
     /\ w \notin executing
@@ -367,6 +389,24 @@ Settle(w, epoch) ==
                     responseState, acknowledgedVersion, pendingSignal,
                     consumedSignalVersion, lastTruthWriter>>
 
+\* Recovery of an already-committed terminal bypasses every physical execution
+\* effect and needs no lost Worker response. Loading the committed snapshot and
+\* holding the current dispatch epoch are sufficient to reuse Done settlement.
+SettleCommittedTerminal(w, epoch) ==
+    /\ w = owner /\ epoch = leaseEpoch /\ leaseLive
+    /\ dispatchState = "TerminalLeased"
+    /\ runState = "Ended"
+    /\ snapshotLoaded[w] /\ snapshotEpoch[w] = leaseEpoch
+    /\ dispatchState' = "Removed"
+    /\ owner' = NoWorker /\ leaseLive' = FALSE
+    /\ executing' = executing \ {w}
+    /\ UNCHANGED <<workerState, workerIncarnation, leaseEpoch, snapshotLoaded,
+                    snapshotEpoch, workerProjection, committedLog, runState,
+                    endedOnce, receiptHash, receiptVersion, pendingOperation,
+                    pendingHash, pendingEpoch, pendingExpectedVersion,
+                    responseState, acknowledgedVersion, pendingSignal,
+                    consumedSignalVersion, lastTruthWriter>>
+
 SupplyInput ==
     /\ runState = "Awaiting" /\ dispatchState = "Awaiting"
     /\ pendingSignal = "None"
@@ -395,7 +435,8 @@ Next ==
     \/ \E w \in Workers, incarnation \in 0..MaxIncarnation :
            Heartbeat(w, incarnation) \/ StaleHeartbeat(w, incarnation)
     \/ \E w \in Workers : Drain(w) \/ Quiesce(w)
-    \/ \E w \in Workers : Claim(w) \/ Reclaim(w) \/ Snapshot(w) \/ Execute(w)
+    \/ \E w \in Workers : Claim(w) \/ Reclaim(w) \/ ClaimTerminalRecovery(w)
+                           \/ Snapshot(w) \/ Execute(w)
     \/ Expire \/ Abandon
     \/ \E w \in Workers, operation \in Operations, hash \in Hashes :
            CommitRequest(w, operation, hash)
@@ -403,6 +444,7 @@ Next ==
                            \/ DeliverResponse(w) \/ ClearResponse(w)
     \/ \E w \in Workers, epoch \in 0..MaxEpoch :
            Renew(w, epoch) \/ Settle(w, epoch)
+             \/ SettleCommittedTerminal(w, epoch)
     \/ SupplyInput \/ RequestCancellation
 
 TypeOK ==
@@ -434,7 +476,14 @@ IsPrefix(prefix, whole) ==
     /\ \A i \in 1..Len(prefix) : prefix[i] = whole[i]
 
 OneLiveClaimOwner ==
-    (dispatchState = "Leased" /\ leaseLive) => owner \in Workers
+    (dispatchState \in {"Leased", "TerminalLeased"} /\ leaseLive)
+      => owner \in Workers
+
+TerminalRecoverySkipsExecution ==
+    dispatchState = "TerminalLeased" =>
+      /\ runState = "Ended"
+      /\ owner \in Workers
+      /\ owner \notin executing
 
 StaleEpochNeverMutatesTruth ==
     \A w \in Workers :
@@ -473,6 +522,7 @@ CoordinatorOwnsCommittedTruth == lastTruthWriter = Coordinator
 Safety ==
     /\ TypeOK
     /\ OneLiveClaimOwner
+    /\ TerminalRecoverySkipsExecution
     /\ StaleEpochNeverMutatesTruth
     /\ StableOperationReceipt
     /\ TerminalRunIsAbsorbing
@@ -485,10 +535,11 @@ Safety ==
 \* Fairness is attached only to protocol progress actions. Environment actions
 \* (registration, external input, cancellation, network recovery, and Worker
 \* availability) intentionally have no fairness assumption.
-ClaimAny == \E w \in Workers : Claim(w) \/ Reclaim(w)
+ClaimAny == \E w \in Workers : Claim(w) \/ Reclaim(w) \/ ClaimTerminalRecovery(w)
 SnapshotAny == \E w \in Workers : Snapshot(w)
 CommitApplyAny == \E w \in Workers : CommitApply(w)
-SettleAny == \E w \in Workers, epoch \in 0..MaxEpoch : Settle(w, epoch)
+SettleAny == \E w \in Workers, epoch \in 0..MaxEpoch :
+               Settle(w, epoch) \/ SettleCommittedTerminal(w, epoch)
 QuiesceAny == \E w \in Workers : Quiesce(w)
 
 ClaimEnabled ==
@@ -497,7 +548,7 @@ ClaimEnabled ==
     /\ \E w \in Workers : workerState[w] = "Ready"
 
 SnapshotEnabled ==
-    /\ dispatchState = "Leased" /\ leaseLive
+    /\ dispatchState \in {"Leased", "TerminalLeased"} /\ leaseLive
     /\ owner \in Workers /\ workerState[owner] = "Ready"
     /\ ~snapshotLoaded[owner]
 
@@ -509,6 +560,16 @@ ReclaimEnabled ==
     /\ dispatchState = "Leased" /\ ~leaseLive /\ runState # "Ended"
     /\ leaseEpoch < MaxEpoch
     /\ \E w \in Workers : workerState[w] = "Ready" /\ w # owner
+
+TerminalRecoveryEnabled ==
+    /\ dispatchState = "Leased" /\ ~leaseLive /\ runState = "Ended"
+    /\ leaseEpoch < MaxEpoch
+    /\ \E w \in Workers : workerState[w] = "Ready"
+
+TerminalRecoverySettleEnabled ==
+    /\ dispatchState = "TerminalLeased" /\ leaseLive
+    /\ owner \in Workers
+    /\ snapshotLoaded[owner] /\ snapshotEpoch[owner] = leaseEpoch
 
 ClaimableEventuallyChanges ==
     ClaimEnabled ~> (~ClaimEnabled \/ (dispatchState = "Leased" /\ leaseLive))
@@ -525,6 +586,14 @@ CommitRequestEventuallyChanges ==
 
 ExpiredClaimEventuallyChanges ==
     ReclaimEnabled ~> (~ReclaimEnabled \/ leaseLive)
+
+CommittedTerminalEventuallyGetsRecoveryClaim ==
+    TerminalRecoveryEnabled
+      ~> (~TerminalRecoveryEnabled
+           \/ (dispatchState = "TerminalLeased" /\ leaseLive))
+
+CommittedTerminalRecoveryEventuallySettles ==
+    TerminalRecoverySettleEnabled ~> dispatchState = "Removed"
 
 TerminalLeaseEventuallyChanges ==
     (runState = "Ended" /\ dispatchState = "Leased" /\ leaseLive

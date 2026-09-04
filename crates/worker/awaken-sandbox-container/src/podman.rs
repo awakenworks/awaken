@@ -483,7 +483,23 @@ impl PodmanRuntime {
                 "json".into(),
             ])
             .await?;
-        podman_realizations(&encoded)
+        self.classify_host_bind_recovery(podman_realizations(&encoded)?)
+            .await
+    }
+
+    async fn classify_host_bind_recovery(
+        &self,
+        mut observed: Vec<ExistingRealization>,
+    ) -> Result<Vec<ExistingRealization>, RuntimeError> {
+        for realization in &mut observed {
+            let staging_root = self.recovered_host_staging_root(&realization.locator).await;
+            if let Ok(Some(staging_root)) = staging_root
+                && crate::restore_target::retained_host_staging_path(staging_root).is_ok()
+            {
+                realization.recovery = ExistingRealizationRecovery::Reconstructible;
+            }
+        }
+        Ok(observed)
     }
 
     async fn create_decision(
@@ -671,6 +687,18 @@ impl ContainerRuntime for PodmanRuntime {
 
     fn uses_host_live_input_bind(&self) -> bool {
         true
+    }
+
+    async fn recovered_host_staging_root(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<PathBuf>, RuntimeError> {
+        let live_inputs = self.live_inputs_root(container_id).await?;
+        live_inputs
+            .parent()
+            .map(PathBuf::from)
+            .ok_or_else(|| backend("Podman live-input root has no staging parent"))
+            .map(Some)
     }
 
     async fn project_live_input(
@@ -1052,12 +1080,15 @@ impl ContainerRuntime for PodmanRuntime {
                 "json".into(),
             ])
             .await?;
+        let observed = self
+            .classify_host_bind_recovery(podman_realizations(&encoded)?)
+            .await?;
         sandbox_observation(
             expected_incarnation,
             expectation.adoption_fingerprint,
             expectation.realization_fingerprint,
             expectation.effect_fence,
-            &podman_realizations(&encoded)?,
+            &observed,
         )
     }
 

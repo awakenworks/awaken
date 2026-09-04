@@ -1,34 +1,6 @@
-//! Hermetic cloud-managed ACP gateway scenario assembly.
+//! Hermetic cloud-managed ACP gateway resolver fixtures.
 
 use std::sync::Arc;
-
-use axum::Router;
-
-use super::{
-    EchoModel, fake_acp_cli, mount_with_host_backend_publication, resource_host,
-    scenario_host_acp_cli, scenario_model, scenario_storage_dir,
-};
-
-/// Drive the fake CLI through the projecting launch path with an explicit
-/// scenario-only resolver. `AWAKEN_MODEL_MODE=acp-gateway` selects this router.
-pub fn build_acp_gateway_router() -> Router {
-    let store_dir = scenario_storage_dir();
-    let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
-    let fixture_cli = fake_acp_cli();
-    mount_with_host_backend_publication(
-        resource_host(model, model_ref).map_host(|host| {
-            host.with_projected_acp(
-                scenario_host_acp_cli(fixture_cli),
-                Arc::new(ScenarioEnvAcpModel),
-                store_dir,
-            )
-        }),
-        "acp-agent",
-        // The scenario supplies a fake executable launch, but the immutable
-        // backend reference must still name a registered ACP protocol adapter.
-        "acp:claude",
-    )
-}
 
 /// Explicit environment fixture for dev-only live scenarios. Product startup
 /// uses publication-pinned database access instead.

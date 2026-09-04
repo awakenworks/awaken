@@ -2,7 +2,9 @@
 //
 // The parent delegates to a first-class child Run. We crash while the child is
 // executing with a bound sandbox, expire the abandoned SQLite lease (equivalent
-// to passage of lease time), restart on the same durable directory, and assert:
+// to passage of lease time), restart on the same durable directory, prove the
+// successor remains fenced until the fake provider reports the old request
+// terminal, inject that exact quiescence fact, and assert:
 // the stable child identity is reused, its sandbox handle is adopted unchanged,
 // the result resumes the parent, and no duplicate child relationship appears.
 
@@ -32,6 +34,10 @@ type DispatchRow = {
   thread_id: string;
   status: string;
   lease_until: number | null;
+  lease_owner: string | null;
+  lease_epoch: number;
+  active_attempt_owner: string | null;
+  active_attempt_epoch: number | null;
   sandbox: string | null;
   request: string;
 };
@@ -64,8 +70,41 @@ function allFiles(root: string): string[] {
 
 function rows(database: string): DispatchRow[] {
   return withSqlite(database, true, (connection) => connection.prepare(
-    'SELECT run_id, thread_id, status, lease_until, sandbox, request FROM runtime_dispatch ORDER BY created_at',
+    `SELECT run_id, thread_id, status, lease_until, lease_owner, lease_epoch,
+            active_attempt_owner, active_attempt_epoch, sandbox, request
+       FROM runtime_dispatch ORDER BY created_at`,
   ).all() as unknown as DispatchRow[]);
+}
+
+function dispatchCoordinates(dispatches: DispatchRow[]): Array<Omit<DispatchRow, 'request' | 'sandbox'> & { sandbox_bound: boolean }> {
+  return dispatches.map(({ request: _request, sandbox, ...row }) => ({
+    ...row,
+    sandbox_bound: sandbox !== null,
+  }));
+}
+
+function acknowledgeProviderTerminal(database: string): number {
+  return withSqlite(database, false, (connection) => {
+    const active = rows(database).filter(
+      (row) => row.active_attempt_epoch !== null && row.lease_epoch > row.active_attempt_epoch,
+    );
+    let acknowledged = 0;
+    for (const row of active) {
+      // This is the fault fixture's equivalent of DispatchQueue::finish_attempt:
+      // the fake provider is the authority that proved every pre-crash request
+      // terminal, and the compare uses the persisted predecessor owner+epoch.
+      // Never clear from lease expiry or the successor's newer claim.
+      const result = connection.prepare(
+        `UPDATE runtime_dispatch
+            SET active_attempt_owner = NULL, active_attempt_epoch = NULL
+          WHERE run_id = ?
+            AND active_attempt_owner = ?
+            AND active_attempt_epoch = ?`,
+      ).run(row.run_id, row.active_attempt_owner, row.active_attempt_epoch);
+      acknowledged += Number(result.changes);
+    }
+    return acknowledged;
+  });
 }
 
 function committedMessages(database: string, threadId: string): any[] {
@@ -118,9 +157,17 @@ function inspectBoundChild(root: string): BoundChildObservation {
     const current = rows(database);
     observed.push(...current);
     if (current.length >= 2) {
-      const parent = current[0];
-      const child = current.find((row) => row.thread_id !== parent.thread_id);
-      if (child?.status === 'running' && parent.sandbox) {
+      // Durable identity, not insertion order, distinguishes the self-affine
+      // Session root from a child. Recovery may delete/reinsert a dispatch and
+      // legitimately reverse created_at ordering.
+      const parent = current.find((row) => {
+        const request = JSON.parse(row.request);
+        return request.session_thread_id === row.thread_id;
+      });
+      const child = parent
+        ? current.find((row) => row.thread_id !== parent.thread_id)
+        : undefined;
+      if (parent && child?.status === 'running' && parent.sandbox) {
         return { bound: { database, parent, child }, observed, files: allFiles(root) };
       }
     }
@@ -132,7 +179,7 @@ function boundChild(root: string): BoundChild {
   const snapshot = inspectBoundChild(root);
   if (snapshot.bound) return snapshot.bound;
   throw new Error(
-    `crashed child was not durably sandbox-bound; rows=${JSON.stringify(snapshot.observed)} files=${JSON.stringify(snapshot.files)}`,
+    `crashed child was not durably sandbox-bound; rows=${JSON.stringify(dispatchCoordinates(snapshot.observed))} files=${JSON.stringify(snapshot.files)}`,
   );
 }
 
@@ -146,15 +193,23 @@ async function waitForBoundChild(root: string, timeoutMs = 20_000): Promise<Boun
   return snapshot.bound!;
 }
 
+function requestsFor(
+  requests: Array<{ lastUserText?: string }>,
+  prompt: string,
+): number {
+  return requests.filter((request) => request.lastUserText === prompt).length;
+}
+
 async function waitForMoreInference(
-  upstream: { received: number },
+  upstream: { receivedRequests: Array<{ lastUserText?: string }> },
+  prompt: string,
   previous: number,
   timeoutMs = 20_000,
 ): Promise<void> {
   await waitForValue(
-    async () => upstream.received,
+    async () => requestsFor(upstream.receivedRequests, prompt),
     (received: number) => received > previous,
-    'the recovered Run to re-enter the real HTTP model',
+    `the recovered Run to re-enter the real HTTP model for ${JSON.stringify(prompt)}`,
     { timeoutMs, pollMs: 20 },
   );
 }
@@ -202,6 +257,7 @@ async function main(): Promise<void> {
   const environment = realServerEnv('delegating', upstream, {
     mode: 'delegate',
     extraEnv: {
+      SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
       SESSION_DEPLOYMENT_INGRESS: 'durable',
       SESSION_DEPLOYMENT_STORAGE_DIR: storage,
       OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${metricAddress.port}`,
@@ -244,6 +300,17 @@ async function main(): Promise<void> {
     // sandbox binding identifies the crash window; provider arrival counts do not.
     console.log('[child-recovery] waiting for durable child dispatch');
     await waitForBoundChild(storage);
+    // The dispatch physical-attempt slot is authoritative for exclusion, while
+    // this provider-side arrival ledger proves the exact child request crossed
+    // the external effect boundary before the process is killed. Waiting on the
+    // child prompt (rather than a global call count) excludes safe concurrent
+    // parent activity from the crash predicate.
+    await waitForValue(
+      async () => requestsFor(upstream.receivedRequests, 'do the research'),
+      (received: number) => received === 1,
+      'the first child provider request to arrive before the crash',
+      { timeoutMs: 10_000, pollMs: 20 },
+    );
 
     // Simulate a hard worker crash: no graceful settle/commit hooks run.
     const crashed = new Promise<void>((resolve) => server.once('exit', () => resolve()));
@@ -269,13 +336,27 @@ async function main(): Promise<void> {
     );
     assert.match(childSeedBefore?.id ?? '', /^coord-input-/u, 'S1 exact frozen child seed family');
 
-    // Deterministically advance the lease boundary without making the e2e sleep
-    // 30 seconds. This mutates only the throwaway dispatch DB created above.
+    // Physical-attempt recovery decision table:
+    // C1=the mutation lease expired; C2=a successor owns a newer exact claim;
+    // C3=the predecessor's provider request has a terminal receipt. Effects:
+    // E1=C1+C2+!C3 => the successor remains blocked and emits no provider call;
+    // E2=C1+C2+C3 => exact predecessor quiescence is acknowledged and recovery
+    // may enter the provider. Lease expiry alone is deliberately insufficient.
+    // This test-only SQLite mutation advances time and injects the fake
+    // provider's terminal receipt; production still requires its authenticated
+    // provider/Worker authority and must fail closed when no such proof exists.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // | P1   | T  | T  | F  | E1     |
+    // | P2   | T  | T  | T  | E2     |
     withSqlite(before.database, false, (connection) => {
       connection.exec("UPDATE runtime_dispatch SET lease_until = 0 WHERE status = 'running'");
     });
 
-    const receivedBeforeRestart = upstream.received;
+    const childReceivedBeforeRestart = requestsFor(
+      upstream.receivedRequests,
+      'do the research',
+    );
     // Recovery routing cause/effect graph: C1=Run thread equals its Session
     // thread (root); C2=Run thread is a first-class child while
     // session_thread_id names its parent; C3=the child carries its own immutable
@@ -296,7 +377,39 @@ async function main(): Promise<void> {
     server = spawnServer('delegate', PORT, environment).server;
     console.log('[child-recovery] waiting for replacement server');
     await waitForPort(PORT);
-    await waitForMoreInference(upstream, receivedBeforeRestart);
+    const blockedRows = await waitForValue(
+      async () => rows(before.database),
+      (dispatches: DispatchRow[]) => dispatches.some(
+        (row) => row.active_attempt_epoch !== null && row.lease_epoch > row.active_attempt_epoch,
+      ),
+      'the replacement claim to remain behind the predecessor physical slot',
+      { timeoutMs: 10_000, pollMs: 20 },
+    ) as DispatchRow[];
+    assert.equal(
+      requestsFor(upstream.receivedRequests, 'do the research'),
+      childReceivedBeforeRestart,
+      'P1 replacement made no duplicate child provider call before predecessor terminal proof',
+    );
+    await waitForValue(
+      async () => requestsFor(upstream.requests, 'do the research'),
+      (completed: number) => completed >= childReceivedBeforeRestart,
+      'the fake provider to terminalize the exact child request received before the crash',
+      { timeoutMs: 10_000, pollMs: 20 },
+    );
+    const activeBeforeProof = blockedRows.filter(
+      (row) => row.active_attempt_epoch !== null && row.lease_epoch > row.active_attempt_epoch,
+    ).length;
+    assert.ok(activeBeforeProof > 0, 'P1 predecessor physical slot remained occupied');
+    const activeAtProof = rows(before.database).filter(
+      (row) => row.active_attempt_epoch !== null && row.lease_epoch > row.active_attempt_epoch,
+    ).length;
+    assert.ok(activeAtProof >= activeBeforeProof, 'P2 retained every observed predecessor slot');
+    assert.equal(
+      acknowledgeProviderTerminal(before.database),
+      activeAtProof,
+      'P2 exact provider terminal proof acknowledged every predecessor physical slot',
+    );
+    await waitForMoreInference(upstream, 'do the research', childReceivedBeforeRestart);
     console.log('[child-recovery] replacement re-entered inference');
     const duringRecovery = boundChild(storage);
     const recoveringRows = rows(duringRecovery.database);
@@ -321,7 +434,7 @@ async function main(): Promise<void> {
         childThreadId,
       );
       throw new Error(
-        `${error}; dispatch=${JSON.stringify(rows(before.database))}; child=${JSON.stringify(childMessages)}`,
+        `${error}; dispatch=${JSON.stringify(dispatchCoordinates(rows(before.database)))}; child=${JSON.stringify(childMessages)}; provider=${JSON.stringify({ received: upstream.receivedRequests.map((request) => request.lastUserText), terminal: upstream.requests.map((request) => request.lastUserText) })}`,
       );
     }
     assert.equal(reply, 'coordination completed from child report');
@@ -387,7 +500,7 @@ async function main(): Promise<void> {
     );
 
     console.log(
-      'DURABLE CHILD/SANDBOX TS E2E PASS: hard crash recovered one stable child, adopted its session sandbox, resumed the parent and avoided duplicate execution.',
+      'DURABLE CHILD/SANDBOX TS E2E PASS: hard crash stayed fenced until provider terminal proof, then recovered one stable child, adopted its session sandbox, resumed the parent and avoided concurrent execution.',
     );
   } finally {
     console.log('[child-recovery] cleaning up');

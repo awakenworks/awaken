@@ -16,7 +16,7 @@ const BETA = 'agent-memory-2026-07-22';
 const H = { 'content-type': 'application/json', 'anthropic-beta': BETA };
 
 async function main() {
-  await withScenarioServer('management', 'mcp', 38146, async (baseUrl) => {
+  await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseUrl) => {
     const ws = (tenant, p) => `${baseUrl}/v1/workspaces/${tenant}${p}`;
 
     // tenant-a authors a store and writes a memory into it.

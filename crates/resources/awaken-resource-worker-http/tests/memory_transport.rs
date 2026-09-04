@@ -7,8 +7,9 @@ use std::sync::Arc;
 use awaken_memory_store::{MemErr, MemoryRepository as _};
 use awaken_provisioning_contract::{MemoryMaterializationEvidence, MemoryMaterializationHead};
 use awaken_resource_contract::{
-    ChangeMemoryStoreState, ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition,
-    RegisterMemoryStore, ResourceAccess, ResourceAdministration as _, ResourceState,
+    ChangeMemoryStoreState, ConfigVersion, MemoryMaterializationReferenceEncoder,
+    MemoryStoreConfigVersion, MemoryStoreDefinition, RegisterMemoryStore, ResourceAccess,
+    ResourceAdministration as _, ResourceState,
 };
 use awaken_resource_worker_http::{
     HttpMemoryRepository, WorkerMemoryService, worker_memory_router,
@@ -20,7 +21,8 @@ use awaken_dispatch::{DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDisp
 use awaken_session_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, SessionRealizationControl, SessionRealizationControlFailure,
-    SessionRealizationDirective, SessionTerminalMemoryIntent, SessionTerminalMemoryTarget,
+    SessionRealizationDirective, SessionResourceMaterializationIntent, SessionTerminalMemoryIntent,
+    SessionTerminalMemoryTarget,
 };
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
@@ -71,6 +73,60 @@ struct ExactTerminalMemoryControl {
     workspace_id: String,
     intent: SessionTerminalMemoryIntent,
     current_effect: awaken_session_contract::SessionTerminalCleanupEffect,
+}
+
+struct ExactResourceMemoryControl {
+    workspace_id: String,
+    intent: SessionResourceMaterializationIntent,
+}
+
+#[async_trait::async_trait]
+impl SessionRealizationControl for ExactResourceMemoryControl {
+    async fn begin_session_realization(
+        &self,
+        _command: BeginSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "test control has no realization driver".into(),
+        ))
+    }
+
+    async fn activate_session_realization(
+        &self,
+        _command: ActivateSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "test control has no realization driver".into(),
+        ))
+    }
+
+    async fn acknowledge_session_realization(
+        &self,
+        _command: AcknowledgeSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "test control has no realization driver".into(),
+        ))
+    }
+
+    async fn fail_session_realization(
+        &self,
+        _command: FailSessionRealization,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "test control has no realization driver".into(),
+        ))
+    }
+
+    async fn authorize_resource_materialization_intent(
+        &self,
+        intent: &SessionResourceMaterializationIntent,
+    ) -> Result<String, SessionRealizationControlFailure> {
+        if intent != &self.intent {
+            return Err(SessionRealizationControlFailure::StaleOwnership);
+        }
+        Ok(self.workspace_id.clone())
+    }
 }
 
 #[async_trait::async_trait]
@@ -296,6 +352,144 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
         .await
         .unwrap();
     assert!(client.snapshot_heads(&rw).await.is_err(), "M6");
+}
+
+/// Session-realization Memory cause/effect graph: C1 the authenticated Worker
+/// owns the asserted live realization lease; C2 Control matches the complete
+/// intent to the pending Session root; C3 the operation is snapshot or write.
+/// Effects: E1 one read-only snapshot through the canonical Memory repository;
+/// E2 stale generation conflict; E3 foreign Worker denial; E4 all writes denied
+/// before repository mutation. Registry validation remains after root authority.
+///
+/// | Rule | C1 | C2 | C3 | Effect |
+/// |---|---|---|---|---|
+/// | R1 | yes | yes | snapshot | E1 |
+/// | R2 | yes | no | any | E2 |
+/// | R3 | no | any | any | E3 |
+/// | R4 | yes | yes | write | E4 |
+#[tokio::test]
+async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root() {
+    let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
+    repository
+        .create("memory-realization", "/seed.md", "seed")
+        .await
+        .expect("seed realization Memory");
+    let storage = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .expect("open realization Resource Registry"),
+    );
+    let catalog = Arc::new(awaken_resource_application::RegistryApplication::new(
+        storage,
+    ));
+    create_store(&catalog, "memory-realization");
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let (directory, identity) = support::ready_worker("worker-realization-memory").await;
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: identity.worker_id.clone(),
+        runtime_incarnation: identity.lease_owner(),
+        epoch: 13,
+        expires_at_unix_ms: support::unix_now_ms().saturating_add(60_000),
+    };
+    let input = memory_input(
+        "realization",
+        "memory-realization",
+        ResourceAccess::ReadOnly,
+    );
+    let intent = SessionResourceMaterializationIntent::try_new(
+        "session-realization-memory",
+        3,
+        input.clone(),
+        lease.clone(),
+    )
+    .expect("exact realization Memory intent");
+    let service = Arc::new(
+        WorkerMemoryService::new(
+            repository.clone(),
+            catalog,
+            dispatch,
+            Arc::new(HeaderWorkerAuthenticator),
+            directory,
+        )
+        .with_session_control(Arc::new(ExactResourceMemoryControl {
+            workspace_id: "workspace-memory".into(),
+            intent: intent.clone(),
+        })),
+    );
+    let address = support::serve(worker_memory_router(service)).await;
+    let client = HttpMemoryRepository::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone()),
+    );
+    let encoder = awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder;
+    let reference = encoder
+        .encode(
+            "workspace-memory",
+            "memory-realization",
+            ConfigVersion::INITIAL,
+            ResourceAccess::ReadOnly,
+            &intent,
+        )
+        .expect("encode exact realization Memory reference");
+    let heads = client
+        .snapshot_heads(&reference)
+        .await
+        .expect("R1/E1 exact snapshot");
+    assert_eq!(heads.len(), 1, "R1/E1");
+
+    let write_error = client
+        .create(&reference, "/must-not-exist.md", "forbidden")
+        .await
+        .expect_err("R4/E4 realization reference is snapshot-only");
+    assert!(
+        write_error.to_string().contains("403"),
+        "R4/E4: {write_error}"
+    );
+    assert!(
+        repository
+            .get_by_path("memory-realization", "/must-not-exist.md")
+            .await
+            .expect("read repository after denied write")
+            .is_none(),
+        "R4/E4 no mutation"
+    );
+
+    let stale_intent = SessionResourceMaterializationIntent::try_new(
+        "session-realization-memory",
+        4,
+        input,
+        lease,
+    )
+    .expect("stale generation remains structurally valid");
+    let stale_reference = encoder
+        .encode(
+            "workspace-memory",
+            "memory-realization",
+            ConfigVersion::INITIAL,
+            ResourceAccess::ReadOnly,
+            &stale_intent,
+        )
+        .expect("encode stale realization Memory reference");
+    let stale_error = client
+        .snapshot_heads(&stale_reference)
+        .await
+        .expect_err("R2/E2 stale root generation");
+    assert!(
+        stale_error.to_string().contains("409"),
+        "R2/E2: {stale_error}"
+    );
+
+    let foreign_client = HttpMemoryRepository::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(
+            awaken_worker_contract::WorkerIdentity::new("foreign-worker", "foreign-boot", 1),
+        ),
+    );
+    let foreign_error = foreign_client
+        .snapshot_heads(&reference)
+        .await
+        .expect_err("R3/E3 foreign Worker");
+    assert!(
+        foreign_error.to_string().contains("403"),
+        "R3/E3: {foreign_error}"
+    );
 }
 
 /// Terminal Memory cause/effect decision table:

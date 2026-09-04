@@ -134,12 +134,17 @@ struct RecordingSessionWorkAuthority {
     releases: AtomicUsize,
     acquired_sessions: Mutex<Vec<String>>,
     released_sessions: Mutex<Vec<String>>,
+    reconciliation_requests: AtomicUsize,
 }
 
 #[async_trait::async_trait]
 impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority
     for RecordingSessionWorkAuthority
 {
+    fn request_lifecycle_reconciliation(&self) {
+        self.reconciliation_requests.fetch_add(1, Ordering::SeqCst);
+    }
+
     async fn acquire_session_work(
         &self,
         session_id: &str,
@@ -896,6 +901,36 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("incarnation-bound assertion heartbeats");
     assert_eq!(heartbeat.mutation, RegistryMutation::Applied);
     assert_eq!(heartbeat.lease_ttl_ms, Some(30_000));
+    assert_eq!(
+        session_work.reconciliation_requests.load(Ordering::SeqCst),
+        1,
+        "Starting to Ready wakes the canonical Session lifecycle supervisor",
+    );
+    // Worker-evidence wake decision table: C1 an applied heartbeat changes a
+    // placement coordinate => E1 wake once; C2 only sequence/lease time changes
+    // => E2 no wake; C3 a rejected heartbeat => E3 no wake. The authenticated
+    // transport and registry still own mutation validity; this hint owns no
+    // state and the Session supervisor re-reads every authority.
+    let unchanged = WorkerControlClient::new(upstream.clone())
+        .heartbeat(
+            &registered.snapshot.identity,
+            WorkerHeartbeat {
+                sequence: 2,
+                ready: true,
+                in_flight: 0,
+                warm_environment_shapes: Default::default(),
+                credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
+            },
+        )
+        .await
+        .expect("same placement evidence renews the registry lease");
+    assert_eq!(unchanged.mutation, RegistryMutation::Applied, "C2");
+    assert_eq!(
+        session_work.reconciliation_requests.load(Ordering::SeqCst),
+        1,
+        "C2/E2 lease-only heartbeat does not defeat lifecycle backoff",
+    );
     // Duplicate-path removal rule D1: an otherwise valid incarnation cannot
     // reach the retired owner-wide renewal route. Exact `/renew` remains the
     // only Run-lease transport, so this must be route absence rather than a
@@ -961,9 +996,10 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         0,
         "claim verification has no Session scheduler side effect"
     );
-    // Physical-slot transport rules: exact live identity begins; an exact
-    // response-loss retry is idempotent; a body identity different from the
-    // signed incarnation cannot acknowledge; the exact owner can finish. The
+    // Physical-slot transport rules: exact live identity begins; exact begin
+    // and continuation-handoff response-loss retries are idempotent; a body
+    // identity different from the signed incarnation can neither hand off nor
+    // acknowledge; the exact owner can finish. The
     // final ACK endpoint intentionally authenticates the signed predecessor but
     // does not require it to remain the current registry/Run owner, because that
     // would make safe handoff impossible after reclaim.
@@ -977,9 +1013,24 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         AttemptAdmission::AlreadyApplied,
         "P2 exact response-loss retry"
     );
+    assert_eq!(
+        queue
+            .handoff_attempt(&claim, 10_000)
+            .await
+            .expect("P2 handoff retry"),
+        AttemptAdmission::AlreadyApplied,
+        "P2 exact durable-continuation retry"
+    );
     let mismatched_queue = awaken_coordinator_client::dispatch_transport_with_upstream(
         &upstream,
         WorkerIdentity::new("signed-http-worker", "different-boot", 2),
+    );
+    assert!(
+        mismatched_queue
+            .handoff_attempt(&claim, 10_000)
+            .await
+            .is_err(),
+        "P3 mismatched signed-body incarnation cannot replace the slot"
     );
     assert!(
         mismatched_queue.finish_attempt(&claim).await.is_err(),
@@ -2232,7 +2283,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .heartbeat(
             &registered.snapshot.identity,
             WorkerHeartbeat {
-                sequence: 2,
+                sequence: 3,
                 ready: true,
                 in_flight: 1,
                 warm_environment_shapes: Default::default(),
@@ -2276,7 +2327,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .heartbeat(
             &registered.snapshot.identity,
             WorkerHeartbeat {
-                sequence: 3,
+                sequence: 4,
                 ready: true,
                 in_flight: 0,
                 warm_environment_shapes: Default::default(),

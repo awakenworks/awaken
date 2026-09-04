@@ -37,10 +37,30 @@ type Binding = {
   payload: {
     schema: string;
     container_id?: string;
+    previous?: {
+      container_id?: string;
+      [key: string]: unknown;
+    };
     provider_kind?: string;
     [key: string]: unknown;
   };
 };
+
+function canonicalContainerPayload(
+  durableBinding: Binding,
+  marker: string,
+): NonNullable<Binding['payload']['previous']> {
+  assert.equal(
+    durableBinding.payload.schema,
+    'container_v2',
+    `${marker} binding uses the canonical container payload`,
+  );
+  assert.ok(
+    durableBinding.payload.previous,
+    `${marker} binding carries its canonical container_v1 compatibility body`,
+  );
+  return durableBinding.payload.previous;
+}
 
 function buildBrain(): string {
   return cargoExecutable({
@@ -263,7 +283,7 @@ function knownContainer(shortId: string, ...sets: Set<string>[]): boolean {
 
 async function main(): Promise<void> {
   // Test design (Session Environment recovery faults). Causes: C1=a real
-  // container-backed Session has one closed `container_v1` durable handle;
+  // container-backed Session has one closed `container_v2` durable handle;
   // C2=after a crash that handle is malformed JSON, names a foreign Session,
   // contains a structurally valid foreign-provider payload, omits the exact
   // container locator, or names a stopped/deleted container; C3=the replacement
@@ -272,8 +292,9 @@ async function main(): Promise<void> {
   // model/tool execution; E2a=pre-admission observation returns structured 500,
   // or E2b=post-admission observation retains the exact unprocessed User receipt
   // with no terminal effect; E3=no replacement or unrelated container is
-  // created. Constraint K: the aggregate's exact typed handle,
-  // Session owner, provider payload, and live physical locator must all agree;
+  // created. Constraint K: the aggregate's exact typed handle (including its V2
+  // realization evidence and nested V1 compatibility body), Session owner,
+  // provider payload, and live physical locator must all agree;
   // recovery never guesses, synthesizes, or falls back to an indexed column.
   // Decision rules F1-F6 pair C1+C3 with each C2 arm and require E1+E3 plus
   // E2a/E2b according to C4; acknowledgement never manufactures completion.
@@ -324,12 +345,7 @@ async function main(): Promise<void> {
       const sessionId = await createRealizedSession(client, name);
       cases.set(name, sessionId);
       const durableBinding = binding(storage, sessionId);
-      assert.equal(
-        durableBinding.payload.schema,
-        'container_v1',
-        `${name} binding uses the canonical container payload`,
-      );
-      const containerId = durableBinding.payload.container_id;
+      const containerId = canonicalContainerPayload(durableBinding, name).container_id;
       assert.ok(containerId, `${name} binding carries its physical container locator`);
       containers.add(containerId);
     }
@@ -349,12 +365,18 @@ async function main(): Promise<void> {
     rewriteBinding(storage, cases.get('wrong-provider')!, JSON.stringify(wrongProvider));
 
     const missingLocator = binding(storage, cases.get('missing-locator')!);
-    delete missingLocator.payload.container_id;
+    delete canonicalContainerPayload(missingLocator, 'missing-locator').container_id;
     rewriteBinding(storage, cases.get('missing-locator')!, JSON.stringify(missingLocator));
 
-    const stopped = binding(storage, cases.get('stopped-container')!).payload.container_id!;
+    const stopped = canonicalContainerPayload(
+      binding(storage, cases.get('stopped-container')!),
+      'stopped-container',
+    ).container_id!;
     execFileSync('docker', ['stop', stopped], { stdio: 'ignore' });
-    const deleted = binding(storage, cases.get('deleted-container')!).payload.container_id!;
+    const deleted = canonicalContainerPayload(
+      binding(storage, cases.get('deleted-container')!),
+      'deleted-container',
+    ).container_id!;
     execFileSync('docker', ['rm', '-f', deleted], { stdio: 'ignore' });
 
     brain = spawnBrain(binary, storage);

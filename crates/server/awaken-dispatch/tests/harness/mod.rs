@@ -15,7 +15,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_dispatch_testkit::ConformanceClock;
+use awaken_dispatch_testkit::{ConformanceClock, LEASE_MS};
 use awaken_runtime::Runtime;
 #[cfg(feature = "test-support")]
 use awaken_runtime_contract::CredentialRealizationCapabilities;
@@ -885,6 +885,13 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
         now_ms: u64,
     ) -> Result<awaken_dispatch::AttemptAdmission, awaken_dispatch::DispatchError> {
         self.inner.begin_attempt(claim, now_ms).await
+    }
+    async fn handoff_attempt(
+        &self,
+        claim: &awaken_dispatch::RunClaim,
+        now_ms: u64,
+    ) -> Result<awaken_dispatch::AttemptAdmission, awaken_dispatch::DispatchError> {
+        self.inner.handoff_attempt(claim, now_ms).await
     }
     async fn finish_attempt(
         &self,
@@ -2017,20 +2024,29 @@ pub async fn assert_relinquish_claim<S: awaken_dispatch::Dispatch>(store: &S) {
 /// | A2 | current A | A | begin A retry | already-applied |
 /// | A3 | current A | A | settle/relinquish | fenced; slot retained |
 /// | A4 | replacement B | stale A | begin B | blocked; no executor entry |
-/// | A5 | replacement B | stale A | finish A | applied; slot empty |
-/// | A6 | current B | empty | begin B | applied; A cannot clear B |
-/// | A7 | current B | empty after finish B | finish B retry | applied; remains empty |
+/// | A5 | replacement B | stale A | relinquish B | expired Leased recovery; slot A retained |
+/// | A6 | replacement C | stale A | finish A | applied; slot empty |
+/// | A7 | current C | empty | begin C | applied; A cannot clear C |
+/// | A8 | current C | empty after finish C | finish C retry, then settle | applied; remains empty; old Run terminal |
+/// | A9 | replacement E | stale D | handoff E with executor proof | applied; slot=E |
+/// | A10 | current E | E | handoff retry / finish D | already-applied / fenced |
 ///
 /// Constraints: lease expiry can replace the mutation claim but is not proof
 /// that the old physical future returned. `finish_attempt` is the only ordinary
-/// transition that frees this slot, and every backend must implement the same
-/// aggregate rather than a side lock.
+/// transition that frees this slot. The sole exception is A9: the leaf executor
+/// has already proved a committed, continuation-only remote operation, so the
+/// same aggregate replaces the slot atomically rather than creating a side lock.
+/// A9 advances the selected backend's authority clock past D's lease before E
+/// claims; assigning the logical timestamp alone is insufficient for a backend
+/// whose durable database owns time. All live-claim rules use the testkit's
+/// single cross-backend lease duration: a shorter scheduler-sized lease makes
+/// `claim -> begin_attempt` expire under load before the reducer is exercised.
 pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
     use awaken_dispatch::{
-        AttemptAdmission, DispatchOutcome, RunClaim, RunDispatch, SettleOutcome,
+        AttemptAdmission, DispatchOutcome, DispatchState, RunClaim, RunDispatch, SettleOutcome,
     };
 
     clock.set(0);
@@ -2039,7 +2055,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
         .await
         .expect("enqueue physical-slot fixture");
     let first = store
-        .claim("owner-a", 10, 0, &Default::default())
+        .claim("owner-a", LEASE_MS, 0, &Default::default())
         .await
         .expect("A claim query")
         .expect("A claim");
@@ -2087,7 +2103,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
     );
     assert!(
         store
-            .claim_retry_exhausted("terminalizer", 10, after_expiry, 0)
+            .claim_retry_exhausted("terminalizer", LEASE_MS, after_expiry, 0)
             .await
             .expect("A3 terminal claim query")
             .is_none(),
@@ -2095,7 +2111,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
     );
 
     let second = store
-        .claim("owner-b", 10, after_expiry, &Default::default())
+        .claim("owner-b", LEASE_MS, after_expiry, &Default::default())
         .await
         .expect("B reclaim query")
         .expect("B reclaims after expiry");
@@ -2109,38 +2125,65 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
         "A4 lease takeover alone cannot admit a second physical attempt"
     );
     assert_eq!(
-        store.finish_attempt(&claim_a).await.expect("A5"),
+        store.relinquish_claim(&claim_b).await.expect("A5 release"),
         SettleOutcome::Applied,
-        "A5 stale mutation owner may acknowledge its exact physical slot"
+        "A5 a replacement may release its mutation lease without clearing A's physical slot"
+    );
+    let retained = store.list_dispatches().await.expect("A5 projection");
+    assert_eq!(
+        retained[0].state,
+        DispatchState::Leased,
+        "A5 retains the canonical recovery state"
+    );
+    assert!(retained[0].physical_attempt_active, "A5 slot retained");
+    let third = store
+        .claim("owner-c", LEASE_MS, after_expiry, &Default::default())
+        .await
+        .expect("C reclaim query")
+        .expect("C reclaims released mutation lease");
+    let claim_c = RunClaim::from(&third.lease);
+    assert!(third.recovered, "A5 recovery evidence survives rollback");
+    assert_eq!(
+        store
+            .begin_attempt(&claim_c, after_expiry)
+            .await
+            .expect("A5 blocked"),
+        AttemptAdmission::Blocked,
+        "A5 retained A slot still excludes C executor entry"
+    );
+    assert_eq!(
+        store.finish_attempt(&claim_a).await.expect("A6"),
+        SettleOutcome::Applied,
+        "A6 stale mutation owner may acknowledge its exact physical slot"
     );
     assert_eq!(
         store
-            .begin_attempt(&claim_b, after_expiry)
+            .begin_attempt(&claim_c, after_expiry)
             .await
-            .expect("A6"),
+            .expect("A7"),
         AttemptAdmission::Applied,
-        "A6 B enters only after A ACK"
+        "A7 C enters only after A ACK"
     );
     assert_eq!(
         store
             .finish_attempt(&claim_a)
             .await
-            .expect("A6 stale retry"),
+            .expect("A7 stale retry"),
         SettleOutcome::Fenced,
-        "A6 A cannot clear B's slot"
+        "A7 A cannot clear C's slot"
     );
     assert_eq!(
-        store.finish_attempt(&claim_b).await.expect("A6 B finish"),
+        store.finish_attempt(&claim_c).await.expect("A7 C finish"),
         SettleOutcome::Applied,
-        "A6 B releases its exact slot"
+        "A7 C releases its exact slot"
     );
     assert_eq!(
         store
-            .finish_attempt(&claim_b)
+            .finish_attempt(&claim_c)
             .await
-            .expect("A7 B finish response-loss retry"),
+            .expect("A8 C finish response-loss retry"),
         SettleOutcome::Applied,
-        "A7 the exact finish is idempotent after its response is lost"
+        "A8 the exact finish is idempotent after its response is lost"
     );
     assert!(
         !store
@@ -2148,7 +2191,83 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
             .await
             .expect("A6 operational projection")[0]
             .physical_attempt_active,
-        "A7 quiescence remains visible without exposing owner fencing material"
+        "A8 quiescence remains visible without exposing owner fencing material"
+    );
+    assert_eq!(
+        store
+            .settle(&claim_c.run_id, claim_c.epoch, DispatchOutcome::Done, &[],)
+            .await
+            .expect("A8 settle old fixture"),
+        SettleOutcome::Applied,
+        "A8 closes the first independent journey before A9 claim ordering"
+    );
+
+    clock.set(after_expiry.saturating_add(100));
+    let handoff_now = after_expiry.saturating_add(100);
+    store
+        .enqueue(RunDispatch::new(activation("physical-handoff-run")))
+        .await
+        .expect("enqueue handoff fixture");
+    let predecessor = store
+        .claim("owner-d", LEASE_MS, handoff_now, &Default::default())
+        .await
+        .expect("D claim query")
+        .expect("D claim");
+    let claim_d = RunClaim::from(&predecessor.lease);
+    assert_eq!(
+        store
+            .begin_attempt(&claim_d, handoff_now)
+            .await
+            .expect("A9 predecessor begin"),
+        AttemptAdmission::Applied,
+        "A9 predecessor occupies the physical slot"
+    );
+    let replacement_now = predecessor.lease.expires_ms.saturating_add(1);
+    clock.set(replacement_now);
+    clock.advance_past(predecessor.lease.expires_ms).await;
+    let replacement = store
+        .claim("owner-e", LEASE_MS, replacement_now, &Default::default())
+        .await
+        .expect("E claim query")
+        .expect("E replacement claim");
+    let claim_e = RunClaim::from(&replacement.lease);
+    assert!(replacement.recovered, "A9 handoff requires recovery");
+    assert_eq!(
+        store
+            .begin_attempt(&claim_e, replacement_now)
+            .await
+            .expect("A9 ordinary begin"),
+        AttemptAdmission::Blocked,
+        "A9 ordinary recovery remains fail closed"
+    );
+    assert_eq!(
+        store
+            .handoff_attempt(&claim_e, replacement_now)
+            .await
+            .expect("A9 continuation handoff"),
+        AttemptAdmission::Applied,
+        "A9 executor-proved continuation atomically replaces D"
+    );
+    assert_eq!(
+        store
+            .handoff_attempt(&claim_e, replacement_now)
+            .await
+            .expect("A10 handoff retry"),
+        AttemptAdmission::AlreadyApplied,
+        "A10 response-loss retry is idempotent"
+    );
+    assert_eq!(
+        store
+            .finish_attempt(&claim_d)
+            .await
+            .expect("A10 stale D finish"),
+        SettleOutcome::Fenced,
+        "A10 predecessor cannot clear its successor"
+    );
+    assert_eq!(
+        store.finish_attempt(&claim_e).await.expect("A10 E finish"),
+        SettleOutcome::Applied,
+        "A10 current continuation releases its exact slot"
     );
 }
 

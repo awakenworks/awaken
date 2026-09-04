@@ -452,9 +452,19 @@ async function main() {
     const acceptedSecure = secureReceipt.data[0];
     assert.equal(acceptedSecure?.type, 'user.message', 'M1 exact User Event receipt family');
     assert.equal(acceptedSecure?.processed_at, null, 'M1 effect failure is not falsely processed');
-    await new Promise((resolve) => setTimeout(resolve, 750));
-    const secureEvents = await listEvents(codexClient, secureSession.id);
-    const retainedSecure = secureEvents.find((event) => event.id === acceptedSecure.id);
+    const secureObservation = await waitForSessionEventReceipt(
+      codexClient,
+      secureSession.id,
+      acceptedSecure.id,
+      BETAS,
+      ({ delta }) => ['session.error', 'session.thread_status_idle',
+        'session.thread_status_terminated', 'session.status_terminated']
+        .every((type) => delta.some((event) => event.type === type)),
+      'the credential-custody failure to reach its complete durable terminal projection',
+      { timeoutMs: 30_000 },
+    );
+    const secureEvents = secureObservation.events;
+    const retainedSecure = secureObservation.receiptEvent;
     assert.equal(
       typeof retainedSecure?.processed_at,
       'string',

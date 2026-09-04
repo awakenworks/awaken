@@ -124,7 +124,7 @@ async function main() {
     clientAuth: { method: 'post', clientId: POST_CLIENT_ID, clientSecret: POST_CLIENT_SECRET },
   });
   try {
-    await withScenarioServer('management', 'mcp', 38192, async (baseUrl) => {
+    await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // --- vault + refreshable mcp_oauth credential (all secrets write-only) ---

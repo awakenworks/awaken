@@ -57,8 +57,9 @@ pub struct LiveInboxMessageId(pub u64);
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageOrigin {
-    /// The run's own input — activation carry-over, a sub-run's background-task
-    /// callback, or leftovers seeded into the next attempt. The default.
+    /// The run's own attempt-local input — for example, a sub-run's
+    /// background-task callback. The default. Entries never cross an attempt
+    /// boundary through this process-local queue.
     #[default]
     Run,
     /// Injected from outside the run while it was in flight (the host's

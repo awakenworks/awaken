@@ -562,6 +562,22 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         handle: &pc::SandboxHandle,
         spec: &pc::SandboxSpec,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
+        let payload = recovery::decode_handle(handle)?;
+        let recovered_staging = if self.runtime.uses_host_live_input_bind() {
+            let path = self
+                .runtime
+                .recovered_host_staging_root(&payload.container_id)
+                .await
+                .map_err(err)?
+                .ok_or_else(|| {
+                    pc::SandboxError::new(
+                        "host-bind container adoption has no exact staging-root evidence",
+                    )
+                })?;
+            Some(crate::restore_target::retained_host_staging_path(path).map_err(err)?)
+        } else {
+            None
+        };
         let secret_broker = self
             .secret_broker
             .read()
@@ -571,7 +587,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             spec,
             handle,
             secret_broker,
-            !self.runtime.uses_host_bind_materialization(),
+            !self.runtime.uses_host_bind_materialization() || recovered_staging.is_some(),
+            recovered_staging,
         )?;
         self.adopt_observed_container_with_lifecycle(handle, Some(spec), lifecycle)
             .await

@@ -74,9 +74,25 @@ impl PhysicalAttemptSlot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhysicalAttemptTransition {
     Install,
+    Replace,
     Clear,
     Stutter,
     Blocked,
+    Fenced,
+    Corrupt,
+}
+
+/// Result of relinquishing an exact mutation claim while accounting for the
+/// physical-attempt slot in the same dispatch aggregate.
+///
+/// `Pending` is ordinary pre-execution rollback. `Recovering` deliberately
+/// retains the existing Leased state and asks the adapter to expire its lease:
+/// that is the canonical crash-recovery representation and preserves the
+/// `Claimed::recovered` fact without adding a parallel recovery state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelinquishTransition {
+    Pending(DispatchTransition),
+    Recovering(DispatchTransition),
     Fenced,
     Corrupt,
 }
@@ -96,6 +112,29 @@ pub const fn begin_physical_attempt(
         PhysicalAttemptSlot::Empty => PhysicalAttemptTransition::Install,
         PhysicalAttemptSlot::ExactClaim => PhysicalAttemptTransition::Stutter,
         PhysicalAttemptSlot::OtherClaim => PhysicalAttemptTransition::Blocked,
+        PhysicalAttemptSlot::Corrupt => PhysicalAttemptTransition::Corrupt,
+    }
+}
+
+/// Replace a predecessor physical slot with a current claim that can prove it
+/// is continuing the same durable remote operation without repeating the
+/// initiating effect.
+///
+/// The proof is deliberately established by the authoritative leaf executor;
+/// this reducer still owns the one atomic Dispatch-slot mutation. Ordinary
+/// recovered attempts continue to use [`begin_physical_attempt`] and block.
+#[must_use]
+pub const fn handoff_physical_attempt(
+    claim_is_current: bool,
+    slot: PhysicalAttemptSlot,
+) -> PhysicalAttemptTransition {
+    if !claim_is_current {
+        return PhysicalAttemptTransition::Fenced;
+    }
+    match slot {
+        PhysicalAttemptSlot::Empty => PhysicalAttemptTransition::Install,
+        PhysicalAttemptSlot::ExactClaim => PhysicalAttemptTransition::Stutter,
+        PhysicalAttemptSlot::OtherClaim => PhysicalAttemptTransition::Replace,
         PhysicalAttemptSlot::Corrupt => PhysicalAttemptTransition::Corrupt,
     }
 }
@@ -242,20 +281,31 @@ impl DispatchTransition {
         }
     }
 
-    /// Return an exact current claim to pending. Owner equality is supplied by
-    /// the adapter because owner representation is deliberately not in this
-    /// storage-neutral kernel.
-    pub fn relinquish(self, claim_epoch: u64, owner_matches: bool) -> GuardedTransition {
+    /// Release an exact current mutation claim under the aggregate's physical
+    /// attempt evidence. Owner equality is supplied by the adapter because
+    /// owner representation is deliberately not in this storage-neutral
+    /// kernel.
+    pub fn relinquish(
+        self,
+        claim_epoch: u64,
+        owner_matches: bool,
+        slot: PhysicalAttemptSlot,
+    ) -> RelinquishTransition {
         if self.state != crate::DispatchState::Leased
             || self.lease_epoch != claim_epoch
             || !owner_matches
         {
-            return GuardedTransition::Fenced;
+            return RelinquishTransition::Fenced;
         }
-        GuardedTransition::Applied(Self {
-            state: crate::DispatchState::Pending,
-            ..self
-        })
+        match slot {
+            PhysicalAttemptSlot::Empty => RelinquishTransition::Pending(Self {
+                state: crate::DispatchState::Pending,
+                ..self
+            }),
+            PhysicalAttemptSlot::ExactClaim => RelinquishTransition::Fenced,
+            PhysicalAttemptSlot::OtherClaim => RelinquishTransition::Recovering(self),
+            PhysicalAttemptSlot::Corrupt => RelinquishTransition::Corrupt,
+        }
     }
 
     /// Record cancellation. A live lease is revoked by minting the next epoch;
@@ -364,31 +414,39 @@ mod tests {
     fn physical_attempt_slot_follows_the_complete_decision_table() {
         // Cause/effect graph: C1 the asserted durable claim is current; C2 the
         // physical slot is empty, exact, occupied by another claim, or torn.
-        // Effects: E1 install once; E2 exact begin/empty finish stutter; E3 a
-        // predecessor blocks begin and fences finish; E4 a stale claim is
-        // fenced before slot interpretation; E5 torn persistence fails closed.
+        // Cause C3: a leaf executor proved a committed continuation that cannot
+        // repeat the initiating external effect. Effects: E1 install once; E2
+        // exact begin/empty finish stutter; E3 a predecessor blocks ordinary
+        // begin and fences finish; E4 a stale claim is fenced before slot
+        // interpretation; E5 torn persistence fails closed; E6 only C1+C3 may
+        // replace another complete slot.
         //
-        // | Rule | C1 | C2 | Begin | Finish |
-        // |---|---|---|---|---|
-        // | R1 | yes | empty | install | stutter |
-        // | R2 | yes | exact | stutter | clear |
-        // | R3 | yes | other | blocked | fenced |
-        // | R4 | no | any | fenced | n/a |
-        // | R5 | yes | corrupt | corrupt | corrupt |
-        // Constraint: only R1 installs and only R2 clears, so a successor can
-        // never erase a predecessor that has not acknowledged quiescence.
+        // | Rule | C1 | C2 | C3 | Begin | Handoff | Finish |
+        // |---|---|---|---|---|---|---|
+        // | R1 | yes | empty | any | install | install | stutter |
+        // | R2 | yes | exact | any | stutter | stutter | clear |
+        // | R3 | yes | other | no | blocked | n/a | fenced |
+        // | R4 | yes | other | yes | blocked | replace | fenced |
+        // | R5 | no | any | any | fenced | fenced | n/a |
+        // | R6 | yes | corrupt | any | corrupt | corrupt | corrupt |
+        // Constraint: `Replace` is reachable only through the separately named
+        // handoff input; ordinary begin never erases an unacknowledged slot.
         use PhysicalAttemptSlot::{Corrupt, Empty, ExactClaim, OtherClaim};
         use PhysicalAttemptTransition::{
-            Blocked, Clear, Corrupt as CorruptTransition, Fenced, Install, Stutter,
+            Blocked, Clear, Corrupt as CorruptTransition, Fenced, Install, Replace, Stutter,
         };
         assert_eq!(begin_physical_attempt(true, Empty), Install, "R1/E1");
+        assert_eq!(handoff_physical_attempt(true, Empty), Install, "R1/E1");
         assert_eq!(finish_physical_attempt(Empty), Stutter, "R1/E2");
         assert_eq!(begin_physical_attempt(true, ExactClaim), Stutter, "R2/E2");
+        assert_eq!(handoff_physical_attempt(true, ExactClaim), Stutter, "R2/E2");
         assert_eq!(finish_physical_attempt(ExactClaim), Clear, "R2/E2");
         assert_eq!(begin_physical_attempt(true, OtherClaim), Blocked, "R3/E3");
+        assert_eq!(handoff_physical_attempt(true, OtherClaim), Replace, "R4/E6");
         assert_eq!(finish_physical_attempt(OtherClaim), Fenced, "R3/E3");
         for slot in [Empty, ExactClaim, OtherClaim, Corrupt] {
             assert_eq!(begin_physical_attempt(false, slot), Fenced, "R4/E4");
+            assert_eq!(handoff_physical_attempt(false, slot), Fenced, "R5/E4");
         }
         assert_eq!(
             begin_physical_attempt(true, Corrupt),
@@ -396,14 +454,65 @@ mod tests {
             "R5/E5"
         );
         assert_eq!(finish_physical_attempt(Corrupt), CorruptTransition, "R5/E5");
+        assert_eq!(
+            handoff_physical_attempt(true, Corrupt),
+            CorruptTransition,
+            "R6/E5"
+        );
     }
 
     #[test]
     fn stale_settle_and_relinquish_are_fenced() {
         let current = leased(8);
         assert_eq!(current.settle(7, true), GuardedTransition::Fenced);
-        assert_eq!(current.relinquish(8, false), GuardedTransition::Fenced);
-        assert_eq!(current.relinquish(7, true), GuardedTransition::Fenced);
+        assert_eq!(
+            current.relinquish(8, false, PhysicalAttemptSlot::Empty),
+            RelinquishTransition::Fenced
+        );
+        assert_eq!(
+            current.relinquish(7, true, PhysicalAttemptSlot::Empty),
+            RelinquishTransition::Fenced
+        );
+    }
+
+    #[test]
+    fn relinquish_preserves_recovery_evidence_for_a_stale_physical_attempt() {
+        // Cause/effect graph: C1 exact mutation claim; C2 physical slot is
+        // empty, exact, other, or torn. Effects: E1 Pending rollback; E2 fence;
+        // E3 retain Leased so the adapter can expire it for immediate recovery;
+        // E4 reject corrupt persistence.
+        //
+        // | Rule | C1 | C2 | Effect |
+        // |---|---|---|---|
+        // | R1 | exact | empty | E1 Pending |
+        // | R2 | exact | exact | E2 Fenced |
+        // | R3 | exact | other | E3 Recovering Leased |
+        // | R4 | exact | corrupt | E4 Corrupt |
+        // | R5 | stale | any | E2 Fenced |
+        //
+        // Invariant: an occupied predecessor slot is never cleared, and its
+        // successor never loses the recovery classification by becoming an
+        // ordinary fresh Pending dispatch.
+        let current = leased(8);
+        assert_eq!(
+            current.relinquish(8, true, PhysicalAttemptSlot::Empty),
+            RelinquishTransition::Pending(DispatchTransition {
+                state: crate::DispatchState::Pending,
+                ..current
+            })
+        );
+        assert_eq!(
+            current.relinquish(8, true, PhysicalAttemptSlot::ExactClaim),
+            RelinquishTransition::Fenced
+        );
+        assert_eq!(
+            current.relinquish(8, true, PhysicalAttemptSlot::OtherClaim),
+            RelinquishTransition::Recovering(current)
+        );
+        assert_eq!(
+            current.relinquish(8, true, PhysicalAttemptSlot::Corrupt),
+            RelinquishTransition::Corrupt
+        );
     }
 
     #[test]
@@ -608,6 +717,7 @@ mod proofs {
         let current = kani::any::<bool>();
         let slot = arbitrary_physical_slot();
         let begin = begin_physical_attempt(current, slot);
+        let handoff = handoff_physical_attempt(current, slot);
         let finish = finish_physical_attempt(slot);
 
         assert_eq!(
@@ -624,10 +734,12 @@ mod proofs {
         );
         if !current {
             assert_eq!(begin, PhysicalAttemptTransition::Fenced);
+            assert_eq!(handoff, PhysicalAttemptTransition::Fenced);
         }
         if slot == PhysicalAttemptSlot::OtherClaim {
             assert_ne!(begin, PhysicalAttemptTransition::Install);
             assert_ne!(finish, PhysicalAttemptTransition::Clear);
+            assert_eq!(handoff == PhysicalAttemptTransition::Replace, current);
         }
     }
 
@@ -663,8 +775,8 @@ mod proofs {
             GuardedTransition::Fenced
         );
         assert_eq!(
-            state.relinquish(stale_epoch, kani::any()),
-            GuardedTransition::Fenced
+            state.relinquish(stale_epoch, kani::any(), PhysicalAttemptSlot::Empty),
+            RelinquishTransition::Fenced
         );
         assert_eq!(
             state.exhaust_retries(stale_epoch, kani::any()),
@@ -735,8 +847,8 @@ mod proofs {
                         GuardedTransition::Fenced
                     );
                     assert_eq!(
-                        cancelled.relinquish(state.lease_epoch, true),
-                        GuardedTransition::Fenced
+                        cancelled.relinquish(state.lease_epoch, true, PhysicalAttemptSlot::Empty,),
+                        RelinquishTransition::Fenced
                     );
                 } else {
                     assert!(!revoked_lease);

@@ -33,7 +33,7 @@ async function drain(pagePromise) {
 
 async function main() {
   try {
-    await withScenarioServer('management', 'mcp', 38132, async (baseUrl) => {
+    await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // -- Vault List --------------------------------------------------------

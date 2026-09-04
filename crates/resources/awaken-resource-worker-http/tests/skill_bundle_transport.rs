@@ -11,7 +11,8 @@ use awaken_resource_worker_http::{
     HttpSkillBundleSource, WorkerSkillBundleService, worker_skill_bundle_router,
 };
 use awaken_dispatch::{
-    DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
+    DispatchQueue as _, MemoryDispatchStore, ResourceOperationFence, RunClaim, RunDispatch,
+    WorkerIdentity,
 };
 use awaken_session_contract::{
     ResolvedSessionResources, ResolvedSkillBinding, SkillBundleSource as _,
@@ -116,9 +117,10 @@ async fn exact_skill_bundle_is_scope_claim_and_incarnation_fenced_and_digest_ver
     let source = HttpSkillBundleSource::new(
         WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone()),
     );
+    let fence = ResourceOperationFence::Run(claim.clone());
 
     let exact = source
-        .load("workspace-skill", &frozen, Some(&claim))
+        .load("workspace-skill", &frozen, Some(&fence))
         .await
         .expect("S1 exact Skill read")
         .expect("S1 existing Skill");
@@ -126,7 +128,7 @@ async fn exact_skill_bundle_is_scope_claim_and_incarnation_fenced_and_digest_ver
 
     let other = binding(&version("other", 1, b"OTHER"));
     let denied = source
-        .load("workspace-skill", &other, Some(&claim))
+        .load("workspace-skill", &other, Some(&fence))
         .await
         .expect_err("S2 non-frozen Skill must be denied");
     assert!(denied.to_string().contains("403"), "S2: {denied}");
@@ -136,7 +138,7 @@ async fn exact_skill_bundle_is_scope_claim_and_incarnation_fenced_and_digest_ver
             "http://{address}/v1/worker/resources/skills/bundle"
         ))
         .json(&serde_json::json!({
-            "claim": claim,
+            "authority": fence,
             "identity": identity,
             "workspace_id": "workspace-skill",
             "binding": frozen
@@ -156,7 +158,7 @@ async fn exact_skill_bundle_is_scope_claim_and_incarnation_fenced_and_digest_ver
                 .with_worker_identity(WorkerIdentity::new("worker-skill", "worker-skill-stale", 2)),
         );
     let stale_identity = stale_source
-        .load("workspace-skill", &frozen, Some(&claim))
+        .load("workspace-skill", &frozen, Some(&fence))
         .await
         .expect_err("S4 stale incarnation must be denied");
     assert!(stale_identity.to_string().contains("403"), "S4");
@@ -171,7 +173,7 @@ async fn exact_skill_bundle_is_scope_claim_and_incarnation_fenced_and_digest_ver
         .await
         .unwrap();
     let stale_claim = source
-        .load("workspace-skill", &frozen, Some(&claim))
+        .load("workspace-skill", &frozen, Some(&fence))
         .await
         .expect_err("S5 stale claim must be rejected");
     assert!(stale_claim.to_string().contains("409"), "S5");
@@ -190,29 +192,29 @@ async fn exact_skill_bundle_is_scope_claim_and_incarnation_fenced_and_digest_ver
     );
     assert!(
         substituted_source
-            .load("workspace-skill", &frozen, Some(&claim))
+            .load("workspace-skill", &frozen, Some(&fence))
             .await
             .is_err(),
         "S6"
     );
 }
 
-/// Cause/effect rationale: without an exact dispatch claim a remote source has
+/// Cause/effect rationale: without an exact Resource authority a remote source has
 /// no authority to contact the Skill data plane, so C1 -> E1 fails locally and
 /// cannot become an unfenced compatibility path. Built-in Skills are rejected
 /// by this port because the runtime binary is their sole source of truth.
 #[tokio::test]
-async fn remote_skill_source_requires_claim_and_custom_kind() {
+async fn remote_skill_source_requires_resource_authority_and_custom_kind() {
     let source = HttpSkillBundleSource::new(WorkerUpstream::new("http://127.0.0.1:1"));
     let custom = binding(&version("review", 1, b"REVIEW"));
     let missing_claim = source
         .load("workspace-skill", &custom, None)
         .await
-        .expect_err("claim is mandatory");
+        .expect_err("Resource authority is mandatory");
     assert!(
         missing_claim
             .to_string()
-            .contains("requires a dispatch claim")
+            .contains("exact Resource authority")
     );
 
     let mut built_in = custom;
@@ -222,8 +224,9 @@ async fn remote_skill_source_requires_claim_and_custom_kind() {
         owner: "worker-unused".into(),
         epoch: 1,
     };
+    let fence = ResourceOperationFence::Run(claim);
     let wrong_kind = source
-        .load("workspace-skill", &built_in, Some(&claim))
+        .load("workspace-skill", &built_in, Some(&fence))
         .await
         .expect_err("built-in Skill stays runtime-owned");
     assert!(wrong_kind.to_string().contains("custom Skill"));

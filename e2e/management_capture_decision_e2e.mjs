@@ -39,7 +39,7 @@ async function main() {
     await withScenarioServer(
       'management',
       'mcp',
-      38193,
+      Number(process.env.E2E_PORT),
       async (baseUrl) => {
       const id = 'dsub_cd_e2e';
 

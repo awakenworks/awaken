@@ -18,15 +18,16 @@ mod scenario_platform;
 mod web;
 mod worker;
 pub use crate::models::*;
-pub use acp_gateway::build_acp_gateway_router;
-use acp_scenarios::fake_acp_cli;
 pub use acp_scenarios::{
-    build_acp_container_router, build_acp_control_router, build_acp_jsonrpc_router,
-    build_acp_managed_mcp_router, build_acp_permission_router, build_acp_real_mcp_router,
-    build_acp_relaunch_failure_router, build_acp_router, build_acp_sandboxed_router,
-    build_acp_sandboxed_router_with_deployment, build_acp_tool_bridge_router,
+    build_acp_container_router, build_acp_control_router, build_acp_gateway_router,
+    build_acp_gateway_router_with_deployment, build_acp_jsonrpc_router,
+    build_acp_jsonrpc_router_with_deployment, build_acp_managed_mcp_router,
+    build_acp_permission_router, build_acp_permission_router_with_deployment,
+    build_acp_real_mcp_router, build_acp_relaunch_failure_router, build_acp_router,
+    build_acp_sandboxed_router, build_acp_sandboxed_router_with_deployment,
+    build_acp_tool_bridge_router,
 };
-pub use delegation::build_delegation_router;
+pub use delegation::{build_delegation_router, build_delegation_router_with_deployment};
 pub use deployment::{install_scenario_runtime_authority, scenario_deployment};
 pub use distributed_control::build_distributed_provider_router;
 pub use distributed_control::serve_distributed_control;
@@ -39,13 +40,12 @@ pub use worker::run_echo_worker;
 mod scenario_shell;
 use deployment::{
     resource_host, resource_host_with_deployment, runtime_resource_host_with_deployment,
-    scenario_storage_dir,
 };
 use scenario_platform::{
     fixed_agent_publication, fixed_host_backend_publication,
     fixed_host_backend_publication_with_acp_mcp, fixed_host_backend_publication_with_mcp, mount,
     mount_with_agent_source, mount_with_environments, mount_with_environments_and_agent_source,
-    mount_with_host_backend_publication, mount_with_memory_publication,
+    mount_with_memory_publication,
 };
 use scenario_shell::{scenario_argv, scenario_host_acp_cli, scenario_shell_argv};
 
@@ -81,19 +81,6 @@ pub use awaken_session_executor::{
 };
 pub use awaken_sandbox_local::content_fingerprint;
 
-/// A minimal ACP agent (shell): read the prompt line, emit a message + turn_end —
-/// stands in for an external adapter so the ACP-runtime path runs without a real CLI.
-const FAKE_ACP_SCRIPT: &str = "read _p; \
-    case \"$_p\" in \
-      *acp-refuse*) printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"refusal\"}';; \
-      *acp-truncate*) printf '%s\\n' '{\"type\":\"message\",\"text\":\"partial\"}';; \
-      *acp-auth*) printf '%s\\n' 'not json: 401 Unauthorized invalid api key';; \
-      *acp-ratelimit*) printf '%s\\n' 'not json: HTTP 429 too many requests';; \
-      *acp-login*) printf '%s\\n' 'not json: Please run /login to continue';; \
-      *) printf '%s\\n' '{\"type\":\"message\",\"text\":\"acp-runtime reply\"}'; \
-         printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}';; \
-    esac";
-
 /// One tool-free ACP stand-in that can act as either Outcome Worker or Judge.
 /// Its prompt classification makes the Worker/Grader backend matrix observable
 /// without provider credentials.
@@ -115,15 +102,11 @@ const FAKE_OUTCOME_ACP_SCRIPT: &str = "read _p; \
 
 /// Managed Outcome backend matrix: each Session independently selects a Native
 /// or ACP Worker, while `AWAKEN_OUTCOME_JUDGE_RUNTIME` pins the Judge snapshot.
-pub fn build_outcome_matrix_router() -> Router {
+pub async fn build_outcome_matrix_router() -> Router {
     let launch = awaken_run_executor_acp::AcpLaunch::custom(
         scenario_shell_argv(FAKE_OUTCOME_ACP_SCRIPT),
         vec![],
     );
-    let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
-        launch,
-    ));
-    let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
     let (model, model_ref) = scenario_model(Arc::new(ReviseModel), "outcome-native");
     let judge_backend = match std::env::var("AWAKEN_OUTCOME_JUDGE_RUNTIME").as_deref() {
         Ok("acp") => "acp:claude",
@@ -138,12 +121,18 @@ pub fn build_outcome_matrix_router() -> Router {
         ))
         .max_steps(2)
         .build();
-    mount_with_host_backend_publication(
-        resource_host(model, model_ref)
-            .map_host(|host| host.with_acp(acp).with_judge_snapshot(judge)),
-        "acp-agent",
-        "acp:claude",
+    let publication = fixed_host_backend_publication("acp-agent", "acp:claude", Vec::new());
+    let platform = acp_scenarios::bind_acp_session_environment(
+        resource_host(model, model_ref),
+        awaken_session_executor::LaunchSource::Fixed(Box::new(launch)),
+        None,
     )
+    .await
+    .map_host(|host| {
+        host.with_agent_publications(publication.clone())
+            .with_judge_snapshot(judge)
+    });
+    mount_with_agent_source(platform, publication)
 }
 
 /// A router with out-of-band memory extraction + bounded recall (the memory
@@ -372,11 +361,7 @@ const FAKE_ACP_JSONRPC_SCRIPT: &str = "runtime=${AWAKEN_MATRIX_RUNTIME:-unknown}
             *matrix-hitl*) \
               request_permission;; \
             *matrix-error*) printf '%s\\n' 'not-json: deterministic ACP adapter failure'; exit 0;; \
-            *matrix-interrupt*) \
-              if [ -n \"${AWAKEN_MATRIX_INTERRUPT_READY_DIR:-}\" ]; then \
-                : > \"$AWAKEN_MATRIX_INTERRUPT_READY_DIR/$runtime\"; \
-              fi; \
-              while :; do :; done; \
+            *matrix-interrupt*) while :; do :; done; \
               printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"matrix-%s-uncancelled\"}}}}\\n' \"$runtime\"; \
               printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; exit 0;; \
             *matrix-basic*) \
@@ -1328,9 +1313,20 @@ pub async fn build_config_router() -> Router {
         SharedHost::provision_local_workspace,
         SharedHost::provision_local_workspace_at,
     );
-    let store = Arc::new(
-        awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
-    );
+    // Config/Session durability decision table: no storage root keeps the
+    // disposable scenario in memory; a configured root opens the canonical
+    // SQLite ConfigStore beside the durable Session/Dispatch authorities. A
+    // restart must never retain the latter while silently replacing the former.
+    let store = Arc::new(match deployment.storage_dir.as_deref() {
+        Some(root) => awaken_config_store::SqliteConfigStore::open(
+            root.join("config.db")
+                .to_str()
+                .expect("scenario storage path is UTF-8"),
+        )
+        .expect("open durable scenario config store"),
+        None => awaken_config_store::SqliteConfigStore::open_in_memory()
+            .expect("open ephemeral scenario config store"),
+    });
     // Scope-keyed tool visibility (ADR-0052 D3): every scope sees the advertised
     // (global) tools; only the reserved admin scope additionally sees the four
     // management descriptors, so a config naming an `admin_*` tool compiles only there.
@@ -1402,6 +1398,13 @@ pub async fn build_config_router() -> Router {
     let scenario_dispatch = host
         .dispatch_store()
         .expect("config scenario installs one Dispatch authority");
+    // Rebuild the disposable executable catalog through the same registration
+    // recovery used by Control. This replays durable publication truth; it does
+    // not create a second warm-install path or reinterpret a claimed Run.
+    plane
+        .recover_all_registrations(&platform_workspace)
+        .await
+        .expect("recover durable scenario Agent registrations");
     // The reserved value owns only configuration/tool visibility. Install the
     // executable in the Host's real platform Workspace so Sessions, resources,
     // credentials, and runtime lookup share one coordinate.

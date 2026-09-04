@@ -515,6 +515,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
             "workspace",
             &resolved.inputs()[1],
             None,
+            None,
             Some(&strict_projection),
         )
         .await

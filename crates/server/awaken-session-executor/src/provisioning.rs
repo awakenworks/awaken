@@ -395,7 +395,7 @@ pub(crate) enum ResourceBindingCheck {
         config_version: awaken_resource_contract::ConfigVersion,
         remote_url: String,
         credential_binding: Option<String>,
-        claim: Option<awaken_dispatch::RunClaim>,
+        authority: Option<Box<awaken_dispatch::ResourceOperationFence>>,
     },
 }
 
@@ -790,16 +790,17 @@ impl SharedHost {
                 config_version,
                 remote_url,
                 credential_binding,
-                claim,
+                authority,
             } if repository_id == &repository.plan.repository_id => Some((
                 *config_version,
                 remote_url.as_str(),
                 credential_binding.as_deref(),
-                claim.as_ref(),
+                authority.as_deref(),
             )),
             _ => None,
         });
-        let Some((config_version, remote_url, credential_binding, claim)) = matching.next() else {
+        let Some((config_version, remote_url, credential_binding, authority)) = matching.next()
+        else {
             return Err(crate::host::HostError::internal(
                 "protected Repository has no exact binding check",
             ));
@@ -823,7 +824,13 @@ impl SharedHost {
                 "Repository changed its frozen source URL",
             ));
         }
-        let publication_transport = match (publication_fence, &self.upstream) {
+        let publication_authority = publication_fence.map(|(command, lease)| {
+            awaken_dispatch::ResourceOperationFence::RepositoryPublication {
+                command: Box::new(command.clone()),
+                lease: lease.clone(),
+            }
+        });
+        let publication_transport = match (publication_authority.as_ref(), &self.upstream) {
             (Some(fence), Some(_)) => {
                 let verifier = self
                     .dispatch_session_runtime
@@ -832,7 +839,7 @@ impl SharedHost {
                         crate::host::HostError::internal("dispatch Session Runtime lock poisoned")
                     })?
                     .as_ref()
-                    .and_then(|runtime| runtime.repository_publication_binding_verifier.clone())
+                    .and_then(|runtime| runtime.repository_binding_verifier.clone())
                     .ok_or_else(|| {
                         crate::host::HostError::internal(
                             "terminal Repository publication has no binding verifier",
@@ -939,7 +946,7 @@ impl SharedHost {
                                 &workspace,
                                 &repository.plan.repository_id,
                                 config_version,
-                                claim,
+                                authority,
                             )
                             .await
                             .map_err(|error| crate::host::HostError::internal(error.to_string()))?
@@ -1157,6 +1164,8 @@ impl ArtifactHarvester {
         let terminal_effect = fence.as_ref().and_then(|fence| match fence {
             awaken_dispatch::ArtifactPublicationFence::Terminal(effect) => Some(effect),
             awaken_dispatch::ArtifactPublicationFence::Run(_)
+            | awaken_dispatch::ArtifactPublicationFence::SessionMaterialization(_)
+            | awaken_dispatch::ArtifactPublicationFence::RepositoryPublication { .. }
             | awaken_dispatch::ArtifactPublicationFence::CheckpointRelease(_) => None,
         });
         if capture_mode == ArtifactCaptureMode::ReceiptOnly && terminal_effect.is_none() {

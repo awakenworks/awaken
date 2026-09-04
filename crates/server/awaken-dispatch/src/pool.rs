@@ -231,6 +231,21 @@ struct DrainErrorState {
     probe_in_flight: bool,
 }
 
+impl DrainErrorState {
+    /// Pure transition inside the pool-wide mutex. The caller owns clock
+    /// comparison; this kernel owns the single recovery-probe authority.
+    fn admit_cycle(&mut self, retry_deadline_reached: bool) -> bool {
+        if self.consecutive_errors == 0 {
+            return true;
+        }
+        if self.probe_in_flight || !retry_deadline_reached {
+            return false;
+        }
+        self.probe_in_flight = true;
+        true
+    }
+}
+
 #[derive(Default)]
 struct DrainErrorGate {
     state: tokio::sync::Mutex<DrainErrorState>,
@@ -245,21 +260,17 @@ impl DrainErrorGate {
             let delay = {
                 let mut state = self.state.lock().await;
                 if state.consecutive_errors == 0 {
+                    debug_assert!(state.admit_cycle(false));
                     return true;
                 }
-                if state.probe_in_flight {
-                    None
-                } else {
-                    let retry_not_before = state
-                        .retry_not_before
-                        .expect("an error state owns a retry deadline");
-                    let now = tokio::time::Instant::now();
-                    if now >= retry_not_before {
-                        state.probe_in_flight = true;
-                        return true;
-                    }
-                    Some(retry_not_before.duration_since(now))
+                let retry_not_before = state
+                    .retry_not_before
+                    .expect("an error state owns a retry deadline");
+                let now = tokio::time::Instant::now();
+                if state.admit_cycle(now >= retry_not_before) {
+                    return true;
                 }
+                (!state.probe_in_flight).then(|| retry_not_before.duration_since(now))
             };
             match delay {
                 Some(delay) => tokio::select! {
@@ -458,7 +469,6 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
                     resolver.clone(),
                     completion.clone(),
                     admission.clone(),
-                    config.poll_interval,
                 ))
             })
             .collect();
@@ -644,7 +654,6 @@ async fn drain_loop<S: Dispatch + 'static>(
     resolver: Arc<dyn WorkerResolver<S>>,
     completion: Option<Arc<dyn CompletionSink>>,
     admission: Arc<PoolAdmission>,
-    poll_interval: Duration,
 ) {
     loop {
         tokio::select! {
@@ -669,6 +678,16 @@ async fn drain_loop<S: Dispatch + 'static>(
         {
             Ok(true) => {
                 admission.error_gate.record_success().await;
+                // A successful drive can make a same-Thread or same-Session
+                // successor eligible only at settlement. Any permit published
+                // while the predecessor was live may already have been consumed
+                // by an idle peer that correctly found no claimable row. Re-arm
+                // one permit after the settlement boundary so the pool actually
+                // drains to idle instead of waiting for the coarse fallback poll.
+                // Tokio Notify coalesces permits, so this cannot accumulate an
+                // unbounded retry queue when a peer wake is still pending.
+                tracing::debug!(owner = %owner, "dispatch drive settled; rearming drain permit");
+                admission.wake.notify_one();
                 continue;
             }
             Ok(false) => admission.error_gate.record_success().await,
@@ -680,8 +699,17 @@ async fn drain_loop<S: Dispatch + 'static>(
             Err(err) if err.is_resolution_not_ready() => {
                 // WorkQueue serializes Runs that share one Environment. A
                 // predecessor releasing that slot is normal backpressure, not a
-                // fault; cap retries independently of a very small queue poll.
-                tokio::time::sleep(poll_interval.max(Duration::from_millis(250))).await;
+                // fault. The queue poll is only a missed-edge fallback (and may
+                // be intentionally coarse), so apply the admission floor here
+                // independently instead of turning it into the retry interval.
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                // Relinquishing made the row eligible but consumed this drain's
+                // sole permit. Re-arm exactly one permit after the floor: the
+                // external wake is edge-triggered and the Session projection or
+                // Work-slot transition that resolves NotReady need not enqueue a
+                // second row. Without this handoff a blackhole/cross-process wake
+                // waits for the coarse fallback poll despite local progress.
+                admission.wake.notify_one();
             }
             Err(err) => {
                 let (consecutive_errors, delay) = admission.error_gate.record_failure().await;
@@ -692,6 +720,12 @@ async fn drain_loop<S: Dispatch + 'static>(
                     retry_delay_ms = delay.as_millis(),
                     "drain tick failed; retrying"
                 );
+                // `wait_cycle` owns the bounded exponential delay, while this
+                // permit owns the retry edge. Without it, an observer that asks
+                // its canonical projection supervisor to converge still cannot
+                // revisit the retained dispatch until the coarse poll fallback.
+                // Notify coalescing keeps one retry outstanding across all drains.
+                admission.wake.notify_one();
             }
         }
     }
@@ -702,6 +736,43 @@ fn drain_error_backoff(consecutive_errors: u32) -> Duration {
     const MAX: Duration = Duration::from_secs(5);
     let exponent = consecutive_errors.saturating_sub(1).min(31);
     MIN.saturating_mul(1_u32 << exponent).min(MAX)
+}
+
+#[cfg(kani)]
+mod drain_error_proofs {
+    use super::{DrainErrorState, drain_error_backoff};
+    use std::time::Duration;
+
+    #[kani::proof]
+    fn shared_error_gate_admits_exactly_one_probe_after_the_deadline() {
+        let consecutive_errors: u32 = kani::any();
+        kani::assume(consecutive_errors > 0);
+        let mut state = DrainErrorState {
+            consecutive_errors,
+            retry_not_before: None,
+            probe_in_flight: false,
+        };
+
+        assert!(!state.admit_cycle(false));
+        assert!(!state.probe_in_flight);
+        assert!(state.admit_cycle(true));
+        assert!(state.probe_in_flight);
+        assert!(!state.admit_cycle(true));
+    }
+
+    #[kani::proof]
+    fn drain_error_backoff_is_bounded_monotonic_and_saturating() {
+        let consecutive_errors: u32 = kani::any();
+        let delay = drain_error_backoff(consecutive_errors);
+        let successor = drain_error_backoff(consecutive_errors.saturating_add(1));
+
+        assert!(delay >= Duration::from_millis(100));
+        assert!(delay <= Duration::from_secs(5));
+        assert!(successor >= delay);
+        if consecutive_errors >= 7 {
+            assert_eq!(delay, Duration::from_secs(5));
+        }
+    }
 }
 
 /// Convert the external/cross-node wake plus the fallback timer into one
@@ -795,7 +866,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
         admission.wake.notify_one();
         resolver
             .terminalize_retry_exhausted(&claimed, clock.clone())
-            .await?
+            .await
     } else {
         match resolver.worker_for_claimed(&claimed).await {
             Ok(worker) => {
@@ -806,17 +877,33 @@ async fn claim_and_drive<S: Dispatch + 'static>(
                 admission.wake.notify_one();
                 worker
                     .drive_claimed_with_renewal(claimed, clock.clone(), claim_renewal)
-                    .await?
+                    .await
             }
             Err(error) if error.is_terminal_resolution() => {
                 resolver
                     .settle_claimed_resolution_failure(&claimed, error, clock.clone())
-                    .await?
+                    .await
             }
             Err(error) => {
-                relinquish_after_resolution_failure(store.as_ref(), &claimed).await;
+                relinquish_after_claim_failure(store.as_ref(), &claim).await;
                 return Err(error);
             }
+        }
+    };
+    let settled = match settled {
+        Ok(settled) => settled,
+        Err(error) => {
+            // Cause/effect decision table: C1 this exact mutation claim failed
+            // before/after a physical attempt; C2 an opaque physical slot still
+            // exists. R1 C1+!C2 => relinquish and retry immediately; R2 C1+C2 =>
+            // relinquish only the mutation lease while the independent physical
+            // slot continues to fence execution; a successor may observe but
+            // cannot re-enter until authoritative quiescence. Holding the
+            // mutation lease here added a 30-second availability delay without
+            // adding safety because the physical-attempt fence is the sole
+            // external-effect exclusion authority.
+            relinquish_after_claim_failure(store.as_ref(), &claim).await;
+            return Err(error);
         }
     };
     if let Some((run_id, state)) = settled
@@ -828,9 +915,8 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     Ok(true)
 }
 
-async fn relinquish_after_resolution_failure<S: Dispatch + 'static>(store: &S, claimed: &Claimed) {
-    let claim = crate::RunClaim::from(&claimed.lease);
-    match store.relinquish_claim(&claim).await {
+async fn relinquish_after_claim_failure<S: Dispatch + 'static>(store: &S, claim: &crate::RunClaim) {
+    match store.relinquish_claim(claim).await {
         Ok(crate::SettleOutcome::Applied) => {}
         Ok(crate::SettleOutcome::Fenced) => tracing::debug!(
             run_id = %claim.run_id.0,

@@ -156,6 +156,7 @@ async fn spawn_transport_server() -> (
         .route("/v1/worker/dispatch/claim_run", post(claim_run))
         .route("/v1/worker/dispatch/renew", post(renew))
         .route("/v1/worker/dispatch/attempt/begin", post(begin_attempt))
+        .route("/v1/worker/dispatch/attempt/handoff", post(handoff_attempt))
         .route("/v1/worker/dispatch/attempt/finish", post(finish_attempt))
         .route("/v1/worker/dispatch/bind_sandbox", post(bind_sandbox))
         .route("/v1/worker/dispatch/settle", post(settle))
@@ -281,6 +282,24 @@ async fn begin_attempt(
         .begin_attempt(&claim, state.now_ms.load(Ordering::SeqCst))
         .await
         .expect("begin attempt");
+    Json(json!({ "admission": admission }))
+}
+
+async fn handoff_attempt(
+    State(state): State<Arc<TransportState>>,
+    Json(req): Json<Value>,
+) -> Json<Value> {
+    assert_server_authority_fields_absent(&req);
+    assert!(
+        req.get("identity").is_some(),
+        "exact Worker identity crosses"
+    );
+    let claim: RunClaim = serde_json::from_value(req["claim"].clone()).expect("claim");
+    let admission = state
+        .store
+        .handoff_attempt(&claim, state.now_ms.load(Ordering::SeqCst))
+        .await
+        .expect("handoff attempt");
     Json(json!({ "admission": admission }))
 }
 
@@ -748,6 +767,14 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
         queue.begin_attempt(&claim, 0).await.expect("D4 retry"),
         AttemptAdmission::AlreadyApplied,
         "D4/E5 response-loss retry"
+    );
+    assert_eq!(
+        queue
+            .handoff_attempt(&claim, 0)
+            .await
+            .expect("D4 handoff transport retry"),
+        AttemptAdmission::AlreadyApplied,
+        "D4 the signed continuation route preserves exact-slot idempotency"
     );
 
     // A second claim finds nothing runnable (the only run is now leased): `None`.

@@ -1520,6 +1520,7 @@ impl ContainerCleanupState {
         handle: &pc::SandboxHandle,
         secret_broker: Option<Arc<dyn pc::SecretBroker>>,
         reconstructible: bool,
+        staging: Option<StagingGuard>,
     ) -> Result<Self, pc::SandboxError> {
         let secret_writebacks = spec
             .mounts
@@ -1550,7 +1551,7 @@ impl ContainerCleanupState {
         }
         let writeback_done = secret_writebacks.is_empty();
         Ok(Self {
-            staging: std::sync::Mutex::new(None),
+            staging: std::sync::Mutex::new(staging),
             secret_writebacks,
             secret_broker,
             memory: tokio::sync::Mutex::new(None),

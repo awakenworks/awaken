@@ -13,7 +13,8 @@ use awaken_resource_worker_http::{
     WorkerRepositoryBindingService, worker_repository_binding_router,
 };
 use awaken_dispatch::{
-    DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
+    DispatchQueue as _, MemoryDispatchStore, ResourceOperationFence, RunClaim, RunDispatch,
+    WorkerIdentity,
 };
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
@@ -81,6 +82,25 @@ impl awaken_session_contract::SessionRealizationControl for ExactTerminalPublica
                 "unused test phase".into(),
             ),
         )
+    }
+
+    async fn authorize_resource_materialization_intent(
+        &self,
+        intent: &awaken_session_contract::SessionResourceMaterializationIntent,
+    ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
+        let current_lease = self.lease.lock().unwrap().clone();
+        let exact_input = matches!(
+            intent.target(),
+            awaken_session_contract::SessionResourceMaterializationTarget::Input(input)
+                if input == &self.command.intent.input
+        );
+        if intent.session_id() != self.command.session_id
+            || intent.lease() != &current_lease
+            || !exact_input
+        {
+            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+        }
+        Ok(self.workspace_id.clone())
     }
 
     async fn terminal_repository_publication_command(
@@ -237,6 +257,9 @@ impl RepositoryTransportAuthorizer for GatewayAuthorizer {
             RepositoryTransportAuthority::Run {
                 claim_expires_ms, ..
             } => *claim_expires_ms,
+            RepositoryTransportAuthority::SessionMaterialization { intent } => {
+                intent.lease().expires_at_unix_ms
+            }
             RepositoryTransportAuthority::TerminalPublication { lease, .. } => {
                 lease.expires_at_unix_ms
             }
@@ -675,11 +698,13 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
     }
 }
 
-/// Terminal Repository authority decision table:
+/// Session Repository authority decision table:
 ///
 /// | Rule | registered Worker | realization lease | canonical command | deployment authorizer | Effect |
 /// |---|---|---|---|---|---|
-/// | P1 | current | exact/live | exact, catalog retired | absent | Direct from the frozen command; no mutable catalog re-read |
+/// | M1 | current | exact/live materialization intent | exact pending input and live catalog | absent | Direct without a Run claim |
+/// | M2 | current | exact/live materialization intent | foreign request Repository | any | deny before transport authorizer |
+/// | P1 | current | exact/live terminal lease | exact, catalog retired | absent | Direct from the frozen command; no mutable catalog re-read |
 /// | P2 | current | exact/live | exact | Gateway | exact terminal authority reaches authorizer |
 /// | P3 | stale incarnation | exact | exact | any | deny before Control/authorizer |
 /// | P4 | current | stale | exact | any | reject the non-current generation |
@@ -692,7 +717,7 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
 /// | P11 | current | asserted expired, current root expired | exact | any | 409 from Control; no authorizer |
 /// | P12 | current | asserted expired, root renews B -> C during authorizer | exact | operation-scoped Gateway expiry | admit after stable Workspace/command and monotonic same-generation recheck; do not require whole-projection equality |
 #[tokio::test]
-async fn terminal_repository_transport_is_worker_lease_and_command_fenced() {
+async fn session_repository_transport_is_worker_lease_and_command_fenced() {
     type PublicationFence = (
         awaken_session_contract::SessionRepositoryPublicationCommand,
         awaken_session_contract::SessionRealizationLease,
@@ -713,7 +738,7 @@ async fn terminal_repository_transport_is_worker_lease_and_command_fenced() {
     });
     let direct = Arc::new(
         WorkerRepositoryBindingService::new(
-            Arc::new(ExactRepositoryRegistry { active: false }),
+            Arc::new(ExactRepositoryRegistry { active: true }),
             Arc::new(MemoryDispatchStore::new()),
             Arc::new(HeaderWorkerAuthenticator),
         )
@@ -724,6 +749,41 @@ async fn terminal_repository_transport_is_worker_lease_and_command_fenced() {
     let verifier = HttpRepositoryBindingVerifier::new(
         WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone()),
     );
+    let materialization_intent =
+        awaken_session_contract::SessionResourceMaterializationIntent::try_new(
+            command.session_id.clone(),
+            1,
+            command.intent.input.clone(),
+            lease.clone(),
+        )
+        .expect("exact Repository materialization intent");
+    let materialization_fence =
+        ResourceOperationFence::SessionMaterialization(materialization_intent);
+    <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<
+        ResourceOperationFence,
+    >>::verify(
+        &verifier,
+        "workspace-repository",
+        "repository-exact",
+        ConfigVersion::INITIAL,
+        Some(&materialization_fence),
+    )
+    .await
+    .expect("M1 cold Session Repository authority");
+    let wrong_repository =
+        <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<
+            ResourceOperationFence,
+        >>::verify(
+            &verifier,
+            "workspace-repository",
+            "repository-other",
+            ConfigVersion::INITIAL,
+            Some(&materialization_fence),
+        )
+        .await
+        .expect_err("M2 foreign Repository");
+    assert!(wrong_repository.to_string().contains("403"), "M2");
+
     let fence = (command.clone(), lease.clone());
     let transport =
         <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<

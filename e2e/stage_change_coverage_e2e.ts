@@ -19,6 +19,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// @ts-ignore -- shared JavaScript fixture intentionally serves TS scenarios.
+import { withoutAmbientProviderKeys } from './process_environment.mjs';
 
 type Scenario = {
   id: string;
@@ -62,6 +64,7 @@ const scenarios: Scenario[] = [
   { id: 'resource_reclamation_faults', file: 'e2e/resource_reclamation_faults_e2e.mjs' },
   { id: 'memory_extraction_stage_recovery', file: 'e2e/managed_memory_extraction_stage_recovery_e2e.mjs' },
   { id: 'managed_full_chain', file: 'e2e/managed_full_chain_e2e.mjs' },
+  { id: 'managed_namespace_session_environment', file: 'e2e/managed_namespace_session_environment_e2e.mjs' },
   { id: 'resource_ephemeral', file: 'e2e/resource_ephemeral_e2e.mjs' },
   { id: 'resource_scope_boundary', file: 'e2e/resource_scope_boundary_e2e.mjs' },
   { id: 'container_provider_config', file: 'e2e/container_provider_configuration_e2e.ts' },
@@ -143,8 +146,8 @@ const obligations: Obligation[] = [
 
 
   { id: 'D5-01', stage: '5 durable child lifecycle', behavior: 'child has a first-class stable run identity', scenario: 'child_recovery' },
-  { id: 'D5-02', stage: '5 durable child lifecycle', behavior: 'hard process crash occurs while child inference is in flight', scenario: 'child_recovery' },
-  { id: 'D5-03', stage: '5 durable child lifecycle', behavior: 'replacement process reuses the same child run', scenario: 'child_recovery' },
+  { id: 'D5-02', stage: '5 durable child lifecycle', behavior: 'hard process crash leaves the in-flight child provider attempt physically fenced', scenario: 'child_recovery' },
+  { id: 'D5-03', stage: '5 durable child lifecycle', behavior: 'replacement reuses the same child run only after exact predecessor terminal proof', scenario: 'child_recovery' },
   { id: 'D5-04', stage: '5 durable child lifecycle', behavior: 'recovered child result resumes and completes the parent', scenario: 'child_recovery' },
   { id: 'D5-05', stage: '5 durable child lifecycle', behavior: 'recovery does not duplicate child seed', scenario: 'child_recovery' },
   { id: 'D5-06', stage: '5 durable child lifecycle', behavior: 'recovery commits one child terminal result', scenario: 'child_recovery' },
@@ -197,9 +200,9 @@ const obligations: Obligation[] = [
   { id: 'D7-20', stage: '7 resource persistence', behavior: 'Extracted and Stored Memory intents resume while stale mutations and unavailable extractors fail terminally', scenario: 'memory_extraction_stage_recovery' },
   { id: 'D7-21', stage: '7 resource persistence', behavior: 'a Managed Session writes and reads one authored SKILL.md within its sandbox, while archive performs no implicit Skill promotion', scenario: 'managed_full_chain' },
   { id: 'D7-22', stage: '7 resource persistence', behavior: 'a cold remote worker realizes the frozen Session File manifest from shared resource truth', scenario: 'worker_resource_manifest' },
-  { id: 'D7-23', stage: '7 resource persistence', behavior: 'an explicit empty manifest revokes a prior live projection and remains resource-capability constrained', scenario: 'worker_resource_manifest' },
+  { id: 'D7-23', stage: '7 resource persistence', behavior: 'the Managed Session aggregate drives an explicit live resource detach through its complete previous-to-desired transition', scenario: 'managed_namespace_session_environment' },
   { id: 'D7-24', stage: '7 resource persistence', behavior: 'a mismatched dispatch and resource Workspace fails before sandbox creation', scenario: 'worker_resource_manifest' },
-  { id: 'D7-25', stage: '7 resource persistence', behavior: 'a remote worker hash-verifies and materializes one frozen binary Skill bundle, then removes the exact tree on detach', scenario: 'worker_resource_manifest' },
+  { id: 'D7-25', stage: '7 resource persistence', behavior: 'a remote worker hash-verifies and materializes one frozen binary Skill bundle without consulting node-local resource truth', scenario: 'worker_resource_manifest' },
   { id: 'D7-26', stage: '7 resource persistence', behavior: 'a remote worker uses the pinned Memory configuration to mount current mutable content from the shared data plane', scenario: 'worker_resource_manifest' },
   { id: 'D7-27', stage: '7 resource persistence', behavior: 'archiving a MemoryStore live denies a later claim even though its immutable configuration remains pinned', scenario: 'worker_resource_manifest' },
   { id: 'D7-28', stage: '7 resource persistence', behavior: 'all control-plane repository ports select Postgres without changing the HTTP publication or Session execution path', scenario: 'control_plane_postgres' },
@@ -336,6 +339,19 @@ async function startPostgres(): Promise<{ container: string; url: string }> {
   throw new Error('timed out waiting for disposable Postgres');
 }
 
+function createScenarioPostgresDatabase(
+  postgres: { container: string; url: string },
+  scenarioId: string,
+): string {
+  const database = `awaken_${process.pid}_${scenarioId}`;
+  assert.match(database, /^[a-z0-9_]+$/u, 'scenario database identifier is closed');
+  assert.ok(Buffer.byteLength(database) <= 63, 'scenario database identifier fits PostgreSQL');
+  docker('exec', postgres.container, 'createdb', '-U', 'postgres', database);
+  const url = new URL(postgres.url);
+  url.pathname = `/${database}`;
+  return url.toString();
+}
+
 const STAGE_PORT_FIRST = 12_000;
 const STAGE_PORT_COUNT = 15_000;
 
@@ -412,14 +428,24 @@ async function main(): Promise<void> {
       const port = await nextStagePort();
       const workerPort = await nextStagePort();
       const configPort = await nextStagePort();
+      // PostgreSQL fixture isolation decision table. Causes: C1=scenario owns
+      // PostgreSQL state; C2=another scenario ran earlier; C3=the daemon
+      // container is reusable. Effects: E1=C1 creates one fresh database before
+      // process startup; E2=C1+C2 cannot observe installation identity or rows
+      // from the predecessor; E3=!C1 creates no database. Constraint: reuse the
+      // daemon only, never a database or installation authority. Rules:
+      // P1=C1=>E1; P2=C1+C2+C3=>E1+E2; P3=!C1=>E3.
+      const postgresUrl = scenario.postgres
+        ? createScenarioPostgresDatabase(postgres, scenario.id)
+        : undefined;
       const environment = {
-        ...process.env,
+        ...withoutAmbientProviderKeys(process.env),
         E2E_PORT: String(port),
         E2E_WORKER_PORT: String(workerPort),
         E2E_CONFIG_PORT: String(configPort),
         ...(scenario.postgres
           ? {
-              SESSION_DEPLOYMENT_DATABASE_URL: postgres.url,
+              SESSION_DEPLOYMENT_DATABASE_URL: postgresUrl,
               AWAKEN_E2E_POSTGRES_CONTAINER: postgres.container,
             }
           : {}),

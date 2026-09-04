@@ -747,6 +747,42 @@ async fn physical_attempt_admission_on_postgres() {
 }
 
 #[tokio::test]
+async fn physical_attempt_admission_uses_the_postgres_authority_clock() {
+    // Postgres clock-authority cause/effect decision table:
+    // C1 the database minted a current claim; C2 the caller supplies a clock
+    // value ahead of that lease; C3 the persisted owner/epoch still match.
+    // P1 C1+C2+C3 => admit from the database clock and install the slot.
+    // P2 !C1 or !C3 => the shared physical-attempt matrix fences the caller.
+    // This test owns P1; the shared A1-A10 matrix above owns P2 and slot
+    // occupancy. The extreme caller value makes a second clock authority fail
+    // deterministically instead of depending on host/database scheduling skew.
+    let Some(pool) = harness::schema_pool("t_pg_physical_attempt_clock").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool)
+        .await
+        .expect("dispatch");
+    store
+        .enqueue(RunDispatch::new(activation("physical-clock-authority-run")))
+        .await
+        .expect("enqueue");
+    let claimed = store
+        .claim("clock-owner", 5_000, 0, &Default::default())
+        .await
+        .expect("claim query")
+        .expect("claim");
+
+    assert_eq!(
+        store
+            .begin_attempt(&RunClaim::from(&claimed.lease), u64::MAX)
+            .await
+            .expect("physical admission"),
+        awaken_dispatch::AttemptAdmission::Applied,
+        "the Postgres aggregate must evaluate its DB lease on the DB clock"
+    );
+}
+
+#[tokio::test]
 async fn list_dispatches_on_postgres() {
     let Some(pool) = harness::schema_pool("t_pg_list").await else {
         return;

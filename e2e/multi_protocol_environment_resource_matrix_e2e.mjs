@@ -46,7 +46,7 @@ async function runProtocol(base, protocol, thread, marker) {
 }
 
 async function main() {
-  await withScenarioServer('environment-matrix', 'echo', 38731, async (base) => {
+  await withScenarioServer('environment-matrix', 'echo', Number(process.env.E2E_PORT), async (base) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
     const file = await client.beta.files.upload({
       file: await toFile(Buffer.from('orthogonal resource bytes'), 'matrix.txt'), betas: BETAS,

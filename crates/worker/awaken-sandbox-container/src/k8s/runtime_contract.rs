@@ -668,7 +668,8 @@ impl ContainerRuntime for K8sRuntime {
         authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), RuntimeError> {
         let (pod_uid, claim_uid) = deletion_incarnation(runtime_handle)?;
-        self.remove_bound(container_id, pod_uid, claim_uid, Some(authorization))
+        let authorization = continuation::PodCleanupAuthorization::Aggregate(authorization.clone());
+        self.remove_bound(container_id, pod_uid, claim_uid, Some(&authorization))
             .await
     }
 }

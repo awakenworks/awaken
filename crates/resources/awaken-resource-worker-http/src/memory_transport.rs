@@ -14,7 +14,8 @@ use awaken_resource_contract::{
 };
 use awaken_dispatch_contract::{DispatchQueue, ResourceOperationFence, RunClaim};
 use awaken_session_contract::{
-    SessionRealizationControl, SessionTerminalMemoryIntent, SessionTerminalMemoryTarget,
+    SessionRealizationControl, SessionResourceMaterializationIntent, SessionTerminalMemoryIntent,
+    SessionTerminalMemoryTarget,
 };
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use axum::extract::{Extension, State};
@@ -36,6 +37,7 @@ const MEMORY_PATH: &str = "/v1/worker/resources/memory/operation";
 
 const MEMORY_REFERENCE_V1_PREFIX: &str = "awaken-memory-v1:";
 const MEMORY_REFERENCE_V2_PREFIX: &str = "awaken-memory-v2:";
+const MEMORY_REFERENCE_V3_PREFIX: &str = "awaken-memory-v3:";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -61,6 +63,7 @@ struct TerminalMemoryMaterializationReferenceV2 {
 enum MemoryMaterializationReference {
     RunV1(RunMemoryMaterializationReferenceV1),
     TerminalV2(Box<SessionTerminalMemoryIntent>),
+    RealizationV3(Box<SessionResourceMaterializationIntent>),
 }
 
 /// Stateless encoder for the Resource Worker HTTP wire capability.
@@ -109,6 +112,47 @@ impl MemoryMaterializationReferenceEncoder<SessionTerminalMemoryIntent>
     }
 }
 
+impl MemoryMaterializationReferenceEncoder<SessionResourceMaterializationIntent>
+    for HttpMemoryMaterializationReferenceEncoder
+{
+    fn encode(
+        &self,
+        _workspace_id: &str,
+        memory_store_id: &str,
+        config_version: ConfigVersion,
+        access: ResourceAccess,
+        intent: &SessionResourceMaterializationIntent,
+    ) -> Result<String, MemoryMaterializationReferenceError> {
+        let awaken_session_contract::SessionResourceMaterializationTarget::Input(input) =
+            intent.target()
+        else {
+            return Err(MemoryMaterializationReferenceError::new(
+                "Session Resource materialization target is not an input",
+            ));
+        };
+        let awaken_session_contract::ResolvedInputSource::MemoryStore {
+            memory_store_id: expected_store,
+            config,
+        } = &input.source
+        else {
+            return Err(MemoryMaterializationReferenceError::new(
+                "Session Resource materialization target is not a Memory input",
+            ));
+        };
+        if expected_store.as_str() != memory_store_id
+            || config.version != config_version
+            || input.access != access
+        {
+            return Err(MemoryMaterializationReferenceError::new(
+                "Session Resource Memory encoder inputs do not match the frozen intent",
+            ));
+        }
+        let encoded = serde_json::to_string(intent)
+            .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()))?;
+        Ok(format!("{MEMORY_REFERENCE_V3_PREFIX}{encoded}"))
+    }
+}
+
 /// Encode the private HTTP transport capability. Application and run-ingress
 /// layers consume only the neutral encoder port, never this representation.
 pub fn memory_materialization_reference(
@@ -152,6 +196,12 @@ fn parse_reference(
     if let Some(encoded) = reference.strip_prefix(MEMORY_REFERENCE_V1_PREFIX) {
         return serde_json::from_str(encoded)
             .map(MemoryMaterializationReference::RunV1)
+            .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()));
+    }
+    if let Some(encoded) = reference.strip_prefix(MEMORY_REFERENCE_V3_PREFIX) {
+        return serde_json::from_str(encoded)
+            .map(Box::new)
+            .map(MemoryMaterializationReference::RealizationV3)
             .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()));
     }
     let encoded = reference
@@ -534,6 +584,62 @@ async fn memory_operation(
                 target.memory_store_id().to_owned(),
                 target.config_version(),
                 Some(target),
+            )
+        }
+        MemoryMaterializationReference::RealizationV3(intent) => {
+            let Some(identity) = request.identity.as_ref() else {
+                return StatusCode::FORBIDDEN.into_response();
+            };
+            if request.operation.writes() {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            if let Some(status) = verify_session_worker_effect(
+                service.directory.as_ref(),
+                &worker,
+                identity,
+                intent.lease(),
+                now_unix_ms,
+                SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
+            )
+            .await
+            .rejection_status()
+            {
+                return status.into_response();
+            }
+            let Some(control) = service.session_control.as_deref() else {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            };
+            let workspace_id = match control
+                .authorize_resource_materialization_intent(intent)
+                .await
+            {
+                Ok(workspace_id) => workspace_id,
+                Err(awaken_session_contract::SessionRealizationControlFailure::Unavailable(_))
+                | Err(awaken_session_contract::SessionRealizationControlFailure::Conflict) => {
+                    return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                }
+                Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership) => {
+                    return StatusCode::CONFLICT.into_response();
+                }
+                Err(_) => return StatusCode::FORBIDDEN.into_response(),
+            };
+            let awaken_session_contract::SessionResourceMaterializationTarget::Input(input) =
+                intent.target()
+            else {
+                return StatusCode::FORBIDDEN.into_response();
+            };
+            let awaken_session_contract::ResolvedInputSource::MemoryStore {
+                memory_store_id,
+                config,
+            } = &input.source
+            else {
+                return StatusCode::FORBIDDEN.into_response();
+            };
+            (
+                workspace_id,
+                memory_store_id.to_string(),
+                config.version,
+                None,
             )
         }
     };

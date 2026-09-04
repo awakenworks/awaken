@@ -5,6 +5,24 @@
 
 use super::*;
 
+/// Immutable evidence available when choosing the Session-wide Skill delivery
+/// profile. A reservation may use the aggregate-owned binding pins without
+/// loading Resource Store bytes; every executable context must use the exact
+/// materialized versions instead.
+pub(crate) enum SkillDeliveryEvidence<'a> {
+    Materialized(Option<&'a [awaken_resource_contract::SkillVersion]>),
+    DeferredBindings(&'a [awaken_session_contract::ResolvedSkillBinding]),
+}
+
+impl SkillDeliveryEvidence<'_> {
+    fn materialized_versions(&self) -> Option<&[awaken_resource_contract::SkillVersion]> {
+        match self {
+            Self::Materialized(versions) => *versions,
+            Self::DeferredBindings(_) => None,
+        }
+    }
+}
+
 pub(super) fn published_skill_ids(
     snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
 ) -> Option<std::collections::BTreeSet<String>> {
@@ -156,7 +174,7 @@ impl SharedHost {
         &self,
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-        frozen_skill_versions: Option<&[awaken_resource_contract::SkillVersion]>,
+        skill_evidence: SkillDeliveryEvidence<'_>,
     ) -> Result<crate::session_slot::ManagedContentDelivery, HostError> {
         let managed_session = self
             .session_slots
@@ -164,28 +182,44 @@ impl SharedHost {
             .unwrap_or(false);
         let selected_skills = published_skill_ids(published_snapshot);
         let managed_has_skill = if managed_session {
-            // A cold reservation may precede Resource realization and therefore
-            // carry neither a publication Skill selection nor a frozen Skill
-            // vector yet. That means "no Skill projection", not an alternate
-            // catalog. Once a publication selects a Skill, however, its exact
-            // frozen bytes are mandatory.
-            let frozen = frozen_skill_versions.unwrap_or_default();
+            // A cold reservation deliberately precedes Worker-owned Resource
+            // realization. Its aggregate binding pins are enough to choose the
+            // Session-wide delivery profile, but never to construct an executable
+            // Skill registry. Every other open requires exact frozen bytes.
+            let frozen = skill_evidence.materialized_versions().unwrap_or_default();
             if let Some(missing) = selected_skills.as_ref().and_then(|selected| {
                 selected.iter().find(|id| {
-                    !frozen
+                    let materialized = frozen
                         .iter()
-                        .any(|version| version.skill_id.as_str() == id.as_str())
+                        .any(|version| version.skill_id.as_str() == id.as_str());
+                    let deferred = matches!(
+                        &skill_evidence,
+                        SkillDeliveryEvidence::DeferredBindings(bindings)
+                            if bindings
+                                .iter()
+                                .any(|binding| binding.skill_id.as_str() == id.as_str())
+                    );
+                    !materialized && !deferred
                 })
             }) {
                 return Err(HostError::internal(format!(
-                    "Managed Session Skill `{missing}` has no frozen version bytes"
+                    "Managed Session Skill `{missing}` has neither frozen version bytes nor a deferred aggregate binding"
                 )));
             }
-            frozen.iter().any(|version| {
-                selected_skills
-                    .as_ref()
-                    .is_none_or(|selected| selected.contains(version.skill_id.as_str()))
-            })
+            match &skill_evidence {
+                SkillDeliveryEvidence::Materialized(_) => frozen.iter().any(|version| {
+                    selected_skills
+                        .as_ref()
+                        .is_none_or(|selected| selected.contains(version.skill_id.as_str()))
+                }),
+                SkillDeliveryEvidence::DeferredBindings(bindings) => {
+                    bindings.iter().any(|binding| {
+                        selected_skills
+                            .as_ref()
+                            .is_none_or(|selected| selected.contains(binding.skill_id.as_str()))
+                    })
+                }
+            }
         } else {
             false
         };
@@ -221,11 +255,14 @@ impl SharedHost {
         if delivery == crate::session_slot::ManagedContentDelivery::SemanticTools
             && !managed_session
         {
-            let frozen_requires_filesystem = frozen_skill_versions.is_some_and(|versions| {
-                versions
-                    .iter()
-                    .any(crate::skills::version_requires_environment)
-            });
+            let frozen_requires_filesystem =
+                skill_evidence
+                    .materialized_versions()
+                    .is_some_and(|versions| {
+                        versions
+                            .iter()
+                            .any(crate::skills::version_requires_environment)
+                    });
             if frozen_requires_filesystem
                 || self.skills.requires_environment_in(
                     &self.thread_workspace(thread),

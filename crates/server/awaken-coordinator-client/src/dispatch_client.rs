@@ -775,6 +775,31 @@ impl DispatchQueue for HttpDispatchQueue {
         .map_err(|error| DispatchError::Rejected(format!("decode attempt admission: {error}")))
     }
 
+    async fn handoff_attempt(
+        &self,
+        claim: &RunClaim,
+        now_ms: u64,
+    ) -> Result<AttemptAdmission, DispatchError> {
+        let value = self
+            .post_idempotent(
+                "/v1/worker/dispatch/attempt/handoff",
+                &AttemptExecutionRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                },
+                self.worker_id(),
+            )
+            .await?;
+        let _ = now_ms;
+        serde_json::from_value(
+            value
+                .get("admission")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        )
+        .map_err(|error| DispatchError::Rejected(format!("decode attempt admission: {error}")))
+    }
+
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         let value = self
             .post_idempotent(

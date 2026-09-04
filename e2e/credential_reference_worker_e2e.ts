@@ -10,6 +10,7 @@
 //   C2 epoch/owner are current          -> E2 one committed provider result
 //   C3 stdin reaches EOF in E2E mode    -> E3 graceful drain + coverage flush
 //   C4 seed claim commits exact Ended   -> E4 durable receipt precedes Done removal
+//   C5 exact Resource envelope retained -> E5 cold worker proves Empty -> desired
 //
 // Decision table:
 //   Rule  C0  C1  C2  C3  Expected
@@ -18,6 +19,7 @@
 //   T3    Y   N   -   Y   fail closed; E3
 //   T4    N   any any any claimed Session control is mandatory and fail-closed
 //   T5    seed current owner/epoch commits Ended before Done -> E4
+//   T6    C0+C1+C2+C5                   -> E5 before provider execution
 
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -27,6 +29,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 import { cargoExecutable } from './cargo_binary.mjs';
+// @ts-ignore -- shared JavaScript fixture intentionally serves TS scenarios.
+import { withoutAmbientProviderKeys } from './process_environment.mjs';
 import {
   nativeProviderCandidateFixture,
   providerCredentialTargetFixture,
@@ -173,6 +177,14 @@ async function main(): Promise<void> {
     assert.ok(seed, 'seed worker claimed the server-created activation');
     const gatewayRunId = `${seed.request.activation.run_id}-gateway`;
     const request = ordinaryRunDispatchFixture(seed.request, gatewayRunId, THREAD);
+    assert.ok(
+      request.session_resources,
+      'T6/E5 ordinary cold execution retains its exact Resource transition proof',
+    );
+    assert.ok(
+      request.session_runtime,
+      'T6/E5 ordinary cold execution retains its frozen Runtime projection',
+    );
     // This hand-built dispatch is deliberately an ordinary Run. A non-null
     // session_thread_id is a claimed Session-control contract, not a history
     // grouping alias; activation.thread_id already owns committed history.
@@ -251,7 +263,7 @@ async function main(): Promise<void> {
     );
     assert.equal(seedSettle.settled, true, 'seed dispatch settled before the gateway worker starts');
 
-    const env = { ...process.env } as Record<string, string>;
+    const env = withoutAmbientProviderKeys(process.env) as Record<string, string>;
     Object.assign(env, {
       AWAKEN_UPSTREAM_URL: BASE,
       SESSION_DEPLOYMENT_INGRESS: 'durable',

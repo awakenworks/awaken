@@ -15,6 +15,18 @@ async fn acquire_session_realization_admission(
         .await
 }
 
+/// A co-located dispatch pool has no outbound Control client because its
+/// Session application already drives the same Runtime Host. It may consume a
+/// claimed Managed Run only after that application has installed the complete
+/// frozen projection. Treating the Run's derived execution snapshot as a
+/// substitute would create a second Agent-publication authority during restart.
+const fn local_claimed_projection_is_ready(
+    has_frozen_baseline: bool,
+    session_dispatch: bool,
+) -> bool {
+    has_frozen_baseline && session_dispatch
+}
+
 fn map_claimed_session_control_error(
     run_id: &str,
     error: awaken_dispatch_contract::ClaimedSessionControlError,
@@ -65,6 +77,18 @@ pub(super) async fn install_claimed_session_projection(
         return Ok(());
     }
     let Some(control) = host.session_control.as_ref() else {
+        let projection_ready = host
+            .session_slots
+            .read(&thread_id.0, |slot| {
+                local_claimed_projection_is_ready(slot.baseline.is_some(), slot.session_dispatch)
+            })
+            .unwrap_or(false);
+        if !projection_ready {
+            return Err(awaken_dispatch::Error::ResolutionNotReady(format!(
+                "run {} is waiting for its co-located frozen Session projection",
+                claimed.lease.run_id.0
+            )));
+        }
         if let Some(manifest) = dispatched_resources {
             let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
             host.install_dispatched_resources(&thread_id.0, manifest, Some(&claim))
@@ -138,6 +162,34 @@ pub(super) async fn install_claimed_session_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn co_located_claim_requires_the_complete_frozen_projection() {
+        // Cause/effect graph: C1 the frozen baseline is installed; C2 the
+        // Session application has published its dispatch/preparation marker.
+        // E1 only C1+C2 admits the local claimed path; every partial/cold row
+        // waits for the canonical application projection and cannot reinterpret
+        // the Run's attempt-local snapshot as immutable Session truth.
+        //
+        // | Rule | C1 | C2 | Effect |
+        // |---|---|---|---|
+        // | L1 | no | no | wait |
+        // | L2 | yes | no | wait |
+        // | L3 | no | yes | wait |
+        // | L4 | yes | yes | E1 admit |
+        for (baseline, dispatch, expected) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (true, true, true),
+        ] {
+            assert_eq!(
+                local_claimed_projection_is_ready(baseline, dispatch),
+                expected,
+                "baseline={baseline}, dispatch={dispatch}"
+            );
+        }
+    }
 
     #[test]
     fn control_projection_requires_the_exact_dispatched_resource_manifest() {
