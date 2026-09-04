@@ -330,6 +330,14 @@ export const BEHAVIORS = {
     if (m) return tool(`toolu_${m[1]}`, m[1], { pattern: '*.md' });
     return text(`FAKE:${t}`);
   },
+  // Private reasoning followed by the same public echo. The canonical fake
+  // wire emits genuine Anthropic `thinking_delta` frames so every protocol e2e
+  // exercises the production provider/runtime path rather than a test-only
+  // protocol shortcut.
+  reasoning: (parsed) => ({
+    reasoning: `PRIVATE-REASONING:${lastUserText(parsed)}`,
+    text: `FAKE:${lastUserText(parsed)}`,
+  }),
   // EchoModel: `Echo: <last user text>`.
   echo: (parsed) => text(`Echo: ${lastUserText(parsed)}`),
   // LabelModel(<label>): `model=<label>: <user>` — the label rides in via the model
@@ -834,7 +842,12 @@ function emitJson(res, { id, model, reply }) {
   const toolCalls = reply.tools ?? (reply.tool ? [reply.tool] : []);
   const content = toolCalls.length > 0
     ? toolCalls.map((call) => ({ type: 'tool_use', id: call.id, name: call.name, input: call.input }))
-    : [{ type: 'text', text: reply.text }];
+    : [
+        ...(reply.reasoning
+          ? [{ type: 'thinking', thinking: reply.reasoning, signature: 'fake-signature' }]
+          : []),
+        { type: 'text', text: reply.text },
+      ];
   res.writeHead(200, { 'content-type': 'application/json' });
   res.end(
     JSON.stringify({
@@ -893,15 +906,37 @@ function emitStream(res, { id, model, reply }) {
     }
     ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: FAKE_USAGE.output_tokens } });
   } else {
-    ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+    let textIndex = 0;
+    if (reply.reasoning) {
+      ev('content_block_start', {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'thinking', thinking: '', signature: '' },
+      });
+      for (const part of chunkString(reply.reasoning, 4)) {
+        ev('content_block_delta', {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'thinking_delta', thinking: part },
+        });
+      }
+      ev('content_block_delta', {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'signature_delta', signature: 'fake-signature' },
+      });
+      ev('content_block_stop', { type: 'content_block_stop', index: 0 });
+      textIndex = 1;
+    }
+    ev('content_block_start', { type: 'content_block_start', index: textIndex, content_block: { type: 'text', text: '' } });
     // Chunk the assistant text across several `text_delta` events exactly as
     // Anthropic streams incremental text, so the live channel carries true
     // token-level deltas (not one whole-text frame). Every text consumer
     // concatenates the deltas, so the assembled message is identical.
     for (const part of chunkString(reply.text, 4)) {
-      ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: part } });
+      ev('content_block_delta', { type: 'content_block_delta', index: textIndex, delta: { type: 'text_delta', text: part } });
     }
-    ev('content_block_stop', { type: 'content_block_stop', index: 0 });
+    ev('content_block_stop', { type: 'content_block_stop', index: textIndex });
     ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: FAKE_USAGE.output_tokens } });
   }
   ev('message_stop', { type: 'message_stop' });

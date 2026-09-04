@@ -234,17 +234,13 @@ impl RunApplication for PrefixMock {
 
 #[tokio::test]
 async fn run_started_and_reasoning_only_prefix_keeps_committed_text_once() {
-    // Causes: the fixtures below establish `run started and reasoning only prefix` with the
-    // concrete inputs, state, dependencies, and failure triggers used by this case.
-    // Effects: the observable result `keeps committed text once` and every asserted state
-    // transition or side effect must hold.
-    // Constraints/invariants: this adapter owns only its public wire mapping; the shared neutral
-    // Runtime and committed facts remain the single execution authority.
-    // Coverage rationale: `run started and reasoning only prefix` is one independent branch
-    // selecting `keeps committed text once`; a multi-row decision table is not applicable, and
-    // sibling tests own alternate causes.
-    // CE-AG3/AG4 router rule: non-projected reasoning does not select a lossy
-    // close path, and a live RUN_STARTED is never repeated by completion.
+    /* Router/SSE decision table. Causes: C1 one RunStarted fact; C2 a private
+     * reasoning delta; C3 completion commits public text. Effects: E1 exactly
+     * one RUN_STARTED; E2 balanced REASONING_START/END with the same id and no
+     * private bytes; E3 reasoning ends before text starts; E4 text uses a
+     * different id and appears once; E5 RUN_FINISHED is last. Rule
+     * CE-AG3/AG4: C1+C2+C3=>E1+E2+E3+E4+E5. The shared Runtime and committed
+     * outcome remain authoritative; this test covers only Router serialization. */
     let frames = frames_for(Arc::new(PrefixMock {
         events: vec![
             AgentEvent::Fact(Fact::RunStarted),
@@ -272,6 +268,30 @@ async fn run_started_and_reasoning_only_prefix_keeps_committed_text_once() {
             .count(),
         1
     );
+    let position = |kind: &str| {
+        frames
+            .iter()
+            .position(|frame| frame["type"] == kind)
+            .unwrap_or_else(|| panic!("missing {kind}: {frames:?}"))
+    };
+    let reasoning_start = position("REASONING_START");
+    let reasoning_end = position("REASONING_END");
+    let text_start = position("TEXT_MESSAGE_START");
+    let finish = position("RUN_FINISHED");
+    assert!(reasoning_start < reasoning_end && reasoning_end < text_start && text_start < finish);
+    assert_eq!(
+        frames[reasoning_start]["messageId"],
+        frames[reasoning_end]["messageId"]
+    );
+    assert_ne!(
+        frames[reasoning_start]["messageId"],
+        frames[text_start]["messageId"]
+    );
+    assert!(
+        !serde_json::to_string(&frames).unwrap().contains("hmm"),
+        "private reasoning bytes reached SSE: {frames:?}"
+    );
+    assert_eq!(frames.last().unwrap()["type"], "RUN_FINISHED");
 }
 
 #[tokio::test]
