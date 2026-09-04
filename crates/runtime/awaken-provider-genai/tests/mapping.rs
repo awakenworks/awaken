@@ -14,7 +14,7 @@ use awaken_provider_genai::{
 use awaken_runtime_contract::llm::{AssistantOutput, ChatMessage, ChatRequest};
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use genai::chat::{
-    ChatRole as GenaiRole, ContentPart, MessageContent, PromptTokensDetails, ThinkingBlock,
+    ChatRole as GenaiRole, ContentPart, MessageContent, PromptTokensDetails,
     ToolCall as GenaiToolCall, ToolResponse, Usage,
 };
 
@@ -258,15 +258,11 @@ fn anthropic_signed_thinking_round_trip_preserves_order_and_signature() {
     // | Rule | C1 | C2 | C3 | Dialect   | Effects    |
     // | R1   | Y  | Y  | Y  | Anthropic | E1+E2+E3 |
     let provider = MessageContent::from_parts(vec![
-        ContentPart::Thinking(ThinkingBlock {
-            thinking: "select the fixture".into(),
-            signature: Some("opaque-proof".into()),
-        }),
+        ContentPart::ThoughtSignature("opaque-proof".into()),
+        ContentPart::ReasoningContent("select the fixture".into()),
         ContentPart::Text("checking".into()),
-        ContentPart::Thinking(ThinkingBlock {
-            thinking: "verify arguments".into(),
-            signature: Some("opaque-proof-2".into()),
-        }),
+        ContentPart::ThoughtSignature("opaque-proof-2".into()),
+        ContentPart::ReasoningContent("verify arguments".into()),
         ContentPart::ToolCall(GenaiToolCall {
             call_id: "call-1".into(),
             fn_name: "read_fixture".into(),
@@ -322,29 +318,61 @@ fn anthropic_signed_thinking_round_trip_preserves_order_and_signature() {
     let replayed = to_genai_request_for_adapter(&request, AdapterKind::Anthropic).unwrap();
     let parts = replayed.messages[0].content.parts();
     assert!(
-        matches!(
-            &parts[0],
-            ContentPart::Thinking(ThinkingBlock { thinking, signature })
-                if thinking == "select the fixture" && signature.as_deref() == Some("opaque-proof")
-        ),
+        matches!(&parts[0], ContentPart::ThoughtSignature(signature) if signature == "opaque-proof"),
         "R1/E2+E3"
     );
     assert!(
-        matches!(&parts[1], ContentPart::Text(text) if text == "checking"),
-        "R1/E2"
-    );
-    assert!(
-        matches!(
-            &parts[2],
-            ContentPart::Thinking(ThinkingBlock { thinking, signature })
-                if thinking == "verify arguments" && signature.as_deref() == Some("opaque-proof-2")
-        ),
+        matches!(&parts[1], ContentPart::ReasoningContent(reasoning) if reasoning == "select the fixture"),
         "R1/E2+E3"
     );
     assert!(
-        matches!(&parts[3], ContentPart::ToolCall(call) if call.call_id == "call-1"),
+        matches!(&parts[2], ContentPart::Text(text) if text == "checking"),
         "R1/E2"
     );
+    assert!(
+        matches!(&parts[3], ContentPart::ThoughtSignature(signature) if signature == "opaque-proof-2"),
+        "R1/E2+E3"
+    );
+    assert!(
+        matches!(&parts[4], ContentPart::ReasoningContent(reasoning) if reasoning == "verify arguments"),
+        "R1/E2+E3"
+    );
+    assert!(
+        matches!(&parts[5], ContentPart::ToolCall(call) if call.call_id == "call-1"),
+        "R1/E2"
+    );
+}
+
+#[test]
+fn anthropic_replay_drops_unsigned_thinking_without_poisoning_valid_pairs() {
+    // Cause: a provider handoff leaves one unsigned reasoning block beside a
+    // valid Anthropic signed block. Effect: only the replayable pair reaches
+    // genai, so its global signature/reasoning cardinality check cannot discard
+    // the valid continuation metadata.
+    let request = ChatRequest {
+        model_binding: binding("deepseek-v4-pro"),
+        inference: Default::default(),
+        messages: vec![ChatMessage {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::thinking("unsigned handoff reasoning"),
+                ContentBlock::signed_thinking("replayable reasoning", Some("opaque-proof".into())),
+                ContentBlock::tool_use("call-1", "read_fixture", serde_json::json!({})),
+            ],
+        }],
+        tools: Vec::new(),
+    };
+
+    let replayed = to_genai_request_for_adapter(&request, AdapterKind::Anthropic).unwrap();
+    let parts = replayed.messages[0].content.parts();
+    assert_eq!(parts.len(), 3);
+    assert!(
+        matches!(&parts[0], ContentPart::ThoughtSignature(signature) if signature == "opaque-proof")
+    );
+    assert!(
+        matches!(&parts[1], ContentPart::ReasoningContent(reasoning) if reasoning == "replayable reasoning")
+    );
+    assert!(matches!(&parts[2], ContentPart::ToolCall(call) if call.call_id == "call-1"));
 }
 
 #[test]
@@ -624,6 +652,7 @@ fn executor_constructors_are_available() {
         "https://api.openai.com/v1",
         "explicit-test-key",
     )
+    .expect("explicit client construction")
     .with_timeout(Duration::from_secs(5));
 }
 

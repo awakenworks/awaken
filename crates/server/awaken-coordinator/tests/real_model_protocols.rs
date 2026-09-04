@@ -46,11 +46,14 @@ fn live_env() -> (String, String, String) {
 fn live_executor() -> (Arc<GenaiExecutor>, String) {
     let (base, key, model) = live_env();
     (
-        Arc::new(GenaiExecutor::from_materialized_endpoint(
-            awaken_provider_genai::AdapterKind::Anthropic,
-            base,
-            key,
-        )),
+        Arc::new(
+            GenaiExecutor::from_materialized_endpoint(
+                awaken_provider_genai::AdapterKind::Anthropic,
+                base,
+                key,
+            )
+            .expect("explicit client construction"),
+        ),
         model,
     )
 }

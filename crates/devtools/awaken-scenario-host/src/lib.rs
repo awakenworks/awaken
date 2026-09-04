@@ -617,7 +617,8 @@ pub async fn build_real_gemini_router() -> Router {
         awaken_provider_genai::AdapterKind::Vertex,
         base_url,
         token,
-    );
+    )
+    .expect("explicit Vertex client construction");
     mount(
         runtime_resource_host_with_deployment(Arc::new(executor), model, scenario_deployment())
             .await,

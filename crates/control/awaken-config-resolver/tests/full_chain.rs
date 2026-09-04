@@ -118,7 +118,8 @@ async fn full_chain_resolves_credential_to_provider_seam() {
         awaken_provider_genai::AdapterKind::Anthropic,
         resolved.base_url.clone().unwrap(),
         credential.expose_secret(),
-    );
+    )
+    .expect("resolved provider client construction");
     // Construction with the exposed secret is the seam; the plaintext exists only
     // here and is zeroized on drop.
     assert_eq!(credential.expose_secret(), "sk-secret-123");
@@ -140,7 +141,8 @@ async fn full_chain_live_model_call() {
         awaken_provider_genai::AdapterKind::Anthropic,
         resolved.base_url.clone().unwrap(),
         resolved.credential.as_ref().unwrap().expose_secret(),
-    );
+    )
+    .expect("resolved provider client construction");
 
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::Role;
