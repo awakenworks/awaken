@@ -117,6 +117,9 @@ StaleProjectionNeverRollsBackLocalEffect ==
 RejectedProjectionNeverRelabelsLocalEffect ==
     lastOutcome = "rejected" => lastAfterEffect = lastBeforeEffect
 
+ExactProjectionIsAlsoAnIdentityStutter ==
+    lastOutcome = "exact" => lastAfterEffect = lastBeforeEffect
+
 AbsorptionRequiresExactPhysicalOwner ==
     lastOutcome \in {"exact", "stale"} =>
         lastCapturedGeneration = localGeneration /\
@@ -125,10 +128,16 @@ AbsorptionRequiresExactPhysicalOwner ==
 RetiringKeepsExactEffectFence ==
     phase = "Retiring" => localEffect = retirementFence
 
+ProjectionNeverRewritesTheRetirementFence ==
+    lastOutcome \in {"exact", "stale", "rejected"} /\ phase = "Retiring" =>
+        localEffect = retirementFence
+
 Safety ==
     /\ TypeOK
     /\ StaleProjectionNeverRollsBackLocalEffect
     /\ RejectedProjectionNeverRelabelsLocalEffect
+    /\ ExactProjectionIsAlsoAnIdentityStutter
     /\ AbsorptionRequiresExactPhysicalOwner
     /\ RetiringKeepsExactEffectFence
+    /\ ProjectionNeverRewritesTheRetirementFence
 =============================================================================

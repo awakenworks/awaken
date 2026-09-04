@@ -1321,6 +1321,90 @@ async fn restart_retries_terminal_cleanup_before_publishing_completion() {
 }
 
 #[tokio::test]
+async fn transient_terminal_cleanup_retries_without_reexecuting_the_dream() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CleanupFailsOnce {
+        executions: Arc<AtomicUsize>,
+        cleanups: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl DreamExecutor for CleanupFailsOnce {
+        async fn validate_inputs(&self, _request: &DreamRequest) -> Result<(), DreamFailure> {
+            Ok(())
+        }
+
+        async fn prepare(&self, request: &DreamRequest) -> Result<DreamPreparation, DreamFailure> {
+            Ok(DreamPreparation {
+                result_memory_store_id: format!("result-{}", request.job_id),
+                session_id: format!("session-{}", request.job_id),
+                transcript_file_ids: vec!["transcript-file".into()],
+            })
+        }
+
+        async fn execute(
+            &self,
+            _request: &DreamRequest,
+            _preparation: &DreamPreparation,
+            _cancellation: DreamCancellation,
+        ) -> Result<(), DreamFailure> {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn cleanup(
+            &self,
+            _request: &DreamRequest,
+            _preparation: Option<&DreamPreparation>,
+        ) -> Result<(), DreamFailure> {
+            if self.cleanups.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(DreamFailure::new(
+                    "cleanup_pending",
+                    "receipt not committed",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    // Cause/effect decision table: R1 terminal execution + first cleanup has no
+    // exact receipt -> public status remains Running and cleanup_pending remains
+    // the sole retry fact; R2 the same cleanup identity succeeds on retry ->
+    // publish Completed and clear transient files; R3 every cleanup retry -> the
+    // Agent execution count remains one. Constraint: no process restart and no
+    // second Dream/Session state machine participates.
+    let executions = Arc::new(AtomicUsize::new(0));
+    let cleanups = Arc::new(AtomicUsize::new(0));
+    let state = Arc::new(in_memory_application(Arc::new(CleanupFailsOnce {
+        executions: executions.clone(),
+        cleanups: cleanups.clone(),
+    })));
+    let app = dreams_router(state);
+    let (_, created) = request(
+        &app,
+        "POST",
+        "/v1/dreams",
+        Some(create_body("mem", &["session"])),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap();
+
+    for _ in 0..30 {
+        let (_, projected) = request(&app, "GET", &format!("/v1/dreams/{id}"), None).await;
+        if projected["status"] == "completed" {
+            assert_eq!(executions.load(Ordering::SeqCst), 1, "R3");
+            assert_eq!(cleanups.load(Ordering::SeqCst), 2, "R1/R2");
+            return;
+        }
+        assert_ne!(projected["status"], "failed", "R1");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("Dream cleanup did not converge after the retry receipt")
+}
+
+#[tokio::test]
 async fn dream_uses_one_stable_ordinary_agent_id_without_selection_state() {
     struct RecordingWorker(Arc<std::sync::Mutex<Vec<String>>>);
     #[async_trait::async_trait]

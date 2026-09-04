@@ -44,7 +44,7 @@ consistent vocabulary. This affects the documentation layers differently:
 | `INVARIANTS.md` | Ready | Guardrails are mechanical and reviewable |
 | `requirements-coverage.md` | Ready | Maps all required areas to bounded contexts and packaging rules |
 | `design/architecture-overview.md` | Ready | Maps the implemented Control/Coordinator/Resources/Worker boundaries, aggregate ownership, lifecycle processors, and runtime/server seams |
-| `design/acp-harness-capability-and-tool-bridge.md` | Runtime-owned | Defines ACP capability projection, the governed Session tool bridge, approval replay safety, and portable working-directory constraints |
+| `design/acp-harness-capability-and-tool-bridge.md` | Runtime-owned | Defines ACP capability selection and projection, the governed Session MCP tool bridge, approval replay safety, verification, and portable working-directory constraints |
 | `design/config-to-run-execution-flow.md` | Ready | Owns static Agent/Environment publication, role-scoped database/migration ownership, Deployment/Session creation, and request execution through per-kind materialization, commit, and HTTP/SSE response |
 | `design/config-publication-lifecycle.md` | Ready | Owns Control publication and Coordinator executable-registration semantics, idempotency, recovery, and failure rules without a parallel whole-catalog install model |
 | `design/protocol-adapter-boundaries.md` | Product-owned | Defines public protocol adapter mapping, conformance, and unsupported management boundaries |
@@ -52,7 +52,6 @@ consistent vocabulary. This affects the documentation layers differently:
 | `design/model-provider-backend-binding.md` | Runtime-owned | Defines model-provider/model/model-pool/agent spec graph, selected binding validation, fallback ownership, capability reconciliation, and narrow `ModelProviderSpec` / `AgentSpec` responsibilities |
 | `design/commit-fact-projection-taxonomy.md` | Runtime-owned | Separates live stream output, committed truth, replay rows, and public projections |
 | `design/builtin-tools-extension-contract.md` | Runtime-owned | Defines `awaken-ext-builtin-tools` package boundaries and toolset contracts |
-| `design/acp-harness-capability-and-tool-bridge.md` | Runtime-owned | Defines ACP harness capability selection, Session MCP tool bridging, approval, replay safety, and verification |
 | `design/key-design-decisions.md` | Ready | Defines runtime-owned implementation decisions, explicit config graph, concrete-tool packaging, admin-tool ownership, neutral naming, publication-role placement, and rejected leaks |
 | `design/runtime-behavior.md` | Runtime-owned | Covers run lifecycle, activation/context split, live state apply versus durable commit, state/effects/events, extensions, cancellation, scheduling, eval |
 | `design/auxiliary-context-windows.md` | Ready | Defines shared transcript windows, extension ownership, and asynchronous Memory, Compact, and Outcome behavior |
@@ -70,6 +69,7 @@ consistent vocabulary. This affects the documentation layers differently:
 | `design/web-ui.md` | Product-owned | Web console blueprint: Oversight two-scope shell over the management plane, session surface, design tokens, contract-first frontend engineering plan |
 | `design/credentials-and-vaults.md` | Product-owned | Credential/product concern; runtime sees opaque refs only |
 | `design/resources-memory-files-skills.md` | Product-owned | Normative Resources application composition and File/Memory/Repository/Skill lifecycles, including command ownership, config resolution, activation, explicit terminal Repository publication, recovery, and reclamation |
+| `design/resources-memory-files-skills-roadmap.md` | Product-owned | Delegates its bounded delivery sequence, exclusions, and guardrail index to the normative Resources design without defining another model |
 | `design/runtime-persistence.md` | Runtime-owned | Expands ADR-0039: persistence bounded contexts (agent-truth / dispatch / config / protocol-projection), port surface, `awaken-store-<medium>` backend matrix, atomic staged commit (G13), and fact-authority reads (D4) |
 | `design/tool-state-machine.md` | Runtime-owned | Defines the tool call state machine: typed state cells over the untyped command store, the four runtime seams (state materialization, tool gate chain, tool-outcome reaction hook, run-end guard state), reminder emission via the conversation aggregate, capability bounds, and persistence/atomicity/transactionality/restart guarantees |
 | `design/plugin-configuration.md` | Runtime-owned | Defines per-plugin configuration: the raw config carrier on the resolved spec, config-aware resolve, validation as a dry run of resolve, schema derived from the config type via schemars, and delivery to the frontend on the capability catalog |
@@ -97,7 +97,6 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `requirements-coverage.md` | Coverage map | Not required | n/a |
 | `formal-verification-expansion.md` | Coverage report | Not required | n/a |
 | `design/architecture-overview.md` | Navigation / context map | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
-| `design/acp-harness-capability-and-tool-bridge.md` | Design narrative | Not required | n/a |
 | `design/config-to-run-execution-flow.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/config-publication-lifecycle.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/protocol-adapter-boundaries.md` | Product/downstream mapping | Not required | n/a |
@@ -123,6 +122,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/web-ui.md` | Product/downstream mapping | Not required | n/a |
 | `design/credentials-and-vaults.md` | Product/downstream mapping | Not required | n/a |
 | `design/resources-memory-files-skills.md` | Role owner | Required | self |
+| `design/resources-memory-files-skills-roadmap.md` | Delegated boundary narrative | Delegated | [resources-memory-files-skills.md](design/resources-memory-files-skills.md#resource-input-component-catalog) |
 | `design/observability-eval-dataset-boundary.md` | Product/downstream mapping | Not required | n/a |
 | `design/prompt-skill-optimization-data-contracts.md` | Proposed implementation contract | Not required | n/a |
 | `design/prompt-skill-optimization-state-machine.md` | Proposed lifecycle owner | Not required | n/a |
@@ -133,7 +133,6 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/plugin-configuration.md` | Role owner | Required | self |
 | `design/distributed-acp-execution.md` | Design narrative | Not required | n/a |
 | `design/brain-hand-coverage.md` | Coverage report | Not required | n/a |
-| `design/acp-harness-capability-and-tool-bridge.md` | Product/downstream mapping | Not required | n/a |
 | `adr/0001-documentation-model-and-vocabulary-alignment.md` | Decision record | Not required | n/a |
 | `adr/0002-resolver-role-demarcation.md` | Decision record | Not required | n/a |
 | `adr/0003-deferred-work-mechanism-selection.md` | Decision record | Not required | n/a |

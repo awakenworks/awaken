@@ -70,7 +70,7 @@ async function main() {
 
   // --- pre-uploaded File: the official Chat preserves a custom data part; Awaken
   // resolves its opaque logical id in the Run Workspace before model I/O. ---
-  await withRealServer('vision', 38144, async (base) => {
+  await withRealServer('vision', Number(process.env.E2E_PORT), async (base) => {
     const form = new FormData();
     form.append('file', new Blob([Buffer.from(RED_PNG_DATA_URI.split(',')[1], 'base64')], {
       type: 'image/png',

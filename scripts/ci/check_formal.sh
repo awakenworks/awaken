@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+readonly tlc_version="TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+readonly tlapm_version="763bf3c"
+
 cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
@@ -31,6 +34,7 @@ rendered_trace_dir="$formal_tmp_root/rendered-traces"
 
 python3 scripts/ci/check_feature_coverage.py --require-complete
 python3 scripts/ci/check_formal_coverage.py --require-complete
+python3 scripts/release/verification_manifest.py self-test
 python3 scripts/ci/check_formal_surface.py --require-complete
 python3 scripts/ci/check_formal_web_surface.py
 python3 scripts/ci/check_proof_boundaries.py
@@ -118,6 +122,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness every_skill_execution_pin_axis_is_binding \
     --harness frozen_worker_agent_publication_is_exact_or_fails_closed \
     --harness terminal_dream_statuses_are_absorbing \
+    --harness dream_public_terminal_requires_committed_cleanup \
     --harness dream_success_and_failure_require_a_running_process \
     --harness dream_recovery_and_cancel_never_widen_terminal_authority \
     --harness dream_transition_table_is_total_exact_and_closed \
@@ -202,11 +207,13 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness dispatch_cancel_revokes_old_epoch_and_is_idempotent \
     --harness dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows \
     --harness dispatch_maintenance_transitions_are_closed_and_exact \
+    --harness commit_epoch_completion_requires_observed_release \
     --harness physical_attempt_slot_installs_and_clears_only_exact_authority \
     --harness physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair
   run_kani awaken-dispatch --no-default-features \
     --harness shared_error_gate_admits_exactly_one_probe_after_the_deadline \
-    --harness drain_error_backoff_is_bounded_monotonic_and_saturating
+    --harness drain_error_backoff_is_bounded_monotonic_and_saturating \
+    --harness store_deadline_is_monotonic_saturating_and_never_wraps
   run_kani awaken-credential-materializer \
     --harness exact_vault_revision_accepts_only_a_positive_matching_or_unpinned_source \
     --harness platform_relay_local_gate_admits_only_exact_platform_relay
@@ -319,6 +326,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_state_classification_is_exact \
     --harness unknown_transition_trigger_and_result_fail_closed
   run_kani awaken-session-executor \
+    --harness coordination_envelope_never_satisfies_execution_cache_admission \
     --harness resume_receipt_classification_is_exact_and_conflict_absorbing \
     --harness file_read_authority_never_changes_path_class_or_admits_unsafe_input \
     --harness hand_availability_has_only_explicit_recovery_and_terminal_transitions \
@@ -335,6 +343,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness durable_dispatch_admission_is_exact_and_commit_store_independent \
     --harness durable_dispatch_admission_is_monotonic_in_persistence_evidence \
     --harness sandbox_support_projection_is_total_exact_and_evidence_bound \
+    --harness durable_projection_identity_is_exact_or_a_same_physical_owner_stutter \
     --harness unsettled_running_is_always_rejected_and_settled_kinds_never_interchange \
     --harness settled_step_projection_cannot_invent_pending_or_observations
   run_kani awaken-config-service \
@@ -384,6 +393,11 @@ if [ -z "$tlapm_bin" ] && command -v tlapm >/dev/null 2>&1; then
   tlapm_bin="$(command -v tlapm)"
 fi
 if [ -n "$tlapm_bin" ] && [ -x "$tlapm_bin" ]; then
+  actual_tlapm_version="$("$tlapm_bin" --version)"
+  if [ "$actual_tlapm_version" != "$tlapm_version" ]; then
+    echo "unexpected TLAPM version: $actual_tlapm_version" >&2
+    exit 1
+  fi
   "$tlapm_bin" -I formal/tla formal/tla/RuntimeSystemProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/RuntimeImplementationProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/ThreadCommitProjectionProof.tla
@@ -408,10 +422,23 @@ if [ -z "$tla_jar" ]; then
   fi
 fi
 if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; then
+  tlc_version_output="$(java -cp "$tla_jar" tlc2.TLC -version 2>&1 || true)"
+  actual_tlc_version="${tlc_version_output%%$'\n'*}"
+  if [ "$actual_tlc_version" != "$tlc_version" ]; then
+    echo "unexpected TLC version: $actual_tlc_version" >&2
+    exit 1
+  fi
   tlc_state_root="$formal_tmp_root/tlc-states"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/run-ingress" \
     -config formal/tla/RunIngress.cfg formal/tla/RunIngress.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/commit-epoch-guard" \
+    -config formal/tla/CommitEpochGuard.cfg formal/tla/CommitEpochGuard.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/dream-cleanup-boundary" \
+    -config formal/tla/DreamCleanupBoundary.cfg \
+    formal/tla/DreamCleanupBoundary.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/thread-state" \
     -config formal/tla/ThreadState.cfg formal/tla/ThreadState.tla

@@ -23,6 +23,7 @@ const MAX_PAGE_SIZE: usize = 100;
 // public failure contract. Six hours admits the documented multi-hour jobs and
 // still gives every self-hosted process a finite recovery boundary.
 const DEFAULT_DREAM_RUNTIME_BUDGET: Duration = Duration::from_secs(6 * 60 * 60);
+const DREAM_CLEANUP_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 pub const BUILT_IN_DREAM_AGENT_ID: &str = "awaken_builtin_dream_agent";
 
@@ -179,8 +180,8 @@ impl DreamProcess {
         // The durable terminal decision is written before resource cleanup so a
         // crash can resume cleanup. Do not publish that terminal state until the
         // output store is released and transient transcript Files are removed.
-        let public_terminal_pending = self.cleanup_pending
-            && matches!(self.status, DreamStatus::Completed | DreamStatus::Failed);
+        let public_status = self.status.public_projection(self.cleanup_pending);
+        let public_terminal_pending = public_status != self.status;
         Dream {
             id: self.id.clone(),
             kind: "dream",
@@ -219,11 +220,7 @@ impl DreamProcess {
                 })
                 .collect(),
             session_id: self.session_id.clone(),
-            status: if public_terminal_pending {
-                DreamStatus::Running
-            } else {
-                self.status
-            },
+            status: public_status,
             usage,
         }
     }
@@ -988,31 +985,48 @@ impl DreamApplication {
     }
 
     async fn cleanup_job(&self, id: &str) {
-        let Ok(job) = self.load_process(id) else {
-            return;
-        };
-        let preparation = match (&job.result_memory_store_id, &job.session_id) {
-            (Some(result_memory_store_id), Some(session_id)) => Some(DreamPreparation {
-                result_memory_store_id: result_memory_store_id.clone(),
-                session_id: session_id.clone(),
-                transcript_file_ids: job.transcript_file_ids.clone(),
-            }),
-            _ => None,
-        };
-        if let Err(error) = self
-            .executor
-            .cleanup(&job.request(), preparation.as_ref())
-            .await
-        {
-            tracing::warn!(dream_id = %id, message = %error.message, "Dream resource cleanup remains pending");
-            return;
-        }
-        if let Err(error) = self.commit_job_update(id, |job| {
-            job.cleanup_pending = false;
-            job.transcript_file_ids.clear();
-            Ok(())
-        }) {
-            tracing::warn!(dream_id = %id, %error, "Dream cleanup transition did not commit");
+        loop {
+            let Ok(job) = self.load_process(id) else {
+                return;
+            };
+            if !job.cleanup_pending {
+                return;
+            }
+            let preparation = match (&job.result_memory_store_id, &job.session_id) {
+                (Some(result_memory_store_id), Some(session_id)) => Some(DreamPreparation {
+                    result_memory_store_id: result_memory_store_id.clone(),
+                    session_id: session_id.clone(),
+                    transcript_file_ids: job.transcript_file_ids.clone(),
+                }),
+                _ => None,
+            };
+            if let Err(error) = self
+                .executor
+                .cleanup(&job.request(), preparation.as_ref())
+                .await
+            {
+                // cleanup_pending is the only retry authority. Transient Session
+                // Worker lag, response loss, and process-local failures all
+                // re-enter the same idempotent executor path without publishing
+                // terminal state or creating a second receipt registry.
+                tracing::warn!(dream_id = %id, message = %error.message, "Dream resource cleanup remains pending");
+                tokio::time::sleep(DREAM_CLEANUP_RETRY_INTERVAL).await;
+                continue;
+            }
+            match self.commit_job_update(id, |job| {
+                job.cleanup_pending = false;
+                job.transcript_file_ids.clear();
+                Ok(())
+            }) {
+                Ok(_) => return,
+                Err(DreamApiError::Conflict(_)) => {
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => {
+                    tracing::warn!(dream_id = %id, %error, "Dream cleanup transition did not commit");
+                    tokio::time::sleep(DREAM_CLEANUP_RETRY_INTERVAL).await;
+                }
+            }
         }
     }
 

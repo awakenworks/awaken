@@ -142,6 +142,8 @@ def main() -> None:
         fail("formal/features.json version must be 1")
     if assumption_data.get("version") != 1:
         fail("formal/assumptions.json version must be 1")
+    if assumption_data.get("tcb_contract_schema_version") != 1:
+        fail("formal/assumptions.json tcb_contract_schema_version must be 1")
 
     obligations = coverage_data.get("obligations")
     if not isinstance(obligations, list) or not obligations:
@@ -174,6 +176,21 @@ def main() -> None:
             fail(f"{assumption_id} has invalid kind {item.get('kind')!r}")
         if item.get("status") not in ASSUMPTION_STATUSES:
             fail(f"{assumption_id} has invalid status {item.get('status')!r}")
+        for field in (
+            "version_and_configuration_contract",
+            "dependency_contract",
+            "fail_closed_behavior",
+        ):
+            if not isinstance(item.get(field), str) or not item[field]:
+                fail(f"{assumption_id} has no {field}")
+        validity = item.get("evidence_validity")
+        if (
+            not isinstance(validity, dict)
+            or type(validity.get("maximum_age_seconds")) is not int
+            or validity["maximum_age_seconds"] <= 0
+            or validity.get("requires_exact_runtime_fingerprint") is not True
+        ):
+            fail(f"{assumption_id} has an invalid evidence_validity contract")
         integration = item.get("integration_evidence", [])
         runtime = item.get("runtime_evidence", [])
         if not isinstance(integration, list) or not integration:
@@ -415,6 +432,8 @@ def main() -> None:
         "formalizable_obligations": len(formalizable_obligations),
         "linked_obligations": len(used_obligations),
         "external_assumptions": len(assumptions),
+        "external_assumptions_proved": 0,
+        "tcb_contracts": len(assumptions),
         "incomplete_requirements": len(incomplete_requirements),
         "open_assumptions": len(open_assumptions),
     }
@@ -436,7 +455,8 @@ def main() -> None:
             f"{summary['features']} features / {summary['requirements']} requirements; "
             f"{summary['linked_obligations']}/{summary['formalizable_obligations']} obligations linked; "
             f"{summary['incomplete_requirements']} requirements without verification; "
-            f"{summary['open_assumptions']} external assumptions open"
+            f"{summary['open_assumptions']} external evidence gaps; "
+            f"{summary['external_assumptions_proved']} external components claimed proved"
         )
     if args.require_complete and (incomplete_requirements or open_assumptions):
         fail(

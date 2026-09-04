@@ -177,6 +177,11 @@ type checking are valuable executable evidence, but are not formal proofs.
   fails closed. Row locks/transactions and the Runtime's Tokio per-Thread mutex
   remain trusted implementation/environment boundaries rather than being
   mislabeled as Kani proofs.
+  Runtime context reuse now consumes one closed purpose-aware reducer as well:
+  a reservation/observation coordination envelope may never satisfy an
+  execution request, regardless of matching publication identity. Kani proves
+  the finite decision table; the asynchronous rebuild, Environment realization,
+  and persistence effects remain integration evidence.
   SQL still owns row locking, compare-and-set predicates, pending-input writes,
   timestamps, and transaction durability; those adapter properties are checked
   by the shared backend conformance suite rather than proved by Kani.
@@ -260,6 +265,28 @@ Pure code decides an effect and emits a stable plan identity. An adapter perform
 the effect and returns an authenticated receipt. Only an exact, live, fenced
 receipt can mutate durable truth. TLA+ checks crash/retry behavior; Kani proves
 plan/receipt admission; production traces check selected implementation refinements.
+
+The dispatch/Thread cross-aggregate boundary now applies this rule to physical
+claim release as well: CommitEpochBoundary is a production-consumed typestate,
+Kani exhausts its release decision, and CommitEpochGuard.tla checks that an
+early return is only a stutter. The PostgreSQL/SQLite lock implementation stays
+an explicit database TCB; no model claim is relabeled as a driver proof.
+
+Session Environment recovery similarly consumes one closed equality reducer
+over effect identity, physical binding, and immutable generation. Kani proves
+the complete decision table, while SessionEnvironmentProjection.tla proves
+that exact and stale same-owner projection are identity stutters and cannot
+rewrite a Resident or Retiring fence.
+
+### Proof-carrying release and deployment admission
+
+The generated release manifest extends the existing signed release provenance;
+it is not a second obligation or assumption ledger. A standard artifact records
+all remaining direct-proof gaps. A Verified artifact can be generated only
+after the P0 production-proof gate is empty, and deployment must additionally
+present one fresh, exact fingerprint for every TCB contract. Artifact, ledger,
+profile, proof-input, or TCB mismatch removes the Verified identity rather than
+weakening the safety claim.
 
 ### Durable inbox/outbox and event-sourced reducers
 

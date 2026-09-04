@@ -114,10 +114,9 @@ def scenario_port_errors(sources: dict[str, str]) -> list[str]:
     """Reject callers that bypass the harness-owned non-ephemeral port block."""
 
     fixed_port = re.compile(
-        r"(?:withScenarioServer\(\s*[^,]+,\s*[^,]+|"
-        r"(?:withRealServer|withServer)\(\s*[^,]+)"
+        r"(?:withScenarioServer\(\s*[^,\n]+,\s*[^,\n]+|"
+        r"(?:withRealServer|withServer)\(\s*[^,\n]+)"
         r"\s*,\s*[0-9][0-9_]*\s*,",
-        re.DOTALL,
     )
     return [
         f"{relative} passes a fixed port to the shared server harness; use E2E_PORT"
@@ -528,6 +527,17 @@ def self_test() -> None:
         "e2e/fixed_e2e.mjs passes a fixed port to the shared server harness; use E2E_PORT",
         "e2e/real_fixed_e2e.mjs passes a fixed port to the shared server harness; use E2E_PORT",
     ], "P2 fixed shared-harness port"
+    assert not scenario_port_errors(
+        {
+            "e2e/dynamic_e2e.mjs": """
+                withRealServer('echo', Number(process.env.E2E_PORT), run);
+                withRealServer('vision', Number(process.env.E2E_PORT), run);
+                withScenarioServer(
+                    'management', 'mcp', Number(process.env.E2E_PORT), run
+                );
+            """,
+        }
+    ), "P3 dynamic calls cannot merge into one false fixed-port match"
 
     # Deterministic-environment rule: C10=the package entry crosses the one
     # provider-environment sanitizer before Node starts; E10=every expanded leaf

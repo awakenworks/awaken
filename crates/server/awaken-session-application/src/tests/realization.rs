@@ -1260,17 +1260,19 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
     // realization lease and may receive a compatible shorter assertion; C2 the
     // frozen target set contains root and child; C3 the external Worker has not
     // driven, drives the canonical two-stage protocol, or replays after the
-    // final disposal CAS; C4 the asserted lease is exact or stale. Effects: E1
-    // Coordinator performs no Runtime effect and retains the aggregate queue;
+    // final disposal CAS; C4 the asserted lease is exact or stale; C5 an
+    // internal lifecycle owner requests a completion-bearing force archive.
+    // Effects: E1 Coordinator performs no Runtime effect, retains the aggregate
+    // queue, and reports pending rather than a false successful completion;
     // E2 the Worker sees child-first preparation under the exact assignment;
     // E3 its single driver durably prepares both targets before one disposal;
     // E4 stale authority fails closed; E5 Completed replay performs no effect.
     //
     // | Rule | lease | durable phase | Effect |
-    // | W1 | expired assertion + same-generation live current renewal | Requested | E1 + E2 |
+    // | W1 | force archive + external owner not driven | Requested | E1 + E2 |
     // | W2 | stale | Requested | E4 |
     // | W3 | exact | Requested | E3 |
-    // | W4 | exact | Completed | E5 |
+    // | W4 | force archive replay after exact receipt | Completed | E5 + success |
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("remote cleanup Session repository"),
@@ -1308,10 +1310,28 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
         },
     );
 
-    let retained = application
-        .release_terminal_resources("workspace", "remote-cleanup")
+    let pending_force = application
+        .force_terminate_session(
+            "remote-cleanup",
+            "2026-09-05T00:00:00Z",
+            awaken_session_contract::ManagedLifecycleFact {
+                id: "remote-cleanup:terminated".into(),
+                object_id: "remote-cleanup".into(),
+                workspace_id: Some("workspace".into()),
+                event_type: "session.status_terminated".into(),
+                timestamp: 1,
+                runtime_interval: None,
+            },
+        )
+        .await;
+    assert!(
+        matches!(pending_force, Err(SessionPreparationError::Unavailable(ref message))
+            if message == "Session archive cleanup remains pending"),
+        "W1/E1: {pending_force:?}"
+    );
+    let retained = repo
+        .get("remote-cleanup")
         .await
-        .expect("W1 Coordinator leaves external work durable")
         .expect("W1 aggregate remains the Worker queue");
     assert!(retained.terminal_cleanup.is_requested(), "W1/E1");
     assert!(runtime.intents.lock().unwrap().is_empty(), "W1/E1");
@@ -1354,6 +1374,22 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
         awaken_session_contract::SessionTerminalCleanupDriveOutcome::Completed,
         "W3/E3"
     );
+    let replay = application
+        .force_terminate_session(
+            "remote-cleanup",
+            "2026-09-05T00:00:00Z",
+            awaken_session_contract::ManagedLifecycleFact {
+                id: "remote-cleanup:terminated".into(),
+                object_id: "remote-cleanup".into(),
+                workspace_id: Some("workspace".into()),
+                event_type: "session.status_terminated".into(),
+                timestamp: 1,
+                runtime_interval: None,
+            },
+        )
+        .await
+        .expect("W4 completed cleanup replay");
+    assert!(!replay.transitioned, "W4 exact archive replay");
     let completed = repo
         .get("remote-cleanup")
         .await
