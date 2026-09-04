@@ -83,19 +83,20 @@ pub async fn build_control_router_with_publication_resolver(
     key: &[u8; 32],
     resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
 ) -> Result<Router, String> {
-    let providers = awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins();
-    let publication_resolver = Arc::new(
-        crate::web_search_publication::WebSearchPublicationResolver::new(providers.clone()),
-    );
-    build_control_router_with_publication_resolver_and_web_search(
+    prepare_control_process_with_model_supply(
         deployment,
         key,
-        resolver,
+        PublicationModelSupply::HostedPublication {
+            resolver,
+            direct_credential_execution: None,
+        },
         None,
-        providers,
-        publication_resolver,
+        None,
+        None,
+        ManagedServiceAdapters::default(),
     )
     .await
+    .map(|process| process.public_router)
 }
 
 /// Canonical hosted Control process with a deployment-owned provider
@@ -105,17 +106,17 @@ pub async fn prepare_control_process_with_publication_resolver(
     key: &[u8; 32],
     resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
 ) -> Result<PreparedProcess, String> {
-    let providers = awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins();
-    let publication_resolver = Arc::new(
-        crate::web_search_publication::WebSearchPublicationResolver::new(providers.clone()),
-    );
-    prepare_control_process_with_publication_resolver_and_web_search(
+    prepare_control_process_with_model_supply(
         deployment,
         key,
-        resolver,
+        PublicationModelSupply::HostedPublication {
+            resolver,
+            direct_credential_execution: None,
+        },
         None,
-        providers,
-        publication_resolver,
+        None,
+        None,
+        ManagedServiceAdapters::default(),
     )
     .await
 }

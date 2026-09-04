@@ -58,6 +58,7 @@ awaken-run-executor-acp = { workspace = true }
 awaken-acp-contract = { workspace = true }
 awaken-credential-vault = { workspace = true, optional = true }
 awaken-credential-contract.workspace = true
+awaken-credential.workspace = true
 awaken-credential-materializer = { workspace = true }
 async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }

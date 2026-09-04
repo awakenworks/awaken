@@ -6,9 +6,9 @@ use awaken_ext_builtin_tools::{
     WebSearchCredentialRequirement, WebSearchProvider, WebSearchProviderDescriptor,
     WebSearchProviderRegistry, WebSearchRequest, WebSearchResult,
 };
+use awaken_runtime_contract::CredentialUsage;
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_contract::tool::ToolError;
-use awaken_runtime_contract::{CredentialMaterial, CredentialUsage};
 use axum::Router;
 use serde_json::json;
 
@@ -39,11 +39,17 @@ impl WebSearchProvider for ScenarioWebSearchProvider {
     async fn search(
         &self,
         request: WebSearchRequest,
-        credential: Option<&CredentialMaterial>,
+        credential: Option<&awaken_credential::Credential>,
     ) -> Result<Vec<WebSearchResult>, ToolError> {
         let secret_matches = credential
-            .and_then(|material| material.single_secret().ok())
-            .is_some_and(|secret| secret.expose_secret() == SCENARIO_WEB_SEARCH_SECRET);
+            .and_then(awaken_credential::Credential::header)
+            .is_some_and(|header| {
+                header
+                    == (
+                        "X-Scenario-Web-Key".into(),
+                        SCENARIO_WEB_SEARCH_SECRET.into(),
+                    )
+            });
         if !secret_matches {
             return Err(ToolError::Execution(
                 "scenario web-search credential mismatch".into(),

@@ -464,7 +464,10 @@ mod tests {
                 None,
                 providers.clone(),
                 Arc::new(
-                    crate::web_search_publication::WebSearchPublicationResolver::new(providers),
+                    crate::web_search_publication::WebSearchPublicationResolver::new(
+                        providers,
+                        Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+                    ),
                 ),
                 None,
                 managed_services_with_installation_counter(Arc::clone(&control_installations)),

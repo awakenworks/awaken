@@ -207,14 +207,16 @@ pub(super) async fn prepare_runtime_routers(
     if let Some(materializer) = process.inference_materializer {
         model_wiring.materializer = Some(materializer);
     }
-    let web_search_publication_resolver =
-        process.web_search_publication_resolver.unwrap_or_else(|| {
+    let web_search_publication_resolver = process.web_search_publication_resolver.or_else(|| {
+        stores.control.as_ref().map(|control| {
             Arc::new(
                 crate::web_search_publication::WebSearchPublicationResolver::new(
                     web_search_providers.clone(),
+                    control.credentials.clone(),
                 ),
-            )
-        });
+            ) as Arc<dyn awaken_config_service::PluginPublicationResolver>
+        })
+    });
     let deployment_iam = iam.clone();
     let deployment_remote_iam = remote_iam.clone();
     let live_runtime_capabilities = stores.control.as_ref().map(|control| {
@@ -265,7 +267,8 @@ pub(super) async fn prepare_runtime_routers(
                     .expect("AllInOne configures model publication")
                     .publication_resolver
                     .clone(),
-                web_search_publication_resolver,
+                web_search_publication_resolver
+                    .expect("AllInOne requires a Web publication resolver"),
                 &web_search_providers,
                 brokered_client.clone(),
                 injected_brokered_catalog,

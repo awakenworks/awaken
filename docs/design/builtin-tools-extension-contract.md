@@ -66,6 +66,31 @@ or both ports and a Workspace may bind several accounts for the same provider.
 Search and Fetch route plans select one primary target and explicit ordered
 fallbacks. They never infer a fallback across credential custody or funding.
 
+For a host-executed paid route, authoring selects only an exact Vault source
+revision. The existing plugin publication resolver validates the provider's
+descriptor-owned target and usage, then replaces that authoring reference with
+one complete, secret-free `CredentialAccess`. Runtime configuration accepts
+only the published access; it never reconstructs policy from an id/revision.
+Immediately before provider dispatch, the canonical credential materializer
+revalidates Workspace, active revision, target, usage, holder, and material
+shape, and emits only the narrow outbound HTTP credential. Search and Fetch
+providers never receive `CredentialMaterial` or Vault/repository APIs.
+
+Provider wire facts such as Brave's `X-Subscription-Token` live once in the
+provider descriptor. They are deliberately absent from the model-visible
+authoring schema and application requests. The final HTTP adapter applies the
+descriptor-derived wire credential; it does not repeat a provider-specific
+header rule. A disabled, rotated, foreign, stale, or mismatched source therefore
+fails closed before network I/O. Managed Gateway routes remain a distinct
+secretless realization: their short-lived `Authorization` capability authorizes
+the Gateway hop and is never confused with or exposed as an upstream provider
+credential.
+
+This is a fail-closed snapshot cutover. A pre-cutover host-paid publication that
+contains only `credential { id, revision }` must be republished through the same
+Config publication command before it can execute; Runtime does not retain a
+second legacy policy-construction path.
+
 Gateway-routed providers share one infrastructure adapter for both local and
 hosted compositions. The adapter receives a `ManagedWebRouteResolver`; the
 resolver alone exchanges trusted Runtime operation coordinates for an exact,

@@ -50,7 +50,7 @@ impl WebFetchProvider for AwakenDirectFetchProvider {
     async fn fetch(
         &self,
         request: WebFetchRequest,
-        _credential: Option<&CredentialMaterial>,
+        _credential: Option<&Credential>,
         domain_filter: Option<&WebDomainFilter>,
     ) -> Result<String, ToolError> {
         let filter_active = domain_filter.is_some();

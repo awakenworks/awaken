@@ -431,6 +431,7 @@ dependencies = [
  "awaken-connection-plan",
  "awaken-control",
  "awaken-coordinator",
+ "awaken-credential",
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-store",
@@ -1151,6 +1152,7 @@ name = "awaken-ext-builtin-tools"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-credential",
  "awaken-runtime-contract",
  "cap-std",
  "glob",
@@ -2051,6 +2053,7 @@ dependencies = [
  "async-trait",
  "awaken-acp-contract",
  "awaken-agent-contract",
+ "awaken-credential",
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-vault",
@@ -2255,6 +2258,7 @@ dependencies = [
  "awaken-config-store",
  "awaken-control",
  "awaken-coordinator",
+ "awaken-credential",
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-store",

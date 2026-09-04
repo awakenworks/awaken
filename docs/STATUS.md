@@ -52,6 +52,7 @@ consistent vocabulary. This affects the documentation layers differently:
 | `design/model-provider-backend-binding.md` | Runtime-owned | Defines model-provider/model/model-pool/agent spec graph, selected binding validation, fallback ownership, capability reconciliation, and narrow `ModelProviderSpec` / `AgentSpec` responsibilities |
 | `design/commit-fact-projection-taxonomy.md` | Runtime-owned | Separates live stream output, committed truth, replay rows, and public projections |
 | `design/builtin-tools-extension-contract.md` | Runtime-owned | Defines `awaken-ext-builtin-tools` package boundaries and toolset contracts |
+| `design/acp-harness-capability-and-tool-bridge.md` | Runtime-owned | Defines ACP harness capability selection, Session MCP tool bridging, approval, replay safety, and verification |
 | `design/key-design-decisions.md` | Ready | Defines runtime-owned implementation decisions, explicit config graph, concrete-tool packaging, admin-tool ownership, neutral naming, publication-role placement, and rejected leaks |
 | `design/runtime-behavior.md` | Runtime-owned | Covers run lifecycle, activation/context split, live state apply versus durable commit, state/effects/events, extensions, cancellation, scheduling, eval |
 | `design/auxiliary-context-windows.md` | Ready | Defines shared transcript windows, extension ownership, and asynchronous Memory, Compact, and Outcome behavior |
@@ -104,6 +105,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/model-provider-backend-binding.md` | Role owner | Required | self |
 | `design/commit-fact-projection-taxonomy.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/builtin-tools-extension-contract.md` | Delegated boundary narrative | Delegated | [tool-and-capability.md](design/tool-and-capability.md#tool-and-capability-role-catalog) |
+| `design/acp-harness-capability-and-tool-bridge.md` | Delegated boundary narrative | Delegated | [tool-and-capability.md](design/tool-and-capability.md#tool-and-capability-role-catalog) |
 | `design/key-design-decisions.md` | Decision record | Not required | n/a |
 | `design/runtime-behavior.md` | Role owner | Required | self |
 | `design/auxiliary-context-windows.md` | Design narrative | Not required | n/a |

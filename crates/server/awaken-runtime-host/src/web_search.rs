@@ -6,9 +6,7 @@
 
 use awaken_ext_builtin_tools::WebSearchCredentialResolver;
 use awaken_runtime_contract::{
-    CredentialAccess, CredentialExecutionPolicy, CredentialMaterial, CredentialMaterialSource,
-    CredentialRealizationKind, CredentialRef, CredentialUsage, ModelExposurePolicy,
-    PlaintextBoundary, PlaintextHolder,
+    CredentialAccess, CredentialRealizationKind, PlaintextBoundary, PlaintextHolder,
 };
 use std::sync::Arc;
 
@@ -160,34 +158,26 @@ impl HostWebSearchCredentialResolver {
 impl WebSearchCredentialResolver for HostWebSearchCredentialResolver {
     async fn resolve(
         &self,
-        credential: &CredentialRef,
+        access: &CredentialAccess,
         provider_id: &str,
-        usage: &CredentialUsage,
-    ) -> Result<CredentialMaterial, String> {
+    ) -> Result<awaken_credential::Credential, String> {
         let holder = PlaintextHolder::new(
             PlaintextBoundary::Worker,
             awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         );
-        let access = CredentialAccess::new(
-            credential.clone(),
-            CredentialMaterialSource::ControlPlaneReference,
-            usage.clone(),
-            CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
-        )
-        .with_target(awaken_runtime_contract::CredentialTarget::new(
-            awaken_runtime_contract::credential::CredentialPurpose::WebProviderAuthorization,
-            provider_id,
-        ));
-        self.materializer
-            .resolve_for_workspace(
-                &access,
+        let resolved = self
+            .materializer
+            .resolve_for_workspace_and_provider(
+                access,
                 &holder,
                 CredentialRealizationKind::WorkerProviderAdapter,
                 &self.workspace,
-                &(provider_id, usage),
+                provider_id,
+                &(provider_id, &access.usage),
             )
             .await
-            .map(|resolved| resolved.material)
+            .map_err(|error| error.to_string())?;
+        awaken_credential_materializer::materialized_http_credential(access, &resolved.material)
             .map_err(|error| error.to_string())
     }
 }
@@ -197,6 +187,10 @@ mod tests {
     use super::*;
 
     use awaken_runtime_contract::tool::{ToolCall, ToolError};
+    use awaken_runtime_contract::{
+        CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef, CredentialUsage,
+        ModelExposurePolicy,
+    };
 
     #[test]
     fn acp_web_tools_are_exported_or_native_but_never_both() {
@@ -300,13 +294,12 @@ mod tests {
         async fn search(
             &self,
             request: awaken_ext_builtin_tools::WebSearchRequest,
-            credential: Option<&CredentialMaterial>,
+            credential: Option<&awaken_credential::Credential>,
         ) -> Result<Vec<awaken_ext_builtin_tools::WebSearchResult>, ToolError> {
-            let secret = credential
-                .ok_or_else(|| ToolError::Execution("missing paid material".into()))?
-                .single_secret()
-                .map_err(|error| ToolError::Execution(error.to_string()))?;
-            if secret.expose_secret() != "paid-search-key" {
+            let header = credential
+                .and_then(awaken_credential::Credential::header)
+                .ok_or_else(|| ToolError::Execution("missing paid wire credential".into()))?;
+            if header != ("X-Subscription-Token".into(), "paid-search-key".into()) {
                 return Err(ToolError::Execution("wrong paid material".into()));
             }
             Ok(vec![awaken_ext_builtin_tools::WebSearchResult {
@@ -327,10 +320,10 @@ mod tests {
         };
 
         // Cause/effect decision table:
-        // R1 exact workspace+revision+provider -> secret; R2 stale revision ->
-        // reject; R3 wrong Workspace -> reject; R4 provider mismatch -> reject.
-        // Every rejection occurs in the materializer, before an HTTP provider can
-        // receive plaintext.
+        // R1 exact workspace+revision+provider -> one wire credential; R2 stale
+        // requested revision; R3 wrong Workspace; R4 provider mismatch; R5
+        // source rotated after publication; R6 source disabled after rotation.
+        // R2-R6 reject in the materializer before a Provider receives a header.
         let repo: Arc<dyn CredentialRepo> = Arc::new(InMemoryCredentialRepo::new());
         let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::new());
         let usage = CredentialUsage::HttpHeader {
@@ -368,24 +361,32 @@ mod tests {
         )
         .await
         .unwrap();
-        let materializer = PinnedCredentialMaterializer::new(repo, secrets);
+        let materializer = PinnedCredentialMaterializer::new(repo.clone(), secrets);
         let exact = CredentialRef {
-            id: source.id.0,
+            id: source.id.0.clone(),
             revision: 1,
         };
+        let holder = PlaintextHolder::new(
+            PlaintextBoundary::Worker,
+            awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        );
+        let access = CredentialAccess::new(
+            exact.clone(),
+            CredentialMaterialSource::ControlPlaneReference,
+            usage.clone(),
+            CredentialExecutionPolicy::exact(holder, ModelExposurePolicy::Forbidden),
+        )
+        .with_target(awaken_runtime_contract::CredentialTarget::new(
+            awaken_runtime_contract::credential::CredentialPurpose::WebProviderAuthorization,
+            "brave",
+        ));
         let resolver = Arc::new(HostWebSearchCredentialResolver::new(
             materializer.clone(),
             "workspace-a".into(),
         ));
         assert_eq!(
-            resolver
-                .resolve(&exact, "brave", &usage,)
-                .await
-                .unwrap()
-                .single_secret()
-                .unwrap()
-                .expose_secret(),
-            "paid-search-key"
+            resolver.resolve(&access, "brave").await.unwrap().header(),
+            Some(("X-Subscription-Token".into(), "paid-search-key".into()))
         );
         let providers =
             awaken_ext_builtin_tools::WebSearchProviderRegistry::try_new([
@@ -397,7 +398,7 @@ mod tests {
         let (_, paid_tool) = plugin
             .configured_tool(Some(&serde_json::json!({
                 "provider_id": "brave",
-                "credential": { "id": exact.id.clone(), "revision": exact.revision },
+                "credential_access": access,
                 "options": {},
             })))
             .unwrap();
@@ -410,22 +411,28 @@ mod tests {
             .await
             .unwrap();
         assert!(output.text().contains("https://paid.test/result"));
-        let stale = CredentialRef {
-            revision: 2,
-            ..exact.clone()
-        };
-        assert!(resolver.resolve(&stale, "brave", &usage,).await.is_err());
+        let mut stale = access.clone();
+        stale.credential.revision = 2;
+        assert!(resolver.resolve(&stale, "brave").await.is_err());
         assert!(
             HostWebSearchCredentialResolver::new(materializer.clone(), "workspace-b".into())
-                .resolve(&exact, "brave", &usage,)
+                .resolve(&access, "brave")
                 .await
                 .is_err()
         );
+        assert!(resolver.resolve(&access, "another-provider").await.is_err());
+
+        let mut rotated = source.clone();
+        rotated.version = 2;
+        repo.put(rotated.clone()).await.unwrap();
+        assert!(resolver.resolve(&access, "brave").await.is_err(), "R5");
+        rotated.status = awaken_credential_vault::CredentialStatus::Disabled;
+        repo.put(rotated).await.unwrap();
+        let mut rotated_access = access;
+        rotated_access.credential.revision = 2;
         assert!(
-            resolver
-                .resolve(&exact, "another-provider", &usage,)
-                .await
-                .is_err()
+            resolver.resolve(&rotated_access, "brave").await.is_err(),
+            "R6"
         );
     }
 }

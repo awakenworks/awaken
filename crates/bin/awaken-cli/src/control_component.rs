@@ -82,6 +82,7 @@ pub(super) async fn control_component_for_process(
             Arc::new(
                 crate::web_search_publication::WebFetchPublicationResolver::new(
                     web_search_providers.clone(),
+                    control.credentials.clone(),
                 ),
             ),
         ],
@@ -199,6 +200,12 @@ pub(super) async fn prepare_control_routers(
             Arc::new(
                 crate::web_search_publication::WebSearchPublicationResolver::new(
                     web_search_providers.clone(),
+                    stores
+                        .control
+                        .as_ref()
+                        .expect("Control process requires Control stores")
+                        .credentials
+                        .clone(),
                 ),
             )
         });
