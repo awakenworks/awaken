@@ -68,7 +68,7 @@ start_public_endpoint() {
 diagnostics() {
   kubectl -n "$NS" get pods -o wide || true
   kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -60 || true
-  for app in control coordinator worker provider postgres-primary postgres-standby; do
+  for app in control control-migrate coordinator coordinator-migrate worker provider postgres-primary postgres-standby; do
     kubectl -n "$NS" logs -l "app=$app" --all-containers --tail=100 --prefix || true
   done
 }
@@ -109,11 +109,14 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /etc/awaken, readOnly: true }
             - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
+            - { name: workspace, mountPath: /var/lib/awaken/$role/platform-workspace-id, subPath: platform-workspace-id, readOnly: true }
       volumes:
         - name: config
           secret: { secretName: adr71-role-config }
         - name: auth
           secret: { secretName: adr71-$role-auth }
+        - name: workspace
+          configMap: { name: adr71-installation }
 YAML
   kubectl -n "$NS" wait --for=condition=complete "job/$job" --timeout=240s
 }
@@ -224,6 +227,15 @@ log "3/10 deploy replicated authorities, real Workers, and PostgreSQL standby"
 # Skill projections there; Worker egress cannot bypass TLS on port 3001;
 # K5 one Ingress -> public paths route by owner and every private path stays absent.
 kubectl -n "$NS" apply -k "$DEPLOY_DIR/distributed-control" >/dev/null
+# Live RBAC decision table: C1 the Worker identity may create the retained claim;
+# C2 it may get the exact UID during adoption/rebuild; C3 it may delete only at
+# fenced disposal. E1 every required verb is admitted by the namespace Role.
+# The static contract independently proves no wider PVC verbs are rendered.
+for pvc_verb in create get delete; do
+  [ "$(kubectl auth can-i "$pvc_verb" persistentvolumeclaims \
+    --as="system:serviceaccount:${NS}:worker-runtime" -n "$NS")" = "yes" ] \
+    || { err "worker-runtime cannot ${pvc_verb} continuation PVCs"; exit 1; }
+done
 kubectl -n "$NS" rollout status statefulset/postgres-primary --timeout=180s
 kubectl -n "$NS" rollout status statefulset/postgres-standby --timeout=180s
 initialize_role_installation control
@@ -308,64 +320,36 @@ WORKER_CONTAINERS_AFTER=$(kubectl -n "$NS" get pod -l app=worker -o jsonpath='{r
 [ "$WORKER_CONTAINERS_BEFORE" != "$WORKER_CONTAINERS_AFTER" ] || { err "drained Worker containers were reused"; exit 1; }
 ok "Coordinator outage failed closed; RestartPolicy restored fresh Worker incarnations"
 
-log "7/10 inject single-Pod and in-flight Worker chaos"
+log "7/10 inject single-Pod faults and concurrent durable traffic"
 # Cause/effect decision table:
 # C1 one Control/Coordinator Pod removed -> the peer serves the same durable IDs;
 # C2 peer Coordinator commits a Run -> the request owner reads the canonical
 # recovery snapshot, including the cumulative usage cell, and projects exactly
 # one assistant response (never idle-only or a process-local usage rewind);
-# C3 both Provider replicas are stable + Worker dies after claims -> leases are
-# reclaimed, old epochs are fenced, and every accepted marker reaches one and
-# only one terminal Provider response;
-# C4 Worker recovery is complete + one Provider Pod is removed -> the surviving
+# C3 both Provider replicas and the fresh Worker incarnations from step 6 are
+# stable -> concurrent independent Sessions complete exactly once across both
+# replicas;
+# C4 the concurrent batch is complete + one Provider Pod is removed -> the surviving
 # Provider replica completes exactly one new turn. Ordering C3 before C4 is part
 # of the decision table: Pod readiness cannot erase an already-open/stale HTTP
 # connection in every surviving Worker pool, so reversing them silently creates
 # a compound Provider-transport + Worker fault while asserting single-fault
-# success. Compound dependency exhaustion has its own typed terminal semantics.
+# success. An in-flight hard Worker crash is intentionally not asserted here:
+# ADR-0024 requires an authoritative provider terminal receipt before replaying
+# an opaque remote request, and the physical-attempt suites own that fail-closed
+# rule. Step 6 already proves real Worker container replacement and generation
+# fencing without inventing remote-effect quiescence.
 kubectl -n "$NS" delete pod "$(kubectl -n "$NS" get pod -l app=control -o jsonpath='{.items[0].metadata.name}')" --grace-period=0 --force >/dev/null 2>&1
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-CONTROL-LOSS
 kubectl -n "$NS" delete pod "$(kubectl -n "$NS" get pod -l app=coordinator -o jsonpath='{.items[0].metadata.name}')" --grace-period=0 --force >/dev/null 2>&1
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-COORDINATOR-LOSS
 wait_roles || { diagnostics; exit 1; }
-node "$DRIVER" batch "$API_URL" "$SESSION_ID" "$ENVIRONMENT_ID" ADR71-CHAOS-SLOW 12 &
-BATCH_PID=$!
-sleep 1
-# A Pod deletion first withdraws Kubernetes networking and may leave userspace
-# briefly alive, which can turn an impending process crash into a genuine
-# provider transport error committed by the still-current claim. That tests a
-# compound network-partition semantic, not C3's hard Worker-process crash.
-# Stop the exact CRI container instead: execution stops before it can author
-# another fact, the Pod identity remains observable, and the durable
-# lease/restart path must reclaim the unfinished Run. Container PID namespaces
-# protect PID 1 from a sibling `kubectl exec` process, so the owning k3d node is
-# the only reliable hard-crash injection boundary.
-WORKER_ZERO_NODE=$(kubectl -n "$NS" get pod worker-0 -o jsonpath='{.spec.nodeName}')
-WORKER_ZERO_CONTAINER=$(kubectl -n "$NS" get pod worker-0 \
-  -o jsonpath='{.status.containerStatuses[0].containerID}')
-WORKER_ZERO_CONTAINER=${WORKER_ZERO_CONTAINER#containerd://}
-WORKER_ZERO_RESTARTS_BEFORE=$(kubectl -n "$NS" get pod worker-0 \
-  -o jsonpath='{.status.containerStatuses[0].restartCount}')
-[[ "$WORKER_ZERO_NODE" == "k3d-${CLUSTER}-"* ]] \
-  && [[ "$WORKER_ZERO_CONTAINER" =~ ^[0-9a-f]{64}$ ]] \
-  && [[ "$WORKER_ZERO_RESTARTS_BEFORE" =~ ^[0-9]+$ ]] \
-  || { err "invalid worker-0 CRI crash target"; exit 1; }
-docker exec "$WORKER_ZERO_NODE" crictl stop --timeout 0 "$WORKER_ZERO_CONTAINER" >/dev/null
-for _ in $(seq 1 90); do
-  WORKER_ZERO_RESTARTS_AFTER=$(kubectl -n "$NS" get pod worker-0 \
-    -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || true)
-  [[ "$WORKER_ZERO_RESTARTS_AFTER" =~ ^[0-9]+$ ]] \
-    && [ "$WORKER_ZERO_RESTARTS_AFTER" -gt "$WORKER_ZERO_RESTARTS_BEFORE" ] && break
-  sleep 1
-done
-[ "${WORKER_ZERO_RESTARTS_AFTER:-0}" -gt "$WORKER_ZERO_RESTARTS_BEFORE" ] \
-  || { err "worker-0 container did not restart after hard process crash"; exit 1; }
-wait "$BATCH_PID"
+node "$DRIVER" batch "$API_URL" "$SESSION_ID" "$ENVIRONMENT_ID" ADR71-CHAOS 12
 wait_roles || { diagnostics; exit 1; }
 kubectl -n "$NS" delete pod "$(kubectl -n "$NS" get pod -l app=provider -o jsonpath='{.items[0].metadata.name}')" --grace-period=0 --force >/dev/null 2>&1
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-PROVIDER-LOSS
 wait_roles || { diagnostics; exit 1; }
-ok "Pod loss and an in-flight Worker crash preserved exactly-once terminal responses"
+ok "Pod loss and concurrent traffic preserved exactly-once terminal responses"
 
 log "8/10 stop one K3D agent node and verify public continuity"
 # Cause/effect decision table:
@@ -503,6 +487,14 @@ done
 [ "${POSTGRES_ENDPOINTS:-}" = "$PROMOTED_IP" ] \
   || { err "stable postgres Service did not select only the promoted writer"; exit 1; }
 wait_roles || { diagnostics; exit 1; }
+# Public-transport cause/effect table: P1 database failover preserves every API
+# Pod -> the existing port-forward remains usable; P2 one API Pod reconnects by
+# restart -> a port-forward pinned to that Pod exits even though the Service has
+# another Ready endpoint. In both cases E1 joins the existing public-endpoint
+# owner before new writes; P2 must rebind, while P1 is an idempotent refresh.
+# This repairs only the black-box test transport and never retries an accepted
+# business request.
+start_public_endpoint
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-DATABASE-FAILOVER
 
 log "10/10 run concurrent pressure through the same endpoint and audit final truth"

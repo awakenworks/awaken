@@ -696,12 +696,19 @@ impl SessionAgentCoordination for SessionApplication {
                 state,
                 Some(snapshot.store_cursor),
             )
-            .await?
-            .ok_or_else(|| {
-                RunError::unavailable(
-                    "committed Agent boundary is not yet visible in the lifecycle feed",
-                )
-            })?;
+            .await?;
+        let Some(observation) = observation else {
+            // Cause/effect decision table: C1 the Run commit is authoritative;
+            // C2 its lifecycle projection is not visible yet. R1 C1+!C2 wakes
+            // the sole lifecycle supervisor and returns without settling; the
+            // Pool relinquishes this mutation claim and self-retries. Re-entering
+            // Event-batch execution here would wait on this same claimed row and
+            // recreate the 30-second foreground timeout cycle.
+            self.wake_lifecycle_supervisor();
+            return Err(RunError::unavailable(
+                "committed Agent boundary is not yet visible in the lifecycle feed",
+            ));
+        };
         // Failure is absorbing for an ordinary coordinated Thread. Record
         // cancellation on any already-admitted later dispatch before settling
         // this activity; Dispatch remains the sole queued-work authority and

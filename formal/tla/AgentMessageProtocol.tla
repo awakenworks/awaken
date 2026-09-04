@@ -15,7 +15,8 @@ VARIABLES
     dispatchState, dispatchOwner, dispatchEpoch, dispatchCancelled, dispatchInput,
     activityEpoch, activeActivityEpochs, settledActivities, nextActivityEpoch,
     requestDurable, admissionOutcome, targetMessageCommitted,
-    targetBoundaryCommitted, sourceReceiptCommitted, receiptTiming, lastOutcome
+    targetBoundaryCommitted, targetBoundaryVisible, sourceReceiptCommitted,
+    receiptTiming, lastOutcome
 
 dispatchVars == <<dispatchState, dispatchOwner, dispatchEpoch,
                   dispatchCancelled, dispatchInput>>
@@ -23,7 +24,8 @@ activityVars == <<activityEpoch, activeActivityEpochs,
                   settledActivities, nextActivityEpoch>>
 protocolVars == <<requestDurable, admissionOutcome,
                   targetMessageCommitted, targetBoundaryCommitted,
-                  sourceReceiptCommitted, receiptTiming, lastOutcome>>
+                  targetBoundaryVisible, sourceReceiptCommitted,
+                  receiptTiming, lastOutcome>>
 vars == <<dispatchVars, activityVars, protocolVars>>
 
 Ingress == INSTANCE RunIngressKernel WITH
@@ -51,6 +53,7 @@ Init ==
     /\ admissionOutcome = "None"
     /\ targetMessageCommitted = FALSE
     /\ targetBoundaryCommitted = FALSE
+    /\ targetBoundaryVisible = FALSE
     /\ sourceReceiptCommitted = FALSE
     /\ receiptTiming = "None"
     /\ lastOutcome = "none"
@@ -61,6 +64,7 @@ PersistRequest ==
     /\ lastOutcome' = "request_committed"
     /\ UNCHANGED <<dispatchVars, activityVars, admissionOutcome,
                     targetMessageCommitted, targetBoundaryCommitted,
+                    targetBoundaryVisible,
                     sourceReceiptCommitted, receiptTiming>>
 
 OpenActivity ==
@@ -69,6 +73,7 @@ OpenActivity ==
     /\ lastOutcome' = "activity_opened"
     /\ UNCHANGED <<dispatchVars, requestDurable, admissionOutcome,
                     targetMessageCommitted, targetBoundaryCommitted,
+                    targetBoundaryVisible,
                     sourceReceiptCommitted, receiptTiming>>
 
 AdmitSuccess ==
@@ -79,6 +84,7 @@ AdmitSuccess ==
     /\ lastOutcome' = "admitted"
     /\ UNCHANGED <<activityVars, requestDurable,
                     targetMessageCommitted, targetBoundaryCommitted,
+                    targetBoundaryVisible,
                     sourceReceiptCommitted, receiptTiming>>
 
 \* Validation rejection proves that no dispatch committed, so the activity may
@@ -91,7 +97,8 @@ AdmitRejected ==
     /\ admissionOutcome' = "Rejected"
     /\ lastOutcome' = "closed_rejection"
     /\ UNCHANGED <<requestDurable, targetMessageCommitted,
-                    targetBoundaryCommitted, sourceReceiptCommitted,
+                    targetBoundaryCommitted, targetBoundaryVisible,
+                    sourceReceiptCommitted,
                     receiptTiming>>
 
 AdmitConflict ==
@@ -101,6 +108,7 @@ AdmitConflict ==
     /\ lastOutcome' = "identity_conflict"
     /\ UNCHANGED <<dispatchVars, activityVars, requestDurable,
                     targetMessageCommitted, targetBoundaryCommitted,
+                    targetBoundaryVisible,
                     sourceReceiptCommitted, receiptTiming>>
 
 \* An unavailable response represents both possible physical outcomes. Neither
@@ -113,6 +121,7 @@ AdmitUnknownBeforeCommit ==
     /\ lastOutcome' = "unknown_before_commit"
     /\ UNCHANGED <<dispatchVars, activityVars, requestDurable,
                     targetMessageCommitted, targetBoundaryCommitted,
+                    targetBoundaryVisible,
                     sourceReceiptCommitted, receiptTiming>>
 
 AdmitUnknownAfterCommit ==
@@ -123,6 +132,7 @@ AdmitUnknownAfterCommit ==
     /\ lastOutcome' = "unknown_after_commit"
     /\ UNCHANGED <<activityVars, requestDurable,
                     targetMessageCommitted, targetBoundaryCommitted,
+                    targetBoundaryVisible,
                     sourceReceiptCommitted, receiptTiming>>
 
 RetryExact ==
@@ -136,6 +146,7 @@ RetryExact ==
     /\ lastOutcome' = "exact_retry"
     /\ UNCHANGED <<activityVars, requestDurable,
                     targetMessageCommitted, targetBoundaryCommitted,
+                    targetBoundaryVisible,
                     sourceReceiptCommitted, receiptTiming>>
 
 Claim(owner) ==
@@ -144,6 +155,7 @@ Claim(owner) ==
     /\ lastOutcome' = "claimed"
     /\ UNCHANGED <<activityVars, requestDurable, admissionOutcome,
                     targetMessageCommitted, targetBoundaryCommitted,
+                    targetBoundaryVisible,
                     sourceReceiptCommitted, receiptTiming>>
 
 LeaseExpires(owner, epoch) ==
@@ -151,6 +163,7 @@ LeaseExpires(owner, epoch) ==
     /\ lastOutcome' = "lease_expired"
     /\ UNCHANGED <<activityVars, requestDurable, admissionOutcome,
                     targetMessageCommitted, targetBoundaryCommitted,
+                    targetBoundaryVisible,
                     sourceReceiptCommitted, receiptTiming>>
 
 CommitTarget(owner, epoch) ==
@@ -162,6 +175,7 @@ CommitTarget(owner, epoch) ==
     /\ lastOutcome' = "target_committed"
     /\ UNCHANGED <<dispatchVars, activityVars, requestDurable,
                     admissionOutcome, targetBoundaryCommitted,
+                    targetBoundaryVisible,
                     sourceReceiptCommitted, receiptTiming>>
 
 CommitTargetBoundary(owner, epoch) ==
@@ -174,7 +188,33 @@ CommitTargetBoundary(owner, epoch) ==
     /\ lastOutcome' = "target_boundary_committed"
     /\ UNCHANGED <<dispatchVars, activityVars, requestDurable,
                     admissionOutcome, targetMessageCommitted,
-                    sourceReceiptCommitted, receiptTiming>>
+                    targetBoundaryVisible, sourceReceiptCommitted, receiptTiming>>
+
+\* Shared durable truth may commit before this process observes the lifecycle
+\* row. Visibility is disposable projection state and has no settlement power
+\* until it is refreshed from the committed boundary.
+ObserveTargetBoundary ==
+    /\ targetBoundaryCommitted
+    /\ ~targetBoundaryVisible
+    /\ targetBoundaryVisible' = TRUE
+    /\ lastOutcome' = "target_boundary_visible"
+    /\ UNCHANGED <<dispatchVars, activityVars, requestDurable,
+                    admissionOutcome, targetMessageCommitted,
+                    targetBoundaryCommitted, sourceReceiptCommitted,
+                    receiptTiming>>
+
+ProjectionMissingRetry(owner, epoch) ==
+    /\ targetBoundaryCommitted
+    /\ ~targetBoundaryVisible
+    /\ dispatchState = "Leased"
+    /\ dispatchOwner = owner
+    /\ dispatchEpoch = epoch
+    /\ Ingress!Relinquish(owner, epoch)
+    /\ lastOutcome' = "projection_missing_retry"
+    /\ UNCHANGED <<activityVars, requestDurable, admissionOutcome,
+                    targetMessageCommitted, targetBoundaryCommitted,
+                    targetBoundaryVisible, sourceReceiptCommitted,
+                    receiptTiming>>
 
 CommitSourceReceipt ==
     /\ admissionOutcome = "Success"
@@ -186,24 +226,26 @@ CommitSourceReceipt ==
     /\ lastOutcome' = "source_receipt_committed"
     /\ UNCHANGED <<dispatchVars, activityVars, requestDurable,
                     admissionOutcome, targetMessageCommitted,
-                    targetBoundaryCommitted>>
+                    targetBoundaryCommitted, targetBoundaryVisible>>
 
 SettleTargetActivity ==
-    /\ targetBoundaryCommitted
+    /\ targetBoundaryVisible
     /\ activityEpoch[MessageActivity] \in activeActivityEpochs
     /\ Activity!Settle(MessageActivity)
     /\ lastOutcome' = "target_activity_settled"
     /\ UNCHANGED <<dispatchVars, requestDurable, admissionOutcome,
                     targetMessageCommitted, targetBoundaryCommitted,
+                    targetBoundaryVisible,
                     sourceReceiptCommitted, receiptTiming>>
 
 SettleDispatch(owner, epoch) ==
-    /\ targetBoundaryCommitted
+    /\ targetBoundaryVisible
     /\ activityEpoch[MessageActivity] \notin activeActivityEpochs
     /\ Ingress!SettleDone(owner, epoch)
     /\ lastOutcome' = "dispatch_settled"
     /\ UNCHANGED <<activityVars, requestDurable, admissionOutcome,
                     targetMessageCommitted, targetBoundaryCommitted,
+                    targetBoundaryVisible,
                     sourceReceiptCommitted, receiptTiming>>
 
 Next ==
@@ -220,6 +262,9 @@ Next ==
     \/ \E owner \in Owners, epoch \in 1..MaxEpoch: CommitTarget(owner, epoch)
     \/ \E owner \in Owners, epoch \in 1..MaxEpoch:
            CommitTargetBoundary(owner, epoch)
+    \/ ObserveTargetBoundary
+    \/ \E owner \in Owners, epoch \in 1..MaxEpoch:
+           ProjectionMissingRetry(owner, epoch)
     \/ CommitSourceReceipt
     \/ SettleTargetActivity
     \/ \E owner \in Owners, epoch \in 1..MaxEpoch: SettleDispatch(owner, epoch)
@@ -231,6 +276,7 @@ TypeOK ==
     /\ admissionOutcome \in {"None", "Success", "Rejected", "Conflict", "Unknown"}
     /\ targetMessageCommitted \in BOOLEAN
     /\ targetBoundaryCommitted \in BOOLEAN
+    /\ targetBoundaryVisible \in BOOLEAN
     /\ sourceReceiptCommitted \in BOOLEAN
     /\ receiptTiming \in {"None", "BeforeTargetBoundary", "AfterTargetBoundary"}
     /\ lastOutcome \in {"none", "request_committed", "activity_opened",
@@ -238,6 +284,7 @@ TypeOK ==
                          "unknown_before_commit", "unknown_after_commit",
                          "exact_retry", "claimed", "lease_expired",
                          "target_committed", "target_boundary_committed",
+                         "target_boundary_visible", "projection_missing_retry",
                          "source_receipt_committed", "target_activity_settled",
                          "dispatch_settled"}
 
@@ -271,6 +318,14 @@ SourceReceiptCannotSettleActivityAlone ==
 TargetBoundaryRequiresCommittedMessage ==
     targetBoundaryCommitted => targetMessageCommitted
 
+TargetBoundaryVisibilityRequiresCommittedBoundary ==
+    targetBoundaryVisible => targetBoundaryCommitted
+
+MissingProjectionRetryPreservesActivity ==
+    lastOutcome = "projection_missing_retry" =>
+        activityEpoch[MessageActivity] \in activeActivityEpochs /\
+        dispatchState = "Pending"
+
 TargetSettlementPrecedesDispatchRemoval ==
     targetBoundaryCommitted /\ dispatchState = "Removed" =>
       activityEpoch[MessageActivity] \notin activeActivityEpochs
@@ -289,6 +344,8 @@ Safety ==
     /\ ReceiptTimingIsExact
     /\ SourceReceiptCannotSettleActivityAlone
     /\ TargetBoundaryRequiresCommittedMessage
+    /\ TargetBoundaryVisibilityRequiresCommittedBoundary
+    /\ MissingProjectionRetryPreservesActivity
     /\ TargetSettlementPrecedesDispatchRemoval
     /\ InternalMessageNeverUsesPendingInput
 
@@ -313,6 +370,7 @@ EarlyReceiptNext ==
     \/ \E owner \in Owners, epoch \in 1..MaxEpoch: CommitTarget(owner, epoch)
     \/ \E owner \in Owners, epoch \in 1..MaxEpoch:
            CommitTargetBoundary(owner, epoch)
+    \/ ObserveTargetBoundary
     \/ SettleTargetActivity
     \/ \E owner \in Owners, epoch \in 1..MaxEpoch: SettleDispatch(owner, epoch)
 
@@ -324,6 +382,7 @@ LateReceiptRecoveryNext ==
     \/ \E owner \in Owners, epoch \in 1..MaxEpoch: CommitTarget(owner, epoch)
     \/ \E owner \in Owners, epoch \in 1..MaxEpoch:
            CommitTargetBoundary(owner, epoch)
+    \/ ObserveTargetBoundary
     \/ SettleTargetActivity
     \/ \E owner \in Owners, epoch \in 1..MaxEpoch: SettleDispatch(owner, epoch)
     \/ CommitLateSourceReceipt

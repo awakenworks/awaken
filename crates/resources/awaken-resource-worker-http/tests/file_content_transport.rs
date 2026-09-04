@@ -19,7 +19,8 @@ use awaken_resource_contract::{FileReadPurpose, ResolvedFileContent};
 use awaken_resource_worker_http::HttpFileContentSource;
 use awaken_resource_worker_http::{WorkerFileContentService, worker_file_content_router};
 use awaken_dispatch::{
-    DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
+    DispatchQueue as _, MemoryDispatchStore, ResourceOperationFence, RunClaim, RunDispatch,
+    WorkerIdentity,
 };
 use awaken_session_contract::ManagedSessionRepository as _;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
@@ -322,7 +323,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
             "workspace-file",
             "file-public",
             &FileReadPurpose::SessionResource,
-            Some(&claim),
+            Some(&ResourceOperationFence::Run(claim.clone())),
         )
         .await
         .expect("F1 exact File read")
@@ -344,7 +345,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
             "workspace-file",
             "file-other",
             &FileReadPurpose::SessionResource,
-            Some(&claim),
+            Some(&ResourceOperationFence::Run(claim.clone())),
         )
         .await
         .expect_err("F2 non-frozen File must be denied");
@@ -379,7 +380,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
             "workspace-file",
             "file-public",
             &FileReadPurpose::SessionResource,
-            Some(&claim),
+            Some(&ResourceOperationFence::Run(claim.clone())),
         )
         .await
         .expect_err("F6 stale incarnation must be denied");
@@ -399,7 +400,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
             "workspace-file",
             "file-public",
             &FileReadPurpose::SessionResource,
-            Some(&claim),
+            Some(&ResourceOperationFence::Run(claim.clone())),
         )
         .await
         .expect_err("F4 stale claim must be rejected");
@@ -434,7 +435,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
                 "workspace-file",
                 "file-public",
                 &FileReadPurpose::SessionResource,
-                Some(&claim),
+                Some(&ResourceOperationFence::Run(claim.clone())),
             )
             .await
             .is_err(),
@@ -455,7 +456,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
             "workspace-file",
             "file-public",
             &FileReadPurpose::SessionResource,
-            Some(&claim),
+            Some(&ResourceOperationFence::Run(claim.clone())),
         )
         .await
         .expect_err("F7 digest header is mandatory");
@@ -473,7 +474,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
                 "workspace-file",
                 "file-missing",
                 &FileReadPurpose::SessionResource,
-                Some(&missing_claim),
+                Some(&ResourceOperationFence::Run(missing_claim.clone())),
             )
             .await
             .expect("F8 not-found response"),
@@ -515,7 +516,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
             "workspace-file",
             "file-broken",
             &FileReadPurpose::SessionResource,
-            Some(&broken_claim),
+            Some(&ResourceOperationFence::Run(broken_claim.clone())),
         )
         .await
         .expect_err("F9 missing blob must fail closed");
@@ -598,7 +599,7 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
             "workspace-file",
             "file-application",
             &FileReadPurpose::SessionResource,
-            Some(&claim),
+            Some(&ResourceOperationFence::Run(claim.clone())),
         )
         .await
         .expect("frozen application File read")
@@ -619,7 +620,7 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
             "workspace-file",
             "file-other",
             &FileReadPurpose::SessionResource,
-            Some(&claim),
+            Some(&ResourceOperationFence::Run(claim.clone())),
         )
         .await
         .expect_err("a File outside the frozen generation must be denied");
@@ -686,7 +687,7 @@ async fn model_content_file_requires_its_claimed_thread_and_strong_input_referen
             &FileReadPurpose::ModelContent {
                 thread_id: "thread-model-content".into(),
             },
-            Some(&claim),
+            Some(&ResourceOperationFence::Run(claim.clone())),
         )
         .await
         .expect("M1 authorized read")
@@ -700,7 +701,7 @@ async fn model_content_file_requires_its_claimed_thread_and_strong_input_referen
             &FileReadPurpose::ModelContent {
                 thread_id: "thread-foreign".into(),
             },
-            Some(&claim),
+            Some(&ResourceOperationFence::Run(claim.clone())),
         )
         .await
         .expect_err("M2 foreign thread");
@@ -713,7 +714,7 @@ async fn model_content_file_requires_its_claimed_thread_and_strong_input_referen
             &FileReadPurpose::ModelContent {
                 thread_id: "thread-model-content".into(),
             },
-            Some(&claim),
+            Some(&ResourceOperationFence::Run(claim.clone())),
         )
         .await
         .expect_err("M3 unreferenced File");
@@ -823,7 +824,7 @@ async fn model_content_recovery_uses_parent_partition_for_a_child_thread() {
             &FileReadPurpose::ModelContent {
                 thread_id: thread_id.0.clone(),
             },
-            Some(&claim),
+            Some(&ResourceOperationFence::Run(claim.clone())),
         )
         .await
         .expect("R1/E1 recovered child File read")
@@ -837,11 +838,11 @@ async fn model_content_recovery_uses_parent_partition_for_a_child_thread() {
     );
 }
 
-/// Cause/effect rationale: a remote source without the exact claim has no
+/// Cause/effect rationale: a remote source without the exact Resource authority has no
 /// authority to contact the File data plane, so it fails locally (C1 -> E1) and
 /// cannot accidentally become an unfenced compatibility path.
 #[tokio::test]
-async fn remote_file_source_requires_claim() {
+async fn remote_file_source_requires_resource_authority() {
     let source = HttpFileContentSource::new(WorkerUpstream::new("http://127.0.0.1:1"));
     let error = source
         .read(
@@ -851,8 +852,8 @@ async fn remote_file_source_requires_claim() {
             None,
         )
         .await
-        .expect_err("claim is mandatory");
-    assert!(error.to_string().contains("requires a dispatch claim"));
+        .expect_err("Resource authority is mandatory");
+    assert!(error.to_string().contains("exact Resource authority"));
 
     let claim = RunClaim {
         run_id: awaken_agent_contract::agent::run::Id("run-unused".into()),
@@ -864,7 +865,7 @@ async fn remote_file_source_requires_claim() {
             "",
             "file-public",
             &FileReadPurpose::SessionResource,
-            Some(&claim),
+            Some(&ResourceOperationFence::Run(claim.clone())),
         )
         .await
         .expect_err("empty Workspace is rejected locally");

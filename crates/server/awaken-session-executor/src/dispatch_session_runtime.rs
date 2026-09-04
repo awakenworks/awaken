@@ -50,15 +50,7 @@ pub(crate) struct DispatchSessionRuntime {
     pub(super) resource_validator:
         Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
     pub(super) repository_binding_verifier:
-        Option<Arc<dyn RepositoryBindingVerifier<awaken_dispatch::RunClaim>>>,
-    pub(super) repository_publication_binding_verifier: Option<
-        Arc<
-            dyn RepositoryBindingVerifier<(
-                awaken_session_contract::SessionRepositoryPublicationCommand,
-                awaken_session_contract::SessionRealizationLease,
-            )>,
-        >,
-    >,
+        Option<Arc<dyn RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>>>,
     pub(super) mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
 }
 
@@ -74,9 +66,6 @@ impl DispatchSessionRuntime {
             credential_refresh_factory: self.credential_refresh_factory.clone(),
             resource_validator: self.resource_validator.clone(),
             repository_binding_verifier: self.repository_binding_verifier.clone(),
-            repository_publication_binding_verifier: self
-                .repository_publication_binding_verifier
-                .clone(),
             mcp_realizer: None,
         })
     }
@@ -125,6 +114,7 @@ impl DispatchSessionRuntime {
                     thread,
                     &projected_transition,
                     claim,
+                    None,
                     expected_binding,
                 )
                 .await;
@@ -172,6 +162,7 @@ impl DispatchSessionRuntime {
                 thread,
                 &proven_transition,
                 claim,
+                None,
                 false,
             )
             .await?;
@@ -191,6 +182,7 @@ impl DispatchSessionRuntime {
         thread: &str,
         transition: &awaken_session_contract::SessionResourceTransition,
         claim: Option<&awaken_dispatch::RunClaim>,
+        realization_lease: Option<&awaken_session_contract::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
         let managed = self.managed()?;
@@ -199,6 +191,7 @@ impl DispatchSessionRuntime {
                 thread,
                 transition,
                 claim,
+                realization_lease,
                 prospective_environment_binding,
             )
             .await
@@ -209,9 +202,10 @@ impl DispatchSessionRuntime {
         thread: &str,
         transition: &awaken_session_contract::SessionResourceTransition,
         claim: Option<&awaken_dispatch::RunClaim>,
+        realization_lease: Option<&awaken_session_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         self.managed()?
-            .apply_session_inputs_with_context(thread, transition, claim)
+            .apply_session_inputs_with_context(thread, transition, claim, realization_lease)
             .await
     }
 
@@ -220,9 +214,10 @@ impl DispatchSessionRuntime {
         thread: &str,
         transition: &awaken_session_contract::SessionResourceTransition,
         claim: Option<&awaken_dispatch::RunClaim>,
+        realization_lease: Option<&awaken_session_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         self.managed()?
-            .apply_session_inputs_under_lifecycle(thread, transition, claim)
+            .apply_session_inputs_under_lifecycle(thread, transition, claim, realization_lease)
             .await
     }
 
@@ -332,6 +327,7 @@ impl SharedHost {
         thread: &str,
         transition: &awaken_session_contract::SessionResourceTransition,
         claim: Option<&awaken_dispatch::RunClaim>,
+        realization_lease: Option<&awaken_session_contract::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()?
@@ -339,6 +335,7 @@ impl SharedHost {
                 thread,
                 transition,
                 claim,
+                realization_lease,
                 prospective_environment_binding,
             )
             .await
@@ -349,9 +346,10 @@ impl SharedHost {
         thread: &str,
         transition: &awaken_session_contract::SessionResourceTransition,
         claim: Option<&awaken_dispatch::RunClaim>,
+        realization_lease: Option<&awaken_session_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()?
-            .apply_transition(thread, transition, claim)
+            .apply_transition(thread, transition, claim, realization_lease)
             .await
     }
 
@@ -360,9 +358,10 @@ impl SharedHost {
         thread: &str,
         transition: &awaken_session_contract::SessionResourceTransition,
         claim: Option<&awaken_dispatch::RunClaim>,
+        realization_lease: Option<&awaken_session_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()?
-            .apply_transition_under_lifecycle(thread, transition, claim)
+            .apply_transition_under_lifecycle(thread, transition, claim, realization_lease)
             .await
     }
 

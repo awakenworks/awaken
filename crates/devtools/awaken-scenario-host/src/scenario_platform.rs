@@ -437,19 +437,6 @@ pub(super) fn fixed_host_model_publication(
     Arc::new(FixedAgentPublication::new([snapshot], Vec::new()))
 }
 
-/// Install one immutable Agent as the sole backend authority for deterministic
-/// ACP scenarios. Keeping this platform preparation in one place prevents scenario tests
-/// from reviving metadata-based runtime selection as a second source of truth.
-pub(super) fn mount_with_host_backend_publication(
-    platform: ScenarioPlatform,
-    agent_id: &str,
-    backend_ref: &str,
-) -> Router {
-    let publication = fixed_host_backend_publication(agent_id, backend_ref, Vec::new());
-    let platform = platform.map_host(|host| host.with_agent_publications(publication.clone()));
-    mount_with_agent_source(platform, publication)
-}
-
 impl PublishedAgentSnapshotSource for FixedAgentPublication {
     fn current(&self, workspace: &str, agent_id: &AgentId) -> Option<ExecutableAgentSnapshot> {
         self.snapshots.current(workspace, agent_id)

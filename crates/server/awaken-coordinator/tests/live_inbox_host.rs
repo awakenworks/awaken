@@ -150,13 +150,14 @@ async fn a_message_queued_mid_run_reaches_the_same_run() {
 }
 
 /// Cause/effect design: C0 the Host installs the canonical dispatch Session
-/// Runtime; C1 a follow-up is queued while the first Run is gated;
-/// C2 that Run is interrupted before a drain boundary; C3 a second Run starts on
-/// the same Thread and reaches its natural end. Effects: E1 the first inbox
-/// closes; E2 its best-effort message does not leak into the next physical
-/// attempt; E3 the next Run needs only one inference step. Decision rule
-/// C0+C1+C2+C3=>E1+E2+E3; same-attempt consumption is covered by the preceding
-/// test.
+/// Runtime; C1 a follow-up is queued while the first Run is gated; C2 that Run
+/// is interrupted before a drain boundary; C3 a second Run starts on the same
+/// Thread. Effects: E1 the first inbox closes and rejects later offers; E2 its
+/// uncommitted entry is discarded; E3 the second Run completes after one
+/// inference without folding that entry. Decision rule L2=C0+C1+C2+C3=>E1+E2+E3.
+/// Constraint: reliable cross-attempt delivery uses durable Session ingress,
+/// never a parallel process-local carry-over queue. L1 covers consumption before
+/// close; the active-generation test covers replacement by another live attempt.
 #[tokio::test]
 async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
     // Causes: the fixtures below establish `a message the cancelled run` with the concrete inputs,
@@ -192,15 +193,25 @@ async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
         h.host.live_inbox(thread).await.is_none(),
         "the cancelled attempt closed its inbox"
     );
+    assert!(
+        inbox.list().is_empty(),
+        "L2/E2 close removed the uncommitted attempt-local entry"
+    );
+    assert!(
+        matches!(
+            inbox.offer(user("late", "Too late.")),
+            awaken_runtime_contract::live_inbox::Offer::Closed
+        ),
+        "L2/E1 the retired inbox cannot accept another ownerless entry"
+    );
 
-    // The next Run on the same Thread owns a fresh physical-attempt inbox. The
-    // cancelled attempt's best-effort message is not durable input and must not
-    // seed it.
+    // Next Run on the same Thread gets a fresh empty inbox. One permitted
+    // inference is therefore sufficient for a natural end; a second inference
+    // would prove that the retired entry crossed the attempt boundary.
     let run = {
         let host = h.host.clone();
         tokio::spawn(async move { host.run(None, thread, vec![user("u2", "Second.")]).await })
     };
-    // One inference step is sufficient: there is no carried-over input to drain.
     h.wait_step_started().await;
     let _ = h.permits.send(());
 
@@ -216,7 +227,18 @@ async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
         .expect("assistant reply");
     assert!(
         !reply.text_content().contains("Survivor."),
-        "best-effort input from a cancelled attempt must not leak (reply: {})",
+        "L2/E3 the next attempt must not see retired input (reply: {})",
         reply.text_content()
+    );
+    let committed = h
+        .host
+        .committed_messages(thread)
+        .await
+        .expect("committed history remains readable");
+    assert!(
+        committed
+            .iter()
+            .all(|message| message.text_content() != "Survivor."),
+        "L2/E2 an unconsumed best-effort entry never became durable truth"
     );
 }

@@ -132,7 +132,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-service-auth-contract \
     --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
   run_kani awaken-session-application \
-    --harness environment_owner_topology_is_exact_and_frozen
+    --harness environment_owner_topology_is_exact_and_frozen \
+    --harness session_recovery_backoff_is_bounded_monotonic_and_saturating \
+    --harness dependency_wake_never_postpones_the_single_existing_deadline
   run_kani awaken-tenancy \
     --harness successful_scope_resolution_never_widens_authority \
     --harness any_uncovered_selector_fails_closed \
@@ -202,6 +204,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness dispatch_maintenance_transitions_are_closed_and_exact \
     --harness physical_attempt_slot_installs_and_clears_only_exact_authority \
     --harness physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair
+  run_kani awaken-dispatch --no-default-features \
+    --harness shared_error_gate_admits_exactly_one_probe_after_the_deadline \
+    --harness drain_error_backoff_is_bounded_monotonic_and_saturating
   run_kani awaken-credential-materializer \
     --harness exact_vault_revision_accepts_only_a_positive_matching_or_unpinned_source \
     --harness platform_relay_local_gate_admits_only_exact_platform_relay
@@ -467,6 +472,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/session-runtime-projection" \
     -config formal/tla/SessionRuntimeProjection.cfg \
     formal/tla/SessionRuntimeProjection.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-environment-projection" \
+    -config formal/tla/SessionEnvironmentProjection.cfg \
+    formal/tla/SessionEnvironmentProjection.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/managed-projection-publish" \
     -config formal/tla/ManagedProjectionPublish.cfg \

@@ -18,8 +18,8 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_scenario_host::{
-    EchoModel, ReviseModel, build_custom_router, build_delegation_router, build_graded_router,
-    build_router, build_router_and_host_with_agent_publications,
+    EchoModel, ReviseModel, build_custom_router, build_delegation_router_with_deployment,
+    build_graded_router, build_router, build_router_and_host_with_agent_publications,
 };
 use axum::Router;
 use axum::body::Body;
@@ -28,6 +28,12 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use support::wait_for_session_events;
+
+async fn build_local_delegation_router() -> Router {
+    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+    build_delegation_router_with_deployment(deployment).await
+}
 
 fn build_write_confirmation_router(
     llm: Arc<dyn LlmExecutor>,
@@ -1014,7 +1020,7 @@ async fn delegation_runs_a_subagent_and_returns_its_result() {
     // E2 Runtime still executes C2's list/send surface; E3 the child report
     // admits exactly one later root report Run. The immutable publication and
     // derived execution closure are distinct roles, never parallel authorities.
-    let app = build_delegation_router();
+    let app = build_local_delegation_router().await;
     let id = create_session(&app).await;
     send_message(&app, &id, "research the answer").await;
     let list = wait_for_session_events(
@@ -1099,7 +1105,7 @@ async fn delegation_fails_closed_on_unpublished_target() {
     // frozen roster. E1 C1 remains accepted as publication truth; E2 the
     // Thread-owned `SEND_MESSAGE` command rejects C2 before a child Thread or
     // Run can be admitted.
-    let app = build_delegation_router();
+    let app = build_local_delegation_router().await;
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "use the ghost agent").await;
 

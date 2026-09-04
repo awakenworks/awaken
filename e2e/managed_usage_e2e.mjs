@@ -47,7 +47,7 @@ const usageOf = async (client, id) => (await client.beta.sessions.retrieve(id, {
 
 async function main() {
   // ---- arm 1: deterministic exact usage over the real provider wire ----
-  await withRealServer('echo', 38240, async (baseUrl) => {
+  await withRealServer('echo', Number(process.env.E2E_PORT), async (baseUrl) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 
@@ -78,7 +78,7 @@ async function main() {
 
   // ---- arm 2: live KIMI — real, plausible counts ----
   if (process.env.E2E_LIVE === '1' && (process.env.ANTHROPIC_API_KEY || process.env.KIMI_API_KEY)) {
-    await withServer('real', 38241, async (baseUrl) => {
+    await withServer('real', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       await turn(client, session.id, 'Reply with exactly the single word: pong');

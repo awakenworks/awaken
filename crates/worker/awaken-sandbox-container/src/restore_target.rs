@@ -110,7 +110,9 @@ pub(super) fn retained_host_staging(
     retained_host_staging_path(std::path::PathBuf::from(locator.staging_root())).map(Some)
 }
 
-fn retained_host_staging_path(path: std::path::PathBuf) -> Result<StagingGuard, RuntimeError> {
+pub(crate) fn retained_host_staging_path(
+    path: std::path::PathBuf,
+) -> Result<StagingGuard, RuntimeError> {
     validate_host_staging_path(&path)?;
     let metadata = std::fs::symlink_metadata(&path)
         .map_err(|error| RuntimeError::Backend(error.to_string()))?;

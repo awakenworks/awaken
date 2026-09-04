@@ -66,11 +66,62 @@ function skillsFixture(projection) {
   throw new Error(`unsupported Skills projection ${JSON.stringify(projection)}`);
 }
 
+function managedTypesFixture(enabled) {
+  if (!enabled) return '';
+  return `
+  const fableModel: import('@anthropic-ai/sdk/resources/beta/agents/agents').BetaManagedAgentsModel =
+    'claude-fable-5-1';
+  const held: import('@anthropic-ai/sdk/resources/beta/dreams').BetaTargetStoreHeldError = {
+    type: 'conflict_error',
+    message: 'target store held',
+  };
+  const dreaming: import('@anthropic-ai/sdk/resources/beta/dreams').BetaDreamingError = held;
+  type CandidateProfile = import('@anthropic-ai/sdk/resources/beta/user-profiles').BetaUserProfile;
+  const relationshipIsAbsent:
+    'relationship' extends keyof CandidateProfile ? never : true = true;
+  const profile: CandidateProfile = {
+    id: 'uprof_compile',
+    created_at: '2026-09-03T00:00:00Z',
+    metadata: {},
+    trust_grants: {},
+    type: 'user_profile',
+    updated_at: '2026-09-03T00:00:00Z',
+    external_user_onboarded_at: null,
+  };
+  const createProfile:
+    import('@anthropic-ai/sdk/resources/beta/user-profiles').UserProfileCreateParams = {
+      external_user_onboarded_at: '2026-09-03T00:00:00Z',
+    };
+  const updateProfile:
+    import('@anthropic-ai/sdk/resources/beta/user-profiles').UserProfileUpdateParams = {
+      external_user_onboarded_at: '2026-09-03T00:00:00Z',
+    };
+  const listProfiles:
+    import('@anthropic-ai/sdk/resources/beta/user-profiles').UserProfileListParams = {
+      order: 'asc', order_by: 'name',
+    };
+  type DeploymentRun =
+    import('@anthropic-ai/sdk/resources/beta/deployment-runs').BetaManagedAgentsDeploymentRun;
+  type Deployment =
+    import('@anthropic-ai/sdk/resources/beta/deployments').BetaManagedAgentsDeployment;
+  type Memory =
+    import('@anthropic-ai/sdk/resources/beta/memory-stores/memories').BetaManagedAgentsMemory;
+  type SessionEvent =
+    import('@anthropic-ai/sdk/resources/beta/sessions/events').BetaManagedAgentsSessionEvent;
+  type Session =
+    import('@anthropic-ai/sdk/resources/beta/sessions/sessions').BetaManagedAgentsSession;
+  const declarationOwners:
+    [DeploymentRun, Deployment, Memory, SessionEvent, Session] | undefined = undefined;
+  void fableModel; void dreaming; void relationshipIsAbsent; void profile;
+  void createProfile; void updateProfile; void listProfiles; void declarationOwners;`;
+}
+
 export function officialSdkChangePointFixture({
   filesProjection,
   skillsProjection,
   parseUnverified,
   resolveSkillVersion,
+  managedTypesV123 = false,
 }) {
   return `// Generated in memory by official_sdk_change_point_compile.mjs.
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
@@ -97,6 +148,7 @@ async function exerciseChangePoints() {
   void toolNames; void accumulate;
 ${filesFixture(filesProjection)}
 ${skillsFixture(skillsProjection)}
+${managedTypesFixture(managedTypesV123)}
   client.beta.webhooks.unwrap('{}', { headers: {
     'webhook-id': 'event_compile',
     'webhook-timestamp': '0',

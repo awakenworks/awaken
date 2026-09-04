@@ -18,7 +18,7 @@ const PORT = Number(process.env.E2E_PORT ?? 38137);
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_BETA = 'agent-memory-2026-07-22';
 const QUALIFIED_CLIENTS = await loadConformanceClients();
-const CLIENTS = QUALIFIED_CLIENTS.map(({ version, Client }) => [version, Client]);
+const CLIENTS = QUALIFIED_CLIENTS.map(({ version, Client, root }) => [version, Client, root]);
 const QUALIFIED_VERSIONS = CLIENTS.map(([version]) => version).join(', ');
 
 async function drain(items) {
@@ -124,7 +124,7 @@ async function rawMemoryPage(baseURL, options, storeID, beta, page) {
   return body;
 }
 
-async function exercise(version, Client, baseURL, options) {
+async function exercise(version, Client, root, baseURL, options) {
   const client = new Client({ apiKey: options.apiKey, baseURL });
 
   // Test design: every_supported_sdk_decodes_real_managed_error_boundaries
@@ -146,7 +146,7 @@ async function exercise(version, Client, baseURL, options) {
     assert.match(requestID ?? '', /^req_[0-9a-f]{32}$/u, `${version}: error request id`);
     assert.equal(error.requestID, requestID, `${version}: promoted error request id`);
     assert.ok(workspaceID, `${version}: error workspace id`);
-    const projectsWorkspace = projectsWorkspaceResponseContext(version);
+    const projectsWorkspace = projectsWorkspaceResponseContext(root);
     assert.equal(
       'workspaceID' in error,
       projectsWorkspace,
@@ -450,7 +450,9 @@ async function main() {
   assertSdkCapabilityBoundary();
   const run = async (baseURL) => {
     await exerciseVersionSelectionBoundary(baseURL, options);
-    for (const [version, Client] of CLIENTS) await exercise(version, Client, baseURL, options);
+    for (const [version, Client, root] of CLIENTS) {
+      await exercise(version, Client, root, baseURL, options);
+    }
     const memoryShapes = [];
     for (const [version, Client] of CLIENTS) {
       memoryShapes.push(await exerciseMemory(version, Client, baseURL, options));

@@ -41,6 +41,10 @@ pub enum awaken_protocol_ag_ui::types::AgUiContent
 pub awaken_protocol_ag_ui::types::AgUiContent::Parts(alloc::vec::Vec<awaken_protocol_ag_ui::types::InputContentPart>)
 pub awaken_protocol_ag_ui::types::AgUiContent::Text(alloc::string::String)
 pub enum awaken_protocol_ag_ui::types::AgUiEvent
+pub awaken_protocol_ag_ui::types::AgUiEvent::ReasoningEnd
+pub awaken_protocol_ag_ui::types::AgUiEvent::ReasoningEnd::message_id: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::ReasoningStart
+pub awaken_protocol_ag_ui::types::AgUiEvent::ReasoningStart::message_id: alloc::string::String
 pub awaken_protocol_ag_ui::types::AgUiEvent::RunError
 pub awaken_protocol_ag_ui::types::AgUiEvent::RunError::code: core::option::Option<alloc::string::String>
 pub awaken_protocol_ag_ui::types::AgUiEvent::RunError::message: alloc::string::String
@@ -141,6 +145,10 @@ pub awaken_protocol_ag_ui::types::RunAgentInput::state: serde_json::value::Value
 pub awaken_protocol_ag_ui::types::RunAgentInput::thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_ag_ui::types::RunAgentInput::tools: alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiTool>
 pub enum awaken_protocol_ag_ui::AgUiEvent
+pub awaken_protocol_ag_ui::AgUiEvent::ReasoningEnd
+pub awaken_protocol_ag_ui::AgUiEvent::ReasoningEnd::message_id: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::ReasoningStart
+pub awaken_protocol_ag_ui::AgUiEvent::ReasoningStart::message_id: alloc::string::String
 pub awaken_protocol_ag_ui::AgUiEvent::RunError
 pub awaken_protocol_ag_ui::AgUiEvent::RunError::code: core::option::Option<alloc::string::String>
 pub awaken_protocol_ag_ui::AgUiEvent::RunError::message: alloc::string::String

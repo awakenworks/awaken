@@ -366,6 +366,12 @@ fn stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run() {
 /// public Environment Work ownership decision without exposing the Work store.
 #[async_trait]
 pub trait SessionWorkLeaseAuthority: Send + Sync {
+    /// Notify the existing Session lifecycle supervisor that Worker placement
+    /// evidence changed. This is an edge-triggered hint only: the supervisor
+    /// re-reads the Session, WorkQueue, and Worker registry authorities before
+    /// performing any mutation or effect.
+    fn request_lifecycle_reconciliation(&self) {}
+
     async fn acquire_session_work(
         &self,
         session_id: &str,

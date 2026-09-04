@@ -103,7 +103,7 @@ async function main() {
     return;
   }
   try {
-    await withServer('real', 38137, async (baseUrl) => {
+    await withServer('real', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const memoryOnly = process.env.AWAKEN_EVAL_MEMORY_ONLY === '1';
 

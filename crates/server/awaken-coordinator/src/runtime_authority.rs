@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord};
+use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::thread::read::lifecycle::{
@@ -552,6 +553,17 @@ impl LocalCommitQueries<PostgresCommitCoordinator> for PostgresQueries {
     ) -> Result<Vec<Message>, String> {
         store
             .authoritative_committed_messages(thread_id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn authoritative_committed_state(
+        &self,
+        store: &PostgresCommitCoordinator,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<StateCommand>, String> {
+        store
+            .authoritative_committed_state(thread_id)
             .await
             .map_err(|error| error.to_string())
     }

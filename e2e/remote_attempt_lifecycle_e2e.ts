@@ -611,8 +611,14 @@ async function main(): Promise<void> {
     await waitForPort(PORT, 180_000, server);
     await publishRemote(peer.endpoint);
 
-    // 1) Crash after task-reference commit but during tasks/get. Replacement must
-    // reattach to crash-task from the pinned snapshot and never message:send again.
+    // 1) Crash after task-reference commit but during tasks/get. Causes:
+    // C1=the first process commits the exact remote task reference; C2=that
+    // process crashes with the poll open; C3=the replacement's deliberately
+    // executable catalog is rebuilt from the same durable Config publication;
+    // C4=the peer completes the task. Effects: E1=C1+C2+C3+C4
+    // reattaches to crash-task; E2=the initial message:send remains exactly once.
+    // Constraint: the claimed Run snapshot never substitutes for the canonical
+    // Session publication. Rule R1=!C3=>wait fail-closed; R2=all=>E1+E2.
     const crashThread = await createSession(client);
     await sendText(client, crashThread, 'prove crash recovery');
     // Cause graph: valid A2A discriminators -> task reference commit -> tasks/get
@@ -642,11 +648,6 @@ async function main(): Promise<void> {
       new Set(['crash-task']),
       'every poll addressed the committed task identity',
     );
-
-    // Config storage is intentionally process-local in this scenario host. Publish
-    // again for new sessions; the recovered run above succeeded before this step,
-    // proving recovery consumed its pinned dispatch snapshot rather than reopening config.
-    await publishRemote(peer.endpoint);
 
     // 2) A foreground Managed API Run reaches input-required. A client result
     // resumes the root Run on the exact remote context and commits its terminal reply.

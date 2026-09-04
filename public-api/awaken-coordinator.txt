@@ -111,9 +111,6 @@ pub fn awaken_coordinator::data_subject_boundary::coordinator_content_eraser(all
 pub fn awaken_coordinator::data_subject_boundary::router(alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub fn awaken_coordinator::data_subject_boundary::router_with_authenticator(alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>, alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>) -> axum::routing::Router
 pub mod awaken_coordinator::mcp_export
-pub struct awaken_coordinator::mcp_export::SessionToolExporter
-impl awaken_session_executor::acp_tool_export::AcpToolExporter for awaken_coordinator::mcp_export::SessionToolExporter
-pub fn awaken_coordinator::mcp_export::SessionToolExporter::export_set<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_executor::acp_tool_export::AcpToolExport, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_coordinator::mcp_export::router(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>, core::option::Option<alloc::string::String>) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub mod awaken_coordinator::webhooks
 pub use awaken_coordinator::webhooks::<<awaken_webhook_managed::*>>

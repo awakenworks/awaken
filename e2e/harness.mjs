@@ -19,6 +19,8 @@ import {
   cargoExecutable,
   cargoScenarioHostBundle,
 } from './cargo_binary.mjs';
+import { stringifyDurableJson } from './sqlite.mjs';
+import { withoutAmbientProviderKeys } from './process_environment.mjs';
 
 // The historical 38xxx defaults overlap Linux's ephemeral client-port range.
 // Assign each Node scenario a small, non-ephemeral block before the importing
@@ -138,6 +140,23 @@ export function deploymentEnv(
   return { HOME: home };
 }
 
+// Direct-SQL E2E probes must address the same database as the product under
+// test. Cause/effect rule: one absolute PostgreSQL URL with one path segment
+// yields that decoded database name; an empty/nested/non-PostgreSQL URL is
+// rejected before a probe can accidentally inspect the daemon's default DB.
+export function postgresDatabaseName(databaseUrl) {
+  const url = new URL(databaseUrl);
+  const encodedName = url.pathname.slice(1);
+  if (
+    !['postgres:', 'postgresql:'].includes(url.protocol)
+    || encodedName.length === 0
+    || encodedName.includes('/')
+  ) {
+    throw new Error(`invalid PostgreSQL database URL for E2E probe: ${databaseUrl}`);
+  }
+  return decodeURIComponent(encodedName);
+}
+
 // One test-side transport owner for official Managed SDK calls against a
 // workspace-scoped Awaken route. Causes: C1=the SDK emits its canonical `/v1/`
 // path; C2=the scenario owns the selected Workspace id. Effects: E1=prefix the
@@ -225,7 +244,7 @@ function serverProcessEnv(addr, configured = {}, inheritedEnvironment = process.
     ?? inheritedEnvironment.SESSION_DEPLOYMENT_SANDBOX_DIR
     ?? (hasDurableRoot ? undefined : `${E2E_HOME_ROOT}/sandboxes`);
   return {
-    ...inheritedEnvironment,
+    ...withoutAmbientProviderKeys(inheritedEnvironment),
     HOME: E2E_HOME,
     ...configured,
     // A caller's shell may globally clamp Rust logs (Codex commonly uses
@@ -438,7 +457,11 @@ export async function waitForValue(
     if (await predicate(value)) return value;
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   } while (performance.now() < deadline);
-  throw new Error(`${description}; last observed value: ${JSON.stringify(value)}`);
+  // Cause/effect rule: durable SQLite observations may contain exact u64
+  // BigInts; timeout diagnostics must preserve those tokens instead of masking
+  // the product state with JSON.stringify's BigInt TypeError. Reuse the one
+  // durable JSON encoder shared by fault-injection fixtures.
+  throw new Error(`${description}; last observed value: ${stringifyDurableJson(value)}`);
 }
 
 // Canonical receipt-scoped observation for asynchronous Managed Event batches.
@@ -1014,17 +1037,19 @@ export async function availablePort(preferred) {
 }
 
 /// Spawn the server in `mode` on `port`, run `fn(baseUrl)`, then stop it.
-export async function withServer(mode, port, fn) {
+export async function withServer(mode, port, fn, extraEnv = {}) {
   const bin = ensureBuilt();
   const listenPort = await availablePort(port);
   const addr = `127.0.0.1:${listenPort}`;
   const server = spawn(bin, {
     // Generic scenario fixtures use the portable Workdir substrate. A test for
-    // Namespace/Container owns its provider selection explicitly and does not
-    // use this convenience wrapper.
+    // Namespace/Container must own that selection explicitly through extraEnv;
+    // this remains the one lifecycle wrapper instead of duplicating spawn/wait/
+    // stop in each substrate-specific scenario.
     env: preparedServerProcessEnv(addr, {
       AWAKEN_MODEL_MODE: mode,
       SESSION_DEPLOYMENT_SANDBOX_TIER: 'local',
+      ...extraEnv,
     }),
     stdio: ['pipe', 'inherit', 'inherit'],
   });
@@ -1040,6 +1065,19 @@ export async function withServer(mode, port, fn) {
 // test that spawns the server itself (restart/durability suites) can build the same
 // env via `realServerEnv`.
 export const FAKE_KEY = 'sk-fake-upstream-key'; // awaken-allow: secret
+
+// Explicit fake-provider configuration is layered through `extraEnv` after
+// inherited provider keys are removed by `serverProcessEnv`. Custom upstream
+// fixtures reuse this owner instead of mutating process.env and accidentally
+// reclassifying their inert key as ambient input.
+export function fakeAnthropicServerEnv(upstream, overrides = {}) {
+  return {
+    ANTHROPIC_API_KEY: FAKE_KEY,
+    ANTHROPIC_BASE_URL: `${upstream.url}/v1/`,
+    ANTHROPIC_MODEL: 'fake-haiku',
+    ...overrides,
+  };
+}
 
 // A scenario with host config (custom tools / delegates / skills / state machine /
 // compaction / memory / config plane / MCP): keep its `mode` router but run the
@@ -1082,9 +1120,7 @@ export function realServerEnv(behavior, upstream, { mode = 'real', extraEnv = {}
     // Local substrate here. A substrate-specific test can still override this
     // through extraEnv and must fail closed when that substrate is unavailable.
     SESSION_DEPLOYMENT_SANDBOX_TIER: 'local',
-    ANTHROPIC_API_KEY: FAKE_KEY,
-    ANTHROPIC_BASE_URL: `${upstream.url}/v1/`,
-    ANTHROPIC_MODEL: 'fake-haiku',
+    ...fakeAnthropicServerEnv(upstream),
     ...extraEnv,
   };
 }

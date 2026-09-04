@@ -7,11 +7,18 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  pass,
+  spawnServer,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const CALC_TOKEN = 'calc-bearer-token-e2e'; // awaken-allow: secret
+const PORT = Number(process.env.E2E_PORT ?? 38196);
 
 function agentTexts(events) {
   return events
@@ -49,7 +56,15 @@ async function main() {
   const fixture = await startCalcFixture(CALC_TOKEN, { allowAnonymous: true });
   const replacementFixture = await startCalcFixture(undefined, { allowAnonymous: true });
   try {
-    await withServer('acp-managed-mcp', 38196, async (baseUrl) => {
+    // Cause C0: a catalog ACP adapter requires the shared path-faithful
+    // Namespace SessionEnvironment. Effect E0: every A1-A4 launch below is
+    // bound to that same Session-owned environment. Decision S1:
+    // Namespace+C0=>E0; Local+C0=>fail closed rather than bypass placement.
+    const { server, baseUrl } = spawnServer('acp-managed-mcp', PORT, {
+      SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
+    });
+    try {
+      await waitForPort(PORT, 180_000, server);
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const acpAgent = await client.beta.agents.create({
         name: 'managed ACP fixture',
@@ -135,7 +150,9 @@ async function main() {
       const afterRemove = await runAcpTurn(client, anonymous.id, 'after remove', 'A4');
       assert.equal(afterRemove.at(-1), 'mcp noname noref', `A4: ${JSON.stringify(afterRemove)}`);
       pass('A1-A4 ACP MCP create, replace, and remove consume only the active generation');
-    });
+    } finally {
+      await stopServer(server);
+    }
 
     // Coverage ownership: this hermetic scenario owns only A1-A4. The live
     // `acp_real_mcp_kimi_e2e` owns pinned-wrapper launch plus real model/MCP

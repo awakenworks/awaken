@@ -106,7 +106,7 @@ run static "sandbox image release checker self-test" python3 scripts/ci/check_sa
 run static "sandbox image release contract" python3 scripts/ci/check_sandbox_image_release.py
 run docs "documentation" scripts/ci/check-docs.sh
 run rust "rust" scripts/ci/check-rust.sh --full
-run rust "dependency-policy" cargo deny --log-level error check bans
+run rust "dependency-policy" cargo deny --log-level error check advisories bans
 run api "public-api" scripts/ci/check_public_api.sh --require-tools
 run formal "formal" scripts/ci/check_formal.sh --require-tools
 run reliability "reliability" scripts/ci/check-reliability.sh --require-tools

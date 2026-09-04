@@ -8,7 +8,12 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  fakeAnthropicServerEnv,
+  withServer,
+  pass,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -58,14 +63,10 @@ async function runOneTurn(baseUrl, text) {
 }
 
 async function main() {
-  process.env.ANTHROPIC_API_KEY = FAKE_KEY;
-  process.env.ANTHROPIC_MODEL = 'fake-haiku';
-
   // Arm 1: a retryable failure (first attempt 503) is retried; the turn recovers.
   const recovering = await startFakeAnthropic(FAKE_KEY, { failuresBeforeSuccess: 1 });
   try {
-    process.env.ANTHROPIC_BASE_URL = `${recovering.url}/v1/`;
-    await withServer('real', 38221, async (baseUrl) => {
+    await withServer('real', Number(process.env.E2E_PORT), async (baseUrl) => {
       const { events } = await runOneTurn(baseUrl, 'hello after a hiccup');
       const replies = events
         .filter((e) => e.type === 'agent.message')
@@ -75,7 +76,7 @@ async function main() {
         `the turn recovered on retry: ${JSON.stringify(replies)}`,
       );
       assert.ok(recovering.attempts >= 2, `the failed attempt was retried (attempts=${recovering.attempts})`);
-    });
+    }, fakeAnthropicServerEnv(recovering, { ANTHROPIC_API_KEY: FAKE_KEY }));
     pass('a retryable upstream failure is retried and the turn recovers');
   } finally {
     recovering.close();
@@ -85,8 +86,7 @@ async function main() {
   // the run loop (error handling + circuit breaker) rather than hanging or panicking.
   const failing = await startFakeAnthropic(FAKE_KEY, { alwaysFail: true });
   try {
-    process.env.ANTHROPIC_BASE_URL = `${failing.url}/v1/`;
-    await withServer('real', 38222, async (baseUrl) => {
+    await withServer('real', Number(process.env.E2E_PORT), async (baseUrl) => {
       const { events, sendError } = await runOneTurn(baseUrl, 'this never succeeds');
       const recovered = events
         .filter((e) => e.type === 'agent.message')
@@ -94,7 +94,7 @@ async function main() {
       assert.ok(!recovered, 'a permanently-failing upstream does not fabricate a reply');
       assert.ok(failing.attempts >= 2, `retries were attempted before giving up (attempts=${failing.attempts})`);
       assert.ok(sendError !== null || events.length > 0, 'the failure surfaced (error or a status event)');
-    });
+    }, fakeAnthropicServerEnv(failing, { ANTHROPIC_API_KEY: FAKE_KEY }));
     pass('exhausted upstream failures surface through the run loop (retries + breaker + error path)');
   } finally {
     failing.close();

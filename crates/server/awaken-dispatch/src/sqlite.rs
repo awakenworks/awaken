@@ -45,6 +45,7 @@ use crate::{
 };
 use awaken_dispatch_contract::{
     PhysicalAttemptSlot, PhysicalAttemptTransition, RunDispatch, begin_physical_attempt,
+    handoff_physical_attempt,
 };
 
 mod claim;

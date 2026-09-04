@@ -10,7 +10,6 @@ impl ManagedHost {
             credential_refresh_factory: None,
             resource_validator: None,
             repository_binding_verifier: None,
-            repository_publication_binding_verifier: None,
             mcp_realizer: None,
         }
     }
@@ -74,9 +73,6 @@ impl ManagedHost {
             credential_refresh_factory: self.credential_refresh_factory.clone(),
             resource_validator: self.resource_validator.clone(),
             repository_binding_verifier: self.repository_binding_verifier.clone(),
-            repository_publication_binding_verifier: self
-                .repository_publication_binding_verifier
-                .clone(),
             mcp_realizer: self.mcp_realizer.clone(),
         });
         self

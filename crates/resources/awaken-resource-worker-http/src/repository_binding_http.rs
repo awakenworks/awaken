@@ -6,7 +6,7 @@ use awaken_resource_contract::{
     ConfigVersion, LiveResourceBindingVerifier, RepositoryBindingVerifier,
     RepositoryBindingVerifierError, RepositoryTransport,
 };
-use awaken_dispatch_contract::{DispatchQueue, RunClaim};
+use awaken_dispatch_contract::{DispatchQueue, ResourceOperationFence, RunClaim};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
@@ -28,25 +28,12 @@ const REPOSITORY_BINDING_PATH: &str = "/v1/worker/resources/repositories/verify"
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RepositoryBindingRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    claim: Option<RunClaim>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    terminal_publication: Option<TerminalRepositoryPublicationAuthority>,
+    authority: ResourceOperationFence,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     identity: Option<WorkerIdentity>,
     workspace_id: String,
     repository_id: String,
     config_version: ConfigVersion,
-}
-
-/// Exact Session-owned authority for the one terminal Repository publication
-/// effect. The command carries the frozen input/configuration; the lease proves
-/// which registered Worker incarnation may execute it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TerminalRepositoryPublicationAuthority {
-    command: awaken_session_contract::SessionRepositoryPublicationCommand,
-    lease: awaken_session_contract::SessionRealizationLease,
 }
 
 pub struct WorkerRepositoryBindingService {
@@ -78,6 +65,9 @@ pub enum RepositoryTransportAuthority {
     Run {
         claim: RunClaim,
         claim_expires_ms: u64,
+    },
+    SessionMaterialization {
+        intent: Box<awaken_session_contract::SessionResourceMaterializationIntent>,
     },
     TerminalPublication {
         command: Box<awaken_session_contract::SessionRepositoryPublicationCommand>,
@@ -155,8 +145,7 @@ impl HttpRepositoryBindingVerifier {
         workspace_id: &str,
         repository_id: &str,
         config_version: ConfigVersion,
-        claim: Option<RunClaim>,
-        terminal_publication: Option<TerminalRepositoryPublicationAuthority>,
+        authority: ResourceOperationFence,
     ) -> Result<RepositoryTransport, RepositoryBindingVerifierError> {
         if workspace_id.trim().is_empty() || repository_id.trim().is_empty() {
             return Err(RepositoryBindingVerifierError::new(
@@ -171,8 +160,7 @@ impl HttpRepositoryBindingVerifier {
                 self.upstream.base_url()
             ))
             .json(&RepositoryBindingRequest {
-                claim,
-                terminal_publication,
+                authority,
                 identity: self.upstream.worker_identity().cloned(),
                 workspace_id: workspace_id.to_owned(),
                 repository_id: repository_id.to_owned(),
@@ -204,6 +192,31 @@ impl HttpRepositoryBindingVerifier {
 }
 
 #[async_trait::async_trait]
+impl RepositoryBindingVerifier<ResourceOperationFence> for HttpRepositoryBindingVerifier {
+    async fn verify(
+        &self,
+        workspace_id: &str,
+        repository_id: &str,
+        config_version: ConfigVersion,
+        authority: Option<&ResourceOperationFence>,
+    ) -> Result<RepositoryTransport, RepositoryBindingVerifierError> {
+        let authority = authority.ok_or_else(|| {
+            RepositoryBindingVerifierError::new(
+                "remote Repository verification requires an operation fence",
+            )
+        })?;
+        self.verify_request(
+            workspace_id,
+            repository_id,
+            config_version,
+            authority.clone(),
+        )
+        .await
+    }
+}
+
+/// Source-compatible adapter for callers that still hold a raw Run claim.
+#[async_trait::async_trait]
 impl RepositoryBindingVerifier<RunClaim> for HttpRepositoryBindingVerifier {
     async fn verify(
         &self,
@@ -221,13 +234,13 @@ impl RepositoryBindingVerifier<RunClaim> for HttpRepositoryBindingVerifier {
             workspace_id,
             repository_id,
             config_version,
-            Some(claim.clone()),
-            None,
+            ResourceOperationFence::Run(claim.clone()),
         )
         .await
     }
 }
 
+/// Source-compatible terminal adapter over the same canonical wire fence.
 #[async_trait::async_trait]
 impl
     RepositoryBindingVerifier<(
@@ -254,11 +267,10 @@ impl
             workspace_id,
             repository_id,
             config_version,
-            None,
-            Some(TerminalRepositoryPublicationAuthority {
-                command: command.clone(),
+            ResourceOperationFence::RepositoryPublication {
+                command: Box::new(command.clone()),
                 lease: lease.clone(),
-            }),
+            },
         )
         .await
     }
@@ -327,15 +339,19 @@ async fn verify_repository_binding(
     if request.workspace_id.trim().is_empty() || request.repository_id.trim().is_empty() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let authority = (request.claim.clone(), request.terminal_publication.clone());
-    match authority {
-        (Some(claim), None) => {
+    match request.authority.clone() {
+        ResourceOperationFence::Run(claim) => {
             verify_run_repository_binding(service, &worker, request, claim).await
         }
-        (None, Some(authority)) => {
-            verify_terminal_repository_binding(service, &worker, request, authority).await
+        ResourceOperationFence::SessionMaterialization(intent) => {
+            verify_session_repository_binding(service, &worker, request, intent).await
         }
-        _ => StatusCode::FORBIDDEN.into_response(),
+        ResourceOperationFence::RepositoryPublication { command, lease } => {
+            verify_terminal_repository_binding(service, &worker, request, *command, lease).await
+        }
+        ResourceOperationFence::CheckpointRelease(_) | ResourceOperationFence::Terminal(_) => {
+            StatusCode::FORBIDDEN.into_response()
+        }
     }
 }
 
@@ -455,11 +471,11 @@ async fn verify_run_repository_binding(
     }
 }
 
-async fn verify_terminal_repository_binding(
+async fn verify_session_repository_binding(
     service: Arc<WorkerRepositoryBindingService>,
     worker: &VerifiedWorkerContext,
     request: RepositoryBindingRequest,
-    authority: TerminalRepositoryPublicationAuthority,
+    intent: awaken_session_contract::SessionResourceMaterializationIntent,
 ) -> Response {
     let Some(identity) = request.identity.as_ref() else {
         return StatusCode::FORBIDDEN.into_response();
@@ -475,7 +491,129 @@ async fn verify_terminal_repository_binding(
         directory,
         worker,
         identity,
-        &authority.lease,
+        intent.lease(),
+        now_ms,
+        SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
+    )
+    .await
+    .rejection_status()
+    {
+        return status.into_response();
+    }
+    let awaken_session_contract::SessionResourceMaterializationTarget::Input(input) =
+        intent.target()
+    else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    let awaken_session_contract::ResolvedInputSource::Repository {
+        repository_id,
+        config,
+        ..
+    } = &input.source
+    else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    let workspace_id = match control
+        .authorize_resource_materialization_intent(&intent)
+        .await
+    {
+        Ok(workspace_id) => workspace_id,
+        Err(awaken_session_contract::SessionRealizationControlFailure::Unavailable(_)) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        Err(_) => return StatusCode::CONFLICT.into_response(),
+    };
+    if workspace_id != request.workspace_id
+        || repository_id.as_str() != request.repository_id
+        || config.repository_id.as_str() != request.repository_id
+        || config.version != request.config_version
+        || service
+            .validator
+            .verify_repository_binding(
+                &request.workspace_id,
+                &request.repository_id,
+                request.config_version,
+            )
+            .is_err()
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(authorizer) = &service.transport_authorizer else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let transport = match authorizer
+        .authorize(RepositoryTransportAuthorization {
+            worker: identity.clone(),
+            session_id: intent.session_id().to_owned(),
+            workspace_id: workspace_id.clone(),
+            input: input.clone(),
+            authority: RepositoryTransportAuthority::SessionMaterialization {
+                intent: Box::new(intent.clone()),
+            },
+        })
+        .await
+    {
+        Ok(transport) => transport,
+        Err(_) => return StatusCode::FORBIDDEN.into_response(),
+    };
+    let latest_now_ms = unix_now_ms();
+    if control
+        .authorize_resource_materialization_intent(&intent)
+        .await
+        .ok()
+        .as_deref()
+        != Some(workspace_id.as_str())
+    {
+        return StatusCode::CONFLICT.into_response();
+    }
+    if let Some(status) = verify_session_worker_effect(
+        directory,
+        worker,
+        identity,
+        intent.lease(),
+        latest_now_ms,
+        SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
+    )
+    .await
+    .rejection_status()
+    {
+        return status.into_response();
+    }
+    if !transport_expiry_is_admitted(
+        &transport,
+        latest_now_ms,
+        RepositoryTransportExpiryRule::BoundToAuthority(intent.lease().expires_at_unix_ms),
+    ) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match transport {
+        RepositoryTransport::Direct => StatusCode::NO_CONTENT.into_response(),
+        transport => (StatusCode::OK, Json(transport)).into_response(),
+    }
+}
+
+async fn verify_terminal_repository_binding(
+    service: Arc<WorkerRepositoryBindingService>,
+    worker: &VerifiedWorkerContext,
+    request: RepositoryBindingRequest,
+    command: awaken_session_contract::SessionRepositoryPublicationCommand,
+    lease: awaken_session_contract::SessionRealizationLease,
+) -> Response {
+    let Some(identity) = request.identity.as_ref() else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    let Some(directory) = service.directory.as_deref() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Some(control) = service.session_control.as_deref() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let now_ms = unix_now_ms();
+    if let Some(status) = verify_session_worker_effect(
+        directory,
+        worker,
+        identity,
+        &lease,
         now_ms,
         SessionWorkerEffectTemporalRule::TerminalGeneration,
     )
@@ -485,10 +623,10 @@ async fn verify_terminal_repository_binding(
         return status.into_response();
     }
     let projection = match control
-        .terminal_repository_publication_command(&authority.command.session_id, &authority.lease)
+        .terminal_repository_publication_command(&command.session_id, &lease)
         .await
     {
-        Ok(Some(projection)) if projection.command == authority.command => projection,
+        Ok(Some(projection)) if projection.command == command => projection,
         Ok(_) => return StatusCode::CONFLICT.into_response(),
         Err(awaken_session_contract::SessionRealizationControlFailure::Unavailable(_)) => {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -497,7 +635,7 @@ async fn verify_terminal_repository_binding(
     };
     if !awaken_session_contract::realization_lease_authorizes(
         &projection.current_lease,
-        &authority.lease,
+        &lease,
         now_ms,
     ) {
         return StatusCode::CONFLICT.into_response();
@@ -555,7 +693,7 @@ async fn verify_terminal_repository_binding(
         Err(_) => return StatusCode::FORBIDDEN.into_response(),
     };
     let latest = match control
-        .terminal_repository_publication_command(&canonical.session_id, &authority.lease)
+        .terminal_repository_publication_command(&canonical.session_id, &lease)
         .await
     {
         Ok(Some(latest)) => latest,
@@ -570,7 +708,7 @@ async fn verify_terminal_repository_binding(
         )
         || !awaken_session_contract::realization_lease_authorizes(
             &latest.current_lease,
-            &authority.lease,
+            &lease,
             latest_now_ms,
         )
     {
@@ -613,12 +751,11 @@ mod tests {
         // field => reject before validation. Rules W1 R1+!R2=>decode; W2
         // R1+R2=>fail closed.
         let request = RepositoryBindingRequest {
-            claim: Some(RunClaim {
+            authority: ResourceOperationFence::Run(RunClaim {
                 run_id: awaken_agent_contract::agent::run::Id("run-repo".into()),
                 owner: "worker-repo".into(),
                 epoch: 5,
             }),
-            terminal_publication: None,
             identity: None,
             workspace_id: "workspace".into(),
             repository_id: "repository".into(),
@@ -627,7 +764,7 @@ mod tests {
         let encoded = serde_json::to_value(&request).expect("W1 encode");
         let decoded: RepositoryBindingRequest =
             serde_json::from_value(encoded.clone()).expect("W1 decode");
-        assert_eq!(decoded.claim, request.claim, "W1 claim");
+        assert_eq!(decoded.authority, request.authority, "W1 authority");
         assert_eq!(decoded.config_version, request.config_version, "W1 version");
 
         let mut unknown = encoded;

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::awaiting::{
-    AwaitReason, AwaitTarget, PermissionDecision, ResumeTicket,
+    AwaitReason, AwaitTarget, PermissionDecision, ResumeTicket, ToolCallAuthority,
 };
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
@@ -139,6 +139,8 @@ pub(crate) use worker_resolver::HostWorkerResolver;
 pub(crate) trait RuntimeMemoryReferenceEncoder:
     awaken_resource_contract::MemoryMaterializationReferenceEncoder<awaken_dispatch::RunClaim>
     + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+        awaken_session_contract::SessionResourceMaterializationIntent,
+    > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
         awaken_session_contract::SessionTerminalMemoryIntent,
     >
 {
@@ -147,6 +149,8 @@ pub(crate) trait RuntimeMemoryReferenceEncoder:
 impl<T> RuntimeMemoryReferenceEncoder for T where
     T: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
             awaken_dispatch::RunClaim,
+        > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+            awaken_session_contract::SessionResourceMaterializationIntent,
         > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
             awaken_session_contract::SessionTerminalMemoryIntent,
         >
@@ -301,7 +305,8 @@ pub struct SharedHost {
     /// Sole per-kind File materialization service. An embedded process points it at
     /// the local catalog/store pair; a database-less Worker replaces it with the
     /// claim-fenced HTTP adapter before accepting work.
-    pub(crate) file_content_source: Arc<dyn crate::FileContentSource<awaken_dispatch::RunClaim>>,
+    pub(crate) file_content_source:
+        Arc<dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>>,
     /// Logical Files-API truth: public identity, metadata, Workspace visibility,
     /// Session scope, and harvest idempotency. Bytes remain in `file_store` only.
     #[cfg(any(test, feature = "test-support"))]

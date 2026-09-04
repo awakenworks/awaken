@@ -53,6 +53,7 @@ use crate::{
 };
 use awaken_dispatch_contract::{
     PhysicalAttemptSlot, PhysicalAttemptTransition, RunDispatch, begin_physical_attempt,
+    handoff_physical_attempt,
 };
 
 pub use crate::postgres_checkpoint::PostgresStreamCheckpointStore;
@@ -423,7 +424,12 @@ impl PostgresDispatchStore {
         };
         Ok(
             request.map(|(request, expires_ms, cancellation_requested)| {
-                CommitEpochGuard::new(tx, request, expires_ms, cancellation_requested)
+                CommitEpochGuard::new_releasing(
+                    async move { tx.rollback().await.map_err(|error| error.to_string()) },
+                    request,
+                    expires_ms,
+                    cancellation_requested,
+                )
             }),
         )
     }

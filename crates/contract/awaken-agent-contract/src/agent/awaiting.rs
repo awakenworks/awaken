@@ -47,6 +47,21 @@ pub enum ToolAwaitReason {
     Delegation,
 }
 
+/// Durable owner of a pending tool wait. The distinction is an execution
+/// authority boundary, not a second ticket: Native tool execution is fenced by
+/// its committed Runtime ToolBatch, while an opaque attempt executor (for
+/// example ACP) owns a permission exchange that has no local ToolBatch.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolCallAuthority {
+    RuntimeToolBatch,
+    RunAttemptExecutor,
+    /// Tickets written before the authority field was introduced. Readers may
+    /// use the presence of an exact ToolBatch to recover the historical owner;
+    /// new writers must always select one of the explicit variants.
+    #[default]
+    LegacyUnspecified,
+}
+
 /// Why a remote agent is awaiting caller input without a local tool call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RemoteInputReason {
@@ -73,6 +88,8 @@ pub enum AwaitTarget {
         reason: ToolAwaitReason,
         call_id: String,
         tool: PendingTool,
+        #[serde(default)]
+        authority: ToolCallAuthority,
     },
     RemoteInput {
         reason: RemoteInputReason,
@@ -121,6 +138,14 @@ impl AwaitTarget {
     pub fn tool_call(&self) -> Option<(&str, &PendingTool)> {
         match self {
             Self::ToolCall { call_id, tool, .. } => Some((call_id, tool)),
+            Self::RemoteInput { .. } | Self::Pause(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn tool_call_authority(&self) -> Option<ToolCallAuthority> {
+        match self {
+            Self::ToolCall { authority, .. } => Some(*authority),
             Self::RemoteInput { .. } | Self::Pause(_) => None,
         }
     }
@@ -251,6 +276,7 @@ impl<'de> Deserialize<'de> for ResumeTicket {
                     reason: ToolAwaitReason::Permission,
                     call_id,
                     tool,
+                    authority: ToolCallAuthority::LegacyUnspecified,
                 }
             }
             (None, Some(AwaitReason::ExternalEvent), Some(call_id), Some(tool)) => {
@@ -258,6 +284,7 @@ impl<'de> Deserialize<'de> for ResumeTicket {
                     reason: ToolAwaitReason::ClientExecution,
                     call_id,
                     tool,
+                    authority: ToolCallAuthority::LegacyUnspecified,
                 }
             }
             (None, Some(AwaitReason::ScheduledAction), Some(call_id), Some(tool)) => {
@@ -265,6 +292,7 @@ impl<'de> Deserialize<'de> for ResumeTicket {
                     reason: ToolAwaitReason::ScheduledAction,
                     call_id,
                     tool,
+                    authority: ToolCallAuthority::LegacyUnspecified,
                 }
             }
             (None, Some(AwaitReason::Delegation), Some(call_id), Some(tool)) => {
@@ -272,6 +300,7 @@ impl<'de> Deserialize<'de> for ResumeTicket {
                     reason: ToolAwaitReason::Delegation,
                     call_id,
                     tool,
+                    authority: ToolCallAuthority::LegacyUnspecified,
                 }
             }
             (None, Some(AwaitReason::UserInput), Some(call_id), None) => AwaitTarget::RemoteInput {
@@ -378,6 +407,11 @@ impl ResumeTicket {
     }
 
     #[must_use]
+    pub const fn tool_call_authority(&self) -> Option<ToolCallAuthority> {
+        self.target.tool_call_authority()
+    }
+
+    #[must_use]
     pub fn tool_call(&self) -> Option<(&str, &PendingTool)> {
         self.target.tool_call()
     }
@@ -431,6 +465,7 @@ mod tests {
                     reason: ToolAwaitReason::Permission,
                     call_id: "tool-call".into(),
                     tool: pt.clone(),
+                    authority: ToolCallAuthority::RuntimeToolBatch,
                 },
                 AwaitReason::ToolPermission,
                 Some("tool-call"),
@@ -441,6 +476,7 @@ mod tests {
                     reason: ToolAwaitReason::ClientExecution,
                     call_id: "client-call".into(),
                     tool: pt.clone(),
+                    authority: ToolCallAuthority::RuntimeToolBatch,
                 },
                 AwaitReason::ExternalEvent,
                 Some("client-call"),
@@ -451,6 +487,7 @@ mod tests {
                     reason: ToolAwaitReason::ScheduledAction,
                     call_id: "scheduled-call".into(),
                     tool: pt.clone(),
+                    authority: ToolCallAuthority::RuntimeToolBatch,
                 },
                 AwaitReason::ScheduledAction,
                 Some("scheduled-call"),
@@ -461,6 +498,7 @@ mod tests {
                     reason: ToolAwaitReason::Delegation,
                     call_id: "delegated-call".into(),
                     tool: pt,
+                    authority: ToolCallAuthority::RuntimeToolBatch,
                 },
                 AwaitReason::Delegation,
                 Some("delegated-call"),
@@ -549,6 +587,7 @@ mod tests {
                     reason: ToolAwaitReason::Permission,
                     call_id: "permission".into(),
                     tool: pending_tool(),
+                    authority: ToolCallAuthority::LegacyUnspecified,
                 },
             ),
             (
@@ -560,6 +599,7 @@ mod tests {
                     reason: ToolAwaitReason::ClientExecution,
                     call_id: "client".into(),
                     tool: pending_tool(),
+                    authority: ToolCallAuthority::LegacyUnspecified,
                 },
             ),
             (
@@ -571,6 +611,7 @@ mod tests {
                     reason: ToolAwaitReason::ScheduledAction,
                     call_id: "scheduled".into(),
                     tool: pending_tool(),
+                    authority: ToolCallAuthority::LegacyUnspecified,
                 },
             ),
             (
@@ -582,6 +623,7 @@ mod tests {
                     reason: ToolAwaitReason::Delegation,
                     call_id: "delegation".into(),
                     tool: pending_tool(),
+                    authority: ToolCallAuthority::LegacyUnspecified,
                 },
             ),
             (

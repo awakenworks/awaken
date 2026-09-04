@@ -97,15 +97,38 @@ fn runtime_with(
     )
 }
 
+fn observation_runtime(summary: &str, live_inputs: &std::path::Path) -> PodmanRuntime {
+    let summary = summary.to_owned();
+    let mounts = serde_json::json!([{
+        "Source": live_inputs,
+        "Destination": crate::LIVE_INPUTS_ROOT,
+    }])
+    .to_string();
+    runtime_with(8080, move |args| {
+        if args.first().map(String::as_str) == Some("inspect") {
+            ok(&mounts)
+        } else {
+            ok(&summary)
+        }
+    })
+    .0
+}
+
 #[tokio::test]
 async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
     // Cause/effect table: C1 `ps --all` succeeds with exact Running/Terminal/empty,
     // or the Podman process fails; C2 durable evidence is V2 exact/legacy; C3
-    // Podman host-bind participants are reconstructible only by their creating
-    // attempt. R1 exact Running from an unproven prior attempt=>Incompatible;
-    // R2 exact Terminal=>Terminal(dispose); R3 exact empty=>Unavailable(Some id);
-    // R4 backend failure remains indeterminate; R5 legacy empty cannot prove
-    // deletion authority and therefore fails closed.
+    // the exact live-input bind resolves to a validated provider staging root or
+    // is missing/foreign. R1 exact Running+C2+C3=>Ready and transfers only that
+    // staging owner; R2 exact Terminal+C2+C3=>Terminal(dispose); R3 exact
+    // empty=>Unavailable(Some id); R4 backend or invalid C3 remains
+    // indeterminate/fail-closed; R5 legacy empty cannot prove deletion authority.
+    let staging = tempfile::Builder::new()
+        .prefix("awaken-acp-stage-podman-observation-")
+        .tempdir_in(std::env::temp_dir())
+        .unwrap();
+    let live_inputs = staging.path().join("live-inputs");
+    std::fs::create_dir(&live_inputs).unwrap();
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&pc::SandboxSpec {
         scope: "s1".into(),
         isolation: pc::IsolationClass::Container,
@@ -126,28 +149,25 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
     let running = format!(
         r#"[{{"Id":"container-1","State":"running","Labels":{{"{MANAGED_SANDBOX_LABEL}":"1","{SANDBOX_ADOPTION_LABEL}":"{fingerprint}","{SANDBOX_REALIZATION_LABEL}":"{fingerprint}"}}}}]"#
     );
-    let running_response = running.clone();
-    let (runtime, _) = runtime_with(8080, move |_| ok(&running_response));
-    assert!(
-        matches!(
-            ContainerRuntime::observe(
-                &runtime,
-                crate::ContainerObservationExpectation {
-                    container_id: "container-1",
-                    adoption_fingerprint: Some(&fingerprint),
-                    realization_fingerprint: Some(&fingerprint),
-                    runtime_handle: None,
-                    effect_fence: None,
-                },
-            )
-            .await
-            .unwrap(),
-            pc::SandboxObservation::Incompatible { .. }
-        ),
+    let runtime = observation_runtime(&running, &live_inputs);
+    assert_eq!(
+        ContainerRuntime::observe(
+            &runtime,
+            crate::ContainerObservationExpectation {
+                container_id: "container-1",
+                adoption_fingerprint: Some(&fingerprint),
+                realization_fingerprint: Some(&fingerprint),
+                runtime_handle: None,
+                effect_fence: None,
+            },
+        )
+        .await
+        .unwrap(),
+        pc::SandboxObservation::Ready,
         "R1"
     );
     let terminal = running.replace("\"State\":\"running\"", "\"State\":\"exited\"");
-    let (terminal_runtime, _) = runtime_with(8080, move |_| ok(&terminal));
+    let terminal_runtime = observation_runtime(&terminal, &live_inputs);
     assert_eq!(
         ContainerRuntime::observe(
             &terminal_runtime,
@@ -205,7 +225,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
         r#"[{{"Id":"container-1","State":"running","Labels":{{"{MANAGED_SANDBOX_LABEL}":"1","{SANDBOX_ADOPTION_LABEL}":"{fingerprint}"}}}}]"#
     );
     let without_fingerprint_response = without_fingerprint.clone();
-    let (missing_fingerprint, _) = runtime_with(8080, move |_| ok(&without_fingerprint_response));
+    let missing_fingerprint = observation_runtime(&without_fingerprint_response, &live_inputs);
     assert!(
         matches!(
             ContainerRuntime::observe(

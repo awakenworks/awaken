@@ -7,7 +7,8 @@ use super::*;
 /// Keeping the pair named prevents a partially remote Host startup from
 /// silently opening a local content authority for the missing half.
 struct WorkerContentAdapters {
-    file_content_source: Arc<dyn crate::FileContentSource<awaken_dispatch::RunClaim>>,
+    file_content_source:
+        Arc<dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>>,
     memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
 }
 
@@ -232,7 +233,9 @@ impl SharedHost {
     pub fn new_worker_with_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        file_content_source: Arc<dyn crate::FileContentSource<awaken_dispatch::RunClaim>>,
+        file_content_source: Arc<
+            dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>,
+        >,
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
@@ -255,7 +258,9 @@ impl SharedHost {
     pub fn new_with_runtime_resources_and_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        file_content_source: Arc<dyn crate::FileContentSource<awaken_dispatch::RunClaim>>,
+        file_content_source: Arc<
+            dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>,
+        >,
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         deployment: crate::DeploymentConfig,
@@ -381,22 +386,23 @@ impl SharedHost {
             )) as Arc<dyn awaken_resource_contract::FileApplicationService>
         });
         let session_slots = crate::session_slot::SessionRuntimeSlots::default();
-        let file_content_source: Arc<dyn crate::FileContentSource<awaken_dispatch::RunClaim>> =
-            worker_content
-                .as_ref()
-                .map(|content| content.file_content_source.clone())
-                .unwrap_or_else(|| {
-                    #[cfg(test)]
-                    if let Some(application) = &file_application {
-                        return Arc::new(
-                            awaken_resource_application::ApplicationFileContentSource::new(
-                                application.clone(),
-                            ),
-                        );
-                    }
-                    Arc::new(awaken_resource_contract::UnavailableFileContentSource)
-                        as Arc<dyn crate::FileContentSource<awaken_dispatch::RunClaim>>
-                });
+        let file_content_source: Arc<
+            dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>,
+        > = worker_content
+            .as_ref()
+            .map(|content| content.file_content_source.clone())
+            .unwrap_or_else(|| {
+                #[cfg(test)]
+                if let Some(application) = &file_application {
+                    return Arc::new(
+                        awaken_resource_application::ApplicationFileContentSource::new(
+                            application.clone(),
+                        ),
+                    );
+                }
+                Arc::new(awaken_resource_contract::UnavailableFileContentSource)
+                    as Arc<dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>>
+            });
         let artifact_publisher: Arc<
             dyn awaken_resource_contract::ArtifactPublisher<
                     awaken_dispatch::ArtifactPublicationFence,
@@ -681,7 +687,9 @@ impl SharedHost {
     pub fn with_file_application(
         mut self,
         application: Arc<dyn awaken_resource_contract::FileApplicationService>,
-        content_source: Arc<dyn crate::FileContentSource<awaken_dispatch::RunClaim>>,
+        content_source: Arc<
+            dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>,
+        >,
         artifact_publisher: Arc<
             dyn awaken_resource_contract::ArtifactPublisher<
                     awaken_dispatch::ArtifactPublicationFence,
@@ -895,6 +903,8 @@ impl SharedHost {
         E: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
                 awaken_dispatch::RunClaim,
             > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+                awaken_session_contract::SessionResourceMaterializationIntent,
+            > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
                 awaken_session_contract::SessionTerminalMemoryIntent,
             > + 'static,
     {
@@ -1020,7 +1030,11 @@ impl SharedHost {
     /// execution Worker. This does not grant authoring or catalog access.
     pub fn with_skill_bundle_source(
         mut self,
-        source: Arc<dyn awaken_session_contract::SkillBundleSource<awaken_dispatch::RunClaim>>,
+        source: Arc<
+            dyn awaken_session_contract::SkillBundleSource<
+                    awaken_dispatch::ResourceOperationFence,
+                >,
+        >,
     ) -> Self {
         self.skills.set_bundle_source(source);
         self
@@ -1146,7 +1160,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_file_content_source(
         mut self,
-        source: Arc<dyn crate::FileContentSource<awaken_dispatch::RunClaim>>,
+        source: Arc<dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>>,
     ) -> Self {
         self.file_content_source = source;
         self

@@ -477,6 +477,14 @@ conjunctive custody predicate. Either fact alone is insufficient, and the
 standard manifest must not publish `WorkerRelay` evidence without both plus an
 installed exact credential materializer.
 
+The installed Kubernetes `NetworkPolicy` remains the sole destination
+coordinate authority: the runtime attests an explicit namespace selector,
+gateway-role selector, protocol, and port, but does not hard-code a second copy
+of the deployment namespace. The strict cluster gate proves the selected
+gateway is reachable and proves both a same-namespace wrong-role Pod and a
+foreign-namespace copied-role Pod are unreachable. Static policy shape without
+those live negative effects is not sufficient network-isolation evidence.
+
 It must not enumerate credentials, select a revision, authorize a trust domain,
 select an MCP target, or own relay/gateway lifecycle. Network realization remains
 `NetworkPolicy` enforcement, not credential policy authorship.

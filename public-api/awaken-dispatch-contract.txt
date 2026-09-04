@@ -134,6 +134,8 @@ pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::cancellation_reques
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::expires_ms(&self) -> u64
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::is_live_at(&self, u64) -> bool
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool) -> Self
+pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new_releasing(impl core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool) -> Self
+pub async fn awaken_dispatch_contract::dispatch::CommitEpochGuard::release(self) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::request(&self) -> &awaken_dispatch_contract::run_dispatch::RunDispatch
 pub struct awaken_dispatch_contract::dispatch::DispatchCompletion
 pub awaken_dispatch_contract::dispatch::DispatchCompletion::request_fingerprint: core::option::Option<alloc::string::String>
@@ -216,6 +218,7 @@ pub fn awaken_dispatch_contract::dispatch::DispatchQueue::enqueue<'life0, 'async
 pub fn awaken_dispatch_contract::dispatch::DispatchQueue::enqueue_session_child<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::run_dispatch::RunDispatch, awaken_dispatch_contract::dispatch::SessionChildAdmission) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::DispatchQueue::enqueue_with<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::run_dispatch::RunDispatch, awaken_dispatch_contract::dispatch::SubmitOptions) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::DispatchQueue::finish_attempt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_dispatch_contract::dispatch::DispatchQueue::handoff_attempt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::AttemptAdmission, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::DispatchQueue::list_dispatches<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_dispatch_contract::dispatch::DispatchSummary>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::DispatchQueue::load_recovery_snapshot<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::DispatchQueue::load_stream_checkpoint<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::stream::checkpoint::StreamCheckpoint>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -452,10 +455,20 @@ pub awaken_dispatch_contract::PhysicalAttemptTransition::Clear
 pub awaken_dispatch_contract::PhysicalAttemptTransition::Corrupt
 pub awaken_dispatch_contract::PhysicalAttemptTransition::Fenced
 pub awaken_dispatch_contract::PhysicalAttemptTransition::Install
+pub awaken_dispatch_contract::PhysicalAttemptTransition::Replace
 pub awaken_dispatch_contract::PhysicalAttemptTransition::Stutter
+pub enum awaken_dispatch_contract::RelinquishTransition
+pub awaken_dispatch_contract::RelinquishTransition::Corrupt
+pub awaken_dispatch_contract::RelinquishTransition::Fenced
+pub awaken_dispatch_contract::RelinquishTransition::Pending(awaken_dispatch_contract::DispatchTransition)
+pub awaken_dispatch_contract::RelinquishTransition::Recovering(awaken_dispatch_contract::DispatchTransition)
 pub enum awaken_dispatch_contract::ResourceOperationFence
 pub awaken_dispatch_contract::ResourceOperationFence::CheckpointRelease(awaken_session_contract::environment::SessionEnvironmentOperation)
+pub awaken_dispatch_contract::ResourceOperationFence::RepositoryPublication
+pub awaken_dispatch_contract::ResourceOperationFence::RepositoryPublication::command: alloc::boxed::Box<awaken_session_contract::terminal_cleanup::repository_publication::SessionRepositoryPublicationCommand>
+pub awaken_dispatch_contract::ResourceOperationFence::RepositoryPublication::lease: awaken_session_contract::session_repo::repository_port::SessionRealizationLease
 pub awaken_dispatch_contract::ResourceOperationFence::Run(awaken_dispatch_contract::dispatch::RunClaim)
+pub awaken_dispatch_contract::ResourceOperationFence::SessionMaterialization(awaken_session_contract::session_realization::SessionResourceMaterializationIntent)
 pub awaken_dispatch_contract::ResourceOperationFence::Terminal(awaken_session_contract::terminal_cleanup::effects::SessionTerminalCleanupEffect)
 impl core::convert::From<awaken_dispatch_contract::dispatch::RunClaim> for awaken_dispatch_contract::ResourceOperationFence
 pub fn awaken_dispatch_contract::ResourceOperationFence::from(awaken_dispatch_contract::dispatch::RunClaim) -> Self
@@ -537,6 +550,8 @@ pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::cancellation_reques
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::expires_ms(&self) -> u64
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::is_live_at(&self, u64) -> bool
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool) -> Self
+pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new_releasing(impl core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool) -> Self
+pub async fn awaken_dispatch_contract::dispatch::CommitEpochGuard::release(self) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::request(&self) -> &awaken_dispatch_contract::run_dispatch::RunDispatch
 pub struct awaken_dispatch_contract::CredentialRealizationRequest
 pub awaken_dispatch_contract::CredentialRealizationRequest::claim: awaken_dispatch_contract::dispatch::RunClaim
@@ -582,7 +597,7 @@ pub fn awaken_dispatch_contract::DispatchTransition::claim(self) -> core::result
 pub fn awaken_dispatch_contract::DispatchTransition::exhaust_retries(self, u64, bool) -> awaken_dispatch_contract::GuardedTransition
 pub fn awaken_dispatch_contract::DispatchTransition::recover_reservation(self) -> core::result::Result<core::option::Option<Self>, awaken_dispatch_contract::DispatchTransitionError>
 pub fn awaken_dispatch_contract::DispatchTransition::reject_reservation(self) -> awaken_dispatch_contract::GuardedTransition
-pub fn awaken_dispatch_contract::DispatchTransition::relinquish(self, u64, bool) -> awaken_dispatch_contract::GuardedTransition
+pub fn awaken_dispatch_contract::DispatchTransition::relinquish(self, u64, bool, awaken_dispatch_contract::PhysicalAttemptSlot) -> awaken_dispatch_contract::RelinquishTransition
 pub fn awaken_dispatch_contract::DispatchTransition::requeue_dead_letter(self) -> core::option::Option<Self>
 pub fn awaken_dispatch_contract::DispatchTransition::resolve_reservation(self, u64, bool, core::option::Option<bool>) -> awaken_dispatch_contract::GuardedTransition
 pub fn awaken_dispatch_contract::DispatchTransition::settle(self, u64, bool) -> awaken_dispatch_contract::GuardedTransition
@@ -765,6 +780,7 @@ pub fn awaken_dispatch_contract::DispatchQueue::enqueue<'life0, 'async_trait>(&'
 pub fn awaken_dispatch_contract::DispatchQueue::enqueue_session_child<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::run_dispatch::RunDispatch, awaken_dispatch_contract::dispatch::SessionChildAdmission) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::DispatchQueue::enqueue_with<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::run_dispatch::RunDispatch, awaken_dispatch_contract::dispatch::SubmitOptions) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::DispatchQueue::finish_attempt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_dispatch_contract::DispatchQueue::handoff_attempt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::AttemptAdmission, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch_contract::DispatchQueue::list_dispatches<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_dispatch_contract::dispatch::DispatchSummary>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::DispatchQueue::load_recovery_snapshot<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch_contract::DispatchQueue::load_stream_checkpoint<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::stream::checkpoint::StreamCheckpoint>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -802,6 +818,7 @@ pub fn awaken_dispatch_contract::Outbox::stage_session_resume<'life0, 'life1, 'a
 pub const fn awaken_dispatch_contract::begin_physical_attempt(bool, awaken_dispatch_contract::PhysicalAttemptSlot) -> awaken_dispatch_contract::PhysicalAttemptTransition
 pub fn awaken_dispatch_contract::compile_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_dispatch_contract::DispatchCredentialAdmissionError>
 pub const fn awaken_dispatch_contract::finish_physical_attempt(awaken_dispatch_contract::PhysicalAttemptSlot) -> awaken_dispatch_contract::PhysicalAttemptTransition
+pub const fn awaken_dispatch_contract::handoff_physical_attempt(bool, awaken_dispatch_contract::PhysicalAttemptSlot) -> awaken_dispatch_contract::PhysicalAttemptTransition
 pub fn awaken_dispatch_contract::retry_exhaustion_eligible(awaken_dispatch_contract::dispatch::DispatchState, core::option::Option<u64>, u64, u64, u64) -> bool
 pub const fn awaken_dispatch_contract::session_run_replacement_candidate_is_safe(awaken_dispatch_contract::dispatch::DispatchState) -> bool
 pub fn awaken_dispatch_contract::worker_credential_realization_capabilities(&awaken_worker_contract::registry::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, awaken_runtime_contract::credential::AttemptCredentialBindingError>

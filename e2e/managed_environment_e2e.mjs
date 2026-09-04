@@ -16,7 +16,7 @@ import { withScenarioServer, pass } from './harness.mjs';
 const BETAS = ['managed-agents-2026-04-01'];
 
 async function main() {
-  await withScenarioServer('management', 'mcp', 38150, async (base) => {
+  await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (base) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
     // A real environment to reference.

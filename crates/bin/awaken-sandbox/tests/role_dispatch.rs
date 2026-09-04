@@ -66,6 +66,42 @@ fn no_role_prints_usage_and_fails() {
 }
 
 #[test]
+fn tree_reader_projects_an_absent_root_as_an_empty_archive() {
+    /* Tree-reader decision table. Causes: C1 root is absent; C2 root is an
+     * exact directory; C3 root is a non-directory. Effects: E1 emit a valid
+     * empty archive; E2 emit the exact tree; E3 fail closed. This covers rule
+     * T1 C1=>E1. `read-tree-nofollow --check` owns T2 C2=>E2 plus the symlink
+     * rejection branch; T3 C3=>E3 is covered below. */
+    let absent = std::env::temp_dir().join(format!(
+        "awaken-absent-tree-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("unnamed")
+    ));
+    let output = awaken_sandbox()
+        .args(["read-tree-nofollow", absent.to_str().unwrap()])
+        .output()
+        .expect("run absent tree reader");
+    assert!(output.status.success(), "T1/E1: {:?}", output.stderr);
+    let entries = tar::Archive::new(std::io::Cursor::new(output.stdout))
+        .entries()
+        .expect("T1/E1 valid empty tar")
+        .count();
+    assert_eq!(entries, 0, "T1/E1");
+}
+
+#[test]
+fn tree_reader_rejects_a_non_directory_root() {
+    /* Tree-reader decision-table rule T3: C3 a present non-directory root =>
+     * E3 non-zero without treating its bytes as a directory projection. */
+    let root = tempfile::tempdir().expect("temporary tree-reader root");
+    let file = root.path().join("value");
+    std::fs::write(&file, b"not a directory").expect("write fixture");
+    let (ok, text) = run(&["read-tree-nofollow", file.to_str().unwrap()]);
+    assert!(!ok, "T3/E3");
+    assert!(text.contains("not one nofollow directory"), "T3/E3: {text}");
+}
+
+#[test]
 fn readiness_role_rejects_noncanonical_markers_without_touching_a_port() {
     /* Role readiness rule D3: C1=readiness role with a noncanonical marker;
      * E1=fail immediately in the marker parser; E2=no network business-port

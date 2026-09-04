@@ -6,7 +6,12 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  fakeAnthropicServerEnv,
+  withServer,
+  pass,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -37,10 +42,7 @@ async function send(client, id, text) {
 async function main() {
   const upstream = await startFakeAnthropic(FAKE_KEY);
   try {
-    process.env.ANTHROPIC_API_KEY = FAKE_KEY;
-    process.env.ANTHROPIC_BASE_URL = `${upstream.url}/v1/`;
-    process.env.ANTHROPIC_MODEL = 'fake-haiku';
-    await withServer('real', 38261, async (base) => {
+    await withServer('real', Number(process.env.E2E_PORT), async (base) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
       const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 
@@ -58,7 +60,7 @@ async function main() {
       const replies = second.filter((t) => t === 'agent.message').length;
       assert.ok(replies >= 2, `multi-turn accumulates replies (${replies})`);
       pass('multi-turn continues over the streamed real path');
-    });
+    }, fakeAnthropicServerEnv(upstream, { ANTHROPIC_API_KEY: FAKE_KEY }));
     console.log('E2E PASS: streamed tool round-trip + multi-turn over the real provider path.');
     process.exitCode = 0;
   } catch (err) {

@@ -8,6 +8,9 @@ pub fn awaken_worker::RegisteredWorkerContext::identity(&self) -> &awaken_worker
 pub fn awaken_worker::RegisteredWorkerContext::registration(&self) -> &awaken_worker_contract::registry::RegisteredWorker
 pub fn awaken_worker::RegisteredWorkerContext::snapshot(&self) -> &awaken_worker_contract::registry::WorkerSnapshot
 pub fn awaken_worker::RegisteredWorkerContext::upstream(&self) -> &awaken_worker_transport_security::WorkerUpstream
+pub struct awaken_worker::SessionToolExporter
+impl awaken_session_executor::acp_tool_export::AcpToolExporter for awaken_worker::SessionToolExporter
+pub fn awaken_worker::SessionToolExporter::export_set<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_executor::acp_tool_export::AcpToolExport, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_worker::StandardManifestConfig
 impl awaken_worker::StandardManifestConfig
 pub fn awaken_worker::StandardManifestConfig::new(impl core::convert::Into<alloc::string::String>) -> Self

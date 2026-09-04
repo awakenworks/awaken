@@ -18,6 +18,9 @@ use super::{
     hardened_security_context,
 };
 
+pub(super) const ORPHANED_LIVE_CLAIM_ERROR: &str =
+    "live Kubernetes continuation PVC cannot be disposed after its source Pod is absent";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CreateClaimAdmission {
     Create,
@@ -249,15 +252,31 @@ enum PodCleanupAuthorizationAdmission {
     AdvanceSuccessor,
 }
 
+/// One persisted physical cleanup interlock with two non-overlapping authority
+/// sources. Aggregate disposal owns published Session environments; exact
+/// restoration evidence owns only its unpublished pre-CAS restore target.
+/// Untagged encoding preserves the existing aggregate annotation wire shape.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub(super) enum PodCleanupAuthorization {
+    Aggregate(pc::SandboxDisposalAuthorization),
+    Restoration(pc::SandboxRestorationEvidence),
+}
+
 fn pod_cleanup_authorization_admission(
-    observed: Option<&pc::SandboxDisposalAuthorization>,
-    requested: &pc::SandboxDisposalAuthorization,
+    observed: Option<&PodCleanupAuthorization>,
+    requested: &PodCleanupAuthorization,
 ) -> Result<PodCleanupAuthorizationAdmission, RuntimeError> {
     use PodCleanupAuthorizationAdmission::{Acquire, AdvanceSuccessor, Resume};
 
     match observed {
         None => Ok(Acquire),
-        Some(observed) => {
+        Some(PodCleanupAuthorization::Aggregate(observed))
+            if matches!(requested, PodCleanupAuthorization::Aggregate(_)) =>
+        {
+            let PodCleanupAuthorization::Aggregate(requested) = requested else {
+                unreachable!("match guard proves aggregate cleanup authority")
+            };
             if observed.prepared_effect_fence() != requested.prepared_effect_fence()
                 || observed.preparation_fingerprint() != requested.preparation_fingerprint()
             {
@@ -278,12 +297,22 @@ fn pod_cleanup_authorization_admission(
                 "Kubernetes continuation cleanup gate is owned by a newer or conflicting successor",
             ))
         }
+        Some(PodCleanupAuthorization::Restoration(observed)) => match requested {
+            PodCleanupAuthorization::Restoration(requested) if observed == requested => Ok(Resume),
+            PodCleanupAuthorization::Restoration(_) => Err(backend(
+                "Kubernetes continuation cleanup gate belongs to a different exact restoration",
+            )),
+            PodCleanupAuthorization::Aggregate(_) => Err(backend(
+                "Kubernetes continuation cleanup gate belongs to restoration authority",
+            )),
+        },
+        Some(PodCleanupAuthorization::Aggregate(_)) => Err(backend(
+            "Kubernetes continuation cleanup gate belongs to aggregate authority",
+        )),
     }
 }
 
-fn pod_cleanup_authorization(
-    pod: &Pod,
-) -> Result<Option<pc::SandboxDisposalAuthorization>, RuntimeError> {
+fn pod_cleanup_authorization(pod: &Pod) -> Result<Option<PodCleanupAuthorization>, RuntimeError> {
     let Some(encoded) = pod
         .metadata
         .annotations
@@ -292,7 +321,7 @@ fn pod_cleanup_authorization(
     else {
         return Ok(None);
     };
-    serde_json::from_str::<pc::SandboxDisposalAuthorization>(encoded)
+    serde_json::from_str::<PodCleanupAuthorization>(encoded)
         .map(Some)
         .map_err(|error| {
             backend(format!(
@@ -306,7 +335,7 @@ fn pod_cleanup_authorization(
 /// by observation, acquisition, replay, and release.
 pub(super) fn observed_pod_cleanup_authorization(
     pod: &Pod,
-) -> Result<Option<pc::SandboxDisposalAuthorization>, RuntimeError> {
+) -> Result<Option<PodCleanupAuthorization>, RuntimeError> {
     let held = pod_cleanup_gate_held(pod);
     let authorization = pod_cleanup_authorization(pod)?;
     if held != authorization.is_some() {
@@ -319,7 +348,7 @@ pub(super) fn observed_pod_cleanup_authorization(
 
 fn stamp_pod_cleanup_authorization(
     pod: &mut Pod,
-    authorization: &pc::SandboxDisposalAuthorization,
+    authorization: &PodCleanupAuthorization,
 ) -> Result<(), RuntimeError> {
     let encoded = serde_json::to_string(authorization).map_err(backend)?;
     pod.metadata
@@ -388,7 +417,7 @@ pub(super) struct PendingPodCleanup {
     pub(super) pod: Pod,
     name: String,
     uid: String,
-    authorization: pc::SandboxDisposalAuthorization,
+    authorization: PodCleanupAuthorization,
 }
 
 pub(super) fn pod_cleanup_gate_held(pod: &Pod) -> bool {
@@ -404,11 +433,11 @@ pub(super) fn pod_cleanup_gate_held(pod: &Pod) -> bool {
 /// point: if Rebuild's DELETE wins first, the Pod becomes terminating and this
 /// operation has no PVC side effect; if this patch wins, the stable Pod name
 /// cannot be released until [`release_pod_cleanup_gate`] removes the finalizer.
-pub(super) async fn acquire_pod_cleanup_gate(
+pub(super) async fn acquire_pod_cleanup_gate_with_authorization(
     pods: &Api<Pod>,
     observed: &Pod,
     expected_uid: &str,
-    authorization: &pc::SandboxDisposalAuthorization,
+    authorization: &PodCleanupAuthorization,
 ) -> Result<PendingPodCleanup, RuntimeError> {
     let name = observed
         .metadata
@@ -445,7 +474,7 @@ pub(super) async fn acquire_pod_cleanup_gate(
         }
     }
     let uid = uid.expect("cleanup admission proved Pod UID is present");
-    match pod_cleanup_authorization_admission(observed_authorization.as_ref(), authorization)? {
+    match pod_cleanup_authorization_admission(observed_authorization.as_ref(), &authorization)? {
         PodCleanupAuthorizationAdmission::Resume => {
             return Ok(PendingPodCleanup {
                 pod: observed.clone(),
@@ -1032,9 +1061,7 @@ pub(super) async fn absent_pod_claim_deletion(
             name,
             uid: uid.expect("absent-Pod claim admission proved UID is present"),
         })),
-        AbsentPodClaimAdmission::UnsafeLiveClaim => Err(backend(
-            "live Kubernetes continuation PVC cannot be disposed after its source Pod is absent",
-        )),
+        AbsentPodClaimAdmission::UnsafeLiveClaim => Err(backend(ORPHANED_LIVE_CLAIM_ERROR)),
         AbsentPodClaimAdmission::MissingUid => {
             Err(backend("Kubernetes continuation PVC has no UID"))
         }
@@ -1085,7 +1112,8 @@ mod tests {
          * preparation A and fingerprint; C3 its latest successor is B/C; C4 the
          * requested aggregate-authorized successor is the exact replay B, a
          * same-lease renewal, higher-epoch C, late stale B after C, or foreign.
-         * Effects: E1 only neither evidence acquires A+fingerprint+B by the same
+         * C5 the authority kind is aggregate disposal or exact unpublished
+         * restoration. Effects: E1 only neither evidence acquires the authority by the same
          * Pod UID/RV CAS; E2 exact B response-loss replay resumes idempotently;
          * E3 an authorized renewal/C advances only latest_successor while A and
          * the fingerprint remain byte-exact; E4 stale/foreign/incomplete rows
@@ -1100,6 +1128,8 @@ mod tests {
          * | KPG3d | A/fp/C | late B | E4 reject |
          * | KPG3e | foreign A/fp/latest | C | E4 reject |
          * | KPG3f | finalizer xor annotation | any | E4 reject |
+         * | KPG3g | exact restore evidence | exact replay | E2 resume |
+         * | KPG3h | either authority | other kind/evidence | E4 reject |
          */
         use PodCleanupAuthorizationAdmission::{Acquire, AdvanceSuccessor, Resume};
 
@@ -1143,31 +1173,33 @@ mod tests {
         let authorization_c =
             pc::SandboxDisposalAuthorization::new(prepared.clone(), successor_c, fingerprint)
                 .unwrap();
+        let gate_b = PodCleanupAuthorization::Aggregate(authorization_b.clone());
+        let gate_b_renewed = PodCleanupAuthorization::Aggregate(authorization_b_renewed.clone());
+        let gate_c = PodCleanupAuthorization::Aggregate(authorization_c.clone());
 
         assert_eq!(
-            pod_cleanup_authorization_admission(None, &authorization_b).unwrap(),
+            pod_cleanup_authorization_admission(None, &gate_b).unwrap(),
             Acquire,
             "KPG3a/E1"
         );
 
         let mut pod = Pod::default();
         pod.metadata.finalizers = Some(vec![CONTINUATION_CLEANUP_FINALIZER.to_owned()]);
-        stamp_pod_cleanup_authorization(&mut pod, &authorization_b).unwrap();
+        stamp_pod_cleanup_authorization(&mut pod, &gate_b).unwrap();
         let replayed = observed_pod_cleanup_authorization(&pod).unwrap().unwrap();
-        assert_eq!(replayed, authorization_b, "KPG3b codec/E2");
+        assert_eq!(replayed, gate_b, "KPG3b codec/E2");
         assert_eq!(
-            pod_cleanup_authorization_admission(Some(&replayed), &authorization_b).unwrap(),
+            pod_cleanup_authorization_admission(Some(&replayed), &gate_b).unwrap(),
             Resume,
             "KPG3b/E2"
         );
         assert_eq!(
-            pod_cleanup_authorization_admission(Some(&replayed), &authorization_b_renewed,)
-                .unwrap(),
+            pod_cleanup_authorization_admission(Some(&replayed), &gate_b_renewed).unwrap(),
             AdvanceSuccessor,
             "KPG3c same-lease renewal/E3"
         );
         assert_eq!(
-            pod_cleanup_authorization_admission(Some(&replayed), &authorization_c).unwrap(),
+            pod_cleanup_authorization_admission(Some(&replayed), &gate_c).unwrap(),
             AdvanceSuccessor,
             "KPG3c A-to-B response loss then A-to-C/E3"
         );
@@ -1182,7 +1214,7 @@ mod tests {
             "KPG3c immutable fingerprint"
         );
         assert!(
-            pod_cleanup_authorization_admission(Some(&authorization_c), &authorization_b).is_err(),
+            pod_cleanup_authorization_admission(Some(&gate_c), &gate_b).is_err(),
             "KPG3d late B after C/E4"
         );
 
@@ -1209,9 +1241,57 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
+        let foreign_gate = PodCleanupAuthorization::Aggregate(foreign);
         assert!(
-            pod_cleanup_authorization_admission(Some(&foreign), &authorization_c).is_err(),
+            pod_cleanup_authorization_admission(Some(&foreign_gate), &gate_c).is_err(),
             "KPG3e/E4"
+        );
+        let restoration = pc::SandboxRestorationEvidence::from_exact_parts(
+            "restore-effect",
+            "restore-generation",
+            "checkpoint",
+            "checkpoint-digest",
+            "spec-fingerprint",
+            "exclusions-fingerprint",
+        )
+        .unwrap();
+        let restore_gate = PodCleanupAuthorization::Restoration(restoration.clone());
+        assert_eq!(
+            pod_cleanup_authorization_admission(None, &restore_gate).unwrap(),
+            Acquire,
+            "KPG3g acquire/E1"
+        );
+        let mut restore_pod = Pod::default();
+        restore_pod.metadata.finalizers = Some(vec![CONTINUATION_CLEANUP_FINALIZER.to_owned()]);
+        stamp_pod_cleanup_authorization(&mut restore_pod, &restore_gate).unwrap();
+        let restore_replay = observed_pod_cleanup_authorization(&restore_pod)
+            .unwrap()
+            .unwrap();
+        assert_eq!(restore_replay, restore_gate, "KPG3g codec/E2");
+        assert_eq!(
+            pod_cleanup_authorization_admission(Some(&restore_replay), &restore_gate).unwrap(),
+            Resume,
+            "KPG3g replay/E2"
+        );
+        assert!(
+            pod_cleanup_authorization_admission(Some(&restore_replay), &gate_b).is_err()
+                && pod_cleanup_authorization_admission(Some(&gate_b), &restore_gate).is_err(),
+            "KPG3h cross-authority/E4"
+        );
+        let different_restore = PodCleanupAuthorization::Restoration(
+            pc::SandboxRestorationEvidence::from_exact_parts(
+                "other-effect",
+                "restore-generation",
+                "checkpoint",
+                "checkpoint-digest",
+                "spec-fingerprint",
+                "exclusions-fingerprint",
+            )
+            .unwrap(),
+        );
+        assert!(
+            pod_cleanup_authorization_admission(Some(&restore_replay), &different_restore).is_err(),
+            "KPG3h foreign restoration/E4"
         );
         let finalizer_only = Pod {
             metadata: ObjectMeta {
@@ -1221,7 +1301,7 @@ mod tests {
             ..Default::default()
         };
         let mut annotation_only = Pod::default();
-        stamp_pod_cleanup_authorization(&mut annotation_only, &authorization_b).unwrap();
+        stamp_pod_cleanup_authorization(&mut annotation_only, &gate_b).unwrap();
         for inconsistent in [&finalizer_only, &annotation_only] {
             assert!(
                 observed_pod_cleanup_authorization(inconsistent).is_err(),

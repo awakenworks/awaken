@@ -16,7 +16,8 @@
 
 use awaken_scenario_host::{
     build_acp_sandboxed_router_with_deployment, build_config_router, build_custom_router,
-    build_delegation_router, build_echo_router, build_vision_router, build_worker_router,
+    build_delegation_router_with_deployment, build_echo_router, build_vision_router,
+    build_worker_router,
 };
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
@@ -135,7 +136,13 @@ async fn delegation_factory_wires_the_fixed_managed_coordination_surface() {
     // Constraints/invariants: the frozen roster and fixed coordination tools are
     // the only topology inputs; this factory must not turn admission into a
     // synchronous child-result path.
-    let frames = drive_run(build_delegation_router(), "go research this").await;
+    let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+    let frames = drive_run(
+        build_delegation_router_with_deployment(deployment).await,
+        "go research this",
+    )
+    .await;
     assert_eq!(tool_names(&frames), ["list_agents", "send_message"]);
     let reply = assistant_text(&frames);
     assert!(reply.starts_with("coordination accepted: "), "{reply}");

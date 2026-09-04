@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { spawnServer, stopServer, waitForPort } from './harness.mjs';
+import { postgresDatabaseName, spawnServer, stopServer, waitForPort } from './harness.mjs';
 import {
   claimedCommitRequestFixture,
   terminalThreadCommitFixture,
@@ -23,6 +23,7 @@ if (!DATABASE_URL) {
   console.error('SKIP: postgres_claimed_commit_guard_e2e requires SESSION_DEPLOYMENT_DATABASE_URL');
   process.exit(0);
 }
+const PROBE_DATABASE = postgresDatabaseName(DATABASE_URL);
 
 const PORT = Number(process.env.E2E_PORT ?? 38814);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -41,7 +42,7 @@ function sql(statement: string): string {
         '-U',
         'postgres',
         '-d',
-        'awaken',
+        PROBE_DATABASE,
         '-X',
         '-v',
         'ON_ERROR_STOP=1',

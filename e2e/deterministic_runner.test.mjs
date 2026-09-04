@@ -16,6 +16,7 @@ import {
   timingWeights,
   validPrebuiltManifest,
   verifyInstalledDependencies,
+  withoutAmbientProviderKeys,
 } from './deterministic_runner.mjs';
 import {
   AWAKEN_BIN_ENV,
@@ -26,6 +27,26 @@ import {
 import { snapshotExecutable } from './executable_snapshot.mjs';
 
 const E2E_ROOT_FOR_TEST = path.dirname(fileURLToPath(import.meta.url));
+
+// Child-environment decision table. C1 provider-independent exact API_KEY;
+// C2 vendor/case-varied *_API_KEY; C3 similarly named files and ordinary
+// variables; C4 an explicit fixture key is layered after filtering. Effects:
+// E1 C1/C2 are absent, E2 C3 is retained, E3 C4 remains possible at the child
+// edge. This helper owns only inherited-environment isolation; the production
+// process remains the authority that rejects any final ambient key.
+test('filters inherited provider keys without removing files or later fixtures', () => {
+  const clean = withoutAmbientProviderKeys({
+    API_KEY: 'generic',
+    anthropic_api_key: 'vendor',
+    DEEPSEEK_API_KEY_FILE: '/run/secret',
+    AWAKEN_MCP_BEARER_TOKEN: 'token',
+  });
+  assert.deepEqual(clean, {
+    DEEPSEEK_API_KEY_FILE: '/run/secret',
+    AWAKEN_MCP_BEARER_TOKEN: 'token',
+  });
+  assert.equal({ ...clean, ANTHROPIC_API_KEY: 'fixture' }.ANTHROPIC_API_KEY, 'fixture');
+});
 
 // Executable snapshot cause/effect table: C1 source and destination may be on
 // different filesystems; C2 source is not executable; C3 source may later be
@@ -160,6 +181,40 @@ test('fingerprints build inputs but ignores Cargo storage locations', () => {
   assert.equal(prebuildFingerprint({ CARGO_TARGET_DIR: '/different/target' }), baseline);
   assert.notEqual(prebuildFingerprint({ RUSTFLAGS: '-C target-cpu=native' }), baseline);
   assert.notEqual(prebuildFingerprint({ CARGO_PROFILE_RELEASE_LTO: 'true' }), baseline);
+});
+
+// Leaf-Cargo cause/effect graph: C1 the caller omits CARGO_TARGET_DIR; C2 the
+// caller explicitly supplies one; C3 a deterministic leaf invokes Cargo after
+// prebuild. Effects: E1 C3 uses this checkout's target and cannot observe an
+// artifact from another worktree; E2 an explicit isolated target is preserved.
+// Constraint: preparedEnvironment is the single environment handoff for every
+// deterministic command. Decision rules: R1 C1+C3=>E1; R2 C2+C3=>E2.
+test('fences Cargo invoked by deterministic leaf scenarios to one checkout', () => {
+  const suffix = process.platform === 'win32' ? '.exe' : '';
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-runner-cargo-target-'));
+  const explicitTarget = path.join(directory, 'explicit-target');
+  try {
+    const binaries = {
+      [AWAKEN_BIN_ENV]: path.join(directory, `awaken${suffix}`),
+      [SCENARIO_HOST_BIN_ENV]: path.join(directory, `awaken-scenario-host${suffix}`),
+      [WORKER_BIN_ENV]: path.join(directory, `awaken-worker${suffix}`),
+    };
+    for (const executable of Object.values(binaries)) fs.writeFileSync(executable, 'fixture');
+    fs.writeFileSync(scenarioHandCompanionPath(binaries[SCENARIO_HOST_BIN_ENV]), 'fixture');
+
+    assert.equal(
+      preparedEnvironment(binaries).CARGO_TARGET_DIR,
+      path.resolve(E2E_ROOT_FOR_TEST, '..', 'target'),
+      'R1',
+    );
+    assert.equal(
+      preparedEnvironment({ ...binaries, CARGO_TARGET_DIR: explicitTarget }).CARGO_TARGET_DIR,
+      explicitTarget,
+      'R2',
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 // Prebuilt-location cause/effect graph: C1 caller supplies a shared artifact

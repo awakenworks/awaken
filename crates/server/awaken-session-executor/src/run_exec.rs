@@ -139,6 +139,14 @@ impl RunExecutor for ArtifactHarvestAttemptExecutor {
 
 #[async_trait::async_trait]
 impl RunAttemptExecutor for ArtifactHarvestAttemptExecutor {
+    fn physical_attempt_recovery(
+        &self,
+        activation: &RunActivation,
+        context: &RuntimeRunContext,
+    ) -> awaken_runtime_contract::AttemptRecoveryMode {
+        self.inner.physical_attempt_recovery(activation, context)
+    }
+
     async fn resume(
         &self,
         activation: RunActivation,
@@ -223,6 +231,14 @@ impl RunExecutor for CaptureContextAttemptExecutor {
 
 #[async_trait::async_trait]
 impl RunAttemptExecutor for CaptureContextAttemptExecutor {
+    fn physical_attempt_recovery(
+        &self,
+        activation: &RunActivation,
+        context: &RuntimeRunContext,
+    ) -> awaken_runtime_contract::AttemptRecoveryMode {
+        self.inner.physical_attempt_recovery(activation, context)
+    }
+
     async fn resume(
         &self,
         activation: RunActivation,
@@ -413,6 +429,14 @@ impl RunExecutor for SessionAttemptExecutor {
 
 #[async_trait::async_trait]
 impl RunAttemptExecutor for SessionAttemptExecutor {
+    fn physical_attempt_recovery(
+        &self,
+        activation: &RunActivation,
+        context: &RuntimeRunContext,
+    ) -> awaken_runtime_contract::AttemptRecoveryMode {
+        self.registry.physical_attempt_recovery(activation, context)
+    }
+
     async fn resume(
         &self,
         activation: RunActivation,
@@ -793,6 +817,8 @@ mod tests {
         > {
             let claim = publication.fence.as_ref().and_then(|fence| match fence {
                 awaken_dispatch::ArtifactPublicationFence::Run(claim) => Some(claim),
+                awaken_dispatch::ArtifactPublicationFence::SessionMaterialization(_) => None,
+                awaken_dispatch::ArtifactPublicationFence::RepositoryPublication { .. } => None,
                 awaken_dispatch::ArtifactPublicationFence::CheckpointRelease(_) => None,
                 awaken_dispatch::ArtifactPublicationFence::Terminal(_) => None,
             });

@@ -29,6 +29,19 @@ function uniqueByID(operations, label) {
   return byID;
 }
 
+function additiveWireContract(current, selected, operationID) {
+  if (JSON.stringify(current) === JSON.stringify(selected)) return current;
+  assert.equal(current.kind, selected.kind, `${operationID}: SDK response media disagree`);
+  assert.equal(current.kind, 'json', `${operationID}: non-JSON response shape changed in place`);
+  return Object.freeze({
+    kind: 'json',
+    schema: Object.freeze({
+      kind: 'union',
+      variants: Object.freeze([current.schema, selected.schema]),
+    }),
+  });
+}
+
 export function projectWireResponseContracts({
   selectedOperations,
   currentOperations,
@@ -47,9 +60,11 @@ export function projectWireResponseContracts({
     assert.ok(current, `${operation.id}: selected operation is absent from the current oracle`);
     const sameRequestProjection = JSON.stringify(requestProjection(operation))
       === JSON.stringify(requestProjection(current));
-    const contracts = sameRequestProjection ? currentResponseContracts : selectedResponseContracts;
-    const contract = contracts[operation.id];
-    assert.ok(contract, `${operation.id}: selected wire projection has no response contract`);
-    return [operation.id, contract];
+    const selectedContract = selectedResponseContracts[operation.id];
+    assert.ok(selectedContract, `${operation.id}: selected wire projection has no response contract`);
+    if (!sameRequestProjection) return [operation.id, selectedContract];
+    const currentContract = currentResponseContracts[operation.id];
+    assert.ok(currentContract, `${operation.id}: current wire projection has no response contract`);
+    return [operation.id, additiveWireContract(currentContract, selectedContract, operation.id)];
   }));
 }

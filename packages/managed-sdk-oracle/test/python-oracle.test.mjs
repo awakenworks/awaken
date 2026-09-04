@@ -35,7 +35,7 @@ function withoutID(operation) {
 }
 
 test('Python current SDK has the exact TypeScript Managed operation identity set', () => {
-  // Cross-language cause/effect graph: C1=the official Python 1.2 wheel yields
+  // Cross-language cause/effect graph: C1=the official Python 1.3 wheel yields
   // one normalized operation id; C2=the reviewed TypeScript oracle yields the
   // corresponding camelCase id; C3=the two language generators use different
   // acronym conventions only for URL/OAuth. Effects: E1=all 127 Managed calls
@@ -50,8 +50,8 @@ test('Python current SDK has the exact TypeScript Managed operation identity set
   assert.equal(pythonIDs.length, 127);
 });
 
-test('Python 1.2 beta-to-GA drift is exactly the reviewed TypeScript 0.122 delta', () => {
-  // Selector cause/effect graph: C1=Python 1.2 removed dated selector pins from
+test('Python 1.2+ beta-to-GA drift is exactly the reviewed TypeScript 0.122 delta', () => {
+  // Selector cause/effect graph: C1=Python 1.2+ removed dated selector pins from
   // beta Files/Skills while retaining `beta=true`; C2=TypeScript 0.121 remains
   // a pinned projection change point; C3=the exact 0.122 qualification owns every
   // changed operation. Effects: E1=method/path/query stay identical and only
@@ -159,13 +159,14 @@ test('Python handwritten Managed library modules have one exact import surface',
 test('Python anchors are monotonic reviewed change points with one exact wheel each', () => {
   // Version-matrix cause/effect graph: C1=0.92 is the first supported Managed
   // release; C2=each later selected release owns a protocol, GA, or transport
-  // change; C3=1.2 is the sole current oracle; C4=an official wheel digest and
+  // change; C3=1.3 is the sole current oracle and 1.2 remains its beta/GA
+  // change point; C4=an official wheel digest and
   // extracted source/operation fingerprints bind every row. Effect E1=the
   // matrix tests behavior-changing versions without redundant patch sampling.
   // Decision table: C1+C2+C3+C4=>E1; missing reason/fingerprint, duplicate
   // wheel, non-monotonic surface, or multiple current rows=>reject.
   assert.equal(python.anchors[0].version, '0.92.0');
-  assert.equal(python.anchors.at(-1).version, '1.2.0');
+  assert.equal(python.anchors.at(-1).version, '1.3.0');
   assert.equal(python.anchors.filter(({ role }) => role === 'current_oracle').length, 1);
   const wheelDigests = new Set();
   let priorCount = 0;

@@ -288,9 +288,6 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             publications: claimed_source.clone(),
             effective_model_ref,
         };
-        host.session_slots.update(&thread_id.0, |slot| {
-            slot.dispatch_claim = Some(awaken_dispatch::RunClaim::from(&claimed.lease));
-        });
         let dispatched_resources =
             crate::dispatch_session_runtime::decode_dispatched_resource_manifest(&claimed.request)
                 .map_err(Self::execution_error)?;
@@ -326,6 +323,31 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 )
             })
             .unwrap_or(false);
+        let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
+        // A failed/NotReady resolve must not publish an attempt claim into the
+        // shared Session projection: lifecycle recovery is independently owned
+        // by its realization lease. Once the complete projection is installed,
+        // the self-affine root synchronizes its aggregate-owned durable Sandbox
+        // into the queue's existing delivery cache under this exact claim.
+        if canonical_session_realization
+            && run_thread_id == thread_id
+            && let Some(binding) = host.durable_session_environment_binding(&thread_id.0)
+        {
+            let outcome = host
+                .dispatch_store()
+                .map_err(|error| Self::execution_error(error.to_string()))?
+                .bind_sandbox(&claim, &binding)
+                .await?;
+            if !outcome.applied() {
+                return Err(Self::execution_error(format!(
+                    "run {} lost ownership before Session Sandbox cache synchronization",
+                    claimed.lease.run_id.0
+                )));
+            }
+        }
+        host.session_slots.update(&thread_id.0, |slot| {
+            slot.dispatch_claim = Some(claim);
+        });
         // A complete frozen Session projection owns MCP realization regardless
         // of whether it arrived through remote Control or was installed by the
         // co-located Runtime. The dispatch envelope remains a compatibility

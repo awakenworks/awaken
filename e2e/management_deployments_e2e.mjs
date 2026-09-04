@@ -67,7 +67,7 @@ async function drain(pagePromise) {
 
 async function main() {
   try {
-    await withScenarioServer('management', 'mcp', 38140, async (baseUrl) => {
+    await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, maxRetries: 0 });
       // Keep mutation/error assertions on a no-retry client so the suite sees
       // the first wire response. Eventual projection reads deliberately use the
@@ -441,7 +441,7 @@ async function main() {
     await withScenarioServer(
       'management-rate-limit',
       'mcp',
-      38140,
+      Number(process.env.E2E_PORT),
       async (baseUrl) => {
         const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, maxRetries: 0 });
         const environment = await client.beta.environments.create({

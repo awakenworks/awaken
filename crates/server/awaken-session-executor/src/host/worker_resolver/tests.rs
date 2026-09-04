@@ -2,8 +2,9 @@ use super::claimed_dispatch::adopt_bound_sandbox;
 use super::test_support::{
     AdoptionModel, ToggleBindingSink, available_local_environment_binding, claim,
     complete_managed_test_host, deferred_environment, eager_environment, empty_frozen_projection,
-    empty_frozen_projection_for_snapshot, frozen_projection_for_manifest, managed_test_host,
-    prepare_deferred_session, test_activation, with_empty_session_resources,
+    empty_frozen_projection_for_snapshot, frozen_projection_for_manifest,
+    install_complete_projection_for_snapshot, managed_test_host, prepare_deferred_session,
+    test_activation, with_empty_session_resources,
 };
 use super::*;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -92,21 +93,31 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
     // Cause/effect graph: C1 the local Runtime authority is ephemeral; C2 the
     // parent Session therefore uses direct foreground delivery; C3 an ordinary
     // child Run is claimed from that same authority's dispatch queue with
-    // parent affinity. Effects: E1 resolution reuses the parent commit,
+    // parent affinity; C4 the co-located Session application has installed the
+    // complete frozen parent projection before dispatch. Effects: E1 resolution reuses the parent commit,
     // Environment, and attempt context; E2 it constructs the existing child
     // boundary Worker without requiring a second per-Session durable ingress.
     // The durable-parent sibling paths are covered by cold-worker recovery.
     //
     // | Rule | Authority | Parent delivery | Claimed Thread | Effect |
     // |---|---|---|---|---|
-    // | E1 | ephemeral | direct | child != parent | E1+E2 |
+    // | E1 | ephemeral | direct | child != parent, C4 | E1+E2 |
     use awaken_dispatch::{DispatchQueue as _, WorkerResolver as _};
 
     let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
-    let _managed = managed_test_host(host.clone());
+    let managed = managed_test_host(host.clone());
     let parent = awaken_agent_contract::agent::thread::Id("ephemeral-parent".into());
     let child = awaken_agent_contract::agent::thread::Id("ephemeral-child".into());
     let run = awaken_agent_contract::agent::run::Id("ephemeral-child-run".into());
+    let activation = test_activation(&child.0, &run.0);
+    install_complete_projection_for_snapshot(
+        &managed,
+        &parent.0,
+        host.local_workspace(),
+        eager_environment(),
+        &activation.snapshot,
+    )
+    .await;
     let parent_ctx = host
         .ctx_for(&parent.0, None)
         .await
@@ -115,7 +126,7 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
     let store = host.dispatch_store().expect("ephemeral dispatch authority");
     store
         .enqueue(
-            awaken_dispatch::RunDispatch::new(test_activation(&child.0, &run.0))
+            awaken_dispatch::RunDispatch::new(activation)
                 .for_session(parent.clone())
                 .with_session_activity_epoch(7),
         )
@@ -142,7 +153,8 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 foreground delivery is direct or durable; C2
     // this process is a local execution owner or coordinator-only; C3 a root
-    // continuation has already been accepted into the dispatch queue.
+    // continuation has already been accepted into the dispatch queue; C4 the
+    // complete co-located Session projection precedes both context and claim.
     // Effects: E1 direct foreground remains non-durable; E2 a local direct
     // Session exposes and executes through its canonical claimed Worker; E3
     // durable foreground and claim resolution share the exact Worker `Arc`;
@@ -152,14 +164,22 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     //
     // | Rule | Foreground | Local owner | Claimed root | Effect |
     // |---|---|---|---|---|
-    // | R1 | direct | yes | yes | E1+E2 |
+    // | R1 | direct | yes | yes, C4 | E1+E2 |
     // | R2 | durable | yes | no | E3 |
     // | R3 | durable | no | yes | E4 |
     use awaken_dispatch::{Clock as _, DispatchQueue as _, WorkerResolver as _};
 
     let ephemeral = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
-    let _ephemeral_managed = managed_test_host(ephemeral.clone());
+    let ephemeral_managed = managed_test_host(ephemeral.clone());
     let session_id = "ephemeral-report-root";
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &ephemeral_managed,
+        session_id,
+        empty_frozen_projection(ephemeral.local_workspace(), eager_environment()),
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("R1 install complete co-located Session projection");
     let direct = ephemeral
         .ctx_for(session_id, None)
         .await
@@ -1458,7 +1478,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
     let transition =
         awaken_session_contract::SessionResourceTransition::new(manifest.clone(), cleared.clone())
             .expect("F4 exact aggregate transition");
-    host.apply_dispatched_resource_transition("thread-cold-resource", &transition, None)
+    host.apply_dispatched_resource_transition("thread-cold-resource", &transition, None, None)
         .await
         .expect("F4 exact live replacement");
     assert!(
@@ -1727,9 +1747,14 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         revision_five.clone(),
     )
     .expect("R3 exact transition");
-    host.apply_dispatched_resource_transition("thread-generation-fence", &transition, Some(&claim))
-        .await
-        .expect("R3 exact transition advances generation");
+    host.apply_dispatched_resource_transition(
+        "thread-generation-fence",
+        &transition,
+        Some(&claim),
+        None,
+    )
+    .await
+    .expect("R3 exact transition advances generation");
     assert_eq!(
         host.thread_resource_manifest("thread-generation-fence"),
         Some(revision_five),
@@ -1898,6 +1923,7 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
             foreign_thread,
             &transition,
             None,
+            None,
             false,
         )
         .await
@@ -1924,6 +1950,7 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     host.stage_prevalidated_dispatched_resource_transition_under_resource_projection(
         bound_thread,
         &transition,
+        None,
         None,
         true,
     )
@@ -1955,18 +1982,18 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
     struct ClaimFileSource;
 
     #[async_trait::async_trait]
-    impl crate::FileContentSource<awaken_dispatch::RunClaim> for ClaimFileSource {
+    impl crate::FileContentSource<awaken_dispatch::ResourceOperationFence> for ClaimFileSource {
         async fn read(
             &self,
             workspace_id: &str,
             file_id: &str,
             _purpose: &awaken_resource_contract::FileReadPurpose,
-            claim: Option<&awaken_dispatch::RunClaim>,
+            fence: Option<&awaken_dispatch::ResourceOperationFence>,
         ) -> Result<
             Option<awaken_resource_contract::ResolvedFileContent>,
             awaken_resource_contract::FileContentSourceError,
         > {
-            let Some(claim) = claim else {
+            let Some(awaken_dispatch::ResourceOperationFence::Run(claim)) = fence else {
                 return Ok(None);
             };
             if workspace_id != "workspace-remote"

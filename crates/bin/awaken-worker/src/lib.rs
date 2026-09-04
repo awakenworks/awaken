@@ -26,6 +26,7 @@ mod credential_files;
 mod credential_liveness;
 mod lifecycle;
 mod manifest;
+mod mcp_export;
 mod relay_hand;
 
 use credential_liveness::WorkerObservationCache;
@@ -43,6 +44,7 @@ pub use bootstrap::{WorkerBootstrap, WorkerBootstrapInput, WorkerDaemonConfig};
 pub use credential_files::WorkerCredentialFileResolver;
 pub use lifecycle::WorkerShutdown;
 pub use manifest::StandardManifestConfig;
+pub use mcp_export::SessionToolExporter;
 pub use relay_hand::relay_hand_executor_factory;
 
 /// Registration-bound construction of the exact Memory projection adapter.
@@ -1124,6 +1126,7 @@ impl WorkerNode {
         .with_worker_stream_publisher(stream_publisher)
         .with_worker_dispatch(dispatch)
         .with_skill_bundle_source(remote_skills)
+        .with_acp_tool_exporter(Arc::new(SessionToolExporter))
         .with_web_search_provider_registry(self.web_search_providers)
         .with_admin_tools(self.admin_tools);
         if let Some(remote_attempt) = self.remote_attempt {
@@ -1199,8 +1202,7 @@ impl WorkerNode {
         // validator is present: MCP hot attachment commands have an independent
         // lifecycle and must not be enabled accidentally by Resource wiring.
         let mut managed = awaken_session_executor::ManagedHost::new(host.clone())
-            .with_repository_binding_verifier(remote_repositories.clone())
-            .with_repository_publication_binding_verifier(remote_repositories);
+            .with_repository_binding_verifier(remote_repositories);
         if let Some(credentials) = managed_credential_materializer {
             managed = managed.with_credential_materializer(credentials);
         }

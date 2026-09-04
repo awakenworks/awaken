@@ -159,6 +159,7 @@ pub(super) fn resume_ticket(
                 tool_id: call.tool_id.clone(),
                 arguments: call.arguments.clone(),
             },
+            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
         },
     )
     .with_delegation_origin(delegation_origin.cloned())

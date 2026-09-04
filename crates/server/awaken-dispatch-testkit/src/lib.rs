@@ -39,7 +39,11 @@ use awaken_session_contract::{
     AdmitSessionRun, SessionRunCommandFingerprint, SessionRunExecutionRequirements,
 };
 
-const LEASE_MS: u64 = 1_000;
+/// Minimum live lease used by cross-backend conformance journeys. A live
+/// database clock keeps moving while an in-process logical clock does not, so
+/// integration assertions must not use scheduler-sized (single-digit ms)
+/// leases as if they were controllable logical time.
+pub const LEASE_MS: u64 = 1_000;
 
 /// Shared fixtures for real-HTTP Worker boundary tests. Keeping these here
 /// prevents the Run Ingress and Resource HTTP crates from maintaining parallel

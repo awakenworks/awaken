@@ -8,7 +8,7 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_resource_contract::{
     FileContentSource, FileContentSourceError, FileReadPurpose, ResolvedFileContent, content_id,
 };
-use awaken_dispatch_contract::{DispatchQueue, RunClaim};
+use awaken_dispatch_contract::{DispatchQueue, ResourceOperationFence};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
@@ -22,7 +22,9 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use crate::worker_authority::unix_now_ms;
+use crate::worker_authority::{
+    SessionWorkerEffectTemporalRule, unix_now_ms, verify_session_worker_effect,
+};
 
 const FILE_CONTENT_PATH: &str = "/v1/worker/resources/files/content";
 const FILE_CONTENT_METADATA_HEADER: &str = "x-awaken-file-content-metadata";
@@ -30,7 +32,7 @@ const FILE_CONTENT_METADATA_HEADER: &str = "x-awaken-file-content-metadata";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileContentRequest {
-    claim: RunClaim,
+    authority: ResourceOperationFence,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     identity: Option<WorkerIdentity>,
     workspace_id: String,
@@ -48,18 +50,19 @@ struct FileContentMetadata {
 }
 
 pub struct WorkerFileContentService {
-    source: Arc<dyn FileContentSource<RunClaim>>,
+    source: Arc<dyn FileContentSource<ResourceOperationFence>>,
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
     session_repository: Option<Arc<dyn awaken_session_contract::ManagedSessionRepository>>,
     recovery: Option<Arc<dyn RunRecoverySource>>,
+    session_control: Option<Arc<dyn awaken_session_contract::SessionRealizationControl>>,
 }
 
 impl WorkerFileContentService {
     #[must_use]
     pub fn new(
-        source: Arc<dyn FileContentSource<RunClaim>>,
+        source: Arc<dyn FileContentSource<ResourceOperationFence>>,
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
     ) -> Self {
@@ -70,6 +73,7 @@ impl WorkerFileContentService {
             directory: None,
             session_repository: None,
             recovery: None,
+            session_control: None,
         }
     }
 
@@ -96,6 +100,15 @@ impl WorkerFileContentService {
         self.recovery = Some(recovery);
         self
     }
+
+    #[must_use]
+    pub fn with_session_control(
+        mut self,
+        control: Arc<dyn awaken_session_contract::SessionRealizationControl>,
+    ) -> Self {
+        self.session_control = Some(control);
+        self
+    }
 }
 
 /// Registered-Worker client for claim-bound immutable File content.
@@ -112,16 +125,18 @@ impl HttpFileContentSource {
 }
 
 #[async_trait::async_trait]
-impl FileContentSource<RunClaim> for HttpFileContentSource {
+impl FileContentSource<ResourceOperationFence> for HttpFileContentSource {
     async fn read(
         &self,
         workspace_id: &str,
         file_id: &str,
         purpose: &FileReadPurpose,
-        claim: Option<&RunClaim>,
+        authority: Option<&ResourceOperationFence>,
     ) -> Result<Option<ResolvedFileContent>, FileContentSourceError> {
-        let claim = claim.ok_or_else(|| {
-            FileContentSourceError::new("remote File materialization requires a dispatch claim")
+        let authority = authority.ok_or_else(|| {
+            FileContentSourceError::new(
+                "remote File materialization requires an exact Resource authority",
+            )
         })?;
         if workspace_id.trim().is_empty() || file_id.trim().is_empty() {
             return Err(FileContentSourceError::new(
@@ -133,7 +148,7 @@ impl FileContentSource<RunClaim> for HttpFileContentSource {
             .http_client()
             .post(format!("{}{FILE_CONTENT_PATH}", self.upstream.base_url()))
             .json(&FileContentRequest {
-                claim: claim.clone(),
+                authority: authority.clone(),
                 identity: self.upstream.worker_identity().cloned(),
                 workspace_id: workspace_id.to_owned(),
                 file_id: file_id.to_owned(),
@@ -216,60 +231,128 @@ async fn read_file_content(
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<FileContentRequest>,
 ) -> Response<Body> {
-    if request.workspace_id.trim().is_empty()
-        || request.file_id.trim().is_empty()
-        || verify_claim_owner(
-            service.directory.as_deref(),
-            &worker,
-            request.identity.as_ref(),
-            &request.claim,
-            unix_now_ms(),
-        )
-        .await
-        .is_err()
-    {
+    if request.workspace_id.trim().is_empty() || request.file_id.trim().is_empty() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let guard = match service.dispatch.lock_commit_epoch(&request.claim).await {
-        Ok(Some(guard)) if guard.is_live_at(unix_now_ms()) => guard,
-        Ok(_) => return StatusCode::CONFLICT.into_response(),
-        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-    };
-    let dispatch = guard.request();
-    let scope_matches = dispatch
-        .execution_scope
-        .as_ref()
-        .is_some_and(|scope| scope.0.0 == request.workspace_id);
-    let manifest = dispatch
-        .session_resources
-        .as_ref()
-        .filter(|envelope| envelope.workspace_id == request.workspace_id)
-        .and_then(|envelope| envelope.decode_manifest().ok());
-    let file_is_frozen = manifest.as_ref().is_some_and(|manifest| {
-        manifest.resources.inputs().iter().any(|input| {
-            matches!(
-                &input.source,
-                awaken_session_contract::ResolvedInputSource::File { file_id }
-                    if file_id.as_str() == request.file_id
+    let now_ms = unix_now_ms();
+    let mut run_guard = None;
+    match &request.authority {
+        ResourceOperationFence::Run(claim) => {
+            if verify_claim_owner(
+                service.directory.as_deref(),
+                &worker,
+                request.identity.as_ref(),
+                claim,
+                now_ms,
             )
-        })
-    });
-    let file_is_authorized = match &request.purpose {
-        FileReadPurpose::SessionResource => {
-            if file_is_frozen {
-                true
-            } else {
-                application_session_file_is_frozen(&service, dispatch, &request, unix_now_ms())
+            .await
+            .is_err()
+            {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            let guard = match service.dispatch.lock_commit_epoch(claim).await {
+                Ok(Some(guard)) if guard.is_live_at(now_ms) => guard,
+                Ok(_) => return StatusCode::CONFLICT.into_response(),
+                Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            };
+            let dispatch = guard.request();
+            let scope_matches = dispatch
+                .execution_scope
+                .as_ref()
+                .is_some_and(|scope| scope.0.0 == request.workspace_id);
+            let manifest = dispatch
+                .session_resources
+                .as_ref()
+                .filter(|envelope| envelope.workspace_id == request.workspace_id)
+                .and_then(|envelope| envelope.decode_manifest().ok());
+            let file_is_frozen = manifest.as_ref().is_some_and(|manifest| {
+                manifest.resources.inputs().iter().any(|input| {
+                    matches!(
+                        &input.source,
+                        awaken_session_contract::ResolvedInputSource::File { file_id }
+                            if file_id.as_str() == request.file_id
+                    )
+                })
+            });
+            let file_is_authorized = match &request.purpose {
+                FileReadPurpose::SessionResource => {
+                    file_is_frozen
+                        || application_session_file_is_frozen(&service, dispatch, &request, now_ms)
+                            .await
+                }
+                FileReadPurpose::ModelContent { thread_id } => {
+                    model_content_file_is_authorized(
+                        &service,
+                        dispatch,
+                        thread_id,
+                        &request.file_id,
+                    )
                     .await
+                }
+            };
+            if !scope_matches || !file_is_authorized {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            run_guard = Some(guard);
+        }
+        ResourceOperationFence::SessionMaterialization(intent) => {
+            let (Some(identity), Some(directory), Some(control)) = (
+                request.identity.as_ref(),
+                service.directory.as_deref(),
+                service.session_control.as_deref(),
+            ) else {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            };
+            if let Some(status) = verify_session_worker_effect(
+                directory,
+                &worker,
+                identity,
+                intent.lease(),
+                now_ms,
+                SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
+            )
+            .await
+            .rejection_status()
+            {
+                return status.into_response();
+            }
+            let workspace = match control
+                .authorize_resource_materialization_intent(intent)
+                .await
+            {
+                Ok(workspace) => workspace,
+                Err(awaken_session_contract::SessionRealizationControlFailure::Unavailable(_))
+                | Err(awaken_session_contract::SessionRealizationControlFailure::Conflict) => {
+                    return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                }
+                Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership) => {
+                    return StatusCode::CONFLICT.into_response();
+                }
+                Err(_) => return StatusCode::FORBIDDEN.into_response(),
+            };
+            let exact_file = matches!(
+                intent.target(),
+                awaken_session_contract::SessionResourceMaterializationTarget::Input(input)
+                    if matches!(
+                        &input.source,
+                        awaken_session_contract::ResolvedInputSource::File { file_id }
+                            if file_id.as_str() == request.file_id
+                    )
+            );
+            if workspace != request.workspace_id
+                || !exact_file
+                || request.purpose != FileReadPurpose::SessionResource
+            {
+                return StatusCode::FORBIDDEN.into_response();
             }
         }
-        FileReadPurpose::ModelContent { thread_id } => {
-            model_content_file_is_authorized(&service, dispatch, thread_id, &request.file_id).await
+        ResourceOperationFence::RepositoryPublication { .. }
+        | ResourceOperationFence::CheckpointRelease(_)
+        | ResourceOperationFence::Terminal(_) => {
+            return StatusCode::FORBIDDEN.into_response();
         }
-    };
-    if !scope_matches || !file_is_authorized {
-        return StatusCode::FORBIDDEN.into_response();
     }
+    let _run_guard = run_guard;
     match service
         .source
         .read(
@@ -408,11 +491,11 @@ mod tests {
         // and File id => lossless request; F2 any unknown field => reject before
         // claim/resource checks. Rules W1 F1+!F2=>decode; W2 F1+F2=>fail closed.
         let request = FileContentRequest {
-            claim: RunClaim {
+            authority: ResourceOperationFence::Run(awaken_dispatch_contract::RunClaim {
                 run_id: awaken_agent_contract::agent::run::Id("run-file".into()),
                 owner: "worker-file".into(),
                 epoch: 4,
-            },
+            }),
             identity: None,
             workspace_id: "workspace".into(),
             file_id: "file".into(),
@@ -421,7 +504,7 @@ mod tests {
         let encoded = serde_json::to_value(&request).expect("W1 encode");
         let decoded: FileContentRequest =
             serde_json::from_value(encoded.clone()).expect("W1 decode");
-        assert_eq!(decoded.claim, request.claim, "W1 claim");
+        assert_eq!(decoded.authority, request.authority, "W1 authority");
         assert_eq!(decoded.file_id, request.file_id, "W1 file");
 
         let mut unknown = encoded;

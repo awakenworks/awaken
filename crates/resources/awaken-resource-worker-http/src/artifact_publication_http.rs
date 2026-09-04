@@ -472,7 +472,7 @@ async fn publish_artifact(
         return StatusCode::BAD_REQUEST.into_response();
     }
     // Cause/effect decision table:
-    // C1 exactly one Run/checkpoint-release/terminal fence; C2 authenticated current Worker; C3
+    // C1 exactly one publication-capable Run/checkpoint-release/terminal fence; C2 authenticated current Worker; C3
     // the selected durable authority admits this exact Session/Workspace; C4
     // content/effect identity is exact. R1 !C1|!C2|!C3 => zero File write;
     // R2 Run+C1..C4 holds the commit-epoch guard through publication; R3
@@ -481,6 +481,10 @@ async fn publish_artifact(
     // unfenced fallback. Only Terminal may carry File association scope.
     let mut run_guard = None;
     match &operation_fence {
+        ArtifactPublicationFence::SessionMaterialization(_)
+        | ArtifactPublicationFence::RepositoryPublication { .. } => {
+            return StatusCode::FORBIDDEN.into_response();
+        }
         ArtifactPublicationFence::Run(claim) => {
             if metadata.idempotency_scope.is_some() {
                 return StatusCode::BAD_REQUEST.into_response();

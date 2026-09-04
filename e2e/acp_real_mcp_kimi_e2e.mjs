@@ -93,7 +93,7 @@ async function main() {
   const conversationMarker = `turn-memory-${crypto.randomBytes(12).toString('hex')}`;
   const fixture = await startCalcFixture(CALC_TOKEN, { opaqueResult: attestation });
   try {
-    await withServer('acp-real-mcp', 38198, async (baseUrl) => {
+    await withServer('acp-real-mcp', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, timeout: 600_000 });
       const acpAgent = await client.beta.agents.create({
         name: `${runtime} live ACP`,

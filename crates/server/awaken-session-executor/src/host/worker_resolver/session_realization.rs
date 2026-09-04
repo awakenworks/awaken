@@ -1624,6 +1624,12 @@ mod tests {
             ["stage", "publish"],
             "R1/E1"
         );
+        assert!(
+            host.session_slots
+                .read(thread, |slot| slot.session_dispatch)
+                .unwrap_or(false),
+            "R1/E1 Control synchronization publishes the existing Managed Session marker so a later empty compatibility envelope cannot drain this MCP generation"
+        );
 
         // Publication deliberately evicts the rebuildable SessionCtx before the
         // final claimed resolve. A heartbeat may enter this exact gap; the

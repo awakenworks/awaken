@@ -21,7 +21,7 @@ use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoo
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_runtime::Runtime;
-use awaken_runtime_contract::execution::RunAttemptExecutor;
+use awaken_runtime_contract::execution::{AttemptRecoveryMode, RunAttemptExecutor};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::{
     AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext,
@@ -46,6 +46,8 @@ use crate::worker_context::WorkerContext;
 
 mod claim_renewal;
 mod physical_attempt;
+
+use physical_attempt::PhysicalAttemptRequest;
 
 pub(crate) use claim_renewal::{
     ClaimLeaseRenewal, combine_attempt_cancellation, renew_claim_while_active,
@@ -857,6 +859,18 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .map(|p| p.message_id.clone())
             .collect();
 
+        // Committed terminal truth dominates every backend-specific path,
+        // including a cancellation claim. A pool drainer may win the claim race
+        // against the dedicated terminal reconciler after a commit/settle crash;
+        // it must reuse the same terminal settlement owner before entering a
+        // physical cancel, model, credential, or Environment effect.
+        if let Some(settlement) = self
+            .settle_from_committed_terminal(&claimed, &mut all_pending, &clock)
+            .await?
+        {
+            return Ok(settlement.into_processed());
+        }
+
         // Cancellation is itself a durable claimed attempt. It deliberately runs
         // before model/credential/sandbox materialization: terminal control must
         // remain possible when the execution dependency being cancelled is down.
@@ -872,14 +886,21 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             );
             let cancel_executor = attempt_executor.clone();
             let cancel_activation = activation.clone();
+            let recovery_mode = if claimed.recovered {
+                attempt_executor.physical_attempt_recovery(&activation, &context)
+            } else {
+                AttemptRecoveryMode::RequirePredecessorQuiescence
+            };
             if let Err(error) = self
                 .run_physical_attempt(
-                    &claim,
-                    claimed.request.thread_id(),
-                    &context,
-                    awaken_runtime_contract::execution::LiveInput::None,
-                    clock.clone(),
-                    &attempt_cancellation,
+                    PhysicalAttemptRequest {
+                        claim: &claim,
+                        thread_id: claimed.request.thread_id(),
+                        context: &context,
+                        live_input: awaken_runtime_contract::execution::LiveInput::None,
+                        recovery_mode,
+                        clock: clock.clone(),
+                    },
                     move |attempt_context| async move {
                         cancel_executor
                             .cancel(cancel_activation, attempt_context)
@@ -928,17 +949,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 .await?
                 .applied()
                 .then_some((run_id, state)));
-        }
-
-        // Committed terminal truth dominates backend-specific recovery. This
-        // also owns cleanup of idle-thread input proven to have been delivered
-        // before the prior owner crashed, so the ACP fail-closed rule below
-        // cannot accidentally make that input visible to a later Run.
-        if let Some(settlement) = self
-            .settle_from_committed_terminal(&claimed, &mut all_pending, &clock)
-            .await?
-        {
-            return Ok(settlement.into_processed());
         }
 
         // Cause/effect recovery rule A2: a reclaimed ACP Run is opaque. The
@@ -1038,12 +1048,14 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             Some(ticket) if ticket.reason() == AwaitReason::ScheduledAction => {
                 match self
                     .run_physical_attempt(
-                        &claim,
-                        claimed.request.thread_id(),
-                        &execution_context,
-                        awaken_runtime_contract::execution::LiveInput::None,
-                        clock.clone(),
-                        &attempt_cancellation,
+                        PhysicalAttemptRequest {
+                            claim: &claim,
+                            thread_id: claimed.request.thread_id(),
+                            context: &execution_context,
+                            live_input: awaken_runtime_contract::execution::LiveInput::None,
+                            recovery_mode: AttemptRecoveryMode::RequirePredecessorQuiescence,
+                            clock: clock.clone(),
+                        },
                         |attempt_context| self.perform_scheduled(&claim, now_ms, attempt_context),
                     )
                     .await?
@@ -1076,12 +1088,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         let resume_activation = activation.clone();
                         match self
                             .run_physical_attempt(
-                                &claim,
-                                claimed.request.thread_id(),
-                                &execution_context,
-                                attempt_executor.capabilities().live_input,
-                                clock.clone(),
-                                &attempt_cancellation,
+                                PhysicalAttemptRequest {
+                                    claim: &claim,
+                                    thread_id: claimed.request.thread_id(),
+                                    context: &execution_context,
+                                    live_input: attempt_executor.capabilities().live_input,
+                                    recovery_mode:
+                                        AttemptRecoveryMode::RequirePredecessorQuiescence,
+                                    clock: clock.clone(),
+                                },
                                 move |attempt_context| async move {
                                     resume_executor
                                         .resume(resume_activation, command, attempt_context)
@@ -1170,15 +1185,22 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     }
                     // Consumed on settle, not on read, so a crash re-delivers them.
                     all_pending.extend(unbound.into_iter().map(|input| input.message_id));
+                    let recovery_mode = if claimed.recovered {
+                        attempt_executor.physical_attempt_recovery(&activation, &execution_context)
+                    } else {
+                        AttemptRecoveryMode::RequirePredecessorQuiescence
+                    };
                     let execute_executor = attempt_executor.clone();
                     match self
                         .run_physical_attempt(
-                            &claim,
-                            claimed.request.thread_id(),
-                            &execution_context,
-                            attempt_executor.capabilities().live_input,
-                            clock.clone(),
-                            &attempt_cancellation,
+                            PhysicalAttemptRequest {
+                                claim: &claim,
+                                thread_id: claimed.request.thread_id(),
+                                context: &execution_context,
+                                live_input: attempt_executor.capabilities().live_input,
+                                recovery_mode,
+                                clock: clock.clone(),
+                            },
                             move |attempt_context| async move {
                                 execute_executor.execute(activation, attempt_context).await
                             },
@@ -1204,12 +1226,14 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 Some(ticket) if ticket.reason() == AwaitReason::ScheduledAction => {
                     state = match self
                         .run_physical_attempt(
-                            &claim,
-                            claimed.request.thread_id(),
-                            &execution_context,
-                            awaken_runtime_contract::execution::LiveInput::None,
-                            clock.clone(),
-                            &attempt_cancellation,
+                            PhysicalAttemptRequest {
+                                claim: &claim,
+                                thread_id: claimed.request.thread_id(),
+                                context: &execution_context,
+                                live_input: awaken_runtime_contract::execution::LiveInput::None,
+                                recovery_mode: AttemptRecoveryMode::RequirePredecessorQuiescence,
+                                clock: clock.clone(),
+                            },
                             |attempt_context| {
                                 self.perform_scheduled(&claim, now_ms, attempt_context)
                             },
@@ -1625,8 +1649,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .then_some((run_id, state)))
     }
 
-    /// Reconcile one quiescent awaiting dispatch or expired running lease whose
-    /// committed Run is already terminal. The committed reader is checked before
+    /// Reconcile one quiescent pending/awaiting dispatch or expired running lease
+    /// whose committed Run is already terminal. The committed reader is checked before
     /// the special claim, and
     /// [`settle_claimed_terminal`](Self::settle_claimed_terminal) checks it again
     /// under that claim before reusing the ordinary fenced Done settlement and
@@ -1674,10 +1698,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     ) -> Result<Vec<(RunId, RunState)>, Error> {
         let rows = self.store.list_dispatches().await?;
         let mut processed = Vec::new();
-        for row in rows
-            .into_iter()
-            .filter(|row| matches!(row.state, DispatchState::Awaiting | DispatchState::Leased))
-        {
+        for row in rows.into_iter().filter(|row| {
+            matches!(
+                row.state,
+                DispatchState::Pending | DispatchState::Awaiting | DispatchState::Leased
+            )
+        }) {
             if processed.len() >= limit {
                 break;
             }

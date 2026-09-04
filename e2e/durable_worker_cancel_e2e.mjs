@@ -119,7 +119,8 @@ async function interruptManagedRun(client, sessionId, rule) {
 function dispatchRow(database, runId) {
   return sqliteRows(
     database,
-    `SELECT status, cancel_requested, lease_owner, lease_until, attempt_count
+    `SELECT status, cancel_requested, lease_owner, lease_until, attempt_count,
+            active_attempt_owner, active_attempt_epoch
      FROM runtime_dispatch WHERE run_id = ?`,
     runId,
   )[0] ?? null;
@@ -240,22 +241,30 @@ async function recoverCommittedCancellationAfterSettleCrash() {
     // C1=the canonical local Worker owns a running Managed Session dispatch;
     // C2=an official-SDK interrupt persists cancellation and cancels that attempt;
     // C3=the real Done settlement alone is faulted after Runtime commits Cancelled;
-    // C4=the process crashes with one terminal-but-unsettled leased row; C5=the
-    // settlement fault is removed and only that lease is expired; C6=a durable,
-    // coordinator-only restart explicitly reconciles the same store.
+    // C4=the physical cancellation attempt is authoritatively quiescent, then the
+    // process crashes while terminal settlement self-retry is either unleased
+    // Pending or owns its next Running mutation claim; C5=the settlement fault is
+    // removed and any live mutation lease is expired; C6=a durable,
+    // coordinator-only restart lets the canonical startup reconciler race one
+    // explicit reconciliation request against the same store.
     // Effects: E1=C1+C2+C3 retains one cancel_requested running row, exact
     // Ended(Cancelled) truth, and no completion tombstone; E2=C4+C5+C6 claims the
     // terminal row without re-execution, performs ordinary fenced Done settlement,
     // writes one completion tombstone, and removes the row; E3=no Provider request
-    // occurs during recovery.
+    // occurs during recovery. The explicit response contains either this run id
+    // or no id when startup already owns the exact claim; no other id is valid.
     // Constraints: the fixture blocks only DELETE of this run's real dispatch row,
-    // then removes that blocker and changes lease_until only. It never writes the
-    // cancel bit, Run phase, completion, Session event, or any terminal fact.
+    // observes the canonical physical-attempt slot clear before crashing, then
+    // removes that blocker and, only for R3b, expires lease_until. It never writes
+    // the cancel bit, physical slot, Run phase, completion, Session event, or
+    // terminal fact. Crashing while the physical slot is occupied is a different
+    // fail-closed rule and cannot be used as a settlement-recovery witness.
     //
-    // | Rule | running | SDK interrupt | settle fault | crash | lease expired | reconcile | Expected |
-    // |---|---|---|---|---|---|---|---|
-    // | R2 | T | T | T | F | F | F | E1 |
-    // | R3 | T | T | removed | T | T | T | E2 + E3 |
+    // | Rule | terminal row at crash | settle fault | lease normalization | claim winner | Expected |
+    // |---|---|---|---|---|---|
+    // | R2 | Running | installed | none | none | E1 |
+    // | R3a | Pending | removed | none | startup or explicit | E2 + E3 |
+    // | R3b | Running retry claim | removed | expire mutation lease | startup or explicit | E2 + E3 |
     const runId = await submitManagedRun(
       client,
       session.id,
@@ -304,14 +313,18 @@ async function recoverCommittedCancellationAfterSettleCrash() {
       ({ cause, dispatch, completions }) => cause === 'Cancelled'
         && dispatch?.status === 'running'
         && Number(dispatch.cancel_requested) === 1
+        && dispatch.active_attempt_owner === null
+        && dispatch.active_attempt_epoch === null
         && completions === 0,
-      'R2 real Cancelled commit to stop at the faulted Done settlement',
+      'R2 real Cancelled commit and physical quiescence to stop at the faulted Done settlement',
       { timeoutMs: 20_000, pollMs: 25 },
     );
     assert.deepEqual(
-      [Boolean(terminalRetained.dispatch.lease_owner), Number(terminalRetained.dispatch.lease_until) > 0, upstream.received],
-      [true, true, 1],
-      'R2 retains one leased terminal row without replacement inference',
+      [Boolean(terminalRetained.dispatch.lease_owner), Number(terminalRetained.dispatch.lease_until) > 0,
+        terminalRetained.dispatch.active_attempt_owner, terminalRetained.dispatch.active_attempt_epoch,
+        upstream.received],
+      [true, true, null, null, 1],
+      'R2 retains one leased terminal row after physical quiescence without replacement inference',
     );
     pass('R2 retained one committed Cancelled run at the real Done-settlement boundary');
 
@@ -328,24 +341,33 @@ async function recoverCommittedCancellationAfterSettleCrash() {
 
     srv = spawnDurable(TERMINAL_STORE, upstream, 'echo', true);
     await waitForPort(PORT, 180_000, srv.server);
-    assert.equal(
-      dispatchRow(database, runId)?.status,
-      'running',
-      'R3 unexpired terminal lease survives startup maintenance until the explicit recovery step',
+    const crashRow = dispatchRow(database, runId);
+    assert.ok(
+      crashRow?.status === 'pending' || crashRow?.status === 'running',
+      `R3 crash snapshot is Pending or an in-progress retry claim: ${JSON.stringify(crashRow)}`,
     );
-    const accelerated = sqliteRun(
-      database,
-      "UPDATE runtime_dispatch SET lease_until = 0 WHERE run_id = ? AND status = 'running'",
-      runId,
-    );
-    assert.equal(Number(accelerated.changes), 1, 'R3 fixture expires only the retained terminal lease');
+    assert.equal(Number(crashRow.cancel_requested), 1, 'R3 retains the authoritative cancellation intent');
+    if (crashRow.status === 'pending') {
+      assert.deepEqual(
+        [crashRow.lease_owner, crashRow.lease_until],
+        [null, null],
+        'R3a released settlement retries carry no mutation lease',
+      );
+    } else {
+      const accelerated = sqliteRun(
+        database,
+        "UPDATE runtime_dispatch SET lease_until = 0 WHERE run_id = ? AND status = 'running'",
+        runId,
+      );
+      assert.equal(Number(accelerated.changes), 1, 'R3b fixture expires only the live retry claim');
+    }
 
     const reconcile = await post(`/v1/durable/threads/${session.id}/reconcile`, undefined);
     assert.equal(reconcile.status, 200, `R3 reconcile accepted: ${JSON.stringify(reconcile.body)}`);
-    assert.deepEqual(
-      reconcile.body.recovered,
-      [runId],
-      'R3 explicit reconciliation owns the exact terminal recovery claim',
+    assert.ok(
+      JSON.stringify(reconcile.body.recovered) === '[]'
+        || JSON.stringify(reconcile.body.recovered) === JSON.stringify([runId]),
+      `R3 only startup or explicit reconciliation may own the exact terminal claim: ${JSON.stringify({ crashRow, reconcile })}`,
     );
     await waitForValue(
       () => [dispatchRow(database, runId), completionCount(database, runId)],

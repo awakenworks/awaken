@@ -352,7 +352,7 @@ async def exercise_agent_toolset() -> None:
 
 
 async def main() -> None:
-    assert anthropic.__version__ == "1.2.0"
+    assert anthropic.__version__ == "1.3.0"
     exercise_public_library_surface()
     await exercise_agent_toolset()
     async with anthropic.AsyncAnthropic(

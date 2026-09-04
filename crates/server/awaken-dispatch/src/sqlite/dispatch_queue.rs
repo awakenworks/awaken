@@ -1,5 +1,105 @@
 // SQLite realization of the one neutral DispatchQueue contract. Included by
 // `sqlite.rs` so the public adapter and trait implementation paths do not move.
+struct PersistedAttemptFacts {
+    status: String,
+    lease_owner: Option<String>,
+    lease_epoch: i64,
+    lease_until: Option<i64>,
+    active_owner: Option<String>,
+    active_epoch: Option<i64>,
+}
+
+impl SqliteDispatchStore {
+    async fn admit_physical_attempt(
+        &self,
+        claim: &RunClaim,
+        now_ms: u64,
+        handoff: bool,
+    ) -> Result<AttemptAdmission, DispatchError> {
+        let claim = claim.clone();
+        self.with_conn(move |conn, p| {
+            let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(store_error)?;
+            let current: Option<PersistedAttemptFacts> = tx
+                .query_row(
+                    &format!(
+                        "SELECT status, lease_owner, lease_epoch, lease_until, \
+                         active_attempt_owner, active_attempt_epoch \
+                         FROM {p}_dispatch WHERE run_id = ?1"
+                    ),
+                    params![claim.run_id.0],
+                    |row| {
+                        Ok(PersistedAttemptFacts {
+                            status: row.get(0)?,
+                            lease_owner: row.get(1)?,
+                            lease_epoch: row.get(2)?,
+                            lease_until: row.get(3)?,
+                            active_owner: row.get(4)?,
+                            active_epoch: row.get(5)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(store_error)?;
+            let Some(current) = current else {
+                let _ = tx.rollback();
+                return Ok(AttemptAdmission::Fenced);
+            };
+            let persisted_epoch = durable_u64("dispatch lease epoch", current.lease_epoch)?;
+            let active_epoch = current
+                .active_epoch
+                .map(|value| durable_u64("dispatch attempt epoch", value))
+                .transpose()?;
+            let live = current.status == "running"
+                && current.lease_owner.as_deref() == Some(&claim.owner)
+                && persisted_epoch == claim.epoch
+                && current
+                    .lease_until
+                    .is_some_and(|until| until >= crate::clock::db_millis(now_ms));
+            let slot = PhysicalAttemptSlot::from_facts(
+                current.active_owner.is_some(),
+                active_epoch.is_some(),
+                current.active_owner.as_deref() == Some(&claim.owner),
+                active_epoch == Some(claim.epoch),
+            );
+            let transition = if handoff {
+                handoff_physical_attempt(live, slot)
+            } else {
+                begin_physical_attempt(live, slot)
+            };
+            let admission = match transition {
+                PhysicalAttemptTransition::Stutter => AttemptAdmission::AlreadyApplied,
+                PhysicalAttemptTransition::Blocked => AttemptAdmission::Blocked,
+                PhysicalAttemptTransition::Fenced => AttemptAdmission::Fenced,
+                PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace => {
+                    tx.execute(
+                        &format!(
+                            "UPDATE {p}_dispatch SET active_attempt_owner = ?2, \
+                             active_attempt_epoch = ?3 WHERE run_id = ?1"
+                        ),
+                        params![claim.run_id.0, claim.owner, epoch],
+                    )
+                    .map_err(store_error)?;
+                    AttemptAdmission::Applied
+                }
+                PhysicalAttemptTransition::Corrupt => {
+                    return Err(DispatchError::Rejected(
+                        "persisted physical attempt slot is not an owner/epoch pair".to_string(),
+                    ));
+                }
+                PhysicalAttemptTransition::Clear => {
+                    unreachable!("attempt admission never clears a slot")
+                }
+            };
+            tx.commit().map_err(store_error)?;
+            Ok(admission)
+        })
+        .await
+    }
+}
+
 #[async_trait]
 impl DispatchQueue for SqliteDispatchStore {
     async fn worker_owns_run(
@@ -1161,98 +1261,15 @@ impl DispatchQueue for SqliteDispatchStore {
         claim: &RunClaim,
         now_ms: u64,
     ) -> Result<AttemptAdmission, DispatchError> {
-        let claim = claim.clone();
-        self.with_conn(move |conn, p| {
-            let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(store_error)?;
-            let current: Option<(
-                String,
-                Option<String>,
-                i64,
-                Option<i64>,
-                Option<String>,
-                Option<i64>,
-            )> = tx
-                .query_row(
-                    &format!(
-                        "SELECT status, lease_owner, lease_epoch, lease_until, \
-                         active_attempt_owner, active_attempt_epoch \
-                         FROM {p}_dispatch WHERE run_id = ?1"
-                    ),
-                    params![claim.run_id.0],
-                    |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                            row.get(5)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(store_error)?;
-            let Some((status, owner, persisted_epoch, lease_until, active_owner, active_epoch)) =
-                current
-            else {
-                let _ = tx.rollback();
-                return Ok(AttemptAdmission::Fenced);
-            };
-            let persisted_epoch = durable_u64("dispatch lease epoch", persisted_epoch)?;
-            let active_epoch = active_epoch
-                .map(|value| durable_u64("dispatch attempt epoch", value))
-                .transpose()?;
-            let live = status == "running"
-                && owner.as_deref() == Some(&claim.owner)
-                && persisted_epoch == claim.epoch
-                && lease_until.is_some_and(|until| until >= crate::clock::db_millis(now_ms));
-            let slot = PhysicalAttemptSlot::from_facts(
-                active_owner.is_some(),
-                active_epoch.is_some(),
-                active_owner.as_deref() == Some(&claim.owner),
-                active_epoch == Some(claim.epoch),
-            );
-            match begin_physical_attempt(live, slot) {
-                PhysicalAttemptTransition::Stutter => {
-                    tx.commit().map_err(store_error)?;
-                    Ok(AttemptAdmission::AlreadyApplied)
-                }
-                PhysicalAttemptTransition::Blocked => {
-                    tx.commit().map_err(store_error)?;
-                    Ok(AttemptAdmission::Blocked)
-                }
-                PhysicalAttemptTransition::Fenced => {
-                    tx.commit().map_err(store_error)?;
-                    Ok(AttemptAdmission::Fenced)
-                }
-                PhysicalAttemptTransition::Install => {
-                    let changed = tx
-                        .execute(
-                            &format!(
-                                "UPDATE {p}_dispatch SET active_attempt_owner = ?2, \
-                                 active_attempt_epoch = ?3 WHERE run_id = ?1 \
-                                 AND active_attempt_owner IS NULL AND active_attempt_epoch IS NULL"
-                            ),
-                            params![claim.run_id.0, claim.owner, epoch],
-                        )
-                        .map_err(store_error)?;
-                    if changed != 1 {
-                        let _ = tx.rollback();
-                        return Ok(AttemptAdmission::Blocked);
-                    }
-                    tx.commit().map_err(store_error)?;
-                    Ok(AttemptAdmission::Applied)
-                }
-                PhysicalAttemptTransition::Corrupt => Err(DispatchError::Rejected(
-                    "persisted physical attempt slot is not an owner/epoch pair".to_string(),
-                )),
-                PhysicalAttemptTransition::Clear => unreachable!("begin never clears a slot"),
-            }
-        })
-        .await
+        self.admit_physical_attempt(claim, now_ms, false).await
+    }
+
+    async fn handoff_attempt(
+        &self,
+        claim: &RunClaim,
+        now_ms: u64,
+    ) -> Result<AttemptAdmission, DispatchError> {
+        self.admit_physical_attempt(claim, now_ms, true).await
     }
 
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -1306,8 +1323,10 @@ impl DispatchQueue for SqliteDispatchStore {
                         "persisted physical attempt slot is not an owner/epoch pair".to_string(),
                     ));
                 }
-                PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Blocked => {
-                    unreachable!("finish never installs or blocks a slot")
+                PhysicalAttemptTransition::Install
+                | PhysicalAttemptTransition::Replace
+                | PhysicalAttemptTransition::Blocked => {
+                    unreachable!("finish never installs, replaces, or blocks a slot")
                 }
             };
             tx.commit().map_err(store_error)?;
@@ -1323,41 +1342,61 @@ impl DispatchQueue for SqliteDispatchStore {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(store_error)?;
-            let current: Option<(String, Option<String>, i64, i64, Option<i64>)> = tx
+            let current: Option<(String, Option<String>, i64, i64, Option<String>, Option<i64>)> = tx
                 .query_row(
                     &format!(
-                        "SELECT status, lease_owner, lease_epoch, cancel_requested, active_attempt_epoch \
+                        "SELECT status, lease_owner, lease_epoch, cancel_requested, active_attempt_owner, active_attempt_epoch \
                          FROM {p}_dispatch WHERE run_id = ?1"
                     ),
                     params![claim.run_id.0],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
                 )
                 .optional()
                 .map_err(store_error)?;
-            let Some((status, owner, persisted_epoch, cancellation_requested, active_attempt)) = current else {
+            let Some((status, owner, persisted_epoch, cancellation_requested, active_attempt_owner, active_attempt_epoch)) = current else {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
             };
-            if active_attempt.is_some() {
-                let _ = tx.rollback();
-                return Ok(SettleOutcome::Fenced);
-            }
+            let active_attempt_epoch = active_attempt_epoch
+                .map(|value| durable_u64("dispatch attempt epoch", value))
+                .transpose()?;
+            let slot = PhysicalAttemptSlot::from_facts(
+                active_attempt_owner.is_some(),
+                active_attempt_epoch.is_some(),
+                active_attempt_owner.as_deref() == Some(&claim.owner),
+                active_attempt_epoch == Some(claim.epoch),
+            );
             let transition = crate::persisted_dispatch_transition(
                 &status,
                 persisted_epoch,
                 cancellation_requested != 0,
             )?;
-            let awaken_dispatch_contract::GuardedTransition::Applied(next) =
-                transition.relinquish(claim.epoch, owner.as_deref() == Some(&claim.owner))
-            else {
-                let _ = tx.rollback();
-                return Ok(SettleOutcome::Fenced);
+            let (next, lease_until) = match transition.relinquish(
+                claim.epoch,
+                owner.as_deref() == Some(&claim.owner),
+                slot,
+            ) {
+                awaken_dispatch_contract::RelinquishTransition::Pending(next) => (next, None),
+                awaken_dispatch_contract::RelinquishTransition::Recovering(next) => {
+                    (next, Some(0_i64))
+                }
+                awaken_dispatch_contract::RelinquishTransition::Fenced => {
+                    let _ = tx.rollback();
+                    return Ok(SettleOutcome::Fenced);
+                }
+                awaken_dispatch_contract::RelinquishTransition::Corrupt => {
+                    let _ = tx.rollback();
+                    return Err(DispatchError::Rejected(
+                        "persisted physical attempt slot is not an owner/epoch pair".to_string(),
+                    ));
+                }
             };
             let changed = tx
                 .execute(
                     &format!(
-                        "UPDATE {p}_dispatch SET status = ?4, lease_owner = NULL, \
-                         lease_until = NULL, created_at = strftime('%Y-%m-%d %H:%M:%f', 'now') \
+                        "UPDATE {p}_dispatch SET status = ?4, \
+                         lease_owner = CASE WHEN ?5 IS NULL THEN NULL ELSE lease_owner END, \
+                         lease_until = ?5, created_at = strftime('%Y-%m-%d %H:%M:%f', 'now') \
                          WHERE run_id = ?1 AND status = 'running' \
                          AND lease_owner = ?2 AND lease_epoch = ?3"
                     ),
@@ -1365,7 +1404,8 @@ impl DispatchQueue for SqliteDispatchStore {
                         claim.run_id.0,
                         claim.owner,
                         epoch,
-                        crate::dispatch_state_db(next.state)
+                        crate::dispatch_state_db(next.state),
+                        lease_until,
                     ],
                 )
                 .map_err(store_error)?;

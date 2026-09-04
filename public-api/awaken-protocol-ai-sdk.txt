@@ -38,7 +38,13 @@ pub fn awaken_protocol_ai_sdk::request::result_text(&serde_json::value::Value) -
 pub mod awaken_protocol_ai_sdk::router
 pub fn awaken_protocol_ai_sdk::router::router(alloc::sync::Arc<dyn awaken_session_contract::run_application::RunApplication>) -> axum::routing::Router
 pub mod awaken_protocol_ai_sdk::types
+pub enum awaken_protocol_ai_sdk::types::AwakenFileKind
+pub awaken_protocol_ai_sdk::types::AwakenFileKind::Document
+pub awaken_protocol_ai_sdk::types::AwakenFileKind::Image
 pub enum awaken_protocol_ai_sdk::types::UIMessagePart
+pub awaken_protocol_ai_sdk::types::UIMessagePart::AwakenFile
+pub awaken_protocol_ai_sdk::types::UIMessagePart::AwakenFile::file_id: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIMessagePart::AwakenFile::kind: awaken_protocol_ai_sdk::types::AwakenFileKind
 pub awaken_protocol_ai_sdk::types::UIMessagePart::File
 pub awaken_protocol_ai_sdk::types::UIMessagePart::File::media_type: alloc::string::String
 pub awaken_protocol_ai_sdk::types::UIMessagePart::File::url: alloc::string::String
@@ -127,6 +133,7 @@ pub awaken_protocol_ai_sdk::types::Usage::total_tokens: u64
 pub fn awaken_protocol_ai_sdk::types::assistant_parts(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn awaken_protocol_ai_sdk::types::attach_usage(&mut [awaken_protocol_ai_sdk::types::UIStreamEvent], (u64, u64))
 pub fn awaken_protocol_ai_sdk::types::history_message(&str, &str, alloc::vec::Vec<serde_json::value::Value>) -> serde_json::value::Value
+pub fn awaken_protocol_ai_sdk::types::history_parts(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn awaken_protocol_ai_sdk::types::text_parts(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::vec::Vec<serde_json::value::Value>
 pub enum awaken_protocol_ai_sdk::UIStreamEvent
 pub awaken_protocol_ai_sdk::UIStreamEvent::Error

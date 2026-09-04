@@ -61,6 +61,22 @@ Do not add GWT text for every unit test. The purpose is to freeze boundary
 behavior: which aggregate owns truth, when a result becomes durable, what fails
 closed, what is idempotent, and how recovery repairs a crash point.
 
+## Quality Gate Ownership
+
+`scripts/ci/check-all.sh` is the only complete executable test manifest. Its
+named groups are a scheduling interface, not independent definitions of release
+quality. `.github/workflows/quality.yml` supplies an exact candidate revision,
+the required substrate-capable runner, dependencies, and retained evidence, then
+invokes that manifest once without selecting a subset. Pull requests, local-main
+pushes, and the tag-only release workflow all enter the same reusable workflow.
+
+The workflow must not repeat package, scenario, backend, or group lists. The
+test-orchestration checker rejects a second workflow invoking `check-all.sh`, a
+partial `--group` workflow, a release-local test list, missing exact-SHA binding,
+successful failure suppression, or missing always-uploaded timing evidence.
+External provider behavior and physical substrate behavior remain labelled
+evidence boundaries; they are not promoted from fixtures or static manifests.
+
 ## Test Organization
 
 Organize executable scenarios by boundary, not by product workflow or concrete

@@ -22,15 +22,19 @@ pub(crate) struct CompiledEffectiveInputs {
 fn resource_requirement_effect_key(
     transition: &awaken_session_contract::SessionResourceTransition,
     claim: Option<&awaken_dispatch::RunClaim>,
+    realization_lease: Option<&awaken_session_contract::SessionRealizationLease>,
 ) -> String {
-    format!(
-        "{}:{}",
-        transition.operation_fingerprint(),
-        claim.map_or_else(
-            || "local".to_string(),
-            awaken_session_contract::stable_fingerprint,
+    let authority = if let Some(claim) = claim {
+        format!("run:{}", awaken_session_contract::stable_fingerprint(claim))
+    } else if let Some(lease) = realization_lease {
+        format!(
+            "realization:{}",
+            awaken_session_contract::stable_fingerprint(lease)
         )
-    )
+    } else {
+        "local".to_string()
+    };
+    format!("{}:{}", transition.operation_fingerprint(), authority,)
 }
 
 impl crate::ManagedHost {
@@ -52,27 +56,9 @@ impl crate::ManagedHost {
     #[must_use]
     pub fn with_repository_binding_verifier(
         mut self,
-        verifier: Arc<dyn RepositoryBindingVerifier<awaken_dispatch::RunClaim>>,
+        verifier: Arc<dyn RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>>,
     ) -> Self {
         self.repository_binding_verifier = Some(verifier);
-        self
-    }
-
-    /// Install the same Repository binding boundary under terminal Session
-    /// publication authority. Remote implementations require the exact durable
-    /// command plus realization lease; local registry implementations reuse the
-    /// generic verifier and therefore retain one Resource/config validation path.
-    #[must_use]
-    pub fn with_repository_publication_binding_verifier(
-        mut self,
-        verifier: Arc<
-            dyn RepositoryBindingVerifier<(
-                awaken_session_contract::SessionRepositoryPublicationCommand,
-                awaken_session_contract::SessionRealizationLease,
-            )>,
-        >,
-    ) -> Self {
-        self.repository_publication_binding_verifier = Some(verifier);
         self
     }
 
@@ -87,6 +73,7 @@ impl crate::ManagedHost {
         workspace: &str,
         inputs: &awaken_session_contract::ResolvedSessionResources,
         claim: Option<&awaken_dispatch::RunClaim>,
+        realization: Option<(&str, u64, &awaken_session_contract::SessionRealizationLease)>,
     ) -> Result<CompiledEffectiveInputs, RunError> {
         let mut all = crate::provisioning::StagedResources::default();
         let mut memory_bindings = std::collections::HashMap::new();
@@ -97,7 +84,7 @@ impl crate::ManagedHost {
             .flatten();
         for input in inputs.inputs() {
             let one = self
-                .stage_resolved_input(workspace, input, claim, environment.as_ref())
+                .stage_resolved_input(workspace, input, claim, realization, environment.as_ref())
                 .await?;
             // Read this exact projection before merging it. Two bindings may
             // legally reference the same store with different access, and a
@@ -267,8 +254,9 @@ impl crate::ManagedHost {
             )
             .expect("a manifest is always a valid no-op transition"),
             claim,
+            None,
         );
-        self.stage_resource_requirements(thread, &desired, claim, effect_key)
+        self.stage_resource_requirements(thread, &desired, claim, None, effect_key)
             .await
     }
 
@@ -281,6 +269,7 @@ impl crate::ManagedHost {
         thread: &str,
         transition: &awaken_session_contract::SessionResourceTransition,
         claim: Option<&awaken_dispatch::RunClaim>,
+        realization_lease: Option<&awaken_session_contract::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
         let installed = self.host.thread_resource_manifest(thread);
@@ -313,16 +302,26 @@ impl crate::ManagedHost {
             // all provider requirements absent so adoption still owns the sole
             // complete compilation edge.
             let versions = self
-                .load_pinned_skill_requirements(transition.desired(), claim)
+                .load_pinned_skill_requirements(
+                    transition.desired(),
+                    claim,
+                    realization_lease.map(|lease| (thread, transition.desired().revision, lease)),
+                )
                 .await?;
             self.host.session_slots.update(thread, |slot| {
                 slot.skills = Some(versions);
             });
             return Ok(());
         }
-        let effect_key = resource_requirement_effect_key(transition, claim);
-        self.stage_resource_requirements(thread, transition.desired(), claim, effect_key)
-            .await
+        let effect_key = resource_requirement_effect_key(transition, claim, realization_lease);
+        self.stage_resource_requirements(
+            thread,
+            transition.desired(),
+            claim,
+            realization_lease.map(|lease| (thread, transition.desired().revision, lease)),
+            effect_key,
+        )
+        .await
     }
 
     async fn stage_resource_requirements(
@@ -330,6 +329,7 @@ impl crate::ManagedHost {
         thread: &str,
         desired: &awaken_session_contract::SessionResourceManifest,
         claim: Option<&awaken_dispatch::RunClaim>,
+        realization: Option<(&str, u64, &awaken_session_contract::SessionRealizationLease)>,
         effect_key: String,
     ) -> Result<(), RunError> {
         // Unclaimed replay may reuse the exact already-compiled cold
@@ -349,9 +349,11 @@ impl crate::ManagedHost {
         }
         let workspace = desired.workspace_id.as_str();
         let resources = &desired.resources;
-        let versions = self.load_pinned_skill_requirements(desired, claim).await?;
+        let versions = self
+            .load_pinned_skill_requirements(desired, claim, realization)
+            .await?;
         let compiled = self
-            .compile_effective_inputs(thread, workspace, resources, claim)
+            .compile_effective_inputs(thread, workspace, resources, claim, realization)
             .await?;
         // Publish only after every fallible Resource/Skill read has succeeded.
         // The slot then exposes one complete set of cold requirements; failed
@@ -374,13 +376,16 @@ impl crate::ManagedHost {
         &self,
         desired: &awaken_session_contract::SessionResourceManifest,
         claim: Option<&awaken_dispatch::RunClaim>,
+        realization: Option<(&str, u64, &awaken_session_contract::SessionRealizationLease)>,
     ) -> Result<Vec<awaken_resource_contract::SkillVersion>, RunError> {
+        let skill_realization = self.host.upstream.as_ref().and(realization);
         self.host
             .skills
             .load_pinned(
                 desired.workspace_id.as_str(),
                 desired.resources.skills(),
                 claim,
+                skill_realization,
             )
             .await
             .map_err(skill_store_run_error)
@@ -425,7 +430,7 @@ impl crate::ManagedHost {
                 ResourceBindingCheck::Repository {
                     repository_id,
                     config_version,
-                    claim,
+                    authority,
                     ..
                 } => self
                     .repository_binding_verifier
@@ -435,7 +440,12 @@ impl crate::ManagedHost {
                             "repository resources require a configured binding verifier",
                         )
                     })?
-                    .verify(&workspace, &repository_id, config_version, claim.as_ref())
+                    .verify(
+                        &workspace,
+                        &repository_id,
+                        config_version,
+                        authority.as_deref(),
+                    )
                     .await
                     .map(|_| ())
                     .map_err(|error| RunError::bad_request(error.to_string()))?,
@@ -497,13 +507,14 @@ impl crate::ManagedHost {
         thread: &str,
         transition: &awaken_session_contract::SessionResourceTransition,
         claim: Option<&awaken_dispatch::RunClaim>,
+        realization_lease: Option<&awaken_session_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         let lifecycle = self
             .host
             .session_slots
             .update(thread, |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle.lock().await;
-        self.apply_session_inputs_under_lifecycle(thread, transition, claim)
+        self.apply_session_inputs_under_lifecycle(thread, transition, claim, realization_lease)
             .await
     }
 
@@ -517,13 +528,14 @@ impl crate::ManagedHost {
         thread: &str,
         transition: &awaken_session_contract::SessionResourceTransition,
         claim: Option<&awaken_dispatch::RunClaim>,
+        realization_lease: Option<&awaken_session_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         let resource_projection = self
             .host
             .session_slots
             .update(thread, |slot| slot.resource_projection.clone());
         let _resource_projection = resource_projection.lock().await;
-        self.apply_session_inputs_body(thread, transition, claim)
+        self.apply_session_inputs_body(thread, transition, claim, realization_lease)
             .await
     }
 
@@ -536,6 +548,7 @@ impl crate::ManagedHost {
         thread: &str,
         transition: &awaken_session_contract::SessionResourceTransition,
         claim: Option<&awaken_dispatch::RunClaim>,
+        realization_lease: Option<&awaken_session_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         let previous_manifest = transition.previous();
         let desired_manifest = transition.desired();
@@ -581,8 +594,14 @@ impl crate::ManagedHost {
             && desired_manifest.revision == 0
             && inputs.inputs().is_empty()
             && inputs.skills().is_empty();
-        let projection_is_staged =
-            baseline_is_staged || session_dispatch || direct_empty_revision_zero_noop;
+        // An ordinary claimed Run may carry the same frozen Environment
+        // projection without acquiring Session-command identity. That exact
+        // projection is sufficient runtime authority for its carried Resource
+        // transition; absence of both projections remains fail-closed.
+        let projection_is_staged = baseline_is_staged
+            || session_dispatch
+            || environment_projection.is_some()
+            || direct_empty_revision_zero_noop;
         if live_environment.is_none() && !projection_is_staged {
             return Err(RunError::unavailable_classified(
                 "session_resource_projection_not_staged",
@@ -765,7 +784,7 @@ impl crate::ManagedHost {
                 }
             }
         }
-        let effect_key = resource_requirement_effect_key(transition, claim);
+        let effect_key = resource_requirement_effect_key(transition, claim, realization_lease);
         let cache_matches = self
             .host
             .session_slots
@@ -778,8 +797,14 @@ impl crate::ManagedHost {
             // by complete projection staging. This is the only Skill/Resource
             // read and requirements-publication owner; the physical body below
             // consumes its result and publishes only completion.
-            self.stage_resource_requirements(thread, &desired_manifest, claim, effect_key.clone())
-                .await?;
+            self.stage_resource_requirements(
+                thread,
+                &desired_manifest,
+                claim,
+                realization_lease.map(|lease| (thread, desired_manifest.revision, lease)),
+                effect_key.clone(),
+            )
+            .await?;
         }
         let compiled = self
             .host
@@ -1001,31 +1026,6 @@ pub(super) fn managed_resource_mount_path(requested: &str) -> String {
         format!("/{logical}")
     } else {
         format!("/mnt/{logical}")
-    }
-}
-
-type TerminalRepositoryPublicationFence = (
-    awaken_session_contract::SessionRepositoryPublicationCommand,
-    awaken_session_contract::SessionRealizationLease,
-);
-
-/// Select only the Repository authorization port while keeping the resource
-/// projection itself singular. Terminal authority is interpreted together with
-/// the Host's existing upstream topology fact: local effects use the frozen
-/// command directly, while a remote effect requires its lease verifier. A
-/// remote Run without its claim still fails closed.
-#[derive(Clone, Copy)]
-enum RepositoryProjectionAuthority<'a> {
-    Run(Option<&'a awaken_dispatch::RunClaim>),
-    Terminal(&'a TerminalRepositoryPublicationFence),
-}
-
-impl<'a> RepositoryProjectionAuthority<'a> {
-    fn run_claim(self) -> Option<&'a awaken_dispatch::RunClaim> {
-        match self {
-            Self::Run(claim) => claim,
-            Self::Terminal(_) => None,
-        }
     }
 }
 
@@ -1484,12 +1484,31 @@ impl crate::ManagedHost {
         workspace: &str,
         input: &awaken_session_contract::ResolvedInput,
         claim: Option<&awaken_dispatch::RunClaim>,
+        realization: Option<(&str, u64, &awaken_session_contract::SessionRealizationLease)>,
         environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
     ) -> Result<crate::provisioning::StagedResources, awaken_session_contract::RunError> {
+        let authority = if let (Some((session_id, resource_revision, lease)), Some(_)) =
+            (realization, self.host.upstream.as_ref())
+        {
+            Some(
+                awaken_dispatch::ResourceOperationFence::SessionMaterialization(
+                    awaken_session_contract::SessionResourceMaterializationIntent::try_new(
+                        session_id,
+                        resource_revision,
+                        input.clone(),
+                        lease.clone(),
+                    )
+                    .map_err(awaken_session_contract::RunError::bad_request)?,
+                ),
+            )
+        } else {
+            claim.map(|claim| awaken_dispatch::ResourceOperationFence::Run(claim.clone()))
+        };
         self.stage_resolved_input_with_repository_authority(
             workspace,
             input,
-            RepositoryProjectionAuthority::Run(claim),
+            authority.as_ref(),
+            realization,
             environment,
         )
         .await
@@ -1519,11 +1538,15 @@ impl crate::ManagedHost {
                 "terminal Repository publication input is not a Repository",
             ));
         }
-        let fence = (command.clone(), lease.clone());
+        let fence = awaken_dispatch::ResourceOperationFence::RepositoryPublication {
+            command: Box::new(command.clone()),
+            lease: lease.clone(),
+        };
         self.stage_resolved_input_with_repository_authority(
             workspace,
             input,
-            RepositoryProjectionAuthority::Terminal(&fence),
+            Some(&fence),
+            None,
             None,
         )
         .await
@@ -1533,12 +1556,16 @@ impl crate::ManagedHost {
         &self,
         workspace: &str,
         input: &awaken_session_contract::ResolvedInput,
-        repository_authority: RepositoryProjectionAuthority<'_>,
+        repository_authority: Option<&awaken_dispatch::ResourceOperationFence>,
+        realization: Option<(&str, u64, &awaken_session_contract::SessionRealizationLease)>,
         environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
     ) -> Result<crate::provisioning::StagedResources, awaken_session_contract::RunError> {
         use awaken_session_contract::{ResolvedInputSource, RunError};
 
-        let claim = repository_authority.run_claim();
+        let claim = repository_authority.and_then(|authority| match authority {
+            awaken_dispatch::ResourceOperationFence::Run(claim) => Some(claim),
+            _ => None,
+        });
         let mut staged = crate::provisioning::StagedResources::default();
         if matches!(input.source, ResolvedInputSource::MemoryStore { .. }) {
             staged.memory_prompts.push(resolved_memory_prompts(input));
@@ -1556,6 +1583,23 @@ impl crate::ManagedHost {
 
         match &input.source {
             ResolvedInputSource::File { file_id } => {
+                let authority = match (claim, realization) {
+                    (_, Some((session_id, revision, lease))) if self.host.upstream.is_some() => Some(
+                        awaken_dispatch::ResourceOperationFence::SessionMaterialization(
+                            awaken_session_contract::SessionResourceMaterializationIntent::try_new(
+                                session_id,
+                                revision,
+                                input.clone(),
+                                lease.clone(),
+                            )
+                            .map_err(RunError::internal)?,
+                        ),
+                    ),
+                    (Some(claim), _) => Some(
+                        awaken_dispatch::ResourceOperationFence::Run(claim.clone()),
+                    ),
+                    (None, _) => None,
+                };
                 let content = self
                     .host
                     .file_content_source
@@ -1563,7 +1607,7 @@ impl crate::ManagedHost {
                         workspace,
                         file_id.as_str(),
                         &awaken_resource_contract::FileReadPurpose::SessionResource,
-                        claim,
+                        authority.as_ref(),
                     )
                     .await
                     .map_err(|error| RunError::internal(error.to_string()))?
@@ -1592,8 +1636,39 @@ impl crate::ManagedHost {
                 memory_store_id,
                 config,
             } => {
-                let materialization_reference = match (&self.host.upstream, claim) {
-                    (Some(_), Some(claim)) => Some(
+                let materialization_reference = match (&self.host.upstream, claim, realization) {
+                    (Some(_), _, Some((session_id, revision, lease))) => {
+                        let intent =
+                            awaken_session_contract::SessionResourceMaterializationIntent::try_new(
+                                session_id,
+                                revision,
+                                input.clone(),
+                                lease.clone(),
+                            )
+                            .map_err(RunError::internal)?;
+                        Some(
+                            awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
+                                awaken_session_contract::SessionResourceMaterializationIntent,
+                            >::encode(
+                                self.host
+                                    .memory_reference_encoder
+                                    .as_ref()
+                                    .ok_or_else(|| {
+                                        RunError::internal(
+                                            "remote Memory materialization encoder is not configured",
+                                        )
+                                    })?
+                                    .as_ref(),
+                                workspace,
+                                memory_store_id.as_str(),
+                                config.version,
+                                input.access,
+                                &intent,
+                            )
+                            .map_err(|error| RunError::internal(error.to_string()))?,
+                        )
+                    }
+                    (Some(_), Some(claim), None) => Some(
                         awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
                             awaken_dispatch::RunClaim,
                         >::encode(
@@ -1614,12 +1689,12 @@ impl crate::ManagedHost {
                         )
                         .map_err(|error| RunError::internal(error.to_string()))?,
                     ),
-                    (Some(_), None) => {
+                    (Some(_), None, None) => {
                         return Err(RunError::bad_request(
-                            "remote Memory materialization requires a dispatch claim",
+                            "remote Memory materialization requires a dispatch claim or Session realization lease",
                         ));
                     }
-                    (None, _) => None,
+                    (None, _, _) => None,
                 };
                 if materialization_reference.is_none() {
                     let validator = self.resource_validator.as_ref().ok_or_else(|| {
@@ -1673,34 +1748,23 @@ impl crate::ManagedHost {
                         ))
                     })?;
                 let transport = match (repository_authority, &self.host.upstream) {
-                    (RepositoryProjectionAuthority::Terminal(fence), Some(_)) => self
-                            .repository_publication_binding_verifier
+                    (
+                        Some(awaken_dispatch::ResourceOperationFence::RepositoryPublication {
+                            ..
+                        }),
+                        None,
+                    ) => Ok(awaken_resource_contract::RepositoryTransport::Direct),
+                    (authority, _) => {
+                        self.repository_binding_verifier
                             .as_ref()
                             .ok_or_else(|| {
                                 RunError::bad_request(
-                                    "remote terminal Repository publication requires a configured binding verifier",
+                                    "repository resources require a configured binding verifier",
                                 )
                             })?
-                            .verify(
-                                workspace,
-                                repository_id.as_str(),
-                                config.version,
-                                Some(fence),
-                            )
-                            .await,
-                    (RepositoryProjectionAuthority::Terminal(_), None) => {
-                        Ok(awaken_resource_contract::RepositoryTransport::Direct)
+                            .verify(workspace, repository_id.as_str(), config.version, authority)
+                            .await
                     }
-                    (RepositoryProjectionAuthority::Run(claim), _) => self
-                        .repository_binding_verifier
-                        .as_ref()
-                        .ok_or_else(|| {
-                            RunError::bad_request(
-                                "repository resources require a configured binding verifier",
-                            )
-                        })?
-                        .verify(workspace, repository_id.as_str(), config.version, claim)
-                        .await,
                 }
                 .map_err(|error| RunError::bad_request(error.to_string()))?;
                 staged
@@ -1710,7 +1774,7 @@ impl crate::ManagedHost {
                         config_version: config.version,
                         remote_url: config.remote_url.clone(),
                         credential_binding: config.credential_binding.clone(),
-                        claim: claim.cloned(),
+                        authority: repository_authority.cloned().map(Box::new),
                     });
                 let (transport_url, credential_pin) = match (
                     &config.credential_binding,

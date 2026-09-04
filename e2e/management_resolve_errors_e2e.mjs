@@ -16,7 +16,7 @@ async function req(base, uri, body, raw = false) {
 }
 
 async function main() {
-  await withScenarioServer('management', 'mcp', 38267, async (base) => {
+  await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (base) => {
     // Resolve an unauthored model → fail closed.
     let r = await req(base, '/v1/config/inference/resolve', {
       workspace_id: 'ws',

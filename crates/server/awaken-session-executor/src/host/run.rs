@@ -841,7 +841,16 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
     ) -> Result<String, HostError> {
-        let ctx = self.ctx_for(thread, agent).await?;
+        // Cause/effect table for durable background admission:
+        // B1 cold Thread + enqueue => freeze/validate an environment-free
+        //    dispatch; only the later claim owner may realize the Environment.
+        // B2 resident Thread + enqueue => reuse its exact retained projection.
+        // B3 recovery scan racing either rule => the shared lifecycle owner
+        //    still sees one durable identity; admission creates no competing
+        //    physical candidate. Calling `ctx_for` here violated B1 by realizing
+        //    before the queue commit and let the local pool become a second
+        //    effect owner.
+        let ctx = self.ctx_for_session_coordination(thread, agent).await?;
         let mut messages: Vec<Message> = Vec::new();
         messages.extend(input);
         let (uid, mut activation) = ctx
@@ -1729,6 +1738,7 @@ mod ticket_projection_tests {
                         tool_id: "submit_answer".into(),
                         arguments: serde_json::json!({"answer": 42}),
                     },
+                    authority: ToolCallAuthority::RuntimeToolBatch,
                 },
             )
         };
@@ -1775,6 +1785,7 @@ mod ticket_projection_tests {
                 tool_id: "reply-tool".into(),
                 arguments: serde_json::json!({}),
             },
+            authority: ToolCallAuthority::RuntimeToolBatch,
         };
         let permission_ticket = ResumeTicket::new(
             "reply-correlation",

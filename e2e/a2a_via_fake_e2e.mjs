@@ -9,7 +9,7 @@ import { withRealServer, pass } from './harness.mjs';
 
 async function main() {
   try {
-    await withRealServer('reasoning', 38247, async (base, upstream) => {
+    await withRealServer('reasoning', Number(process.env.E2E_PORT), async (base, upstream) => {
       const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
       const r = await client.sendMessage({
         message: {

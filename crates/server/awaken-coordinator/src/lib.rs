@@ -1366,6 +1366,7 @@ fn mount_with_managed_over_and_models(
         )
         .with_worker_directory(worker_directory.clone())
         .with_session_repository(session_application.session_repository_handle())
+        .with_session_control(session_application.clone())
         .with_recovery(host.worker_recovery_source()),
     ));
     let artifact_publication =
@@ -1412,7 +1413,8 @@ fn mount_with_managed_over_and_models(
                     dispatch.clone() as Arc<dyn awaken_dispatch::DispatchQueue>,
                     worker_authenticator.clone(),
                 )
-                .with_worker_directory(worker_directory.clone()),
+                .with_worker_directory(worker_directory.clone())
+                .with_session_control(session_application.clone()),
             ),
         ));
     let commit = Arc::new(awaken_dispatch_http::ClaimedCommitHttpService::new(

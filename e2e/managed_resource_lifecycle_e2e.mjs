@@ -37,7 +37,7 @@ async function listResources(client, sessionId) {
 }
 
 async function main() {
-  await withRealServer('echo', 38291, async (base) => {
+  await withRealServer('echo', Number(process.env.E2E_PORT), async (base) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
     const file = await client.beta.files.upload({

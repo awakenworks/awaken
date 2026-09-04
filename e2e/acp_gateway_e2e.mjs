@@ -13,11 +13,18 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  pass,
+  spawnServer,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const GATEWAY = 'https://gw.e2e.internal/anthropic';
 const LEASE = 'lease-e2e-token'; // awaken-allow: secret
+const PORT = Number(process.env.E2E_PORT ?? 38195);
 
 function agentTexts(events) {
   return events
@@ -48,10 +55,20 @@ async function send(client, sessionId, text) {
 
 async function main() {
   try {
-    // The gateway env is injected at server launch (as a placement would), so the
-    // ACP CLI is resolved onto the gateway with a lease token.
-    const extraEnv = { AWAKEN_ACP_GATEWAY_URL: GATEWAY, AWAKEN_ACP_LEASE_TOKEN: LEASE };
-    await withScenarioServer('acp-gateway', 'echo', 38195, async (baseUrl) => {
+    // Substrate/gateway decision table:
+    // G1 Namespace + exact resolver/broker => one bound ACP process receives
+    //    gateway URL + lease and commits its proof.
+    // G2 Namespace + missing broker => launch fails closed (covered below by
+    //    the resolver contract); Local + catalog ACP is forbidden by the shared
+    //    path-fidelity boundary and must not be silently substituted here.
+    // The gateway inputs are injected at server launch (as placement would).
+    const { server, baseUrl } = spawnServer('acp-gateway', PORT, {
+      SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
+      AWAKEN_ACP_GATEWAY_URL: GATEWAY,
+      AWAKEN_ACP_LEASE_TOKEN: LEASE,
+    });
+    try {
+      await waitForPort(PORT, 180_000, server);
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // Cause-effect graph:
@@ -91,7 +108,9 @@ async function main() {
         `the raw provider key must never reach the sandbox; got ${JSON.stringify(echoed)}`,
       );
       pass('D-R2: the cloud-managed ACP CLI dials the gateway with a lease token, never a raw provider key');
-    }, extraEnv);
+    } finally {
+      await stopServer(server);
+    }
 
     console.log('\nACP GATEWAY E2E PASS: cloud-managed egress puts the gateway URL + lease token (not a raw key) into the sandboxed ACP CLI.');
   } catch (err) {

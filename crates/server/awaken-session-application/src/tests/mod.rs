@@ -826,6 +826,7 @@ impl SessionRuntime for RecordingReplyRuntime {
                                 tool_id: "write".into(),
                                 arguments: serde_json::json!({"path": "answer.txt"}),
                             },
+                            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
                         },
                     ),
                 },

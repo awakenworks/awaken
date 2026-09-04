@@ -34,8 +34,6 @@ import {
   assertDurableDispatch,
 } from './trace_validate.mjs';
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 const PORT = Number(process.env.E2E_PORT ?? 38211);
 const BASE = `http://127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
@@ -114,26 +112,33 @@ async function captureTurn(mode, port, file, text, { extraEnv = {} } = {}) {
     let memoryStore;
     let resources = [];
     if (mode === 'memory') {
-      const memoryClient = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
-      memoryStore = await scenarioMemoryStore(memoryClient, MEMORY_HEADERS);
+      // The Memory scenario's immutable Agent publication selects the seeded
+      // `memory` binding. Reuse that server-owned Store identity: authoring a
+      // second Store here cannot replace the binding because the official
+      // id-only attachment exposes neither binding id nor path, and would make
+      // this trace test observe an unrelated aggregate.
+      const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+      memoryStore = await scenarioMemoryStore(client, MEMORY_HEADERS);
       resources = [{ type: 'memory_store', memory_store_id: memoryStore.id }];
     }
     await createAndTurn(base, text, resources);
     if (memoryStore) {
-      let extracted = false;
-      for (let i = 0; i < 30; i += 1) {
-        const response = await fetch(`${base}/v1/memory_stores/${memoryStore.id}/memories`, {
-          headers: MEMORY_HEADERS,
-        });
-        assert.equal(response.status, 200, 'trace memory store remains readable');
-        const page = await response.json();
-        if ((page.data ?? []).length > 0) {
-          extracted = true;
-          break;
-        }
-        await sleep(100);
-      }
-      assert.ok(extracted, 'background extraction committed to the bound MemoryStore');
+      // Extraction observation decision table: readable+empty => the detached
+      // post-commit observer is still running, readable+non-empty => the
+      // MemoryStore is the committed-effect authority, read failure => fail
+      // immediately, deadline+empty => fail with the last page. The canonical
+      // bounded observer owns timing; this test owns only the product predicate.
+      await waitForValue(
+        async () => {
+          const response = await fetch(`${base}/v1/memory_stores/${memoryStore.id}/memories`, {
+            headers: MEMORY_HEADERS,
+          });
+          assert.equal(response.status, 200, 'trace memory store remains readable');
+          return response.json();
+        },
+        (page) => (page.data ?? []).length > 0,
+        'background extraction committed to the bound MemoryStore',
+      );
     }
     await stopServer(server);
     return readSpans(file);

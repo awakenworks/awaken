@@ -447,6 +447,9 @@ pub mod awaken_runtime_contract::execution
 pub enum awaken_runtime_contract::execution::AttemptExecutorRegistryError
 pub awaken_runtime_contract::execution::AttemptExecutorRegistryError::DuplicateBackend(alloc::string::String)
 pub awaken_runtime_contract::execution::AttemptExecutorRegistryError::InvalidBackendRef(alloc::string::String)
+pub enum awaken_runtime_contract::execution::AttemptRecoveryMode
+pub awaken_runtime_contract::execution::AttemptRecoveryMode::ContinueDurableRemoteOperation
+pub awaken_runtime_contract::execution::AttemptRecoveryMode::RequirePredecessorQuiescence
 pub enum awaken_runtime_contract::execution::Cancellation
 pub awaken_runtime_contract::execution::Cancellation::CooperativeToken
 pub awaken_runtime_contract::execution::Cancellation::None
@@ -473,6 +476,7 @@ pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::register_nat
 pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::supports(&self, &str) -> bool
 impl awaken_runtime_contract::execution::RunAttemptExecutor for awaken_runtime_contract::execution::AttemptExecutorRegistry
 pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::physical_attempt_recovery(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime_contract::execution::AttemptRecoveryMode
 pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl awaken_runtime_contract::execution::RunExecutor for awaken_runtime_contract::execution::AttemptExecutorRegistry
 pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::capabilities(&self) -> awaken_runtime_contract::execution::ExecutorCapabilities
@@ -487,9 +491,11 @@ pub const awaken_runtime_contract::execution::A2A_RUNTIME_CAPABILITY: &str
 pub const awaken_runtime_contract::execution::NATIVE_RUNTIME_CAPABILITY: &str
 pub trait awaken_runtime_contract::execution::RunAttemptExecutor: awaken_runtime_contract::execution::RunExecutor
 pub fn awaken_runtime_contract::execution::RunAttemptExecutor::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: core::marker::Sync + 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::execution::RunAttemptExecutor::physical_attempt_recovery(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime_contract::execution::AttemptRecoveryMode
 pub fn awaken_runtime_contract::execution::RunAttemptExecutor::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl awaken_runtime_contract::execution::RunAttemptExecutor for awaken_runtime_contract::execution::AttemptExecutorRegistry
 pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::physical_attempt_recovery(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime_contract::execution::AttemptRecoveryMode
 pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::execution::RunExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::execution::RunExecutor::capabilities(&self) -> awaken_runtime_contract::execution::ExecutorCapabilities
@@ -1709,6 +1715,7 @@ pub enum awaken_runtime_contract::tool_batch::ToolBatchPhase
 pub awaken_runtime_contract::tool_batch::ToolBatchPhase::Finalized
 pub awaken_runtime_contract::tool_batch::ToolBatchPhase::Open
 pub enum awaken_runtime_contract::tool_batch::ToolBatchWaitError
+pub awaken_runtime_contract::tool_batch::ToolBatchWaitError::AuthorityMismatch
 pub awaken_runtime_contract::tool_batch::ToolBatchWaitError::CallMismatch
 pub awaken_runtime_contract::tool_batch::ToolBatchWaitError::CorrelationMismatch
 pub awaken_runtime_contract::tool_batch::ToolBatchWaitError::Finalized
@@ -1806,6 +1813,9 @@ pub awaken_runtime_contract::AttemptExecutorRegistryError::InvalidBackendRef(all
 pub enum awaken_runtime_contract::AttemptOwnershipError
 pub awaken_runtime_contract::AttemptOwnershipError::Lost
 pub awaken_runtime_contract::AttemptOwnershipError::Unavailable(alloc::string::String)
+pub enum awaken_runtime_contract::AttemptRecoveryMode
+pub awaken_runtime_contract::AttemptRecoveryMode::ContinueDurableRemoteOperation
+pub awaken_runtime_contract::AttemptRecoveryMode::RequirePredecessorQuiescence
 pub enum awaken_runtime_contract::BoundaryOutcome
 pub awaken_runtime_contract::BoundaryOutcome::Await
 pub awaken_runtime_contract::BoundaryOutcome::Await::fold: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
@@ -2038,6 +2048,7 @@ pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::register_nat
 pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::supports(&self, &str) -> bool
 impl awaken_runtime_contract::execution::RunAttemptExecutor for awaken_runtime_contract::execution::AttemptExecutorRegistry
 pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::physical_attempt_recovery(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime_contract::execution::AttemptRecoveryMode
 pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl awaken_runtime_contract::execution::RunExecutor for awaken_runtime_contract::execution::AttemptExecutorRegistry
 pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::capabilities(&self) -> awaken_runtime_contract::execution::ExecutorCapabilities
@@ -2591,9 +2602,11 @@ pub fn awaken_runtime_contract::RawTool::recovery_capability(&self) -> awaken_ru
 pub fn awaken_runtime_contract::RawTool::start_task<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskStart, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::RunAttemptExecutor: awaken_runtime_contract::execution::RunExecutor
 pub fn awaken_runtime_contract::RunAttemptExecutor::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: core::marker::Sync + 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::RunAttemptExecutor::physical_attempt_recovery(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime_contract::execution::AttemptRecoveryMode
 pub fn awaken_runtime_contract::RunAttemptExecutor::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl awaken_runtime_contract::execution::RunAttemptExecutor for awaken_runtime_contract::execution::AttemptExecutorRegistry
 pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::physical_attempt_recovery(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime_contract::execution::AttemptRecoveryMode
 pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::RunDelegationService: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::RunDelegationService::allows_recursive_target(&self, &awaken_runtime_contract::snapshot::AgentId) -> bool

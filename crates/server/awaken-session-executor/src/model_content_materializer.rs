@@ -7,20 +7,20 @@ use awaken_agent_contract::agent::content::{ContentBlock, DocumentSource, ImageS
 use awaken_resource_contract::{
     FileContentSource, FileReadPurpose, ResolvedFileContent, content_id,
 };
-use awaken_dispatch::RunClaim;
+use awaken_dispatch::{ResourceOperationFence, RunClaim};
 use awaken_runtime_contract::llm::{ChatRequest, Error, ModelContentMaterializer};
 use base64::Engine as _;
 
 pub(crate) struct ResourceModelContentMaterializer {
-    source: Arc<dyn FileContentSource<RunClaim>>,
+    source: Arc<dyn FileContentSource<ResourceOperationFence>>,
     workspace_id: String,
     thread_id: String,
-    claim: Option<RunClaim>,
+    authority: Option<ResourceOperationFence>,
 }
 
 impl ResourceModelContentMaterializer {
     pub(crate) fn new(
-        source: Arc<dyn FileContentSource<RunClaim>>,
+        source: Arc<dyn FileContentSource<ResourceOperationFence>>,
         workspace_id: impl Into<String>,
         thread_id: impl Into<String>,
         claim: Option<RunClaim>,
@@ -29,7 +29,7 @@ impl ResourceModelContentMaterializer {
             source,
             workspace_id: workspace_id.into(),
             thread_id: thread_id.into(),
-            claim,
+            authority: claim.map(ResourceOperationFence::Run),
         }
     }
 }
@@ -52,7 +52,12 @@ impl ModelContentMaterializer for ResourceModelContentMaterializer {
         for file_id in ids {
             let content = self
                 .source
-                .read(&self.workspace_id, &file_id, &purpose, self.claim.as_ref())
+                .read(
+                    &self.workspace_id,
+                    &file_id,
+                    &purpose,
+                    self.authority.as_ref(),
+                )
                 .await
                 .map_err(|error| {
                     Error::Provider(format!("model File {file_id} is unavailable: {error}"))
@@ -192,13 +197,13 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl FileContentSource<RunClaim> for Source {
+    impl FileContentSource<ResourceOperationFence> for Source {
         async fn read(
             &self,
             workspace_id: &str,
             file_id: &str,
             purpose: &FileReadPurpose,
-            _claim: Option<&RunClaim>,
+            _claim: Option<&ResourceOperationFence>,
         ) -> Result<Option<ResolvedFileContent>, FileContentSourceError> {
             self.reads.fetch_add(1, Ordering::SeqCst);
             assert_eq!(workspace_id, "workspace-a");

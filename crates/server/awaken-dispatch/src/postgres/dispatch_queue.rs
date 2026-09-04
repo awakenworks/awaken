@@ -1,5 +1,89 @@
 // PostgreSQL realization of the one neutral DispatchQueue contract. Included by
 // `postgres.rs` so public type and implementation paths remain unchanged.
+impl PostgresDispatchStore {
+    async fn admit_physical_attempt(
+        &self,
+        claim: &RunClaim,
+        _now_ms: u64,
+        handoff: bool,
+    ) -> Result<AttemptAdmission, DispatchError> {
+        let p = NS;
+        let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
+        let current = sqlx::query(&format!(
+            "SELECT status, lease_owner, lease_epoch, lease_until, \
+             active_attempt_owner, active_attempt_epoch \
+             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
+        ))
+        .bind(&claim.run_id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let Some(current) = current else {
+            let _ = tx.rollback().await;
+            return Ok(AttemptAdmission::Fenced);
+        };
+        let status: String = current.try_get("status").map_err(store_error)?;
+        let owner: Option<String> = current.try_get("lease_owner").map_err(store_error)?;
+        let persisted_epoch: i64 = current.try_get("lease_epoch").map_err(store_error)?;
+        let lease_until: Option<i64> = current.try_get("lease_until").map_err(store_error)?;
+        let active_owner: Option<String> = current
+            .try_get("active_attempt_owner")
+            .map_err(store_error)?;
+        let active_epoch: Option<i64> = current
+            .try_get("active_attempt_epoch")
+            .map_err(store_error)?;
+        let persisted_epoch = durable_u64("dispatch lease epoch", persisted_epoch)?;
+        let active_epoch = active_epoch
+            .map(|value| durable_u64("dispatch attempt epoch", value))
+            .transpose()?;
+        let live = status == "running"
+            && owner.as_deref() == Some(&claim.owner)
+            && persisted_epoch == claim.epoch
+            && lease_until.is_some_and(|until| until >= crate::clock::db_millis(now_ms));
+        let slot = PhysicalAttemptSlot::from_facts(
+            active_owner.is_some(),
+            active_epoch.is_some(),
+            active_owner.as_deref() == Some(&claim.owner),
+            active_epoch == Some(claim.epoch),
+        );
+        let transition = if handoff {
+            handoff_physical_attempt(live, slot)
+        } else {
+            begin_physical_attempt(live, slot)
+        };
+        let admission = match transition {
+            PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace => {
+                sqlx::query(&format!(
+                    "UPDATE {p}_dispatch SET active_attempt_owner = $2, \
+                     active_attempt_epoch = $3 WHERE run_id = $1"
+                ))
+                .bind(&claim.run_id.0)
+                .bind(&claim.owner)
+                .bind(epoch)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
+                AttemptAdmission::Applied
+            }
+            PhysicalAttemptTransition::Stutter => AttemptAdmission::AlreadyApplied,
+            PhysicalAttemptTransition::Blocked => AttemptAdmission::Blocked,
+            PhysicalAttemptTransition::Fenced => AttemptAdmission::Fenced,
+            PhysicalAttemptTransition::Corrupt => {
+                return Err(DispatchError::Rejected(
+                    "persisted physical attempt slot is not an owner/epoch pair".to_string(),
+                ));
+            }
+            PhysicalAttemptTransition::Clear => {
+                unreachable!("attempt admission never clears a slot")
+            }
+        };
+        tx.commit().await.map_err(store_error)?;
+        Ok(admission)
+    }
+}
+
 #[async_trait]
 impl DispatchQueue for PostgresDispatchStore {
     async fn worker_owns_run(
@@ -1022,72 +1106,15 @@ impl DispatchQueue for PostgresDispatchStore {
         claim: &RunClaim,
         now_ms: u64,
     ) -> Result<AttemptAdmission, DispatchError> {
-        let p = NS;
-        let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        let current = sqlx::query(&format!(
-            "SELECT status, lease_owner, lease_epoch, lease_until, \
-             active_attempt_owner, active_attempt_epoch \
-             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
-        ))
-        .bind(&claim.run_id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let Some(current) = current else {
-            let _ = tx.rollback().await;
-            return Ok(AttemptAdmission::Fenced);
-        };
-        let status: String = current.try_get("status").map_err(store_error)?;
-        let owner: Option<String> = current.try_get("lease_owner").map_err(store_error)?;
-        let persisted_epoch: i64 = current.try_get("lease_epoch").map_err(store_error)?;
-        let lease_until: Option<i64> = current.try_get("lease_until").map_err(store_error)?;
-        let active_owner: Option<String> = current
-            .try_get("active_attempt_owner")
-            .map_err(store_error)?;
-        let active_epoch: Option<i64> = current
-            .try_get("active_attempt_epoch")
-            .map_err(store_error)?;
-        let persisted_epoch = durable_u64("dispatch lease epoch", persisted_epoch)?;
-        let active_epoch = active_epoch
-            .map(|value| durable_u64("dispatch attempt epoch", value))
-            .transpose()?;
-        let live = status == "running"
-            && owner.as_deref() == Some(&claim.owner)
-            && persisted_epoch == claim.epoch
-            && lease_until.is_some_and(|until| until >= crate::clock::db_millis(now_ms));
-        let slot = PhysicalAttemptSlot::from_facts(
-            active_owner.is_some(),
-            active_epoch.is_some(),
-            active_owner.as_deref() == Some(&claim.owner),
-            active_epoch == Some(claim.epoch),
-        );
-        let admission = match begin_physical_attempt(live, slot) {
-            PhysicalAttemptTransition::Install => {
-                sqlx::query(&format!(
-                    "UPDATE {p}_dispatch SET active_attempt_owner = $2, \
-                     active_attempt_epoch = $3 WHERE run_id = $1"
-                ))
-                .bind(&claim.run_id.0)
-                .bind(&claim.owner)
-                .bind(epoch)
-                .execute(&mut *tx)
-                .await
-                .map_err(store_error)?;
-                AttemptAdmission::Applied
-            }
-            PhysicalAttemptTransition::Stutter => AttemptAdmission::AlreadyApplied,
-            PhysicalAttemptTransition::Blocked => AttemptAdmission::Blocked,
-            PhysicalAttemptTransition::Fenced => AttemptAdmission::Fenced,
-            PhysicalAttemptTransition::Corrupt => {
-                return Err(DispatchError::Rejected(
-                    "persisted physical attempt slot is not an owner/epoch pair".to_string(),
-                ));
-            }
-            PhysicalAttemptTransition::Clear => unreachable!("begin never clears a slot"),
-        };
-        tx.commit().await.map_err(store_error)?;
-        Ok(admission)
+        self.admit_physical_attempt(claim, now_ms, false).await
+    }
+
+    async fn handoff_attempt(
+        &self,
+        claim: &RunClaim,
+        now_ms: u64,
+    ) -> Result<AttemptAdmission, DispatchError> {
+        self.admit_physical_attempt(claim, now_ms, true).await
     }
 
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -1142,8 +1169,10 @@ impl DispatchQueue for PostgresDispatchStore {
                     "persisted physical attempt slot is not an owner/epoch pair".to_string(),
                 ));
             }
-            PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Blocked => {
-                unreachable!("finish never installs or blocks a slot")
+            PhysicalAttemptTransition::Install
+            | PhysicalAttemptTransition::Replace
+            | PhysicalAttemptTransition::Blocked => {
+                unreachable!("finish never installs, replaces, or blocks a slot")
             }
         };
         tx.commit().await.map_err(store_error)?;
@@ -1155,7 +1184,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         let current = sqlx::query(&format!(
-            "SELECT status, lease_owner, lease_epoch, cancel_requested, active_attempt_epoch \
+            "SELECT status, lease_owner, lease_epoch, cancel_requested, active_attempt_owner, active_attempt_epoch \
              FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
         ))
         .bind(&claim.run_id.0)
@@ -1172,28 +1201,50 @@ impl DispatchQueue for PostgresDispatchStore {
             current.try_get("lease_owner").map_err(store_error)?;
         let cancellation_requested: i64 =
             current.try_get("cancel_requested").map_err(store_error)?;
-        let active_attempt: Option<i64> = current
+        let active_attempt_owner: Option<String> = current
+            .try_get("active_attempt_owner")
+            .map_err(store_error)?;
+        let active_attempt_epoch: Option<i64> = current
             .try_get("active_attempt_epoch")
             .map_err(store_error)?;
-        if active_attempt.is_some() {
-            let _ = tx.rollback().await;
-            return Ok(SettleOutcome::Fenced);
-        }
+        let active_attempt_epoch = active_attempt_epoch
+            .map(|value| durable_u64("dispatch attempt epoch", value))
+            .transpose()?;
+        let slot = PhysicalAttemptSlot::from_facts(
+            active_attempt_owner.is_some(),
+            active_attempt_epoch.is_some(),
+            active_attempt_owner.as_deref() == Some(&claim.owner),
+            active_attempt_epoch == Some(claim.epoch),
+        );
         let transition = crate::persisted_dispatch_transition(
             &status,
             persisted_epoch,
             cancellation_requested != 0,
         )?;
-        let awaken_dispatch_contract::GuardedTransition::Applied(next) = transition.relinquish(
+        let (next, lease_until) = match transition.relinquish(
             claim.epoch,
             persisted_owner.as_deref() == Some(&claim.owner),
-        ) else {
-            let _ = tx.rollback().await;
-            return Ok(SettleOutcome::Fenced);
+            slot,
+        ) {
+            awaken_dispatch_contract::RelinquishTransition::Pending(next) => (next, None),
+            awaken_dispatch_contract::RelinquishTransition::Recovering(next) => {
+                (next, Some(0_i64))
+            }
+            awaken_dispatch_contract::RelinquishTransition::Fenced => {
+                let _ = tx.rollback().await;
+                return Ok(SettleOutcome::Fenced);
+            }
+            awaken_dispatch_contract::RelinquishTransition::Corrupt => {
+                let _ = tx.rollback().await;
+                return Err(DispatchError::Rejected(
+                    "persisted physical attempt slot is not an owner/epoch pair".to_string(),
+                ));
+            }
         };
         let changed = sqlx::query(&format!(
-            "UPDATE {p}_dispatch SET status = $4, lease_owner = NULL, \
-             lease_until = NULL, created_at = clock_timestamp() \
+            "UPDATE {p}_dispatch SET status = $4, \
+             lease_owner = CASE WHEN $5 IS NULL THEN NULL ELSE lease_owner END, \
+             lease_until = $5, created_at = clock_timestamp() \
              WHERE run_id = $1 AND status = 'running' \
              AND lease_owner = $2 AND lease_epoch = $3"
         ))
@@ -1201,6 +1252,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(&claim.owner)
         .bind(epoch)
         .bind(crate::dispatch_state_db(next.state))
+        .bind(lease_until)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;

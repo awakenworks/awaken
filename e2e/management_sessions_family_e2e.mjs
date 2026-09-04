@@ -278,7 +278,7 @@ async function exerciseBudgetResume(client, updateKind) {
 
 async function main() {
   try {
-    await withScenarioServer('management', 'mcp', 38146, async (baseUrl) => {
+    await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // Session Agent-tool admission cause/effect graph: C1 create carries an

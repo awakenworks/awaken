@@ -75,8 +75,9 @@ fn continuation_observation_has_one_disposing_authority() {
      * DELETE response-loss cut before A DELETE; E3 deleting A without the
      * finalizer projects Disposing only when exact P is already terminating
      * (finalizer-release response loss); E4 absent A+terminating P projects
-     * Disposing so cleanup only awaits P; E5 absent A+live P, a foreign P,
-     * deleting-without-proof, or missing fence fails closed; E6 exact A/P total
+     * Disposing so cleanup only awaits P; E5 an aggregate-fenced absent A+live
+     * P raises the canonical unsafe-cleanup error; E6 a foreign P,
+     * deleting-without-proof, or missing fence fails closed; E7 exact A/P total
      * absence is Live here and becomes DefinitivelyUnavailable only in the
      * shared physical-observation owner.
      *
@@ -85,11 +86,11 @@ fn continuation_observation_has_one_disposing_authority() {
      * | K2 | present | no/yes | yes | exact live/term | yes | no | E2 Disposing |
      * | K3 | present | yes | no | exact term | yes | no | E3 Disposing |
      * | K4 | absent | n/a | no | exact term | yes | no | E4 Disposing |
-     * | K5 | absent | n/a | no | exact live | yes | no | E5 Incompatible |
-     * | K6 | present | yes | no | exact live | yes | no | E5 Indeterminate |
-     * | K7 | any | any | any | foreign | yes | any | E5 Incompatible |
-     * | K8 | absent | n/a | no | absent | yes | yes | E6 Live |
-     * | K9 | absent | n/a | no | absent | no | no | E5 Incompatible | */
+     * | K5 | absent | n/a | no | exact live | yes | no | E5 error |
+     * | K6 | present | yes | no | exact live | yes | no | E6 Indeterminate |
+     * | K7 | any | any | any | foreign | yes | any | E6 Incompatible |
+     * | K8 | absent | n/a | no | absent | yes | yes | E7 Live |
+     * | K9 | absent | n/a | no | absent | no | no | E6 Incompatible | */
     use ContinuationObservationDisposition::{Disposing, Incompatible, Live};
 
     let classify = |pod_present,
@@ -133,10 +134,13 @@ fn continuation_observation_has_one_disposing_authority() {
         Disposing,
         "K4"
     );
-    assert_eq!(
-        classify(false, false, false, Some("p"), false, true, false).unwrap(),
-        Incompatible,
-        "K5"
+    let orphaned = classify(false, false, false, Some("p"), false, true, false)
+        .expect_err("K5 exact live orphan must reject cleanup");
+    assert!(
+        orphaned
+            .to_string()
+            .contains(continuation::ORPHANED_LIVE_CLAIM_ERROR),
+        "K5: {orphaned}"
     );
     assert!(
         classify(true, true, false, Some("p"), false, true, false).is_err(),

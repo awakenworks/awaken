@@ -67,7 +67,7 @@ impl SharedHost {
 
     pub fn worker_file_content_source(
         &self,
-    ) -> Arc<dyn FileContentSource<awaken_dispatch::RunClaim>> {
+    ) -> Arc<dyn FileContentSource<awaken_dispatch::ResourceOperationFence>> {
         self.file_content_source.clone()
     }
 

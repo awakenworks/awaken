@@ -28,6 +28,8 @@ awaken_cargo_target_self_test() {
   # same checkout-local default while preserving an explicit target.
   # C7 standalone Kubernetes E2E -> E7 its direct Cargo invocations reuse this
   # authority instead of falling through to user-global Cargo configuration.
+  # C8 Managed SDK hooks invoke an all-features Cargo behavior owner -> E8 the
+  # package command reuses this authority instead of a cross-worktree rmeta.
   #
   # Decision table:
   # Rule | C1 | C2 | C3 | C4 | Expected effect
@@ -57,6 +59,8 @@ awaken_cargo_target_self_test() {
   grep -Fq 'checkoutLocalCargoEnvironment(cwd, environment)' e2e/cargo_binary.mjs || return 1
   grep -Fq 'source scripts/ci/_cargo_target.sh' scripts/e2e/k8s_container_e2e.sh || return 1
   grep -Fq 'awaken_configure_cargo_target "$PWD"' scripts/e2e/k8s_container_e2e.sh || return 1
+  grep -Fq 'awaken_configure_cargo_target "$PWD"' scripts/ci/check_managed_sdk_behavior.sh || return 1
+  grep -Fq '../../scripts/ci/check_managed_sdk_behavior.sh' packages/managed-sdk-oracle/package.json || return 1
 
   echo "Cargo target isolation self-test passed"
 }

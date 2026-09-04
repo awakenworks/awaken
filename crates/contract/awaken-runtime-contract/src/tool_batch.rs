@@ -4,7 +4,9 @@
 //! result, but each call's execution outcome is committed independently. This
 //! cell is the recovery truth; futures, abort handles, and worker tasks are not.
 
-use awaken_agent_contract::agent::awaiting::{AwaitTarget, ResumeTicket, ToolAwaitReason};
+use awaken_agent_contract::agent::awaiting::{
+    AwaitTarget, ResumeTicket, ToolAwaitReason, ToolCallAuthority,
+};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -188,6 +190,8 @@ pub enum ToolBatchWaitError {
     ThreadMismatch,
     #[error("resume ticket does not target a tool call")]
     NotToolCall,
+    #[error("resume ticket tool call is owned by another execution authority")]
+    AuthorityMismatch,
     #[error("tool batch has no awaiting call")]
     MissingAwaitingCall,
     #[error("resume ticket names another call")]
@@ -532,10 +536,14 @@ impl ToolBatch {
             reason,
             call_id,
             tool,
+            authority,
         } = ticket.target()
         else {
             return Err(ToolBatchWaitError::NotToolCall);
         };
+        if *authority == ToolCallAuthority::RunAttemptExecutor {
+            return Err(ToolBatchWaitError::AuthorityMismatch);
+        }
         let entry = self
             .calls
             .iter()
@@ -769,6 +777,7 @@ mod tests {
                     tool_id: tool_id.into(),
                     arguments: serde_json::json!({"call": call_id}),
                 },
+                authority: ToolCallAuthority::RuntimeToolBatch,
             },
         )
     }

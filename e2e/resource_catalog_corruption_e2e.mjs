@@ -16,7 +16,12 @@ import {
   waitForValue,
 } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
-import { sqliteExec, sqliteRows } from './sqlite.mjs';
+import {
+  parseDurableJson,
+  sqliteExec,
+  sqliteRows,
+  stringifyDurableJson,
+} from './sqlite.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38439);
 const WORKSPACE = `catalog-corruption-${process.pid}`;
@@ -149,7 +154,7 @@ function sessionEnvelope(database, sessionId) {
   );
   assert.equal(rows.length, 1, `missing Session ${sessionId}`);
   assert.ok(rows[0].aggregate_json, `Session ${sessionId} has no canonical aggregate`);
-  const envelope = JSON.parse(rows[0].aggregate_json);
+  const envelope = parseDurableJson(rows[0].aggregate_json);
   assert.equal(envelope.format, 'awaken.session.v1');
   return envelope;
 }
@@ -189,7 +194,7 @@ function persistPreparedGeneration(database, sessionId) {
   };
   sqliteExec(
     database,
-    `UPDATE managed_session SET aggregate_json=${sqlQuote(JSON.stringify({
+    `UPDATE managed_session SET aggregate_json=${sqlQuote(stringifyDurableJson({
       ...envelope,
       aggregate: {
         ...aggregate,

@@ -141,12 +141,39 @@ pub trait RunExecutor: Send + Sync {
     }
 }
 
+/// Admission policy for a replacement Worker that recovered an interrupted
+/// durable Run while the predecessor's physical-attempt slot is still present.
+///
+/// Most executors cannot prove what an opaque external operation did after the
+/// local Future disappeared, so they retain the fail-closed default. A leaf
+/// executor may select `ContinueDurableRemoteOperation` only when committed Run
+/// state binds the replacement to the exact remote operation and its execute
+/// path is continuation-only (it cannot submit the initiating effect again).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttemptRecoveryMode {
+    RequirePredecessorQuiescence,
+    ContinueDurableRemoteOperation,
+}
+
 /// A Run executor that can drive both a fresh activation and a committed resume
 /// boundary. Durable dispatch depends on this port instead of assuming every Run
 /// is owned by the in-process native `Runtime`; Native, ACP, and future adapters
 /// therefore share one claim/fence/settle path.
 #[async_trait::async_trait]
 pub trait RunAttemptExecutor: RunExecutor {
+    /// Classify recovered `execute` admission from committed execution state.
+    ///
+    /// This does not grant mutation authority: the durable Dispatch claim still
+    /// must be current, and the Dispatch aggregate atomically replaces its own
+    /// physical slot. The default preserves the ordinary quiescence fence.
+    fn physical_attempt_recovery(
+        &self,
+        _activation: &crate::activation::RunActivation,
+        _context: &crate::runtime_context::RuntimeRunContext,
+    ) -> AttemptRecoveryMode {
+        AttemptRecoveryMode::RequirePredecessorQuiescence
+    }
+
     /// Resume `activation` using the already-validated, durable identity carried
     /// by `command`. The live reader/commit/cancellation handles remain in
     /// `context`, exactly as for [`RunExecutor::execute`].
@@ -294,6 +321,17 @@ impl RunExecutor for AttemptExecutorRegistry {
 
 #[async_trait::async_trait]
 impl RunAttemptExecutor for AttemptExecutorRegistry {
+    fn physical_attempt_recovery(
+        &self,
+        activation: &crate::activation::RunActivation,
+        context: &crate::runtime_context::RuntimeRunContext,
+    ) -> AttemptRecoveryMode {
+        self.executor(activation).map_or(
+            AttemptRecoveryMode::RequirePredecessorQuiescence,
+            |executor| executor.physical_attempt_recovery(activation, context),
+        )
+    }
+
     async fn resume(
         &self,
         activation: crate::activation::RunActivation,
@@ -404,6 +442,18 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RunAttemptExecutor for NamedExecutor {
+        fn physical_attempt_recovery(
+            &self,
+            _activation: &crate::activation::RunActivation,
+            _context: &crate::runtime_context::RuntimeRunContext,
+        ) -> AttemptRecoveryMode {
+            if self.0 == "remote" {
+                AttemptRecoveryMode::ContinueDurableRemoteOperation
+            } else {
+                AttemptRecoveryMode::RequirePredecessorQuiescence
+            }
+        }
+
         async fn resume(
             &self,
             activation: crate::activation::RunActivation,
@@ -488,6 +538,30 @@ mod tests {
                 RunState::Ended(EndCause::Stopped(expected.to_string()))
             );
         }
+        // Cause C1: exact backend selection succeeds; C2: selected leaf reports
+        // continuation or strict recovery. Effect E1: the registry transparently
+        // returns C2; an unknown route fails closed rather than inventing proof.
+        // Rules: R1=remote+continuation=>continuation; R2=native+strict=>strict;
+        // R3=unknown=>strict.
+        let context = crate::runtime_context::RuntimeRunContext::new();
+        let remote = activation("a2a:https://agent.example");
+        assert_eq!(
+            registry.physical_attempt_recovery(&remote, &context),
+            AttemptRecoveryMode::ContinueDurableRemoteOperation,
+            "R1"
+        );
+        let native = activation("genai");
+        assert_eq!(
+            registry.physical_attempt_recovery(&native, &context),
+            AttemptRecoveryMode::RequirePredecessorQuiescence,
+            "R2"
+        );
+        let unknown = activation("a2a:https://unknown.example");
+        assert_eq!(
+            registry.physical_attempt_recovery(&unknown, &context),
+            AttemptRecoveryMode::RequirePredecessorQuiescence,
+            "R3"
+        );
         assert!(
             registry
                 .execute(

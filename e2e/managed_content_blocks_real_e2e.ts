@@ -24,7 +24,7 @@ async function main() {
   }
   // Reuse the offline, conventionally encoded image shared by every protocol.
   const fixture = Buffer.from(RED_PNG_B64, 'base64');
-  await withServer('real', 38338, async (baseUrl: string) => {
+  await withServer('real', Number(process.env.E2E_PORT), async (baseUrl: string) => {
     const client = new Anthropic({ apiKey: 'e2e-local-only', baseURL: baseUrl }); // awaken-allow: secret
     const file = await client.beta.files.upload({
       file: await toFile(fixture, 'live-red.png', {

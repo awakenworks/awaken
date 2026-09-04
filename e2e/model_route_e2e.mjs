@@ -46,7 +46,7 @@ async function ask(client, sessionId, text, model) {
 
 async function main() {
   try {
-    await withScenarioServer('model-route', 'label', 38160, async (baseUrl) => {
+    await withScenarioServer('model-route', 'label', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // Cause-effect graph / decision table for the official model axis:

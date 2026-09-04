@@ -63,7 +63,7 @@ REQUIRED_RELEASE_COMMANDS = (
     "provider_environment.sh --self-test",
     "npm --prefix e2e run test:runner",
     "check_public_api.sh --require-tools",
-    "cargo deny --log-level error check bans",
+    "cargo deny --log-level error check advisories bans",
     "check_formal.sh --require-tools",
     "check-reliability.sh --require-tools",
     "pg_tests.sh --require-docker",
@@ -96,6 +96,8 @@ STORE_BACKEND_TESTS = (
     "crates/stores/awaken-store-postgres/tests/postgres_live.rs",
 )
 INGRESS_CONFORMANCE = "crates/server/awaken-dispatch/tests/dispatch_conformance.rs"
+QUALITY_WORKFLOW = ".github/workflows/quality.yml"
+RELEASE_WORKFLOW = ".github/workflows/release.yml"
 
 
 def e2e_files(root: Path) -> set[str]:
@@ -106,6 +108,22 @@ def e2e_files(root: Path) -> set[str]:
         and "e2e" in path.stem
         and path.suffix in {".js", ".mjs", ".ts"}
     }
+
+
+def scenario_port_errors(sources: dict[str, str]) -> list[str]:
+    """Reject callers that bypass the harness-owned non-ephemeral port block."""
+
+    fixed_port = re.compile(
+        r"(?:withScenarioServer\(\s*[^,]+,\s*[^,]+|"
+        r"(?:withRealServer|withServer)\(\s*[^,]+)"
+        r"\s*,\s*[0-9][0-9_]*\s*,",
+        re.DOTALL,
+    )
+    return [
+        f"{relative} passes a fixed port to the shared server harness; use E2E_PORT"
+        for relative, text in sorted(sources.items())
+        if fixed_port.search(text)
+    ]
 
 
 def coverage_runner_texts(root: Path) -> dict[str, str]:
@@ -307,6 +325,56 @@ def release_gate_errors(check_all: str, public_api: str, check_rust: str) -> lis
     return errors
 
 
+def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
+    """Require one exact-SHA workflow to execute the canonical full gate."""
+
+    errors: list[str] = []
+    quality = workflows.get(QUALITY_WORKFLOW, "")
+    release = workflows.get(RELEASE_WORKFLOW, "")
+    for trigger in ("workflow_call:", "pull_request:", "push:", "workflow_dispatch:"):
+        if trigger not in quality:
+            errors.append(f"quality workflow does not declare {trigger}")
+    required_quality = (
+        "runs-on: [self-hosted, linux, x64, awaken-full-gate]",
+        "persist-credentials: false",
+        'source_revision="$(git rev-parse "$GITHUB_SHA^{commit}")"',
+        'test "$(git rev-parse HEAD)" = "$source_revision"',
+        "AWAKEN_TEST_TIMINGS_FILE: target/test-timings/check-all.tsv",
+        "run: scripts/ci/check-all.sh",
+        "if: always()",
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+        "pnpm install --frozen-lockfile",
+        "npm ci --prefix e2e",
+    )
+    for marker in required_quality:
+        if marker not in quality:
+            errors.append(f"quality workflow does not require: {marker}")
+    if quality.count("run: scripts/ci/check-all.sh") != 1:
+        errors.append("quality workflow must invoke the canonical full gate exactly once")
+    if "check-all.sh --group" in quality or "check-rust.sh --full" in quality:
+        errors.append("quality workflow contains a partial or parallel test manifest")
+    if "continue-on-error:" in quality:
+        errors.append("quality workflow may not suppress a gate failure")
+
+    local_quality_call = "uses: ./.github/workflows/quality.yml"
+    if release.count(local_quality_call) != 1:
+        errors.append("release workflow must reuse the canonical quality workflow exactly once")
+    if "check-all.sh" in release or "check-rust.sh --full" in release:
+        errors.append("release workflow duplicates the canonical quality workflow")
+
+    gate_owners = sorted(
+        relative
+        for relative, workflow in workflows.items()
+        if "scripts/ci/check-all.sh" in workflow
+    )
+    if gate_owners != [QUALITY_WORKFLOW]:
+        errors.append(
+            "canonical full gate must have exactly one workflow owner: "
+            + ", ".join(gate_owners)
+        )
+    return errors
+
+
 def shared_conformance_errors(
     store_suite: str,
     backend_tests: dict[str, str],
@@ -364,6 +432,15 @@ def validate(root: Path) -> list[str]:
         coverage_runner_texts(root),
     )
     errors.extend(
+        scenario_port_errors(
+            {
+                path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
+                for path in (root / "e2e").rglob("*")
+                if path.is_file() and path.suffix in {".js", ".mjs", ".ts"}
+            }
+        )
+    )
+    errors.extend(
         release_gate_errors(
             (root / "scripts/ci/check-all.sh").read_text(encoding="utf-8"),
             (root / "scripts/ci/check_public_api.sh").read_text(encoding="utf-8"),
@@ -380,6 +457,14 @@ def validate(root: Path) -> list[str]:
             (root / INGRESS_CONFORMANCE).read_text(encoding="utf-8"),
         )
     )
+    errors.extend(
+        workflow_gate_errors(
+            {
+                path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
+                for path in (root / ".github" / "workflows").glob("*.yml")
+            }
+        )
+    )
     return errors
 
 
@@ -391,13 +476,16 @@ def self_test() -> None:
     # C2 every E2E belongs to package scripts or the stage cause/effect graph;
     # C3 secondary runners delegate to the aggregate; C4 secondary runners
     # preserve failure status; C5 functional obligation ids are unique; C6 the
-    # release gate requires every external/API/dependency suite and the canonical
+    # release gate requires every external/API/dependency suite, including both
+    # RustSec advisories and dependency-policy bans, and the canonical
     # deterministic-environment self-test without exclusions, while SDK behavior
     # and authority arithmetic each retain exactly one nested gate owner;
     # C7 every shared conformance testkit is executed by every production backend;
     # C8 deterministic leaf commands are unique; C9 stage scenarios have one owner;
     # C10 a scenario credited with container behavior explicitly requires that
-    # substrate instead of returning a successful skip.
+    # substrate instead of returning a successful skip; C11 every
+    # shared server-harness caller consumes the harness-owned non-ephemeral port
+    # rather than retaining a 38xxx literal.
     # `test:compatibility` is part of C1, while the network-backed latest-SDK
     # canary is part of C6 so it runs once at the release boundary rather than
     # contaminating the hermetic deterministic runner.
@@ -414,6 +502,8 @@ def self_test() -> None:
     # | R9   | T  | T  | T  | T  | T  | T  | T  | F  | *  | *   | reject duplicate command |
     # | R10  | T  | T  | T  | T  | T  | T  | T  | T  | F  | *   | reject package/stage overlap |
     # | R14  | T  | T  | T  | T  | T  | T  | T  | T  | T  | F   | reject false-green substrate |
+    # Port decision table: P1 C11=true => accept; P2 C11=false => reject the
+    # duplicate fixed-port authority before any scenario process starts.
     package = json.loads(PACKAGE.read_text(encoding="utf-8"))
     scripts: dict[str, str] = package["scripts"]
     deterministic_suites: list[str] = package["awakenTest"]["deterministicSuites"]
@@ -423,6 +513,21 @@ def self_test() -> None:
     errors = orchestration_errors(scripts, deterministic_suites, stage_text, files, runners)
     if errors:
         raise AssertionError("R1 repository fixture must be valid: " + "; ".join(errors))
+    scenario_sources = {
+        path.relative_to(ROOT).as_posix(): path.read_text(encoding="utf-8")
+        for path in (ROOT / "e2e").rglob("*")
+        if path.is_file() and path.suffix in {".js", ".mjs", ".ts"}
+    }
+    assert not scenario_port_errors(scenario_sources), "P1 harness port authority"
+    assert scenario_port_errors(
+        {
+            "e2e/fixed_e2e.mjs": "withScenarioServer('management', 'mcp', 38146, run)",
+            "e2e/real_fixed_e2e.mjs": "withRealServer('echo', 38147, run)",
+        }
+    ) == [
+        "e2e/fixed_e2e.mjs passes a fixed port to the shared server harness; use E2E_PORT",
+        "e2e/real_fixed_e2e.mjs passes a fixed port to the shared server harness; use E2E_PORT",
+    ], "P2 fixed shared-harness port"
 
     # Deterministic-environment rule: C10=the package entry crosses the one
     # provider-environment sanitizer before Node starts; E10=every expanded leaf
@@ -620,6 +725,11 @@ def self_test() -> None:
         check_rust,
     ), "R7 latest SDK compatibility"
     assert release_gate_errors(
+        check_all.replace("check advisories bans", "check bans"),
+        public_api,
+        check_rust,
+    ), "R7 RustSec advisories cannot disappear behind the bans-only gate"
+    assert release_gate_errors(
         check_all.replace("scripts/e2e/k8s_container_e2e.sh", ""),
         public_api,
         check_rust,
@@ -641,6 +751,34 @@ def self_test() -> None:
         public_api,
         check_rust,
     ), "R7 independently sharded release group"
+
+    # Workflow cause/effect decision table: C14 the candidate SHA is exact;
+    # C15 one full-gate invocation owns all groups; C16 PR/main/release enter
+    # that same workflow; C17 evidence uploads even on failure; C18 the runner
+    # advertises every required substrate. Effects: E14 accept the workflow
+    # graph only when C14-C18 all hold; otherwise E15 reject false-green,
+    # partial, duplicate, or untraceable execution. Rules W1 all=>E14; W2
+    # missing any cause=>E15; W3 a second workflow invokes check-all=>E15.
+    workflows = {
+        path.relative_to(ROOT).as_posix(): path.read_text(encoding="utf-8")
+        for path in (ROOT / ".github" / "workflows").glob("*.yml")
+    }
+    assert not workflow_gate_errors(workflows), "W1"
+    quality = workflows[QUALITY_WORKFLOW]
+    workflow_mutations = (
+        quality.replace('test "$(git rev-parse HEAD)" = "$source_revision"', "true", 1),
+        quality.replace("run: scripts/ci/check-all.sh", "run: scripts/ci/check-all.sh --group rust", 1),
+        quality.replace("pull_request:", "pull_request_removed:", 1),
+        quality.replace("if: always()", "if: success()", 1),
+        quality.replace("awaken-full-gate", "generic-runner", 1),
+    )
+    for rule, mutated in enumerate(workflow_mutations, 2):
+        changed = dict(workflows)
+        changed[QUALITY_WORKFLOW] = mutated
+        assert workflow_gate_errors(changed), f"W{rule}"
+    duplicate = dict(workflows)
+    duplicate[".github/workflows/parallel-quality.yml"] = quality
+    assert workflow_gate_errors(duplicate), "W3 duplicate owner"
     assert release_gate_errors(
         check_all.replace("AWAKEN_TEST_TIMINGS_FILE", "REMOVED_TIMINGS_FILE"),
         public_api,

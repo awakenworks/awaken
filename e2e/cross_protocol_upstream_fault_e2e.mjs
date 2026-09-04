@@ -21,7 +21,12 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  fakeAnthropicServerEnv,
+  withServer,
+  pass,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -109,11 +114,13 @@ async function a2aSend(base, context, text) {
 // Run `fn(base)` against a `real`-mode server pointed at a fault-injected upstream.
 async function withFaultyUpstream(faultOpts, port, fn) {
   const upstream = await startFakeAnthropic(FAKE_KEY, faultOpts);
-  process.env.ANTHROPIC_API_KEY = FAKE_KEY;
-  process.env.ANTHROPIC_MODEL = 'fake-haiku';
-  process.env.ANTHROPIC_BASE_URL = `${upstream.url}/v1/`;
   try {
-    return await withServer('real', port, (base) => fn(base, upstream));
+    return await withServer(
+      'real',
+      port,
+      (base) => fn(base, upstream),
+      fakeAnthropicServerEnv(upstream, { ANTHROPIC_API_KEY: FAKE_KEY }),
+    );
   } finally {
     upstream.close();
   }

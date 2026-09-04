@@ -16,13 +16,22 @@ use awaken_runtime_contract::snapshot::{
 };
 use axum::Router;
 
-use super::deployment::resource_host;
+use super::deployment::{resource_host_with_deployment, scenario_deployment};
 use super::scenario_platform::{fixed_agent_publication, mount_with_agent_source};
 use super::{DelegatingModel, FAKE_ACP_JSONRPC_SCRIPT, scenario_model, scenario_shell_argv};
 
 /// A Native coordinator whose roster proves Native, recursive-self, and ACP
 /// delegated attempts use one parent-mediated child-Run path.
-pub fn build_delegation_router() -> Router {
+pub async fn build_delegation_router() -> Router {
+    build_delegation_router_with_deployment(scenario_deployment()).await
+}
+
+/// Build the delegation scenario against one explicit typed deployment.
+/// Deterministic in-process tests select Local here; real-process scenarios use
+/// [`build_delegation_router`] and exercise their configured sandbox tier.
+pub async fn build_delegation_router_with_deployment(
+    deployment: awaken_session_executor::DeploymentConfig,
+) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate");
     let metadata = |owner_id: &str| AgentSnapshotMetadata {
         source: AgentConfigRevisionRef {
@@ -154,14 +163,12 @@ pub fn build_delegation_router() -> Router {
         scenario_shell_argv(FAKE_ACP_JSONRPC_SCRIPT),
         vec![],
     );
-    let source = Arc::new(
-        awaken_run_executor_acp::SubprocessChannelSource::new(launch)
-            .with_codec(awaken_run_executor_acp::Codec::Acp),
-    );
-    let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    let platform = resource_host(model, model_ref).map_host(|host| {
-        host.with_acp(acp)
-            .with_agent_publications(publication.clone())
-    });
+    let platform = crate::acp_scenarios::bind_acp_session_environment(
+        resource_host_with_deployment(model, model_ref, deployment),
+        awaken_session_executor::LaunchSource::FixedAcp(Box::new(launch)),
+        None,
+    )
+    .await
+    .map_host(|host| host.with_agent_publications(publication.clone()));
     mount_with_agent_source(platform, publication)
 }

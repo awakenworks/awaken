@@ -77,6 +77,14 @@ async function waitForAssistant(minCount, timeoutMs = 30_000) {
 }
 
 async function main() {
+  // Cause/effect decision table for background reservation ownership:
+  // P1 cold admission + local pool => enqueue first, then the claim owner alone
+  //    realizes and commits one Environment identity.
+  // P2 restart + recovered Resident + fresh admission => reuse that exact
+  //    identity and commit a second reply.
+  // P3 recovery scan overlaps P1/P2 => lifecycle serialization preserves P1/P2;
+  //    no HTTP-side physical candidate may race the pool. The two process arms
+  //    below cover P1 and P2, while their startup scan supplies P3.
   // 1. First process: the pool is spawned with PgNotifyWake over the shared Postgres
   //    queue; a background run is driven autonomously by that pool.
   let { server } = spawnServer('echo', PORT, ENV);
