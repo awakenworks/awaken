@@ -334,14 +334,18 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
     // actually reserved a superset of owned paths; C3 the root projection keeps
     // the same durable generation; C4 the projected handle names the same or a
     // different substrate. Effects: E1 C1+C2+C3+same substrate atomically
-    // advances identity+binding on that one owner while retaining the Arc; E2 a
-    // foreign substrate is rejected with the owner unchanged. Exact replay is
-    // already covered by ordinary projection tests, and the provisioning
-    // contract owns path-loss/legacy/different-effect negatives.
+    // advances identity+binding on that one owner while retaining the Arc; C5 a
+    // later root receipt advances only the effect identity after the same handle
+    // was already projected. E2 a foreign substrate is rejected with the owner
+    // unchanged; E3 C5 advances the receipt without mistaking the same physical
+    // generation for an ABA replacement. Exact replay is already covered by
+    // ordinary projection tests, and the provisioning contract owns
+    // path-loss/legacy/different-generation negatives.
     //
     // | Rule | Arc reserved | generation | substrate | Effect |
     // | P1 | yes | same | same | E1 |
     // | P2 | yes | same | different | E2 |
+    // | P3 | already projected | same | same | E3 |
     let thread = "resident-resource-reservation";
     let root = tempfile::tempdir().unwrap();
     let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
@@ -376,6 +380,24 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
                 && Arc::ptr_eq(&owned.environment, &resident_environment)
     ));
 
+    let same_binding_identity = BoundSessionEnvironmentIdentity::Durable {
+        effect_id: "same-binding-resource-receipt".into(),
+        generation: generation(thread),
+    };
+    owner
+        .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
+            identity: same_binding_identity.clone(),
+            binding: reserved_binding.clone(),
+        })
+        .expect("P3 absorb the later receipt for the same physical handle");
+    assert!(matches!(
+        &owner,
+        SessionEnvironmentOwner::Resident(owned)
+            if owned.identity == same_binding_identity
+                && owned.binding == reserved_binding
+                && Arc::ptr_eq(&owned.environment, &resident_environment)
+    ));
+
     let foreign = environment(&provider, "foreign-resource-reservation").await;
     foreign
         .reserve_owned_path("/workspace/foreign.txt")
@@ -396,9 +418,81 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
     assert!(matches!(
         &owner,
         SessionEnvironmentOwner::Resident(owned)
-            if owned.identity == reserved_identity
+            if owned.identity == same_binding_identity
                 && owned.binding == reserved_binding
                 && Arc::ptr_eq(&owned.environment, &resident_environment)
+    ));
+}
+
+#[tokio::test]
+async fn realization_revocation_absorbs_only_a_compatible_durable_receipt() {
+    // Revoked-owner cause/effect graph. C1 a durable Resident enters the sole
+    // RealizationRevocation phase; C2 Control has committed a later Resource
+    // receipt for the same generation and exact physical Arc; C3 a projection
+    // instead names a different generation. E1 C1+C2 advances identity/binding
+    // while preserving the Retiring cause and Arc, allowing canonical terminal
+    // takeover; E2 C1+C3 rejects and preserves the exact revoked owner.
+    //
+    // | Rule | cause | generation/handle | Effect |
+    // | V1 | realization revocation | same | E1 |
+    // | V2 | realization revocation | different | E2 |
+    let thread = "revoked-resource-receipt";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let environment = environment(&provider, thread).await;
+    let binding = serde_json::to_string(&environment.handle()).unwrap();
+    let mut owner = resident(thread, environment.clone());
+    owner
+        .begin_retirement(
+            SessionEnvironmentRetirementCause::RealizationRevocation,
+            RetirementSelection::Current,
+        )
+        .unwrap()
+        .expect("V1 revoked owner");
+
+    let replacement = BoundSessionEnvironmentIdentity::Durable {
+        effect_id: "committed-resource-receipt".into(),
+        generation: generation(thread),
+    };
+    owner
+        .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
+            identity: replacement.clone(),
+            binding: binding.clone(),
+        })
+        .expect("V1 same physical generation advances its receipt");
+    let retained = owner.clone();
+    assert!(matches!(
+        &owner,
+        SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+            cause: SessionEnvironmentRetirementCause::RealizationRevocation,
+            owned: RetiringEnvironmentOwner::Bound(owned),
+        }) if owned.identity == replacement
+            && owned.binding == binding
+            && Arc::ptr_eq(&owned.environment, &environment)
+    ));
+
+    assert!(
+        owner
+            .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
+                identity: BoundSessionEnvironmentIdentity::Durable {
+                    effect_id: "foreign-generation-receipt".into(),
+                    generation: awaken_session_contract::SandboxGeneration::new(
+                        thread,
+                        2,
+                        u64::MAX,
+                        "environment",
+                        "image",
+                    ),
+                },
+                binding,
+            })
+            .is_err(),
+        "V2 different generation is rejected"
+    );
+    assert!(matches!(
+        (&owner, &retained),
+        (SessionEnvironmentOwner::Retiring(current), SessionEnvironmentOwner::Retiring(before))
+            if current.exact_matches(before)
     ));
 }
 
