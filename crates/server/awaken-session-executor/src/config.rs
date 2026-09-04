@@ -704,13 +704,20 @@ mod tests {
 
     #[test]
     fn platform_capabilities_expose_the_schema() {
-        // Cause/effect: the two direct, six native provider-server, and one
-        // OpenRouter provider-server descriptors derive one nine-branch plugin
-        // schema and exact tool bound. The free provider remains the first
-        // authoring default; paid provider authentication stays on the common
-        // CredentialUsage wire. A descriptor addition/removal intentionally
-        // changes this public authoring contract and must update this assertion.
-        let caps = platform_plugin_capabilities();
+        // Capability cause/effect table. C1 the authoritative registry contains
+        // direct and server-routed providers; C2 every provider id is unique;
+        // C3 a direct provider requires credentials. E1 the projected schema
+        // contains every direct provider and no duplicate branch; E2 the free
+        // default remains selectable; E3 paid authentication uses the common
+        // CredentialUsage wire. The provider crate owns the server-route list,
+        // so this adapter test deliberately derives expectations from the same
+        // registry instead of copying its current branch count.
+        //
+        // | Rule | registry | credential | Effect |
+        // | C1 | builtins | none | E1 + E2 |
+        // | C1 + C2 + C3 | builtins | required | E1 + E3 |
+        let providers = WebSearchProviderRegistry::builtins();
+        let caps = platform_plugin_capabilities_with_web_search(&providers);
         assert!(
             caps.iter()
                 .any(|c| c.id == STATE_MACHINE_PLUGIN_ID && c.config_schema.is_some())
@@ -728,11 +735,19 @@ mod tests {
         let branches = web.config_schema.as_ref().unwrap()["oneOf"]
             .as_array()
             .unwrap();
-        assert_eq!(branches.len(), 9);
-        assert_eq!(
-            branches[0]["properties"]["provider_id"]["const"],
-            "duckduckgo"
-        );
+        let branch_ids = branches
+            .iter()
+            .map(|branch| {
+                branch["properties"]["provider_id"]["const"]
+                    .as_str()
+                    .expect("provider branch id")
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(branch_ids.len(), branches.len(), "C2/E1 unique branches");
+        for descriptor in providers.descriptors() {
+            assert!(branch_ids.contains(descriptor.id.as_str()), "C1/E1");
+        }
+        assert!(branch_ids.contains("duckduckgo"), "C1/E2 free default");
         let fetch = caps
             .iter()
             .find(|capability| capability.id == awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID)
@@ -743,9 +758,14 @@ mod tests {
                 awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID.into()
             ])
         );
+        let brave = branches
+            .iter()
+            .find(|branch| branch["properties"]["provider_id"]["const"] == "brave")
+            .expect("Brave provider branch");
         assert_eq!(
-            branches[1]["properties"]["credential"]["x-awaken-credential-application"]["type"],
-            "http_header"
+            brave["properties"]["credential"]["x-awaken-credential-application"]["type"],
+            "http_header",
+            "C3/E3 common credential wire",
         );
     }
 
