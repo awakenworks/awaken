@@ -3171,6 +3171,10 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
 }
 
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires Linux mount-namespace path fidelity"
+)]
 async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
     // Test design: acp_execution_rebuilds_an_envelope_only_reservation_context
     // Cause/effect graph: C1 an ACP publication; C2 reservation preflight leaves
@@ -4399,6 +4403,10 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
 /// This is the active-active recovery case: a peer may ask the Runtime to replay
 /// durable Session truth after the local projection has already been installed.
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires Linux mount-namespace path fidelity"
+)]
 async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed() {
     use awaken_session_contract::SessionInit;
 
@@ -4892,6 +4900,10 @@ impl LlmExecutor for OkModel {
 /// This rule exercises the admitted branch and proves detach reverses it in the
 /// same Session-owned environment.
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires Linux mount-namespace path fidelity"
+)]
 async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_sandbox() {
     // Causes: C1 an active Session's Resource inputs change to a new generation;
     // C2 a cached sandbox/projection exists; C3 the process slot retains a Run
@@ -5097,6 +5109,10 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
 /// compilation, projection transaction, or Git; keep the old manifest, mounts,
 /// resident bytes, environment handle, and cached Runtime atomically unchanged.
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires Linux mount-namespace path fidelity"
+)]
 async fn invalid_repository_live_replacement_preserves_the_installed_generation() {
     use awaken_session_contract::SessionRuntime;
 

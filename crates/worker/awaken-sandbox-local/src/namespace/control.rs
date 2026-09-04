@@ -104,12 +104,14 @@ fn unlink_if_identity(path: &std::path::Path, expected: SocketIdentity) {
 }
 
 #[derive(Clone)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct NamespaceControlPublicationState {
     cancel: CancellationToken,
     task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     socket: PathBuf,
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 impl NamespaceControlPublicationState {
     async fn close_task(&self) {
         self.cancel.cancel();
@@ -144,6 +146,7 @@ pub(super) struct NamespaceControlPublicationRegistry {
 }
 
 impl NamespaceControlPublicationRegistry {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn reserve(
         &self,
         socket: PathBuf,
@@ -167,6 +170,7 @@ impl NamespaceControlPublicationRegistry {
         Ok((lease, state))
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn owns(&self, lease: &SandboxControlPublicationLease) -> bool {
         self.slot.owns(lease)
     }
@@ -202,21 +206,23 @@ impl NamespaceControlPublicationRegistry {
         })?
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn release_reservation(&self, lease: &SandboxControlPublicationLease) {
         self.slot.release(lease);
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn cleanup_owned_if_active(
         &self,
         lease: &SandboxControlPublicationLease,
-        state: &NamespaceControlPublicationState,
+        _state: &NamespaceControlPublicationState,
     ) {
         if self
             .slot
-            .with_current_mut(lease, |active| {
+            .with_current_mut(lease, |_active| {
                 #[cfg(target_os = "linux")]
-                if let Some(identity) = active.owned_socket.take() {
-                    unlink_if_identity(&state.socket, identity);
+                if let Some(identity) = _active.owned_socket.take() {
+                    unlink_if_identity(&_state.socket, identity);
                 }
             })
             .is_ok()
@@ -226,10 +232,10 @@ impl NamespaceControlPublicationRegistry {
     }
 
     pub(super) async fn close_for_dispose(&self) {
-        if let Some(mut active) = self.slot.close() {
+        if let Some(active) = self.slot.close() {
             active.state.close_task().await;
             #[cfg(target_os = "linux")]
-            if let Some(identity) = active.owned_socket.take() {
+            if let Some(identity) = active.owned_socket {
                 unlink_if_identity(&active.state.socket, identity);
             }
         }
@@ -256,6 +262,7 @@ impl Drop for OwnedNamespaceControlListener {
     }
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct NamespaceControlPublication {
     registry: Arc<NamespaceControlPublicationRegistry>,
     lease: SandboxControlPublicationLease,

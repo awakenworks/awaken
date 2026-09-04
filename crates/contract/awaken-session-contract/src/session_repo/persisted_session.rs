@@ -819,10 +819,14 @@ impl PersistedSession {
     /// Outcome aggregate may still need continuation. The root intentionally
     /// stores no active/terminal shadow flag: the lifecycle supervisor revisits
     /// this conservative candidate set and the Thread aggregate decides whether
-    /// work exists. This trades a bounded read for one source of effect truth.
+    /// work exists. A live Session activity owns the Thread until its committed
+    /// boundary is observed; driving the Outcome concurrently would replay the
+    /// same stable Worker Run while its resume is still in flight. This trades a
+    /// bounded read for one source of effect truth.
     #[must_use]
     pub fn needs_outcome_reconciliation(&self) -> bool {
         !self.is_terminal()
+            && self.execution == crate::SessionExecutionState::Idle
             && self.event_batches.iter().any(|batch| {
                 batch.events.iter().any(|entry| {
                     matches!(

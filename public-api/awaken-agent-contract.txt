@@ -3,8 +3,10 @@ pub mod awaken_agent_contract::acp
 pub struct awaken_agent_contract::acp::AcpSessionConfiguration
 pub awaken_agent_contract::acp::AcpSessionConfiguration::mode: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::acp::AcpSessionConfiguration::options: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_agent_contract::acp::AcpSessionConfiguration::working_directory: core::option::Option<alloc::string::String>
 impl awaken_agent_contract::acp::AcpSessionConfiguration
 pub fn awaken_agent_contract::acp::AcpSessionConfiguration::is_empty(&self) -> bool
+pub fn awaken_agent_contract::acp::AcpSessionConfiguration::validate_working_directory(&self) -> core::result::Result<(), &'static str>
 pub mod awaken_agent_contract::agent
 pub mod awaken_agent_contract::agent::awaiting
 pub enum awaken_agent_contract::agent::awaiting::AwaitReason
@@ -1120,8 +1122,10 @@ pub awaken_agent_contract::TranscriptView::RawCommitted
 pub struct awaken_agent_contract::AcpSessionConfiguration
 pub awaken_agent_contract::AcpSessionConfiguration::mode: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::AcpSessionConfiguration::options: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_agent_contract::AcpSessionConfiguration::working_directory: core::option::Option<alloc::string::String>
 impl awaken_agent_contract::acp::AcpSessionConfiguration
 pub fn awaken_agent_contract::acp::AcpSessionConfiguration::is_empty(&self) -> bool
+pub fn awaken_agent_contract::acp::AcpSessionConfiguration::validate_working_directory(&self) -> core::result::Result<(), &'static str>
 pub struct awaken_agent_contract::AgentSkillBinding
 pub awaken_agent_contract::AgentSkillBinding::kind: awaken_agent_contract::skill::AgentSkillKind
 pub awaken_agent_contract::AgentSkillBinding::skill_id: alloc::string::String

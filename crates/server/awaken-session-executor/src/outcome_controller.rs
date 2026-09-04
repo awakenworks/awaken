@@ -177,6 +177,22 @@ impl SharedHost {
             OutcomeCommand::Resume => {
                 let _outcome = ctx.outcome.lock().await;
                 let _command = ctx.command.lock().await;
+                // A reply may already have dispatched the Outcome's stable
+                // Worker Run while the lifecycle supervisor starts another
+                // reconciliation pass. Re-entering that Running Run would
+                // recover its open tool batch before the new Awaiting ticket is
+                // committed and turn a valid permission wait indeterminate.
+                // This process-local hint is only a live-owner fence: after a
+                // crash it is absent and the durable Outcome/Run state remains
+                // fully recoverable by the replacement process.
+                if ctx
+                    .active_run
+                    .lock()
+                    .expect("active run mutex poisoned")
+                    .is_some()
+                {
+                    return Ok(OutcomeCommandResult::Driven(None));
+                }
                 match controller.resume_active().await {
                     Ok(Some(report)) => Ok(OutcomeCommandResult::Driven(Some(
                         HostOutcomeDrive::Completed(project_report(report)),
@@ -185,6 +201,9 @@ impl SharedHost {
                     Err(ControllerError::WorkerAwaiting { .. }) => Ok(
                         OutcomeCommandResult::Driven(Some(HostOutcomeDrive::Awaiting)),
                     ),
+                    Err(ControllerError::WorkerRunning { .. }) => {
+                        Ok(OutcomeCommandResult::Driven(None))
+                    }
                     Err(error) => Err(controller_error(error)),
                 }
             }
@@ -233,7 +252,7 @@ pub(crate) fn project_report(report: awaken_ext_goal::controller::Report) -> Hos
 
 fn controller_error(error: ControllerError) -> HostError {
     match error {
-        ControllerError::Busy { .. } => {
+        ControllerError::Busy { .. } | ControllerError::WorkerRunning { .. } => {
             HostError::unavailable_classified(OUTCOME_BUSY_CODE, error.to_string())
         }
         ControllerError::ActiveDefinitionConflict { .. }

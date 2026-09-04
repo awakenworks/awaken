@@ -50,7 +50,7 @@ async fn host_over(dir: &std::path::Path, process: &str) -> Arc<SharedHost> {
     )
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     // Causes: the fixtures below establish `awaiting run survives a restart and` with the concrete
     // inputs, state, dependencies, and failure triggers used by this case.

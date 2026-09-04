@@ -7,7 +7,8 @@
 awaken_unset_ambient_api_keys() {
   local name normalized
   while IFS= read -r name; do
-    normalized="${name^^}"
+    # macOS still ships Bash 3.2, which has no `${name^^}` expansion.
+    normalized=$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')
     if [[ "$normalized" == "API_KEY" || "$normalized" == *_API_KEY ]]; then
       unset "$name"
     fi

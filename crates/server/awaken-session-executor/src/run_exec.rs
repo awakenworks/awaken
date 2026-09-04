@@ -583,14 +583,12 @@ impl SharedHost {
             if let Some(sink) = options.sink {
                 context = context.with_stream_sink(sink);
             }
-            let result = ctx
-                .delivery
+            ctx.delivery
                 .direct()
                 .ok_or_else(|| HostError::internal("direct delivery driver is unavailable"))?
                 .start(activation, context)
                 .await
-                .map_err(|e| HostError::internal(e.to_string()));
-            result
+                .map_err(|e| HostError::internal(e.to_string()))
         }
     }
 }

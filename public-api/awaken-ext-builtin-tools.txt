@@ -284,14 +284,20 @@ pub const awaken_ext_builtin_tools::WriteTool::DESCRIPTION: &'static str
 pub const awaken_ext_builtin_tools::WriteTool::ID: &'static str
 pub fn awaken_ext_builtin_tools::WriteTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::WriteArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub const awaken_ext_builtin_tools::AGENT_RUN: &str
+pub const awaken_ext_builtin_tools::ANTHROPIC_PROVIDER_ID: &str
 pub const awaken_ext_builtin_tools::AUXILIARY_AGENT: &str
 pub const awaken_ext_builtin_tools::AWAKEN_CLOUD_PROVIDER_ID: &str
 pub const awaken_ext_builtin_tools::AWAKEN_DIRECT_PROVIDER_ID: &str
 pub const awaken_ext_builtin_tools::BRAVE_PROVIDER_ID: &str
+pub const awaken_ext_builtin_tools::DEEPSEEK_ANTHROPIC_PROVIDER_ID: &str
+pub const awaken_ext_builtin_tools::DEEPSEEK_RESPONSES_PROVIDER_ID: &str
 pub const awaken_ext_builtin_tools::DUCKDUCKGO_PROVIDER_ID: &str
+pub const awaken_ext_builtin_tools::GEMINI_PROVIDER_ID: &str
 pub const awaken_ext_builtin_tools::LIST_AGENTS: &str
+pub const awaken_ext_builtin_tools::OPENAI_PROVIDER_ID: &str
 pub const awaken_ext_builtin_tools::OPENROUTER_PROVIDER_ID: &str
 pub const awaken_ext_builtin_tools::SEND_MESSAGE: &str
+pub const awaken_ext_builtin_tools::VERTEX_PROVIDER_ID: &str
 pub const awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID: &str
 pub const awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID: &str
 pub const awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID: &str

@@ -280,7 +280,9 @@ class ReleaseContractTests(unittest.TestCase):
             )
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop("CARGO_TARGET_DIR", None)
-                self.assertEqual(target_directory(root), root / "configured-target")
+                self.assertEqual(
+                    target_directory(root), (root / "configured-target").resolve()
+                )
             override = root / "explicit-target"
             with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(override)}):
                 self.assertEqual(target_directory(root), override)

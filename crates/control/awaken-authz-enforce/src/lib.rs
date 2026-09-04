@@ -107,15 +107,10 @@ impl ApplicationGrant {
         }
         if self.operations.is_empty()
             || self.operations.iter().any(|operation| {
-                !matches!(
-                    operation.as_str(),
-                    "thread.run" | "thread.respond" | "thread.messages.read"
-                )
+                !matches!(operation.as_str(), "thread.run" | "thread.messages.read")
             })
         {
-            return Err(
-                "operations may contain only thread.run, thread.respond, and thread.messages.read",
-            );
+            return Err("operations may contain only thread.run and thread.messages.read");
         }
         if self.thread_bindings.is_empty() || self.thread_bindings.len() > 32 {
             return Err("thread_bindings must contain between 1 and 32 bindings");
@@ -247,7 +242,7 @@ pub async fn application_guard(
             identity.workspace_id.clone(),
         ));
     let path = request.uri().path().to_string();
-    let Some(mut route) = classify_application_route(request.method(), &path) else {
+    let Some(route) = classify_application_route(request.method(), &path) else {
         return reject(
             StatusCode::FORBIDDEN,
             "application token does not allow this route",
@@ -258,14 +253,6 @@ pub async fn application_guard(
             StatusCode::FORBIDDEN,
             "application token does not allow this protocol",
         );
-    }
-    if route.operation == "thread.run"
-        && route.protocol == "ai-sdk"
-        && route.path_thread.is_some()
-        && !identity.grant.operations.contains("thread.run")
-        && identity.grant.operations.contains("thread.respond")
-    {
-        route.operation = "thread.respond";
     }
     if !identity.grant.operations.contains(route.operation) {
         return reject(
@@ -361,12 +348,6 @@ async fn scope_application_request<'a>(
                 "application request must be an object",
             )
         })?;
-        if route.operation == "thread.respond" && !is_ai_sdk_response_only(object) {
-            return Err(ApplicationRejection::new(
-                StatusCode::FORBIDDEN,
-                "application token allows only an AI SDK tool response",
-            ));
-        }
         let thread_key = if object.contains_key("threadId") {
             Some("threadId")
         } else if object.contains_key("thread_id") {
@@ -448,30 +429,6 @@ async fn scope_application_request<'a>(
         .insert(awaken_tenancy::ResolvedAgentId(binding.agent_id.clone()));
     let request = Request::from_parts(parts, body);
     Ok(request)
-}
-
-fn is_ai_sdk_response_only(object: &serde_json::Map<String, serde_json::Value>) -> bool {
-    let Some(last) = object
-        .get("messages")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|messages| messages.last())
-        .and_then(serde_json::Value::as_object)
-    else {
-        return false;
-    };
-    if last.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
-        return false;
-    }
-    last.get("parts")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|parts| {
-            parts.iter().any(|part| {
-                matches!(
-                    part.get("state").and_then(serde_json::Value::as_str),
-                    Some("approval-responded" | "output-available" | "output-error")
-                )
-            })
-        })
 }
 
 fn resolve_binding<'a>(

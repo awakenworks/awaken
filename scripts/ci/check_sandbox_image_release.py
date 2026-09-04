@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import re
 import subprocess
@@ -463,12 +464,24 @@ def _registry_write_capabilities(source: str) -> tuple[str, ...]:
     return tuple(_registry_write_capability_counts(source))
 
 
+@functools.lru_cache(maxsize=None)
 def _registry_write_capability_counts(source: str) -> dict[str, int]:
-    capabilities = {
-        name: len(tuple(pattern.finditer(source)))
-        for name, pattern in REGISTRY_WRITE_PATTERNS
-        if pattern.search(source)
+    lowered = source.lower()
+    necessary_markers = {
+        "registry-write workflow permission": "packages:",
+        "registry publisher action": "uses:",
+        "Docker registry write": "docker",
+        "Buildx push": "docker buildx",
+        "OCI publisher command": " ",
     }
+    capabilities: dict[str, int] = {}
+    for name, pattern in REGISTRY_WRITE_PATTERNS:
+        marker = necessary_markers[name]
+        if marker != " " and marker not in lowered:
+            continue
+        matches = tuple(pattern.finditer(source))
+        if matches:
+            capabilities[name] = len(matches)
     if _has_oci_distribution_http_write(source):
         capabilities["OCI Distribution API write"] = 1
     return capabilities
@@ -476,6 +489,10 @@ def _registry_write_capability_counts(source: str) -> dict[str, int]:
 
 def _has_oci_distribution_http_write(source: str) -> bool:
     """Bind a mutating method and Registry path within one source statement."""
+    # Avoid splitting every tracked source (including large generated fixtures)
+    # when it cannot possibly contain an OCI Distribution path.
+    if "/v2/" not in source:
+        return False
     return any(
         OCI_DISTRIBUTION_PATH_RE.search(statement)
         and OCI_DISTRIBUTION_WRITE_METHOD_RE.search(statement)

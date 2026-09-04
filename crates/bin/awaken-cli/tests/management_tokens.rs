@@ -12,7 +12,10 @@
 //! scoped (404 unknown id); and the bootstrap token can be rotated away —
 //! revoke it with a freshly minted admin token and only the successor works.
 
-use awaken_cli::{BOOTSTRAP_WORKSPACE, TokenSpec, build_secured_all_in_one_router};
+use awaken_cli::{
+    BOOTSTRAP_WORKSPACE, TokenSpec,
+    build_secured_all_in_one_router as build_isolated_secured_all_in_one_router,
+};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -20,6 +23,57 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const KEY: [u8; 32] = [7u8; 32];
+
+static LOCAL_DEPLOYMENT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static TEST_RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+
+struct SharedSecuredDeployment {
+    app: axum::Router,
+    iam: std::sync::Arc<awaken_cli::ManagementAuthz>,
+    admin_token: String,
+    _directory: tempfile::TempDir,
+}
+
+static SHARED_SECURED_DEPLOYMENT: tokio::sync::OnceCell<SharedSecuredDeployment> =
+    tokio::sync::OnceCell::const_new();
+
+fn run_local_deployment(future: impl std::future::Future<Output = ()>) {
+    let _deployment = LOCAL_DEPLOYMENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let runtime = TEST_RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("local deployment test runtime")
+    });
+    runtime.block_on(future);
+}
+
+async fn shared_secured_all_in_one_router(
+    token_handoff_dir: &std::path::Path,
+    key: &[u8; 32],
+) -> (axum::Router, std::sync::Arc<awaken_cli::ManagementAuthz>) {
+    let deployment = SHARED_SECURED_DEPLOYMENT
+        .get_or_init(|| async {
+            let directory = tempfile::tempdir().expect("shared deployment directory");
+            let (app, iam) = build_isolated_secured_all_in_one_router(directory.path(), key).await;
+            let admin_token = admin_token(directory.path());
+            SharedSecuredDeployment {
+                app,
+                iam,
+                admin_token,
+                _directory: directory,
+            }
+        })
+        .await;
+    std::fs::write(
+        token_handoff_dir.join(awaken_cli::ADMIN_TOKEN_FILE),
+        &deployment.admin_token,
+    )
+    .expect("copy shared admin-token handoff");
+    (deployment.app.clone(), deployment.iam.clone())
+}
 
 /// A workspace the bootstrap token is NOT bound at — cross-workspace proof.
 const OTHER_WORKSPACE: &str = "wrkspc_two";
@@ -110,255 +164,320 @@ async fn mint_http(
     )
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn the_org_bootstrap_binding_rejects_an_unregistered_workspace() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let bootstrap = admin_token(dir.path());
+#[test]
+fn the_org_bootstrap_binding_rejects_an_unregistered_workspace() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _iam) = build_isolated_secured_all_in_one_router(dir.path(), &KEY).await;
+        let bootstrap = admin_token(dir.path());
 
-    // The bootstrap is Org-bound, but wrkspc_two is not registered below that
-    // Org. A request body must never create a new tenant edge implicitly.
-    let (s, denied) = call(
-        &app,
-        "POST",
-        "/v1/config/iam/tokens",
-        Some(&bootstrap),
-        Some(mint_body(OTHER_WORKSPACE, "workspace_admin")),
-    )
-    .await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
+        // The bootstrap is Org-bound, but wrkspc_two is not registered below that
+        // Org. A request body must never create a new tenant edge implicitly.
+        let (s, denied) = call(
+            &app,
+            "POST",
+            "/v1/config/iam/tokens",
+            Some(&bootstrap),
+            Some(mint_body(OTHER_WORKSPACE, "workspace_admin")),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
 
-    // The platform-provisioned workspace is registered and remains mintable.
-    let (s, minted) = call(
-        &app,
-        "POST",
-        "/v1/config/iam/tokens",
-        Some(&bootstrap),
-        Some(mint_body(BOOTSTRAP_WORKSPACE, "workspace_admin")),
-    )
-    .await;
-    assert_eq!(s, StatusCode::CREATED, "{minted}");
-    let cleartext = minted["token"].as_str().unwrap();
-    // Awaken-branded scheme: management tokens are `sk-awaken-…`, distinct from
-    // real Anthropic provider keys (`sk-ant-…`, now legacy-verify only).
-    assert!(cleartext.starts_with("sk-awaken-"), "{cleartext}");
-    let view = &minted["api_token"];
-    assert_eq!(view["workspace_id"], json!(BOOTSTRAP_WORKSPACE));
-    assert_eq!(view["role"], json!("workspace_admin"));
-    assert!(view["id"].as_str().unwrap().starts_with("tok_"));
-    assert!(view.get("secret_hash").is_none(), "view is hash-free");
-    assert!(view["revoked_at"].is_null() || view.get("revoked_at").is_none());
-
-    // The minted token works within its role's route→action rules in its
-    // workspace.
-    let t = Some(cleartext);
-    let (s, _) = call(&app, "GET", "/v1/config/catalog", t, None).await;
-    assert_eq!(s, StatusCode::OK);
-    let (s, cred) = call(
-        &app,
-        "POST",
-        "/v1/config/credentials",
-        t,
-        Some(json!({
-            "workspace_id": BOOTSTRAP_WORKSPACE, "kind": "vault", "provider_id": "anthropic",
-            "env_key": "ANTHROPIC_API_KEY",
-            "secret": "sk-tokens-two" // awaken-allow: secret
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::CREATED, "{cred}");
-
-    // …and 403s cross-workspace through the request fence.
-    let (s, err) = call(
-        &app,
-        "GET",
-        &format!("/v1/config/credentials?workspace_id={OTHER_WORKSPACE}"),
-        t,
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
-    assert_eq!(err["error"]["type"], json!("permission_error"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_workspace_bound_admin_mints_only_for_its_own_workspace() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    iam.register_workspace(OTHER_WORKSPACE);
-    let bootstrap = admin_token(dir.path());
-    let (scoped, _) = mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_admin").await;
-
-    // Its own workspace: allowed.
-    let (s, minted) = call(
-        &app,
-        "POST",
-        "/v1/config/iam/tokens",
-        Some(&scoped),
-        Some(mint_body(BOOTSTRAP_WORKSPACE, "workspace_user")),
-    )
-    .await;
-    assert_eq!(s, StatusCode::CREATED, "{minted}");
-
-    // Another workspace: the scope graph refuses — no Org binding here.
-    let (s, err) = call(
-        &app,
-        "POST",
-        "/v1/config/iam/tokens",
-        Some(&scoped),
-        Some(mint_body(OTHER_WORKSPACE, "workspace_user")),
-    )
-    .await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
-    assert_eq!(err["error"]["type"], json!("permission_error"));
-
-    // Listing another workspace's tokens is refused the same way.
-    let (s, _) = call(
-        &app,
-        "GET",
-        &format!("/v1/config/iam/tokens?workspace_id={OTHER_WORKSPACE}"),
-        Some(&scoped),
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn token_listings_are_secret_free() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let bootstrap = admin_token(dir.path());
-    let (cleartext, _) = mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_admin").await;
-
-    let (s, raw, _) = call_raw(
-        &app,
-        "GET",
-        &format!("/v1/config/iam/tokens?workspace_id={BOOTSTRAP_WORKSPACE}"),
-        Some(&bootstrap),
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK, "{raw}");
-    // The argon2id PHC hash and the cleartexts never appear on the wire.
-    assert!(!raw.contains("$argon2"), "list leaks a secret hash: {raw}");
-    assert!(!raw.contains(&cleartext), "list leaks the minted cleartext");
-    assert!(
-        !raw.contains(bootstrap.trim()),
-        "list leaks the bootstrap cleartext"
-    );
-
-    let listed: Value = serde_json::from_str(&raw).unwrap();
-    let listed = listed.as_array().unwrap();
-    // Both the bootstrap token and the freshly minted one are visible as views.
-    assert!(
-        listed
-            .iter()
-            .any(|t| t["principal_id"] == json!("mgmt-bootstrap"))
-    );
-    assert!(listed.iter().any(|t| t["role"] == json!("workspace_admin")));
-    for view in listed {
-        assert!(view.get("secret_hash").is_none());
+        // The platform-provisioned workspace is registered and remains mintable.
+        let (s, minted) = call(
+            &app,
+            "POST",
+            "/v1/config/iam/tokens",
+            Some(&bootstrap),
+            Some(mint_body(BOOTSTRAP_WORKSPACE, "workspace_admin")),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "{minted}");
+        let cleartext = minted["token"].as_str().unwrap();
+        // Awaken-branded scheme: management tokens are `sk-awaken-…`, distinct from
+        // real Anthropic provider keys (`sk-ant-…`, now legacy-verify only).
+        assert!(cleartext.starts_with("sk-awaken-"), "{cleartext}");
+        let view = &minted["api_token"];
         assert_eq!(view["workspace_id"], json!(BOOTSTRAP_WORKSPACE));
-    }
+        assert_eq!(view["role"], json!("workspace_admin"));
+        assert!(view["id"].as_str().unwrap().starts_with("tok_"));
+        assert!(view.get("secret_hash").is_none(), "view is hash-free");
+        assert!(view["revoked_at"].is_null() || view.get("revoked_at").is_none());
+
+        // The minted token works within its role's route→action rules in its
+        // workspace.
+        let t = Some(cleartext);
+        let (s, _) = call(&app, "GET", "/v1/config/catalog", t, None).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, cred) = call(
+            &app,
+            "POST",
+            "/v1/config/credentials",
+            t,
+            Some(json!({
+                "workspace_id": BOOTSTRAP_WORKSPACE, "kind": "vault", "provider_id": "anthropic",
+                "env_key": "ANTHROPIC_API_KEY",
+                "secret": "sk-tokens-two" // awaken-allow: secret
+            })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "{cred}");
+
+        // …and 403s cross-workspace through the request fence.
+        let (s, err) = call(
+            &app,
+            "GET",
+            &format!("/v1/config/credentials?workspace_id={OTHER_WORKSPACE}"),
+            t,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+        assert_eq!(err["error"]["type"], json!("permission_error"));
+    });
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn non_admin_roles_cannot_mint_tokens() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let bootstrap = admin_token(dir.path());
+#[test]
+fn a_workspace_bound_admin_mints_only_for_its_own_workspace() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+        iam.register_workspace(OTHER_WORKSPACE);
+        let bootstrap = admin_token(dir.path());
+        let (scoped, _) = mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_admin").await;
 
-    // workspace_user holds no apikey pattern at all — mint (apikey.write) 403s.
-    let (user, _) = mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_user").await;
-    let (s, err) = call(
-        &app,
-        "POST",
-        "/v1/config/iam/tokens",
-        Some(&user),
-        Some(mint_body(BOOTSTRAP_WORKSPACE, "workspace_user")),
-    )
-    .await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
-    assert_eq!(err["error"]["type"], json!("permission_error"));
+        // Its own workspace: allowed.
+        let (s, minted) = call(
+            &app,
+            "POST",
+            "/v1/config/iam/tokens",
+            Some(&scoped),
+            Some(mint_body(BOOTSTRAP_WORKSPACE, "workspace_user")),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "{minted}");
 
-    // …and cannot even read the token list (apikey.read).
-    let (s, _) = call(
-        &app,
-        "GET",
-        &format!("/v1/config/iam/tokens?workspace_id={BOOTSTRAP_WORKSPACE}"),
-        Some(&user),
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
+        // Another workspace: the scope graph refuses — no Org binding here.
+        let (s, err) = call(
+            &app,
+            "POST",
+            "/v1/config/iam/tokens",
+            Some(&scoped),
+            Some(mint_body(OTHER_WORKSPACE, "workspace_user")),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+        assert_eq!(err["error"]["type"], json!("permission_error"));
+
+        // Listing another workspace's tokens is refused the same way.
+        let (s, _) = call(
+            &app,
+            "GET",
+            &format!("/v1/config/iam/tokens?workspace_id={OTHER_WORKSPACE}"),
+            Some(&scoped),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    });
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn an_unknown_role_is_a_422_problem() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let bootstrap = admin_token(dir.path());
-
-    let (s, raw, content_type) = call_raw(
-        &app,
-        "POST",
-        "/v1/config/iam/tokens",
-        Some(&bootstrap),
-        Some(mint_body(BOOTSTRAP_WORKSPACE, "superuser")),
-    )
-    .await;
-    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{raw}");
-    assert_eq!(content_type.as_deref(), Some("application/problem+json"));
-    let err: Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(err["code"], json!("unknown_role"));
-    assert_eq!(err["status"], json!(422));
-    assert!(err["detail"].as_str().unwrap().contains("superuser"));
-
-    // Missing required fields are 422 problems too.
-    let (s, err) = call(
-        &app,
-        "POST",
-        "/v1/config/iam/tokens",
-        Some(&bootstrap),
-        Some(json!({ "role": "workspace_admin" })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(err["code"], json!("invalid_token_spec"));
-
-    // A garbage expiry never reaches the engine's lexical comparison.
-    let (s, err) = call(
-        &app,
-        "POST",
-        "/v1/config/iam/tokens",
-        Some(&bootstrap),
-        Some(json!({
-            "workspace_id": BOOTSTRAP_WORKSPACE, "role": "workspace_admin",
-            "expires_at": "banana"
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
-    assert_eq!(err["code"], json!("invalid_token_spec"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn revocation_is_immediate_and_survives_a_restart() {
-    let dir = tempfile::tempdir().unwrap();
-    let bootstrap;
-    let revoked_cleartext;
-    let keeper_cleartext;
-    {
-        let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-        bootstrap = admin_token(dir.path());
-        let (revoked, revoked_id) =
+#[test]
+fn token_listings_are_secret_free() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+        let bootstrap = admin_token(dir.path());
+        let (cleartext, _) =
             mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_admin").await;
-        let (keeper, _) = mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_admin").await;
-        revoked_cleartext = revoked;
-        keeper_cleartext = keeper;
 
-        // Live before the revoke…
+        let (s, raw, _) = call_raw(
+            &app,
+            "GET",
+            &format!("/v1/config/iam/tokens?workspace_id={BOOTSTRAP_WORKSPACE}"),
+            Some(&bootstrap),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{raw}");
+        // The argon2id PHC hash and the cleartexts never appear on the wire.
+        assert!(!raw.contains("$argon2"), "list leaks a secret hash: {raw}");
+        assert!(!raw.contains(&cleartext), "list leaks the minted cleartext");
+        assert!(
+            !raw.contains(bootstrap.trim()),
+            "list leaks the bootstrap cleartext"
+        );
+
+        let listed: Value = serde_json::from_str(&raw).unwrap();
+        let listed = listed.as_array().unwrap();
+        // Both the bootstrap token and the freshly minted one are visible as views.
+        assert!(
+            listed
+                .iter()
+                .any(|t| t["principal_id"] == json!("mgmt-bootstrap"))
+        );
+        assert!(listed.iter().any(|t| t["role"] == json!("workspace_admin")));
+        for view in listed {
+            assert!(view.get("secret_hash").is_none());
+            assert_eq!(view["workspace_id"], json!(BOOTSTRAP_WORKSPACE));
+        }
+    });
+}
+
+#[test]
+fn non_admin_roles_cannot_mint_tokens() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+        let bootstrap = admin_token(dir.path());
+
+        // workspace_user holds no apikey pattern at all — mint (apikey.write) 403s.
+        let (user, _) = mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_user").await;
+        let (s, err) = call(
+            &app,
+            "POST",
+            "/v1/config/iam/tokens",
+            Some(&user),
+            Some(mint_body(BOOTSTRAP_WORKSPACE, "workspace_user")),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+        assert_eq!(err["error"]["type"], json!("permission_error"));
+
+        // …and cannot even read the token list (apikey.read).
+        let (s, _) = call(
+            &app,
+            "GET",
+            &format!("/v1/config/iam/tokens?workspace_id={BOOTSTRAP_WORKSPACE}"),
+            Some(&user),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    });
+}
+
+#[test]
+fn an_unknown_role_is_a_422_problem() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+        let bootstrap = admin_token(dir.path());
+
+        let (s, raw, content_type) = call_raw(
+            &app,
+            "POST",
+            "/v1/config/iam/tokens",
+            Some(&bootstrap),
+            Some(mint_body(BOOTSTRAP_WORKSPACE, "superuser")),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{raw}");
+        assert_eq!(content_type.as_deref(), Some("application/problem+json"));
+        let err: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(err["code"], json!("unknown_role"));
+        assert_eq!(err["status"], json!(422));
+        assert!(err["detail"].as_str().unwrap().contains("superuser"));
+
+        // Missing required fields are 422 problems too.
+        let (s, err) = call(
+            &app,
+            "POST",
+            "/v1/config/iam/tokens",
+            Some(&bootstrap),
+            Some(json!({ "role": "workspace_admin" })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(err["code"], json!("invalid_token_spec"));
+
+        // A garbage expiry never reaches the engine's lexical comparison.
+        let (s, err) = call(
+            &app,
+            "POST",
+            "/v1/config/iam/tokens",
+            Some(&bootstrap),
+            Some(json!({
+                "workspace_id": BOOTSTRAP_WORKSPACE, "role": "workspace_admin",
+                "expires_at": "banana"
+            })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+        assert_eq!(err["code"], json!("invalid_token_spec"));
+    });
+}
+
+#[test]
+fn revocation_is_immediate_and_survives_a_restart() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let bootstrap;
+        let revoked_cleartext;
+        let keeper_cleartext;
+        {
+            let (app, _iam) = build_isolated_secured_all_in_one_router(dir.path(), &KEY).await;
+            bootstrap = admin_token(dir.path());
+            let (revoked, revoked_id) =
+                mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_admin").await;
+            let (keeper, _) =
+                mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_admin").await;
+            revoked_cleartext = revoked;
+            keeper_cleartext = keeper;
+
+            // Live before the revoke…
+            let (s, _) = call(
+                &app,
+                "GET",
+                "/v1/config/catalog",
+                Some(&revoked_cleartext),
+                None,
+            )
+            .await;
+            assert_eq!(s, StatusCode::OK);
+
+            let (s, view) = call(
+                &app,
+                "DELETE",
+                &format!("/v1/config/iam/tokens/{revoked_id}"),
+                Some(&bootstrap),
+                None,
+            )
+            .await;
+            assert_eq!(s, StatusCode::OK, "{view}");
+            assert!(view["revoked_at"].as_str().is_some(), "{view}");
+
+            // …401 immediately after, while the sibling token still works.
+            let (s, err) = call(
+                &app,
+                "GET",
+                "/v1/config/catalog",
+                Some(&revoked_cleartext),
+                None,
+            )
+            .await;
+            assert_eq!(s, StatusCode::UNAUTHORIZED, "{err}");
+            assert_eq!(err["error"]["type"], json!("authentication_error"));
+            assert!(
+                err["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("revoked")
+            );
+            let (s, _) = call(
+                &app,
+                "GET",
+                "/v1/config/catalog",
+                Some(&keeper_cleartext),
+                None,
+            )
+            .await;
+            assert_eq!(s, StatusCode::OK);
+        } // "process" ends
+
+        // Restart over the same dir: the revocation hydrated from the rewritten
+        // row — still 401 — and the untouched tokens still authenticate.
+        let (app, _iam) = build_isolated_secured_all_in_one_router(dir.path(), &KEY).await;
         let (s, _) = call(
             &app,
             "GET",
@@ -367,36 +486,7 @@ async fn revocation_is_immediate_and_survives_a_restart() {
             None,
         )
         .await;
-        assert_eq!(s, StatusCode::OK);
-
-        let (s, view) = call(
-            &app,
-            "DELETE",
-            &format!("/v1/config/iam/tokens/{revoked_id}"),
-            Some(&bootstrap),
-            None,
-        )
-        .await;
-        assert_eq!(s, StatusCode::OK, "{view}");
-        assert!(view["revoked_at"].as_str().is_some(), "{view}");
-
-        // …401 immediately after, while the sibling token still works.
-        let (s, err) = call(
-            &app,
-            "GET",
-            "/v1/config/catalog",
-            Some(&revoked_cleartext),
-            None,
-        )
-        .await;
-        assert_eq!(s, StatusCode::UNAUTHORIZED, "{err}");
-        assert_eq!(err["error"]["type"], json!("authentication_error"));
-        assert!(
-            err["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("revoked")
-        );
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
         let (s, _) = call(
             &app,
             "GET",
@@ -406,140 +496,124 @@ async fn revocation_is_immediate_and_survives_a_restart() {
         )
         .await;
         assert_eq!(s, StatusCode::OK);
-    } // "process" ends
-
-    // Restart over the same dir: the revocation hydrated from the rewritten
-    // row — still 401 — and the untouched tokens still authenticate.
-    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let (s, _) = call(
-        &app,
-        "GET",
-        "/v1/config/catalog",
-        Some(&revoked_cleartext),
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED);
-    let (s, _) = call(
-        &app,
-        "GET",
-        "/v1/config/catalog",
-        Some(&keeper_cleartext),
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    let (s, _) = call(&app, "GET", "/v1/config/catalog", Some(&bootstrap), None).await;
-    assert_eq!(s, StatusCode::OK);
+        let (s, _) = call(&app, "GET", "/v1/config/catalog", Some(&bootstrap), None).await;
+        assert_eq!(s, StatusCode::OK);
+    });
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn the_bootstrap_token_rotates_to_a_minted_successor() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let bootstrap = admin_token(dir.path());
+#[test]
+fn the_bootstrap_token_rotates_to_a_minted_successor() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _iam) = build_isolated_secured_all_in_one_router(dir.path(), &KEY).await;
+        let bootstrap = admin_token(dir.path());
 
-    // Mint the successor with the FULL admin role, then use the successor to
-    // revoke the bootstrap token (its workspace is wrkspc_default; the
-    // successor's admin binding there authorizes apikey.write).
-    let (successor, _) = mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "admin").await;
-    let (s, listed) = call(
-        &app,
-        "GET",
-        &format!("/v1/config/iam/tokens?workspace_id={BOOTSTRAP_WORKSPACE}"),
-        Some(&successor),
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    let bootstrap_id = listed
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|t| t["principal_id"] == json!("mgmt-bootstrap"))
-        .and_then(|t| t["id"].as_str())
-        .expect("bootstrap token is listed")
-        .to_string();
+        // Mint the successor with the FULL admin role, then use the successor to
+        // revoke the bootstrap token (its workspace is wrkspc_default; the
+        // successor's admin binding there authorizes apikey.write).
+        let (successor, _) = mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "admin").await;
+        let (s, listed) = call(
+            &app,
+            "GET",
+            &format!("/v1/config/iam/tokens?workspace_id={BOOTSTRAP_WORKSPACE}"),
+            Some(&successor),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let bootstrap_id = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["principal_id"] == json!("mgmt-bootstrap"))
+            .and_then(|t| t["id"].as_str())
+            .expect("bootstrap token is listed")
+            .to_string();
 
-    let (s, _) = call(
-        &app,
-        "DELETE",
-        &format!("/v1/config/iam/tokens/{bootstrap_id}"),
-        Some(&successor),
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+        let (s, _) = call(
+            &app,
+            "DELETE",
+            &format!("/v1/config/iam/tokens/{bootstrap_id}"),
+            Some(&successor),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
 
-    // Rotation proven: the old credential 401s, the successor passes.
-    let (s, _) = call(&app, "GET", "/v1/config/catalog", Some(&bootstrap), None).await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED);
-    let (s, _) = call(&app, "GET", "/v1/config/catalog", Some(&successor), None).await;
-    assert_eq!(s, StatusCode::OK);
+        // Rotation proven: the old credential 401s, the successor passes.
+        let (s, _) = call(&app, "GET", "/v1/config/catalog", Some(&bootstrap), None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        let (s, _) = call(&app, "GET", "/v1/config/catalog", Some(&successor), None).await;
+        assert_eq!(s, StatusCode::OK);
+    });
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_token_may_revoke_itself_and_the_request_completes() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
+#[test]
+fn a_token_may_revoke_itself_and_the_request_completes() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
 
-    // Minted via the embedding path so the test controls the id.
-    let cleartext = iam
-        .mint_service_token(TokenSpec {
-            token_id: "tok_selfrevoke".into(),
-            service_id: "ci-self".into(),
-            workspace_id: BOOTSTRAP_WORKSPACE.into(),
-            role: "workspace_admin".into(),
-            created_at: None,
-            expires_at: None,
-        })
-        .unwrap();
+        // Minted via the embedding path so the test controls the id.
+        let cleartext = iam
+            .mint_service_token(TokenSpec {
+                token_id: "tok_selfrevoke".into(),
+                service_id: "ci-self".into(),
+                workspace_id: BOOTSTRAP_WORKSPACE.into(),
+                role: "workspace_admin".into(),
+                created_at: None,
+                expires_at: None,
+            })
+            .unwrap();
 
-    // The revoke request itself completes (documented): authn happened before
-    // the revocation landed…
-    let (s, view) = call(
-        &app,
-        "DELETE",
-        "/v1/config/iam/tokens/tok_selfrevoke",
-        Some(&cleartext),
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK, "{view}");
-    assert!(view["revoked_at"].as_str().is_some());
+        // The revoke request itself completes (documented): authn happened before
+        // the revocation landed…
+        let (s, view) = call(
+            &app,
+            "DELETE",
+            "/v1/config/iam/tokens/tok_selfrevoke",
+            Some(&cleartext),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{view}");
+        assert!(view["revoked_at"].as_str().is_some());
 
-    // …and every subsequent call 401s.
-    let (s, _) = call(&app, "GET", "/v1/config/catalog", Some(&cleartext), None).await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED);
+        // …and every subsequent call 401s.
+        let (s, _) = call(&app, "GET", "/v1/config/catalog", Some(&cleartext), None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    });
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn revoking_an_unknown_token_id_is_a_404_problem() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let bootstrap = admin_token(dir.path());
+#[test]
+fn revoking_an_unknown_token_id_is_a_404_problem() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+        let bootstrap = admin_token(dir.path());
 
-    let (s, raw, content_type) = call_raw(
-        &app,
-        "DELETE",
-        "/v1/config/iam/tokens/tok_missing",
-        Some(&bootstrap),
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND, "{raw}");
-    assert_eq!(content_type.as_deref(), Some("application/problem+json"));
-    let err: Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(err["code"], json!("not_found"));
+        let (s, raw, content_type) = call_raw(
+            &app,
+            "DELETE",
+            "/v1/config/iam/tokens/tok_missing",
+            Some(&bootstrap),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{raw}");
+        assert_eq!(content_type.as_deref(), Some("application/problem+json"));
+        let err: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(err["code"], json!("not_found"));
 
-    // And the surface stays behind the guard: no token at all → 401.
-    let (s, _) = call(
-        &app,
-        "GET",
-        "/v1/config/iam/tokens?workspace_id=x",
-        None,
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED);
+        // And the surface stays behind the guard: no token at all → 401.
+        let (s, _) = call(
+            &app,
+            "GET",
+            "/v1/config/iam/tokens?workspace_id=x",
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    });
 }

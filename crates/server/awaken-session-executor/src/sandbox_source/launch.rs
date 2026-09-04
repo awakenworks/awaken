@@ -128,7 +128,7 @@ impl AcpLaunchRegistry {
 pub enum LaunchSource {
     /// One newline-fixture CLI for every `acp:*` thread (explicit trusted/test
     /// startup only).
-    Fixed(AcpLaunch),
+    Fixed(Box<AcpLaunch>),
     /// One official JSON-RPC ACP fixture for every `acp:*` thread. This differs
     /// only in codec selection; launch and Session-environment ownership stay on
     /// the same bound source as [`Self::Fixed`].
@@ -163,7 +163,7 @@ impl LaunchSource {
     ) -> Result<ResolvedLaunch, OpenError> {
         match self {
             LaunchSource::Fixed(launch) => Ok(ResolvedLaunch {
-                launch: launch.clone(),
+                launch: launch.as_ref().clone(),
                 credential_artifact: None,
                 secret_broker: None,
             }),

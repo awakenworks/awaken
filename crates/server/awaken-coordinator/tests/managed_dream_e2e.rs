@@ -3,6 +3,7 @@
 mod support;
 
 use awaken_scenario_host::build_dream_router;
+use awaken_service_lifecycle::run_composed_async_test;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -42,7 +43,8 @@ async fn ok(app: &Router, method: &str, uri: &str, body: Option<Value>) -> Value
 }
 
 async fn terminal_dream(app: &Router, id: &str) -> Value {
-    for _ in 0..200 {
+    let mut last = Value::Null;
+    for _ in 0..1_000 {
         let value = ok(app, "GET", &format!("/v1/dreams/{id}?beta=true"), None).await;
         if matches!(
             value["status"].as_str(),
@@ -50,13 +52,14 @@ async fn terminal_dream(app: &Router, id: &str) -> Value {
         ) {
             return value;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        last = value;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
-    panic!("Dream remained non-terminal")
+    panic!("Dream remained non-terminal: {last}")
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane() {
+#[test]
+fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane() {
     // Causes: the fixtures below establish `agent session events files memory and dream share one
     // runtime and data plane` with the concrete inputs, state, dependencies, and failure triggers
     // used by this case.
@@ -83,200 +86,203 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
     // official default `basic` projection intentionally omits them); C7 the Runtime
     // terminal lifecycle cursor is consumed after the Session archive CAS -> E7 the
     // delayed event projection cannot reverse `terminated` to `idle`; C8 the sole
-    // lifecycle supervisor composes its complete recovery cycle on a default Tokio
-    // worker -> E8 the cycle reaches terminal state without exhausting worker stack.
+    // lifecycle supervisor composes its complete recovery cycle on the repository's
+    // production-equivalent composed-test runtime -> E8 the cycle reaches terminal
+    // state without exhausting the explicitly provisioned worker stack.
     // Decision rule R1 covers the successful end-to-end combination of all nine
     // causes, including the late-feed ordering selected by the shared ephemeral
     // Runtime authority.
     // Route/unit suites own invalid, default-basic, and nonterminal alternatives.
-    let app = build_dream_router();
+    run_composed_async_test(|| async {
+        let app = build_dream_router();
 
-    let session = ok(
-        &app,
-        "POST",
-        "/v1/sessions",
-        Some(json!({
-            "agent": "assistant",
-            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
-        })),
-    )
-    .await;
-    let session_id = session["id"].as_str().unwrap();
-    let receipt = ok(
-        &app,
-        "POST",
-        &format!("/v1/sessions/{session_id}/events"),
-        Some(json!({
-            "events":[{
-                "type":"user.message",
-                "content":[{"type":"text","text":"Remember that Project Atlas uses Rust."}]
-            }]
-        })),
-    )
-    .await;
-    let events = wait_for_session_events(
-        &app,
-        session_id,
-        Some(&receipt),
-        "the Session's aggregate idle boundary",
-        |events| {
-            events
-                .iter()
-                .any(|event| event["type"] == "session.status_idle")
-        },
-    )
-    .await;
-    let event_types = events["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|event| event["type"].as_str())
-        .collect::<Vec<_>>();
-    for expected in [
-        "user.message",
-        "session.status_running",
-        "session.thread_status_running",
-        "agent.message",
-        "session.thread_status_idle",
-        "session.status_idle",
-    ] {
-        assert!(
-            event_types.contains(&expected),
-            "C1/E1 missing {expected}: {events}"
-        );
-    }
-
-    let store = ok(
-        &app,
-        "POST",
-        "/v1/memory_stores",
-        Some(json!({"name":"Project memory"})),
-    )
-    .await;
-    let store_id = store["id"].as_str().unwrap();
-    let default_policy = ok(
-        &app,
-        "GET",
-        &format!("/v1/awaken/memory-stores/{store_id}/dream-policy"),
-        None,
-    )
-    .await;
-    assert_eq!(default_policy["type"], "dream_policy");
-    assert_eq!(default_policy["enabled"], false);
-    let configured_policy = ok(
-        &app,
-        "PUT",
-        &format!("/v1/awaken/memory-stores/{store_id}/dream-policy"),
-        Some(json!({
-            "enabled": false,
-            "interval_seconds": 3600,
-            "min_new_sessions": 1,
-            "max_sessions": 25,
-            "model": {"id":"claude-sonnet-5","speed":"standard"},
-            "instructions": "Retain verified project conventions."
-        })),
-    )
-    .await;
-    assert_eq!(configured_policy["max_sessions"], 25);
-    assert!(configured_policy["next_due_at"].is_string());
-    ok(
-        &app,
-        "POST",
-        &format!("/v1/memory_stores/{store_id}/memories"),
-        Some(json!({"path":"/MEMORY.md","content":"# Existing\n- Keep me.\n"})),
-    )
-    .await;
-
-    let dream = ok(
-        &app,
-        "POST",
-        "/v1/dreams?beta=true",
-        Some(json!({
-            "inputs":[
-                {"type":"memory_store","memory_store_id":store_id},
-                {"type":"sessions","session_ids":[session_id]}
-            ],
-            "model":"claude-sonnet-5",
-            "instructions":"Retain verified project conventions."
-        })),
-    )
-    .await;
-    let terminal = terminal_dream(&app, dream["id"].as_str().unwrap()).await;
-    assert_eq!(terminal["status"], "completed", "{terminal}");
-    let output_id = terminal["outputs"][0]["memory_store_id"].as_str().unwrap();
-    assert_ne!(output_id, store_id);
-
-    let source = ok(
-        &app,
-        "GET",
-        &format!("/v1/memory_stores/{store_id}/memories?view=full"),
-        None,
-    )
-    .await;
-    let output = ok(
-        &app,
-        "GET",
-        &format!("/v1/memory_stores/{output_id}/memories?view=full"),
-        None,
-    )
-    .await;
-    let auxiliary_events = ok(
-        &app,
-        "GET",
-        &format!(
-            "/v1/sessions/{}/events",
-            terminal["session_id"].as_str().unwrap()
-        ),
-        None,
-    )
-    .await;
-    assert_eq!(source["data"][0]["content"], "# Existing\n- Keep me.\n");
-    assert_eq!(
-        output["data"][0]["content"],
-        "# Dream\n- Consolidated by the Dream Agent.\n"
-    );
-    assert!(
-        auxiliary_events["data"]
+        let session = ok(
+            &app,
+            "POST",
+            "/v1/sessions",
+            Some(json!({
+                "agent": "assistant",
+                "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+            })),
+        )
+        .await;
+        let session_id = session["id"].as_str().unwrap();
+        let receipt = ok(
+            &app,
+            "POST",
+            &format!("/v1/sessions/{session_id}/events"),
+            Some(json!({
+                "events":[{
+                    "type":"user.message",
+                    "content":[{"type":"text","text":"Remember that Project Atlas uses Rust."}]
+                }]
+            })),
+        )
+        .await;
+        let events = wait_for_session_events(
+            &app,
+            session_id,
+            Some(&receipt),
+            "the Session's aggregate idle boundary",
+            |events| {
+                events
+                    .iter()
+                    .any(|event| event["type"] == "session.status_idle")
+            },
+        )
+        .await;
+        let event_types = events["data"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|event| {
-                event["type"] == "agent.tool_use"
-                    && event["name"] == "write"
-                    && event["input"]["path"] == "/mnt/dream/output-memory/MEMORY.md"
+            .filter_map(|event| event["type"].as_str())
+            .collect::<Vec<_>>();
+        for expected in [
+            "user.message",
+            "session.status_running",
+            "session.thread_status_running",
+            "agent.message",
+            "session.thread_status_idle",
+            "session.status_idle",
+        ] {
+            assert!(
+                event_types.contains(&expected),
+                "C1/E1 missing {expected}: {events}"
+            );
+        }
+
+        let store = ok(
+            &app,
+            "POST",
+            "/v1/memory_stores",
+            Some(json!({"name":"Project memory"})),
+        )
+        .await;
+        let store_id = store["id"].as_str().unwrap();
+        let default_policy = ok(
+            &app,
+            "GET",
+            &format!("/v1/awaken/memory-stores/{store_id}/dream-policy"),
+            None,
+        )
+        .await;
+        assert_eq!(default_policy["type"], "dream_policy");
+        assert_eq!(default_policy["enabled"], false);
+        let configured_policy = ok(
+            &app,
+            "PUT",
+            &format!("/v1/awaken/memory-stores/{store_id}/dream-policy"),
+            Some(json!({
+                "enabled": false,
+                "interval_seconds": 3600,
+                "min_new_sessions": 1,
+                "max_sessions": 25,
+                "model": {"id":"claude-sonnet-5","speed":"standard"},
+                "instructions": "Retain verified project conventions."
+            })),
+        )
+        .await;
+        assert_eq!(configured_policy["max_sessions"], 25);
+        assert!(configured_policy["next_due_at"].is_string());
+        ok(
+            &app,
+            "POST",
+            &format!("/v1/memory_stores/{store_id}/memories"),
+            Some(json!({"path":"/MEMORY.md","content":"# Existing\n- Keep me.\n"})),
+        )
+        .await;
+
+        let dream = ok(
+            &app,
+            "POST",
+            "/v1/dreams?beta=true",
+            Some(json!({
+                "inputs":[
+                    {"type":"memory_store","memory_store_id":store_id},
+                    {"type":"sessions","session_ids":[session_id]}
+                ],
+                "model":"claude-sonnet-5",
+                "instructions":"Retain verified project conventions."
+            })),
+        )
+        .await;
+        let terminal = terminal_dream(&app, dream["id"].as_str().unwrap()).await;
+        assert_eq!(terminal["status"], "completed", "{terminal}");
+        let output_id = terminal["outputs"][0]["memory_store_id"].as_str().unwrap();
+        assert_ne!(output_id, store_id);
+
+        let source = ok(
+            &app,
+            "GET",
+            &format!("/v1/memory_stores/{store_id}/memories?view=full"),
+            None,
+        )
+        .await;
+        let output = ok(
+            &app,
+            "GET",
+            &format!("/v1/memory_stores/{output_id}/memories?view=full"),
+            None,
+        )
+        .await;
+        let auxiliary_events = ok(
+            &app,
+            "GET",
+            &format!(
+                "/v1/sessions/{}/events",
+                terminal["session_id"].as_str().unwrap()
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(source["data"][0]["content"], "# Existing\n- Keep me.\n");
+        assert_eq!(
+            output["data"][0]["content"],
+            "# Dream\n- Consolidated by the Dream Agent.\n"
+        );
+        assert!(
+            auxiliary_events["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| {
+                    event["type"] == "agent.tool_use"
+                        && event["name"] == "write"
+                        && event["input"]["path"] == "/mnt/dream/output-memory/MEMORY.md"
+                })
+        );
+        let write_result = auxiliary_events["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["type"] == "agent.tool_result")
+            .expect("Dream write has a correlated tool result");
+        assert_ne!(write_result["is_error"], true, "{write_result}");
+
+        let auxiliary = ok(
+            &app,
+            "GET",
+            &format!("/v1/sessions/{}", terminal["session_id"].as_str().unwrap()),
+            None,
+        )
+        .await;
+        assert_eq!(auxiliary["status"], "terminated");
+        assert_eq!(auxiliary["metadata"]["awaken.session.origin"], "dream");
+
+        let files = ok(&app, "GET", "/v1/files", None).await;
+        let transcript = files["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| {
+                file["filename"]
+                    .as_str()
+                    .is_some_and(|name| name == format!("{session_id}.jsonl"))
             })
-    );
-    let write_result = auxiliary_events["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|event| event["type"] == "agent.tool_result")
-        .expect("Dream write has a correlated tool result");
-    assert_ne!(write_result["is_error"], true, "{write_result}");
-
-    let auxiliary = ok(
-        &app,
-        "GET",
-        &format!("/v1/sessions/{}", terminal["session_id"].as_str().unwrap()),
-        None,
-    )
-    .await;
-    assert_eq!(auxiliary["status"], "terminated");
-    assert_eq!(auxiliary["metadata"]["awaken.session.origin"], "dream");
-
-    let files = ok(&app, "GET", "/v1/files", None).await;
-    let transcript = files["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|file| {
-            file["filename"]
-                .as_str()
-                .is_some_and(|name| name == format!("{session_id}.jsonl"))
-        })
-        .cloned();
-    assert!(
-        transcript.is_none(),
-        "transient transcript Files must be deleted after terminal cleanup"
-    );
+            .cloned();
+        assert!(
+            transcript.is_none(),
+            "transient transcript Files must be deleted after terminal cleanup"
+        );
+    });
 }
