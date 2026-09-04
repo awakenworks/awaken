@@ -78,21 +78,66 @@ fn inline_env(name: &str, value: &str) -> pc::EnvVar {
     }
 }
 
-/// Host env keys passed through into the otherwise-cleared child env (the
-/// `["PATH","HOME"]` allowlist): `PATH` so an absolute Node-backed wrapper can
-/// resolve `node`, and `HOME` so a backend-owned CLI finds its own login and user
-/// config. Everything else stays cleared — no ambient leak (G22). A key
-/// already set by the projection (a modeled value) is never overridden.
+/// Minimum host lookup admitted for managed local processes. `HOME` is replaced
+/// by the Session-owned config directory before an opaque CLI is launched.
 const HOST_PASSTHROUGH_ENV: &[&str] = &["PATH", "HOME"];
+
+/// Host identity explicitly admitted only for a backend-owned TrustedHost
+/// launch. HOME resolves Git/CLI config and SSH_AUTH_SOCK delegates to the
+/// operator's agent without copying private keys.
+const TRUSTED_UNIX_HOST_ENV: &[&str] = &["PATH", "HOME", "SSH_AUTH_SOCK"];
+
+/// Windows coordinates required by Git for Windows and Git Credential Manager.
+/// Tokens, askpass commands, and arbitrary GIT_* overrides are deliberately not
+/// inherited.
+const TRUSTED_WINDOWS_HOST_ENV: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "SYSTEMROOT",
+    "COMSPEC",
+    "PATHEXT",
+    "TEMP",
+    "TMP",
+    "SSH_AUTH_SOCK",
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostPlatform {
+    Unix,
+    Windows,
+}
+
+impl HostPlatform {
+    fn current() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::Unix
+        }
+    }
+
+    fn trusted_identity_env(self) -> &'static [&'static str] {
+        match self {
+            Self::Unix => TRUSTED_UNIX_HOST_ENV,
+            Self::Windows => TRUSTED_WINDOWS_HOST_ENV,
+        }
+    }
+}
 
 /// Add the [`HOST_PASSTHROUGH_ENV`] allowlist to a launch's env, reading each from
 /// `lookup` (the host env at spawn). Pure so the allowlist is unit-testable without
 /// spawning; a projected key is not shadowed.
 fn with_host_passthrough(
     mut env: Vec<pc::EnvVar>,
+    keys: &[&str],
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Vec<pc::EnvVar> {
-    for key in HOST_PASSTHROUGH_ENV {
+    for key in keys {
         if !env.iter().any(|var| var.name == *key)
             && let Some(value) = lookup(key)
         {
@@ -115,22 +160,28 @@ fn with_host_passthrough(
 /// home belong to the image rather than the Worker host.
 #[must_use]
 pub fn with_local_host_launch_environment(env: Vec<pc::EnvVar>) -> Vec<pc::EnvVar> {
-    with_host_passthrough(env, |key| std::env::var(key).ok())
+    with_host_passthrough(env, HOST_PASSTHROUGH_ENV, |key| std::env::var(key).ok())
 }
 
-/// Bind a backend-owned launch to the actual host user's PATH/HOME. Resolver
-/// passthrough cannot replace either identity coordinate.
+/// Bind a backend-owned launch to the actual host user's platform identity.
+/// Resolver passthrough cannot replace an admitted identity coordinate.
 #[must_use]
 pub fn with_backend_owned_host_environment(env: Vec<pc::EnvVar>) -> Vec<pc::EnvVar> {
-    with_backend_owned_host_environment_from(env, |key| std::env::var(key).ok())
+    with_backend_owned_host_environment_from(env, HostPlatform::current(), |key| {
+        std::env::var(key).ok()
+    })
 }
 
 fn with_backend_owned_host_environment_from(
     mut env: Vec<pc::EnvVar>,
+    platform: HostPlatform,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Vec<pc::EnvVar> {
-    env.retain(|var| !HOST_PASSTHROUGH_ENV.contains(&var.name.as_str()));
-    with_host_passthrough(env, lookup)
+    env.retain(|var| {
+        !TRUSTED_UNIX_HOST_ENV.contains(&var.name.as_str())
+            && !TRUSTED_WINDOWS_HOST_ENV.contains(&var.name.as_str())
+    });
+    with_host_passthrough(env, platform.trusted_identity_env(), lookup)
 }
 
 /// Launches an ACP CLI as a local child (`env_clear` + only the projected env, so
@@ -656,7 +707,7 @@ mod tests {
             inline_env("ANTHROPIC_API_KEY", "secret"),
             inline_env("HOME", "/projected/home"),
         ];
-        let env = with_host_passthrough(projected, |k| match k {
+        let env = with_host_passthrough(projected, HOST_PASSTHROUGH_ENV, |k| match k {
             "PATH" => Some("/usr/local/bin:/usr/bin".to_string()),
             "HOME" => Some("/host/home".to_string()),
             _ => None,
@@ -679,7 +730,9 @@ mod tests {
 
     #[test]
     fn host_passthrough_omits_a_key_absent_from_the_host() {
-        let env = with_host_passthrough(Vec::new(), |k| (k == "PATH").then(|| "/bin".to_string()));
+        let env = with_host_passthrough(Vec::new(), HOST_PASSTHROUGH_ENV, |k| {
+            (k == "PATH").then(|| "/bin".to_string())
+        });
         assert!(env.iter().any(|var| var.name == "PATH"));
         assert!(
             !env.iter().any(|var| var.name == "HOME"),
@@ -689,19 +742,46 @@ mod tests {
 
     #[test]
     fn backend_owned_host_identity_cannot_be_overridden_by_projection() {
-        // Cause graph / decision table: a projected PATH/HOME is removed; a host
-        // value replaces it. Non-identity env remains untouched.
+        // Cause graph: C1 platform={Unix,Windows}; C2 key={identity,token,
+        // ordinary}; C3 source={projected,host}. Effects: E1 identity is sourced
+        // only from the actual host; E2 ordinary modeled env survives; E3
+        // unlisted ambient token/command env never crosses. Decision table rules:
+        // U1 Unix admits PATH/HOME/SSH_AUTH_SOCK; W1 Windows additionally admits
+        // profile/GCM/process coordinates; A1 every admitted projected identity
+        // is replaced; X1 ambient GIT_ASKPASS and API tokens are excluded on all
+        // hosts (an explicitly modeled projection remains explicit input).
         let env = with_backend_owned_host_environment_from(
             vec![
                 inline_env("PATH", "/projected/bin"),
                 inline_env("HOME", "/projected/home"),
+                inline_env("SSH_AUTH_SOCK", "/projected/agent"),
+                inline_env("USERPROFILE", "C:\\projected"),
+                inline_env("GIT_ASKPASS", "projected-helper"),
                 inline_env("LANG", "C"),
             ],
+            HostPlatform::Unix,
             |key| Some(format!("/host/{key}")),
         );
         assert_eq!(env_value(&env, "PATH"), Some("/host/PATH"));
         assert_eq!(env_value(&env, "HOME"), Some("/host/HOME"));
+        assert_eq!(
+            env_value(&env, "SSH_AUTH_SOCK"),
+            Some("/host/SSH_AUTH_SOCK")
+        );
+        assert!(env_value(&env, "USERPROFILE").is_none());
+        assert_eq!(env_value(&env, "GIT_ASKPASS"), Some("projected-helper"));
         assert_eq!(env_value(&env, "LANG"), Some("C"));
+
+        let windows = with_backend_owned_host_environment_from(
+            vec![inline_env("USERPROFILE", "C:\\projected")],
+            HostPlatform::Windows,
+            |key| Some(format!("host:{key}")),
+        );
+        for key in TRUSTED_WINDOWS_HOST_ENV {
+            let expected = format!("host:{key}");
+            assert_eq!(env_value(&windows, key), Some(expected.as_str()));
+        }
+        assert!(env_value(&windows, "OPENAI_API_KEY").is_none(), "X1");
     }
 
     #[tokio::test]

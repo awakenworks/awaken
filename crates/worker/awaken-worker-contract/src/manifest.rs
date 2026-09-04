@@ -29,6 +29,11 @@ pub const REPOSITORY_CREDENTIALS_CAPABILITY: &str = "repository-credentials/v1";
 /// grants no access.
 pub const WORKER_LOCAL_CREDENTIALS_CAPABILITY: &str = "worker-local-credentials/v1";
 
+/// Exact Worker backend identity for an operator-authorized host Workdir.
+/// Unlike isolation capability, this is not monotonic: Namespace/Container may
+/// be stronger sandboxes but cannot substitute for local machine identity.
+pub const TRUSTED_HOST_SANDBOX_BACKEND: &str = "trusted-host";
+
 pub const CURRENT_CONTRACT_VERSION: u32 = 1;
 
 /// Inclusive protocol-version range supported by a worker.

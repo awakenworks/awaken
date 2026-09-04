@@ -105,7 +105,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
             metadata: command.metadata,
             scope: command.scope,
             config: command.config,
-            sandbox_policy: None,
+            sandbox_policy: command.sandbox_policy,
             archived_at: None,
         };
         state.envs.insert(id, item.clone());
@@ -159,6 +159,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
     async fn update(
         &self,
         id: &str,
+        expected_revision: EnvironmentRevision,
         patch: EnvUpdate,
     ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
         let mut state = self.state()?;
@@ -167,6 +168,9 @@ impl EnvRegistry for InMemoryEnvRegistry {
         };
         if item.archived_at.is_some() {
             return Ok(None);
+        }
+        if item.revision != expected_revision {
+            return Err(EnvironmentStoreError::RevisionConflict);
         }
         if !item.apply(patch)? {
             return Ok(Some(item.clone()));
@@ -359,6 +363,7 @@ mod tests {
         let up = r
             .update(
                 &e.id,
+                e.revision,
                 EnvUpdate {
                     name: Some("renamed".into()),
                     metadata: Some(BTreeMap::from([("drop".into(), None)])),

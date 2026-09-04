@@ -724,6 +724,7 @@ impl RawTool for DraftEnvironment {
                 metadata: Default::default(),
                 scope: None,
                 config,
+                sandbox_policy: None,
             })
             .await
         {

@@ -243,6 +243,10 @@ impl std::str::FromStr for SandboxTier {
 /// environment variables.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxSettings {
+    /// Allow exact `trusted_host` Environment policies on this installation.
+    /// Workers advertise the matching backend only when this operator-owned
+    /// switch is enabled; hosted installations therefore fail closed by default.
+    pub trusted_host_enabled: bool,
     /// Permit an unavailable Namespace provider to degrade to unsandboxed Workdir.
     pub allow_local_fallback: bool,
     /// Startup and steady-state target of ready, never-used containers per exact
@@ -303,6 +307,7 @@ pub struct SandboxSettings {
 impl Default for SandboxSettings {
     fn default() -> Self {
         Self {
+            trusted_host_enabled: false,
             allow_local_fallback: false,
             warm_pool_size: 0,
             warm_pool_total_size: 16,
@@ -491,6 +496,15 @@ const fn sandbox_support_projection(
 }
 
 impl DeploymentConfig {
+    /// Whether this installation may realize the exact host-identity boundary.
+    /// Selecting the Local tier is itself an explicit operator choice; other
+    /// tiers require the independent opt-in so a cloud Worker cannot inherit
+    /// ambient host access from an unrelated fallback setting.
+    #[must_use]
+    pub fn trusted_host_enabled(&self) -> bool {
+        self.sandbox_tier == SandboxTier::Local || self.sandbox.trusted_host_enabled
+    }
+
     /// Project the configured Sandbox adapter into the exact secret-free support
     /// a Worker may advertise before provider construction. Runtime Host owns this
     /// mapping because it also owns tier realization; Worker manifest derivation

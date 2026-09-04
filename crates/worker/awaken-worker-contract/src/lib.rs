@@ -16,8 +16,8 @@ pub use awaken_credential_contract::{
 pub use manifest::{
     CURRENT_CONTRACT_VERSION, FingerprintError, HOST_EXECUTOR_CAPABILITY,
     PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, REPOSITORY_CREDENTIALS_CAPABILITY,
-    SESSION_RESOURCES_CAPABILITY, VersionRange, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
-    WorkerCapacity, WorkerManifest,
+    SESSION_RESOURCES_CAPABILITY, TRUSTED_HOST_SANDBOX_BACKEND, VersionRange,
+    WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerCapacity, WorkerManifest,
 };
 #[cfg(any(test, kani))]
 pub(crate) use observation::dynamic_observation_admitted;
@@ -797,6 +797,29 @@ mod tests {
                 .iter()
                 .all(|r| can_claim(&worker.manifest, r).is_err())
         );
+    }
+
+    #[test]
+    fn trusted_host_backend_is_exact_not_monotonic_isolation() {
+        // Cause/effect graph: C1 Worker has strong Container capabilities;
+        // C2 Worker reports exact trusted-host backend. E1 C1 without C2 is
+        // rejected; E2 C1+C2 is admitted. This two-rule decision table proves
+        // stronger isolation cannot substitute for requested host identity.
+        let worker = manifest("trusted", 0);
+        let mut exact = requirements();
+        exact.sandbox = SandboxRequirements::default();
+        exact.sandbox_backend = Some(TRUSTED_HOST_SANDBOX_BACKEND.to_string());
+        assert!(matches!(
+            can_claim(&worker.manifest, &exact),
+            Err(Incompatibility::SandboxBackend(backend))
+                if backend == TRUSTED_HOST_SANDBOX_BACKEND
+        ));
+
+        let mut reported = worker.manifest;
+        reported
+            .sandbox_backends
+            .insert(TRUSTED_HOST_SANDBOX_BACKEND.to_string());
+        assert!(can_claim(&reported, &exact).is_ok());
     }
 
     #[test]

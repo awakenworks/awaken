@@ -518,3 +518,87 @@ can refer to it without a publish-time path lookup, but no such projection or
 helper activation is implemented by this amendment. The current Repository pin
 continues to require `Forbidden` model exposure; holder/exposure/claim/verifier
 and activation authority remain with the credential and Session owners.
+
+## Amendment 8 (2026-09-05): explicit TrustedHost Environment selection
+
+Environment authoring now names host trust independently from minimum isolation.
+`SandboxOverride.host_access` is a closed value: `isolated` (the default) or
+`trusted_host`. `trusted_host` is valid only with exact `isolation=workdir`, no
+image/network/limit guarantee, and only on a `self_hosted` Environment.
+Scheduler resource requests remain valid because they are capacity demand, not
+enforcement. The Awaken Environment create command may
+bind one exact sandbox-policy version in revision 1; Control resolves and
+validates that version before its Environment transaction. Official Managed
+wire remains unchanged, and later policy binding remains the update operation
+of the same aggregate rather than a second local-mode registry.
+
+The three provider choices have deliberately different guarantees:
+
+| Choice | Working path seen by process | Host files and identity | Network/resource enforcement |
+|---|---|---|---|
+| Namespace | stable sandbox-absolute path | excluded by OS namespace/Seatbelt capability | only capabilities attested by that provider |
+| Container | stable sandbox-absolute path | excluded except declared mounts/broker routes | provider capability admission is mandatory |
+| TrustedHost/Workdir | provider-owned host directory; Agent prompt uses a relative path | explicitly available to local Native tools and BackendOwned ACP | no isolation claim; read-only is advisory; no network, allowlist, or resource-limit enforcement |
+
+Workdir is therefore a convenience and ownership boundary, not a cloud security
+boundary. A network policy, read-only mount flag, or resource request must never
+be reported as enforced merely because it was authored for TrustedHost. Cloud
+Environment authoring rejects TrustedHost, and a runtime without an installed
+local Workdir provider rejects it again. Conversely, an isolated Namespace or
+Container never falls back to a BackendOwned local-agent identity.
+
+Static structure remains one path: Environment owns the exact policy reference;
+the existing executable Environment projection carries the policy body;
+`SessionRuntimeSlot.environment_projection` freezes it; the existing
+`SessionEnvironmentProvider` selector chooses Workdir, Namespace, or Container;
+Native and ACP reuse the resulting `SessionEnvironment`. No `LocalEnvironment`,
+credential store, mount registry, or alternate executor is introduced.
+
+Dynamic behavior is fail-closed. Create validates policy existence, enabled
+state, cross-field rules, and Environment compatibility before persistence. At
+realization, `trusted_host` exact-selects the Workdir provider even when the
+model is HostExecutor/Provider; absence fails. BackendOwned Codex/Claude may
+reuse only the host identity allowlist documented by ADR-0069. Every other ACP
+launch keeps its Session-owned HOME, while Namespace/Container continue to use
+Vault/Broker materialization and declared mounts. Suspension, resource
+generation, cleanup, and terminal receipts remain those of the same
+SessionEnvironment owner.
+
+Worker registration and claim reuse the existing exact backend axis. A Worker
+always reports its primary Namespace/Container/Workdir backend and reports the
+additional `trusted-host` backend only when the operator selected the Local tier
+or set `sandbox_trusted_host_enabled=true`. Coordinator compiles a frozen
+TrustedHost Environment into `PlacementRequirements.sandbox_backend =
+"trusted-host"`; `can_claim` requires exact membership. It deliberately does not
+turn TrustedHost into a minimum isolation requirement, so a cloud Container
+Worker cannot substitute itself merely because its isolation is stronger.
+
+```text
+Environment create (exact policy version)
+  -> executable Environment projection
+  -> Session freezes host_access=trusted_host
+  -> Run placement requires backend "trusted-host"
+  -> Worker manifest exact-match claim
+  -> Runtime rechecks local operator opt-in
+  -> trusted Workdir realizes resources and launches Native/Codex/Claude
+```
+
+Failure at policy lookup, self-hosted compatibility, Worker capability claim,
+runtime opt-in, provider availability, resource staging, or Agent launch leaves
+the existing durable Run/Session outcome authoritative; none of these stages
+falls back to an isolated or untrusted provider.
+
+The API selects the form through the existing versioned policy aggregate, then
+binds that exact version atomically when the Environment is created:
+
+```http
+POST /v1/awaken/sandbox-execution-policies
+{"id":"developer-host","config":{"isolation":"workdir","host_access":"trusted_host"}}
+
+POST /v1/awaken/environments
+{"command_id":"create-dev","name":"Developer host","config":{"type":"self_hosted"},"sandbox_policy":{"policy_id":"developer-host","version":1}}
+```
+
+Namespace and Container use the same two commands with `isolation` set to
+`namespace` or `container` and `host_access` omitted. There is no run-level
+string that can bypass the Environment revision or Worker claim fence.

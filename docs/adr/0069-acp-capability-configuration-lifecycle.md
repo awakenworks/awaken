@@ -1052,3 +1052,21 @@ The same typed decision is applied both when the PVC is created and when the
 Pod volume is projected. A Pod cannot retain a reference to a claim that the
 ephemeral branch intentionally omitted; this keeps disposable observations out
 of durable-storage capacity without weakening Session continuity.
+
+## 2026-09-05 amendment: TrustedHost reuses host login without copying it
+
+BackendOwned Codex/Claude under the exact TrustedHost/Workdir policy may use the
+operator's existing login and Git identity directly. The subprocess boundary
+still calls `env_clear`; it then replaces any projected identity coordinate
+with a platform allowlist read from the actual host. Unix and macOS admit only
+`PATH`, `HOME`, and `SSH_AUTH_SOCK`. Windows additionally admits
+`USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, `LOCALAPPDATA`, `SYSTEMROOT`,
+`COMSPEC`, `PATHEXT`, `TEMP`, and `TMP`, enabling Git for Windows and Git
+Credential Manager. It does not ambiently inherit API tokens, `GIT_ASKPASS`,
+arbitrary `GIT_*` overrides, or private-key bytes.
+
+Managed Provider ACP retains the minimum PATH/HOME launch lookup and replaces
+HOME with its Session directory. Namespace and Container inherit no host
+identity and continue through the existing Vault/Broker and control-transport
+contracts. This is a launch-policy refinement of the existing BackendOwned
+variant, not a second credential materializer or local credential database.

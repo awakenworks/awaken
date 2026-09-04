@@ -92,10 +92,14 @@ async fn missing_id_fails_closed<R: EnvRegistry>(r: &R) {
             .is_none()
     );
     assert!(
-        r.update("env_missing", Default::default())
-            .await
-            .expect("update missing Environment")
-            .is_none()
+        r.update(
+            "env_missing",
+            EnvironmentRevision::default(),
+            Default::default(),
+        )
+        .await
+        .expect("update missing Environment")
+        .is_none()
     );
     assert!(
         !r.exists("env_missing")
@@ -107,18 +111,20 @@ async fn missing_id_fails_closed<R: EnvRegistry>(r: &R) {
 async fn revision_decision_table<R: EnvRegistry>(r: &R) {
     // Cause-effect graph:
     // C1 create -> E1 revision 1; C2 authored update -> E2 increment once;
-    // C3 first archive -> E3 increment once; C4 repeated archive -> E4 replay;
-    // C5 update after archive -> E5 terminal denial with no new revision.
+    // C3 stale expected revision -> E3 conflict and no write; C4 first archive
+    // -> E4 increment once; C5 repeated archive -> E5 replay; C6 update after
+    // archive -> E6 terminal denial with no new revision.
     // Missing targets produce no record and therefore no invented revision.
     //
     // | Rule | Trigger          | Exists | Already archived | Revision/result |
     // |------|------------------|--------|------------------|-----------------|
     // | V1   | create           | -      | -                | 1               |
     // | V2   | update           | T      | F                | 2               |
-    // | V3   | archive          | T      | F                | 3               |
-    // | V4   | archive replay   | T      | T                | 3               |
-    // | V5   | update archived  | T      | T                | None; stays at 3|
-    // | V6   | update missing   | F      | -                | None            |
+    // | V3   | update, stale r1 | T      | F                | conflict; stays 2|
+    // | V4   | archive          | T      | F                | 3               |
+    // | V5   | archive replay   | T      | T                | 3               |
+    // | V6   | update archived  | T      | T                | None; stays at 3|
+    // | V7   | update missing   | F      | -                | None            |
     let item = r
         .create(
             "versioned".into(),
@@ -139,6 +145,7 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
     let item = r
         .update(
             &item.id,
+            item.revision,
             EnvUpdate {
                 name: Some("versioned-2".into()),
                 ..Default::default()
@@ -148,6 +155,25 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
         .expect("V2 update store operation")
         .expect("V2 update");
     assert_eq!(item.revision, EnvironmentRevision(2), "V2");
+    assert_eq!(
+        r.update(
+            &item.id,
+            EnvironmentRevision(1),
+            EnvUpdate {
+                name: Some("stale-write".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err(),
+        EnvironmentStoreError::RevisionConflict,
+        "V3"
+    );
+    assert_eq!(
+        r.get(&item.id).await.unwrap().unwrap(),
+        item,
+        "V3 leaves current state unchanged"
+    );
     assert_eq!(
         r.get_revision(&item.id, EnvironmentRevision(1))
             .await
@@ -184,6 +210,7 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
     assert!(
         r.update(
             &item.id,
+            item.revision,
             EnvUpdate {
                 name: Some("must-not-revive".into()),
                 ..Default::default()
@@ -202,10 +229,14 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
     assert_eq!(terminal.revision, EnvironmentRevision(3), "V5");
     assert_eq!(terminal.name, item.name, "V5");
     assert!(
-        r.update("env_missing", EnvUpdate::default())
-            .await
-            .expect("V6 update store operation")
-            .is_none(),
+        r.update(
+            "env_missing",
+            EnvironmentRevision::default(),
+            EnvUpdate::default(),
+        )
+        .await
+        .expect("V6 update store operation")
+        .is_none(),
         "V6"
     );
 }
@@ -213,9 +244,42 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
 async fn sandbox_binding_is_one_environment_revision<R: EnvRegistry>(r: &R) {
     // Cause/effect decision table:
     // | Rule | Environment | exact policy ref | effect |
+    // | B0 | create rev1 | p@1 | current and immutable rev1 both contain p@1 |
     // | B1 | existing rev1 | p@3 | atomically append rev2 containing p@3 |
     // | B2 | after B1 | read rev1 | no policy binding (history unchanged) |
     // | B3 | missing | p@3 | no row or invented revision |
+    let initial_reference = EnvironmentSandboxPolicyRef {
+        policy_id: "initial".into(),
+        version: 1,
+    };
+    let created = r
+        .create_once(CreateEnvironmentCommand {
+            command_id: "policy-bound-at-create".into(),
+            name: "initial binding".into(),
+            description: None,
+            metadata: Default::default(),
+            scope: None,
+            config: EnvironmentConfig::SelfHosted,
+            sandbox_policy: Some(initial_reference.clone()),
+        })
+        .await
+        .expect("B0 create")
+        .into_item();
+    assert_eq!(
+        created.sandbox_policy,
+        Some(initial_reference.clone()),
+        "B0"
+    );
+    assert_eq!(
+        r.get_revision(&created.id, EnvironmentRevision(1))
+            .await
+            .expect("B0 revision read")
+            .unwrap()
+            .sandbox_policy,
+        Some(initial_reference),
+        "B0"
+    );
+
     let item = r
         .create(
             "policy-bound".into(),
@@ -232,6 +296,7 @@ async fn sandbox_binding_is_one_environment_revision<R: EnvRegistry>(r: &R) {
     let bound = r
         .update(
             &item.id,
+            item.revision,
             EnvUpdate {
                 sandbox_policy: Some(EnvironmentFieldUpdate::Replace(reference.clone())),
                 ..Default::default()
@@ -254,6 +319,7 @@ async fn sandbox_binding_is_one_environment_revision<R: EnvRegistry>(r: &R) {
     assert!(
         r.update(
             "env_missing",
+            EnvironmentRevision::default(),
             EnvUpdate {
                 sandbox_policy: Some(EnvironmentFieldUpdate::Clear),
                 ..Default::default()
@@ -289,6 +355,7 @@ async fn scope_round_trips_and_updates<R: EnvRegistry>(r: &R) {
     let updated = r
         .update(
             &item.id,
+            item.revision,
             EnvUpdate {
                 scope: Some(EnvironmentFieldUpdate::Replace("account".into())),
                 ..Default::default()
@@ -328,6 +395,7 @@ async fn nested_config_patch_is_atomic_and_durable<R: EnvRegistry>(r: &R) {
         .expect("create patch Environment");
     r.update(
         &item.id,
+        item.revision,
         EnvUpdate {
             config: Some(EnvironmentConfigMutation::PatchCloud {
                 networking: Some(EnvironmentNetworkingMutation::Limited {
@@ -414,6 +482,7 @@ async fn package_network_invariant_is_atomic<R: EnvRegistry>(r: &R) {
         metadata: Default::default(),
         scope: None,
         config: limited(false, packages()),
+        sandbox_policy: None,
     };
     assert_eq!(
         r.create_once(invalid).await.unwrap_err(),
@@ -441,6 +510,7 @@ async fn package_network_invariant_is_atomic<R: EnvRegistry>(r: &R) {
     assert_eq!(
         r.update(
             &configured.id,
+            configured.revision,
             EnvUpdate {
                 config: Some(EnvironmentConfigMutation::PatchCloud {
                     networking: Some(EnvironmentNetworkingMutation::Limited {
@@ -483,6 +553,7 @@ async fn package_network_invariant_is_atomic<R: EnvRegistry>(r: &R) {
     let cleared = r
         .update(
             &configured.id,
+            configured.revision,
             EnvUpdate {
                 config: Some(EnvironmentConfigMutation::PatchCloud {
                     networking: Some(EnvironmentNetworkingMutation::Limited {
@@ -507,6 +578,7 @@ async fn package_network_invariant_is_atomic<R: EnvRegistry>(r: &R) {
     let enabled = r
         .update(
             &empty.id,
+            empty.revision,
             EnvUpdate {
                 config: Some(EnvironmentConfigMutation::PatchCloud {
                     networking: Some(EnvironmentNetworkingMutation::Limited {
@@ -540,6 +612,7 @@ async fn idempotent_create_decision_table<R: EnvRegistry>(r: &R) {
         metadata: Default::default(),
         scope: None,
         config: EnvironmentConfig::SelfHosted,
+        sandbox_policy: None,
     };
     let CreateEnvironmentOutcome::Created(created) = r.create_once(command.clone()).await.unwrap()
     else {

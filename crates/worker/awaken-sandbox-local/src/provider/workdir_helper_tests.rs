@@ -37,6 +37,46 @@ fn git(cwd: &std::path::Path, args: &[&str]) {
     assert!(ok, "git {args:?}");
 }
 
+#[tokio::test]
+async fn trusted_host_realizes_readonly_resource_as_advisory_access() {
+    // Cause/effect graph: C1 provider={ordinary Workdir,trusted host}; C2 one
+    // read-only managed File mount. E1 ordinary Workdir rejects an unenforceable
+    // guarantee; E2 trusted host realizes the bytes while retaining the typed
+    // read-only intent. The two rows exhaust C1 for fixed C2.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut ordinary_spec = workdir_spec("ordinary-readonly", false);
+    ordinary_spec.mounts.push(pc::MountRequirement {
+        mount_id: "input".into(),
+        source: pc::MountSource::Inline {
+            contents: "managed resource".into(),
+        },
+        mount_path: "/workspace/input.txt".into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+    assert!(
+        LocalProvider::new(tmp.path().join("ordinary"))
+            .create_sandbox(&ordinary_spec)
+            .await
+            .is_err(),
+        "E1"
+    );
+
+    let mut trusted_spec = ordinary_spec;
+    trusted_spec.scope = "trusted-readonly".into();
+    let sandbox = LocalProvider::trusted_host(tmp.path().join("trusted"))
+        .create_sandbox(&trusted_spec)
+        .await
+        .expect("E2 trusted host accepts advisory read-only access");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.root.root().join("workspace/input.txt")).unwrap(),
+        "managed resource",
+        "E2"
+    );
+    assert_eq!(sandbox.realized()[0].access, pc::MountAccess::ReadOnly);
+}
+
 struct FailedCreationMount {
     teardowns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,

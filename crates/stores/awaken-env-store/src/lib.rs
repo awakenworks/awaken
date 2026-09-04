@@ -381,8 +381,8 @@ impl EnvRegistry for SqliteEnvRegistry {
         let id = format!("env_{next:016}");
         tx.execute(
             "INSERT INTO env_registry_env \
-                (env_id, seq, name, description, metadata_json, config_json, scope) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (env_id, seq, name, description, metadata_json, config_json, scope, sandbox_policy_json) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 id,
                 next,
@@ -392,7 +392,9 @@ impl EnvRegistry for SqliteEnvRegistry {
                     .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?,
                 config_str(&command.config)
                     .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?,
-                command.scope
+                command.scope,
+                sandbox_policy_str(&command.sandbox_policy)
+                    .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?,
             ],
         )
         .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
@@ -409,7 +411,7 @@ impl EnvRegistry for SqliteEnvRegistry {
             metadata: command.metadata,
             scope: command.scope,
             config: command.config,
-            sandbox_policy: None,
+            sandbox_policy: command.sandbox_policy,
             archived_at: None,
         };
         Self::insert_revision(&tx, &item)
@@ -490,6 +492,7 @@ impl EnvRegistry for SqliteEnvRegistry {
     async fn update(
         &self,
         id: &str,
+        expected_revision: EnvironmentRevision,
         patch: EnvUpdate,
     ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
         let id = id.to_string();
@@ -502,6 +505,9 @@ impl EnvRegistry for SqliteEnvRegistry {
             };
             if item.archived_at.is_some() {
                 return Ok(None);
+            }
+            if item.revision != expected_revision {
+                return Err(EnvironmentStoreError::RevisionConflict);
             }
             if !item.apply(patch)? {
                 return Ok(Some(item));
@@ -756,8 +762,8 @@ impl EnvRegistry for PostgresEnvRegistry {
         let id = format!("env_{next:016}");
         sqlx::query(
             "INSERT INTO env_registry_env \
-                (env_id, seq, name, description, metadata_json, config_json, scope) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                (env_id, seq, name, description, metadata_json, config_json, scope, sandbox_policy_json) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(&id)
         .bind(next)
@@ -772,6 +778,10 @@ impl EnvRegistry for PostgresEnvRegistry {
                 .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?,
         )
         .bind(&command.scope)
+        .bind(
+            sandbox_policy_str(&command.sandbox_policy)
+                .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?,
+        )
         .execute(&mut *tx)
         .await
         .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
@@ -786,7 +796,7 @@ impl EnvRegistry for PostgresEnvRegistry {
             metadata: command.metadata,
             scope: command.scope,
             config: command.config,
-            sandbox_policy: None,
+            sandbox_policy: command.sandbox_policy,
             archived_at: None,
         };
         sqlx::query(
@@ -892,6 +902,7 @@ impl EnvRegistry for PostgresEnvRegistry {
     async fn update(
         &self,
         id: &str,
+        expected_revision: EnvironmentRevision,
         patch: EnvUpdate,
     ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
         let mut tx = self.pool.begin().await.map_err(environment_store)?;
@@ -908,6 +919,9 @@ impl EnvRegistry for PostgresEnvRegistry {
         let mut item = pg_row(&row)?;
         if item.archived_at.is_some() {
             return Ok(None);
+        }
+        if item.revision != expected_revision {
+            return Err(EnvironmentStoreError::RevisionConflict);
         }
         if !item.apply(patch)? {
             return Ok(Some(item));
@@ -1288,6 +1302,7 @@ mod tests {
                 metadata: Default::default(),
                 scope: None,
                 config: config(),
+                sandbox_policy: None,
             })
             .await;
         assert!(
@@ -1417,6 +1432,7 @@ mod tests {
         let up = r
             .update(
                 &e.id,
+                e.revision,
                 EnvUpdate {
                     name: Some("renamed".into()),
                     metadata: Some(BTreeMap::from([("drop".into(), None)])),
@@ -1453,6 +1469,7 @@ mod tests {
         let updated = registry
             .update(
                 &created.id,
+                created.revision,
                 EnvUpdate {
                     name: Some("outbox-v2".into()),
                     ..Default::default()
@@ -1483,6 +1500,7 @@ mod tests {
         let replayed = registry
             .update(
                 &created.id,
+                updated.revision,
                 EnvUpdate {
                     name: Some("outbox-v2".into()),
                     ..Default::default()
@@ -1688,6 +1706,7 @@ mod tests {
         assert_eq!(
             r.update(
                 &valid.id,
+                valid.revision,
                 EnvUpdate {
                     config: Some(EnvironmentConfigMutation::PatchCloud {
                         networking: Some(EnvironmentNetworkingMutation::Limited {
@@ -1766,6 +1785,7 @@ mod tests {
                 metadata: Default::default(),
                 scope: None,
                 config: config(),
+                sandbox_policy: None,
             })
             .await;
         assert!(
@@ -1815,6 +1835,7 @@ mod tests {
         let up = r
             .update(
                 &e.id,
+                e.revision,
                 EnvUpdate {
                     name: Some("renamed".into()),
                     metadata: Some(BTreeMap::from([("t".into(), Some("x".into()))])),

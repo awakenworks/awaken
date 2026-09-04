@@ -68,9 +68,8 @@ impl SessionEnvironmentProvider {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn supports_host_identity(&self) -> bool {
-        matches!(self, Self::Workdir(_))
+        matches!(self, Self::Workdir(provider) if provider.has_trusted_host_access())
     }
 
     pub(crate) fn capabilities(&self) -> pc::SandboxCapabilities {
@@ -90,6 +89,13 @@ impl SessionEnvironmentProvider {
         inherit: bool,
     ) -> Self {
         Self::Workdir(LocalProvider::new(base).with_agent_stderr(inherit))
+    }
+
+    pub(crate) fn trusted_host_workdir_with_agent_stderr(
+        base: impl Into<std::path::PathBuf>,
+        inherit: bool,
+    ) -> Self {
+        Self::Workdir(LocalProvider::trusted_host(base).with_agent_stderr(inherit))
     }
 
     pub(crate) fn namespace_with_agent_stderr(
@@ -169,7 +175,14 @@ impl SessionEnvironmentProvider {
         let base = base.into();
         match self {
             Self::Workdir(provider) => {
-                Self::workdir_with_agent_stderr(base, provider.inherits_agent_stderr())
+                if provider.has_trusted_host_access() {
+                    Self::trusted_host_workdir_with_agent_stderr(
+                        base,
+                        provider.inherits_agent_stderr(),
+                    )
+                } else {
+                    Self::workdir_with_agent_stderr(base, provider.inherits_agent_stderr())
+                }
             }
             Self::Namespace {
                 provider,

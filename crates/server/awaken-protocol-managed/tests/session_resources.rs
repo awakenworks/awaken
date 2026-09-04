@@ -1655,6 +1655,7 @@ async fn agent_default_environment_requires_the_exact_revision() {
                 networking: awaken_environment_contract::EnvironmentNetworking::Unrestricted,
                 packages: Default::default(),
             },
+            sandbox_policy: None,
         })
         .await
         .unwrap()

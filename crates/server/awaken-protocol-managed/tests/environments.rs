@@ -862,6 +862,7 @@ async fn environment_application_replay_converges_one_environment_and_healthchec
         metadata: Default::default(),
         scope: None,
         config: awaken_environment_contract::EnvironmentConfig::SelfHosted,
+        sandbox_policy: None,
     };
     let first = authoring
         .application()

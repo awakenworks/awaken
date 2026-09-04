@@ -120,6 +120,7 @@ async fn app() -> (Router, String) {
             metadata: Default::default(),
             scope: None,
             config: awaken_environment_contract::EnvironmentConfig::SelfHosted,
+            sandbox_policy: None,
         })
         .await
         .expect("publish Environment through the Control application");

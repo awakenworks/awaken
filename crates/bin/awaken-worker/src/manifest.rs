@@ -294,6 +294,10 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
     {
         capabilities.insert(capability);
     }
+    let mut sandbox_backends = BTreeSet::from([backend.to_string()]);
+    if inputs.deployment.trusted_host_enabled() {
+        sandbox_backends.insert(awaken_worker_contract::TRUSTED_HOST_SANDBOX_BACKEND.to_string());
+    }
     WorkerManifest {
         build_digest: inputs.config.build_digest.clone(),
         capabilities,
@@ -304,7 +308,7 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
             .sandbox
             .container_hand_residency
             .recovery_capability(),
-        sandbox_backends: BTreeSet::from([backend.to_string()]),
+        sandbox_backends,
         dispatch_contract: VersionRange::exact(1),
         runtime_protocol: VersionRange { min: 1, max: 2 },
         checkpoint_formats: BTreeSet::from(["stream-v1".to_string()])

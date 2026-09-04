@@ -104,6 +104,7 @@ struct WorkerFileConfig {
     worker_credential_observation_ttl_secs: Option<u64>,
     sandbox_tier: Option<String>,
     sandbox_dir: Option<PathBuf>,
+    sandbox_trusted_host_enabled: Option<bool>,
     sandbox_allow_local_fallback: Option<bool>,
     k8s_namespace: Option<String>,
     acp_clis: Option<Vec<String>>,
@@ -167,6 +168,7 @@ impl WorkerDaemonConfig {
             .unwrap_or("namespace")
             .parse()?;
         runtime.sandbox_dir = file.sandbox_dir;
+        runtime.sandbox.trusted_host_enabled = file.sandbox_trusted_host_enabled.unwrap_or(false);
         runtime.sandbox.allow_local_fallback = file.sandbox_allow_local_fallback.unwrap_or(false);
         if let Some(namespace) = file.k8s_namespace {
             if namespace.trim().is_empty() {
@@ -377,7 +379,8 @@ mod tests {
         // Sandbox configuration cause/effect decision table: S1 K8s tier plus
         // non-empty namespace and image preserves configuration but makes no
         // isolation claim before live provider attestation; S2 empty namespace
-        // rejects; S3 the removed operator-evidence key rejects as unknown.
+        // rejects; S3 the removed operator-evidence key rejects as unknown; S4
+        // the trusted-host switch enters the typed Deployment value exactly.
         // The canonical K8s adapter is therefore the only evidence owner.
         write(&format!(
             "role='worker'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\nsandbox_tier='k8s'\nk8s_namespace='agents'\ncontainer_image='awaken-sandbox:local'\n",
@@ -400,6 +403,16 @@ mod tests {
             "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='k8s'\nk8s_network_policy_enforcement='awaken-restricted-egress-v1'\n",
         );
         assert!(WorkerDaemonConfig::load(&path, None).is_err(), "S3");
+        write(
+            "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='namespace'\nsandbox_trusted_host_enabled=true\n",
+        );
+        assert!(
+            WorkerDaemonConfig::load(&path, None)
+                .expect("S4")
+                .runtime
+                .trusted_host_enabled(),
+            "S4"
+        );
         assert!(
             worker
                 .manifest()

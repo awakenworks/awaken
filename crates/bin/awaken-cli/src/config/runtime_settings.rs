@@ -46,6 +46,7 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
     };
     let sandbox_defaults = SandboxSettings::default();
     let sandbox = SandboxSettings {
+        trusted_host_enabled: file.sandbox_trusted_host_enabled.unwrap_or(false),
         allow_local_fallback: file.sandbox_allow_local_fallback.unwrap_or(false),
         warm_pool_size: file.sandbox_warm_pool_size.unwrap_or(0),
         warm_pool_total_size: file

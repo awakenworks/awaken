@@ -457,6 +457,34 @@ fn current_fake_container_handle(spec: &pc::SandboxSpec) -> pc::SandboxHandle {
 }
 
 #[tokio::test]
+async fn trusted_host_live_resource_admission_keeps_readonly_advisory() {
+    // Cause/effect graph: C1 resident boundary={ordinary Workdir,TrustedHost};
+    // C2 late managed mount=read-only. The ordinary rejection rule is exercised
+    // by the Host resource-transition test; this complementary rule requires
+    // TrustedHost+C2 to admit the same typed resource without claiming an
+    // enforced-readonly capability or creating another mount path.
+    let base = tempfile::tempdir().unwrap();
+    let provider =
+        SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false);
+    let environment = provider.create(&spec()).await.unwrap();
+    let readonly = pc::MountRequirement {
+        mount_id: "late-file".into(),
+        source: pc::MountSource::Inline {
+            contents: "late".into(),
+        },
+        mount_path: "/mnt/session/uploads/late.txt".into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    };
+    environment
+        .validate_live_mount_replacement(&[], &[readonly])
+        .expect("TrustedHost admits advisory read-only managed resources");
+    assert!(!environment.capabilities().enforced_readonly);
+    environment.dispose().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_process_and_agent_channel_share_one_live_environment() {
     // Cause/effect graph: C1=Workdir environment; C2=Native Hand tool;
     // C3=ACP child process. Effects: E1/E2 both observe state written inside

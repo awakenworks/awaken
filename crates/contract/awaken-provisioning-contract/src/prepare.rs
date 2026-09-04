@@ -34,6 +34,8 @@ pub struct EnvironmentPlan {
 pub enum PrepareError {
     #[error("backend isolation is weaker than requested")]
     InsufficientIsolation,
+    #[error("trusted-host admission requires an exact Workdir provider and spec")]
+    TrustedHostRequiresWorkdir,
     #[error("read-only mount {0:?} requested but backend does not enforce read-only")]
     ReadOnlyUnsupported(String),
     #[error("egress-only secret {0:?} requested but backend cannot substitute at egress")]
@@ -204,6 +206,37 @@ pub fn prepare_environment(
     })
 }
 
+/// Prepare an explicitly authorized trusted-host Workdir.
+///
+/// This is the same closed validator as [`prepare_environment`], with exactly
+/// one deliberate exception: read-only mount access is advisory because an
+/// unconstrained host process can always mutate the files. Every other request
+/// still fails against the Workdir provider's truthful capabilities.
+pub fn prepare_trusted_host_environment(
+    spec: &SandboxSpec,
+    caps: &SandboxCapabilities,
+) -> Result<EnvironmentPlan, PrepareError> {
+    if spec.isolation != crate::IsolationClass::Workdir
+        || caps.isolation != crate::IsolationClass::Workdir
+    {
+        return Err(PrepareError::TrustedHostRequiresWorkdir);
+    }
+    let mut advisory = caps.clone();
+    advisory.enforced_readonly = true;
+    prepare_environment(spec, &advisory)
+}
+
+/// Validate a live TrustedHost mount set with the same single advisory
+/// read-only exception used at environment creation.
+pub fn validate_trusted_host_mount_requirements(
+    mounts: &[MountRequirement],
+    caps: &SandboxCapabilities,
+) -> Result<(), PrepareError> {
+    let mut advisory = caps.clone();
+    advisory.enforced_readonly = true;
+    validate_mount_requirements(mounts, &advisory)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +295,37 @@ mod tests {
             command: Vec::new(),
             deny_tool_egress: false,
         }
+    }
+
+    #[test]
+    fn trusted_host_changes_only_the_readonly_admission_axis() {
+        // Cause/effect graph: C1 admission={isolated,trusted}; C2 mount=readonly;
+        // C3 network={unrestricted,restricted}; C4 provider={Workdir,Container}.
+        // Effects: E1 isolated Workdir
+        // rejects readonly; E2 trusted Workdir accepts advisory readonly only
+        // with unrestricted network; E3 both reject a network guarantee; E4 a
+        // stronger Container cannot substitute for exact host identity. These
+        // rules are the minimal decision table for the single exception.
+        let mut requested = spec();
+        requested.isolation = IsolationClass::Workdir;
+        requested.network = NetworkPolicy::Unrestricted;
+        let workdir = caps(IsolationClass::Workdir);
+        assert!(matches!(
+            prepare_environment(&requested, &workdir),
+            Err(PrepareError::ReadOnlyUnsupported(_))
+        ));
+        assert!(prepare_trusted_host_environment(&requested, &workdir).is_ok());
+
+        requested.network = NetworkPolicy::None;
+        assert_eq!(
+            prepare_trusted_host_environment(&requested, &workdir),
+            Err(PrepareError::NetworkIsolationUnsupported)
+        );
+        requested.network = NetworkPolicy::Unrestricted;
+        assert_eq!(
+            prepare_trusted_host_environment(&requested, &caps(IsolationClass::Container)),
+            Err(PrepareError::TrustedHostRequiresWorkdir)
+        );
     }
 
     #[test]

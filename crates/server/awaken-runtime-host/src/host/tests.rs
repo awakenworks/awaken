@@ -2070,6 +2070,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                         && slot.manifest.is_none()
                         && slot.resources.mounts.is_empty()
                         && slot.resources.prompts.is_empty()
+                        && slot.resources.resource_prompts.is_empty()
                         && slot.request_context.is_empty()
                         && slot.realization_lease.is_none()
                         && !slot.session_dispatch
@@ -6407,6 +6408,101 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             .is_none(),
         "B2 environment"
     );
+}
+
+#[test]
+fn frozen_environment_selects_trusted_host_exactly() {
+    // Cause/effect graph: C1 host_access={trusted_host,isolated}; C2 requested
+    // isolation={workdir,namespace}; C3 local Workdir provider={present,absent};
+    // C4 provisioning={HostExecutor,BackendOwned}. Effects: E1 trusted_host
+    // selects the Workdir provider even for HostExecutor; E2 absence fails
+    // closed; E3 isolated Namespace never falls back to host identity for a
+    // BackendOwned Agent. Decision rules: T1=trusted+workdir+present=>E1;
+    // T2=trusted+workdir+absent=>E2; I1=isolated+namespace+BackendOwned=>E3.
+    // Constraints: the frozen Environment projection is the sole selector and
+    // provider strength cannot substitute for the exact trust decision.
+    let namespace_root = tempfile::tempdir().unwrap();
+    let trusted_root = tempfile::tempdir().unwrap();
+    let mut host = SharedHost::new(Arc::new(OkModel), "stub");
+    host.deployment.sandbox.trusted_host_enabled = true;
+    host.session_provider =
+        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+            namespace_root.path(),
+            false,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            "/bin/sh",
+            std::time::Duration::ZERO,
+        );
+    host.backend_owned_session_provider = Some(
+        crate::session_environment::SessionEnvironmentProvider::
+            trusted_host_workdir_with_agent_stderr(trusted_root.path(), false),
+    );
+
+    let mut trusted = session_environment(
+        awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+        serde_json::json!({
+            "isolation": "workdir",
+            "host_access": "trusted_host"
+        }),
+    );
+    trusted.self_hosted = true;
+    host.install_environment_projection("T1", &trusted).unwrap();
+    let selected = host
+        .session_environment_provider_for_thread(
+            "T1",
+            &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+        )
+        .unwrap();
+    assert!(selected.supports_host_identity(), "T1/E1");
+
+    let mut absent = SharedHost::new(Arc::new(OkModel), "stub");
+    absent.deployment.sandbox.trusted_host_enabled = true;
+    absent.session_provider =
+        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+            namespace_root.path(),
+            false,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            "/bin/sh",
+            std::time::Duration::ZERO,
+        );
+    absent
+        .install_environment_projection("T2", &trusted)
+        .unwrap();
+    let error = match absent.session_environment_provider_for_thread(
+        "T2",
+        &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+    ) {
+        Ok(_) => panic!("T2/E2"),
+        Err(error) => error,
+    };
+    assert!(error.message.contains("local Workdir provider"), "T2/E2");
+
+    let mut isolated = session_environment(
+        awaken_session_contract::SessionNetworkPolicy::None,
+        serde_json::json!({"isolation": "namespace"}),
+    );
+    isolated.self_hosted = true;
+    host.install_environment_projection("I1", &isolated)
+        .unwrap();
+    let backend_owned =
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
+            awaken_runtime_contract::resolved::ModelBinding::new("local", "", "acp:codex"),
+            awaken_runtime_contract::CredentialRef {
+                id: "codex-login".into(),
+                revision: 1,
+            },
+            awaken_runtime_contract::resolved::BackendModelSelection::Default,
+            "codex",
+            "sha256:codex",
+            Default::default(),
+        )
+        .unwrap();
+    let error =
+        match host.session_environment_provider_for_thread("I1", backend_owned.provisioning()) {
+            Ok(_) => panic!("I1/E3"),
+            Err(error) => error,
+        };
+    assert!(error.message.contains("trusted_host Workdir"), "I1/E3");
 }
 
 /// L1: `on_tool_use` means inference alone must not allocate a Sandbox.
@@ -22110,6 +22206,7 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     // | M5 | yes | bound | any | no | E3 missing selected evidence rejected |
     // | M6 | yes | bound | yes | deferred binding | E1 metadata-only reservation |
     // | M7 | yes | other | any | deferred binding | E3 mismatched pin rejected |
+    // | M8 | yes | no | no | Memory path variable | E3 physical path rejected |
     use super::session::SkillDeliveryEvidence;
     use crate::session_slot::ManagedContentDelivery;
     use awaken_agent_contract::{
@@ -22199,6 +22296,46 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
             .expect("M4 keeps semantic delivery available to non-Skill content"),
         ManagedContentDelivery::SemanticTools,
         "M4/E4"
+    );
+
+    let memory_with_path = awaken_session_contract::ResolvedInput {
+        binding_id: awaken_resource_contract::BindingId::from("memory"),
+        source: awaken_session_contract::ResolvedInputSource::MemoryStore {
+            memory_store_id: awaken_resource_contract::MemoryStoreId::from("store"),
+            config: awaken_resource_contract::MemoryStoreConfigVersion {
+                memory_store_id: awaken_resource_contract::MemoryStoreId::from("store"),
+                version: awaken_resource_contract::ConfigVersion::INITIAL,
+                retention_policy: Default::default(),
+            },
+        },
+        mount_path: "/mnt/memory".into(),
+        access: awaken_resource_contract::ResourceAccess::ReadOnly,
+        instructions: Some("Read {{awaken.resource.path}}".into()),
+    };
+    empty_host
+        .session_slots
+        .update("managed-memory-path", |slot| {
+            slot.session_dispatch = true;
+            slot.tools = Some(deny_filesystem());
+            slot.resources.resource_prompts.push(
+                crate::managed_resource_projection::ResourcePromptProjection::try_from_input(
+                    &memory_with_path,
+                )
+                .unwrap(),
+            );
+        });
+    let path_error = empty_host
+        .select_content_delivery(
+            "managed-memory-path",
+            None,
+            SkillDeliveryEvidence::Materialized(Some(&[])),
+        )
+        .expect_err("M8 rejects an unusable physical path instruction");
+    assert!(
+        path_error
+            .to_string()
+            .contains("instructions reference a filesystem path"),
+        "M8/E3: {path_error}"
     );
 
     empty_host

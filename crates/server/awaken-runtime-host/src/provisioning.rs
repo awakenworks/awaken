@@ -362,11 +362,11 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
 #[derive(Default, Clone)]
 pub(crate) struct StagedResources {
     pub mounts: Vec<pc::MountRequirement>,
+    /// Non-Resource request context retained for direct/profiled callers.
+    /// Managed File/Memory/Repository context uses `resource_prompts` so every
+    /// resource kind shares one typed renderer and one path-variable grammar.
     pub prompts: Vec<String>,
-    /// One prompt pair per MemoryStore binding. The Session delivery decision
-    /// selects exactly one member; retaining both here is projection data, not
-    /// a second store or mutable source of truth.
-    pub memory_prompts: Vec<MemoryPromptProjection>,
+    pub resource_prompts: Vec<crate::managed_resource_projection::ResourcePromptProjection>,
     /// Resource-domain liveness checks repeated at each Session operation. These
     /// carry only Workspace-owned resource identity and frozen, secret-free config
     /// facts; authorization was completed before staging. Repository effect edges
@@ -376,12 +376,6 @@ pub(crate) struct StagedResources {
     /// Mutable Repository inputs, realized after the environment is created (not a
     /// byte mount). The plan is secret-free; its transport credential is transient.
     pub repositories: Vec<RepositoryActivation>,
-}
-
-#[derive(Clone)]
-pub(crate) struct MemoryPromptProjection {
-    pub filesystem: String,
-    pub semantic_tools: String,
 }
 
 #[derive(Clone)]

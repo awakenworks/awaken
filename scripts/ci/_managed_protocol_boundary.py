@@ -26,6 +26,7 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
         ("GET", "/v1/awaken/sandbox-execution-policies/{}/versions/{}"),
         ("GET", "/v1/awaken/environments/{}/sandbox-execution-policy"),
         ("POST", "/v1/awaken/environments/{}/sandbox-execution-policy"),
+        ("POST", "/v1/awaken/environments"),
     }
 )
 

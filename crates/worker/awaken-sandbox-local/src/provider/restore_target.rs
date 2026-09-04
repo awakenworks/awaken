@@ -168,7 +168,7 @@ impl LocalProvider {
         request: &pc::SandboxRestoreRequest,
     ) -> Result<pc::SandboxRestoreTarget<LocalSandbox>, pc::SandboxError> {
         request.validate_for_spec(spec)?;
-        pc::prepare_environment(spec, &LocalProvider::capabilities()).map_err(err)?;
+        self.prepare(spec)?;
         let evidence = request.evidence(spec);
         let root = restoration_root(&self.base, &evidence)?;
 

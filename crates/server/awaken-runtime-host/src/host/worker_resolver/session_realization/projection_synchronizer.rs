@@ -157,10 +157,13 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             }
             if self.rebuild_unavailable_environment && !a2a_only {
                 let provider = if let Some(candidate) = model_candidate.as_ref() {
-                    self.host
-                        .session_environment_provider(candidate.provisioning())
+                    self.host.session_environment_provider_for_thread(
+                        session_id,
+                        candidate.provisioning(),
+                    )
                 } else {
-                    self.host.session_environment_provider(
+                    self.host.session_environment_provider_for_thread(
+                        session_id,
                         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                     )
                 }

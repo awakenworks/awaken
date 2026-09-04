@@ -1486,9 +1486,10 @@ impl crate::SharedHost {
             )?;
         } else {
             let provider = if let Some(candidate) = model_candidate.as_ref() {
-                self.session_environment_provider(candidate.provisioning())?
+                self.session_environment_provider_for_thread(thread, candidate.provisioning())?
             } else {
-                self.session_environment_provider(
+                self.session_environment_provider_for_thread(
+                    thread,
                     &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                 )?
             };

@@ -56,6 +56,7 @@ fn converged_sandbox_policy_bundle() -> Result<MigrationBundle, MigrationError> 
 }
 
 fn validate(policy: &SandboxExecutionPolicy) -> Result<(), SandboxExecutionPolicyError> {
+    policy.validate()?;
     if policy.config.network.is_some() {
         return Err(SandboxExecutionPolicyError::Invalid(
             "network belongs to the Environment contract".into(),

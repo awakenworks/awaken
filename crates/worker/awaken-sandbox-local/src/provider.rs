@@ -110,6 +110,7 @@ pub(crate) fn verify(source: &pc::MountSource, bytes: &[u8]) -> Result<(), pc::S
 pub struct LocalProvider {
     base: PathBuf,
     inherit_agent_stderr: bool,
+    trusted_host_access: bool,
     /// In-memory blob seed for `File`/`Resource` mounts (keyed by id).
     blobs: HashMap<String, Vec<u8>>,
     /// Optional content-addressed store consulted after the seed map (Slice 4).
@@ -128,11 +129,37 @@ impl LocalProvider {
         Self {
             base: base.into(),
             inherit_agent_stderr: false,
+            trusted_host_access: false,
             blobs: HashMap::new(),
             file_store: None,
             secret_broker: Arc::new(std::sync::RwLock::new(None)),
             memory_mounter: Arc::new(std::sync::RwLock::new(None)),
         }
+    }
+
+    /// Construct the exact operator-authorized host-identity adapter. It uses
+    /// the same lifecycle and materialization implementation as Workdir; only
+    /// read-only mount admission becomes advisory.
+    pub fn trusted_host(base: impl Into<PathBuf>) -> Self {
+        Self {
+            trusted_host_access: true,
+            ..Self::new(base)
+        }
+    }
+
+    #[must_use]
+    pub fn has_trusted_host_access(&self) -> bool {
+        self.trusted_host_access
+    }
+
+    pub(super) fn prepare(&self, spec: &pc::SandboxSpec) -> Result<(), pc::SandboxError> {
+        if self.trusted_host_access {
+            pc::prepare_trusted_host_environment(spec, &Self::capabilities())
+        } else {
+            pc::prepare_environment(spec, &Self::capabilities())
+        }
+        .map(|_| ())
+        .map_err(err)
     }
 
     /// Select whether an opaque agent child inherits the host stderr.
@@ -267,7 +294,7 @@ impl LocalProvider {
         source_handle: Option<&pc::SandboxHandle>,
     ) -> Result<LocalSandbox, pc::SandboxError> {
         // Fail closed against our capabilities (isolation, ro, egress secrets, …).
-        pc::prepare_environment(spec, &Self::capabilities()).map_err(err)?;
+        self.prepare(spec)?;
 
         let mut sandbox = self.build(&spec.scope, &spec.outputs_path);
         let realization_fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
@@ -505,7 +532,7 @@ impl LocalProvider {
         if handle.restoration().is_none() {
             return self.adopt_sandbox_inner(Some(spec), handle, None).await;
         }
-        pc::prepare_environment(spec, &Self::capabilities()).map_err(err)?;
+        self.prepare(spec)?;
         if handle.sandbox_id != spec.scope {
             return Err(err("local Sandbox handle does not match SandboxSpec scope"));
         }
@@ -870,6 +897,7 @@ impl LocalProvider {
             outputs_path: outputs_path.to_string(),
             deny_egress: false,
             inherit_agent_stderr: self.inherit_agent_stderr,
+            trusted_host_access: self.trusted_host_access,
             base_env: Vec::new(),
             secret_broker: self.secret_broker.clone(),
             realized: Vec::new(),
@@ -1036,6 +1064,7 @@ pub struct LocalSandbox {
     /// spec's [`NetworkPolicy`](pc::NetworkPolicy)); threaded into [`rooted_tools`].
     deny_egress: bool,
     inherit_agent_stderr: bool,
+    trusted_host_access: bool,
     base_env: Vec<pc::EnvVar>,
     /// Shared broker installation; only opaque refs are retained in `base_env`.
     secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
@@ -1071,6 +1100,11 @@ pub struct LocalSandbox {
 }
 
 impl LocalSandbox {
+    #[must_use]
+    pub fn has_trusted_host_access(&self) -> bool {
+        self.trusted_host_access
+    }
+
     fn root_identity_for_access(
         &self,
     ) -> Result<Option<awaken_sandbox_fs::DirectoryIdentity>, pc::SandboxError> {

@@ -367,6 +367,7 @@ mod tests {
                 metadata: Default::default(),
                 scope: None,
                 config: awaken_environment_contract::EnvironmentConfig::SelfHosted,
+                sandbox_policy: None,
             })
             .await
             .unwrap();

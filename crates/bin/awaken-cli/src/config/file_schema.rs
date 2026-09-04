@@ -92,6 +92,7 @@ pub(super) struct FileConfig {
     pub(super) control_seal_key_file: Option<PathBuf>,
     pub(super) sandbox_tier: Option<String>,
     pub(super) sandbox_dir: Option<PathBuf>,
+    pub(super) sandbox_trusted_host_enabled: Option<bool>,
     pub(super) sandbox_allow_local_fallback: Option<bool>,
     pub(super) sandbox_warm_pool_size: Option<usize>,
     pub(super) sandbox_warm_pool_total_size: Option<usize>,
