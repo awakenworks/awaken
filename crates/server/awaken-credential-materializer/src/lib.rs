@@ -9,6 +9,7 @@
 #[cfg(feature = "brokered")]
 pub mod brokered_inference;
 mod credential_artifact;
+mod http_credential;
 mod inference;
 #[cfg(feature = "authority")]
 mod oauth_refresh;
@@ -16,6 +17,7 @@ mod platform_relay;
 mod refresh;
 mod secret_broker;
 
+pub use http_credential::materialized_http_credential;
 pub use inference::{
     CredentialInferenceMaterializer, ResolvedExecutorError, executor_from_materialized_endpoint,
     executor_from_materialized_endpoint_for_provider,

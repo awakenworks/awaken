@@ -708,8 +708,9 @@ mod tests {
         // direct and server-routed providers; C2 every provider id is unique;
         // C3 a direct provider requires credentials. E1 the projected schema
         // contains every direct provider and no duplicate branch; E2 the free
-        // default remains selectable; E3 paid authentication uses the common
-        // CredentialUsage wire. The provider crate owns the server-route list,
+        // default remains selectable; E3 paid authoring exposes only the Vault
+        // source pin and hides provider wire mechanics. The provider crate owns
+        // the server-route list,
         // so this adapter test deliberately derives expectations from the same
         // registry instead of copying its current branch count.
         //
@@ -762,10 +763,16 @@ mod tests {
             .iter()
             .find(|branch| branch["properties"]["provider_id"]["const"] == "brave")
             .expect("Brave provider branch");
+        let credential = &brave["properties"]["credential"];
         assert_eq!(
-            brave["properties"]["credential"]["x-awaken-credential-application"]["type"],
-            "http_header",
-            "C3/E3 common credential wire",
+            credential["required"],
+            serde_json::json!(["id", "revision"]),
+            "C3/E3 authoring exposes only an exact Vault selection"
+        );
+        assert!(
+            credential.get("x-awaken-credential-application").is_none()
+                && !credential.to_string().contains("X-Subscription-Token"),
+            "C3/E3 provider injection mechanics never enter the model-facing schema"
         );
     }
 
