@@ -1388,6 +1388,7 @@ pub struct NamespaceSandbox {
     secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
     network: pc::NetworkPolicy,
     control_services: std::collections::BTreeSet<SandboxControlServiceKind>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     control_directory: Option<PathBuf>,
     control_publication: Arc<NamespaceControlPublicationRegistry>,
     layout: std::sync::RwLock<Vec<RenderMount>>,

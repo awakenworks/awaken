@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 ASSUMPTIONS = ROOT / "formal" / "assumptions.json"
 RELIABILITY_SCRIPT = ROOT / "scripts" / "ci" / "check-reliability.sh"
+GENERATED_WORK_DIRS = {".codex-work", ".pnpm-store", "outputs", "reports"}
 
 REQUIRED_SURFACES = (
     "crates/devtools/awaken-reliability-testkit/src/lib.rs",
@@ -99,7 +100,8 @@ def current_inputs() -> tuple[dict[str, object], str, set[str], dict[str, str]]:
         child_dirs[:] = [
             name
             for name in child_dirs
-            if name not in {"target", ".git"} and not name.startswith("mutants.out")
+            if name not in {"target", ".git", *GENERATED_WORK_DIRS}
+            and not name.startswith("mutants.out")
         ]
         parent = Path(directory)
         existing.update((parent / name).relative_to(ROOT).as_posix() for name in files)

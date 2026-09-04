@@ -29,6 +29,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// blocked until the old Worker acknowledges return. An authoritative
     /// provider terminal receipt may prove a remote model request stopped;
     /// process/Pod termination proves only process-bound tool/Sandbox work.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the physical attempt boundary keeps every independent authority axis explicit"
+    )]
     pub(super) async fn run_physical_attempt<T, E, F, Fut>(
         &self,
         claim: &RunClaim,

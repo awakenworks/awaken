@@ -15,35 +15,6 @@ pub awaken_sandbox_memoryd::copy::HarvestReport::conflicts: alloc::vec::Vec<awak
 pub fn awaken_sandbox_memoryd::copy::fuse_available() -> bool
 pub async fn awaken_sandbox_memoryd::copy::harvest(&dyn awaken_resource_contract::MemoryRepository, &str, &std::path::Path, &mut awaken_sandbox_memoryd::copy::CopySnapshot) -> core::result::Result<awaken_sandbox_memoryd::copy::HarvestReport, awaken_sandbox_memoryd::FuseError>
 pub async fn awaken_sandbox_memoryd::copy::materialize(&dyn awaken_resource_contract::MemoryRepository, &str, &std::path::Path) -> core::result::Result<awaken_sandbox_memoryd::copy::CopySnapshot, awaken_sandbox_memoryd::FuseError>
-pub mod awaken_sandbox_memoryd::fuse
-pub struct awaken_sandbox_memoryd::fuse::MemoryFuse
-impl awaken_sandbox_memoryd::fuse::MemoryFuse
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::new(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::string::String) -> core::result::Result<Self, awaken_sandbox_memoryd::FuseError>
-impl fuser::Filesystem for awaken_sandbox_memoryd::fuse::MemoryFuse
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::create(&mut self, &fuser::request::Request<'_>, u64, &std::ffi::os_str::OsStr, u32, u32, i32, fuser::reply::ReplyCreate)
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::flush(&mut self, &fuser::request::Request<'_>, u64, u64, u64, fuser::reply::ReplyEmpty)
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::fsync(&mut self, &fuser::request::Request<'_>, u64, u64, bool, fuser::reply::ReplyEmpty)
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::getattr(&mut self, &fuser::request::Request<'_>, u64, core::option::Option<u64>, fuser::reply::ReplyAttr)
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::lookup(&mut self, &fuser::request::Request<'_>, u64, &std::ffi::os_str::OsStr, fuser::reply::ReplyEntry)
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::mkdir(&mut self, &fuser::request::Request<'_>, u64, &std::ffi::os_str::OsStr, u32, u32, fuser::reply::ReplyEntry)
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::open(&mut self, &fuser::request::Request<'_>, u64, i32, fuser::reply::ReplyOpen)
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::read(&mut self, &fuser::request::Request<'_>, u64, u64, i64, u32, i32, core::option::Option<u64>, fuser::reply::ReplyData)
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::readdir(&mut self, &fuser::request::Request<'_>, u64, u64, i64, fuser::reply::ReplyDirectory)
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::release(&mut self, &fuser::request::Request<'_>, u64, u64, i32, core::option::Option<u64>, bool, fuser::reply::ReplyEmpty)
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::rename(&mut self, &fuser::request::Request<'_>, u64, &std::ffi::os_str::OsStr, u64, &std::ffi::os_str::OsStr, u32, fuser::reply::ReplyEmpty)
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::rmdir(&mut self, &fuser::request::Request<'_>, u64, &std::ffi::os_str::OsStr, fuser::reply::ReplyEmpty)
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::setattr(&mut self, &fuser::request::Request<'_>, u64, core::option::Option<u32>, core::option::Option<u32>, core::option::Option<u32>, core::option::Option<u64>, core::option::Option<fuser::ll::TimeOrNow>, core::option::Option<fuser::ll::TimeOrNow>, core::option::Option<std::time::SystemTime>, core::option::Option<u64>, core::option::Option<std::time::SystemTime>, core::option::Option<std::time::SystemTime>, core::option::Option<std::time::SystemTime>, core::option::Option<u32>, fuser::reply::ReplyAttr)
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::unlink(&mut self, &fuser::request::Request<'_>, u64, &std::ffi::os_str::OsStr, fuser::reply::ReplyEmpty)
-pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::write(&mut self, &fuser::request::Request<'_>, u64, u64, i64, &[u8], u32, i32, core::option::Option<u64>, fuser::reply::ReplyWrite)
-pub struct awaken_sandbox_memoryd::fuse::MemoryMountHandle
-impl awaken_sandbox_memoryd::fuse::MemoryMountHandle
-pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::open_fd_count(&self) -> usize
-pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::unmount(&mut self)
-pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::with_drain_timeout(self, core::time::Duration) -> Self
-impl core::ops::drop::Drop for awaken_sandbox_memoryd::fuse::MemoryMountHandle
-pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::drop(&mut self)
-pub fn awaken_sandbox_memoryd::fuse::spawn_mount(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::string::String, std::path::PathBuf) -> core::result::Result<awaken_sandbox_memoryd::fuse::MemoryMountHandle, awaken_sandbox_memoryd::FuseError>
-pub fn awaken_sandbox_memoryd::fuse::spawn_mount_with_invalidations(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::string::String, std::path::PathBuf, tokio::sync::broadcast::Receiver<awaken_sandbox_memoryd::invalidate::Invalidation>) -> core::result::Result<awaken_sandbox_memoryd::fuse::MemoryMountHandle, awaken_sandbox_memoryd::FuseError>
 pub mod awaken_sandbox_memoryd::invalidate
 pub struct awaken_sandbox_memoryd::invalidate::InvalidatingMemoryRepository
 impl awaken_sandbox_memoryd::invalidate::InvalidatingMemoryRepository
@@ -139,7 +110,5 @@ pub fn awaken_sandbox_memoryd::fuse_available() -> bool
 pub async fn awaken_sandbox_memoryd::harvest(&dyn awaken_resource_contract::MemoryRepository, &str, &std::path::Path, &mut awaken_sandbox_memoryd::copy::CopySnapshot) -> core::result::Result<awaken_sandbox_memoryd::copy::HarvestReport, awaken_sandbox_memoryd::FuseError>
 pub fn awaken_sandbox_memoryd::immediate_children(&[awaken_resource_contract::MemoryEntry], &str) -> alloc::collections::btree::map::BTreeMap<alloc::string::String, bool>
 pub async fn awaken_sandbox_memoryd::materialize(&dyn awaken_resource_contract::MemoryRepository, &str, &std::path::Path) -> core::result::Result<awaken_sandbox_memoryd::copy::CopySnapshot, awaken_sandbox_memoryd::FuseError>
-pub fn awaken_sandbox_memoryd::spawn_mount(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::string::String, std::path::PathBuf) -> core::result::Result<awaken_sandbox_memoryd::fuse::MemoryMountHandle, awaken_sandbox_memoryd::FuseError>
-pub fn awaken_sandbox_memoryd::spawn_mount_with_invalidations(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::string::String, std::path::PathBuf, tokio::sync::broadcast::Receiver<awaken_sandbox_memoryd::invalidate::Invalidation>) -> core::result::Result<awaken_sandbox_memoryd::fuse::MemoryMountHandle, awaken_sandbox_memoryd::FuseError>
 pub fn awaken_sandbox_memoryd::splice_bytes(&str, i64, &[u8]) -> core::result::Result<alloc::string::String, awaken_sandbox_memoryd::FuseError>
 pub type awaken_sandbox_memoryd::Invalidation = (alloc::string::String, alloc::string::String)

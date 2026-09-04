@@ -28,6 +28,7 @@ awaken-worker-transport-security.workspace = true
 awaken-executable-agent-contract.workspace = true
 awaken-service-auth-contract.workspace = true
 awaken-deployment-contract.workspace = true
+awaken-environment-contract.workspace = true
 awaken-deployment-application.workspace = true
 awaken-environment-execution-application.workspace = true
 awaken-worker-registry = { workspace = true }
@@ -160,7 +161,6 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
 awaken-control.workspace = true
 awaken-executable-agent-catalog.workspace = true
-awaken-environment-contract.workspace = true
 awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
 awaken-deployment-application = { workspace = true, features = ["test-support"] }
 awaken-webhook = { workspace = true, features = ["test-support"] }

@@ -1,6 +1,6 @@
 //! Host-level live-inbox round trip: a message queued while a Run is in
-//! flight is folded into that Run before it ends; a message the cancelled
-//! Run never consumed carries over into the Thread's next attempt.
+//! flight is folded into that Run before it ends; a best-effort message the
+//! cancelled Run never consumed is discarded with that physical attempt.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -152,12 +152,13 @@ async fn a_message_queued_mid_run_reaches_the_same_run() {
 /// Cause/effect design: C0 the Host installs the canonical dispatch Session
 /// Runtime; C1 a follow-up is queued while the first Run is gated;
 /// C2 that Run is interrupted before a drain boundary; C3 a second Run starts on
-/// the same Thread and reaches its first natural boundary. Effects: E1 the first
-/// inbox closes without consuming the message; E2 the survivor appears in the
-/// second Run's reply. Decision rule C0+C1+C2+C3=>E1+E2; consumption before
-/// cancel is covered by the preceding test.
+/// the same Thread and reaches its natural end. Effects: E1 the first inbox
+/// closes; E2 its best-effort message does not leak into the next physical
+/// attempt; E3 the next Run needs only one inference step. Decision rule
+/// C0+C1+C2+C3=>E1+E2+E3; same-attempt consumption is covered by the preceding
+/// test.
 #[tokio::test]
-async fn a_message_the_cancelled_run_never_consumed_carries_over() {
+async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
     // Causes: the fixtures below establish `a message the cancelled run` with the concrete inputs,
     // state, dependencies, and failure triggers used by this case.
     // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
@@ -181,24 +182,25 @@ async fn a_message_the_cancelled_run_never_consumed_carries_over() {
         .interrupt(thread)
         .await
         .expect("interrupt the gated Run");
-    let _ = timeout(Duration::from_secs(5), run)
+    timeout(Duration::from_secs(5), run)
         .await
-        .expect("cancelled Run returns");
+        .expect("cancelled Run returns")
+        .expect("cancelled Run task joins")
+        .expect("cancelled Run has a committed terminal receipt");
 
     assert!(
         h.host.live_inbox(thread).await.is_none(),
         "the cancelled attempt closed its inbox"
     );
 
-    // Next Run on the same Thread: the leftover seeds the fresh inbox and is
-    // consumed at the first natural-end boundary.
+    // The next Run on the same Thread owns a fresh physical-attempt inbox. The
+    // cancelled attempt's best-effort message is not durable input and must not
+    // seed it.
     let run = {
         let host = h.host.clone();
         tokio::spawn(async move { host.run(None, thread, vec![user("u2", "Second.")]).await })
     };
-    // Step 1 of Run 2, then Step 2 after the drain.
-    h.wait_step_started().await;
-    let _ = h.permits.send(());
+    // One inference step is sufficient: there is no carried-over input to drain.
     h.wait_step_started().await;
     let _ = h.permits.send(());
 
@@ -213,8 +215,8 @@ async fn a_message_the_cancelled_run_never_consumed_carries_over() {
         .rfind(|m| m.role == Role::Assistant)
         .expect("assistant reply");
     assert!(
-        reply.text_content().contains("Survivor."),
-        "the carried-over message reached the next attempt (reply: {})",
+        !reply.text_content().contains("Survivor."),
+        "best-effort input from a cancelled attempt must not leak (reply: {})",
         reply.text_content()
     );
 }

@@ -1,0 +1,1533 @@
+use super::*;
+use awaken_runtime_contract::resolved::ModelBinding;
+use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
+
+use crate::config::ModelSelection;
+
+fn compile(
+    config: &AgentConfig,
+    tools: &[ToolDescriptor],
+) -> Result<ExecutableAgentSnapshot, CompileError> {
+    compile_resolved(config, tools, AgentSnapshotMetadata::default())
+}
+
+fn config(tools: &[&str]) -> AgentConfig {
+    AgentConfig {
+        id: "agent-1".to_string(),
+        instructions: "be helpful".to_string(),
+        max_steps: 8,
+        delegation_limits: Default::default(),
+        model_binding: ModelSelection::pinned("p", "m", "b"),
+        inference: Default::default(),
+        tool_ids: tools.iter().map(|s| s.to_string()).collect(),
+        model_fallbacks: Vec::new(),
+        plugin_ids: Vec::new(),
+        plugin_config: Default::default(),
+        context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+        tool_patterns: Vec::new(),
+        ..Default::default()
+    }
+}
+
+fn tool(id: &str) -> ToolDescriptor {
+    ToolDescriptor::pinned("test", id, "a tool", serde_json::json!({"type": "object"}))
+}
+
+#[test]
+fn client_tools_compile_as_exact_non_host_capabilities() {
+    // Causal graph: inline client descriptor -> compile -> immutable snapshot;
+    // catalog lookup and host ownership are deliberately bypassed.
+    //
+    // Decision table:
+    // | inline kind | catalog collision | result |
+    // | client_executed | no  | exact descriptor in snapshot |
+    // | regular         | no  | reject wrong execution owner |
+    // | client_executed | yes | reject ambiguous identity |
+    let mut config = config(&[]);
+    config.client_tools = vec![
+        ToolDescriptor::pinned(
+            "managed-client",
+            "lookup",
+            "client lookup",
+            serde_json::json!({"type":"object","required":["query"]}),
+        )
+        .with_kind(ToolKind::ClientExecuted),
+    ];
+
+    let snapshot = compile(&config, &[]).expect("exact client tool compiles");
+    assert_eq!(snapshot.resolved_spec.tool_descriptors, config.client_tools);
+
+    let mut wrong_owner = config.clone();
+    wrong_owner.client_tools[0].kind = ToolKind::Regular;
+    assert!(matches!(
+        compile(&wrong_owner, &[]),
+        Err(CompileError::InvalidBinding {
+            axis: "client_tools",
+            ..
+        })
+    ));
+
+    let mut collision = config.clone();
+    collision.tool_ids = vec!["lookup".into()];
+    assert!(matches!(
+        compile(&collision, &[tool("lookup")]),
+        Err(CompileError::InvalidBinding {
+            axis: "client_tools",
+            ..
+        })
+    ));
+}
+
+fn mcp(name: &str, url: &str) -> awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+    awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+        name: name.to_string(),
+        transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(url),
+        credential: None,
+        prompts_as_skills: false,
+    }
+}
+
+#[test]
+fn sandbox_stdio_mcp_compiles_as_an_explicit_agent_binding() {
+    let mut cfg = config(&[]);
+    cfg.mcp_servers = vec![
+        awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+            name: "playwright".into(),
+            transport:
+                awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::sandbox_stdio(
+                    "playwright-mcp",
+                    vec!["--headless".into()],
+                ),
+            credential: None,
+            prompts_as_skills: false,
+        },
+    ];
+    let snapshot = compile(&cfg, &[]).expect("sandbox stdio binding compiles");
+    let binding = &snapshot.resolved_spec.plugin_config.agent.mcp_servers[0];
+    assert_eq!(
+        binding
+            .transport
+            .normalize()
+            .unwrap()
+            .sandbox_stdio_target()
+            .unwrap()
+            .command,
+        "playwright-mcp"
+    );
+}
+
+#[test]
+fn toolsets_compile_into_one_exact_executable_capability_path() {
+    // Cause graph: typed authoring policy + exact publication catalog ->
+    // normalized policy -> ordinary pinned descriptors + snapshot fingerprint.
+    // There is no synthetic `agent_toolset_*` executable id.
+    //
+    // Decision table:
+    // | catalog member | authored enabled | compiled descriptor | resolved policy |
+    // | read present   | true             | read                | enabled         |
+    // | write present  | false            | absent              | disabled        |
+    // | bash absent    | true/default     | absent              | disabled        |
+    // Effects: the compiled descriptor surface and immutable fingerprint
+    // reflect one normalized policy. Constraints/invariants: no synthetic
+    // toolset executable or unpublished catalog member can enter the snapshot.
+    // Decision rule T1: apply each table row once, then change one policy bit
+    // and require a different fingerprint.
+    use awaken_runtime_contract::agent_bindings::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+        ToolsetSource,
+    };
+    let mut cfg = config(&[]);
+    cfg.toolsets = vec![ToolsetPolicy {
+        source: ToolsetSource::Agent,
+        default: ToolExecutionPolicy::default(),
+        overrides: vec![
+            ToolPolicyOverride::new("read", ToolExecutionPolicy::default()),
+            ToolPolicyOverride::new(
+                "write",
+                ToolExecutionPolicy {
+                    enabled: false,
+                    permission: ToolPermissionRequirement::AlwaysAsk,
+                },
+            ),
+        ],
+    }];
+    let snapshot = compile(&cfg, &[tool("read"), tool("write")]).unwrap();
+    let ids = snapshot
+        .resolved_spec
+        .tool_descriptors
+        .iter()
+        .map(|tool| tool.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["read"]);
+    let policy = &snapshot.resolved_spec.plugin_config.agent.toolsets[0];
+    assert!(policy.policy_for("read").enabled);
+    assert!(!policy.policy_for("write").enabled);
+    assert!(
+        snapshot
+            .resolved_spec
+            .plugin_config
+            .agent
+            .tool_policy("unlisted")
+            .is_none()
+    );
+
+    let mut changed = cfg;
+    changed.toolsets[0].overrides[1].policy.enabled = true;
+    assert_ne!(
+        snapshot.fingerprint,
+        compile(&changed, &[tool("read"), tool("write")])
+            .unwrap()
+            .fingerprint,
+        "execution policy is part of the immutable snapshot identity"
+    );
+}
+
+#[test]
+fn provider_server_tool_with_always_ask_is_rejected_before_publication() {
+    use awaken_runtime_contract::agent_bindings::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+        ToolsetSource,
+    };
+    use awaken_runtime_contract::resolved::ProviderServerTool;
+
+    let provider_search =
+        tool("web_search").with_provider_server_tool(ProviderServerTool::OpenAiWebSearch);
+    let mut cfg = config(&[]);
+    cfg.toolsets = vec![ToolsetPolicy {
+        source: ToolsetSource::Agent,
+        default: ToolExecutionPolicy::default(),
+        overrides: vec![ToolPolicyOverride::new(
+            "web_search",
+            ToolExecutionPolicy {
+                enabled: true,
+                permission: ToolPermissionRequirement::AlwaysAsk,
+            },
+        )],
+    }];
+
+    let error = compile(&cfg, std::slice::from_ref(&provider_search)).unwrap_err();
+    assert!(matches!(
+        error,
+        CompileError::InvalidBinding { axis: "tools", .. }
+    ));
+    assert!(
+        error
+            .to_string()
+            .contains("PROVIDER_SERVER_TOOL_APPROVAL_UNSUPPORTED")
+    );
+
+    cfg.toolsets[0].overrides[0].policy.permission = ToolPermissionRequirement::AlwaysAllow;
+    let snapshot = compile(&cfg, &[provider_search]).expect("always_allow is executable");
+    assert_eq!(snapshot.resolved_spec.tool_descriptors.len(), 1);
+}
+
+#[test]
+fn competing_or_unresolvable_toolset_authoring_fails_closed() {
+    // Decision table:
+    // | cause                         | result |
+    // | duplicate source              | invalid tools binding |
+    // | MCP source undeclared         | invalid tools binding |
+    // | legacy permission + toolsets  | reject competing owner |
+    use awaken_runtime_contract::agent_bindings::{
+        ToolExecutionPolicy, ToolsetPolicy, ToolsetSource,
+    };
+    let agent = ToolsetPolicy {
+        source: ToolsetSource::Agent,
+        default: ToolExecutionPolicy::default(),
+        overrides: Vec::new(),
+    };
+    let invalid = |cfg: &AgentConfig| {
+        assert!(matches!(
+            compile(cfg, &[]),
+            Err(CompileError::InvalidBinding { axis: "tools", .. })
+        ));
+    };
+
+    let mut cfg = config(&[]);
+    cfg.toolsets = vec![agent.clone(), agent.clone()];
+    invalid(&cfg);
+
+    cfg.toolsets = vec![ToolsetPolicy {
+        source: ToolsetSource::Mcp {
+            server_name: "docs".into(),
+        },
+        default: ToolExecutionPolicy::default(),
+        overrides: Vec::new(),
+    }];
+    invalid(&cfg);
+
+    cfg.toolsets = vec![agent];
+    cfg.plugin_config
+        .insert("permission".into(), serde_json::json!({"rules": []}));
+    invalid(&cfg);
+}
+
+#[test]
+fn mcp_credential_reference_requires_a_stable_id_and_positive_revision() {
+    let mut cfg = config(&[]);
+    cfg.mcp_servers = vec![mcp("docs", "https://mcp.example.test")];
+    cfg.mcp_servers[0].credential = Some(awaken_runtime_contract::credential::CredentialRef {
+        id: String::new(),
+        revision: 1,
+    });
+    assert!(matches!(
+        compile(&cfg, &[]),
+        Err(CompileError::InvalidBinding {
+            axis: "mcp_servers",
+            ..
+        })
+    ));
+
+    cfg.mcp_servers[0].credential = Some(awaken_runtime_contract::credential::CredentialRef {
+        id: "cred:workspace:docs".into(),
+        revision: 0,
+    });
+    assert!(matches!(
+        compile(&cfg, &[]),
+        Err(CompileError::InvalidBinding {
+            axis: "mcp_servers",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn recovery_policy_is_pinned_and_invalid_targets_fail_closed() {
+    let tools = vec![tool("echo")];
+    let mut cfg = config(&["echo"]);
+    cfg.recovery_policies.insert(
+        "echo".into(),
+        ToolRecoveryPolicy::try_new(ToolRecoveryMode::Idempotent, 5)
+            .expect("non-zero recovery attempt budget"),
+    );
+    let compiled = compile(&cfg, &tools).unwrap();
+    assert_eq!(
+        compiled.resolved_spec.tool_descriptors[0].recovery_policy,
+        cfg.recovery_policies["echo"]
+    );
+
+    cfg.recovery_policies
+        .insert("ghost".into(), ToolRecoveryPolicy::default());
+    let error = compile(&cfg, &tools).unwrap_err();
+    assert!(matches!(error, CompileError::InvalidToolRecovery { .. }));
+    assert_eq!(error.field_path(), "recovery_policies");
+
+    let invalid = serde_json::json!({ "mode": "idempotent", "max_attempts": 0 });
+    assert!(serde_json::from_value::<ToolRecoveryPolicy>(invalid).is_err());
+}
+
+#[test]
+fn delegation_limits_are_resolved_and_enter_the_fingerprint() {
+    let base = config(&[]);
+    let base_compiled = compile(&base, &[]).unwrap();
+    let mut bounded = base;
+    bounded.delegation_limits = awaken_runtime_contract::delegation::DelegationLimits::new(2, 3, 5);
+    let bounded_compiled = compile(&bounded, &[]).unwrap();
+    assert_eq!(
+        bounded_compiled.resolved_spec.delegation_limits,
+        bounded.delegation_limits
+    );
+    assert_ne!(bounded_compiled.fingerprint, base_compiled.fingerprint);
+}
+
+#[test]
+fn model_candidates_compile_into_the_resolved_pool_and_enter_the_fingerprint() {
+    let tools = vec![tool("echo")];
+
+    let mut pooled = config(&["echo"]);
+    pooled.model_fallbacks = vec![ModelBinding::new("p", "fallback", "b")];
+    let compiled = compile(&pooled, &tools).unwrap();
+    let spec = &compiled.resolved_spec;
+    // The pool is carried onto the resolved spec: primary + one fallback.
+    assert_eq!(spec.model_candidates.len(), 1);
+    assert_eq!(spec.candidate_bindings().len(), 2);
+    assert_eq!(spec.candidate_bindings()[1].model_ref, "fallback");
+
+    // A pool enters the content address (a different pool is a different snapshot);
+    // an empty pool (the default) leaves the fingerprint byte-identical.
+    let single = compile(&config(&["echo"]), &tools).unwrap();
+    assert_ne!(
+        compiled.fingerprint.0, single.fingerprint.0,
+        "a pool must change the content address"
+    );
+    assert!(single.resolved_spec.model_candidates.is_empty());
+}
+
+#[test]
+fn tool_overrides_compile_into_the_presentation_and_enter_the_fingerprint() {
+    use crate::config::ToolOverride;
+    let tools = vec![tool("echo"), tool("mcp__gh__create_issue")];
+
+    let mut cfg = config(&["echo", "mcp__gh__create_issue"]);
+    cfg.tool_overrides = vec![
+        ToolOverride {
+            target: "echo".into(),
+            alias: Some("say".into()),
+            description: Some("Speak.".into()),
+            exposure: None,
+        },
+        ToolOverride {
+            target: "mcp__gh__create_issue".into(),
+            alias: None,
+            description: None,
+            exposure: Some(awaken_runtime_contract::resolved::ToolExposure::OnDemand),
+        },
+    ];
+    let compiled = compile(&cfg, &tools).unwrap();
+    let pres = &compiled.resolved_spec.tool_presentation;
+    assert!(!pres.is_empty());
+    // The alias reverse-maps back to the canonical id; the model face renames + defers.
+    assert_eq!(pres.resolve("say"), "echo");
+    let presented = pres.present(&tools);
+    assert!(
+        presented
+            .visible
+            .iter()
+            .any(|d| d.id == "say" && d.description == "Speak.")
+    );
+    assert!(
+        presented
+            .discoverable
+            .iter()
+            .any(|d| d.id == "mcp__gh__create_issue")
+    );
+
+    // Overrides enter the content address; no overrides ⇒ byte-identical fingerprint.
+    let bare = compile(&config(&["echo", "mcp__gh__create_issue"]), &tools).unwrap();
+    assert_ne!(compiled.fingerprint.0, bare.fingerprint.0);
+    assert!(bare.resolved_spec.tool_presentation.is_empty());
+}
+
+#[test]
+fn empty_exposure_selectors_fail_at_the_authoring_boundary() {
+    // Causal graph / boundary-value partition: C1 Exact(""), C2
+    // Prefix(whitespace), C3 policy default expresses the all-tools case.
+    // E1 C1/C2 fail with a field-addressable exposure error; E2 C3 remains
+    // valid. The closed selector enum eliminates regex syntax errors, while
+    // compilation owns the remaining non-empty authoring invariant.
+    use awaken_runtime_contract::resolved::{
+        ToolExposure, ToolExposurePolicy, ToolExposureRule, ToolSelector,
+    };
+    for selector in [
+        ToolSelector::Exact(String::new()),
+        ToolSelector::Prefix(" ".into()),
+    ] {
+        let mut cfg = config(&["echo"]);
+        cfg.tool_exposure = ToolExposurePolicy {
+            rules: vec![ToolExposureRule {
+                selector,
+                exposure: ToolExposure::OnDemand,
+            }],
+            default: ToolExposure::Eager,
+        };
+        let error = compile(&cfg, &[tool("echo")]).expect_err("C1/C2=>E1");
+        assert_eq!(error.field_path(), "tool_exposure");
+        assert!(matches!(error, CompileError::InvalidToolExposure { .. }));
+    }
+    let mut all = config(&["echo"]);
+    all.tool_exposure.default = ToolExposure::OnDemand;
+    compile(&all, &[tool("echo")]).expect("C3=>E2");
+}
+
+#[test]
+fn an_override_targeting_an_unselected_non_mcp_tool_is_rejected() {
+    use crate::config::ToolOverride;
+    let tools = vec![tool("echo")];
+    let mut cfg = config(&["echo"]);
+    cfg.tool_overrides = vec![ToolOverride {
+        target: "ghost".into(),
+        alias: Some("g".into()),
+        ..Default::default()
+    }];
+    assert!(matches!(
+        compile(&cfg, &tools),
+        Err(CompileError::InvalidToolOverride { .. })
+    ));
+
+    // An MCP target that isn't in the compile catalog is allowed (resolved at runtime).
+    let mut mcp = config(&["echo"]);
+    mcp.tool_overrides = vec![ToolOverride {
+        target: "mcp__x__y".into(),
+        alias: Some("y".into()),
+        ..Default::default()
+    }];
+    assert!(compile(&mcp, &tools).is_ok());
+
+    // An alias colliding with another selected tool's id is rejected.
+    let mut clash = config(&["echo", "read"]);
+    clash.tool_overrides = vec![ToolOverride {
+        target: "echo".into(),
+        alias: Some("read".into()),
+        ..Default::default()
+    }];
+    assert!(matches!(
+        compile(&clash, &[tool("echo"), tool("read")]),
+        Err(CompileError::InvalidToolOverride { .. })
+    ));
+}
+
+#[test]
+fn compile_is_deterministic_and_content_addressed() {
+    let tools = vec![tool("echo")];
+    let a = compile(&config(&["echo"]), &tools).unwrap();
+    let b = compile(&config(&["echo"]), &tools).unwrap();
+    let fp = a.fingerprint.0.clone();
+    assert_eq!(fp, b.fingerprint.0, "same config, same fingerprint");
+
+    // The snapshot envelope and resolved payload agree on the fingerprint.
+    assert_eq!(a.resolved_spec.catalog_fingerprint.0, fp);
+
+    // A different config yields a different fingerprint.
+    let mut other = config(&["echo"]);
+    other.instructions = "be terse".to_string();
+    assert_ne!(compile(&other, &tools).unwrap().fingerprint.0, fp);
+}
+
+#[test]
+fn context_policy_flows_into_the_compiled_spec_and_fingerprint() {
+    use awaken_runtime_contract::resolved::ContextPolicy;
+    let mut cfg = config(&[]);
+    cfg.context_policy = ContextPolicy::KeepLast { keep_last: 3 };
+    let compiled = compile(&cfg, &[]).unwrap();
+    assert_eq!(
+        compiled.resolved_spec.context_policy,
+        ContextPolicy::KeepLast { keep_last: 3 }
+    );
+    // The policy is part of the content address: changing it changes the hash.
+    let default_fp = compile(&config(&[]), &[]).unwrap().fingerprint.0.clone();
+    assert_ne!(compiled.fingerprint.0, default_fp);
+}
+
+#[test]
+fn tool_patterns_select_matching_catalog_tools_and_enter_the_fingerprint() {
+    let catalog = vec![tool("fs_read"), tool("fs_write"), tool("net_get")];
+
+    let mut cfg = config(&["net_get"]); // one exact id
+    cfg.tool_patterns = vec!["fs_*".to_string()]; // plus a glob
+    let spec = compile(&cfg, &catalog).unwrap();
+    let ids: Vec<String> = spec
+        .resolved_spec
+        .tool_descriptors
+        .iter()
+        .map(|d| d.id.clone())
+        .collect();
+    // Exact id kept, both fs_* tools selected, net_get not double-added.
+    assert_eq!(ids, vec!["net_get", "fs_read", "fs_write"]);
+
+    // A pattern matching nothing is not an error (unlike an unknown tool_id).
+    let mut nomatch = config(&[]);
+    nomatch.tool_patterns = vec!["zzz_*".to_string()];
+    assert!(compile(&nomatch, &catalog).is_ok());
+
+    // Empty patterns keep the fingerprint byte-identical to before the field.
+    let plain_fp = compile(&config(&["net_get"]), &catalog)
+        .unwrap()
+        .fingerprint
+        .0
+        .clone();
+    // A non-empty pattern set enters the content address.
+    assert_ne!(spec.fingerprint.0, plain_fp);
+}
+
+#[test]
+fn auto_binding_fails_closed_at_compile() {
+    // ADR-0052 D5: compile is pure and cannot resolve `Auto` — it must be
+    // resolved to a concrete binding by publish first, so a bare compile of an
+    // Auto config is rejected (never a silent empty binding).
+    let mut cfg = config(&[]);
+    cfg.model_binding = ModelSelection::Auto;
+    assert_eq!(
+        compile(&cfg, &[]).unwrap_err(),
+        CompileError::UnresolvedModel {
+            agent: "agent-1".to_string(),
+        }
+    );
+}
+
+#[test]
+fn a2a_agent_declaring_skills_or_mcp_fails_the_capability_gate() {
+    // ADR-0057 D2: a remote (a2a) agent honors neither locally — declaring them is a
+    // silent runtime no-op, so publish rejects it. Skills reported first.
+    let mut with_skills = config(&[]);
+    with_skills.model_binding = ModelSelection::pinned("p", "m", "a2a:https://remote/agent");
+    with_skills.skills = vec![awaken_agent_contract::AgentSkillBinding::custom("review")];
+    assert_eq!(
+        compile(&with_skills, &[]).unwrap_err(),
+        CompileError::UnsupportedCapability {
+            agent: "agent-1".to_string(),
+            axis: "skills",
+        }
+    );
+
+    let mut with_mcp = config(&[]);
+    with_mcp.model_binding = ModelSelection::pinned("p", "m", "a2a:https://remote/agent");
+    with_mcp.mcp_servers = vec![mcp("gh", "")];
+    assert_eq!(
+        compile(&with_mcp, &[]).unwrap_err(),
+        CompileError::UnsupportedCapability {
+            agent: "agent-1".to_string(),
+            axis: "mcp_servers",
+        }
+    );
+}
+
+#[test]
+fn native_and_acp_agents_may_declare_skills_and_mcp() {
+    // The gate is A2A-only: Native and ACP kinds honor skills/MCP (in-process or via
+    // the CLI's config-home/session), so they compile with them present.
+    for backend in ["genai", "acp:claude"] {
+        let mut cfg = config(&[]);
+        cfg.model_binding = ModelSelection::pinned("p", "m", backend);
+        cfg.skills = vec![awaken_agent_contract::AgentSkillBinding::custom("review")];
+        cfg.mcp_servers = vec![mcp("gh", "https://mcp.example.test")];
+        assert!(
+            compile(&cfg, &[]).is_ok(),
+            "backend `{backend}` must honor skills/mcp"
+        );
+    }
+}
+
+#[test]
+fn background_tool_execution_is_rejected_for_external_backends_before_publication() {
+    // Cause/effect matrix:
+    // R1 Native + background_task -> compile: the in-process prepared executor exists.
+    // R2 ACP + background_task    -> reject: the external harness cannot retain it.
+    // R3 A2A + background_task    -> reject: outbound A2A owns no local Hand.
+    // R4 ACP without it           -> compile: unrelated Managed Agent features remain valid.
+    let mut native = config(&[]);
+    native.plugin_ids = vec!["background_task".into()];
+    assert!(compile(&native, &[]).is_ok(), "R1");
+
+    let mut acp = config(&[]);
+    acp.model_binding = ModelSelection::pinned("p", "m", "acp:codex");
+    acp.plugin_ids = vec!["background_task".into()];
+    assert_eq!(
+        compile(&acp, &[]).unwrap_err(),
+        CompileError::UnsupportedCapability {
+            agent: "agent-1".into(),
+            axis: "background_task",
+        },
+        "R2",
+    );
+
+    let mut a2a = config(&[]);
+    a2a.model_binding = ModelSelection::pinned("p", "m", "a2a:https://remote/agent");
+    a2a.plugin_ids = vec!["background_task".into()];
+    assert_eq!(
+        compile(&a2a, &[]).unwrap_err(),
+        CompileError::UnsupportedCapability {
+            agent: "agent-1".into(),
+            axis: "background_task",
+        },
+        "R3",
+    );
+
+    acp.plugin_ids.clear();
+    assert!(compile(&acp, &[]).is_ok(), "R4");
+}
+
+#[test]
+fn state_machine_is_native_only_and_never_a_silent_acp_configuration() {
+    let mut native = config(&[]);
+    native.plugin_ids = vec!["state_machine".into()];
+    assert!(compile(&native, &[]).is_ok());
+
+    let mut acp = config(&[]);
+    acp.model_binding = ModelSelection::pinned("p", "m", "acp:codex");
+    acp.plugin_ids = vec!["state_machine".into()];
+    assert_eq!(
+        compile(&acp, &[]).unwrap_err(),
+        CompileError::UnsupportedCapability {
+            agent: "agent-1".into(),
+            axis: "state_machine",
+        }
+    );
+}
+
+#[test]
+fn every_model_selection_has_one_strict_tagged_wire_shape() {
+    let selection = ModelSelection::pinned("p", "m", "b");
+    let json = serde_json::to_value(&selection).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"mode": "pinned", "provider_identity_ref": "p", "model_ref": "m", "backend_ref": "b"})
+    );
+    assert_eq!(
+        serde_json::from_value::<ModelSelection>(json).unwrap(),
+        selection
+    );
+    assert!(
+        serde_json::from_value::<ModelSelection>(
+            serde_json::json!({"provider_identity_ref": "p", "model_ref": "m", "backend_ref": "b"})
+        )
+        .is_err(),
+        "the retired untagged pinned shape must not remain a second path"
+    );
+    let auto = serde_json::to_value(ModelSelection::Auto).unwrap();
+    assert_eq!(auto, serde_json::json!({"mode": "auto"}));
+    assert_eq!(
+        serde_json::from_value::<ModelSelection>(auto).unwrap(),
+        ModelSelection::Auto
+    );
+    let backend_default = ModelSelection::try_backend_default("acp:codex", Default::default())
+        .expect("exact ACP backend");
+    let wire = serde_json::to_value(&backend_default).unwrap();
+    assert_eq!(
+        wire,
+        serde_json::json!({"mode":"backend_default","backend_ref":"acp:codex"})
+    );
+    assert_eq!(
+        serde_json::from_value::<ModelSelection>(wire).unwrap(),
+        backend_default
+    );
+    let target = ModelSelection::Target {
+        target: crate::ModelTarget {
+            model_id: "qwen/qwen3".into(),
+            provider_id: Some("anyrouter".into()),
+            api_dialect: Some("open_ai_chat".into()),
+            protocol_endpoint_id: None,
+            endpoint_name: Some("primary".into()),
+        },
+        backend_ref: "acp:opencode".into(),
+        configuration: Default::default(),
+    };
+    let wire = serde_json::to_value(&target).unwrap();
+    assert_eq!(
+        serde_json::from_value::<ModelSelection>(wire).unwrap(),
+        target,
+        "unresolved target intent must round-trip without becoming a pin"
+    );
+
+    // Cause/effect decision table for target selection admission:
+    // T1 non-empty model/backend + at most one endpoint selector -> accepted;
+    // T2 empty model or backend -> rejected; T3 protocol id + endpoint name ->
+    // rejected. Simplifying the admission predicate must preserve every rule.
+    for invalid in [
+        serde_json::json!({
+            "mode": "target",
+            "target": {"model_id": "", "endpoint_name": "primary"},
+            "backend_ref": "genai"
+        }),
+        serde_json::json!({
+            "mode": "target",
+            "target": {"model_id": "model", "endpoint_name": "primary"},
+            "backend_ref": ""
+        }),
+        serde_json::json!({
+            "mode": "target",
+            "target": {
+                "model_id": "model",
+                "protocol_endpoint_id": "endpoint-id",
+                "endpoint_name": "primary"
+            },
+            "backend_ref": "genai"
+        }),
+    ] {
+        assert!(serde_json::from_value::<ModelSelection>(invalid).is_err());
+    }
+
+    // Cause/effect decision table for the shared ACP selection wire:
+    // W1 default + empty configuration -> compact backward-compatible shape;
+    // W2 exact + native mode/options -> one lossless discriminated union;
+    // W3 provider fields cannot enter either backend-owned variant because
+    // they are absent from the canonical Rust type.
+    let backend_exact = ModelSelection::try_backend_exact(
+        "acp:codex",
+        "gpt-exact",
+        awaken_runtime_contract::resolved::AcpSessionConfiguration {
+            mode: Some("plan".into()),
+            options: [("reasoning_effort".into(), "high".into())]
+                .into_iter()
+                .collect(),
+            working_directory: None,
+        },
+    )
+    .expect("exact ACP selection");
+    let wire = serde_json::to_value(&backend_exact).unwrap();
+    assert_eq!(
+        wire,
+        serde_json::json!({
+            "mode":"backend_exact",
+            "backend_ref":"acp:codex",
+            "model_ref":"gpt-exact",
+            "configuration":{
+                "mode":"plan",
+                "options":{"reasoning_effort":"high"}
+            }
+        }),
+        "W2"
+    );
+    assert_eq!(
+        serde_json::from_value::<ModelSelection>(wire).unwrap(),
+        backend_exact,
+        "W2"
+    );
+}
+
+#[test]
+fn unknown_tool_reference_is_rejected() {
+    let err = compile(&config(&["ghost"]), &[tool("echo")]).unwrap_err();
+    assert_eq!(
+        err,
+        CompileError::UnknownTool {
+            agent: "agent-1".to_string(),
+            tool: "ghost".to_string(),
+        }
+    );
+}
+
+#[test]
+fn publication_pinned_model_provisioning_is_part_of_the_fingerprint() {
+    let cfg = config(&[]);
+    let metadata = || AgentSnapshotMetadata {
+        source: awaken_runtime_contract::AgentConfigRevisionRef {
+            agent_id: awaken_runtime_contract::snapshot::AgentId("agent-1".into()),
+            revision: 1,
+        },
+        ..Default::default()
+    };
+    let candidate = |credential: &str| {
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
+            cfg.model_binding.resolved().unwrap().clone(),
+            "anthropic@1",
+            "primary@1",
+            "workspace-a",
+            Some(
+                awaken_runtime_contract::CredentialAccess::new(
+                    awaken_runtime_contract::CredentialRef {
+                        id: credential.into(),
+                        revision: 1,
+                    },
+                    awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                    awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                    awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                )
+                .with_target(awaken_runtime_contract::CredentialTarget::new(
+                    awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                    "anthropic",
+                )),
+            ),
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "anthropic".into(),
+                api_dialect: "anthropic_messages".into(),
+                base_url: "https://api.example/v1".into(),
+                upstream_model: "model-a".into(),
+                processing_placement: None,
+            },
+        )
+        .expect("coherent fingerprint provider candidate")
+    };
+    let first = compile_published(
+        &cfg,
+        &[],
+        metadata(),
+        candidate("credential-a"),
+        vec![],
+        None,
+    )
+    .unwrap();
+    let second = compile_published(
+        &cfg,
+        &[],
+        metadata(),
+        candidate("credential-b"),
+        vec![],
+        None,
+    )
+    .unwrap();
+    assert_ne!(first.fingerprint, second.fingerprint);
+    let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+        credential: Some(credential),
+        ..
+    } = first.resolved_spec.model_binding.provisioning()
+    else {
+        panic!("provider candidate")
+    };
+    assert_eq!(credential.credential.id, "credential-a");
+}
+
+#[test]
+fn wire_identity_metadata_is_excluded_from_the_fingerprint() {
+    // name / description / metadata are authoring metadata the runtime never
+    // consumes — editing them must NOT mint a new content-address for a
+    // byte-identical snapshot (so a delegation `description` edit is not a republish).
+    let tools = vec![tool("echo")];
+    let base = config(&["echo"]);
+    let base_fp = compile(&base, &tools).unwrap().fingerprint.0.clone();
+
+    let mut labeled = base.clone();
+    labeled.description = Some("routes research questions".to_string());
+    labeled.name = Some("Researcher".to_string());
+    labeled
+        .metadata
+        .insert("team".to_string(), "research".to_string());
+    let labeled_fp = compile(&labeled, &tools).unwrap().fingerprint.0.clone();
+    assert_eq!(
+        base_fp, labeled_fp,
+        "name/description/metadata are excluded from the content-address"
+    );
+
+    // A genuinely behavioral change still moves the fingerprint.
+    let mut rebehaved = base.clone();
+    rebehaved.instructions = "be terse".to_string();
+    let rebehaved_fp = compile(&rebehaved, &tools).unwrap().fingerprint.0.clone();
+    assert_ne!(
+        base_fp, rebehaved_fp,
+        "instructions still enter the fingerprint"
+    );
+}
+
+#[test]
+fn compile_carries_plugin_ids_and_config_sections() {
+    // Cause/effect table: C1 section id is selected -> E1 it enters the
+    // executable snapshot/fingerprint; C2 section is inactive -> E2 it is
+    // retained only in AgentConfig and cannot change the snapshot or
+    // fingerprint; C3 active section value changes -> E3 fingerprint moves;
+    // C4 backend-owned ACP section is active only for an ACP backend.
+    let mut cfg = config(&["echo"]);
+    cfg.plugin_ids = vec!["state_machine".to_string()];
+    cfg.plugin_config.insert(
+        "state_machine".to_string(),
+        serde_json::json!({"machines": []}),
+    );
+    let snapshot = compile(&cfg, &[tool("echo")]).unwrap();
+    let spec = &snapshot.resolved_spec;
+    assert_eq!(spec.plugin_ids, vec!["state_machine".to_string()]);
+    assert_eq!(
+        spec.plugin_config.get("state_machine"),
+        Some(&serde_json::json!({"machines": []}))
+    );
+    let mut inactive = cfg.clone();
+    inactive.plugin_config.insert(
+        "unused".to_string(),
+        serde_json::json!({"secret-free-residue": "different"}),
+    );
+    let inactive_snapshot = compile(&inactive, &[tool("echo")]).unwrap();
+    assert_eq!(inactive_snapshot, snapshot, "C2/E2");
+    assert!(
+        !inactive_snapshot
+            .resolved_spec
+            .plugin_config
+            .contains_key("unused"),
+        "C2/E2"
+    );
+    let mut native_acp_residue = cfg.clone();
+    native_acp_residue
+        .plugin_config
+        .insert("acp".into(), serde_json::json!({"compact_window": 64}));
+    assert_eq!(
+        compile(&native_acp_residue, &[tool("echo")]).unwrap(),
+        snapshot,
+        "C4 native publication ignores ACP-only residue"
+    );
+    let mut acp = native_acp_residue;
+    acp.plugin_ids.clear();
+    acp.plugin_config.remove("state_machine");
+    acp.model_binding = ModelSelection::pinned("p", "m", "acp:claude");
+    let acp_snapshot = compile(&acp, &[tool("echo")]).unwrap();
+    assert_eq!(
+        acp_snapshot.resolved_spec.plugin_config.get("acp"),
+        Some(&serde_json::json!({"compact_window": 64})),
+        "C4 ACP publication retains its backend-owned section"
+    );
+    let mut acp_changed = acp;
+    acp_changed
+        .plugin_config
+        .insert("acp".into(), serde_json::json!({"compact_window": 65}));
+    assert_ne!(
+        acp_snapshot.fingerprint,
+        compile(&acp_changed, &[tool("echo")]).unwrap().fingerprint,
+        "C4 executable ACP config changes its fingerprint"
+    );
+
+    let mut other = cfg;
+    other.plugin_config.insert(
+        "state_machine".to_string(),
+        serde_json::json!({"machines": [{"name": "m"}]}),
+    );
+    assert_ne!(
+        snapshot.fingerprint.0,
+        compile(&other, &[tool("echo")]).unwrap().fingerprint.0,
+        "C3/E3"
+    );
+}
+
+// --- CEG 03 / B1 (compile priority + override masks) ---------------------
+
+#[test]
+fn c3_an_alias_equal_to_the_reserved_tool_search_id_is_rejected() {
+    // C3: the runtime mints `tool_search` for deferred tools; an override alias must
+    // not shadow that reserved id, else the model sees two tools under one face.
+    use crate::config::ToolOverride;
+    use awaken_runtime_contract::resolved::TOOL_SEARCH_ID;
+    let tools = vec![tool("echo")];
+    let mut cfg = config(&["echo"]);
+    cfg.tool_overrides = vec![ToolOverride {
+        target: "echo".into(),
+        alias: Some(TOOL_SEARCH_ID.to_string()),
+        ..Default::default()
+    }];
+    let err = compile(&cfg, &tools).unwrap_err();
+    assert!(
+        matches!(err, CompileError::InvalidToolOverride { .. }),
+        "reserved tool_search alias must be rejected, got {err:?}"
+    );
+}
+
+#[test]
+fn c4_two_tools_aliased_to_one_visible_id_is_rejected() {
+    // C4: two selected tools overridden to the same model-facing id would present
+    // the model two tools under one name — fail-closed, not silently deduped.
+    use crate::config::ToolOverride;
+    let catalog = vec![tool("echo"), tool("read")];
+    let mut cfg = config(&["echo", "read"]);
+    cfg.tool_overrides = vec![
+        ToolOverride {
+            target: "echo".into(),
+            alias: Some("same".into()),
+            ..Default::default()
+        },
+        ToolOverride {
+            target: "read".into(),
+            alias: Some("same".into()),
+            ..Default::default()
+        },
+    ];
+    let err = compile(&cfg, &catalog).unwrap_err();
+    assert!(
+        matches!(err, CompileError::InvalidToolOverride { .. }),
+        "a duplicate model-facing id must be rejected, got {err:?}"
+    );
+}
+
+#[test]
+fn c8_unknown_tool_takes_priority_over_an_unresolved_auto_model() {
+    // C8 (priority chain): tool resolution runs before model resolution, so an
+    // Auto binding *and* an unknown tool must surface the UnknownTool error — the
+    // earlier, more specific failure — not UnresolvedModel.
+    let mut cfg = config(&["ghost"]);
+    cfg.model_binding = ModelSelection::Auto;
+    let err = compile(&cfg, &[tool("echo")]).unwrap_err();
+    assert_eq!(
+        err,
+        CompileError::UnknownTool {
+            agent: "agent-1".to_string(),
+            tool: "ghost".to_string(),
+        },
+        "unknown tool must win over the unresolved model"
+    );
+}
+
+#[test]
+fn c9_an_mcp_override_target_absent_from_the_catalog_passes() {
+    // C9: the `mcp__` prefix masks the "target is not a selected tool" check — MCP
+    // ids are resolved at runtime, so an override for an MCP tool that never appears
+    // in the compile catalog is inert (passes), and being absent it does not enter
+    // the model-facing uniqueness set either.
+    use crate::config::ToolOverride;
+    let tools = vec![tool("echo")];
+    let mut cfg = config(&["echo"]);
+    cfg.tool_overrides = vec![ToolOverride {
+        target: "mcp__gh__create_issue".into(),
+        alias: Some("file_issue".into()),
+        description: Some("Open a GitHub issue.".into()),
+        exposure: Some(awaken_runtime_contract::resolved::ToolExposure::OnDemand),
+    }];
+    let compiled = compile(&cfg, &tools).expect("missing MCP target must compile");
+    // The override still projects into the presentation (applied at runtime).
+    let pres = &compiled.resolved_spec.tool_presentation;
+    assert!(!pres.is_empty());
+    assert_eq!(pres.resolve("file_issue"), "mcp__gh__create_issue");
+}
+
+#[test]
+fn published_config_carries_normalized_agent_integrations() {
+    let mut cfg = config(&[]);
+    cfg.mcp_servers = vec![mcp("docs", "https://mcp.example.test")];
+    cfg.skills = vec![
+        awaken_agent_contract::AgentSkillBinding::custom("skill_docs"),
+        awaken_agent_contract::AgentSkillBinding::custom("skill_release"),
+    ];
+    cfg.multiagent = Some(crate::config::MultiagentConfig {
+        agents: vec![
+            crate::config::MultiagentTarget::Agent {
+                id: "researcher".into(),
+                version: None,
+            },
+            crate::config::MultiagentTarget::Agent {
+                id: "reviewer".into(),
+                version: None,
+            },
+        ],
+    });
+    let delegation =
+        tool("agent_run").with_kind(awaken_runtime_contract::resolved::ToolKind::AgentDelegation);
+    let snapshot = compile(&cfg, &[delegation]).expect("valid integrations compile");
+    let bindings = &snapshot.resolved_spec.plugin_config.agent;
+    assert_eq!(bindings.mcp_servers[0].name, "docs");
+    assert_eq!(
+        bindings
+            .skills
+            .iter()
+            .map(|skill| skill.skill_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["skill_docs", "skill_release"]
+    );
+    assert_eq!(
+        bindings
+            .delegates
+            .iter()
+            .map(|binding| binding.agent_id.0.as_str())
+            .collect::<Vec<_>>(),
+        vec!["researcher", "reviewer"]
+    );
+}
+
+#[test]
+fn invalid_agent_integrations_fail_at_publish_boundary() {
+    let mut cfg = config(&[]);
+    cfg.mcp_servers = vec![mcp("docs", "file:///tmp/x")];
+    let error = compile(&cfg, &[]).unwrap_err();
+    assert!(matches!(
+        error,
+        CompileError::InvalidBinding {
+            axis: "mcp_servers",
+            ..
+        }
+    ));
+    assert_eq!(error.field_path(), "mcp_servers");
+
+    cfg.mcp_servers.clear();
+    cfg.skills = vec![awaken_agent_contract::AgentSkillBinding::custom("")];
+    let error = compile(&cfg, &[]).unwrap_err();
+    assert!(matches!(
+        error,
+        CompileError::InvalidBinding { axis: "skills", .. }
+    ));
+
+    cfg.skills.clear();
+    cfg.multiagent = Some(crate::config::MultiagentConfig {
+        agents: vec![crate::config::MultiagentTarget::Agent {
+            id: "agent-1".into(),
+            version: None,
+        }],
+    });
+    let error = compile(&cfg, &[]).unwrap_err();
+    assert!(matches!(
+        error,
+        CompileError::InvalidBinding {
+            axis: "multiagent",
+            ..
+        }
+    ));
+}
+
+/// Cause/effect graph: public roster target form -> canonical config target
+/// -> compiled delegate id and recursive-self admission bit. Only the sentinel
+/// may resolve to the owner; empty/duplicate/out-of-range rosters fail before
+/// an executable snapshot exists.
+///
+/// | rule | roster | compile effect |
+/// |---|---|---|
+/// | M1 | one `self` | owner id + recursive_self=true |
+/// | M2 | ordinary target | target id + recursive_self=false |
+/// | M3 | explicit owner id | reject |
+/// | M4 | empty / 21 / duplicate-resolved | reject |
+#[test]
+fn multiagent_self_and_cardinality_use_one_canonical_validation_table() {
+    use crate::config::{MultiagentConfig, MultiagentTarget};
+
+    let delegation =
+        tool("agent_run").with_kind(awaken_runtime_contract::resolved::ToolKind::AgentDelegation);
+    let mut cfg = config(&[]);
+    cfg.multiagent = Some(MultiagentConfig {
+        agents: vec![MultiagentTarget::SelfReference],
+    });
+    let snapshot = compile(&cfg, std::slice::from_ref(&delegation)).expect("M1");
+    assert_eq!(
+        snapshot.resolved_spec.plugin_config.agent.delegates,
+        vec![
+            awaken_runtime_contract::agent_bindings::AgentDelegateBinding {
+                agent_id: awaken_runtime_contract::snapshot::AgentId(cfg.id.clone()),
+                source_revision: None,
+                recursive_self: true,
+            }
+        ],
+        "M1"
+    );
+
+    cfg.multiagent = Some(MultiagentConfig {
+        agents: vec![MultiagentTarget::Agent {
+            id: "worker".into(),
+            version: Some(2),
+        }],
+    });
+    let ordinary = compile(&cfg, std::slice::from_ref(&delegation)).expect("M2");
+    assert_eq!(
+        ordinary.resolved_spec.plugin_config.agent.delegates[0].source_revision,
+        Some(2),
+        "M2"
+    );
+    assert!(
+        !ordinary.resolved_spec.plugin_config.agent.delegates[0].recursive_self,
+        "M2"
+    );
+
+    let invalid_rosters = [
+        Vec::new(),
+        vec![MultiagentTarget::Agent {
+            id: cfg.id.clone(),
+            version: Some(1),
+        }],
+        vec![
+            MultiagentTarget::SelfReference,
+            MultiagentTarget::SelfReference,
+        ],
+        (0..21)
+            .map(|index| MultiagentTarget::Agent {
+                id: format!("worker-{index}"),
+                version: Some(1),
+            })
+            .collect(),
+    ];
+    for agents in invalid_rosters {
+        cfg.multiagent = Some(MultiagentConfig { agents });
+        assert!(
+            matches!(
+                compile(&cfg, std::slice::from_ref(&delegation)),
+                Err(CompileError::InvalidBinding {
+                    axis: "multiagent",
+                    ..
+                })
+            ),
+            "M3/M4"
+        );
+    }
+}
+
+#[test]
+fn advisor_is_distinct_from_delegation_and_requires_one_exact_candidate() {
+    // Cause/effect graph: advisor authoring selects the reserved service
+    // capability and its publication candidate; ordinary targets alone
+    // select agent_run. The official 20-entry roster limit counts every
+    // target, including the advisor.
+    //
+    // Decision table:
+    // | Rule | ordinary | advisor | candidate | effect                     |
+    // | V1   | 0        | 1       | exact     | advisor only, replay-safe  |
+    // | V2   | 19       | 1       | exact     | both; 20 total accepted   |
+    // | V3   | 20       | 1       | exact     | reject 21-entry roster    |
+    // | V4   | 0        | 1       | absent    | reject publication        |
+    // | V5   | 0        | 2       | exact     | reject roster             |
+    // | V6   | 0        | 1       | route B   | different fingerprint     |
+    // | V7   | collision| 1       | ambiguous | reject publication        |
+    // Constraints/invariants: at most one Advisor occupies one roster slot,
+    // owns a pinned candidate, and never aliases ordinary agent delegation.
+    use crate::config::{MultiagentConfig, MultiagentTarget};
+
+    let delegation =
+        tool("agent_run").with_kind(awaken_runtime_contract::resolved::ToolKind::AgentDelegation);
+    let advisor_candidate = ResolvedModelCandidate::host(
+        awaken_runtime_contract::resolved::ModelBinding::new("p", "advisor", "b"),
+    );
+    let mut cfg = config(&[]);
+    cfg.multiagent = Some(MultiagentConfig {
+        agents: vec![MultiagentTarget::Advisor {
+            model: "claude-opus-5".into(),
+        }],
+    });
+    let provider_candidate = |route_ref: &str| {
+        ResolvedModelCandidate::try_provider(
+            cfg.model_binding.resolved().unwrap().clone(),
+            "provider@1",
+            route_ref,
+            "workspace-a",
+            None,
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "test".into(),
+                api_dialect: "test".into(),
+                base_url: "https://provider.invalid".into(),
+                upstream_model: "m".into(),
+                processing_placement: None,
+            },
+        )
+        .expect("coherent advisor-collision fixture")
+    };
+    let primary = provider_candidate("route-a@1");
+    let advisor_only = compile_published(
+        &cfg,
+        std::slice::from_ref(&delegation),
+        AgentSnapshotMetadata::default(),
+        primary.clone(),
+        vec![],
+        Some(advisor_candidate.clone()),
+    )
+    .expect("V1");
+    let advisor_only_fingerprint = advisor_only.fingerprint.clone();
+    assert!(
+        advisor_only
+            .resolved_spec
+            .plugin_config
+            .agent
+            .delegates
+            .is_empty()
+    );
+    assert_eq!(
+        advisor_only
+            .resolved_spec
+            .plugin_config
+            .agent
+            .advisor
+            .as_ref()
+            .unwrap()
+            .candidate,
+        advisor_candidate,
+        "V1"
+    );
+    assert!(
+        advisor_only
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .any(|descriptor| descriptor.kind == ToolKind::Advisor)
+    );
+    assert_eq!(
+        advisor_only
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .find(|descriptor| descriptor.kind == ToolKind::Advisor)
+            .unwrap()
+            .recovery_policy
+            .mode(),
+        awaken_runtime_contract::tool::ToolRecoveryMode::DurableRequest,
+        "V1"
+    );
+    assert!(
+        !advisor_only
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .any(|descriptor| descriptor.kind == ToolKind::AgentDelegation)
+    );
+
+    let alternate_advisor = ResolvedModelCandidate::host(
+        awaken_runtime_contract::resolved::ModelBinding::new("p", "advisor", "route-b"),
+    );
+    let alternate = compile_published(
+        &cfg,
+        std::slice::from_ref(&delegation),
+        AgentSnapshotMetadata::default(),
+        primary.clone(),
+        vec![],
+        Some(alternate_advisor),
+    )
+    .expect("V6");
+    assert_ne!(alternate.fingerprint, advisor_only_fingerprint, "V6");
+
+    let ambiguous_advisor = provider_candidate("route-b@1");
+    assert!(
+        matches!(
+            compile_published(
+                &cfg,
+                std::slice::from_ref(&delegation),
+                AgentSnapshotMetadata::default(),
+                primary.clone(),
+                vec![],
+                Some(ambiguous_advisor),
+            ),
+            Err(CompileError::InvalidResolvedModels { .. })
+        ),
+        "V7"
+    );
+
+    cfg.multiagent = Some(MultiagentConfig {
+        agents: (0..19)
+            .map(|index| MultiagentTarget::Agent {
+                id: format!("worker-{index}"),
+                version: Some(1),
+            })
+            .chain(std::iter::once(MultiagentTarget::Advisor {
+                model: "claude-opus-5".into(),
+            }))
+            .collect(),
+    });
+    let both = compile_published(
+        &cfg,
+        std::slice::from_ref(&delegation),
+        AgentSnapshotMetadata::default(),
+        primary.clone(),
+        vec![],
+        Some(advisor_candidate.clone()),
+    )
+    .expect("V2");
+    assert_eq!(both.resolved_spec.plugin_config.agent.delegates.len(), 19);
+    assert!(
+        both.resolved_spec
+            .tool_descriptors
+            .iter()
+            .any(|descriptor| descriptor.kind == ToolKind::AgentDelegation)
+    );
+
+    cfg.multiagent = Some(MultiagentConfig {
+        agents: (0..20)
+            .map(|index| MultiagentTarget::Agent {
+                id: format!("worker-{index}"),
+                version: Some(1),
+            })
+            .chain(std::iter::once(MultiagentTarget::Advisor {
+                model: "claude-opus-5".into(),
+            }))
+            .collect(),
+    });
+    assert!(
+        matches!(
+            compile_published(
+                &cfg,
+                std::slice::from_ref(&delegation),
+                AgentSnapshotMetadata::default(),
+                primary.clone(),
+                vec![],
+                Some(advisor_candidate.clone()),
+            ),
+            Err(CompileError::InvalidBinding {
+                axis: "multiagent",
+                ..
+            })
+        ),
+        "V3"
+    );
+
+    cfg.multiagent = Some(MultiagentConfig {
+        agents: vec![MultiagentTarget::Advisor {
+            model: "claude-opus-5".into(),
+        }],
+    });
+
+    assert!(
+        matches!(
+            compile_published(
+                &cfg,
+                std::slice::from_ref(&delegation),
+                AgentSnapshotMetadata::default(),
+                primary.clone(),
+                vec![],
+                None,
+            ),
+            Err(CompileError::InvalidBinding {
+                axis: "multiagent",
+                ..
+            })
+        ),
+        "V4"
+    );
+
+    cfg.multiagent = Some(MultiagentConfig {
+        agents: vec![
+            MultiagentTarget::Advisor {
+                model: "claude-opus-5".into(),
+            },
+            MultiagentTarget::Advisor {
+                model: "claude-fable-5".into(),
+            },
+        ],
+    });
+    assert!(
+        matches!(
+            compile_published(
+                &cfg,
+                std::slice::from_ref(&delegation),
+                AgentSnapshotMetadata::default(),
+                primary,
+                vec![],
+                Some(advisor_candidate),
+            ),
+            Err(CompileError::InvalidBinding {
+                axis: "multiagent",
+                ..
+            })
+        ),
+        "V5"
+    );
+}
+
+// --- CEG 03 / B2 (tool-id pattern authority) -----------------------------
+
+#[test]
+fn tool_id_patterns_cover_prefix_middle_exact_empty_and_escape() {
+    // Causes: C1 a trailing/middle `*`; C2 an exact/empty pattern; C3 an
+    // escaped `*`; C4 a candidate that violates the anchored literal parts.
+    // Effects: E1 matching catalog ids are selected; E2 C4/nonmatching ids
+    // are rejected; E3 escaped metacharacters remain literal.
+    // Constraint/invariant: Agent publication delegates to the shared
+    // `awaken-tool-pattern` grammar; it must not maintain a second matcher.
+    // Decision rules: P1 C1+aligned=>E1; P2 C1+C4=>E2; P3 C2 exact=>E1;
+    // P4 C2 mismatch=>E2; P5 C3 literal star=>E3; P6 C3 wildcard=>E2.
+    assert!(tool_id_match("fs_*", "fs_read"), "P1");
+    assert!(!tool_id_match("fs_*", "net_fs"), "P2");
+    assert!(tool_id_match("", ""), "P3");
+    assert!(!tool_id_match("", "x"), "P4");
+    assert!(tool_id_match("a*c", "abc"), "P1");
+    assert!(tool_id_match("a*c", "ac"), "P1");
+    assert!(tool_id_match("a*c", "abbbc"), "P1");
+    assert!(!tool_id_match("a*c", "abd"), "P2");
+    assert!(tool_id_match("fs_read", "fs_read"), "P3");
+    assert!(!tool_id_match("fs_read", "fs_reads"), "P4");
+    assert!(tool_id_match(r"literal\*tool", "literal*tool"), "P5");
+    assert!(!tool_id_match(r"literal\*tool", "literalXtool"), "P6");
+}
+
+// --- CEG 03 / B5 (ModelSelection) ----------------------------------------
+
+#[test]
+fn model_selection_resolved_reports_pinned_and_policy_variants() {
+    // Cause graph: Pinned already carries a concrete binding; Auto and
+    // BackendDefault require publication resolution. Neither policy may be
+    // mistaken for the other.
+    //
+    // Decision table:
+    // M1 Pinned         -> resolved Some, not auto, no backend default
+    // M2 Auto           -> resolved None, auto, no backend default
+    // M3 BackendDefault -> resolved None, not auto, exact backend ref
+    // Wire shapes are covered by
+    // `pinned_selection_is_wire_identical_to_the_flat_triple`.
+    let pinned = ModelSelection::pinned("p", "m", "b");
+    assert_eq!(pinned.resolved(), Some(&ModelBinding::new("p", "m", "b")));
+    assert!(!pinned.is_auto());
+    assert_eq!(pinned.backend_default_ref(), None);
+    assert_eq!(ModelSelection::Auto.resolved(), None);
+    assert!(ModelSelection::Auto.is_auto());
+    assert_eq!(ModelSelection::Auto.backend_default_ref(), None);
+    let backend_default = ModelSelection::try_backend_default("acp:codex", Default::default())
+        .expect("exact ACP backend");
+    assert_eq!(backend_default.resolved(), None);
+    assert!(!backend_default.is_auto());
+    assert_eq!(backend_default.backend_default_ref(), Some("acp:codex"));
+}
+
+// --- CEG 03 / B6 (CompileError::field_path) ------------------------------
+
+#[test]
+fn compile_error_field_path_routes_each_variant() {
+    assert_eq!(
+        CompileError::UnknownTool {
+            agent: "a".into(),
+            tool: "t".into()
+        }
+        .field_path(),
+        "tools"
+    );
+    assert_eq!(
+        CompileError::UnresolvedModel { agent: "a".into() }.field_path(),
+        "model"
+    );
+    assert_eq!(
+        CompileError::InvalidToolOverride {
+            agent: "a".into(),
+            reason: "r".into()
+        }
+        .field_path(),
+        "tool_overrides"
+    );
+    assert_eq!(CompileError::Serialize("boom".into()).field_path(), "");
+}

@@ -60,6 +60,14 @@ pub awaken_protocol_ai_sdk::types::UIStreamEvent::ReasoningEnd
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::ReasoningEnd::id: alloc::string::String
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::ReasoningStart
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::ReasoningStart::id: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::SourceDocument
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::SourceDocument::media_type: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::SourceDocument::source_id: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::SourceDocument::title: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::SourceUrl
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::SourceUrl::source_id: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::SourceUrl::title: core::option::Option<alloc::string::String>
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::SourceUrl::url: alloc::string::String
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::Start
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::StartStep
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::TextDelta
@@ -116,6 +124,7 @@ pub struct awaken_protocol_ai_sdk::types::Usage
 pub awaken_protocol_ai_sdk::types::Usage::input_tokens: u64
 pub awaken_protocol_ai_sdk::types::Usage::output_tokens: u64
 pub awaken_protocol_ai_sdk::types::Usage::total_tokens: u64
+pub fn awaken_protocol_ai_sdk::types::assistant_parts(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn awaken_protocol_ai_sdk::types::attach_usage(&mut [awaken_protocol_ai_sdk::types::UIStreamEvent], (u64, u64))
 pub fn awaken_protocol_ai_sdk::types::history_message(&str, &str, alloc::vec::Vec<serde_json::value::Value>) -> serde_json::value::Value
 pub fn awaken_protocol_ai_sdk::types::text_parts(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::vec::Vec<serde_json::value::Value>
@@ -130,6 +139,14 @@ pub awaken_protocol_ai_sdk::UIStreamEvent::ReasoningEnd
 pub awaken_protocol_ai_sdk::UIStreamEvent::ReasoningEnd::id: alloc::string::String
 pub awaken_protocol_ai_sdk::UIStreamEvent::ReasoningStart
 pub awaken_protocol_ai_sdk::UIStreamEvent::ReasoningStart::id: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::SourceDocument
+pub awaken_protocol_ai_sdk::UIStreamEvent::SourceDocument::media_type: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::SourceDocument::source_id: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::SourceDocument::title: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::SourceUrl
+pub awaken_protocol_ai_sdk::UIStreamEvent::SourceUrl::source_id: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::SourceUrl::title: core::option::Option<alloc::string::String>
+pub awaken_protocol_ai_sdk::UIStreamEvent::SourceUrl::url: alloc::string::String
 pub awaken_protocol_ai_sdk::UIStreamEvent::Start
 pub awaken_protocol_ai_sdk::UIStreamEvent::StartStep
 pub awaken_protocol_ai_sdk::UIStreamEvent::TextDelta

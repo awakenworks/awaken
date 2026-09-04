@@ -439,6 +439,20 @@ pub awaken_run_ingress_contract::LeaseLossReason::Cancelled
 pub awaken_run_ingress_contract::LeaseLossReason::Expired
 pub awaken_run_ingress_contract::LeaseLossReason::Relinquished
 pub awaken_run_ingress_contract::LeaseLossReason::RetryExhausted
+pub enum awaken_run_ingress_contract::PhysicalAttemptSlot
+pub awaken_run_ingress_contract::PhysicalAttemptSlot::Corrupt
+pub awaken_run_ingress_contract::PhysicalAttemptSlot::Empty
+pub awaken_run_ingress_contract::PhysicalAttemptSlot::ExactClaim
+pub awaken_run_ingress_contract::PhysicalAttemptSlot::OtherClaim
+impl awaken_run_ingress_contract::PhysicalAttemptSlot
+pub const fn awaken_run_ingress_contract::PhysicalAttemptSlot::from_facts(bool, bool, bool, bool) -> Self
+pub enum awaken_run_ingress_contract::PhysicalAttemptTransition
+pub awaken_run_ingress_contract::PhysicalAttemptTransition::Blocked
+pub awaken_run_ingress_contract::PhysicalAttemptTransition::Clear
+pub awaken_run_ingress_contract::PhysicalAttemptTransition::Corrupt
+pub awaken_run_ingress_contract::PhysicalAttemptTransition::Fenced
+pub awaken_run_ingress_contract::PhysicalAttemptTransition::Install
+pub awaken_run_ingress_contract::PhysicalAttemptTransition::Stutter
 pub enum awaken_run_ingress_contract::ResourceOperationFence
 pub awaken_run_ingress_contract::ResourceOperationFence::CheckpointRelease(awaken_session_contract::environment::SessionEnvironmentOperation)
 pub awaken_run_ingress_contract::ResourceOperationFence::Run(awaken_run_ingress_contract::dispatch::RunClaim)
@@ -512,11 +526,11 @@ impl awaken_run_ingress_contract::ClaimedCommitRequest
 pub fn awaken_run_ingress_contract::ClaimedCommitRequest::new(awaken_run_ingress_contract::dispatch::ClaimedCommitCommand, awaken_worker_contract::registry::WorkerIdentity) -> Self
 pub struct awaken_run_ingress_contract::ClaimedSessionControlError(_)
 impl awaken_run_ingress_contract::ClaimedSessionControlError
-pub const fn awaken_run_ingress_contract::ClaimedSessionControlError::disposition(&self) -> awaken_session_contract::session_realization::SessionRealizationControlDisposition
+pub const fn awaken_run_ingress_contract::ClaimedSessionControlError::disposition(&self) -> awaken_session_contract::session_realization::control_failure::SessionRealizationControlDisposition
 pub const fn awaken_run_ingress_contract::ClaimedSessionControlError::is_not_ready(&self) -> bool
 pub fn awaken_run_ingress_contract::ClaimedSessionControlError::new(impl core::convert::Into<alloc::string::String>) -> Self
-impl core::convert::From<awaken_session_contract::session_realization::SessionRealizationControlFailure> for awaken_run_ingress_contract::ClaimedSessionControlError
-pub fn awaken_run_ingress_contract::ClaimedSessionControlError::from(awaken_session_contract::session_realization::SessionRealizationControlFailure) -> Self
+impl core::convert::From<awaken_session_contract::session_realization::control_failure::SessionRealizationControlFailure> for awaken_run_ingress_contract::ClaimedSessionControlError
+pub fn awaken_run_ingress_contract::ClaimedSessionControlError::from(awaken_session_contract::session_realization::control_failure::SessionRealizationControlFailure) -> Self
 pub struct awaken_run_ingress_contract::CommitEpochGuard
 impl awaken_run_ingress_contract::dispatch::CommitEpochGuard
 pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::cancellation_requested(&self) -> bool
@@ -785,7 +799,9 @@ pub fn awaken_run_ingress_contract::Outbox::relay<'life0, 'async_trait>(&'life0 
 pub fn awaken_run_ingress_contract::Outbox::relay_and_enqueue<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::PendingInput, awaken_run_ingress_contract::run_dispatch::RunDispatch, awaken_run_ingress_contract::dispatch::ContinuationAdmission) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::Outbox::stage<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::Outbox::stage_session_resume<'life0, 'life1, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::PendingInput, &'life1 awaken_agent_contract::agent::thread::Id, core::option::Option<u64>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub const fn awaken_run_ingress_contract::begin_physical_attempt(bool, awaken_run_ingress_contract::PhysicalAttemptSlot) -> awaken_run_ingress_contract::PhysicalAttemptTransition
 pub fn awaken_run_ingress_contract::compile_attempt_credential_bindings(&awaken_run_ingress_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_run_ingress_contract::DispatchCredentialAdmissionError>
+pub const fn awaken_run_ingress_contract::finish_physical_attempt(awaken_run_ingress_contract::PhysicalAttemptSlot) -> awaken_run_ingress_contract::PhysicalAttemptTransition
 pub fn awaken_run_ingress_contract::retry_exhaustion_eligible(awaken_run_ingress_contract::dispatch::DispatchState, core::option::Option<u64>, u64, u64, u64) -> bool
 pub const fn awaken_run_ingress_contract::session_run_replacement_candidate_is_safe(awaken_run_ingress_contract::dispatch::DispatchState) -> bool
 pub fn awaken_run_ingress_contract::worker_credential_realization_capabilities(&awaken_worker_contract::registry::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, awaken_runtime_contract::credential::AttemptCredentialBindingError>

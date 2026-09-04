@@ -231,3 +231,5 @@ pub fn awaken_worker_contract::place(&dyn awaken_worker_contract::PlacementPolic
 pub fn awaken_worker_contract::place_assignment(&dyn awaken_worker_contract::PlacementPolicy, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot], core::option::Option<&awaken_worker_contract::WorkerAssignment>, bool, u64) -> core::result::Result<awaken_worker_contract::RankedWorker, awaken_worker_contract::PlacementError>
 pub const fn awaken_worker_contract::process_ready_after_startup(awaken_worker_contract::DynamicEvidenceProbeState) -> bool
 pub const fn awaken_worker_contract::sandbox_tool_recovery_is_compatible(awaken_runtime_contract::tool::ToolRecoveryMode, awaken_runtime_contract::tool::ToolRecoveryCapability) -> bool
+pub const fn awaken_worker_contract::worker_heartbeat_admission(bool, bool, bool, bool, awaken_worker_contract::WorkerState) -> awaken_worker_contract::RegistryMutation
+pub const fn awaken_worker_contract::worker_slot_is_replaceable(awaken_worker_contract::WorkerState, u64, u64) -> bool

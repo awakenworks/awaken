@@ -1315,6 +1315,10 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires Linux mount-namespace path fidelity"
+)]
 async fn live_file_replacement_requires_the_exact_resource_transition() {
     let storage = tempfile::tempdir().expect("storage");
     let mut raw_host =

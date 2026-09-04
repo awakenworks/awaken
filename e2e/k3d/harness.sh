@@ -292,12 +292,11 @@ k3d_import_images() {
   coredns_image=${coredns_image:-rancher/mirrored-coredns-coredns:1.10.1}
 
   local images=("$pause_image" "$coredns_image" "$@")
-  local unique=() image existing
+  local unique=() image existing candidate_index
   for image in "${images[@]}"; do
     existing=0
-    local candidate
-    for candidate in "${unique[@]}"; do
-      [[ "$candidate" = "$image" ]] && existing=1 && break
+    for ((candidate_index = 0; candidate_index < ${#unique[@]}; candidate_index++)); do
+      [[ "${unique[$candidate_index]}" = "$image" ]] && existing=1 && break
     done
     (( existing == 0 )) && unique+=("$image")
   done
@@ -572,13 +571,13 @@ k3d_harness_selftest() (
   (( ${#docker_saves[@]} == 4 ))
   [[ "${docker_saves[*]}" = *"--platform $K3D_PLATFORM"* ]]
   [[ "${k3d_calls[0]}" = image\ import* ]]
-  [[ "${docker_execs[-1]}" = "exec k3d-awaken-test-server-0 find /k3d/images -mindepth 1 -maxdepth 1 -type f -delete" ]]
+  [[ "${docker_execs[${#docker_execs[@]} - 1]}" = "exec k3d-awaken-test-server-0 find /k3d/images -mindepth 1 -maxdepth 1 -type f -delete" ]]
 
   unset AWAKEN_K3D_BUILD_NETWORK
   k3d_docker_build --load -t fixture:latest .
-  [[ "${docker_builds[-1]}" = "build --load -t fixture:latest ." ]]
+  [[ "${docker_builds[${#docker_builds[@]} - 1]}" = "build --load -t fixture:latest ." ]]
   AWAKEN_K3D_BUILD_NETWORK=host k3d_docker_build --load -t fixture:latest .
-  [[ "${docker_builds[-1]}" = "build --network host --load -t fixture:latest ." ]]
+  [[ "${docker_builds[${#docker_builds[@]} - 1]}" = "build --network host --load -t fixture:latest ." ]]
 )
 
 if [[ "${BASH_SOURCE[0]}" = "$0" ]]; then

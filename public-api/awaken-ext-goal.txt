@@ -16,6 +16,8 @@ pub awaken_ext_goal::controller::Error::Persistence(alloc::string::String)
 pub awaken_ext_goal::controller::Error::Serialization(alloc::string::String)
 pub awaken_ext_goal::controller::Error::WorkerAwaiting
 pub awaken_ext_goal::controller::Error::WorkerAwaiting::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_ext_goal::controller::Error::WorkerRunning
+pub awaken_ext_goal::controller::Error::WorkerRunning::run_id: awaken_agent_contract::agent::run::Id
 impl core::error::Error for awaken_ext_goal::controller::Error
 impl core::fmt::Display for awaken_ext_goal::controller::Error
 pub fn awaken_ext_goal::controller::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result

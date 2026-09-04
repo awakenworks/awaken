@@ -10,6 +10,7 @@ pub use awaken_cli::TokenSpec
 pub use awaken_cli::block_on_service
 pub use awaken_cli::embedded_iam
 pub mod awaken_cli::config
+pub use awaken_cli::config::Role
 pub use awaken_cli::config::WorkerBootstrap
 pub enum awaken_cli::config::CloudModelMode
 pub awaken_cli::config::CloudModelMode::Disabled
@@ -31,14 +32,6 @@ pub awaken_cli::config::ResourceStoreBackend::PostgresObject::object: awaken_fil
 pub awaken_cli::config::ResourceStoreBackend::PostgresObject::url: alloc::string::String
 impl awaken_cli::config::ResourceStoreBackend
 pub fn awaken_cli::config::ResourceStoreBackend::is_shared(&self) -> bool
-pub enum awaken_cli::config::Role
-pub awaken_cli::config::Role::AllInOne
-pub awaken_cli::config::Role::Control
-pub awaken_cli::config::Role::Coordinator
-pub awaken_cli::config::Role::Worker
-impl awaken_cli::config::Role
-pub fn awaken_cli::config::Role::as_str(self) -> &'static str
-pub fn awaken_cli::config::Role::mounts_managed_runtime(self) -> bool
 pub enum awaken_cli::config::SealKeySource
 pub awaken_cli::config::SealKeySource::File(std::path::PathBuf)
 pub awaken_cli::config::SealKeySource::Inline(alloc::string::String)
@@ -69,7 +62,7 @@ pub awaken_cli::config::ConfigOverrides::data_dir: core::option::Option<std::pat
 pub awaken_cli::config::ConfigOverrides::identity_mode: core::option::Option<awaken_control::authz::ManagementIdentityMode>
 pub awaken_cli::config::ConfigOverrides::no_browser: core::option::Option<bool>
 pub awaken_cli::config::ConfigOverrides::port: core::option::Option<u16>
-pub awaken_cli::config::ConfigOverrides::role: core::option::Option<awaken_cli::config::Role>
+pub awaken_cli::config::ConfigOverrides::role: core::option::Option<awaken_service_lifecycle::ProcessRole>
 pub awaken_cli::config::ConfigOverrides::worker_server: core::option::Option<alloc::string::String>
 pub struct awaken_cli::config::ControlServiceConfig
 impl awaken_cli::config::ControlServiceConfig
@@ -109,7 +102,7 @@ pub awaken_cli::config::ResolvedDeployment::observability: awaken_observability:
 pub awaken_cli::config::ResolvedDeployment::org_id: alloc::string::String
 pub awaken_cli::config::ResolvedDeployment::origins: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_cli::config::ResolvedDeployment::resources: awaken_cli::config::ResourceStoreBackend
-pub awaken_cli::config::ResolvedDeployment::role: awaken_cli::config::Role
+pub awaken_cli::config::ResolvedDeployment::role: awaken_service_lifecycle::ProcessRole
 pub awaken_cli::config::ResolvedDeployment::run_local_pool: bool
 pub awaken_cli::config::ResolvedDeployment::runtime: awaken_runtime_host::deployment_config::DeploymentConfig
 pub awaken_cli::config::ResolvedDeployment::seal_key: awaken_cli::config::SealKeySource

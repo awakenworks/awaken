@@ -4036,6 +4036,12 @@ async fn cold_supervisor_continues_only_the_thread_owned_outcome_truth() {
         Some(("ship".into(), "file_rubric".into(), 3)),
         "C1/E1 execution lowering applies the existing default only at effect time"
     );
+    let mut in_flight = durable.clone();
+    in_flight.execution = awaken_session_contract::SessionExecutionState::Running;
+    assert!(
+        !in_flight.needs_outcome_reconciliation(),
+        "C1: a retained Outcome cannot replay its stable Worker Run while Session activity is in flight"
+    );
     drop(warm);
 
     let cold = application_with_runtime(

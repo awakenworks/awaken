@@ -539,7 +539,7 @@ pub async fn build_acp_sandboxed_router_with_deployment(
         .map_host_async(|host| async move {
             host.with_acp_launch_source(
                 awaken_worker::relay_hand_executor_factory(),
-                awaken_runtime_host::LaunchSource::Fixed(launch),
+                awaken_runtime_host::LaunchSource::Fixed(Box::new(launch)),
             )
             .await
         })
@@ -630,9 +630,9 @@ pub async fn build_acp_container_router() -> Router {
                 },
             ],
         );
-        let launch = awaken_runtime_host::LaunchSource::Fixed(
+        let launch = awaken_runtime_host::LaunchSource::Fixed(Box::new(
             awaken_run_executor_acp::AcpLaunch::custom(vec!["/bin/false".into()], vec![]),
-        );
+        ));
         (publication, launch, Arc::new(NativePlaywrightMcpModel))
     } else if playwright_mcp {
         let fixture_cli = playwright_mcp_fixture_cli();
@@ -665,9 +665,9 @@ pub async fn build_acp_container_router() -> Router {
         let argv = scenario_argv(
             &std::env::var("AWAKEN_ACP_ARGV").expect("container scenario requires AWAKEN_ACP_ARGV"),
         );
-        let launch = awaken_runtime_host::LaunchSource::Fixed(
+        let launch = awaken_runtime_host::LaunchSource::Fixed(Box::new(
             awaken_run_executor_acp::AcpLaunch::custom(argv, vec![]),
-        );
+        ));
         (publication, launch, Arc::new(EchoModel))
     };
     let host_publication = publication.clone();

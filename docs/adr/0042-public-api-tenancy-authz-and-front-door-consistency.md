@@ -326,21 +326,19 @@ is explicitly closed, future policy changes still update the one Coordinator
 constant and its same profile projection—never a second field, store, or
 fallback.
 
-## Amendment (2026-09-03): Pending AI SDK responses use a least-authority capability
+## Amendment (2026-09-03): Pending execution responses remain consumer commands
 
-An application grant may include `thread.respond` independently of
-`thread.run`. It is limited to the AI SDK Thread Run route for one bound Thread
-and only when the final message is an assistant message containing a pending
-approval response or client-tool result. The existing application PEP rewrites
-that already-classified request to the narrower operation before grant
-evaluation; there is no second route, credential, proxy, or protocol decoder.
+Application grants retain two operations only: `thread.run` for an interactive
+turn and `thread.messages.read` for bound history. A consuming product may render
+standard AI SDK message parts, but a pending execution approval or client-tool
+result must return through that product's existing execution-command boundary.
+Awaken does not infer consumer authority from message shape or expose a parallel
+response-only application operation.
 
-This capability exists so a product can render read-only execution history and
-still resolve a pending action through standard AI SDK message parts without
-granting authority to append an arbitrary user turn. The canonical AI SDK
-decoder and Runtime remain responsible for exact committed-history and pending
-tool validation. Session issuance applies the existing runnable/nonterminal
-fence to both `thread.run` and `thread.respond`.
+This supersedes the briefly introduced response-only permission. It removes the
+route reclassification and request-body policy from the application PEP, keeps
+read-only history genuinely read-only, and leaves each execution owner to fence
+responses against its committed awaiting state and idempotency identity.
 
 ## References
 

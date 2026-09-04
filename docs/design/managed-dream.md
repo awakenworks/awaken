@@ -76,7 +76,6 @@ path.
 | `BuiltInDreamAgent` | server composition | snapshots inputs, exports JSONL, contributes an ordinary Session, executes and cleans up |
 | `SessionTranscriptJsonlExporter` | server composition | deterministic committed-Message JSONL encoding |
 | `MemoryStoreContentSnapshot` | server composition | names one exact set of source heads used for both input and output |
-| `ExclusiveMemoryStoreWriterLease` | server composition | keeps the result catalog-gated until the auxiliary writer terminates |
 
 No `DreamAgentState`, `MemoryCompactAgent`, alternate transcript schema store, or
 parallel output import/harvest implementation exists.
@@ -308,14 +307,14 @@ worker
   -> derive deterministic snapshot/result/Session ids from Dream id
   -> reclaim an uncommitted partial clone, or reuse an existing prepared result
   -> atomically snapshot source; clone snapshot and result
-  -> Resources application creates result as Suspended (exclusive writer fence)
+  -> Resources application creates an active result for the ordinary Session binding
   -> export JSONL Files
   -> create/realize ordinary auxiliary Session with strict mounts
   -> persist output and Session references
   -> execute one idempotently identified ordinary user event
   -> revalidate every input (archive/delete during execution is a typed failure)
   -> durably record terminal outcome with cleanup_pending
-  -> archive auxiliary Session, activate result, purge hidden snapshot and JSONL Files
+  -> archive auxiliary Session, purge hidden snapshot and JSONL Files
   -> clear cleanup_pending; only now publish Completed or Failed
 ```
 
@@ -338,7 +337,7 @@ does not stop the other family on later ticks.
 
 Cancel immediately and durably sets a pending/running job to `canceled`, sets
 `ended_at`, signals the worker, interrupts and archives an existing auxiliary
-Session, releases the result availability fence, and retains the result store.
+Session, and retains a successfully prepared result store.
 Repeated cancel is idempotent. Canceling `completed` or `failed` returns 400;
 late worker completion cannot overwrite `canceled`.
 
@@ -348,7 +347,9 @@ Transient JSONL Files have already been purged at the terminal cleanup boundary.
 
 ## Failure and consistency boundaries
 
-- Source Memory and transcript mounts are read-only; result is the only writable mount.
+- Caller-owned source Memory and transcript truth are immutable. The private input snapshot and
+  transcript copies may be writable where a Workdir provider cannot enforce read-only mounts;
+  result is the only mount whose writes are published.
 - Source and result have independent ids and file histories.
 - The same atomic Memory snapshot initializes both frozen input and result.
 - A result mount is write-through or the Agent never starts.

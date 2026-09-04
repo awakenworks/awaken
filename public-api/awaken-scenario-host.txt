@@ -87,6 +87,7 @@ pub fn awaken_scenario_host::build_acp_relaunch_failure_router() -> axum::routin
 pub fn awaken_scenario_host::build_acp_router() -> axum::routing::Router
 pub async fn awaken_scenario_host::build_acp_sandboxed_router() -> axum::routing::Router
 pub async fn awaken_scenario_host::build_acp_sandboxed_router_with_deployment(awaken_runtime_host::deployment_config::DeploymentConfig) -> axum::routing::Router
+pub async fn awaken_scenario_host::build_acp_tool_bridge_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_compaction_router() -> axum::routing::Router
 pub async fn awaken_scenario_host::build_config_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_custom_router() -> axum::routing::Router

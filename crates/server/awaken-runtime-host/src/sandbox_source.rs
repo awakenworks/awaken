@@ -1001,7 +1001,10 @@ mod tests {
             });
             let source = BoundLocalChannelSource {
                 sandbox: sandbox.clone(),
-                launch: LaunchSource::Fixed(AcpLaunch::custom(vec!["fixture".into()], vec![])),
+                launch: LaunchSource::Fixed(Box::new(AcpLaunch::custom(
+                    vec!["fixture".into()],
+                    vec![],
+                ))),
                 codec: awaken_run_executor_acp::Codec::Newline,
                 backend: awaken_runtime_contract::resolved::Backend::from_ref("acp:fixture"),
                 mcp_servers: Vec::new(),

@@ -1,7 +1,7 @@
 //! Embedded IAM over the management plane (ADR-0042/0043 P1): the admin +
 //! vault surfaces behind bearer `ApiToken` authn and preset-role authz.
 //!
-//! Uses `build_secured_all_in_one_router` (explicit dir + key, env-free) so the
+//! Uses `shared_secured_all_in_one_router` (explicit dir + key, env-free) so the
 //! tests cannot race other tests on process-global env vars, and the returned
 //! [`ManagementAuthz`] handle to mint non-admin tokens. Trust-model pins:
 //! missing/garbage/expired tokens 401 in the Managed `ErrorResponse` envelope;
@@ -13,7 +13,7 @@
 
 use awaken_cli::{
     ADMIN_TOKEN_FILE, BOOTSTRAP_WORKSPACE, TokenSpec, build_durable_all_in_one_router,
-    build_secured_all_in_one_router,
+    build_secured_all_in_one_router as build_isolated_secured_all_in_one_router,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -22,6 +22,62 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const KEY: [u8; 32] = [9u8; 32];
+
+// Each all-in-one router owns several independent SQLite pools. Running every
+// full-deployment test at once can exceed the default macOS file-descriptor
+// limit before a test gets to exercise authorization. Keep this integration
+// binary deterministic without changing production pool sizing or requiring a
+// machine-specific ulimit.
+static LOCAL_DEPLOYMENT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static TEST_RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+
+struct SharedSecuredDeployment {
+    app: axum::Router,
+    iam: std::sync::Arc<awaken_cli::ManagementAuthz>,
+    admin_token: String,
+    _directory: tempfile::TempDir,
+}
+
+static SHARED_SECURED_DEPLOYMENT: tokio::sync::OnceCell<SharedSecuredDeployment> =
+    tokio::sync::OnceCell::const_new();
+
+fn run_local_deployment(future: impl std::future::Future<Output = ()>) {
+    let _deployment = LOCAL_DEPLOYMENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let runtime = TEST_RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("local deployment test runtime")
+    });
+    runtime.block_on(future);
+}
+
+async fn shared_secured_all_in_one_router(
+    token_handoff_dir: &std::path::Path,
+    key: &[u8; 32],
+) -> (axum::Router, std::sync::Arc<awaken_cli::ManagementAuthz>) {
+    let deployment = SHARED_SECURED_DEPLOYMENT
+        .get_or_init(|| async {
+            let directory = tempfile::tempdir().expect("shared deployment directory");
+            let (app, iam) = build_isolated_secured_all_in_one_router(directory.path(), key).await;
+            let admin_token = admin_token(directory.path());
+            SharedSecuredDeployment {
+                app,
+                iam,
+                admin_token,
+                _directory: directory,
+            }
+        })
+        .await;
+    std::fs::write(
+        token_handoff_dir.join(ADMIN_TOKEN_FILE),
+        &deployment.admin_token,
+    )
+    .expect("copy shared admin-token handoff");
+    (deployment.app.clone(), deployment.iam.clone())
+}
 
 async fn call(
     app: &axum::Router,
@@ -69,598 +125,628 @@ fn credential_body() -> Value {
     })
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn missing_and_garbage_tokens_are_rejected_with_401() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
+#[test]
+fn missing_and_garbage_tokens_are_rejected_with_401() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
 
-    // No token at all → 401 in the Managed error envelope.
-    let (s, err) = call(&app, "GET", "/v1/config/catalog", None, None).await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED, "{err}");
-    assert_eq!(err["type"], json!("error"));
-    assert_eq!(err["error"]["type"], json!("authentication_error"));
+        // No token at all → 401 in the Managed error envelope.
+        let (s, err) = call(&app, "GET", "/v1/config/catalog", None, None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{err}");
+        assert_eq!(err["type"], json!("error"));
+        assert_eq!(err["error"]["type"], json!("authentication_error"));
 
-    // A token-shaped but unknown credential → the same opaque 401.
-    let (s, err) = call(
-        &app,
-        "GET",
-        "/v1/config/catalog",
-        Some("sk-ant-bogusprefix.bogussecret"),
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED);
-    assert_eq!(err["error"]["type"], json!("authentication_error"));
-
-    // Plain garbage that does not even parse as a token → 401 too.
-    let (s, _) = call(&app, "GET", "/v1/config/catalog", Some("garbage"), None).await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED);
-
-    // The vault front door is behind the same guard.
-    let (s, _) = call(&app, "POST", "/v1/vaults", None, Some(json!({}))).await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn resource_plane_is_guarded_without_entering_resource_services() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-
-    for uri in [
-        "/v1/files",
-        "/v1/memory_stores",
-        "/v1/skills",
-        "/v1/sessions",
-    ] {
-        let (status, error) = call(&app, "GET", uri, None, None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}: {error}");
-        assert_eq!(error["error"]["type"], json!("authentication_error"));
-    }
-    let (status, error) = call(&app, "GET", "/v1/a2a/tasks/example", None, None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{error}");
-
-    // The standard workspace_user policy can read File/Skill and Workspace-scoped
-    // Memory resources, but cannot mutate any of them.
-    let user = iam
-        .mint_service_token(TokenSpec {
-            token_id: "tok_resource_reader".into(),
-            service_id: "resource-reader".into(),
-            workspace_id: BOOTSTRAP_WORKSPACE.into(),
-            role: "workspace_user".into(),
-            created_at: None,
-            expires_at: None,
-        })
-        .unwrap();
-    for uri in [
-        "/v1/files",
-        "/v1/memory_stores",
-        "/v1/skills",
-        "/v1/sessions",
-    ] {
-        let (status, body) = call(&app, "GET", uri, Some(&user), None).await;
-        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
-    }
-    for uri in [
-        "/v1/files",
-        "/v1/memory_stores",
-        "/v1/skills",
-        "/v1/sessions",
-    ] {
-        let (status, error) = call(&app, "POST", uri, Some(&user), Some(json!({}))).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {error}");
-        assert_eq!(error["error"]["type"], json!("permission_error"));
-    }
-    let (status, error) = call(
-        &app,
-        "POST",
-        "/v1/a2a/message:stream",
-        Some(&user),
-        Some(json!({})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn resource_pep_stamps_token_scope_and_rejects_foreign_path_selection() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let token = admin_token(dir.path());
-
-    let (status, store) = call(
-        &app,
-        "POST",
-        "/v1/memory_stores",
-        Some(&token),
-        Some(json!({ "name": "governed" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{store}");
-    let id = store["id"].as_str().expect("memory store id");
-    let (status, fetched) = call(
-        &app,
-        "GET",
-        &format!("/v1/memory_stores/{id}"),
-        Some(&token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{fetched}");
-
-    let (status, error) = call(
-        &app,
-        "GET",
-        "/v1/workspaces/wrkspc_other/memory_stores",
-        Some(&token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
-    assert_eq!(error["error"]["type"], json!("permission_error"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn an_expired_token_fails_authentication_with_401() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-
-    // Minted in the past and already expired (expiry must be strictly after
-    // creation, so both stamps are historical).
-    let expired = iam
-        .mint_service_token(TokenSpec {
-            token_id: "tok_expired".into(),
-            service_id: "ci-expired".into(),
-            workspace_id: BOOTSTRAP_WORKSPACE.into(),
-            role: "admin".into(),
-            created_at: Some("2020-01-01T00:00:00Z".into()),
-            expires_at: Some("2020-01-02T00:00:00Z".into()),
-        })
-        .unwrap();
-
-    let (s, err) = call(&app, "GET", "/v1/config/catalog", Some(&expired), None).await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED);
-    assert_eq!(err["error"]["type"], json!("authentication_error"));
-    assert!(
-        err["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("expired"),
-        "{err}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn the_bootstrap_admin_token_authorizes_full_crud_over_http() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let token = admin_token(dir.path());
-    let t = Some(token.as_str());
-
-    // Catalog writes + reads (workspace.*).
-    let (s, _) = call(
-        &app,
-        "PUT",
-        "/v1/config/model-attributes/authz-probe",
-        t,
-        Some(model_attribute_body()),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    let (s, catalog) = call(&app, "GET", "/v1/config/catalog", t, None).await;
-    assert_eq!(s, StatusCode::OK);
-    assert!(catalog["providers"].as_object().is_some());
-
-    // Credential surface (apikey.*): enter, list, pool.
-    let (s, cred) = call(
-        &app,
-        "POST",
-        "/v1/config/credentials",
-        t,
-        Some(credential_body()),
-    )
-    .await;
-    assert_eq!(s, StatusCode::CREATED, "{cred}");
-    let cred_id = cred["id"].as_str().unwrap().to_string();
-    let (s, creds) = call(
-        &app,
-        "GET",
-        &format!("/v1/config/credentials?workspace_id={BOOTSTRAP_WORKSPACE}"),
-        t,
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    assert!(
-        creds
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|c| c["id"] == cred["id"])
-    );
-    let (s, _) = call(
-        &app,
-        "PUT",
-        "/v1/config/credential-pools/pool1",
-        t,
-        Some(json!({
-            "id": "pool1", "workspace_id": BOOTSTRAP_WORKSPACE,
-            "members": [{ "credential_source_id": cred_id, "ordinal": 0,
-                          "enabled": true, "selection_weight": 0 }]
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-
-    // The vault front door (apikey.*).
-    let (s, vault) = call(
-        &app,
-        "POST",
-        "/v1/vaults",
-        t,
-        Some(json!({ "display_name": "authz vault" })),
-    )
-    .await;
-    assert!(s.is_success(), "vault create: {s} {vault}");
-
-    // The SDK's `x-api-key` header carries the same credential (compat path).
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/v1/config/catalog")
-                .header("x-api-key", &token)
-                .body(Body::empty())
-                .unwrap(),
+        // A token-shaped but unknown credential → the same opaque 401.
+        let (s, err) = call(
+            &app,
+            "GET",
+            "/v1/config/catalog",
+            Some("sk-ant-bogusprefix.bogussecret"),
+            None,
         )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "x-api-key authenticates too");
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        assert_eq!(err["error"]["type"], json!("authentication_error"));
+
+        // Plain garbage that does not even parse as a token → 401 too.
+        let (s, _) = call(&app, "GET", "/v1/config/catalog", Some("garbage"), None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+
+        // The vault front door is behind the same guard.
+        let (s, _) = call(&app, "POST", "/v1/vaults", None, Some(json!({}))).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    });
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_restricted_developer_token_reads_everything_but_writes_nothing() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
+#[test]
+fn resource_plane_is_guarded_without_entering_resource_services() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
 
-    // Per the preset catalog, workspace_restricted_developer holds
-    // `apikey.read` + `workspace.read` (among file/skill), but no write.
-    let token = iam
-        .mint_service_token(TokenSpec {
-            token_id: "tok_restricted".into(),
-            service_id: "ci-restricted".into(),
-            workspace_id: BOOTSTRAP_WORKSPACE.into(),
-            role: "workspace_restricted_developer".into(),
-            created_at: None,
-            expires_at: None,
-        })
-        .unwrap();
-    let t = Some(token.as_str());
+        for uri in [
+            "/v1/files",
+            "/v1/memory_stores",
+            "/v1/skills",
+            "/v1/sessions",
+        ] {
+            let (status, error) = call(&app, "GET", uri, None, None).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}: {error}");
+            assert_eq!(error["error"]["type"], json!("authentication_error"));
+        }
+        let (status, error) = call(&app, "GET", "/v1/a2a/tasks/example", None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{error}");
 
-    let (s, _) = call(&app, "GET", "/v1/config/catalog", t, None).await;
-    assert_eq!(s, StatusCode::OK);
-    let (s, _) = call(
-        &app,
-        "GET",
-        &format!("/v1/config/credentials?workspace_id={BOOTSTRAP_WORKSPACE}"),
-        t,
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-
-    // Credential write → apikey.write → deny.
-    let (s, err) = call(
-        &app,
-        "POST",
-        "/v1/config/credentials",
-        t,
-        Some(credential_body()),
-    )
-    .await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
-    assert_eq!(err["error"]["type"], json!("permission_error"));
-
-    // Catalog write → workspace.write → deny.
-    let (s, _) = call(
-        &app,
-        "PUT",
-        "/v1/config/model-attributes/authz-probe",
-        t,
-        Some(model_attribute_body()),
-    )
-    .await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
-
-    // Vault create → apikey.write → deny.
-    let (s, _) = call(&app, "POST", "/v1/vaults", t, Some(json!({}))).await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
+        // The standard workspace_user policy can read File/Skill and Workspace-scoped
+        // Memory resources, but cannot mutate any of them.
+        let user = iam
+            .mint_service_token(TokenSpec {
+                token_id: "tok_resource_reader".into(),
+                service_id: "resource-reader".into(),
+                workspace_id: BOOTSTRAP_WORKSPACE.into(),
+                role: "workspace_user".into(),
+                created_at: None,
+                expires_at: None,
+            })
+            .unwrap();
+        for uri in [
+            "/v1/files",
+            "/v1/memory_stores",
+            "/v1/skills",
+            "/v1/sessions",
+        ] {
+            let (status, body) = call(&app, "GET", uri, Some(&user), None).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        }
+        for uri in [
+            "/v1/files",
+            "/v1/memory_stores",
+            "/v1/skills",
+            "/v1/sessions",
+        ] {
+            let (status, error) = call(&app, "POST", uri, Some(&user), Some(json!({}))).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {error}");
+            assert_eq!(error["error"]["type"], json!("permission_error"));
+        }
+        let (status, error) = call(
+            &app,
+            "POST",
+            "/v1/a2a/message:stream",
+            Some(&user),
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+    });
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_workspace_user_token_reads_config_but_not_credentials() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
+#[test]
+fn resource_pep_stamps_token_scope_and_rejects_foreign_path_selection() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+        let token = admin_token(dir.path());
 
-    // workspace_user holds workspace.read but NO apikey pattern at all.
-    let token = iam
-        .mint_service_token(TokenSpec {
-            token_id: "tok_user".into(),
-            service_id: "ci-user".into(),
-            workspace_id: BOOTSTRAP_WORKSPACE.into(),
-            role: "workspace_user".into(),
-            created_at: None,
-            expires_at: None,
-        })
-        .unwrap();
-    let t = Some(token.as_str());
+        let (status, store) = call(
+            &app,
+            "POST",
+            "/v1/memory_stores",
+            Some(&token),
+            Some(json!({ "name": "governed" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{store}");
+        let id = store["id"].as_str().expect("memory store id");
+        let (status, fetched) = call(
+            &app,
+            "GET",
+            &format!("/v1/memory_stores/{id}"),
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{fetched}");
 
-    let (s, _) = call(&app, "GET", "/v1/config/catalog", t, None).await;
-    assert_eq!(s, StatusCode::OK);
-    let (s, err) = call(
-        &app,
-        "GET",
-        &format!("/v1/config/credentials?workspace_id={BOOTSTRAP_WORKSPACE}"),
-        t,
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
-    assert_eq!(err["error"]["type"], json!("permission_error"));
+        let (status, error) = call(
+            &app,
+            "GET",
+            "/v1/workspaces/wrkspc_other/memory_stores",
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+        assert_eq!(error["error"]["type"], json!("permission_error"));
+    });
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_workspace_mismatch_is_refused_fail_closed() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let token = admin_token(dir.path());
-    let t = Some(token.as_str());
+#[test]
+fn an_expired_token_fails_authentication_with_401() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
 
-    // Body naming a foreign workspace → 403 even for the admin token: its
-    // authority is bound at wrkspc_default, and the fence fails closed.
-    let mut body = credential_body();
-    body["workspace_id"] = json!("wrkspc_other");
-    let (s, err) = call(&app, "POST", "/v1/config/credentials", t, Some(body)).await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
-    assert_eq!(err["error"]["type"], json!("permission_error"));
+        // Minted in the past and already expired (expiry must be strictly after
+        // creation, so both stamps are historical).
+        let expired = iam
+            .mint_service_token(TokenSpec {
+                token_id: "tok_expired".into(),
+                service_id: "ci-expired".into(),
+                workspace_id: BOOTSTRAP_WORKSPACE.into(),
+                role: "admin".into(),
+                created_at: Some("2020-01-01T00:00:00Z".into()),
+                expires_at: Some("2020-01-02T00:00:00Z".into()),
+            })
+            .unwrap();
 
-    // The query-string fence closes the read path the same way.
-    let (s, _) = call(
-        &app,
-        "GET",
-        "/v1/config/credentials?workspace_id=wrkspc_other",
-        t,
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
+        let (s, err) = call(&app, "GET", "/v1/config/catalog", Some(&expired), None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        assert_eq!(err["error"]["type"], json!("authentication_error"));
+        assert!(
+            err["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("expired"),
+            "{err}"
+        );
+    });
+}
+
+#[test]
+fn the_bootstrap_admin_token_authorizes_full_crud_over_http() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+        let token = admin_token(dir.path());
+        let t = Some(token.as_str());
+
+        // Catalog writes + reads (workspace.*).
+        let (s, _) = call(
+            &app,
+            "PUT",
+            "/v1/config/model-attributes/authz-probe",
+            t,
+            Some(model_attribute_body()),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, catalog) = call(&app, "GET", "/v1/config/catalog", t, None).await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(catalog["providers"].as_object().is_some());
+
+        // Credential surface (apikey.*): enter, list, pool.
+        let (s, cred) = call(
+            &app,
+            "POST",
+            "/v1/config/credentials",
+            t,
+            Some(credential_body()),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "{cred}");
+        let cred_id = cred["id"].as_str().unwrap().to_string();
+        let (s, creds) = call(
+            &app,
+            "GET",
+            &format!("/v1/config/credentials?workspace_id={BOOTSTRAP_WORKSPACE}"),
+            t,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(
+            creds
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["id"] == cred["id"])
+        );
+        let (s, _) = call(
+            &app,
+            "PUT",
+            "/v1/config/credential-pools/pool1",
+            t,
+            Some(json!({
+                "id": "pool1", "workspace_id": BOOTSTRAP_WORKSPACE,
+                "members": [{ "credential_source_id": cred_id, "ordinal": 0,
+                              "enabled": true, "selection_weight": 0 }]
+            })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+
+        // The vault front door (apikey.*).
+        let (s, vault) = call(
+            &app,
+            "POST",
+            "/v1/vaults",
+            t,
+            Some(json!({ "display_name": "authz vault" })),
+        )
+        .await;
+        assert!(s.is_success(), "vault create: {s} {vault}");
+
+        // The SDK's `x-api-key` header carries the same credential (compat path).
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/config/catalog")
+                    .header("x-api-key", &token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "x-api-key authenticates too");
+    });
+}
+
+#[test]
+fn a_restricted_developer_token_reads_everything_but_writes_nothing() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+
+        // Per the preset catalog, workspace_restricted_developer holds
+        // `apikey.read` + `workspace.read` (among file/skill), but no write.
+        let token = iam
+            .mint_service_token(TokenSpec {
+                token_id: "tok_restricted".into(),
+                service_id: "ci-restricted".into(),
+                workspace_id: BOOTSTRAP_WORKSPACE.into(),
+                role: "workspace_restricted_developer".into(),
+                created_at: None,
+                expires_at: None,
+            })
+            .unwrap();
+        let t = Some(token.as_str());
+
+        let (s, _) = call(&app, "GET", "/v1/config/catalog", t, None).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _) = call(
+            &app,
+            "GET",
+            &format!("/v1/config/credentials?workspace_id={BOOTSTRAP_WORKSPACE}"),
+            t,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+
+        // Credential write → apikey.write → deny.
+        let (s, err) = call(
+            &app,
+            "POST",
+            "/v1/config/credentials",
+            t,
+            Some(credential_body()),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+        assert_eq!(err["error"]["type"], json!("permission_error"));
+
+        // Catalog write → workspace.write → deny.
+        let (s, _) = call(
+            &app,
+            "PUT",
+            "/v1/config/model-attributes/authz-probe",
+            t,
+            Some(model_attribute_body()),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+
+        // Vault create → apikey.write → deny.
+        let (s, _) = call(&app, "POST", "/v1/vaults", t, Some(json!({}))).await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    });
+}
+
+#[test]
+fn a_workspace_user_token_reads_config_but_not_credentials() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+
+        // workspace_user holds workspace.read but NO apikey pattern at all.
+        let token = iam
+            .mint_service_token(TokenSpec {
+                token_id: "tok_user".into(),
+                service_id: "ci-user".into(),
+                workspace_id: BOOTSTRAP_WORKSPACE.into(),
+                role: "workspace_user".into(),
+                created_at: None,
+                expires_at: None,
+            })
+            .unwrap();
+        let t = Some(token.as_str());
+
+        let (s, _) = call(&app, "GET", "/v1/config/catalog", t, None).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, err) = call(
+            &app,
+            "GET",
+            &format!("/v1/config/credentials?workspace_id={BOOTSTRAP_WORKSPACE}"),
+            t,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+        assert_eq!(err["error"]["type"], json!("permission_error"));
+    });
+}
+
+#[test]
+fn a_workspace_mismatch_is_refused_fail_closed() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+        let token = admin_token(dir.path());
+        let t = Some(token.as_str());
+
+        // Body naming a foreign workspace → 403 even for the admin token: its
+        // authority is bound at wrkspc_default, and the fence fails closed.
+        let mut body = credential_body();
+        body["workspace_id"] = json!("wrkspc_other");
+        let (s, err) = call(&app, "POST", "/v1/config/credentials", t, Some(body)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+        assert_eq!(err["error"]["type"], json!("permission_error"));
+
+        // The query-string fence closes the read path the same way.
+        let (s, _) = call(
+            &app,
+            "GET",
+            "/v1/config/credentials?workspace_id=wrkspc_other",
+            t,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    });
 }
 
 /// A `workspace_user` (no `apikey.*` at all) cannot even READ the vault surface —
 /// the existing coverage proves this for `/v1/config/credentials`, but never for
 /// the account-level `/v1/vaults` front door.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_workspace_user_cannot_read_the_vault_surface() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let token = iam
-        .mint_service_token(TokenSpec {
-            token_id: "tok_user_vault".into(),
-            service_id: "ci-user".into(),
-            workspace_id: BOOTSTRAP_WORKSPACE.into(),
-            role: "workspace_user".into(),
-            created_at: None,
-            expires_at: None,
-        })
-        .unwrap();
-    let (s, err) = call(&app, "GET", "/v1/vaults", Some(token.as_str()), None).await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
-    assert_eq!(err["error"]["type"], json!("permission_error"));
+#[test]
+fn a_workspace_user_cannot_read_the_vault_surface() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+        let token = iam
+            .mint_service_token(TokenSpec {
+                token_id: "tok_user_vault".into(),
+                service_id: "ci-user".into(),
+                workspace_id: BOOTSTRAP_WORKSPACE.into(),
+                role: "workspace_user".into(),
+                created_at: None,
+                expires_at: None,
+            })
+            .unwrap();
+        let (s, err) = call(&app, "GET", "/v1/vaults", Some(token.as_str()), None).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+        assert_eq!(err["error"]["type"], json!("permission_error"));
+    });
 }
 
 /// A read-scoped token (`apikey.read`, no write) is denied on the vault *sub-resource*
 /// write routes, not just `POST /v1/vaults` — the scope check fires before any
 /// handler/not-found logic, so an id that does not exist still 403s (never 404).
-#[tokio::test(flavor = "multi_thread")]
-async fn a_read_scoped_token_cannot_write_vault_sub_resources() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let token = iam
-        .mint_service_token(TokenSpec {
-            token_id: "tok_ro_vault".into(),
-            service_id: "ci-ro".into(),
-            workspace_id: BOOTSTRAP_WORKSPACE.into(),
-            role: "workspace_restricted_developer".into(),
-            created_at: None,
-            expires_at: None,
-        })
-        .unwrap();
-    let t = Some(token.as_str());
-    for (method, uri) in [
-        ("DELETE", "/v1/vaults/vault_x"),
-        ("POST", "/v1/vaults/vault_x/archive"),
-        ("POST", "/v1/vaults/vault_x/credentials"),
-    ] {
-        let (s, err) = call(&app, method, uri, t, Some(json!({}))).await;
-        assert_eq!(s, StatusCode::FORBIDDEN, "{method} {uri}: {err}");
-        assert_eq!(err["error"]["type"], json!("permission_error"));
-    }
+#[test]
+fn a_read_scoped_token_cannot_write_vault_sub_resources() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+        let token = iam
+            .mint_service_token(TokenSpec {
+                token_id: "tok_ro_vault".into(),
+                service_id: "ci-ro".into(),
+                workspace_id: BOOTSTRAP_WORKSPACE.into(),
+                role: "workspace_restricted_developer".into(),
+                created_at: None,
+                expires_at: None,
+            })
+            .unwrap();
+        let t = Some(token.as_str());
+        for (method, uri) in [
+            ("DELETE", "/v1/vaults/vault_x"),
+            ("POST", "/v1/vaults/vault_x/archive"),
+            ("POST", "/v1/vaults/vault_x/credentials"),
+        ] {
+            let (s, err) = call(&app, method, uri, t, Some(json!({}))).await;
+            assert_eq!(s, StatusCode::FORBIDDEN, "{method} {uri}: {err}");
+            assert_eq!(err["error"]["type"], json!("permission_error"));
+        }
+    });
 }
 
 /// The same read-scoped token cannot archive a config credential
 /// (`POST /v1/config/credentials/{id}/archive` maps to `apikey.write`) — an untested
 /// write sub-route.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_read_scoped_token_cannot_archive_a_credential() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let token = iam
-        .mint_service_token(TokenSpec {
-            token_id: "tok_ro_cred".into(),
-            service_id: "ci-ro".into(),
-            workspace_id: BOOTSTRAP_WORKSPACE.into(),
-            role: "workspace_restricted_developer".into(),
-            created_at: None,
-            expires_at: None,
-        })
-        .unwrap();
-    let (s, err) = call(
-        &app,
-        "POST",
-        "/v1/config/credentials/cred_x/archive",
-        Some(token.as_str()),
-        Some(json!({})),
-    )
-    .await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
-    assert_eq!(err["error"]["type"], json!("permission_error"));
+#[test]
+fn a_read_scoped_token_cannot_archive_a_credential() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+        let token = iam
+            .mint_service_token(TokenSpec {
+                token_id: "tok_ro_cred".into(),
+                service_id: "ci-ro".into(),
+                workspace_id: BOOTSTRAP_WORKSPACE.into(),
+                role: "workspace_restricted_developer".into(),
+                created_at: None,
+                expires_at: None,
+            })
+            .unwrap();
+        let (s, err) = call(
+            &app,
+            "POST",
+            "/v1/config/credentials/cred_x/archive",
+            Some(token.as_str()),
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+        assert_eq!(err["error"]["type"], json!("permission_error"));
+    });
 }
 
 /// The workspace-equality fence is symmetric and not special to the Global-bound
 /// bootstrap admin: a token minted into a *second* workspace reads its own tenant
 /// (200) but is fenced off another (403). The existing mismatch test only exercises
 /// the bootstrap token.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_workspace_bound_token_reads_its_own_tenant_but_not_another() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let token = iam
-        .mint_service_token(TokenSpec {
-            token_id: "tok_ws_b".into(),
-            service_id: "ci-ws-b".into(),
-            workspace_id: "wrkspc_b".into(),
-            role: "workspace_admin".into(),
-            created_at: None,
-            expires_at: None,
-        })
-        .unwrap();
-    let t = Some(token.as_str());
-
-    // Its own workspace is admitted past the fence (an empty list is still a 200).
-    let (s, _) = call(
-        &app,
-        "GET",
-        "/v1/config/credentials?workspace_id=wrkspc_b",
-        t,
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-
-    // Another tenant's workspace is fenced — 403, fail closed.
-    let (s, err) = call(
-        &app,
-        "GET",
-        &format!("/v1/config/credentials?workspace_id={BOOTSTRAP_WORKSPACE}"),
-        t,
-        None,
-    )
-    .await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
-    assert_eq!(err["error"]["type"], json!("permission_error"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn minted_tokens_survive_a_restart_over_the_same_directory() {
-    let dir = tempfile::tempdir().unwrap();
-
-    // ---- lifetime A: bootstrap + mint a second token -----------------------
-    let bootstrap;
-    let developer;
-    {
-        let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-        bootstrap = admin_token(dir.path());
-        developer = iam
+#[test]
+fn a_workspace_bound_token_reads_its_own_tenant_but_not_another() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+        let token = iam
             .mint_service_token(TokenSpec {
-                token_id: "tok_dev".into(),
-                service_id: "ci-dev".into(),
-                workspace_id: BOOTSTRAP_WORKSPACE.into(),
+                token_id: "tok_ws_b".into(),
+                service_id: "ci-ws-b".into(),
+                workspace_id: "wrkspc_b".into(),
                 role: "workspace_admin".into(),
                 created_at: None,
                 expires_at: None,
             })
             .unwrap();
+        let t = Some(token.as_str());
+
+        // Its own workspace is admitted past the fence (an empty list is still a 200).
+        let (s, _) = call(
+            &app,
+            "GET",
+            "/v1/config/credentials?workspace_id=wrkspc_b",
+            t,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+
+        // Another tenant's workspace is fenced — 403, fail closed.
+        let (s, err) = call(
+            &app,
+            "GET",
+            &format!("/v1/config/credentials?workspace_id={BOOTSTRAP_WORKSPACE}"),
+            t,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+        assert_eq!(err["error"]["type"], json!("permission_error"));
+    });
+}
+
+#[test]
+fn minted_tokens_survive_a_restart_over_the_same_directory() {
+    run_local_deployment(async {
+        let dir = tempfile::tempdir().unwrap();
+
+        // ---- lifetime A: bootstrap + mint a second token -----------------------
+        let bootstrap;
+        let developer;
+        {
+            let (app, iam) = build_isolated_secured_all_in_one_router(dir.path(), &KEY).await;
+            bootstrap = admin_token(dir.path());
+            developer = iam
+                .mint_service_token(TokenSpec {
+                    token_id: "tok_dev".into(),
+                    service_id: "ci-dev".into(),
+                    workspace_id: BOOTSTRAP_WORKSPACE.into(),
+                    role: "workspace_admin".into(),
+                    created_at: None,
+                    expires_at: None,
+                })
+                .unwrap();
+            let (s, _) = call(
+                &app,
+                "PUT",
+                "/v1/config/model-attributes/authz-probe",
+                Some(&bootstrap),
+                Some(model_attribute_body()),
+            )
+            .await;
+            assert_eq!(s, StatusCode::OK);
+        } // drop router A: "process" ends
+
+        // ---- lifetime B: same dir — hydration, not re-bootstrap ----------------
+        let (app, _iam) = build_isolated_secured_all_in_one_router(dir.path(), &KEY).await;
+
+        // The directory hydrated, so no fresh bootstrap overwrote the token file.
+        assert_eq!(admin_token(dir.path()), bootstrap);
+
+        // Both previously minted tokens still authenticate and authorize, and the
+        // domain state they authored is still there.
+        let (s, catalog) = call(&app, "GET", "/v1/config/catalog", Some(&bootstrap), None).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(
+            catalog["model_attributes"]["authz-probe"]["context_window"], 4096,
+            "{catalog}"
+        );
         let (s, _) = call(
             &app,
             "PUT",
             "/v1/config/model-attributes/authz-probe",
-            Some(&bootstrap),
+            Some(&developer),
             Some(model_attribute_body()),
         )
         .await;
         assert_eq!(s, StatusCode::OK);
-    } // drop router A: "process" ends
 
-    // ---- lifetime B: same dir — hydration, not re-bootstrap ----------------
-    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-
-    // The directory hydrated, so no fresh bootstrap overwrote the token file.
-    assert_eq!(admin_token(dir.path()), bootstrap);
-
-    // Both previously minted tokens still authenticate and authorize, and the
-    // domain state they authored is still there.
-    let (s, catalog) = call(&app, "GET", "/v1/config/catalog", Some(&bootstrap), None).await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(
-        catalog["model_attributes"]["authz-probe"]["context_window"], 4096,
-        "{catalog}"
-    );
-    let (s, _) = call(
-        &app,
-        "PUT",
-        "/v1/config/model-attributes/authz-probe",
-        Some(&developer),
-        Some(model_attribute_body()),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-
-    // The independently namespaced resource role binding was hydrated too;
-    // persistence of management authorization must not be mistaken for
-    // persistence of resource authorization.
-    let (s, files) = call(&app, "GET", "/v1/files", Some(&developer), None).await;
-    assert_eq!(s, StatusCode::OK, "{files}");
+        // The independently namespaced resource role binding was hydrated too;
+        // persistence of management authorization must not be mistaken for
+        // persistence of resource authorization.
+        let (s, files) = call(&app, "GET", "/v1/files", Some(&developer), None).await;
+        assert_eq!(s, StatusCode::OK, "{files}");
+    });
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn without_the_guard_the_management_plane_stays_open() {
-    // Regression pin: typed open identity mode has no guard and is
-    // byte-identical to the pre-IAM behavior — no token, everything works.
-    let dir = tempfile::tempdir().unwrap();
-    let app = build_durable_all_in_one_router(dir.path(), &KEY).await;
+#[test]
+fn without_the_guard_the_management_plane_stays_open() {
+    run_local_deployment(async {
+        // Regression pin: typed open identity mode has no guard and is
+        // byte-identical to the pre-IAM behavior — no token, everything works.
+        let dir = tempfile::tempdir().unwrap();
+        let app = build_durable_all_in_one_router(dir.path(), &KEY).await;
 
-    let (s, _) = call(&app, "GET", "/v1/config/catalog", None, None).await;
-    assert_eq!(s, StatusCode::OK);
-    let (s, _) = call(
-        &app,
-        "PUT",
-        "/v1/config/model-attributes/authz-probe",
-        None,
-        Some(model_attribute_body()),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+        let (s, _) = call(&app, "GET", "/v1/config/catalog", None, None).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _) = call(
+            &app,
+            "PUT",
+            "/v1/config/model-attributes/authz-probe",
+            None,
+            Some(model_attribute_body()),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+    });
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn an_oversize_request_body_is_413() {
-    // The guard buffers the body (to run the workspace fence over it); a body past
-    // the 2 MiB buffer is refused with 413 rather than read unboundedly. This
-    // body-buffering fence + the Managed ErrorResponse envelope is one of the
-    // Managed-specific seams that keep the guard local even though iam-host's PEP
-    // is now tenancy-capable (ADR-0048; see the authz.rs module doc).
-    let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
-    let token = admin_token(dir.path());
-    let big = "x".repeat(3 * 1024 * 1024);
-    let body = json!({ "workspace_id": BOOTSTRAP_WORKSPACE, "blob": big });
-    let (s, _) = call(
-        &app,
-        "POST",
-        "/v1/config/credentials",
-        Some(token.as_str()),
-        Some(body),
-    )
-    .await;
-    assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE);
+#[test]
+fn an_oversize_request_body_is_413() {
+    run_local_deployment(async {
+        // The guard buffers the body (to run the workspace fence over it); a body past
+        // the 2 MiB buffer is refused with 413 rather than read unboundedly. This
+        // body-buffering fence + the Managed ErrorResponse envelope is one of the
+        // Managed-specific seams that keep the guard local even though iam-host's PEP
+        // is now tenancy-capable (ADR-0048; see the authz.rs module doc).
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
+        let token = admin_token(dir.path());
+        let big = "x".repeat(3 * 1024 * 1024);
+        let body = json!({ "workspace_id": BOOTSTRAP_WORKSPACE, "blob": big });
+        let (s, _) = call(
+            &app,
+            "POST",
+            "/v1/config/credentials",
+            Some(token.as_str()),
+            Some(body),
+        )
+        .await;
+        assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE);
+    });
 }

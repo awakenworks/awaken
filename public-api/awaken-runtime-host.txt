@@ -33,7 +33,7 @@ pub awaken_runtime_host::HostResume::ClientResult::content: alloc::vec::Vec<awak
 pub awaken_runtime_host::HostResume::ClientResult::is_error: bool
 pub awaken_runtime_host::HostResume::Permission(awaken_agent_contract::agent::awaiting::PermissionDecision)
 pub enum awaken_runtime_host::LaunchSource
-pub awaken_runtime_host::LaunchSource::Fixed(awaken_run_executor_acp::subprocess::AcpLaunch)
+pub awaken_runtime_host::LaunchSource::Fixed(alloc::boxed::Box<awaken_run_executor_acp::subprocess::AcpLaunch>)
 pub awaken_runtime_host::LaunchSource::FixedAcp(alloc::boxed::Box<awaken_run_executor_acp::subprocess::AcpLaunch>)
 pub awaken_runtime_host::LaunchSource::Projected(awaken_runtime_host::AcpLaunchRegistry)
 pub enum awaken_runtime_host::PackageImageBuilder
@@ -483,7 +483,6 @@ pub async fn awaken_runtime_host::SharedHost::run_streaming_attributed(&self, co
 pub async fn awaken_runtime_host::SharedHost::submit_background_async(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<alloc::string::String, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::supersede_run(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<awaken_runtime_host::CommittedStepReceipt, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::superseded(&self, &str) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_runtime_host::HostError>
-pub async fn awaken_runtime_host::SharedHost::thread_usage(&self, &str) -> awaken_runtime_contract::llm::ThreadUsage
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::continue_outcome(&self, &str) -> core::result::Result<core::option::Option<awaken_runtime_host::HostOutcomeDrive>, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::define_outcome(&self, &str, &str, &str, u32) -> core::result::Result<awaken_runtime_host::HostOutcomeDrive, awaken_runtime_host::HostError>

@@ -306,49 +306,12 @@ async fn protocol_operation_and_binding_permissions_fail_closed() {
     assert_eq!(unbound.status(), StatusCode::FORBIDDEN);
 }
 
-#[tokio::test]
-async fn response_only_capability_accepts_tool_decisions_but_rejects_new_turns() {
-    let token = "response-only-application-token"; // awaken-allow: secret -- inert test fixture
-    let router = app(authenticator(
-        token,
-        grant(&["ai-sdk"], &["thread.messages.read", "thread.respond"]),
-    ));
-    let decision = router
-        .clone()
-        .oneshot(request(
-            "POST",
-            "/v1/ai-sdk/threads/customer-thread/runs",
-            Some(token),
-            json!({"messages": [{
-                "id": "assistant-1",
-                "role": "assistant",
-                "parts": [{
-                    "type": "dynamic-tool",
-                    "toolCallId": "tool-1",
-                    "toolName": "bash",
-                    "state": "approval-responded",
-                    "input": {"command": "cargo test"},
-                    "approval": {"id": "approval-1", "approved": true}
-                }]
-            }]}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(decision.status(), StatusCode::OK);
-
-    let new_turn = router
-        .oneshot(request(
-            "POST",
-            "/v1/ai-sdk/threads/customer-thread/runs",
-            Some(token),
-            json!({"messages": [{
-                "id": "user-1", "role": "user",
-                "parts": [{"type": "text", "text": "do something else"}]
-            }]}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(new_turn.status(), StatusCode::FORBIDDEN);
+#[test]
+fn application_grant_rejects_a_parallel_response_operation() {
+    assert_eq!(
+        grant(&["ai-sdk"], &["thread.messages.read", "thread.respond"]).validate(),
+        Err("operations may contain only thread.run and thread.messages.read"),
+    );
 }
 
 /// Decision rules from the graph above: R6 path/body mismatch -> 400/E2 and

@@ -1070,8 +1070,11 @@ mod tests {
             "W2"
         );
         assert!(
-            requests[1].contains("authorization: Bearer cloud-access"),
-            "W2"
+            requests[1]
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("authorization: Bearer cloud-access")),
+            "W2: HTTP field names are case-insensitive: {}",
+            requests[1]
         );
     }
 

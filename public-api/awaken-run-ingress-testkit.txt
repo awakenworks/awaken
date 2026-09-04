@@ -16,6 +16,17 @@ pub awaken_run_ingress_testkit::ConformanceCapabilities::sandbox_binding: bool
 impl awaken_run_ingress_testkit::ConformanceCapabilities
 pub const awaken_run_ingress_testkit::ConformanceCapabilities::LOCAL_STORE: Self
 pub const awaken_run_ingress_testkit::ConformanceCapabilities::WORKER_TRANSPORT: Self
+pub struct awaken_run_ingress_testkit::DispatchRecoveryHistory
+pub awaken_run_ingress_testkit::DispatchRecoveryHistory::blocked_successor: awaken_run_ingress_contract::dispatch::AttemptAdmission
+pub awaken_run_ingress_testkit::DispatchRecoveryHistory::first_attempt: awaken_run_ingress_contract::dispatch::AttemptAdmission
+pub awaken_run_ingress_testkit::DispatchRecoveryHistory::first_epoch: u64
+pub awaken_run_ingress_testkit::DispatchRecoveryHistory::live_rows_after_settlement: usize
+pub awaken_run_ingress_testkit::DispatchRecoveryHistory::predecessor_finish: awaken_run_ingress_contract::dispatch::SettleOutcome
+pub awaken_run_ingress_testkit::DispatchRecoveryHistory::recovered_epoch: u64
+pub awaken_run_ingress_testkit::DispatchRecoveryHistory::stale_settlement: awaken_run_ingress_contract::dispatch::SettleOutcome
+pub awaken_run_ingress_testkit::DispatchRecoveryHistory::successor_attempt: awaken_run_ingress_contract::dispatch::AttemptAdmission
+pub awaken_run_ingress_testkit::DispatchRecoveryHistory::successor_finish: awaken_run_ingress_contract::dispatch::SettleOutcome
+pub awaken_run_ingress_testkit::DispatchRecoveryHistory::successor_settlement: awaken_run_ingress_contract::dispatch::SettleOutcome
 pub struct awaken_run_ingress_testkit::LogicalCommandClock
 impl awaken_run_ingress_testkit::ConformanceClock for awaken_run_ingress_testkit::LogicalCommandClock
 pub fn awaken_run_ingress_testkit::LogicalCommandClock::advance_past<'life0, 'async_trait>(&'life0 self, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -43,3 +54,4 @@ pub async fn awaken_run_ingress_testkit::assert_dispatch_conformance_with_clock(
 pub async fn awaken_run_ingress_testkit::assert_dispatch_operational_feed_conformance<S>(&S, &str) where S: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::operational::DispatchOperationalFeed + ?core::marker::Sized
 pub async fn awaken_run_ingress_testkit::assert_dispatch_operational_feed_conformance_with_clock<S>(&S, &str, &dyn awaken_run_ingress_testkit::ConformanceClock) where S: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::operational::DispatchOperationalFeed + ?core::marker::Sized
 pub async fn awaken_run_ingress_testkit::assert_session_reply_activity_rotation_conformance(&dyn awaken_run_ingress_contract::dispatch::Dispatch, &str)
+pub async fn awaken_run_ingress_testkit::record_dispatch_recovery_history(&dyn awaken_run_ingress_contract::dispatch::DispatchQueue, &str, &dyn awaken_run_ingress_testkit::ConformanceClock) -> awaken_run_ingress_testkit::DispatchRecoveryHistory

@@ -958,6 +958,39 @@ mod tests {
         (url, handle)
     }
 
+    /// Serve one response and signal only after the request is on the wire.
+    async fn serve_after_request(
+        response: String,
+    ) -> (
+        String,
+        tokio::task::JoinHandle<String>,
+        oneshot::Receiver<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (request_seen, request_observed) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = request_seen.send(());
+            socket.write_all(response.as_bytes()).await.unwrap();
+            socket.shutdown().await.ok();
+            String::from_utf8_lossy(&request).to_string()
+        });
+        (url, handle, request_observed)
+    }
+
     #[tokio::test]
     async fn negotiated_task_methods_follow_one_typed_http_path() {
         // Cause/effect graph: C1=initialize advertises task tools/call and
@@ -1170,27 +1203,26 @@ mod tests {
         // FMECA: missing G2 drops a successful side-effecting tool result, after
         // which an agent may duplicate the effect and reuse a stale MCP Session.
         let empty_sse = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string();
-        let (url, server) = serve(vec![empty_sse]).await;
+        let (url, server, request_observed) = serve_after_request(empty_sse).await;
         let transport = HttpTransportBuilder::new(url).build();
         let shared = Arc::clone(&transport.shared);
         let routed = tokio::spawn(async move {
-            loop {
-                if shared.pending_responses.lock().await.contains_key(&1) {
-                    shared
-                        .dispatch_incoming(json!({
-                            "jsonrpc": "2.0",
-                            "id": 1,
-                            "result": { "tools": [] }
-                        }))
-                        .await;
-                    return;
-                }
-                tokio::task::yield_now().await;
-            }
+            tokio::time::timeout(Duration::from_secs(1), request_observed)
+                .await
+                .expect("POST reaches the fixture")
+                .expect("fixture reports the POST");
+            shared
+                .dispatch_incoming(json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": { "tools": [] }
+                }))
+                .await;
         });
         assert!(transport.list_tools().await.expect("G2/E1").is_empty());
         routed.await.expect("GET response routed");
-        server.await.expect("POST fixture completes");
+        let request = server.await.expect("POST fixture completes");
+        assert!(request.starts_with("POST "));
     }
 
     #[tokio::test]
