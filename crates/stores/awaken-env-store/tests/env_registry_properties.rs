@@ -78,20 +78,24 @@ proptest! {
     ) {
         let r = reg();
         let id = block(make(&r, "initial"));
+        let mut expected_revision = awaken_environment_contract::EnvironmentRevision(1);
         for index in 0..updates_before {
             let updated = block(r.update(
                 &id,
+                expected_revision,
                 EnvUpdate {
                     name: Some(format!("before-{index}")),
                     ..Default::default()
                 },
             ));
-            prop_assert!(updated.expect("update Environment").is_some());
+            let updated = updated.expect("update Environment").expect("active Environment");
+            expected_revision = updated.revision;
         }
         let archived = block(r.archive(&id)).expect("archive Environment store operation").expect("archive existing definition");
         for index in 0..updates_after {
             let updated = block(r.update(
                 &id,
+                archived.revision,
                 EnvUpdate {
                     name: Some(format!("after-{index}")),
                     ..Default::default()
@@ -111,7 +115,11 @@ proptest! {
         let r = reg();
         // (No creates, so any id is missing.)
         prop_assert!(block(r.archive(&missing)).expect("archive missing Environment").is_none());
-        prop_assert!(block(r.update(&missing, Default::default())).expect("update missing Environment").is_none());
+        prop_assert!(block(r.update(
+            &missing,
+            awaken_environment_contract::EnvironmentRevision::default(),
+            Default::default(),
+        )).expect("update missing Environment").is_none());
         prop_assert!(!block(r.exists(&missing)).expect("find missing Environment"));
     }
 }

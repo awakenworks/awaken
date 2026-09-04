@@ -38,6 +38,32 @@ pub struct SandboxExecutionPolicy {
     pub disabled: bool,
 }
 
+impl SandboxExecutionPolicy {
+    /// Validate cross-field trust invariants before a version enters any store.
+    /// Trusted-host access is an exact execution choice, so combining it with a
+    /// Namespace/Container requirement would otherwise admit two contradictory
+    /// provider selections.
+    pub fn validate(&self) -> Result<(), SandboxExecutionPolicyError> {
+        if self.config.host_access == crate::HostAccessPolicy::TrustedHost {
+            if self.config.isolation != Some(crate::IsolationClass::Workdir) {
+                return Err(SandboxExecutionPolicyError::Invalid(
+                    "trusted_host access requires isolation=workdir".into(),
+                ));
+            }
+            if self.config.environment.is_some()
+                || self.config.network.is_some()
+                || self.config.limits.is_set()
+            {
+                return Err(SandboxExecutionPolicyError::Invalid(
+                    "trusted_host access cannot promise an image, network enforcement, or resource limits"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxExecutionPolicyRef {
     pub id: SandboxExecutionPolicyId,
@@ -118,5 +144,97 @@ mod tests {
                 .provisioning,
             SandboxProvisioning::OnToolUse
         );
+    }
+
+    #[test]
+    fn trusted_host_policy_requires_the_exact_workdir_boundary() {
+        // Cause/effect graph: C1 host access={isolated,trusted};
+        // C2 isolation={absent,workdir,namespace,container}. Effects:
+        // E1 isolated preserves every legacy/minimum-isolation policy;
+        // E2 trusted+workdir is valid; E3 every other trusted combination is
+        // rejected before persistence. The nested loops exhaust the closed
+        // discriminants, so this is the complete decision table.
+        for host_access in [
+            crate::HostAccessPolicy::Isolated,
+            crate::HostAccessPolicy::TrustedHost,
+        ] {
+            for isolation in [
+                None,
+                Some(crate::IsolationClass::Workdir),
+                Some(crate::IsolationClass::Namespace),
+                Some(crate::IsolationClass::Container),
+            ] {
+                let policy = SandboxExecutionPolicy {
+                    id: SandboxExecutionPolicyId("policy".into()),
+                    version: SandboxExecutionPolicyVersion::INITIAL,
+                    config: crate::SandboxOverride {
+                        isolation,
+                        host_access,
+                        ..Default::default()
+                    },
+                    provisioning: Default::default(),
+                    idle_retention: Default::default(),
+                    disabled: false,
+                };
+                assert_eq!(
+                    policy.validate().is_ok(),
+                    host_access == crate::HostAccessPolicy::Isolated
+                        || isolation == Some(crate::IsolationClass::Workdir),
+                    "host_access={host_access:?} isolation={isolation:?}"
+                );
+            }
+        }
+
+        // Remaining cause axes are independent once trusted+workdir is fixed:
+        // C3 image, C4 network policy, C5 enforceable limit. Any one produces
+        // E3 rejection; scheduler-only resource requests remain admitted.
+        let base = SandboxExecutionPolicy {
+            id: SandboxExecutionPolicyId("trusted".into()),
+            version: SandboxExecutionPolicyVersion::INITIAL,
+            config: crate::SandboxOverride {
+                isolation: Some(crate::IsolationClass::Workdir),
+                host_access: crate::HostAccessPolicy::TrustedHost,
+                requests: crate::ResourceRequests {
+                    cpu_millis: Some(100),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            provisioning: Default::default(),
+            idle_retention: Default::default(),
+            disabled: false,
+        };
+        assert!(
+            base.validate().is_ok(),
+            "scheduler request is not a guarantee"
+        );
+        for invalid in [
+            crate::SandboxOverride {
+                environment: Some(crate::EnvironmentKind::Image {
+                    reference: "example.invalid/image@sha256:00".into(),
+                }),
+                ..base.config.clone()
+            },
+            crate::SandboxOverride {
+                network: Some(crate::NetworkPolicy::None),
+                ..base.config.clone()
+            },
+            crate::SandboxOverride {
+                limits: crate::ResourceLimits {
+                    cpu_millis: Some(100),
+                    ..Default::default()
+                },
+                ..base.config.clone()
+            },
+        ] {
+            assert!(
+                SandboxExecutionPolicy {
+                    config: invalid,
+                    ..base.clone()
+                }
+                .validate()
+                .is_err()
+            );
+        }
     }
 }

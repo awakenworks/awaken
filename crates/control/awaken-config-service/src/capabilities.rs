@@ -361,6 +361,10 @@ How a run is isolated (a versioned SandboxExecutionPolicy). Authoring rules:\n\
 - `isolation`: `workdir` (cwd only, no OS isolation — trusted/dev), `namespace` \
 (OS-namespace isolation via bubblewrap/sandbox-exec — the default for an ACP CLI), or \
 `container` (full container/VM). A provider must meet or exceed what you ask for.\n\
+- `host_access`: `isolated` by default; `trusted_host` is an exact local-machine \
+choice and requires `isolation: workdir`. It may expose the operator's local Agent \
+login, Git configuration, SSH agent, and files reachable by that process; it cannot \
+be combined with image, network-enforcement, or resource-limit guarantees.\n\
 - `requests`: scheduler reservations for `cpu_millis` (1000 = 1 core), `memory_bytes`, and \
 `disk_bytes`; they are placement demand, not runtime caps or billing units.\n\
 - `limits`: enforceable caps for `cpu_millis`, `memory_bytes`, `disk_bytes`, and `pids`; omit \
@@ -379,6 +383,11 @@ fn sandbox_config_schema() -> Value {
                 "type": "string", "enum": ["workdir", "namespace", "container"],
                 "default": "namespace",
                 "description": "Isolation class; the provider must meet or exceed it."
+            },
+            "host_access": {
+                "type": "string", "enum": ["isolated", "trusted_host"],
+                "default": "isolated",
+                "description": "Explicit local-machine trust boundary. trusted_host requires isolation=workdir, forbids enforceable limits, and is unavailable on hosted workers."
             },
             "limits": {
                 "type": "object",
@@ -409,6 +418,11 @@ fn sandbox_config_schema() -> Value {
 /// [`sandbox_config_schema`]; the console shows them as one-click presets over the form.
 fn sandbox_presets() -> Vec<Value> {
     vec![
+        json!({
+            "id": "trusted-local", "label": "Trusted local",
+            "description": "Direct access to the local workstation and its login-backed Agent/Git tools; no OS isolation.",
+            "spec": { "isolation": "workdir", "host_access": "trusted_host" }
+        }),
         json!({
             "id": "standard", "label": "Standard",
             "description": "Namespace isolation with provider-default resource limits.",
@@ -670,7 +684,7 @@ mod tests {
     #[test]
     fn sandbox_execution_policy_capability_has_no_resource_or_network_overlap() {
         // Cause/effect decision table: R1 the exact SandboxOverride scheduling
-        // axes are authorable -> requests(cpu,memory,disk) and
+        // axes are authorable -> host access plus requests(cpu,memory,disk) and
         // limits(cpu,memory,disk,pids) appear with positive-or-null grammar;
         // R2 Environment/Resource-owned network and mounts stay absent; R3
         // nested unknown fields fail schema admission; R4 requests remain
@@ -683,6 +697,11 @@ mod tests {
         assert!(desc.contains("namespace") && desc.contains("Networking belongs"));
         assert!(schema["properties"].get("network").is_none());
         assert!(schema["properties"].get("mounts").is_none());
+        assert_eq!(
+            schema["properties"]["host_access"]["enum"],
+            json!(["isolated", "trusted_host"]),
+            "R1"
+        );
         let requests = &schema["properties"]["requests"];
         assert_eq!(requests["additionalProperties"], false, "R3");
         assert_eq!(
@@ -729,7 +748,10 @@ mod tests {
         );
         let presets = sb["presets"].as_array().unwrap();
         let preset_ids: Vec<&str> = presets.iter().map(|p| p["id"].as_str().unwrap()).collect();
-        assert_eq!(preset_ids, ["standard", "locked-down"]);
+        assert_eq!(preset_ids, ["trusted-local", "standard", "locked-down"]);
+        let trusted = presets.iter().find(|p| p["id"] == "trusted-local").unwrap();
+        assert_eq!(trusted["spec"]["isolation"], "workdir");
+        assert_eq!(trusted["spec"]["host_access"], "trusted_host");
         let locked = presets.iter().find(|p| p["id"] == "locked-down").unwrap();
         assert_eq!(locked["spec"]["isolation"], "container");
     }

@@ -665,7 +665,8 @@ impl SharedHost {
             // quiesced owner here, after frozen publication and local-placement
             // validation. Ordinary and remote-only contexts remain fail-closed.
             if recover_revoked_legacy && !a2a_only {
-                let provider = self.session_environment_provider(provisioning)?;
+                let provider =
+                    self.session_environment_provider_for_thread(thread, provisioning)?;
                 self.rebuild_claimed_legacy_environment_after_revocation(thread, provider)
                     .await?;
             }
@@ -749,7 +750,8 @@ impl SharedHost {
                 && !a2a_only
                 && !can_defer
             {
-                let provider = self.session_environment_provider(provisioning)?;
+                let provider =
+                    self.session_environment_provider_for_thread(thread, provisioning)?;
                 let spec = self.sandbox_spec_for_provider(thread, provider);
                 let _ = self.validate_session_environment_capabilities(provider, &spec)?;
             }
@@ -778,7 +780,8 @@ impl SharedHost {
                     )));
                 }
                 RuntimeEnvironmentAdmission::Create => {
-                    let provider = self.session_environment_provider(provisioning)?;
+                    let provider =
+                        self.session_environment_provider_for_thread(thread, provisioning)?;
                     Some(
                         self.create_reserved_session_environment_under_lifecycle(thread, provider)
                             .await?,

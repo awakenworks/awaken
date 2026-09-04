@@ -1004,8 +1004,30 @@ pub struct SandboxOverride {
     pub isolation: Option<IsolationClass>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<NetworkPolicy>,
+    /// Exact host-resource trust decision. `TrustedHost` is not a weaker
+    /// sandbox requirement: it deliberately selects the Workdir provider so a
+    /// local Agent may use the operator's machine and login-backed tools.
+    /// Hosted/isolated environments retain the default and can never infer this
+    /// authority from deployment placement alone.
+    #[serde(skip_serializing_if = "HostAccessPolicy::is_isolated")]
+    pub host_access: HostAccessPolicy,
     pub requests: ResourceRequests,
     pub limits: ResourceLimits,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostAccessPolicy {
+    #[default]
+    Isolated,
+    TrustedHost,
+}
+
+impl HostAccessPolicy {
+    #[must_use]
+    pub const fn is_isolated(&self) -> bool {
+        matches!(self, Self::Isolated)
+    }
 }
 
 impl SandboxOverride {
@@ -1015,6 +1037,7 @@ impl SandboxOverride {
         self.environment.is_none()
             && self.isolation.is_none()
             && self.network.is_none()
+            && self.host_access.is_isolated()
             && !self.requests.is_set()
             && !self.limits.is_set()
     }

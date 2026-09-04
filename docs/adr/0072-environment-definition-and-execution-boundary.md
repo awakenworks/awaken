@@ -288,3 +288,16 @@ task, or second Sandbox provisioning seam.
 - [ADR-0066](0066-session-service-binding-and-realization.md)
 - [ADR-0071](0071-distributed-service-boundaries-and-executable-agent-registration.md)
 - [Configuration-to-application flow](../design/config-to-run-execution-flow.md)
+
+## 2026-09-05 amendment: creation-time exact execution policy
+
+The canonical `CreateEnvironmentCommand` now optionally carries an
+`EnvironmentSandboxPolicyRef`. Its fingerprint, current row, immutable revision,
+registration intent, and executable projection all include that exact version
+in the original transaction. The Awaken-native create route exposes this field;
+the official Managed create route deliberately leaves it absent to preserve its
+wire contract. Policy existence, enabled state, intrinsic validity, and the
+TrustedHost/self-hosted compatibility rule are checked before the authority
+write. Updates and later binding reuse the same validation leaf, so no
+create-then-bind workflow or local Environment aggregate can become a competing
+source of truth.

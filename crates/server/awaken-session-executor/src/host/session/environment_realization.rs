@@ -201,6 +201,60 @@ impl SharedHost {
         }
     }
 
+    /// Select one provider from the frozen Environment trust decision and the
+    /// immutable model provisioning. `trusted_host` is exact rather than a
+    /// minimum capability: a stronger Namespace/Container provider would lose
+    /// the local machine identity the author explicitly selected.
+    pub(crate) fn session_environment_provider_for_thread(
+        &self,
+        thread: &str,
+        provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
+    ) -> Result<&crate::session_environment::SessionEnvironmentProvider, HostError> {
+        let sandbox = self
+            .session_slots
+            .read(thread, |slot| {
+                slot.environment_projection
+                    .as_ref()
+                    .and_then(|environment| environment.sandbox.as_ref())
+                    .cloned()
+            })
+            .flatten();
+        if sandbox.as_ref().is_some_and(|sandbox| {
+            sandbox.host_access == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
+        }) {
+            if !self.deployment.trusted_host_enabled() {
+                return Err(HostError::bad_request(
+                    "trusted_host Environment is disabled on this Worker",
+                ));
+            }
+            let provider = self
+                .backend_owned_session_provider
+                .as_ref()
+                .ok_or_else(|| {
+                    HostError::bad_request(
+                        "trusted_host Environment requires a local Workdir provider",
+                    )
+                })?;
+            if !provider.supports_host_identity() {
+                return Err(HostError::internal(
+                    "trusted_host provider does not preserve host identity",
+                ));
+            }
+            return Ok(provider);
+        }
+        if matches!(
+            provisioning,
+            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. }
+        ) && sandbox.as_ref().and_then(|sandbox| sandbox.isolation)
+            >= Some(awaken_provisioning_contract::IsolationClass::Namespace)
+        {
+            return Err(HostError::bad_request(
+                "backend-owned local Agent credentials require a trusted_host Workdir Environment",
+            ));
+        }
+        self.session_environment_provider(provisioning)
+    }
+
     /// Freeze one exact publication into the existing Session runtime slot.
     /// The slot is already the projection used by claimed-worker replay; direct
     /// and deferred execution reuse it instead of adding a provider-selection
@@ -244,7 +298,7 @@ impl SharedHost {
         agent: Option<&str>,
     ) -> Result<&crate::session_environment::SessionEnvironmentProvider, HostError> {
         let provisioning = self.projected_session_model_provisioning(thread, agent)?;
-        self.session_environment_provider(&provisioning)
+        self.session_environment_provider_for_thread(thread, &provisioning)
     }
 
     pub(crate) fn projected_session_model_provisioning(
@@ -1004,6 +1058,11 @@ impl SharedHost {
         )
         .map_err(|error| HostError::internal(error.to_string()))?;
         let capabilities = provider.capabilities();
+        if provider.supports_host_identity() {
+            awaken_provisioning_contract::prepare_trusted_host_environment(&spec, &capabilities)
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            return Ok(spec);
+        }
         let base = awaken_provisioning_contract::SandboxRequirements::from_spec(&spec, false);
         // The retained immutable publication is the exact candidate-set fact
         // installed by Session activation and claimed-worker replay. Never

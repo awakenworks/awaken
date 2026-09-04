@@ -24,7 +24,7 @@ pub(super) async fn adopt_bound_sandbox(
 ) -> Result<crate::host::session::SessionEnvironmentAdoptionDisposition, awaken_dispatch::Error>
 {
     let provider = host
-        .session_environment_provider(provisioning)
+        .session_environment_provider_for_thread(expected_sandbox_id, provisioning)
         .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
     host.adopt_bound_session_environment(
         expected_sandbox_id,

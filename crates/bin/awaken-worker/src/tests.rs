@@ -387,6 +387,46 @@ fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
 }
 
 #[test]
+fn worker_manifest_reports_trusted_host_only_from_operator_configuration() {
+    // Cause/effect graph: C1 primary tier={local,namespace}; C2 explicit
+    // trusted-host switch={false,true}. Effects: E1 the primary backend is
+    // always reported; E2 trusted-host is reported for the explicitly local
+    // tier or explicit switch, never by default on an isolated Worker.
+    // Rules: local/F=>E1+E2, namespace/F=>E1 only, namespace/T=>E1+E2.
+    for (tier, enabled, expected_trusted) in [
+        (awaken_session_executor::SandboxTier::Local, false, true),
+        (awaken_session_executor::SandboxTier::Namespace, false, false),
+        (awaken_session_executor::SandboxTier::Namespace, true, true),
+    ] {
+        let mut deployment = deployment();
+        deployment.sandbox_tier = tier;
+        deployment.sandbox.trusted_host_enabled = enabled;
+        let primary_backend = deployment.sandbox_support().1.to_string();
+        let manifest = derive_standard_manifest(StandardManifestInputs {
+            deployment: &deployment,
+            materializer: None,
+            credential_materializer: None,
+            brokered_acp_model_access: None,
+            worker_local_credential_resolver_installed: false,
+            remote_credential_realization: None,
+            sandbox_override: None,
+            checkpoint_formats: Default::default(),
+            resource_support: ResourceManifestSupport::None,
+            application_capabilities: Default::default(),
+            config: &StandardManifestConfig::default(),
+        });
+        assert!(manifest.sandbox_backends.contains(&primary_backend), "E1");
+        assert_eq!(
+            manifest
+                .sandbox_backends
+                .contains(awaken_worker_contract::TRUSTED_HOST_SANDBOX_BACKEND),
+            expected_trusted,
+            "tier={tier:?} enabled={enabled}"
+        );
+    }
+}
+
+#[test]
 fn standard_builder_derives_from_its_installed_materializer() {
     let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
         "http://control",

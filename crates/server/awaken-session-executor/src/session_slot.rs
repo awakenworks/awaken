@@ -438,12 +438,19 @@ impl SessionRuntimeSlots {
     pub fn prompts(&self, session: &str) -> Vec<String> {
         self.read(session, |slot| {
             let mut prompts = slot.resources.prompts.clone();
-            prompts.extend(slot.resources.memory_prompts.iter().map(|prompt| {
-                match slot.content_delivery.unwrap_or_default() {
-                    ManagedContentDelivery::ManagedFilesystem => prompt.filesystem.clone(),
-                    ManagedContentDelivery::SemanticTools => prompt.semantic_tools.clone(),
-                }
-            }));
+            let delivery = slot.content_delivery.unwrap_or_default();
+            let path_view = slot
+                .environment_owner
+                .resident()
+                .map_or_else(Default::default, |environment| {
+                    environment.agent_path_view()
+                });
+            prompts.extend(
+                slot.resources
+                    .resource_prompts
+                    .iter()
+                    .map(|prompt| prompt.render(delivery, path_view)),
+            );
             if let Some(baseline) = &slot.baseline {
                 prompts.extend(baseline.prompts.clone());
             }

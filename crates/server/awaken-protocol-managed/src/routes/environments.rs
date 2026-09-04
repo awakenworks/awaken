@@ -135,6 +135,12 @@ fn map_environment_application_error(error: EnvironmentApplicationError) -> Wire
             StatusCode::CONFLICT,
             Json(ErrorResponse::new("conflict_error", message)),
         ),
+        EnvironmentApplicationError::Store(
+            awaken_environment_contract::EnvironmentStoreError::RevisionConflict,
+        ) => (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse::new("conflict_error", message)),
+        ),
         EnvironmentApplicationError::Policy(
             awaken_provisioning_contract::SandboxExecutionPolicyError::NotFound,
         ) => not_found("sandbox execution policy"),
@@ -209,6 +215,7 @@ async fn create_env(
             metadata: params.metadata,
             scope: params.scope.map(|scope| scope.as_str().to_string()),
             config,
+            sandbox_policy: None,
         })
         .await
         .map_err(map_environment_application_error)?;
@@ -519,6 +526,13 @@ mod tests {
                 "P5b",
                 EnvironmentApplicationError::RegistrationInvariant("x".into()),
                 StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                "P5c",
+                EnvironmentApplicationError::Store(
+                    awaken_environment_contract::EnvironmentStoreError::RevisionConflict,
+                ),
+                StatusCode::CONFLICT,
             ),
             (
                 "P6a",

@@ -706,6 +706,7 @@ mod tests {
                         ..Default::default()
                     },
                 },
+                sandbox_policy: None,
             })
             .await
             .expect("X1 authority and registration commit");
