@@ -28,7 +28,14 @@ pub(super) fn compile(
         })
         .collect();
 
+    let mut targets = std::collections::BTreeSet::new();
     for override_ in &config.tool_overrides {
+        if !targets.insert(&override_.target) {
+            return Err(invalid_override(format!(
+                "duplicate tool override target {:?}",
+                override_.target
+            )));
+        }
         if override_.target == ADVISOR_TOOL_ID {
             return Err(invalid_override(
                 "the reserved advisor service tool cannot be aliased, deferred, or rewritten"
@@ -105,4 +112,40 @@ pub(super) fn compile(
         .with_exposure_policy(config.tool_exposure.clone())
         .with_discovery(config.tool_discovery.clone()),
     )
+}
+
+pub(super) fn validate_backends<'a>(
+    agent: &str,
+    presentation: &ToolPresentation,
+    candidates: impl Iterator<Item = &'a awaken_runtime_contract::resolved::ResolvedModelCandidate>,
+) -> Result<(), CompileError> {
+    for candidate in candidates {
+        use awaken_runtime_contract::resolved::{Backend, ModelProvisioning};
+        if matches!(
+            Backend::from_ref(&candidate.binding().backend_ref),
+            Backend::Acp(_) | Backend::Remote(_)
+        ) {
+            let aliases =
+                presentation
+                    .acp_aliases()
+                    .map_err(|reason| CompileError::InvalidToolOverride {
+                        agent: agent.to_owned(),
+                        reason,
+                    })?;
+            let supported = match candidate.provisioning() {
+                ModelProvisioning::BackendOwned { acp, .. } => acp.supports_tool_aliases,
+                ModelProvisioning::Provider { acp: Some(acp), .. } => acp.supports_tool_aliases,
+                _ => false,
+            };
+            if !aliases.is_empty() && !supported {
+                return Err(CompileError::InvalidToolOverride {
+                    agent: agent.to_owned(),
+                    reason:
+                        "ACP_TOOL_UNSUPPORTED: the published adapter does not support tool aliases"
+                            .into(),
+                });
+            }
+        }
+    }
+    Ok(())
 }

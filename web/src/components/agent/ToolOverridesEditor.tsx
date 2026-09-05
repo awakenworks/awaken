@@ -16,6 +16,10 @@ export default function ToolOverridesEditor({
   backgroundTools = [],
   onBackgroundToolsChange,
   backgroundUnavailable = false,
+  aliasUnavailable = false,
+  descriptionUnavailable = false,
+  discoveryUnavailable = false,
+  lookupAliases = false,
 }: {
   tools: string[];
   value: ToolOverride[];
@@ -23,6 +27,10 @@ export default function ToolOverridesEditor({
   backgroundTools?: string[];
   onBackgroundToolsChange?: (next: string[]) => void;
   backgroundUnavailable?: boolean;
+  aliasUnavailable?: boolean;
+  descriptionUnavailable?: boolean;
+  discoveryUnavailable?: boolean;
+  lookupAliases?: boolean;
 }) {
   const app = useApp();
   const suggestionsId = `tool-targets-${useId().replaceAll(":", "")}`;
@@ -34,12 +42,13 @@ export default function ToolOverridesEditor({
     }
   };
   const add = (target = tools[0] ?? "") =>
-    onChange([...value, { target, alias: "", description: "" }]);
+    onChange([...value, { target }]);
   const setBackground = (target: string, enabled: boolean) => onBackgroundToolsChange?.(
     updateBackgroundEligibility(backgroundTools, target, enabled),
   );
   return (
     <>
+      {lookupAliases && <p className="mut">{app.t("Lookup aliases redirect calls to canonical MCP tools. Schemas stay unchanged; configuring aliases disables builtin tools for the session.", "调用别名将调用路由到规范 MCP 工具；参数格式保持不变；配置非空调用别名后，将禁用该会话的内置工具。")}</p>}
       <datalist id={suggestionsId}>
         {tools.map((tool) => <option key={tool} value={tool} />)}
       </datalist>
@@ -55,13 +64,14 @@ export default function ToolOverridesEditor({
               value={r.target}
               onChange={(e) => set(i, { target: e.target.value })}
             />
-            <TextField label={app.t("Alias", "别名")} mono style={{ width: 130 }} placeholder="rename" value={r.alias ?? ""} onChange={(e) => set(i, { alias: e.target.value })} />
-            <TextField label={app.t("Description", "描述")} style={{ flex: 1, minWidth: 160 }} placeholder="override description" value={r.description ?? ""} onChange={(e) => set(i, { description: e.target.value })} />
+            <TextField label={app.t("Alias", "别名")} disabled={aliasUnavailable} mono style={{ width: 130 }} placeholder="rename" value={r.alias ?? ""} onChange={(e) => set(i, { alias: e.target.value || undefined })} />
+            <TextField label={app.t("Description", "描述")} disabled={descriptionUnavailable} style={{ flex: 1, minWidth: 160 }} placeholder="override description" value={r.description ?? ""} onChange={(e) => set(i, { description: e.target.value || undefined })} />
             <div className="field">
               <label>{app.t("Show to model on demand", "仅在需要时向模型展示")}</label>
               <div style={{ height: 30, display: "flex", alignItems: "center" }}>
                 <Switch
                   aria-label={app.t("Show this tool to the model on demand", "仅在需要时向模型展示此工具")}
+                  disabled={discoveryUnavailable}
                   checked={r.exposure === "on_demand"}
                   onChange={(e) => set(i, { exposure: e.target.checked ? "on_demand" : undefined })}
                 />

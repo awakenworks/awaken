@@ -16,6 +16,7 @@ fn endpoint() -> InferenceEndpoint {
 
 fn acp_profile() -> AcpExecutionProfile {
     AcpExecutionProfile {
+        supports_tool_aliases: false,
         capability_fingerprint: "sha256:capability".into(),
         capability_adapter_version: "adapter-v1".into(),
         session_configuration: Default::default(),
@@ -116,6 +117,7 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
             credential: credential(),
             model_selection: BackendModelSelection::Default,
             acp: AcpExecutionProfile {
+                supports_tool_aliases: false,
                 capability_fingerprint: String::new(),
                 ..acp_profile()
             },

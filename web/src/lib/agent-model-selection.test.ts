@@ -61,3 +61,16 @@ describe("ACP model choices", () => {
     expect(defaultSelectionForRuntime(runtime("login_required", ["gpt-a"]))).toBeNull();
   });
 });
+
+// R1 BackendOwned, R2 Provider target, R3 legacy pinned ACP must use the same
+// capability gating; Native targets remain Native. Provisioning is not runtime.
+it("routes provider ACP authoring through the reported adapter capabilities", () => {
+  for (const model of [
+    { mode: "target", backend_ref: "acp:claude", target: { model_id: "test" } },
+    { mode: "pinned", backend_ref: "acp:claude", model_ref: "test", provider_identity_ref: "p" },
+  ] as const) {
+    expect(isAcpModelSelection(model)).toBe(true);
+    expect(executionRuntimeId(model)).toBe("acp:claude");
+  }
+  expect(isAcpModelSelection({ mode: "target", backend_ref: "genai", target: { model_id: "test" } })).toBe(false);
+});

@@ -372,6 +372,7 @@ mod tests {
                 processing_placement: None,
             },
             crate::resolved::AcpExecutionProfile {
+                supports_tool_aliases: false,
                 capability_fingerprint: "sha256:claude-capability".into(),
                 capability_adapter_version: "test".into(),
                 session_configuration: Default::default(),
@@ -486,6 +487,7 @@ mod tests {
                     processing_placement: None,
                 },
                 crate::resolved::AcpExecutionProfile {
+                    supports_tool_aliases: false,
                     capability_fingerprint: "sha256:test-capability".into(),
                     capability_adapter_version: "test".into(),
                     session_configuration: Default::default(),

@@ -42,12 +42,28 @@ pub struct AcpLaunch {
     pub identity: AcpLaunchIdentity,
     pub session_model: Option<String>,
     pub session_mode: Option<String>,
+    pub tool_aliases: BTreeMap<String, String>,
     pub session_config_options: Vec<awaken_protocol_acp::SessionConfigOptionSelection>,
     pub session_working_directory: Option<String>,
     pub expected_capability: Option<awaken_protocol_acp::AcpCapabilityExpectation>,
 }
 
 impl AcpLaunch {
+    pub fn project_tool_aliases(
+        &mut self,
+        cli: &AcpCli,
+        presentation: &awaken_runtime_contract::resolved::ToolPresentation,
+    ) -> Result<(), OpenError> {
+        let aliases = presentation.acp_aliases().map_err(OpenError)?;
+        if !aliases.is_empty() && !cli.supports_tool_aliases {
+            return Err(OpenError(
+                "ACP_TOOL_UNSUPPORTED: selected adapter cannot deliver aliases".into(),
+            ));
+        }
+        self.tool_aliases = aliases;
+        Ok(())
+    }
+
     /// A custom launch (argv + env) — another CLI, or a test ACP agent.
     #[must_use]
     pub fn custom(argv: Vec<String>, env: Vec<(String, String)>) -> Self {
@@ -64,6 +80,7 @@ impl AcpLaunch {
             identity: AcpLaunchIdentity::Managed,
             session_model: None,
             session_mode: None,
+            tool_aliases: Default::default(),
             session_config_options: Vec::new(),
             session_working_directory: None,
             expected_capability: None,
@@ -287,6 +304,7 @@ async fn spawn(
         mcp_session_servers: Vec::new(),
         session_model: launch.session_model.clone(),
         session_mode: launch.session_mode.clone(),
+        tool_aliases: launch.tool_aliases.clone(),
         session_config_options: launch.session_config_options.clone(),
         expected_capability: launch.expected_capability.clone(),
     })
@@ -440,7 +458,9 @@ pub async fn project_launch(
         &activation.snapshot.resolved_spec.plugin_config,
     )
     .compact_window;
-    cli.try_project(&model, window, &extra_env)
+    let mut launch = cli.try_project(&model, window, &extra_env)?;
+    launch.project_tool_aliases(cli, &activation.snapshot.resolved_spec.tool_presentation)?;
+    Ok(launch)
 }
 
 /// Project `plugin_config`'s declared secret-free MCP routes onto the one ACP
@@ -956,6 +976,7 @@ mod tests {
             identity: AcpLaunchIdentity::Managed,
             session_model: None,
             session_mode: None,
+            tool_aliases: Default::default(),
             session_config_options: Vec::new(),
             session_working_directory: None,
             expected_capability: None,
@@ -1016,5 +1037,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    }
+    #[test]
+    fn catalog_alias_delivery_matrix() {
+        // Causes: every catalog adapter x empty/alias presentation. R1 empty =>
+        // no SDK metadata for every adapter; R2 supported => exact map; R3 others
+        // => refusal. Control publication and executor must agree on the same row.
+        use awaken_runtime_contract::resolved::{ToolPresentation, ToolPresentationOverride};
+        let presentation = ToolPresentation::from_overrides([(
+            "write".into(),
+            ToolPresentationOverride {
+                alias: Some("Write".into()),
+                description: None,
+                exposure: None,
+            },
+        )]);
+        for cli in crate::known_acp_clis() {
+            let published = crate::known_acp_publication_capabilities()
+                .into_iter()
+                .find(|row| row.backend_ref == format!("acp:{}", cli.id))
+                .unwrap();
+            assert_eq!(published.supports_tool_aliases, cli.supports_tool_aliases);
+            let mut launch = AcpLaunch::custom(vec!["fixture".into()], vec![]);
+            launch
+                .project_tool_aliases(cli, &ToolPresentation::default())
+                .unwrap();
+            assert!(launch.tool_aliases.is_empty());
+            let result = launch.project_tool_aliases(cli, &presentation);
+            assert_eq!(result.is_ok(), cli.supports_tool_aliases);
+            if result.is_ok() {
+                assert_eq!(launch.tool_aliases["Write"], "mcp__awaken_session__write");
+            }
+        }
     }
 }

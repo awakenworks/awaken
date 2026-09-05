@@ -43,6 +43,45 @@ impl ToolPresentation {
         self.overrides.is_empty() && self.exposure.is_default()
     }
 
+    /// Compile the existing presentation intent to single-hop SDK lookup aliases.
+    /// MCP descriptors retain their canonical names and schemas; permissions do too.
+    pub fn acp_aliases(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
+        if !self.exposure.is_default() || self.discovery != ToolDiscoverySettings::default() {
+            return Err("ACP_TOOL_UNSUPPORTED: tool exposure/discovery is Native-only".into());
+        }
+        let mut aliases = std::collections::BTreeMap::new();
+        for (target, value) in &self.overrides {
+            if value.description.is_some() || value.exposure.is_some() {
+                return Err("ACP_TOOL_UNSUPPORTED: SDK lookup aliases cannot rewrite descriptions or exposure".into());
+            }
+            let Some(alias) = value.alias.as_ref() else {
+                continue;
+            };
+            if alias.is_empty()
+                || alias.len() > 128
+                || !alias
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+            {
+                return Err("ACP_TOOL_UNSUPPORTED: invalid tool alias".into());
+            }
+            let actual = if target.starts_with("mcp__") {
+                target.clone()
+            } else {
+                format!("mcp__awaken_session__{target}")
+            };
+            if aliases.insert(alias.clone(), actual).is_some() {
+                return Err("ACP_TOOL_UNSUPPORTED: duplicate tool alias".into());
+            }
+        }
+        if aliases.values().any(|target| aliases.contains_key(target)) {
+            return Err(
+                "ACP_TOOL_UNSUPPORTED: alias chains and target shadowing are forbidden".into(),
+            );
+        }
+        Ok(aliases)
+    }
+
     /// The canonical ids this presentation overrides (used at compile to validate each
     /// targets a selected tool).
     pub fn targets(&self) -> impl Iterator<Item = &str> {
@@ -181,5 +220,87 @@ impl ToolPresentation {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod acp_alias_tests {
+    use super::*;
+    fn presentation(target: &str, alias: &str) -> ToolPresentation {
+        ToolPresentation::from_overrides([(
+            target.into(),
+            ToolPresentationOverride {
+                alias: Some(alias.into()),
+                description: None,
+                exposure: None,
+            },
+        )])
+    }
+    #[test]
+    fn lookup_alias_decision_table() {
+        // Causes: canonical source(local/MCP), alias syntax, duplicate sources,
+        // description/exposure/discovery policy. Effects: exact single-hop map or
+        // refusal before launch. R1 empty => unchanged; R2 local => reserved MCP;
+        // R3 external => identity; R4 malformed/duplicate/shadow => refusal;
+        // R5 presentation semantics unsupported => refusal. No arguments are changed.
+        assert!(
+            ToolPresentation::default()
+                .acp_aliases()
+                .unwrap()
+                .is_empty()
+        );
+        for (target, actual) in [
+            ("bash", "mcp__awaken_session__bash"),
+            ("mcp__docs__read", "mcp__docs__read"),
+        ] {
+            let p = presentation(target, "Bash");
+            assert_eq!(p.acp_aliases().unwrap()["Bash"], actual);
+            assert_eq!(p.resolve("Bash"), target);
+        }
+        for alias in ["", "with space", "../Bash", "🛠"] {
+            assert!(presentation("bash", alias).acp_aliases().is_err());
+        }
+        let duplicate = ToolPresentation::from_overrides([
+            (
+                "bash".into(),
+                ToolPresentationOverride {
+                    alias: Some("same".into()),
+                    description: None,
+                    exposure: None,
+                },
+            ),
+            (
+                "read".into(),
+                ToolPresentationOverride {
+                    alias: Some("same".into()),
+                    description: None,
+                    exposure: None,
+                },
+            ),
+        ]);
+        assert!(duplicate.acp_aliases().is_err());
+        assert!(
+            presentation("bash", "mcp__awaken_session__bash")
+                .acp_aliases()
+                .is_err()
+        );
+        for value in [
+            ToolPresentationOverride {
+                alias: Some("Read".into()),
+                description: Some("changed".into()),
+                exposure: None,
+            },
+            ToolPresentationOverride {
+                alias: None,
+                description: None,
+                exposure: Some(ToolExposure::OnDemand),
+            },
+        ] {
+            assert!(
+                ToolPresentation::from_overrides([("read".into(), value)])
+                    .acp_aliases()
+                    .is_err()
+            );
+        }
     }
 }

@@ -96,7 +96,10 @@ async function main() {
   let server = spawnServer('acp-tool-bridge', PORT, environment).server;
   try {
     await waitForPort(PORT, 180_000, server);
-    let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE, maxRetries: 0 });
+    // Restart deliberately destroys server sockets. Disable HTTP keep-alive so
+    // the replacement read cannot reuse a stale global fetch-pool connection;
+    // SDK retries stay off, preserving the exact approval/idempotency assertions.
+    let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE, maxRetries: 0, defaultHeaders: { connection: 'close' } });
     const allowed = await begin(client);
 
     const beforeRefresh = await listEvents(client, allowed.session.id);
@@ -106,7 +109,7 @@ async function main() {
     await stopServer(server);
     server = spawnServer('acp-tool-bridge', PORT, environment).server;
     await waitForPort(PORT, 180_000, server);
-    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE, maxRetries: 0 });
+    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE, maxRetries: 0, defaultHeaders: { connection: 'close' } });
     const recovered = await listEvents(client, allowed.session.id);
     assert.ok(recovered.some((event) => event.id === allowed.tool.id), 'restart retains the exact pending tool');
 

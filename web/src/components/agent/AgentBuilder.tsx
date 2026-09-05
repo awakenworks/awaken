@@ -32,8 +32,8 @@ import AgentIntegrationsEditor from "./AgentIntegrationsEditor";
 import AgentAdvancedToolsEditor from "./AgentAdvancedToolsEditor";
 import AgentModelSelectionEditor from "./AgentModelSelectionEditor";
 import AgentModelRuntimeControls from "./AgentModelRuntimeControls";
-import { isAcpModelSelection } from "../../lib/agent-model-selection";
-import { executionRuntimeId } from "../../lib/agent-model-selection";
+import { toolPresentationControls } from "../../lib/agent-runtime-capabilities";
+import { executionRuntimeId, isAcpModelSelection } from "../../lib/agent-model-selection";
 import { runtimeToolCompatibility, type ToolRealization } from "../../lib/runtime-tool-compatibility";
 import BehaviorCard from "./BehaviorCard";
 import ResourcesTab from "./ResourcesTab";
@@ -125,6 +125,7 @@ export default function AgentBuilder({
   useEffect(() => {
     onValidityChange(toolsValid && integrationsValid && incompatibleTools.length === 0 && providerApprovalConflicts.length === 0);
   }, [incompatibleTools.length, integrationsValid, onValidityChange, providerApprovalConflicts.length, toolsValid]);
+  const runtimeFeatures = selectedRuntime?.features;
   const backgroundConfig = (config.plugin_config.background_task as { tools?: string[] } | undefined) ?? {};
   const backgroundTools = backgroundConfig.tools ?? [];
   const toolPolicyOverrides = [
@@ -434,6 +435,7 @@ export default function AgentBuilder({
               onChange={(value) => onPatch({ tool_overrides: value })}
               backgroundTools={backgroundTools}
               backgroundUnavailable={acp}
+              {...toolPresentationControls(acp, runtimeFeatures)}
               onBackgroundToolsChange={(next) => {
                 const { background_task: _removed, ...otherPluginConfig } = config.plugin_config;
                 onPatch(next.length > 0 ? {

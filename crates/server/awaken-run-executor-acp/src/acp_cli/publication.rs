@@ -9,6 +9,7 @@ pub fn known_acp_publication_capabilities() -> Vec<awaken_acp_contract::AcpPubli
     known_acp_clis()
         .iter()
         .map(|cli| awaken_acp_contract::AcpPublicationCapability {
+            supports_tool_aliases: cli.supports_tool_aliases,
             backend_ref: format!("acp:{}", cli.id),
             model_api_dialects: cli
                 .model_api_dialects

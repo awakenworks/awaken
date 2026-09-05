@@ -107,3 +107,69 @@ deterministic ACP process but the production Runtime Host, Session MCP exporter,
 rooted tools, durable approval store, restart path, and Files projection. A
 separate live canary certifies each real ACP CLI; the deterministic fixture does
 not substitute for that adapter certification.
+
+## Claude SDK lookup aliases
+
+The pinned Claude ACP 0.69.0 adapter consumes SDK 0.3.232 `toolAliases` through
+`session/new._meta.claudeCode.options`; the same metadata accompanies load and
+missing-session recovery. This is a catalog-declared adapter extension, not an
+ACP-wide option or an arbitrary user-authored SDK options object.
+
+The canonical ACP catalog declares `supports_tool_aliases`. Control freezes it
+in the existing `AcpExecutionProfile`; publication checks every candidate. Old
+profiles default to unsupported. The capabilities endpoint reports each facet:
+`tool_aliases`, `tool_alias_semantics`, `tool_description_override`, and
+`tool_discovery`. The Console disables controls without supported evidence and
+keeps invalid retained intent removable. Provider-routed ACP and backend-owned
+ACP use the same runtime identity for this gate.
+
+Agent intent stays in `tool_overrides`. Native keeps presentation semantics.
+Claude projects `target=write, alias=Write` to
+`{Write: "mcp__awaken_session__write"}`; external canonical MCP targets retain their
+namespace. MCP descriptors and parameter schemas stay canonical. Alias mappings
+are single-hop lookup redirects, not schema adapters. Duplicate source names,
+shadowed targets/chains and unsupported description/exposure/discovery settings
+fail closed. Unsupported ACP rows cannot publish aliases.
+
+A nonempty alias projection disables the SDK builtin set (`tools: []`) and
+passes alias sources through `disallowedTools`, preventing builtin-object calls
+from being mistaken for governed execution. Other exported MCP tools still obey
+their own declared policies. The runtime refuses delivery when its catalog row
+cannot support the mapping. The canonical permission normalizer accepts both
+`mcp.awaken_session.write` and Claude's `mcp__awaken_session__write`; both resolve
+to `write` before permission evaluation and one-shot execution grants.
+
+Neither aliases nor tool permissions implement filesystem isolation. A Bash
+command can mutate files without calling Write; Environment capability is the
+boundary. Unsupported isolation cannot silently fall back to Workdir.
+
+Verification is split deliberately: protocol tests cover new/load/fallback and
+metadata; compiler tests cover capability admission; the existing tool-bridge
+E2E covers real governed tools, durable approval, restart and artifacts. The
+pinned SDK and actual ACP adapter tests use a shared loopback inference fixture
+to force an alias-emitted tool use and prove real name resolution. They require
+no external account and do not certify live model task quality.
+
+Cowork is an API application built on these mechanisms. It owns task entry and
+delivery UX; Agent publication, Session truth, tools, resource admission,
+approvals, scheduling and Artifact remain Awaken authorities.
+
+The ACP await transaction also writes the existing `ActiveToolBatch` with the
+exact canonical ticket identity and arguments; terminal continuation clears the
+batch together with the ticket. Session admission keeps its shared strict
+batch/ticket validation. There is no ACP-specific approval bypass. Legacy wire
+names are normalized through the same function for decision matching and the
+committed transcript; changed arguments and consumed decisions still fail closed.
+
+Physical Hand exports are created only after Environment binding, never during
+deferred reservation. The MCP `RawTool` port delegates to
+`Environment::tool_executor()`, preserving Workdir rooting and Namespace/Container
+resident Hand execution. It does not instantiate a second registry or dispatch
+host filesystem implementations on behalf of an isolated Environment.
+
+Reproduce the focused verification with `npm run test:claude-aliases` and
+`npm run test:cowork-topologies` from `e2e`, under the existing provider-environment
+sanitizer. The topology suite reuses the canonical bridge, Worker transport,
+Worker recovery and projected Namespace/Container scenarios. HTTP/NATS variants
+of `ConnectionPlan` are rejected by its contract tests; these are distinct from
+the implemented Worker HTTP API.

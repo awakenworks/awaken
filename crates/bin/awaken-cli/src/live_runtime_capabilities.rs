@@ -8,8 +8,9 @@ fn runtime_capabilities(
 ) -> Vec<awaken_control::RuntimeCapability> {
     std::iter::once(awaken_control::RuntimeCapability::native())
         .chain(awaken_run_executor_acp::known_acp_clis().iter().map(|cli| {
-            let capability =
+            let mut capability =
                 awaken_control::RuntimeCapability::acp(cli.id, cli.display_name, cli.description);
+            capability.supports_tool_aliases = cli.supports_tool_aliases;
             let Some(observation) = observations.iter().find(|row| row.cli_id == cli.id) else {
                 return capability;
             };

@@ -136,3 +136,13 @@ pub(super) fn openrouter_server_fetch_descriptor() -> WebServerToolProviderDescr
         }),
     }
 }
+
+pub(super) async fn blocking<F, T>(work: F) -> Result<T, ToolError>
+where
+    F: FnOnce() -> Result<T, ToolError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|err| ToolError::Execution(format!("blocking task: {err}")))?
+}

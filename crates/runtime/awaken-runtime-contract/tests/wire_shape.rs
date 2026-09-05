@@ -210,6 +210,7 @@ fn acp_execution_profile_preserves_backend_wire_and_is_optional_on_provider_wire
     // E3 ACP Provider carries exactly one nested profile. These three rules
     // prevent a parallel capability/configuration shape per provisioning mode.
     let profile = awaken_runtime_contract::resolved::AcpExecutionProfile {
+        supports_tool_aliases: false,
         capability_adapter_version: "1.2.3".into(),
         capability_fingerprint: "sha256:profile".into(),
         session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration {

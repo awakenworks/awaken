@@ -454,6 +454,7 @@ mod tests {
 
     fn test_acp_profile() -> awaken_runtime_contract::resolved::AcpExecutionProfile {
         awaken_runtime_contract::resolved::AcpExecutionProfile {
+            supports_tool_aliases: false,
             capability_fingerprint: "sha256:test-capability".into(),
             capability_adapter_version: "test".into(),
             session_configuration: Default::default(),

@@ -8,12 +8,12 @@ export interface AcpModelChoice {
 
 export function isAcpModelSelection(model: ModelSelection | { id: string } | string): boolean {
   return typeof model === "object" && "mode" in model
-    && (model.mode === "backend_default" || model.mode === "backend_exact");
+    && "backend_ref" in model && model.backend_ref.startsWith("acp:");
 }
 
 export function executionRuntimeId(model: ModelSelection | { id: string } | string): string {
-  return isAcpModelSelection(model)
-    ? (model as Extract<ModelSelection, { mode: "backend_default" | "backend_exact" }>).backend_ref
+  return typeof model === "object" && "backend_ref" in model && model.backend_ref.startsWith("acp:")
+    ? model.backend_ref
     : "awaken";
 }
 

@@ -57,14 +57,30 @@ pub(super) async fn open_new_session(
     resolver: &dyn PermissionResolver,
     cwd: &str,
     mcp_servers: &[crate::SessionMcpServer],
+    aliases: &std::collections::BTreeMap<String, String>,
 ) -> Result<NewSessionResponse, AcpError> {
     wire.send_request(
         ID_NEW_SESSION,
         AGENT_METHOD_NAMES.session_new,
-        NewSessionRequest::new(cwd).mcp_servers(to_acp_mcp_servers(mcp_servers)),
+        NewSessionRequest::new(cwd)
+            .mcp_servers(to_acp_mcp_servers(mcp_servers))
+            .meta(tool_alias_meta(aliases)),
     )
     .await?;
     parse(pump_to_response(wire, ID_NEW_SESSION, sink, seq, resolver).await?)
+}
+
+/// Pinned Claude adapter extension. Disable builtin objects as well as redirecting
+/// model-emitted names; this does not grant authority or convert tool arguments.
+pub(super) fn tool_alias_meta(
+    aliases: &std::collections::BTreeMap<String, String>,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    if aliases.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({"claudeCode": {"options": {
+        "toolAliases": aliases, "tools": [], "disallowedTools": aliases.keys().collect::<Vec<_>>()
+    }}}).as_object().expect("metadata object").clone())
 }
 
 /// Negotiate one prompt-free ACP Session and retain the full advertised
@@ -93,6 +109,15 @@ pub async fn negotiate_capabilities(
         config.auth_method_id.as_deref(),
     )
     .await?;
-    let session = open_new_session(&mut wire, &mut sink, &mut seq, &resolver, cwd, &[]).await?;
+    let session = open_new_session(
+        &mut wire,
+        &mut sink,
+        &mut seq,
+        &resolver,
+        cwd,
+        &[],
+        &Default::default(),
+    )
+    .await?;
     Ok(crate::capabilities::project(init, session))
 }

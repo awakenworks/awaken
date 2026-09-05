@@ -1090,6 +1090,7 @@ fn provider_managed_acp_launch_projects_the_publication_pinned_session_profile()
             ".codex/auth.json",
         )),
         awaken_runtime_contract::resolved::AcpExecutionProfile {
+            supports_tool_aliases: false,
             capability_adapter_version: "1.2.3".into(),
             capability_fingerprint: "sha256:profile".into(),
             session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration {
@@ -1133,6 +1134,7 @@ fn launch_projection_rejects_a_stale_unsafe_working_directory() {
             ".codex/auth.json",
         )),
         awaken_runtime_contract::resolved::AcpExecutionProfile {
+            supports_tool_aliases: false,
             capability_adapter_version: "1".into(),
             capability_fingerprint: "sha256:stale".into(),
             session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration {

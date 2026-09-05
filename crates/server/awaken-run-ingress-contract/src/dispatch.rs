@@ -790,6 +790,7 @@ mod tests {
                 Some(access),
                 endpoint,
                 awaken_runtime_contract::resolved::AcpExecutionProfile {
+                    supports_tool_aliases: false,
                     capability_adapter_version: "test".into(),
                     capability_fingerprint: "sha256:test-capability".into(),
                     session_configuration: Default::default(),

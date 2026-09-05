@@ -135,6 +135,9 @@ impl CatalogModelPublicationResolver {
                     .await?;
                 validate_acp_session_configuration(&binding, &configuration, &negotiated)?;
                 Some(awaken_runtime_contract::resolved::AcpExecutionProfile {
+                    supports_tool_aliases: self.acp_capabilities.iter().any(|row| {
+                        row.backend_ref == binding.backend_ref && row.supports_tool_aliases
+                    }),
                     capability_adapter_version,
                     capability_fingerprint,
                     session_configuration: configuration,

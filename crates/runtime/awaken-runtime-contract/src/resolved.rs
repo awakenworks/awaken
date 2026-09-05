@@ -25,6 +25,9 @@ pub struct CatalogFingerprint(pub String);
 /// Session intent so the two provisioning modes cannot drift.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcpExecutionProfile {
+    /// Catalog-declared alias delivery, frozen by Control; old snapshots fail closed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub supports_tool_aliases: bool,
     #[serde(default)]
     pub capability_fingerprint: String,
     #[serde(default)]
@@ -807,6 +810,7 @@ impl ResolvedModelCandidate {
                 credential,
                 model_selection,
                 acp: AcpExecutionProfile {
+                    supports_tool_aliases: false,
                     capability_adapter_version: capability_adapter_version.into(),
                     capability_fingerprint: capability_fingerprint.into(),
                     session_configuration,
@@ -949,6 +953,18 @@ impl ResolvedModelCandidate {
     #[must_use]
     pub fn binding(&self) -> &ModelBinding {
         &self.binding
+    }
+
+    #[must_use]
+    pub fn with_acp_tool_alias_support(mut self, supported: bool) -> Self {
+        match &mut self.provisioning {
+            ModelProvisioning::BackendOwned { acp, .. } => acp.supports_tool_aliases = supported,
+            ModelProvisioning::Provider { acp: Some(acp), .. } => {
+                acp.supports_tool_aliases = supported
+            }
+            _ => {}
+        }
+        self
     }
 
     #[must_use]

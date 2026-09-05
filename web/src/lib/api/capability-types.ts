@@ -56,6 +56,10 @@ export interface RuntimeCap {
   cli?: string | null;
   description: string;
   features?: {
+    tool_aliases?: "supported" | "conditional" | "unavailable";
+    tool_alias_semantics?: "presentation" | "lookup";
+    tool_description_override?: "supported" | "conditional" | "unavailable";
+    tool_discovery?: "supported" | "conditional" | "unavailable";
     environment_session: "supported" | "conditional" | "unavailable";
     context_projection: "supported" | "conditional" | "unavailable";
     awaken_tool_bridge: "supported" | "conditional" | "unavailable";
