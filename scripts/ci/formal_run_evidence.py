@@ -71,14 +71,21 @@ def source_snapshot(repository: Path) -> dict:
     }
 
 
+def runner_identity(repository: Path) -> dict:
+    path = "scripts/ci/check_formal.sh"
+    # The quality runner and Windows packaging may check out different EOLs.
+    # Bind the exact Git blob; source_snapshot separately rejects real edits.
+    blob = subprocess.check_output(["git", "show", "HEAD:" + path], cwd=repository)
+    return {"path": path, "digest": digest_bytes(blob)}
+
+
 def begin_record(repository: Path, strict: bool, now: int) -> dict:
     return {
         "schema_version": 1, "run_id": str(uuid.uuid4()), "status": "running",
         "strict": strict, "started_at_unix": now,
         "source": source_snapshot(repository),
         "proof_toolchain": proof_toolchain(repository),
-        "runner": {"path": "scripts/ci/check_formal.sh",
-                   "digest": digest_file(repository / "scripts/ci/check_formal.sh")},
+        "runner": runner_identity(repository),
     }
 
 
@@ -93,7 +100,7 @@ def finish_record(record: dict, repository: Path, missing_tools: bool, now: int)
         raise ValueError("formal evidence source changed during execution")
     if record["proof_toolchain"] != proof_toolchain(repository):
         raise ValueError("formal evidence toolchain contract changed during execution")
-    if record["runner"]["digest"] != digest_file(repository / record["runner"]["path"]):
+    if record["runner"] != runner_identity(repository):
         raise ValueError("formal evidence runner changed during execution")
     return dict(record, status="passed", finished_at_unix=now)
 
@@ -112,9 +119,7 @@ def validate_record(record: dict, repository: Path, now: int | None = None) -> N
         raise ValueError("formal evidence does not match the clean release source")
     if record.get("proof_toolchain") != proof_toolchain(repository):
         raise ValueError("formal evidence toolchain contract mismatch")
-    expected_runner = {"path": "scripts/ci/check_formal.sh",
-                       "digest": digest_file(repository / "scripts/ci/check_formal.sh")}
-    if record.get("runner") != expected_runner:
+    if record.get("runner") != runner_identity(repository):
         raise ValueError("formal evidence runner mismatch")
 
 

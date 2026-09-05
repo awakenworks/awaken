@@ -112,6 +112,25 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "clean release source"):
             validate_record(record, self.root, 110)
 
+    def test_git_normalized_windows_checkout_preserves_source_identity(self):
+        # E1 a clean LF checkout completes; E2 Windows-style autocrlf checkout
+        # changes physical bytes but not Git source. The same receipt validates.
+        # E3 a semantic edit after conversion still rejects, so normalization
+        # cannot conceal a changed runner or weaken the clean-source boundary.
+        runner = self.root / "scripts/ci/check_formal.sh"
+        self.git("config", "core.autocrlf", "false")
+        self.assertFalse(b"\r\n" in runner.read_bytes(), "LF fixture")
+        passed = finish_record(begin_record(self.root, True, 100), self.root, False, 110)
+        windows = self.root.parent / "windows-checkout"
+        subprocess.run(["git", "clone", "--quiet", "--no-hardlinks", "--config", "core.autocrlf=true",
+                        str(self.root), str(windows)], check=True, capture_output=True)
+        runner = windows / "scripts/ci/check_formal.sh"
+        self.assertTrue(b"\r\n" in runner.read_bytes(), "CRLF fixture")
+        validate_record(passed, windows, 110)
+        runner.write_bytes(runner.read_bytes() + b"exit 23\r\n")
+        with self.assertRaisesRegex(ValueError, "clean release source"):
+            validate_record(passed, windows, 110)
+
 
 if __name__ == "__main__":
     unittest.main()
