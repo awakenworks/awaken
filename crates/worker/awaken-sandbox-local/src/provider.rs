@@ -1516,14 +1516,50 @@ impl pc::Sandbox for LocalSandbox {
 
     async fn attach(
         &self,
-        _req: pc::MountRequirement,
+        req: pc::MountRequirement,
     ) -> Result<pc::RealizedMount, pc::SandboxError> {
-        // Runtime attach after create realizes to disk but is not reflected in
-        // `realized()` (which reports the create-time set); the caller owns the
-        // returned ref. Provider re-borrows `&self`, so we resolve without state.
-        Err(err(
-            "runtime attach is realized by the provider that owns the blob store (Slice 4)",
-        ))
+        if self.trusted_host_access {
+            pc::validate_trusted_host_mount_requirements(
+                std::slice::from_ref(&req),
+                &LocalProvider::capabilities(),
+            )
+            .map_err(err)?;
+        } else {
+            pc::validate_mount_requirements(
+                std::slice::from_ref(&req),
+                &LocalProvider::capabilities(),
+            )
+            .map_err(err)?;
+        }
+        // Create-time participants keep their original lifecycle authority.
+        // Only already-resolved ordinary File bytes use this late attach port.
+        let destination = self.root.resolve(&req.mount_path).map_err(err)?;
+        for retained in &self.realized {
+            let retained_path = self.root.resolve(&retained.mount_path).map_err(err)?;
+            if destination.starts_with(&retained_path) || retained_path.starts_with(&destination) {
+                return Err(err(
+                    "runtime attachment cannot replace a create-time mount participant",
+                ));
+            }
+        }
+        let contents = match &req.source {
+            pc::MountSource::Inline { contents } => contents.as_bytes(),
+            pc::MountSource::InlineBytes { contents, .. } => contents.as_slice(),
+            _ => {
+                return Err(err(
+                    "runtime attachment requires resolved inline File bytes",
+                ));
+            }
+        };
+        verify(&req.source, contents)?;
+        self.materialize_inline(&req.mount_path, contents)?;
+        Ok(pc::RealizedMount {
+            mount_id: req.mount_id,
+            mount_path: req.mount_path,
+            access: req.access,
+            realization: pc::Realization::Copy,
+            content_hash: Some(content_fingerprint(contents)),
+        })
     }
 
     async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {

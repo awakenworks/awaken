@@ -88,6 +88,7 @@ default = []
 # Post-construction persistence overrides are restricted to tests. Product
 # startup selects every authority before constructing SharedHost.
 test-support = [
+    "awaken-sandbox-local/test-support",
     "dep:awaken-store-inmem",
     "dep:awaken-file-store",
     "dep:awaken-memory-store",

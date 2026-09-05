@@ -740,6 +740,54 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
     );
 }
 
+#[test]
+fn trusted_host_repository_projection_preserves_the_exact_tier() {
+    // Cause/effect rules: T1 explicit TrustedHost + Repository => Workdir;
+    // I1 isolated + Repository => Namespace; T2/I2 without Repository => Workdir.
+    // The frozen Environment is the authority; presence of a Repository must
+    // not silently change a trusted machine identity into an isolated process.
+    let host = host();
+    for trusted in [false, true] {
+        for repository in [false, true] {
+            let mut environment = frozen_projection_with_model_override(
+                "workspace",
+                awaken_session_contract::SessionEnvironmentState::default(),
+                None,
+            )
+            .baseline
+            .environment;
+            environment.sandbox.isolation = Some(pc::IsolationClass::Workdir);
+            environment.sandbox.host_access = if trusted {
+                pc::HostAccessPolicy::TrustedHost
+            } else {
+                pc::HostAccessPolicy::Isolated
+            };
+            let environment = project_environment(&environment);
+            let spec = host.sandbox_spec_for_projected_layout(
+                "trust-matrix",
+                ProjectedSandboxLayout {
+                    resource_mounts: Vec::new(),
+                    has_repositories: repository,
+                    baseline_mounts: None,
+                    baseline_env: None,
+                    content_delivery: None,
+                    environment: Some(&environment),
+                    network_isolation: false,
+                },
+            );
+            assert_eq!(
+                spec.isolation,
+                if repository && !trusted {
+                    pc::IsolationClass::Namespace
+                } else {
+                    pc::IsolationClass::Workdir
+                },
+                "trusted={trusted}, repository={repository}"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn projected_acp_rejects_a_provider_with_split_tool_and_process_paths() {
     // Cause/effect graph: C1 the immutable Agent publication contains/does not

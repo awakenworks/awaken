@@ -446,6 +446,54 @@ mod tests {
                 .as_deref(),
             Some("new")
         );
+        // M2 stale recovery evidence + conflicting edit => explicit conflict,
+        // never overwrite the committed head. M3 read-only => no writes even
+        // with stale evidence. M4 traversal => reject before any store effects.
+        let stale = [("note.md".into(), b"stale overwrite".to_vec())];
+        let error = mounter
+            .reconcile_recovered_copy("s", &evidence, &stale, MountAccess::ReadWrite)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("concurrent durable head conflict")
+        );
+        mounter
+            .reconcile_recovered_copy("s", &evidence, &stale, MountAccess::ReadOnly)
+            .await
+            .unwrap();
+        let error = mounter
+            .reconcile_recovered_copy(
+                "s",
+                &evidence,
+                &[("../escape.md".into(), b"escape".to_vec())],
+                MountAccess::ReadWrite,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsafe recovered Memory copy path")
+        );
+        assert_eq!(
+            durable
+                .get_by_path("s", "/note.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("after")
+        );
+        assert!(
+            durable
+                .get_by_path("s", "/escape.md")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
