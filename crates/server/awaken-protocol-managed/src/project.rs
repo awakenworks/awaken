@@ -414,6 +414,7 @@ pub fn project_messages(
         &std::collections::HashSet::new(),
         std::iter::empty(),
         &advisor_blocks,
+        &[],
     )
 }
 
@@ -660,15 +661,33 @@ pub(crate) fn project_messages_with_mcp_ids(
     projected_tool_ids: &std::collections::HashSet<String>,
     mcp_ids: impl IntoIterator<Item = String>,
     advisor_blocks: &AdvisorConsultationBlocks,
+    pending_history: &[&Pending],
 ) -> Vec<ProjectedEvent> {
     let mut encoder = ManagedEncoder::default();
     encoder.mcp_ids.extend(mcp_ids);
-    encoder.transcode_facts(&fold_with_pending(
-        messages,
-        pending,
-        projected_tool_ids,
-        advisor_blocks,
-    ))
+    let mut facts = fold_with_pending(messages, pending, projected_tool_ids, advisor_blocks);
+    // The transcript establishes occurrence visibility; committed AwaitTarget
+    // history establishes its permission/ownership at that occurrence. Preserve
+    // every prior ask/client call even when a cold read sees all results at once.
+    for fact in &mut facts {
+        if let Fact::ToolCall {
+            id,
+            name,
+            input,
+            disposition,
+        } = fact
+            && let Some(pending) = pending_history.iter().find(|pending| {
+                pending.tool_use_id == *id && pending.name == *name && pending.input == *input
+            })
+        {
+            *disposition = if pending.client_executed {
+                ToolDisposition::PendingClient
+            } else {
+                ToolDisposition::PendingBuiltin
+            };
+        }
+    }
+    encoder.transcode_facts(&facts)
 }
 
 fn fold_with_pending(
@@ -967,6 +986,7 @@ mod tests {
             &std::collections::HashSet::new(),
             std::iter::empty(),
             &advisor_blocks,
+            &[],
         );
         assert_eq!(call_events.len(), 1, "A1/E1-E2");
         assert!(matches!(
@@ -980,6 +1000,7 @@ mod tests {
             &std::collections::HashSet::from(["ordinary-call".into()]),
             std::iter::empty(),
             &advisor_blocks,
+            &[],
         );
         assert_eq!(result_events.len(), 1, "A2/E1-E3");
         assert!(matches!(
@@ -995,6 +1016,7 @@ mod tests {
             &std::collections::HashSet::new(),
             std::iter::empty(),
             &advisor_blocks,
+            &[],
         );
         let reused_result_events = project_messages_with_mcp_ids(
             &[reused_result],
@@ -1002,6 +1024,7 @@ mod tests {
             &std::collections::HashSet::from(["advisor-call".into()]),
             std::iter::empty(),
             &advisor_blocks,
+            &[],
         );
         assert!(
             matches!(
@@ -1134,6 +1157,107 @@ mod tests {
             2,
             "F3/E1,E5 both exact resolved occurrences"
         );
+    }
+
+    #[test]
+    fn cold_permission_history_classifies_every_call_in_one_response() {
+        // Graph: C1 a cold read sees two calls and both results together; C2
+        // each call has a committed permission/client boundary; C3 the history
+        // arrives in either order; C4 history is absent or has a different input.
+        // H1 C1+C2+C3 -> both exact ask/custom events; H2 C4 -> no transferred
+        // permission. Cartesian H1 covers builtin/MCP/client x history order.
+        // Current ticket is absent: completed calls must retain their original
+        // wire ownership, without creating a new pending Session or state store.
+        use awaken_agent_contract::agent::message::{Id, Message, Role};
+        for (name, client) in [
+            ("write", false),
+            ("mcp__files__write", false),
+            ("custom", true),
+        ] {
+            let history = ["first", "second"].map(|id| Pending {
+                tool_use_id: id.into(),
+                name: name.into(),
+                input: serde_json::json!({"path":id}),
+                client_executed: client,
+            });
+            let messages = vec![
+                Message::new(
+                    Id("calls".into()),
+                    Role::Assistant,
+                    history
+                        .iter()
+                        .map(|p| ContentBlock::tool_use(&p.tool_use_id, name, p.input.clone()))
+                        .collect(),
+                ),
+                Message::new(
+                    Id("results".into()),
+                    Role::Tool,
+                    history
+                        .iter()
+                        .map(|p| {
+                            ContentBlock::tool_result(
+                                &p.tool_use_id,
+                                vec![ContentBlock::text("done")],
+                            )
+                        })
+                        .collect(),
+                ),
+            ];
+            for order in [[&history[0], &history[1]], [&history[1], &history[0]]] {
+                let projected = project_messages_with_mcp_ids(
+                    &messages,
+                    None,
+                    &std::collections::HashSet::new(),
+                    std::iter::empty(),
+                    &advisor_consultation_blocks(&messages),
+                    &order,
+                );
+                assert_eq!(
+                    projected
+                        .iter()
+                        .filter(|event| matches!(
+                            event.kind,
+                            OutboundKind::AgentToolUse {
+                                evaluated_permission: Some(EvaluatedPermission::Ask),
+                                ..
+                            } | OutboundKind::AgentMcpToolUse {
+                                evaluated_permission: Some(EvaluatedPermission::Ask),
+                                ..
+                            } | OutboundKind::AgentCustomToolUse { .. }
+                        ))
+                        .count(),
+                    2,
+                    "H1 {name}"
+                );
+            }
+            let mut unrelated = history[0].clone();
+            unrelated.input = serde_json::json!({"path":"elsewhere"});
+            let projected = project_messages_with_mcp_ids(
+                &messages,
+                None,
+                &std::collections::HashSet::new(),
+                std::iter::empty(),
+                &advisor_consultation_blocks(&messages),
+                &[&unrelated],
+            );
+            assert_eq!(
+                projected
+                    .iter()
+                    .filter(|event| matches!(
+                        event.kind,
+                        OutboundKind::AgentToolUse {
+                            evaluated_permission: Some(EvaluatedPermission::Allow),
+                            ..
+                        } | OutboundKind::AgentMcpToolUse {
+                            evaluated_permission: Some(EvaluatedPermission::Allow),
+                            ..
+                        }
+                    ))
+                    .count(),
+                2,
+                "H2 no permission transfer {name}"
+            );
+        }
     }
 
     #[test]
