@@ -4,23 +4,14 @@
 // Kept free of React/DOM so they are unit-testable in isolation.
 
 import type { ContentBlock, SessionEvent } from "./api/types";
+import { pairToolResults } from "@awaken/managed-session-projection";
+export { pairToolResults };
 
 /** Flatten a content-block array to display text (non-text blocks show a tag). */
 export function textOf(content: ContentBlock[] | undefined): string {
   return (content ?? [])
     .map((b) => ("text" in b && typeof b.text === "string" ? b.text : `[${b.type}]`))
     .join("");
-}
-
-/** Pair each tool_use with its tool_result (keyed by the tool_use id). */
-export function pairToolResults(log: SessionEvent[]): Map<string, SessionEvent> {
-  const results = new Map<string, SessionEvent>();
-  for (const ev of log) {
-    if (ev.type === "agent.tool_result" && "tool_use_id" in ev) {
-      results.set(ev.tool_use_id as string, ev);
-    }
-  }
-  return results;
 }
 
 /** A concise, actionable explanation for a committed run failure. */
