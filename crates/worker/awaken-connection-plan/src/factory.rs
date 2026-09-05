@@ -4,7 +4,7 @@
 //! the degenerate zero-serialization arm; [`bind_unix`] gives the listen side
 //! (a hand, or a brain in the Reverse case) a one-shot acceptor. Every consumer
 //! takes an [`AgentChannel`], so the same brain/hand code runs from a laptop
-//! (InProcess/Unix) to a fleet (Tcp/Nats, later slices).
+//! (InProcess/Unix) to TCP peers. HTTP/NATS remain unsupported.
 
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
@@ -36,7 +36,7 @@ pub trait ChannelFactory: Send + Sync {
 }
 
 /// The default factory over tokio transports (InProcess handled out-of-band by
-/// [`in_process_pair`]; Unix here; Tcp/Nats in later slices).
+/// [`in_process_pair`]; Unix and TCP here; HTTP/NATS remain unsupported).
 pub struct TokioChannelFactory;
 
 #[async_trait]

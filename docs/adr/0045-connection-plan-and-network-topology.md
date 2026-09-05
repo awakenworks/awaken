@@ -7,8 +7,9 @@
   `DialPolicy`, `ChannelFactory`, `in_process_pair`, and `bind_unix`. Transport
   authentication is configured by the transport-security owner, not embedded
   in topology; guardrail G34.
-  InProcess + Unix arms green; Tcp/Nats and the foundation-transport adoption
-  (D1/D5) remain follow-on slices.
+  InProcess, Unix and TCP direct/reverse are implemented. HTTP/NATS are rejected.
+  The 2026-09-06 implementation amendment below supersedes the proposed
+  foundation-transport adoption and marker convergence in D1/D5/D6.
 - Depends on: [ADR-0044](0044-remote-hand-tool-executor-over-a-channel.md) (the
   first consumer that needs a channel), foundation crate `awaken-connection`
   (already a transitive dependency of this workspace)
@@ -134,6 +135,29 @@ the ADR-0044 hand channel then sit on one mechanism.
 | Owning crate | new `awaken-connection-plan` (Neutral Platform), depending on foundation `awaken-connection*`; local transports contributed to foundation `-transports` |
 | Guardrail + enforcer | **G34**: `ConnectionPlan` carries topology only—no product-hosting vocabulary, credential reference, or resolved secret. `deny_unknown_fields` rejects the retired credential field. |
 | First vertical slice | `ChannelFactory` with `InProcess` + `Unix` arms; ADR-0044's `RemoteToolExecutor` takes a `ConnectionPlan` instead of a hardcoded channel; transport authentication is composed separately |
+
+## Implementation amendment (2026-09-06): one channel factory
+
+The implemented authority is `awaken-connection-plan::TokioChannelFactory` with
+`bind_tcp`/`bind_unix`, returning the existing `awaken-agent-channel::AgentChannel`
+duplex bound. The proposed foundation `Channel` adoption in D1/D5/D6 did not
+become this implementation. The duplicate container `net` module and its unused
+typed pairing helper have been removed, together with their sole foundation-core
+dependency. Do not restore them as a second transport or compatibility path.
+
+Docker and Podman still resolve their exact published address and own cold-start
+retry policy, then dial through the shared factory. Kubernetes direct dialing
+uses the same factory; reverse dialing binds and accepts through `bind_tcp`.
+Authenticated exact-Pod port-forwarding remains in the Kubernetes adapter and
+does not become an unauthenticated TCP route. No new network or credential
+authority is introduced. The factory retains its existing TCP_NODELAY behavior.
+
+Tests beside the factory and Kubernetes caller cover exact bidirectional bytes,
+half-close/EOF without losing the response, a continuously bound ephemeral
+rendezvous, and refusal at an owned non-listening address. The real Docker
+published-port test requires exact echo bytes and physical cleanup, not merely
+a successful socket write. These tests do not prove that a container can reach
+a Worker-side loopback MCP endpoint: that separate projection gap remains open.
 
 ## Consequences
 

@@ -117,19 +117,18 @@ where
 pub(super) async fn accept_reverse(
     addr: std::net::SocketAddr,
 ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
-    let listen = crate::net::ReverseListen::bind(addr)
-        .await
-        .map_err(super::backend)?;
+    let listen = awaken_connection_plan::bind_tcp(
+        &awaken_connection_plan::ConnectionPlan::tcp_listen(addr.to_string()),
+    )
+    .await
+    .map_err(super::backend)?;
     accept_reverse_on(listen).await
 }
 
 pub(super) async fn accept_reverse_on(
-    listen: crate::net::ReverseListen,
+    listen: awaken_connection_plan::TcpHandListener,
 ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
-    use awaken_connection::ListenSide as _;
-
-    let channel = listen.accept().await.map_err(super::backend)?;
-    Ok(Box::new(channel))
+    listen.accept().await.map_err(super::backend)
 }
 
 pub(super) async fn open_pod_channel(

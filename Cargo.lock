@@ -578,16 +578,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awaken-connection"
-version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation.git?rev=248ca11e94e6ad8aa39bcf43699c725e2a96da70#248ca11e94e6ad8aa39bcf43699c725e2a96da70"
-dependencies = [
- "async-trait",
- "futures",
- "thiserror",
-]
-
-[[package]]
 name = "awaken-connection-plan"
 version = "1.0.0"
 dependencies = [
@@ -2100,7 +2090,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-channel",
- "awaken-connection",
+ "awaken-connection-plan",
  "awaken-memory-store",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
