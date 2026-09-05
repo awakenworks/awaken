@@ -198,11 +198,9 @@ pub async fn prepare_host_acp_with(
                 .as_ref()
                 .is_none_or(|selected| selected.contains(&observation.cli_id))
     }) {
-        if observation.credential_state != Some(CredentialObservationState::Available) {
-            observation.capability_state = Some(AcpCapabilityState::Unavailable);
-            observation.capability_reason_code = Some("acp_login_not_available".to_string());
-            continue;
-        }
+        // Protocol capability is independent of backend-owned login liveness.
+        // Provider-routed execution supplies its own admitted credential later;
+        // this prompt-free probe neither grants nor materializes that authority.
         let cli = acp_cli(&observation.cli_id).expect("discovery returns catalog ids");
         let argv = launch_argv
             .get(&observation.cli_id)
@@ -535,13 +533,13 @@ impl AcpCapabilityObservationSource for AcpLocalCredentialResolver {
                 Some(observation) => observation,
                 None => self.discovery.discover(binding.cli).await,
             };
-            if host.credential_state != Some(CredentialObservationState::Available) {
+            if !host.detected() {
                 observations.push(
                     AcpCapabilityObservation::unavailable(
                         format!("acp:{}", binding.cli.id),
                         host.version.unwrap_or_else(|| "unknown".into()),
                         observed_at_ms,
-                        "acp_login_not_available",
+                        "acp_cli_not_detected",
                     )
                     .map_err(|error| error.to_string())?,
                 );
@@ -863,6 +861,165 @@ mod tests {
                 capability_state: None,
                 capability_fingerprint: None,
                 capability_reason_code: None,
+            }
+        }
+    }
+
+    struct CapabilityDiscovery {
+        state: CredentialObservationState,
+        detected: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl AcpDiscovery for CapabilityDiscovery {
+        async fn discover(&self, cli: &AcpCli) -> AcpHostObservation {
+            observation(
+                cli.id,
+                if cli.id == "claude" && self.detected.load(std::sync::atomic::Ordering::SeqCst) {
+                    AcpDetectionState::Detected
+                } else {
+                    AcpDetectionState::Missing
+                },
+                Some(self.state),
+                None,
+            )
+        }
+    }
+
+    struct CapabilityFixture {
+        success: bool,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl AcpWrapperInstaller for CapabilityFixture {
+        async fn resolved_argv(&self, _: &AcpCli, _: &Path) -> Result<Option<Vec<String>>, String> {
+            Ok(Some(vec!["fixture-acp".into()]))
+        }
+    }
+
+    #[async_trait]
+    impl AcpCapabilityNegotiator for CapabilityFixture {
+        async fn negotiate(
+            &self,
+            _: &[String],
+            _: &Path,
+            _: Option<&str>,
+        ) -> Result<awaken_acp_contract::NegotiatedAcpCapabilities, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if !self.success {
+                return Err("fixture negotiation failed".into());
+            }
+            Ok(awaken_acp_contract::NegotiatedAcpCapabilities {
+                protocol_version: "1".into(),
+                load_session: true,
+                prompt_image: false,
+                prompt_audio: false,
+                prompt_embedded_context: true,
+                mcp_http: true,
+                mcp_sse: false,
+                session_list: false,
+                modes: vec![],
+                config_options: vec![],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn protocol_capability_does_not_grant_backend_owned_login() {
+        // Graph: detected CLI + active registration -> prompt-free negotiation;
+        // independent login observation -> BackendOwned credential admission.
+        // | rule | login state | negotiation | protocol | credential |
+        // | C1 | Available | succeeds | verified | available |
+        // | C2 | any other | succeeds | verified | original denial |
+        // | C3 | any | fails | unverified | unchanged |
+        // | C4 | CLI disappears | not attempted | unavailable | no grant |
+        // | C5 | source disabled | not attempted | unavailable | disabled |
+        // Cross C1-C3 over all six credential states at startup AND heartbeat.
+        // C4/C5 prove that removing the login gate does not remove detection or
+        // registration gates. No Provider key is present in any negotiation.
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        for state in [
+            CredentialObservationState::Available,
+            CredentialObservationState::LoginRequired,
+            CredentialObservationState::Expired,
+            CredentialObservationState::Invalid,
+            CredentialObservationState::ProbeFailed,
+            CredentialObservationState::Disabled,
+        ] {
+            for success in [true, false] {
+                let directory = tempfile::tempdir().unwrap();
+                let discovery = Arc::new(CapabilityDiscovery {
+                    state,
+                    detected: AtomicBool::new(true),
+                });
+                let fixture = Arc::new(CapabilityFixture {
+                    success,
+                    calls: AtomicUsize::new(0),
+                });
+                let prepared = prepare_host_acp_with(
+                    LocalAcpPreparation {
+                        probe_cwd: directory.path().join("probe"),
+                        wrapper_root: directory.path().join("wrappers"),
+                        initial_workspace: Some("workspace".into()),
+                        selected_cli_ids: Some(["claude".into()].into_iter().collect()),
+                        credentials: Arc::new(InMemoryCredentialRepo::new()),
+                    },
+                    discovery.clone(),
+                    fixture.clone(),
+                    fixture.clone(),
+                )
+                .await
+                .unwrap();
+                assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+                assert_eq!(prepared.effective_profiles.contains_key("claude"), success);
+                let credentials = prepared.resolver.credential_observations().await.unwrap();
+                assert_eq!(credentials.len(), 1);
+                let credential = credentials.into_iter().next().unwrap();
+                assert_eq!(credential.state, state);
+                assert_eq!(
+                    require_available(credential).is_ok(),
+                    state == CredentialObservationState::Available
+                );
+                let capabilities = prepared.resolver.capability_observations().await.unwrap();
+                assert_eq!(capabilities.len(), 1);
+                assert_eq!(capabilities[0].negotiated().is_some(), success);
+                assert_eq!(fixture.calls.load(Ordering::SeqCst), 2);
+                discovery.detected.store(false, Ordering::SeqCst);
+                prepared
+                    .resolver
+                    .last_host_observations
+                    .lock()
+                    .unwrap()
+                    .clear();
+                assert!(
+                    prepared.resolver.capability_observations().await.unwrap()[0]
+                        .negotiated()
+                        .is_none()
+                );
+                assert_eq!(fixture.calls.load(Ordering::SeqCst), 2);
+                discovery.detected.store(true, Ordering::SeqCst);
+                for binding in prepared.resolver.bindings.lock().unwrap().values_mut() {
+                    binding.status = CredentialStatus::Disabled;
+                }
+                assert!(
+                    prepared.resolver.capability_observations().await.unwrap()[0]
+                        .negotiated()
+                        .is_none()
+                );
+                assert_eq!(fixture.calls.load(Ordering::SeqCst), 2);
+                assert_eq!(
+                    prepared
+                        .resolver
+                        .credential_observations()
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .next()
+                        .unwrap()
+                        .state,
+                    CredentialObservationState::Disabled
+                );
             }
         }
     }

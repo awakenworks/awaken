@@ -164,7 +164,11 @@ After callers migrate, the executor has no discovery exports.
    It starts a bounded short-lived ACP process and runs
    `initialize` plus `session/new` to observe modes, config options and protocol
    capabilities. It sends no user prompt, Workspace document body, live resource
-   handle or provider credential material.
+   handle or provider credential material. Installed adapters are probed even
+   when backend-owned login is unavailable: Provider execution receives its own
+   published credential later. Failed negotiation remains unavailable; successful
+   negotiation does not change the independent login observation or authorize
+   BackendOwned execution.
 
 The capability-probe process owns no user Session continuity, commits no Run
 facts, has a fixed timeout and is reaped as a unit.
@@ -638,7 +642,7 @@ of truth.
 | 1. declare adapter | product release or typed deployment update | protocol-external adapter facts | one versioned catalog descriptor | invalid descriptor prevents composition; no runtime fallback |
 | 2. discover installation | startup, explicit refresh, descriptor/version change | descriptor + host process probe port | exact executable/version/wrapper evidence in one Worker observation batch | typed missing/incompatible/probe failure; bounded retry |
 | 3. observe login | same refresh batch, periodic liveness, pre-launch fence | descriptor status command + PATH/HOME allowlist | secret-free `CredentialObservation` with revision and TTL | login remediation or expiry; never read the login file |
-| 4. negotiate capability | login available and launchable adapter | neutral channel + canonical handshake port | modes/options/protocol facts; no prompt or user Session | timeout/protocol failure; reap probe process tree |
+| 4. negotiate capability | installed launchable adapter, independent of login | neutral channel + canonical handshake port | modes/options/protocol facts; no prompt or user Session | timeout/protocol failure; reap probe process tree |
 | 5. derive effective profile | successful batch assembly | live negotiation + compatible catalog annotations | `EffectiveAcpCapabilityProfile` and deterministic fingerprint | conflict is `Incompatible`; partial batch is not published |
 | 6. advertise/readiness | atomic observation publish or expiry | profile + login observation | Worker capability projection and live readiness | stale evidence becomes unselectable; prior deadline is never extended by failure |
 | 7. author intent | user/API selection | current projection + generated typed contract | one Agent revision containing backend/model/native mode/options only | draft may remain unavailable; invalid type/value is rejected |

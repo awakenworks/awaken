@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { provisionProviderTestProfile } from './harness.mjs';
+import { provisionProviderTestModel } from './harness.mjs';
 import {
   loadProviderCases,
   providerDialects,
@@ -158,8 +158,13 @@ test('duplicate identities fail before provider I/O', () => {
 // P3 !C2 stops after catalog, never substitutes another model; P4 !C3 returns
 // only a redacted diagnostic; P5 !C4 fails publication setup. API-key/OAuth
 // branches preserve their existing exclusive ownership of credential ingress.
+// P6 cross P1-P5 with Native/ACP: Native writes an exact-credential profile;
+// ACP returns an exact endpoint + runtime Target and creates no unused profile.
+// A profile-only failure is unreachable for ACP. No runtime substitution occurs;
+// actual capability/dialect/credential admission belongs to publication tests.
+for (const backendRef of ['genai', 'acp:claude'])
 for (const mode of ['key', 'oauth', 'implicit', 'missing-model', 'empty', 'leak', 'denied', 'profile-denied']) {
-  test(`shared provider setup: ${mode}`, async (t) => {
+  test(`shared provider setup: ${backendRef} / ${mode}`, async (t) => {
     const calls = [];
     const secret = 'inert-provider-test-material'; // awaken-allow: secret -- loopback-only test
     const item = { id: 'fixture', provider_id: 'fixture', dialect: 'open_ai_chat',
@@ -172,21 +177,23 @@ for (const mode of ['key', 'oauth', 'implicit', 'missing-model', 'empty', 'leak'
       const route = new URL(url).pathname;
       calls.push({ route, method: init.method, body: init.body ? JSON.parse(init.body) : undefined });
       if (route === '/v1/config/provider-connections') {
-        return Response.json({ credential: { id: 'credential' }, sync: { discovered: mode === 'empty' ? 0 : 2 },
+        return Response.json({ endpoint: {id: 'endpoint', base_url: 'https://provider.invalid'}, credential: { id: 'credential' }, sync: { discovered: mode === 'empty' ? 0 : 2 },
           ...(mode === 'leak' ? { leaked: secret } : {}) }, { status: mode === 'denied' ? 403 : 201 });
       }
       if (route === '/v1/config/catalog') return Response.json({ offerings: [
         { model_id: 'wrong-provider', provider_id: 'other', protocol_endpoint_id: 'other' },
+        { model_id: 'chosen', provider_id: 'fixture', protocol_endpoint_id: 'other-dialect', status: 'active' },
         { model_id: 'chosen', provider_id: 'fixture', protocol_endpoint_id: 'endpoint', status: 'active' },
       ] });
       assert.equal(route, '/v1/config/inference-profiles/profile');
       return Response.json({}, { status: mode === 'profile-denied' ? 400 : 200 });
     });
-    if (['key', 'oauth', 'implicit'].includes(mode)) {
-      const result = await provisionProviderTestProfile('http://localhost', 'workspace', item, 'profile');
+    if (['key', 'oauth', 'implicit'].includes(mode) || (mode === 'profile-denied' && backendRef !== 'genai')) {
+      const result = await provisionProviderTestModel('http://localhost', 'workspace', item, 'profile', { backendRef });
       assert.equal(result.offering.model_id, 'chosen');
-      assert.equal(calls.length, 3);
-      assert.deepEqual(calls[2].body.primary, {
+      assert.equal(calls.length, backendRef === 'genai' ? 3 : 2);
+      assert.deepEqual(result.model, backendRef === 'genai' ? { mode: 'profile', profile_id: 'profile' } : 'chosen;provider=fixture;api=open_ai_chat;executor=acp:claude');
+      if (backendRef === 'genai') assert.deepEqual(calls[2].body.primary, {
         target: { model_id: 'chosen', provider_id: 'fixture', protocol_endpoint_id: 'endpoint' },
         credential_binding: { type: 'exact', credential_source_id: 'credential' },
       });
@@ -194,7 +201,7 @@ for (const mode of ['key', 'oauth', 'implicit', 'missing-model', 'empty', 'leak'
       assert.equal(calls[0].body.secret, mode === 'oauth' ? undefined : secret);
       assert.equal(calls[0].body.oauth_helper, mode === 'oauth' ? 'fixture-helper' : undefined);
     } else {
-      await assert.rejects(provisionProviderTestProfile('http://localhost', 'workspace', item, 'profile'), (error) => {
+      await assert.rejects(provisionProviderTestModel('http://localhost', 'workspace', item, 'profile', { backendRef }), (error) => {
         assert.ok(!error.message.includes(secret));
         return true;
       });
@@ -202,3 +209,22 @@ for (const mode of ['key', 'oauth', 'implicit', 'missing-model', 'empty', 'leak'
     }
   });
 }
+
+// P7 invalid backend coordinates must fail before credential ingress/discovery;
+// a typo must not become an implicitly Native test or an arbitrary remote call.
+for (const backendRef of ['', 'native', 'acp:', 'a2a:https://remote.invalid']) {
+  test(`provider setup rejects invalid backend: ${backendRef}`, async (t) => {
+    const fetch = t.mock.method(globalThis, 'fetch', () => { throw new Error('unexpected I/O'); });
+    await assert.rejects(provisionProviderTestModel('http://localhost', 'workspace', {}, 'profile', {backendRef}),
+      /requires a Native or ACP backend/u);
+    assert.equal(fetch.mock.callCount(), 0);
+  });
+}
+
+// P8 omitted URL delegates endpoint/discovery ownership to Control; explicit
+// URLs retain syntax validation above. No provider template is copied here.
+test('provider case can request the Control-owned default endpoint', () => {
+  const [item] = loadProviderCases(authored([{id: 'default', provider_id: 'deepseek',
+    dialect: 'anthropic_messages', secret_env: 'VENDOR_KEY'}], {VENDOR_KEY: 'inert'}));
+  assert.equal(item.base_url, undefined);
+});
