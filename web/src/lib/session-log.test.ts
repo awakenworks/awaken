@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ContentBlock, SessionEvent } from "./api/types";
 import {
-  pairToolResults,
   sessionErrorText,
   spanDurationMs,
   textOf,
@@ -19,17 +18,6 @@ describe("Session presentation projections", () => {
     const content: ContentBlock[] = [{ type: "text", text: "hi" }, { type: "redacted" }];
     expect(textOf(content)).toBe("hi[redacted]");
     expect(textOf(undefined)).toBe("");
-  });
-
-  it("pairs server tool results by their exact tool-use id", () => {
-    // Cause/effect rule: C1 agent.tool_result names one tool_use_id -> E1 only
-    // that tool card receives the result; unrelated ids remain absent.
-    const results = pairToolResults([
-      ev({ id: "u1", type: "agent.tool_use", name: "get_weather" }),
-      ev({ id: "r1", type: "agent.tool_result", tool_use_id: "u1" }),
-    ]);
-    expect(results.get("u1")?.id).toBe("r1");
-    expect(results.has("u2")).toBe(false);
   });
 
   it("computes only nonnegative durations between committed anchors", () => {

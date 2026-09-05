@@ -1788,13 +1788,9 @@ impl RunFactAppender for CollectingAppender {
                 is_error,
             } => {
                 self.open_text_message = None;
-                // The neutral `ToolResult` has no error flag, so a failed call's
-                // error surfaces in the result text (marked) rather than being lost.
-                let body = if *is_error {
-                    format!("[tool error] {content}")
-                } else {
-                    content.clone()
-                };
+                // Use the same typed error fact as Native. A textual prefix
+                // cannot carry failure through committed Session projection.
+                let body = content.clone();
                 let result_id = self
                     .remapped_result
                     .take_if(|(regenerated, _)| regenerated == id)
@@ -1815,9 +1811,10 @@ impl RunFactAppender for CollectingAppender {
                 self.messages.push(Message {
                     id: acp_tool_message_id(&self.run_id, &self.namespace, seq),
                     role: Role::Tool,
-                    content: vec![ContentBlock::tool_result(
+                    content: vec![ContentBlock::tool_result_with_error(
                         result_id,
                         vec![ContentBlock::text(body)],
+                        *is_error,
                     )],
                 });
             }
