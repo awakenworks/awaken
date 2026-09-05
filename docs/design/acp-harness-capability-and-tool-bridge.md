@@ -70,6 +70,20 @@ ticket. This protocol acknowledgement is not proof that an opaque SDK has
 persisted every prior message. Production recovery must still be verified;
 file existence or an isolated SDK restart alone is insufficient.
 
+Linux Namespace launches bind `LocalProcess` to bubblewrap's private `--info-fd`
+report, then wait for the reported child to establish its private session group.
+The same launch helper serves ordinary commands and opaque ACP processes.
+TERM/INT target that inner group; KILL retains the original outer monitor group
+and `--die-with-parent` isolation teardown. Signalling the outer monitor with TERM
+would instead kill the SDK before its normal persistence cleanup. The report fd
+is closed by bubblewrap before application exec and is never a task-visible file.
+Missing, malformed, oversized or timed-out reports fail admission and reap the
+owned launcher; cancellation during binding is covered by kill-on-drop. The
+supervisor's existing grace/deadline policy and the ProcessHandle port are reused.
+The safe descriptor mapping dependency avoids introducing local pre-exec unsafe
+code or a shell launcher. This restores an opportunity for SDK cleanup; durable
+Awaken facts and full recovery acceptance remain authoritative.
+
 The exported MCP tool is guarded independently. `Always allow` may execute
 directly. `Always ask` or deny cannot cross the dispatch boundary without the
 one-shot grant observed from the ACP permission resolver. A grant matches

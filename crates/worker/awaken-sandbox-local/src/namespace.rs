@@ -30,6 +30,7 @@ use crate::{
 };
 
 mod control;
+mod process;
 mod seatbelt;
 use control::{
     NamespaceControlPublicationRegistry, private_control_host_directory, private_control_mount,
@@ -1757,6 +1758,21 @@ impl NamespaceSandbox {
         }
     }
 
+    /// Both opaque agents and ordinary commands use the same isolation launch
+    /// and process-identity binding; only their stdio projections differ.
+    fn process_command(
+        &self,
+        command: &pc::MaterializedCommand,
+    ) -> Result<(TokioCommand, process::LaunchInfo), pc::SandboxError> {
+        let argv = self.render_argv(command)?;
+        let mut cmd = TokioCommand::new(&argv[0]);
+        awaken_local_process::configure_process_group(&mut cmd);
+        let launch_info = process::LaunchInfo::attach(&mut cmd)?;
+        cmd.args(&argv[1..]);
+        self.configure_command(&mut cmd, command)?;
+        Ok((cmd, launch_info))
+    }
+
     /// The tool-transparent agent launch (ADR-0041 amendment), namespace-tier twin
     /// of [`crate::LocalSandbox::spawn_agent`]: run an opaque agent under bwrap
     /// with piped stdio and hand back its [`pc::ProcessHandle`] plus a duplex
@@ -1770,11 +1786,7 @@ impl NamespaceSandbox {
     ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannel>), pc::SandboxError> {
         self.require_root_identity()?;
         let command = self.materialize_command(command).await?;
-        let argv = self.render_argv(&command)?;
-        let mut cmd = TokioCommand::new(&argv[0]);
-        awaken_local_process::configure_process_group(&mut cmd);
-        cmd.args(&argv[1..]);
-        self.configure_command(&mut cmd, &command)?;
+        let (mut cmd, launch_info) = self.process_command(&command)?;
         let stderr = if self.inherit_agent_stderr {
             ProcStdio::inherit()
         } else {
@@ -1784,6 +1796,7 @@ impl NamespaceSandbox {
             .stdout(ProcStdio::piped())
             .stderr(stderr);
         let mut child = cmd.spawn().map_err(err)?;
+        drop(cmd); // Close the parent copy of bubblewrap's private report fd.
         let stdin = child
             .stdin
             .take()
@@ -1793,7 +1806,7 @@ impl NamespaceSandbox {
             .take()
             .ok_or_else(|| err("agent stdout was not piped"))?;
         let channel: Box<dyn AgentChannel> = Box::new(SplitChannel::new(stdout, stdin));
-        Ok((Box::new(LocalProcess::spawned(child)), channel))
+        Ok((Box::new(launch_info.bind(child).await?), channel))
     }
 }
 

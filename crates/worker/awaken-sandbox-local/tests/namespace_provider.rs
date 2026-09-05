@@ -152,6 +152,104 @@ async fn opaque_process_writes_to_the_artifact_scan_output_root() {
     sandbox.dispose().await.unwrap();
 }
 
+/// Signal graph: C1=real Namespace; C2=opaque/ordinary spawn; C3=TERM/INT/KILL;
+/// C4=program handles or ignores soft signals. Rules for each C2:
+/// S1 TERM+handles and S2 INT+handles -> marker persisted, normal exit.
+/// S3 KILL -> no settlement marker, process ends. S4 TERM+ignores -> still
+/// running, then explicit KILL ends it. All rows also require the same confined
+/// output publication and post-exit signal acceptance. Ready is written only
+/// after traps are installed; no arbitrary SDK/file-flush delay can pass a row.
+#[tokio::test]
+async fn namespace_signals_reach_the_program_and_preserve_forced_cleanup() {
+    if !os_native_sandbox_works().await {
+        eprintln!("skipping: OS-native sandbox unavailable");
+        return;
+    }
+    for opaque in [false, true] {
+        for (signal, ignores, settled) in [
+            (pc::Signal::Term, false, true),
+            (pc::Signal::Int, false, true),
+            (pc::Signal::Kill, false, false),
+            (pc::Signal::Term, true, false),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let sandbox = NamespaceProvider::new(tmp.path())
+                .create_sandbox(&spec("t-graceful-signal"))
+                .await
+                .unwrap();
+            let handler = if ignores {
+                "trap '' TERM INT"
+            } else {
+                "trap 'printf settled > \"$AWAKEN_OUTPUTS_DIR/settled.txt\"; exit 0' TERM INT"
+            };
+            let command = sh(&format!(
+                "{handler}; printf ready > \"$AWAKEN_OUTPUTS_DIR/ready.txt\"; while :; do sleep 1; done"
+            ));
+            let (process, _channel) = if opaque {
+                let (process, channel) = sandbox.spawn_agent(command).await.unwrap();
+                (process, Some(channel))
+            } else {
+                (sandbox.spawn(command).await.unwrap(), None)
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let files = sandbox.artifacts().await.unwrap();
+                    if let Some(file) = files.iter().find(|file| file.path.ends_with("/ready.txt"))
+                    {
+                        if sandbox.read_artifact(&file.id).await.unwrap() == b"ready" {
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            process.signal(signal).await.unwrap();
+            let remained_live = if ignores {
+                tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                let live = process.poll().await.unwrap().is_none();
+                process.signal(pc::Signal::Kill).await.unwrap();
+                live
+            } else {
+                true
+            };
+            let status =
+                tokio::time::timeout(std::time::Duration::from_secs(5), process.wait()).await;
+            if status.is_err() {
+                process.signal(pc::Signal::Kill).await.unwrap();
+                process.wait().await.unwrap();
+            }
+            let artifacts = sandbox.artifacts().await.unwrap();
+            let marker = if let Some(file) = artifacts
+                .iter()
+                .find(|file| file.path.ends_with("/settled.txt"))
+            {
+                Some(sandbox.read_artifact(&file.id).await.unwrap())
+            } else {
+                None
+            };
+            process.signal(pc::Signal::Term).await.unwrap();
+            sandbox.dispose().await.unwrap();
+            assert!(
+                remained_live,
+                "S4 ignores TERM until explicit KILL; opaque={opaque}"
+            );
+            assert_eq!(
+                marker.as_deref(),
+                settled.then_some(b"settled".as_slice()),
+                "opaque={opaque}, signal={signal:?}, ignores={ignores}"
+            );
+            let status = status.unwrap().unwrap();
+            if settled {
+                assert_eq!(status.code, Some(0));
+            } else {
+                assert_ne!(status.code, Some(0));
+            }
+        }
+    }
+}
+
 /// Real npm closure graph: N1 an executable inside a scoped package imports a
 /// hoisted sibling; N2 it tries writing that dependency; N3 it reads a sibling
 /// outside node_modules; N4 it writes a Session output. With Linux isolation
