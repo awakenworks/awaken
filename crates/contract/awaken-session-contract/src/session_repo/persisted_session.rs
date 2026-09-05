@@ -9,6 +9,10 @@ use super::*;
 #[serde(deny_unknown_fields)]
 pub struct PersistedSession {
     pub session_id: String,
+    /// Immutable wall-clock creation time owned by the durable Session root.
+    /// Zero is reserved for historical rows written before this field existed.
+    #[serde(default)]
+    pub created_at_unix_ms: u64,
     /// The one optimistic-concurrency fence for baseline, Resource, MCP,
     /// environment, execution, and disposition mutations. New, not-yet-inserted
     /// values use 0.
@@ -102,6 +106,7 @@ impl PersistedSession {
     #[allow(clippy::too_many_arguments)]
     pub fn frozen_with_budget(
         session_id: impl Into<String>,
+        created_at_unix_ms: u64,
         baseline: crate::SessionBaseline,
         resources: crate::SessionResourceState,
         mcp: crate::SessionMcpAttachmentSet,
@@ -112,6 +117,7 @@ impl PersistedSession {
     ) -> Self {
         Self {
             session_id: session_id.into(),
+            created_at_unix_ms,
             revision: SessionRevision::default(),
             baseline: crate::SessionBaselineState::Frozen(baseline),
             title,

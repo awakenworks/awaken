@@ -84,6 +84,7 @@ mod mutation_tests {
 
         PersistedSession {
             session_id: id.into(),
+            created_at_unix_ms: 1_700_000_000_000,
             revision,
             baseline: crate::SessionBaselineState::Preparing(crate::SessionCreationIntent {
                 control: crate::ControlSessionCreationInputs {
@@ -187,6 +188,7 @@ mod mutation_tests {
         let metadata = BTreeMap::from([("key".to_string(), "value".to_string())]);
         let prepared = PersistedSession::frozen_with_budget(
             "constructor",
+            1_700_000_000_000,
             compiled.baseline,
             Default::default(),
             Default::default(),
@@ -196,6 +198,7 @@ mod mutation_tests {
             Default::default(),
         );
         assert_eq!(prepared.session_id, "constructor", "C1/E1");
+        assert_eq!(prepared.created_at_unix_ms, 1_700_000_000_000, "C1/E1");
         assert_eq!(prepared.revision, SessionRevision(0), "C1/E1");
         assert_eq!(
             prepared.execution,

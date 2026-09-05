@@ -391,6 +391,7 @@ fn creation_command(session_id: &str) -> CreateSessionCommand {
     CreateSessionCommand {
         owner_scope: "workspace".into(),
         session_id: session_id.into(),
+        created_at_unix_ms: 1_700_000_000_000,
         intent: awaken_session_contract::SessionCreationIntent {
             control: awaken_session_contract::ControlSessionCreationInputs {
                 mutation_policy: awaken_session_contract::SessionMutationPolicy::Managed,

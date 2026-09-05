@@ -829,6 +829,11 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
 
         let (_snapshot, mut receiver) = state.stream_subscribe(&session.id).unwrap();
         let archived = state.archive_session(&session.id).await.expect(rule);
+        assert_ne!(
+            archived.archived_at.as_deref(),
+            Some(PROCESSED_AT),
+            "{rule}/archive records the real terminal time"
+        );
         let warm_child = state.get_thread(&session.id, &child_id).unwrap();
         assert_eq!(
             warm_child.status,
@@ -1609,6 +1614,7 @@ pub(in crate::state) fn sample_persisted(id: &str) -> PersistedSession {
     mcp.attachments[0].state = awaken_session_contract::McpAttachmentState::Active;
     PersistedSession {
         session_id: id.to_string(),
+        created_at_unix_ms: 1_700_000_000_000,
         revision: Default::default(),
         baseline: awaken_session_contract::SessionBaselineState::Frozen(
             awaken_session_contract::SessionBaseline::compile(

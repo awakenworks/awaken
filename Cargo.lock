@@ -2178,6 +2178,7 @@ version = "1.0.0"
 dependencies = [
  "cap-std",
  "rustix 1.1.4",
+ "same-file",
 ]
 
 [[package]]

@@ -543,6 +543,7 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
     metadata.insert("team".to_string(), "research".to_string());
     PersistedSession {
         session_id: id.to_string(),
+        created_at_unix_ms: 1_700_000_000_000,
         revision: Default::default(),
         baseline: SessionBaselineState::Frozen(SessionBaseline::compile(
             awaken_session_contract::SessionBaselineInputs {

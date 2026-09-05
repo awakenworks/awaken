@@ -1230,6 +1230,7 @@ mod runtime_session_store_tests {
     fn session(id: &str) -> PersistedSession {
         PersistedSession {
             session_id: id.to_string(),
+            created_at_unix_ms: 1_700_000_000_000,
             revision: Default::default(),
             baseline: SessionBaselineState::Preparing(creation_intent()),
             title: None,

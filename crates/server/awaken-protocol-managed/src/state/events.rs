@@ -99,7 +99,9 @@ fn inbound_projection(
         event: Event {
             id: durable_inbound_event_id(session_id, entry.event.operation_id()),
             kind: public_inbound_kind_from_command(session_id, &entry.event),
-            processed_at: entry.processed.then(|| PROCESSED_AT.to_string()),
+            processed_at: entry
+                .processed
+                .then(|| super::constants::session_created_at(entry.processed_at_unix_ms)),
         },
     }
 }

@@ -12,6 +12,7 @@ authority = "sandbox-filesystem"
 [dependencies]
 cap-std = "4"
 rustix = { version = "1", features = ["fs"] }
+same-file = "1"
 
 [lints]
 workspace = true

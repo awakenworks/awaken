@@ -490,7 +490,25 @@ impl ManagedState {
         } else {
             // Recover before resolving the agent so a normal resume continues
             // the awaiting run instead of creating a second execution (ADR-0039).
-            self.ensure_session(session_id).await?;
+            let mut retry = 0_u8;
+            loop {
+                match self.ensure_session(session_id).await {
+                    Ok(()) => break,
+                    Err(error)
+                        if retry < 2 && error.is_transient_sqlite_initialization_failure() =>
+                    {
+                        retry += 1;
+                        tracing::warn!(
+                            %session_id,
+                            retry,
+                            "retrying transient local Session SQLite initialization"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(25 * u64::from(retry)))
+                            .await;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
         }
         let accepted = if let Some(batch) = classify_retry().await? {
             return Ok(receipt_response(&batch));

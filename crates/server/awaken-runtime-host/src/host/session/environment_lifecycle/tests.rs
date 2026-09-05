@@ -1892,6 +1892,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
 
         let mut aggregate = awaken_session_contract::PersistedSession::frozen_with_budget(
             thread,
+            1_700_000_000_000,
             projection.baseline.clone(),
             awaken_session_contract::SessionResourceState::from_active(
                 projection.resources.clone(),

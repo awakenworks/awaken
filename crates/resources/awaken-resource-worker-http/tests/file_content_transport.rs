@@ -211,6 +211,7 @@ fn frozen_application_session(
         .expect("prepare Worker Session resources");
     awaken_session_contract::PersistedSession {
         session_id: session_id.into(),
+        created_at_unix_ms: 1_700_000_000_000,
         revision: Default::default(),
         baseline: awaken_session_contract::SessionBaselineState::Frozen(
             awaken_session_contract::SessionBaseline::compile(
