@@ -1221,6 +1221,19 @@ impl ArtifactHarvester {
                 receipts: Vec::new(),
             });
         };
+        // Read the revision before observing bytes. On CAS conflict a caller
+        // must start a fresh harvest, never rebase an old scan onto a new head.
+        let current_capture = self
+            .publisher
+            .capture(&workspace, thread, fence.as_ref())
+            .await
+            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+        if let Some(capture) = &current_capture {
+            capture
+                .verify_scope(&workspace, thread)
+                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+        }
+        let expected_revision = current_capture.map_or(0, |capture| capture.revision);
         let artifacts = env
             .capture_artifacts()
             .await
@@ -1270,6 +1283,28 @@ impl ArtifactHarvester {
                 .verify(&publication)
                 .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
             receipts.push(receipt);
+        }
+        let replacement = awaken_resource_contract::ReplaceArtifactCapture {
+            workspace_id: workspace,
+            session_id: thread.into(),
+            expected_revision,
+            file_ids: receipts
+                .iter()
+                .map(|receipt| receipt.record.id.clone())
+                .collect(),
+        };
+        let outcome = self
+            .publisher
+            .replace_capture(replacement.clone(), fence.as_ref())
+            .await
+            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+        replacement
+            .verify_outcome(&outcome)
+            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+        if outcome == awaken_resource_contract::ReplaceArtifactCaptureOutcome::Conflict {
+            return Err(ResourcePurgeError::RevisionConflict(
+                "output capture changed; a fresh harvest is required".into(),
+            ));
         }
         Ok(HarvestedArtifacts { receipts })
     }

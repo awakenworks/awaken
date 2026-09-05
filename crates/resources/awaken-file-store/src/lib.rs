@@ -55,22 +55,7 @@ fn decode_artifact_capture(
         file_ids: serde_json::from_str(file_ids_json)
             .map_err(|error| FileCatalogError::Storage(error.to_string()))?,
     };
-    let expected_revision = revision
-        .checked_sub(1)
-        .ok_or_else(|| FileCatalogError::Storage("uncommitted output capture revision".into()))?;
-    let verification = ReplaceArtifactCapture {
-        workspace_id: capture.workspace_id.clone(),
-        session_id: capture.session_id.clone(),
-        expected_revision,
-        file_ids: capture.file_ids.clone(),
-    }
-    .decide(Some(&capture))
-    .map_err(|error| FileCatalogError::Storage(error.to_string()))?;
-    if verification != ReplaceArtifactCaptureOutcome::Replayed(capture.clone()) {
-        return Err(FileCatalogError::Storage(
-            "noncanonical output capture".into(),
-        ));
-    }
+    capture.verify_scope(&capture.workspace_id, &capture.session_id)?;
     Ok(capture)
 }
 

@@ -495,6 +495,29 @@ impl ArtifactPublicationError {
 
 #[async_trait]
 pub trait ArtifactPublisher<C: Send + Sync + 'static = ()>: Send + Sync {
+    /// Read before scanning outputs. The same execution fence protects reads,
+    /// per-File publication, and complete-set replacement across all topologies.
+    async fn capture(
+        &self,
+        _workspace_id: &str,
+        _session_id: &str,
+        _fence: Option<&C>,
+    ) -> Result<Option<crate::ArtifactCapture>, ArtifactPublicationError> {
+        Err(ArtifactPublicationError::new(
+            "artifact capture is not configured by the composition root",
+        ))
+    }
+
+    async fn replace_capture(
+        &self,
+        _request: crate::ReplaceArtifactCapture,
+        _fence: Option<&C>,
+    ) -> Result<crate::ReplaceArtifactCaptureOutcome, ArtifactPublicationError> {
+        Err(ArtifactPublicationError::new(
+            "artifact capture is not configured by the composition root",
+        ))
+    }
+
     async fn publish(
         &self,
         publication: ArtifactPublication<C>,

@@ -116,6 +116,18 @@ impl CommitEpochGuard {
         &self.request
     }
 
+    /// Compare a Resource effect's scope with the locked dispatch authority.
+    /// Outputs belong to the execution Thread, not its parent Session recovery
+    /// affinity. Local and remote publication reject caller-supplied scopes.
+    #[must_use]
+    pub fn matches_execution_scope(&self, workspace_id: &str, session_id: &str) -> bool {
+        self.request
+            .execution_scope
+            .as_ref()
+            .is_some_and(|scope| scope.0.0 == workspace_id)
+            && self.request.thread_id().0 == session_id
+    }
+
     /// Whether the guarded claim's lease is live at `now_ms`. The exact expiry
     /// boundary remains live, matching the queue's recovery rule.
     #[must_use]

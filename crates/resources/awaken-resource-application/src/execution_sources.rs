@@ -72,6 +72,42 @@ impl ApplicationArtifactPublisher {
 
 #[async_trait::async_trait]
 impl<C: Send + Sync + 'static> ArtifactPublisher<C> for ApplicationArtifactPublisher {
+    async fn capture(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+        _fence: Option<&C>,
+    ) -> Result<Option<awaken_resource_contract::ArtifactCapture>, ArtifactPublicationError> {
+        let capture = self
+            .application
+            .artifact_capture(workspace_id, session_id)
+            .await
+            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+        if let Some(capture) = &capture {
+            capture
+                .verify_scope(workspace_id, session_id)
+                .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+        }
+        Ok(capture)
+    }
+
+    async fn replace_capture(
+        &self,
+        request: awaken_resource_contract::ReplaceArtifactCapture,
+        _fence: Option<&C>,
+    ) -> Result<awaken_resource_contract::ReplaceArtifactCaptureOutcome, ArtifactPublicationError>
+    {
+        let outcome = self
+            .application
+            .replace_artifact_capture(request.clone())
+            .await
+            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+        request
+            .verify_outcome(&outcome)
+            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+        Ok(outcome)
+    }
+
     async fn publish(
         &self,
         publication: ArtifactPublication<C>,

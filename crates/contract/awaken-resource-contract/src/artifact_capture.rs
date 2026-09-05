@@ -33,6 +33,28 @@ pub enum ReplaceArtifactCaptureOutcome {
 }
 
 impl ReplaceArtifactCapture {
+    /// A peer cannot acknowledge another revision, scope, or selected set.
+    /// Conflict carries no replacement receipt and remains a rejected write.
+    pub fn verify_outcome(
+        &self,
+        outcome: &ReplaceArtifactCaptureOutcome,
+    ) -> Result<(), FileCatalogError> {
+        let capture = match outcome {
+            ReplaceArtifactCaptureOutcome::Applied(capture)
+            | ReplaceArtifactCaptureOutcome::Replayed(capture) => capture,
+            ReplaceArtifactCaptureOutcome::Conflict => return Ok(()),
+        };
+        let actual = self
+            .decide(Some(capture))
+            .map_err(|error| FileCatalogError::Storage(error.to_string()))?;
+        if actual != ReplaceArtifactCaptureOutcome::Replayed(capture.clone()) {
+            return Err(FileCatalogError::Storage(
+                "noncanonical output capture receipt".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// One reducer for every catalog adapter. A replay after logical File
     /// deletion still acknowledges the old observation; it never revives bytes.
     pub fn decide(
@@ -79,6 +101,30 @@ impl ReplaceArtifactCapture {
 }
 
 impl ArtifactCapture {
+    /// Verify a stored or transported observation against its requested scope.
+    /// Reuse the replacement reducer for canonical ids and exact revision rules.
+    pub fn verify_scope(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+    ) -> Result<(), FileCatalogError> {
+        if self.workspace_id != workspace_id || self.session_id != session_id {
+            return Err(FileCatalogError::Storage(
+                "output capture belongs to another scope".into(),
+            ));
+        }
+        let expected_revision = self.revision.checked_sub(1).ok_or_else(|| {
+            FileCatalogError::Storage("uncommitted output capture revision".into())
+        })?;
+        let request = ReplaceArtifactCapture {
+            workspace_id: self.workspace_id.clone(),
+            session_id: self.session_id.clone(),
+            expected_revision,
+            file_ids: self.file_ids.clone(),
+        };
+        request.verify_outcome(&ReplaceArtifactCaptureOutcome::Replayed(self.clone()))
+    }
+
     /// Called under the SAME transaction/lock as catalog replacement. File
     /// deletion cannot race validation and make a newly selected File invalid.
     /// Existing captures deliberately retain a deleted File's exact identity;

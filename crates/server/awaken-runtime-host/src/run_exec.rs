@@ -712,6 +712,50 @@ mod tests {
         dispatch: Arc<awaken_run_ingress::AnyDispatchStore>,
     }
 
+    impl RecordingArtifactPublisher {
+        // The existing spy records all three publication edges so execute,
+        // resume, failure and cancellation cannot borrow a successor claim.
+        async fn record_claim(
+            &self,
+            fence: Option<&awaken_run_ingress::ArtifactPublicationFence>,
+        ) -> Result<
+            Option<awaken_run_ingress::CommitEpochGuard>,
+            awaken_resource_contract::ArtifactPublicationError,
+        > {
+            let claim = fence.and_then(|fence| match fence {
+                awaken_run_ingress::ArtifactPublicationFence::Run(claim) => Some(claim),
+                awaken_run_ingress::ArtifactPublicationFence::SessionMaterialization(_)
+                | awaken_run_ingress::ArtifactPublicationFence::RepositoryPublication { .. } => None,
+                awaken_run_ingress::ArtifactPublicationFence::CheckpointRelease(_) => None,
+                awaken_run_ingress::ArtifactPublicationFence::Terminal(_) => None,
+            });
+            let guard = if let Some(claim) = claim {
+                Some(
+                    awaken_run_ingress::DispatchQueue::lock_commit_epoch(
+                        self.dispatch.as_ref(),
+                        claim,
+                    )
+                    .await
+                    .map_err(|error| {
+                        awaken_resource_contract::ArtifactPublicationError::new(error.to_string())
+                    })?
+                    .ok_or_else(|| {
+                        awaken_resource_contract::ArtifactPublicationError::new(
+                            "artifact publication lost its local dispatch claim",
+                        )
+                    })?,
+                )
+            } else {
+                None
+            };
+            self.claims
+                .lock()
+                .expect("recorded claims mutex poisoned")
+                .push(claim.cloned());
+            Ok(guard)
+        }
+    }
+
     struct ReplacingClaimExecutor {
         slots: crate::session_slot::SessionRuntimeSlots,
         thread: String,
@@ -806,6 +850,31 @@ mod tests {
     impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::ArtifactPublicationFence>
         for RecordingArtifactPublisher
     {
+        async fn capture(
+            &self,
+            workspace_id: &str,
+            session_id: &str,
+            fence: Option<&awaken_run_ingress::ArtifactPublicationFence>,
+        ) -> Result<
+            Option<awaken_resource_contract::ArtifactCapture>,
+            awaken_resource_contract::ArtifactPublicationError,
+        > {
+            let _guard = self.record_claim(fence).await?;
+            self.inner.capture(workspace_id, session_id, fence).await
+        }
+
+        async fn replace_capture(
+            &self,
+            request: awaken_resource_contract::ReplaceArtifactCapture,
+            fence: Option<&awaken_run_ingress::ArtifactPublicationFence>,
+        ) -> Result<
+            awaken_resource_contract::ReplaceArtifactCaptureOutcome,
+            awaken_resource_contract::ArtifactPublicationError,
+        > {
+            let _guard = self.record_claim(fence).await?;
+            self.inner.replace_capture(request, fence).await
+        }
+
         async fn publish(
             &self,
             publication: awaken_resource_contract::ArtifactPublication<
@@ -815,36 +884,7 @@ mod tests {
             awaken_resource_contract::ArtifactPublicationReceipt,
             awaken_resource_contract::ArtifactPublicationError,
         > {
-            let claim = publication.fence.as_ref().and_then(|fence| match fence {
-                awaken_run_ingress::ArtifactPublicationFence::Run(claim) => Some(claim),
-                awaken_run_ingress::ArtifactPublicationFence::SessionMaterialization(_) => None,
-                awaken_run_ingress::ArtifactPublicationFence::RepositoryPublication { .. } => None,
-                awaken_run_ingress::ArtifactPublicationFence::CheckpointRelease(_) => None,
-                awaken_run_ingress::ArtifactPublicationFence::Terminal(_) => None,
-            });
-            let _guard = if let Some(claim) = claim {
-                Some(
-                    awaken_run_ingress::DispatchQueue::lock_commit_epoch(
-                        self.dispatch.as_ref(),
-                        claim,
-                    )
-                    .await
-                    .map_err(|error| {
-                        awaken_resource_contract::ArtifactPublicationError::new(error.to_string())
-                    })?
-                    .ok_or_else(|| {
-                        awaken_resource_contract::ArtifactPublicationError::new(
-                            "artifact publication lost its local dispatch claim",
-                        )
-                    })?,
-                )
-            } else {
-                None
-            };
-            self.claims
-                .lock()
-                .expect("recorded claims mutex poisoned")
-                .push(claim.cloned());
+            let _guard = self.record_claim(publication.fence.as_ref()).await?;
             self.inner.publish(publication).await
         }
     }
@@ -1300,8 +1340,14 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("artifact publisher is not configured"),
+                .contains("artifact capture is not configured"),
             "R5: {error}"
+        );
+        // R5 now rejects at the pre-scan capture edge; it cannot invent an
+        // empty head when the publisher is unavailable. Outputs remain intact.
+        assert_eq!(
+            std::fs::read(failed_output.join("blocked.txt")).unwrap(),
+            b"blocked"
         );
     }
 

@@ -346,7 +346,7 @@ Static ownership remains deliberately small:
 |---|---|
 | `Sandbox::artifacts/read_artifact` | the one runtime output enumeration/read port |
 | `FileStore` | immutable content-addressed bytes (`blob_id`) |
-| `FileCatalog` | public `file_...` identity, metadata, Workspace, optional Session scope/path, harvest idempotency |
+| `FileCatalog` | public `file_...` identity, metadata, Workspace, optional Session scope/path, harvest idempotency and complete output observations |
 | resource lifecycle index | File-to-blob reference preventing premature physical reclamation |
 
 `FileCatalog` is the logical Files API aggregate, not an Artifact Store. An output
@@ -357,12 +357,14 @@ remaining independent public Files.
 The authoritative transition is:
 
 ```text
-step completion or terminal release
+live step completion or terminal release
+  -> read FileCatalog output capture revision
   -> Sandbox::artifacts/read_artifact
   -> verify Artifact.id == content_hash == FileStore content id
   -> FileStore.put(bytes)
   -> FileCatalog.create(file_..., session/path/blob metadata)
   -> add Artifact lifecycle reference to blob
+  -> CAS the complete receipt File-id set against the observed revision
   -> only then may terminal release dispose the Sandbox
 ```
 
@@ -413,15 +415,40 @@ same-name File. Captures add no blob references and do not revive deleted Files.
 A capture records observed outputs; it does not assert Run success or the user's
 final acceptance.
 
-**Implementation boundary (2026-09-06).** This amendment's catalog/application
-ports and three adapters are implemented. Harvesters, claim-fenced Worker
-transport, public API projection, and Cowork's multi-turn final-delivery journey
-are not yet wired to them. Until those paths are integrated and verified, public
-Files listing and Cowork retain their current historical-version behavior;
-this storage contract is not evidence of completed multi-turn E2E support.
-Cause/effect rules live beside the shared catalog contract tests and the existing
-FileApplication publication/deletion test, including actual database migration,
-reconnect, first-write races, corruption rejection, and A→B→A identity reuse.
+**Execution wiring.** The existing generic `ArtifactPublisher` owns capture
+reads and replacement alongside per-File publication and terminal receipt
+recovery. `ApplicationArtifactPublisher` delegates to `FileApplicationService`;
+the local Coordinator decorator and registered-Worker HTTP adapter apply their
+existing Run/checkpoint/terminal authority before every capture edge. Run guards
+remain held across the File operation. Both topologies compare Workspace and
+execution Thread with the locked Dispatch through
+`CommitEpochGuard::matches_execution_scope` and reject an expired claim. A child
+Run retains its own output scope; its parent Session recovery/history affinity
+does not authorize reading or replacing the parent's outputs. Worker identity
+checks remain at the HTTP boundary; checkpoint and terminal operations retain
+their existing Session-root decisions.
+No capture-specific execution permission or Resource authority is introduced.
+
+The shared `ArtifactHarvester` used after Native/ACP/A2A attempts reads and
+verifies the observation before the existing complete Sandbox scan, publishes
+all File receipts, then submits the entire selected set. A publication failure,
+invalid receipt or CAS conflict fails the harvest without a partial replacement
+or an automatic rebase. An already-failed attempt retains its original execution
+error while still attempting output preservation, as before. Exact replacement
+replay is accepted; a new complete scan may advance the observation revision
+even when its bytes are unchanged. A missing Environment is not an observed
+empty directory. Terminal receipt-only recovery remains read-only and does not
+invent a capture from historical File metadata.
+
+**Implementation boundary (2026-09-06).** Catalog/application ports, three storage
+adapters, Harvester and local/HTTP publication adapters are wired. The public API
+projection and Cowork's multi-turn final-delivery journey are not yet integrated;
+public Files listing and Cowork retain their historical-version behavior. These
+mechanism tests are not evidence of completed multi-turn business E2E support.
+Cause/effect rules live beside catalog/application, Worker HTTP transport,
+Coordinator fencing and Runtime Host tests. They cover database migration and
+reconnect, first-write races, A→B→A, authority and response validation, failures
+at each capture stage, exact acknowledgement-loss replay and no stale rebase.
 
 ### Consequences of the amendment
 

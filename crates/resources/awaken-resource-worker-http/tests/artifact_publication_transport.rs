@@ -138,6 +138,8 @@ struct CountingFileApplication {
     inner: Arc<dyn FileApplicationService>,
     recovery_lists: AtomicUsize,
     artifact_creates: AtomicUsize,
+    capture_reads: AtomicUsize,
+    capture_replaces: AtomicUsize,
 }
 
 impl CountingFileApplication {
@@ -146,12 +148,30 @@ impl CountingFileApplication {
             inner,
             recovery_lists: AtomicUsize::new(0),
             artifact_creates: AtomicUsize::new(0),
+            capture_reads: AtomicUsize::new(0),
+            capture_replaces: AtomicUsize::new(0),
         }
     }
 }
 
 #[async_trait::async_trait]
 impl FileApplicationService for CountingFileApplication {
+    async fn artifact_capture(
+        &self,
+        workspace: &str,
+        session: &str,
+    ) -> Result<Option<awaken_resource_contract::ArtifactCapture>, ResourcePurgeError> {
+        self.capture_reads.fetch_add(1, Ordering::SeqCst);
+        self.inner.artifact_capture(workspace, session).await
+    }
+    async fn replace_artifact_capture(
+        &self,
+        request: awaken_resource_contract::ReplaceArtifactCapture,
+    ) -> Result<awaken_resource_contract::ReplaceArtifactCaptureOutcome, ResourcePurgeError> {
+        self.capture_replaces.fetch_add(1, Ordering::SeqCst);
+        self.inner.replace_artifact_capture(request).await
+    }
+
     async fn get(
         &self,
         workspace_id: &str,
@@ -872,7 +892,7 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
         WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone()),
     );
 
-    exact
+    let receipt = exact
         .publish(terminal_publication(
             "workspace-artifacts",
             "session-terminal-artifact",
@@ -923,7 +943,7 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
             "session-terminal-artifact",
             "terminal/successor.txt",
             b"must-not-publish",
-            successor,
+            successor.clone(),
         ))
         .await
         .expect_err("T3 a foreign epoch cannot use the renewed predecessor");
@@ -941,11 +961,71 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
             "session-terminal-artifact",
             "terminal/foreign.txt",
             b"must-not-publish",
-            asserted,
+            asserted.clone(),
         ))
         .await
         .expect_err("T4 foreign terminal Worker");
     assert!(error.to_string().contains("403"), "T4: {error}");
+
+    // T5 capture read/replacement use the same current-root decision as
+    // publication: renewed exact assertion passes; expired current root,
+    // foreign generation and foreign Worker reject without changing the head.
+    let capture_fence = ArtifactPublicationFence::Terminal(asserted.clone());
+    let capture = awaken_resource_contract::ReplaceArtifactCapture {
+        workspace_id: "workspace-artifacts".into(),
+        session_id: "session-terminal-artifact".into(),
+        expected_revision: 0,
+        file_ids: vec![receipt.record.id.clone()],
+    };
+    assert_eq!(
+        exact
+            .capture(
+                &capture.workspace_id,
+                &capture.session_id,
+                Some(&capture_fence)
+            )
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(
+        matches!(
+            exact
+                .replace_capture(capture.clone(), Some(&capture_fence))
+                .await
+                .unwrap(),
+            awaken_resource_contract::ReplaceArtifactCaptureOutcome::Applied(_)
+        ),
+        "T5"
+    );
+    let successor_fence = ArtifactPublicationFence::Terminal(successor);
+    for (peer, fence) in [
+        (&unrenewed, &capture_fence),
+        (&exact, &successor_fence),
+        (&foreign, &capture_fence),
+    ] {
+        assert!(
+            peer.capture(&capture.workspace_id, &capture.session_id, Some(fence))
+                .await
+                .is_err(),
+            "T5 read denial"
+        );
+        assert!(
+            peer.replace_capture(capture.clone(), Some(fence))
+                .await
+                .is_err(),
+            "T5 replay still fenced"
+        );
+    }
+    assert_eq!(
+        application
+            .artifact_capture(&capture.workspace_id, &capture.session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .revision,
+        1
+    );
 
     assert_eq!(
         application
@@ -1041,6 +1121,37 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
         "C2"
     );
 
+    // C6 the same checkpoint root also owns capture reads/replacements.
+    // A stale operation must be rejected before any capture catalog I/O.
+    let capture_fence = checkpoint.fence.as_ref().unwrap();
+    let capture = awaken_resource_contract::ReplaceArtifactCapture {
+        workspace_id: checkpoint.workspace_id.clone(),
+        session_id: checkpoint.session_id.clone(),
+        expected_revision: 0,
+        file_ids: vec![first.record.id.clone()],
+    };
+    assert_eq!(
+        publisher
+            .capture(
+                &capture.workspace_id,
+                &capture.session_id,
+                Some(capture_fence)
+            )
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(
+        matches!(
+            publisher
+                .replace_capture(capture.clone(), Some(capture_fence))
+                .await
+                .unwrap(),
+            awaken_resource_contract::ReplaceArtifactCaptureOutcome::Applied(_)
+        ),
+        "C6"
+    );
+
     let mut scoped_checkpoint = checkpoint.clone();
     scoped_checkpoint.idempotency_scope = Some("must-not-reserve-terminal".into());
     assert!(publisher.publish(scoped_checkpoint).await.is_err(), "C4");
@@ -1053,13 +1164,43 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
                 "session-checkpoint-artifact",
                 "reports/stale.txt",
                 b"must not publish",
-                stale_operation,
+                stale_operation.clone(),
             ))
             .await
             .expect_err("C5")
             .to_string()
             .contains("409"),
         "C5"
+    );
+
+    let stale_fence = ArtifactPublicationFence::CheckpointRelease(stale_operation);
+    assert!(
+        publisher
+            .capture(
+                &capture.workspace_id,
+                &capture.session_id,
+                Some(&stale_fence)
+            )
+            .await
+            .is_err(),
+        "C6 stale read"
+    );
+    assert!(
+        publisher
+            .replace_capture(capture.clone(), Some(&stale_fence))
+            .await
+            .is_err(),
+        "C6 stale replay"
+    );
+    assert_eq!(
+        counting.capture_reads.load(Ordering::SeqCst),
+        1,
+        "C6 zero stale reads"
+    );
+    assert_eq!(
+        counting.capture_replaces.load(Ordering::SeqCst),
+        1,
+        "C6 zero stale writes"
     );
 
     let terminal = publisher
@@ -1301,4 +1442,554 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
         writes_before_rejections,
         "R4-R6 zero File write"
     );
+}
+
+#[tokio::test]
+async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs() {
+    // C1 exact Worker identity; C2 live exact Run fence; C3 exact scope;
+    // C4 expected revision; C5 all File references valid; C6 response replay.
+    // R1 C1..C5 -> Applied; R2 C1..C3+C6 -> Replayed; R3 !C4 -> Conflict;
+    // R4 !C1|!C2|!C3 -> zero capture reads/replacements; R5 !C5 -> old set
+    // unchanged. R6 A->B->A selects the reused A id, never newest File metadata.
+    use awaken_resource_contract::{
+        ReplaceArtifactCapture, ReplaceArtifactCaptureOutcome as Outcome,
+    };
+    let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+    let app = Arc::new(awaken_resource_application::FileApplication::new(
+        files.clone(),
+        files,
+        Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap()),
+    ));
+    let counting = Arc::new(CountingFileApplication::new(app.clone()));
+    let (directory, identity) = support::ready_worker("capture-worker").await;
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let claim = claimed_dispatch(&dispatch, "capture-journey", &identity.lease_owner()).await;
+    let service = Arc::new(WorkerArtifactPublicationService::new(
+        counting.clone(),
+        dispatch.clone(),
+        Arc::new(HeaderWorkerAuthenticator),
+        directory,
+    ));
+    // R9 the actual handler commits, then a middleware loses its successful
+    // response. Retrying the exact request must return Replayed, not revision+1.
+    async fn lose_capture_ack(
+        axum::extract::State(armed): axum::extract::State<Arc<std::sync::atomic::AtomicBool>>,
+        request: axum::extract::Request,
+        next: axum::middleware::Next,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse as _;
+        let lose = request.uri().path() == awaken_resource_worker_http::ARTIFACT_CAPTURE_PATH
+            && armed.swap(false, Ordering::SeqCst);
+        let response = next.run(request).await;
+        if lose && response.status().is_success() {
+            axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response()
+        } else {
+            response
+        }
+    }
+    let lose_ack = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let router = worker_artifact_publication_router(service).layer(
+        axum::middleware::from_fn_with_state(lose_ack.clone(), lose_capture_ack),
+    );
+    let address = support::serve(router).await;
+    let upstream =
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone());
+    let publisher = HttpArtifactPublisher::new(upstream.clone());
+    let fence = ArtifactPublicationFence::Run(claim.clone());
+    let workspace = "workspace-artifacts";
+    let session = "thread-capture-journey";
+    assert_eq!(
+        publisher
+            .capture(workspace, session, Some(&fence))
+            .await
+            .unwrap(),
+        None,
+        "R1 unknown"
+    );
+    let mut published = Vec::new();
+    for (revision, bytes) in [b"A", b"B", b"A"].into_iter().enumerate() {
+        let receipt = publisher
+            .publish(publication(
+                Some(claim.clone()),
+                workspace,
+                session,
+                "report.txt",
+                bytes,
+            ))
+            .await
+            .unwrap();
+        let request = ReplaceArtifactCapture {
+            workspace_id: workspace.into(),
+            session_id: session.into(),
+            expected_revision: revision as u64,
+            file_ids: vec![receipt.record.id.clone()],
+        };
+        assert!(
+            matches!(
+                publisher
+                    .replace_capture(request.clone(), Some(&fence))
+                    .await
+                    .unwrap(),
+                Outcome::Applied(_)
+            ),
+            "R1/R6"
+        );
+        assert!(
+            matches!(
+                publisher
+                    .replace_capture(request, Some(&fence))
+                    .await
+                    .unwrap(),
+                Outcome::Replayed(_)
+            ),
+            "R2"
+        );
+        published.push(receipt.record.id);
+    }
+    assert_eq!(published[0], published[2], "R6");
+    assert_ne!(published[0], published[1], "R6");
+    let stable = publisher
+        .capture(workspace, session, Some(&fence))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stable.file_ids, [published[0].clone()]);
+    let request = ReplaceArtifactCapture {
+        workspace_id: workspace.into(),
+        session_id: session.into(),
+        expected_revision: 3,
+        file_ids: vec![published[0].clone()],
+    };
+    let mut stale = request.clone();
+    stale.expected_revision = 0;
+    assert_eq!(
+        publisher
+            .replace_capture(stale, Some(&fence))
+            .await
+            .unwrap(),
+        Outcome::Conflict,
+        "R3"
+    );
+    let mut missing = request.clone();
+    missing.file_ids = vec!["missing-file".into()];
+    assert!(
+        publisher
+            .replace_capture(missing, Some(&fence))
+            .await
+            .is_err(),
+        "R5"
+    );
+    assert_eq!(
+        publisher
+            .capture(workspace, session, Some(&fence))
+            .await
+            .unwrap(),
+        Some(stable.clone())
+    );
+    let reads = counting.capture_reads.load(Ordering::SeqCst);
+    let replacements = counting.capture_replaces.load(Ordering::SeqCst);
+    let mut stale_claim = claim.clone();
+    stale_claim.epoch += 1;
+    let stale_fence = ArtifactPublicationFence::Run(stale_claim);
+    for (case, ws, sid, operation_fence) in [
+        ("workspace", "foreign", session, Some(&fence)),
+        ("session", workspace, "foreign", Some(&fence)),
+        ("epoch", workspace, session, Some(&stale_fence)),
+        ("missing fence", workspace, session, None),
+    ] {
+        assert!(
+            publisher.capture(ws, sid, operation_fence).await.is_err(),
+            "R4 read {case}"
+        );
+        let mut denied = request.clone();
+        denied.workspace_id = ws.into();
+        denied.session_id = sid.into();
+        assert!(
+            publisher
+                .replace_capture(denied, operation_fence)
+                .await
+                .is_err(),
+            "R4 replace {case}"
+        );
+    }
+    let wrong_worker =
+        HttpArtifactPublisher::new(
+            WorkerUpstream::new(format!("http://{address}")).with_worker_identity(
+                WorkerIdentity::new("capture-worker", "other-incarnation", 2),
+            ),
+        );
+    assert!(
+        wrong_worker
+            .capture(workspace, session, Some(&fence))
+            .await
+            .is_err(),
+        "R4 Worker read"
+    );
+    assert!(
+        wrong_worker
+            .replace_capture(request.clone(), Some(&fence))
+            .await
+            .is_err(),
+        "R4 Worker replace"
+    );
+    assert_eq!(
+        counting.capture_reads.load(Ordering::SeqCst),
+        reads,
+        "R4 zero reads"
+    );
+    assert_eq!(
+        counting.capture_replaces.load(Ordering::SeqCst),
+        replacements,
+        "R4 zero replacements"
+    );
+
+    // R7 no Worker authentication must fail before even an exact request can
+    // observe the capture. R8 raw invalid ids cannot bypass client validation.
+    use awaken_resource_worker_http::{
+        ARTIFACT_CAPTURE_PATH, ArtifactCaptureOperation, ArtifactCaptureRequest,
+    };
+    let payload = ArtifactCaptureRequest {
+        operation_fence: fence.clone(),
+        identity: Some(identity.clone()),
+        operation: ArtifactCaptureOperation::Read {
+            workspace_id: workspace.into(),
+            session_id: session.into(),
+        },
+    };
+    let url = format!("http://{address}{ARTIFACT_CAPTURE_PATH}");
+    assert_eq!(
+        reqwest::Client::new()
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "R7"
+    );
+    let mut invalid = request;
+    invalid.file_ids = vec![published[0].clone(), published[0].clone()];
+    let payload = ArtifactCaptureRequest {
+        operation: ArtifactCaptureOperation::Replace { request: invalid },
+        ..payload
+    };
+    let http = upstream.http_client().post(&url).json(&payload);
+    let response = upstream
+        .authorize_request("POST", ARTIFACT_CAPTURE_PATH, http)
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST, "R8");
+    assert_eq!(
+        counting.capture_reads.load(Ordering::SeqCst),
+        reads,
+        "R7/R8"
+    );
+    assert_eq!(
+        counting.capture_replaces.load(Ordering::SeqCst),
+        replacements,
+        "R7/R8"
+    );
+    assert_eq!(
+        app.artifact_capture(workspace, session).await.unwrap(),
+        Some(stable)
+    );
+    let lost = awaken_resource_contract::ReplaceArtifactCapture {
+        workspace_id: workspace.into(),
+        session_id: session.into(),
+        expected_revision: 3,
+        file_ids: vec![published[0].clone()],
+    };
+    lose_ack.store(true, Ordering::SeqCst);
+    assert!(
+        publisher
+            .replace_capture(lost.clone(), Some(&fence))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("503"),
+        "R9 missing ACK"
+    );
+    let committed = app
+        .artifact_capture(workspace, session)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(committed.revision, 4, "R9 mutation already committed");
+    assert_eq!(
+        publisher.replace_capture(lost, Some(&fence)).await.unwrap(),
+        Outcome::Replayed(committed.clone()),
+        "R9 exact receipt"
+    );
+    assert_eq!(
+        publisher
+            .capture(workspace, session, Some(&fence))
+            .await
+            .unwrap(),
+        Some(committed),
+        "R9 no extra revision"
+    );
+
+    // R11 a child shares parent recovery/history affinity, but File effects
+    // belong to its actual execution Thread. Exact child publication/read/CAS
+    // succeed; changing only the target to its parent yields 403 before File
+    // I/O. The parent's committed capture and immutable Files remain unchanged.
+    let child_request = RunDispatch::new(support::activation("capture-child"))
+        .for_session(awaken_agent_contract::agent::thread::Id(session.into()))
+        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+            awaken_tenancy::ScopeId::from(workspace),
+        ));
+    let child_session = child_request.thread_id().0.clone();
+    dispatch.enqueue(child_request).await.unwrap();
+    let child_lease = dispatch
+        .claim(
+            &identity.lease_owner(),
+            60_000,
+            support::unix_now_ms(),
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        child_lease.request.thread_id().0,
+        child_session,
+        "R11 child claimed"
+    );
+    let child_claim = RunClaim::from(&child_lease.lease);
+    let child_fence = ArtifactPublicationFence::Run(child_claim.clone());
+    assert_eq!(
+        publisher
+            .capture(workspace, &child_session, Some(&child_fence))
+            .await
+            .unwrap(),
+        None,
+        "R11 unknown child"
+    );
+    let child_file = publisher
+        .publish(publication(
+            Some(child_claim.clone()),
+            workspace,
+            &child_session,
+            "report.txt",
+            b"child",
+        ))
+        .await
+        .unwrap();
+    let child_capture = ReplaceArtifactCapture {
+        workspace_id: workspace.into(),
+        session_id: child_session.clone(),
+        expected_revision: 0,
+        file_ids: vec![child_file.record.id.clone()],
+    };
+    assert!(
+        matches!(
+            publisher
+                .replace_capture(child_capture, Some(&child_fence))
+                .await
+                .unwrap(),
+            Outcome::Applied(_)
+        ),
+        "R11 child capture"
+    );
+    let observed_child = publisher
+        .capture(workspace, &child_session, Some(&child_fence))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(observed_child.revision, 1, "R11");
+    assert_eq!(observed_child.file_ids, vec![child_file.record.id], "R11");
+    let reads = counting.capture_reads.load(Ordering::SeqCst);
+    let replacements = counting.capture_replaces.load(Ordering::SeqCst);
+    let parent_files = app.list(workspace, Some(session)).await.unwrap();
+    assert!(
+        publisher
+            .publish(publication(
+                Some(child_claim),
+                workspace,
+                session,
+                "report.txt",
+                b"forbidden"
+            ))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("403"),
+        "R11 parent publication"
+    );
+    assert!(
+        publisher
+            .capture(workspace, session, Some(&child_fence))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("403"),
+        "R11 parent read"
+    );
+    assert!(
+        publisher
+            .replace_capture(
+                ReplaceArtifactCapture {
+                    workspace_id: workspace.into(),
+                    session_id: session.into(),
+                    expected_revision: 4,
+                    file_ids: vec![],
+                },
+                Some(&child_fence)
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("403"),
+        "R11 parent replacement"
+    );
+    assert_eq!(
+        counting.capture_reads.load(Ordering::SeqCst),
+        reads,
+        "R11 zero parent reads"
+    );
+    assert_eq!(
+        counting.capture_replaces.load(Ordering::SeqCst),
+        replacements,
+        "R11 zero parent writes"
+    );
+    assert_eq!(
+        app.list(workspace, Some(session)).await.unwrap(),
+        parent_files,
+        "R11 no parent File mutation"
+    );
+    let parent_capture = app
+        .artifact_capture(workspace, session)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(parent_capture.revision, 4, "R11 parent revision unchanged");
+    assert_eq!(
+        parent_capture.file_ids,
+        vec![published[0].clone()],
+        "R11 parent output unchanged"
+    );
+
+    // R10 a retained exact epoch with an expired lease still authorizes no
+    // capture I/O. Advance the isolated fixture to that state without sleeping.
+    let reads = counting.capture_reads.load(Ordering::SeqCst);
+    let replacements = counting.capture_replaces.load(Ordering::SeqCst);
+    assert!(dispatch.renew_lease(&claim, 0, 0).await.unwrap());
+    assert!(
+        publisher
+            .capture(workspace, session, Some(&fence))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("409"),
+        "R10"
+    );
+    assert!(
+        publisher
+            .replace_capture(
+                awaken_resource_contract::ReplaceArtifactCapture {
+                    workspace_id: workspace.into(),
+                    session_id: session.into(),
+                    expected_revision: 4,
+                    file_ids: vec![published[0].clone()],
+                },
+                Some(&fence)
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("409"),
+        "R10"
+    );
+    assert_eq!(
+        counting.capture_reads.load(Ordering::SeqCst),
+        reads,
+        "R10 zero reads"
+    );
+    assert_eq!(
+        counting.capture_replaces.load(Ordering::SeqCst),
+        replacements,
+        "R10 zero writes"
+    );
+}
+
+#[tokio::test]
+async fn capture_client_rejects_wrong_operation_scope_revision_and_file_set() {
+    // P1 a 200 reply is not authority by itself. Read replies must be canonical
+    // captures in the requested scope; replacement receipts must acknowledge
+    // the exact requested successor and complete id set. P2 a different response
+    // operation cannot be decoded as success. These are peer-response failures,
+    // not evidence that a remote write was rolled back or is safe to repeat.
+    use awaken_resource_worker_http::ARTIFACT_CAPTURE_PATH;
+    let claim = RunClaim {
+        run_id: awaken_agent_contract::agent::run::Id("run".into()),
+        owner: "owner".into(),
+        epoch: 1,
+    };
+    let fence = ArtifactPublicationFence::Run(claim);
+    let canonical = serde_json::json!({"workspace_id":"workspace", "session_id":"session", "revision":1, "file_ids":["a"]});
+    for operation in ["read", "replace"] {
+        for field in [
+            "workspace_id",
+            "session_id",
+            "revision",
+            "file_ids",
+            "operation",
+        ] {
+            let mut capture = canonical.clone();
+            match field {
+                "workspace_id" | "session_id" => capture[field] = serde_json::json!("foreign"),
+                "revision" => capture[field] = serde_json::json!(0),
+                "file_ids" => {
+                    capture[field] = if operation == "read" {
+                        serde_json::json!(["b", "a"])
+                    } else {
+                        serde_json::json!(["b"])
+                    }
+                }
+                _ => (),
+            }
+            let reply = if operation == "read" && field != "operation"
+                || operation == "replace" && field == "operation"
+            {
+                serde_json::json!({"result":"current", "value":capture})
+            } else {
+                serde_json::json!({"result":"replaced", "value":{"outcome":"applied", "capture":capture}})
+            };
+            let router = axum::Router::new().route(
+                ARTIFACT_CAPTURE_PATH,
+                axum::routing::post(move || {
+                    let reply = reply.clone();
+                    async move { axum::Json(reply) }
+                }),
+            );
+            let address = support::serve(router).await;
+            let peer = HttpArtifactPublisher::new(WorkerUpstream::new(format!("http://{address}")));
+            if operation == "read" {
+                assert!(
+                    peer.capture("workspace", "session", Some(&fence))
+                        .await
+                        .is_err(),
+                    "P1/P2 {operation}/{field}"
+                );
+            } else {
+                assert!(
+                    peer.replace_capture(
+                        awaken_resource_contract::ReplaceArtifactCapture {
+                            workspace_id: "workspace".into(),
+                            session_id: "session".into(),
+                            expected_revision: 0,
+                            file_ids: vec!["a".into()],
+                        },
+                        Some(&fence)
+                    )
+                    .await
+                    .is_err(),
+                    "P1/P2 {operation}/{field}"
+                );
+            }
+        }
+    }
 }
