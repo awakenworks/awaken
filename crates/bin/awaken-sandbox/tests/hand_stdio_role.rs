@@ -75,7 +75,8 @@ async fn hand_stdio_executes_a_real_tool_over_the_child_process_channel() {
             tool_id: "bash".into(),
             arguments: serde_json::json!({ "command": "printf stdio-hand-ok" }),
         })
-        .await;
+        .await
+        .expect("request reached the dispatch boundary");
 
     child.kill().await.expect("terminate hand");
     let _ = child.wait().await;
