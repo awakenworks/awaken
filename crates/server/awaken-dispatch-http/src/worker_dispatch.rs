@@ -1168,6 +1168,12 @@ async fn settle(
                     RealizationHttpError::from(HostError::unavailable(error.to_string()))
                 })?;
         }
+        // Work retirement revokes execution admission, not an already committed
+        // terminal fact. Terminal cleanup retires Work before waiting for this
+        // dispatch to quiesce; requiring the retired lease here would deadlock
+        // both owners. Only exact claim-guarded Ended truth permits this closure.
+        let committed_terminal = request.outcome == awaken_dispatch::DispatchOutcome::Done
+            && matches!(committed_state.as_ref(), Some(RunState::Ended(_)));
         drop(guard);
         // Cause graph: a Work item is the Environment's single active ownership
         // fence, not a permanent reservation for every idle Session. Keeping a
@@ -1194,6 +1200,14 @@ async fn settle(
                     Some(lease)
                 }
                 awaken_session_contract::work_queue::SessionWorkOwnership::Unowned
+                | awaken_session_contract::work_queue::SessionWorkOwnership::Leased(_)
+                    if committed_terminal =>
+                {
+                    // No Work mutation is authorized by another owner's lease.
+                    // The subsequent Dispatch settle still checks its own epoch.
+                    None
+                }
+                awaken_session_contract::work_queue::SessionWorkOwnership::Unowned
                 | awaken_session_contract::work_queue::SessionWorkOwnership::Leased(_) => {
                     return Err(RealizationHttpError::from(HostError::bad_request(
                         "Session Work ownership was lost before Run settlement",
@@ -1209,7 +1223,7 @@ async fn settle(
                     })?,
                 None => true,
             };
-            if !released {
+            if !released && !committed_terminal {
                 return Err(RealizationHttpError::from(HostError::bad_request(
                     "Session Work ownership was lost before Run settlement",
                 )));

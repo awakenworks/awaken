@@ -394,7 +394,10 @@ pub trait SessionWorkLeaseAuthority: Send + Sync {
 
     /// Release the exact Session Work lease after the registered Worker's Run
     /// has committed and is ready to settle. `false` means the caller no longer
-    /// owns that Session and must not settle its Run as current.
+    /// owns that Session Work and grants no further execution authority. A
+    /// current Dispatch claim may still close Done when its exact Run has
+    /// committed Ended truth; terminal cleanup deliberately retires Work before
+    /// waiting for that closure. Other settlement requires the live Work fence.
     async fn release_session_work(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError>;
 
     /// Return every non-terminal Session Work lease owned by one exact registered
