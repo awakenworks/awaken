@@ -160,6 +160,9 @@ async fn dropped_hand_over_tcp_is_indeterminate() {
     });
 
     let executor = RemoteToolExecutor::new(dial_brain(&addr).await);
-    let result = executor.call_hand(&call("c1", "echo", "x")).await;
+    let result = executor
+        .call_hand(&call("c1", "echo", "x"))
+        .await
+        .expect("request reached the dispatch boundary");
     assert_eq!(result, HandResult::Indeterminate);
 }

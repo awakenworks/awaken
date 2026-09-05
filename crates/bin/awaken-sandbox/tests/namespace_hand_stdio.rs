@@ -121,7 +121,7 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
                     "command": "mkdir -p /workspace/repository && printf 'before\\n' > /workspace/repository/note.txt && git -C /workspace/repository init -q"
                 }),
             })
-            .await,
+            .await.expect("request reached the dispatch boundary"),
     );
     assert!(
         !initialize_repository.contains(base.path().to_string_lossy().as_ref()),
@@ -137,7 +137,8 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
                     "path": "/workspace/repository/note.txt"
                 }),
             })
-            .await,
+            .await
+            .expect("request reached the dispatch boundary"),
     );
     assert!(workspace_read.contains("before"), "P5/E1: {workspace_read}");
     assert!(
@@ -156,7 +157,8 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
                     "new": "after"
                 }),
             })
-            .await,
+            .await
+            .expect("request reached the dispatch boundary"),
     );
     assert!(
         workspace_edit.contains("/workspace/repository/note.txt"),
@@ -176,7 +178,7 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
                     "command": "git -C /workspace/repository status --short && git -C /workspace/repository rev-parse --show-toplevel"
                 }),
             })
-            .await,
+            .await.expect("request reached the dispatch boundary"),
     );
     assert!(git_status.contains("?? note.txt"), "P5/E1: {git_status}");
     assert!(
@@ -197,7 +199,8 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
                     "path": "/mnt/session/uploads/file-1"
                 }),
             })
-            .await,
+            .await
+            .expect("request reached the dispatch boundary"),
     );
     assert!(read.contains("namespace-hand-token"), "P2/E1: {read}");
     assert!(
@@ -214,7 +217,8 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
                     "pattern": "/mnt/session/uploads/*"
                 }),
             })
-            .await,
+            .await
+            .expect("request reached the dispatch boundary"),
     );
     assert!(
         glob.contains("/mnt/session/uploads/file-1"),
@@ -230,7 +234,8 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
                     "command": "cat /mnt/session/uploads/file-1"
                 }),
             })
-            .await,
+            .await
+            .expect("request reached the dispatch boundary"),
     );
     assert!(bash.contains("namespace-hand-token"), "P2/E1: {bash}");
 
@@ -243,7 +248,8 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
                 "content": "mutated"
             }),
         })
-        .await;
+        .await
+        .expect("request reached the dispatch boundary");
     assert!(
         matches!(
             write,
@@ -264,7 +270,8 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
                     "path": "/mnt/session/uploads/file-1"
                 }),
             })
-            .await,
+            .await
+            .expect("request reached the dispatch boundary"),
     );
     assert!(
         unchanged.contains("namespace-hand-token"),
@@ -303,7 +310,8 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
                     "path": "/mnt/session/uploads/file-1"
                 }),
             })
-            .await,
+            .await
+            .expect("request reached the dispatch boundary"),
     );
     assert!(adopted_read.contains("namespace-hand-token"), "P4/E4");
     drop(adopted_executor);

@@ -43,7 +43,7 @@ pub struct RemoteToolExecutor<S> {
 
 struct HandChannel<S> {
     framed: Framed<S, LengthDelimitedCodec>,
-    usable: bool,
+    pending_operation: Option<String>,
 }
 
 impl<S> RemoteToolExecutor<S>
@@ -55,7 +55,7 @@ where
         Self {
             channel: Mutex::new(HandChannel {
                 framed: Framed::new(channel, LengthDelimitedCodec::new()),
-                usable: true,
+                pending_operation: None,
             }),
             next_id: AtomicU64::new(1),
             catalog_fingerprint: None,
@@ -89,21 +89,23 @@ where
         self
     }
 
-    /// Run one call on the hand, returning the raw [`HandResult`].
+    /// Run one call on the hand, returning its raw [`HandResult`]. A different
+    /// operation rejected on an already poisoned stream returns the existing
+    /// `UnavailableBeforeDispatch` error without writing any request bytes.
     ///
     /// Once writing the request has been attempted, every transport failure is
     /// surfaced as [`HandResult::Indeterminate`] (ADR-0044 D4). A stream write
     /// may fail after emitting part or all of a frame, so an error cannot prove
     /// that the effect stayed behind the dispatch boundary.
-    pub async fn call_hand(&self, call: &ToolCall) -> HandResult {
+    pub async fn call_hand(&self, call: &ToolCall) -> Result<HandResult, ToolError> {
         let correlation_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let operation_id = match current_tool_operation_token() {
             Some(token) => token.ledger_id(self.operation_scope.as_deref()),
             None if self.recovery_capability == ToolRecoveryCapability::DurableRequest => {
-                return HandResult::err(crate::wire::HandError::new(
+                return Ok(HandResult::err(crate::wire::HandError::new(
                     HandErrorKind::Execution,
                     MISSING_DURABLE_OPERATION_TOKEN,
-                ));
+                )));
             }
             None => self.operation_scope.as_ref().map_or_else(
                 || call.call_id.clone(),
@@ -123,27 +125,38 @@ where
             // A serialization failure is a local, pre-dispatch fault: the call
             // never left, so it is a definite error, not indeterminate.
             Err(e) => {
-                return HandResult::err(crate::wire::HandError::new(
+                return Ok(HandResult::err(crate::wire::HandError::new(
                     HandErrorKind::Execution,
                     format!("failed to encode hand request: {e}"),
-                ));
+                )));
             }
         };
 
         let mut channel = self.channel.lock().await;
-        if !channel.usable {
-            return HandResult::Indeterminate;
+        if let Some(pending) = &channel.pending_operation {
+            // The prior operation may have executed. Its retry remains unknown;
+            // a distinct operation has sent no bytes and can use the existing
+            // Environment-owned pre-dispatch replacement path. Correlation ids
+            // and changed wire call ids must never turn the old operation new.
+            return if pending == &request.operation_id {
+                Ok(HandResult::Indeterminate)
+            } else {
+                Err(ToolError::UnavailableBeforeDispatch(
+                    "Hand channel has an unresolved prior operation; this request was not sent"
+                        .into(),
+                ))
+            };
         }
         // Mark the stream unusable before the first cancellable write. A dropped
         // caller cannot otherwise tell whether a partial/full frame or its reply
         // remains queued. Only the exact correlated reply restores readiness.
-        channel.usable = false;
+        channel.pending_operation = Some(request.operation_id.clone());
         if channel.framed.send(bytes.into()).await.is_err() {
-            return HandResult::Indeterminate;
+            return Ok(HandResult::Indeterminate);
         }
         // Past this point the request is on the wire; any read failure is
         // indeterminate.
-        match channel.framed.next().await {
+        Ok(match channel.framed.next().await {
             Some(Ok(frame)) => match serde_json::from_slice::<HandReply>(&frame) {
                 Ok(reply)
                     if hand_channel_reply_admitted(
@@ -151,14 +164,14 @@ where
                         reply.correlation_id == correlation_id,
                     ) =>
                 {
-                    channel.usable = true;
+                    channel.pending_operation = None;
                     reply.result
                 }
                 Ok(_) => HandResult::Indeterminate,
                 Err(_) => HandResult::Indeterminate,
             },
             _ => HandResult::Indeterminate,
-        }
+        })
     }
 }
 
@@ -187,7 +200,7 @@ where
     }
 
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
-        match self.call_hand(call).await {
+        match self.call_hand(call).await? {
             HandResult::Ok { output } => Ok(output),
             HandResult::Err { error }
                 if error.kind == HandErrorKind::Execution

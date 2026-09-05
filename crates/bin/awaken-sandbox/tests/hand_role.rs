@@ -51,7 +51,10 @@ async fn the_hand_role_runs_a_real_tool_over_a_unix_socket() {
         tool_id: "bash".into(),
         arguments: serde_json::json!({ "command": "echo hand-ran-the-tool" }),
     };
-    let result = executor.call_hand(&call).await;
+    let result = executor
+        .call_hand(&call)
+        .await
+        .expect("request reached the dispatch boundary");
 
     hand.abort();
     let _ = std::fs::remove_dir_all(&dir);
