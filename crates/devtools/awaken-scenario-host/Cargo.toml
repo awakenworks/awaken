@@ -14,6 +14,7 @@ name = "awaken-scenario-host"
 path = "src/main.rs"
 
 [dependencies]
+awaken-protocol-mcp.workspace = true
 # The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all
 # host modules live here; this binary only selects and serves scenario modes.
 awaken-session-executor = { workspace = true, features = ["test-support"] }

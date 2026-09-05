@@ -36,7 +36,11 @@ never ran the Native plugin loop. ACP cwd was fixed to the workspace root.
 
 After, the immutable publication selects the exact Hand descriptor subset and
 the bound Session environment supplies the matching rooted executors. They are
-exported as one Session MCP toolset. The reserved `awaken_session` namespace
+exported as one Session MCP toolset. `awaken-runtime-contract::tool_export`
+owns the export port/lease; `awaken-protocol-mcp::SessionToolExporter` owns the
+single transport adapter. Both the Coordinator Host and registered Worker Host
+install that adapter, including AllInOne's registered Worker. The Host retains
+permission grants and binds executors only after Environment realization. The reserved `awaken_session` namespace
 maps back to canonical IDs such as `write`; third-party MCP namespaces retain
 `mcp__server__tool`. State machine and background execution are both Native-only
 at authoring and publication. ACP supports a validated workspace-relative cwd.
