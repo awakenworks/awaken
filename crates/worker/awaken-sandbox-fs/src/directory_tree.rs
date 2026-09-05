@@ -1,5 +1,100 @@
 use super::*;
 
+/// Platform adapter for callers that own a quiescent plain projection, not an
+/// exact inode identity. The exact-dirfd APIs stay unsupported on these targets;
+/// this must never silently substitute for their stronger ownership contract.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(super) fn read_plain_tree_bounded(
+    root: &Path,
+    max_file_bytes: u64,
+    mut max_total_bytes: u64,
+) -> std::io::Result<TreeSnapshot> {
+    fn reject_link(metadata: &std::fs::Metadata) -> std::io::Result<()> {
+        #[cfg(windows)]
+        let link = {
+            use std::os::windows::fs::MetadataExt;
+            metadata.file_attributes() & 0x400 != 0
+        };
+        #[cfg(not(windows))]
+        let link = metadata.file_type().is_symlink();
+        if link {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "tree contains a link or reparse point",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+    fn visit(
+        root: &Path,
+        relative: &Path,
+        max_file_bytes: u64,
+        remaining_bytes: &mut u64,
+        snapshot: &mut TreeSnapshot,
+    ) -> std::io::Result<()> {
+        let directory = root.join(relative);
+        let metadata = std::fs::symlink_metadata(&directory)?;
+        reject_link(&metadata)?;
+        if !metadata.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "tree root is not a directory",
+            ));
+        }
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            let relative_path = relative.join(entry.file_name());
+            let metadata = std::fs::symlink_metadata(entry.path())?;
+            reject_link(&metadata)?;
+            if metadata.is_dir() {
+                snapshot.directories.push(TreeDirectory {
+                    relative_path: relative_path.clone(),
+                    mode: 0,
+                });
+                visit(
+                    root,
+                    &relative_path,
+                    max_file_bytes,
+                    remaining_bytes,
+                    snapshot,
+                )?;
+            } else if metadata.is_file() {
+                snapshot.files.push(TreeFile {
+                    relative_path,
+                    bytes: read_tree_file_bounded(
+                        File::open(entry.path())?,
+                        max_file_bytes,
+                        remaining_bytes,
+                    )?,
+                    mode: 0,
+                });
+            } else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "tree contains a non-regular file",
+                ));
+            }
+        }
+        Ok(())
+    }
+    let mut snapshot = TreeSnapshot::default();
+    visit(
+        root,
+        Path::new(""),
+        max_file_bytes,
+        &mut max_total_bytes,
+        &mut snapshot,
+    )?;
+    snapshot
+        .directories
+        .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    snapshot
+        .files
+        .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    Ok(snapshot)
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn directory_entry_names<Fd: std::os::fd::AsFd>(
     directory: Fd,

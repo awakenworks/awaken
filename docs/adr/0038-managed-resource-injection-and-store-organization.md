@@ -474,20 +474,41 @@ Agent-owned Git commands are a separate trusted-process identity boundary. Fixtu
 does not certify a vendor CLI, and a configured OS matrix is not evidence of
 executed macOS/Windows tests. Cause/effect rules live next to their test owners.
 
+The same runner's `native-fixture` profile uses the production CLI, its immutable
+Hand companion, and the existing fake Messages upstream to execute that **same**
+resource mission and independent output oracle through Native Bash in Namespace.
+The Linux portability row requires this substrate; it cannot pass by skipping a
+missing Namespace backend. Native changes the tool cwd explicitly between
+`/workspace` and `/workspace/repo/src`: `model.configuration.working_directory`
+remains an ACP setting, not a newly supported Native Agent configuration. This
+distinction is part of the test, rather than claiming equivalent configuration
+surfaces from equivalent file I/O. The local Git transport still needs
+`test-support`; this does not close the production HTTPS acceptance gap.
+
 Copy-mode concurrent same-base update/update, update/delete, create/create and
 identical-edit cases are owned by
 `awaken-sandbox-memoryd/tests/copy_lifecycle.rs`: synchronized dispatch plus both
 ordered linearizations, retry, lost acknowledgement and durable SQLite reopen.
-The existing `MemoryCAS` model adds the copy-recovery configuration, with an
-automatically rejected rebase mutant. Worker login heartbeat reordering runs
+They also distinguish a missing/replaced root from intentional unlink, reject
+unsafe/incomplete scans before write-back, and verify per-file partial CAS
+commit and recovery without claiming multi-file atomicity. The official SDK CAS
+matrix in `e2e/managed_memory_repository_durable_e2e.mjs` drives two clients with
+the same base hash, both ordered linearizations and simultaneous dispatch,
+identical/different updates, exact retries, version history and restart. It is
+public API evidence, not two Agents contending on one mounted path.
+The existing `MemoryCAS` model adds the copy-recovery configuration, with
+automatically rejected rebase and incomplete-scan-delete mutants. Worker login heartbeat reordering runs
 against the production registry under Loom; the existing Kani lease kernel and
 TLA+ activation/projection/reclamation models retain their own boundaries. See
 [formal verification](../../formal/README.md) for the exact model scope.
 
 These gates do not yet establish a complete release matrix: in-flight ACP
 process fencing, a production-feature HTTPS resource composition, actual mixed
-cloud/local Worker placement and loss, and Native File+Memory+Repository in one
-default/nested-cwd API mission still need dedicated end-to-end evidence. Actual
+cloud/local Worker placement and loss, and same-path mounted Memory competition
+through two Agents still need dedicated end-to-end evidence. Windows local
+process termination currently targets the direct child, unlike Unix process
+groups; neither proves ownership recovery after abrupt Worker death while a
+host Agent or descendant is still performing effects. Actual
 vendor logins, macOS/Windows execution, and OS credential-manager/SSH integration
 must be verified on their corresponding hosts; fixture or model success does
 not substitute for them. Memory/Repository live addition remains an explicit

@@ -12,7 +12,8 @@ import {
   managedFileUploadForm,
   managedWorkspaceClient,
   spawnProduction,
-  stopServer,
+  stopServer as stop,
+  hardKillServer,
   waitForPort,
   waitForSessionEventReceipt,
   waitForValue,
@@ -50,13 +51,6 @@ function start(directory) {
 
 async function ready() {
   await waitForPort(PORT, 60_000);
-}
-
-async function stop(child, signal = 'SIGINT') {
-  if (signal === 'SIGINT') return stopServer(child);
-  if (child.exitCode !== null) return;
-  child.kill(signal);
-  await new Promise((resolve) => child.once('exit', resolve));
 }
 
 const scoped = (workspace, suffix) =>
@@ -289,7 +283,7 @@ async function main() {
        )`,
     );
     assert.equal((await json('DELETE', scoped(WS_A, `files/${crashedFile}`))).status, 200);
-    await stop(server, 'SIGKILL');
+    await hardKillServer(server);
     sqliteExec(
       path.join(directory, 'resources.db'),
       `DELETE FROM resource_lifecycle_references

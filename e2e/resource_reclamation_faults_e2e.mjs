@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url';
 import {
   managedFileUploadForm,
   spawnProduction,
-  stopServer,
+  stopServer as stop,
+  hardKillServer,
   waitForPort,
 } from './harness.mjs';
 import { sqliteExec, sqliteRows, sqliteScalar } from './sqlite.mjs';
@@ -41,14 +42,6 @@ function start(directory, { captureStderr = false } = {}) {
 
 async function ready(child) {
   await waitForPort(PORT, 60_000, child);
-}
-
-async function stop(child, signal = 'SIGINT') {
-  if (signal === 'SIGINT') return stopServer(child);
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise((resolve) => child.once('exit', resolve));
-  child.kill(signal);
-  await exited;
 }
 
 const scoped = (tail) =>
@@ -241,7 +234,7 @@ async function main() {
       assert.equal((await json('DELETE', `files/${fileId}`)).status, 200);
     }
     assert.equal((await json('DELETE', `skills/${skillId}`)).status, 200);
-    await stop(server, 'SIGKILL');
+    await hardKillServer(server);
 
     const skillAggregate = path.join(
       directory,
@@ -552,7 +545,7 @@ async function main() {
     // process reports the precise fail-closed reason. Restore the completed row
     // afterwards so this fault campaign itself leaves a converged catalog.
     const completedIntent = intentFor(directory, releaseFailure);
-    await stop(server, 'SIGKILL');
+    await hardKillServer(server);
     const pending = {
       ...completedIntent,
       status: 'pending',

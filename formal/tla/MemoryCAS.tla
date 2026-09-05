@@ -111,49 +111,68 @@ AbsentDeleteIsIdempotent == lastAction = "absent_delete" => (~lastPresentBefore 
 \* linearization; C3 commit then crash before acknowledgement => idempotent
 \* same-content retry; C4 intervening writer => stale retry cannot rebase.
 \* Tests: copy_lifecycle.rs concurrent_copy_harvest_* / recovered_copy_retries_*.
-\* Bounds: one pending edit per writer, surviving tree, atomic Repository calls.
+\* Bounds: one pending edit per writer, atomic Repository calls. A complete
+\* quiescent-tree scan is an external observation: the model checks admission
+\* on that observation, not OS snapshot atomicity or hostile process fencing.
 \* This is safety checking, not a proof of eventual recovery or Rust refinement.
-VARIABLES mounted, crashed, materializationBase
-copyVars == <<vars, mounted, crashed, materializationBase>>
+VARIABLES mounted, crashed, materializationBase, scanComplete, lastMutationScan
+copyVars == <<vars, mounted, crashed, materializationBase, scanComplete, lastMutationScan>>
 CopyInit == /\ Init
             /\ mounted = [w \in Writers |-> FALSE]
             /\ crashed = [w \in Writers |-> FALSE]
             /\ materializationBase = [w \in Writers |-> 0]
+            /\ scanComplete = [w \in Writers |-> TRUE]
+            /\ lastMutationScan = TRUE
 
 CopyCapture(w) == /\ ~mounted[w] /\ headPresent
                   /\ Read(w)
                   /\ mounted' = [mounted EXCEPT ![w] = TRUE]
                   /\ materializationBase' = [materializationBase EXCEPT ![w] = generation]
-                  /\ UNCHANGED crashed
+                  /\ UNCHANGED <<crashed, scanComplete, lastMutationScan>>
 
 CopyFlush(w) == /\ mounted[w] /\ ~crashed[w]
+                /\ scanComplete[w]
+                /\ lastMutationScan' = scanComplete[w]
                 /\ IF headPresent /\ value = w
                       THEN IdempotentWrite
                       ELSE CAS(w) \/ StaleCAS(w)
-                /\ UNCHANGED <<mounted, crashed, materializationBase>>
+                /\ UNCHANGED <<mounted, crashed, materializationBase, scanComplete>>
 
 CopyDelete(w) == /\ mounted[w] /\ ~crashed[w]
+                 /\ scanComplete[w]
+                 /\ lastMutationScan' = scanComplete[w]
                  /\ DeleteIfMatch(w) \/ StaleDelete(w) \/ AlreadyAbsentDelete
-                 /\ UNCHANGED <<mounted, crashed, materializationBase>>
+                 /\ UNCHANGED <<mounted, crashed, materializationBase, scanComplete>>
 
 CopyCrash(w) == /\ mounted[w] /\ ~crashed[w]
                 /\ crashed' = [crashed EXCEPT ![w] = TRUE]
-                /\ UNCHANGED <<vars, mounted, materializationBase>>
+                /\ UNCHANGED <<vars, mounted, materializationBase, scanComplete, lastMutationScan>>
 
 CopyRecover(w) == /\ crashed[w]
                   /\ crashed' = [crashed EXCEPT ![w] = FALSE]
-                  /\ UNCHANGED <<vars, mounted, materializationBase>>
+                  /\ UNCHANGED <<vars, mounted, materializationBase, scanComplete, lastMutationScan>>
+
+\* A missing root, scan IO error, or replaced entry cannot stand in for unlink.
+\* Retrying after the tree is restored changes only scan evidence, never CAS base.
+CopyScan(w, complete) ==
+    /\ mounted[w] /\ ~crashed[w]
+    /\ scanComplete' = [scanComplete EXCEPT ![w] = complete]
+    /\ UNCHANGED <<vars, mounted, crashed, materializationBase, lastMutationScan>>
 
 CopyNext == \E w \in Writers:
               CopyCapture(w) \/ CopyFlush(w) \/ CopyDelete(w)
               \/ CopyCrash(w) \/ CopyRecover(w)
+              \/ CopyScan(w, TRUE) \/ CopyScan(w, FALSE)
 CopyTypeOK == /\ TypeOK
               /\ mounted \in [Writers -> BOOLEAN]
               /\ crashed \in [Writers -> BOOLEAN]
               /\ materializationBase \in [Writers -> 0..MaxGeneration]
+              /\ scanComplete \in [Writers -> BOOLEAN]
+              /\ lastMutationScan \in BOOLEAN
 CopyRecoveryKeepsMaterializationBase ==
     \A w \in Writers: mounted[w] => expected[w] = materializationBase[w]
+CopyMutationRequiresCompleteScan == lastAction \in {"cas", "delete"} => lastMutationScan
 CopySpec == CopyInit /\ [][CopyNext]_copyVars
 \* The original Repository configuration keeps projection history inert.
-Spec == CopyInit /\ [][Next /\ UNCHANGED <<mounted, crashed, materializationBase>>]_copyVars
+Spec == CopyInit /\ [][Next /\ UNCHANGED <<mounted, crashed, materializationBase, scanComplete, lastMutationScan>>]_copyVars
 =============================================================================

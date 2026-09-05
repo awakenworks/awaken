@@ -407,3 +407,73 @@ fn descriptor_tree_read_propagates_every_non_missing_boundary_fault() {
         "R4"
     );
 }
+
+#[test]
+fn bounded_tree_reader_reuses_exact_walk_and_enforces_the_supplied_limit() {
+    // B1 file length = limit (including 0) => exact bytes and sorted snapshot;
+    // B2 file length > limit => InvalidData, never a partial snapshot;
+    // B3 same tree via existing unbounded API => unchanged compatibility;
+    // B4 missing required root => NotFound, not a successful empty tree.
+    let root = std::env::temp_dir().join(format!(
+        "awaken-bounded-tree-{}-{}",
+        std::process::id(),
+        PRIVATE_STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _owned = OwnedDirectory(root.clone());
+    for limit in [0_usize, 16] {
+        std::fs::write(root.join("a"), vec![b'a'; limit]).unwrap();
+        let captured = read_tree_nofollow_bounded(&root, limit as u64, u64::MAX).unwrap();
+        assert_eq!(captured.files.len(), 1, "B1");
+        assert_eq!(captured.files[0].bytes, vec![b'a'; limit], "B1");
+        std::fs::write(root.join("z"), vec![b'z'; limit + 1]).unwrap();
+        assert_eq!(
+            read_tree_nofollow_bounded(&root, limit as u64, u64::MAX)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidData,
+            "B2"
+        );
+        assert_eq!(
+            read_tree_nofollow(
+                &root,
+                directory_identity_nofollow(&root).unwrap(),
+                Path::new("")
+            )
+            .unwrap()
+            .files
+            .iter()
+            .map(|file| file.relative_path.as_path())
+            .collect::<Vec<_>>(),
+            vec![Path::new("a"), Path::new("z")],
+            "B3"
+        );
+        std::fs::remove_file(root.join("z")).unwrap();
+    }
+    assert_eq!(
+        read_tree_nofollow_bounded(&root.join("missing"), 16, 16)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::NotFound,
+        "B4"
+    );
+    // B5 each file is within its limit, but the shared whole-tree budget must
+    // include descendants. Exactly total bytes succeeds; total-1 fails closed.
+    std::fs::create_dir(root.join("nested")).unwrap();
+    std::fs::write(root.join("nested/b"), b"b").unwrap();
+    assert_eq!(
+        read_tree_nofollow_bounded(&root, 16, 17)
+            .unwrap()
+            .files
+            .len(),
+        2,
+        "B5 exact"
+    );
+    assert_eq!(
+        read_tree_nofollow_bounded(&root, 16, 16)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidData,
+        "B5 over"
+    );
+}

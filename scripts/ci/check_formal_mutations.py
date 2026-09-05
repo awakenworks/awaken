@@ -259,34 +259,43 @@ def check_memory_copy_model_mutant(tlc_jar: Path) -> None:
     source = (ROOT / "formal/tla/MemoryCAS.tla").read_text(encoding="utf-8")
     original = """CopyRecover(w) == /\\ crashed[w]
                   /\\ crashed' = [crashed EXCEPT ![w] = FALSE]
-                  /\\ UNCHANGED <<vars, mounted, materializationBase>>"""
+                  /\\ UNCHANGED <<vars, mounted, materializationBase, scanComplete, lastMutationScan>>"""
     mutant = """CopyRecover(w) == /\\ crashed[w]
                   /\\ crashed' = [crashed EXCEPT ![w] = FALSE]
                   /\\ expected' = [expected EXCEPT ![w] = generation]
                   /\\ UNCHANGED <<generation, value, writes, sourcePresent, targetPresent,
                                   targetIdentity, renameCommitted, headPresent, lastAction,
                                   lastBefore, lastAfter, lastPresentBefore, lastPresentAfter,
-                                  mounted, materializationBase>>"""
+                                  mounted, materializationBase, scanComplete, lastMutationScan>>"""
     if source.count(original) != 1:
         raise SystemExit("Memory copy recovery mutation anchor drifted; review the model")
-    with tempfile.TemporaryDirectory(prefix="awaken-memory-copy-mutant-") as temp:
-        directory = Path(temp)
-        model = directory / "MemoryCAS.tla"
-        model.write_text(source.replace(original, mutant), encoding="utf-8")
-        config = directory / "MemoryCASCopy.cfg"
-        shutil.copy2(ROOT / "formal/tla/MemoryCASCopy.cfg", config)
-        result = subprocess.run(
-            ["java", "-Xmx512m", "-jar", str(tlc_jar.resolve()),
-             "-metadir", str(directory / "states"), "-config", str(config), str(model)],
-            cwd=directory, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=30, check=False,
-        )
-        if (
-            result.returncode != 12
-            or "Invariant CopyRecoveryKeepsMaterializationBase is violated" not in result.stdout
-        ):
-            raise SystemExit(f"Memory copy recovery mutant was not killed correctly:\n{result.stdout}")
-    print("Memory copy recovery mutation score: 1/1 killed (frozen base invariant)")
+    # C2: admit delete after an incomplete scan. The exact scan invariant must
+    # reject the old missing-root-as-empty behavior; a tool failure cannot pass.
+    delete_guard = """CopyDelete(w) == /\\ mounted[w] /\\ ~crashed[w]
+                 /\\ scanComplete[w]"""
+    if source.count(delete_guard) != 1:
+        raise SystemExit("Memory copy scan mutation anchor drifted; review the model")
+    mutations = [
+        (source.replace(original, mutant), "CopyRecoveryKeepsMaterializationBase"),
+        (source.replace(delete_guard, "CopyDelete(w) == /\\ mounted[w] /\\ ~crashed[w]"),
+         "CopyMutationRequiresCompleteScan"),
+    ]
+    for mutated, invariant in mutations:
+        with tempfile.TemporaryDirectory(prefix="awaken-memory-copy-mutant-") as temp:
+            directory = Path(temp)
+            model = directory / "MemoryCAS.tla"
+            model.write_text(mutated, encoding="utf-8")
+            config = directory / "MemoryCASCopy.cfg"
+            shutil.copy2(ROOT / "formal/tla/MemoryCASCopy.cfg", config)
+            result = subprocess.run(
+                ["java", "-Xmx512m", "-jar", str(tlc_jar.resolve()),
+                 "-metadir", str(directory / "states"), "-config", str(config), str(model)],
+                cwd=directory, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                timeout=30, check=False,
+            )
+            if result.returncode != 12 or f"Invariant {invariant} is violated" not in result.stdout:
+                raise SystemExit(f"Memory copy mutant was not killed correctly:\n{result.stdout}")
+    print("Memory copy mutation score: 2/2 killed (frozen base and complete scan)")
 
 
 if __name__ == "__main__":

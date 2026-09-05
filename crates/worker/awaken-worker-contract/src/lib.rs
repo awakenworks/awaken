@@ -900,6 +900,72 @@ mod tests {
                 "{rule}"
             );
         }
+
+        // T6 cause/effect exhaustive decision table: exact backend (bit 0),
+        // Available login (1), exact credential revision (2), Ready state (3),
+        // live Worker (4) are five independent conjuncts. For every one of 32
+        // combinations, test before/at observed_at and before/at expiry. All
+        // non-target requirements remain valid; a stronger cloud candidate is
+        // always present so rejection cannot accidentally become fallback.
+        // T7 the initial placement and later assignment revalidation consume
+        // the SAME predicate at their own time; expiry between them must fail.
+        for mask in 0_u8..32 {
+            for now in [4, 5, 19, 20] {
+                let mut worker = ready.clone();
+                if mask & 1 == 0 {
+                    worker
+                        .manifest
+                        .sandbox_backends
+                        .remove(TRUSTED_HOST_SANDBOX_BACKEND);
+                }
+                worker.capability_fingerprint = worker.manifest.fingerprint().unwrap();
+                worker.state = if mask & 8 != 0 {
+                    WorkerState::Ready
+                } else {
+                    WorkerState::Draining
+                };
+                worker.expires_at_ms = if mask & 16 != 0 { 30 } else { now };
+                let mut observation =
+                    WorkerCredentialObservation::available(credential.clone(), 5, 20);
+                if mask & 2 == 0 {
+                    observation.state = WorkerCredentialState::LoginRequired;
+                }
+                if mask & 4 == 0 {
+                    observation.credential.revision += 1;
+                }
+                worker.credential_observations = [observation].into();
+                let admitted = mask == 31 && (5..20).contains(&now);
+                let result = place(
+                    &LeastLoadedPolicy,
+                    &context(required.clone()),
+                    &[worker.clone(), manifest("cloud", 0)],
+                    now,
+                );
+                if admitted {
+                    assert_eq!(
+                        result.unwrap().identity,
+                        worker.identity,
+                        "T6 mask={mask} time={now}"
+                    );
+                } else {
+                    assert!(
+                        matches!(result, Err(PlacementError::NoEligibleWorker)),
+                        "T6 mask={mask} time={now}: {result:?}"
+                    );
+                }
+                assert_eq!(
+                    can_assign(&worker, &required, None, false, now).is_ok(),
+                    admitted,
+                    "T7"
+                );
+            }
+        }
+        assert!(can_assign(&ready, &required, None, false, 19).is_ok());
+        assert_eq!(
+            can_assign(&ready, &required, None, false, 20),
+            Err(AssignmentRejection::Ineligible),
+            "T7 expiry after selection"
+        );
     }
 
     #[test]

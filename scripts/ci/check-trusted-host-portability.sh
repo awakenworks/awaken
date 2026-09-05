@@ -31,6 +31,7 @@ cargo test -p awaken-run-executor-acp --lib
 cargo test -p awaken-worker-contract --lib
 cargo test -p awaken-cli --lib acp_local_credentials
 cargo test -p awaken-sandbox-local --lib
+cargo test -p awaken-sandbox-fs --lib
 cargo test -p awaken-sandbox-memoryd --lib
 cargo test -p awaken-sandbox-memoryd --test copy_lifecycle
 
@@ -41,3 +42,11 @@ for runtime in codex claude; do
   CODEX_ACP_PROFILE=host-fixture AWAKEN_ACP_RUNTIME="$runtime" \
     node e2e/codex_acp_live_e2e.mjs
 done
+
+# Native Namespace is an explicit Linux substrate gate, not an ACP cwd option
+# and not a successful skip on hosts lacking Namespace support. Other OS rows
+# still run Native Local contracts above; no cross-OS Namespace claim is made.
+if [[ "$(uname -s)" == "Linux" ]]; then
+  CODEX_ACP_PROFILE=native-fixture AWAKEN_ACP_RUNTIME=native \
+    node e2e/codex_acp_live_e2e.mjs
+fi

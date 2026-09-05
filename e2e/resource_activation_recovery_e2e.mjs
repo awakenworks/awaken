@@ -10,7 +10,8 @@ import {
   cleanupFixtureTree,
   managedWorkspaceClient,
   spawnProduction,
-  stopServer,
+  stopServer as stop,
+  hardKillServer,
   waitForPort,
   waitForSessionEventReceipt,
   waitForValue,
@@ -46,13 +47,6 @@ function start(directory) {
 
 async function ready() {
   await waitForPort(PORT, 60_000);
-}
-
-async function stop(child, signal = 'SIGINT') {
-  if (signal === 'SIGINT') return stopServer(child);
-  if (child.exitCode !== null) return;
-  child.kill(signal);
-  await new Promise((resolve) => child.once('exit', resolve));
 }
 
 const scoped = (suffix) =>
@@ -334,7 +328,7 @@ async function main() {
     // replacement, and Requested root cleanup + Releasing resources for a
     // terminal Session. These are precisely the states the coordinator persists
     // before Worker-owned realization and teardown.
-    await stop(server, 'SIGKILL');
+    await hardKillServer(server);
     persistPreparedGeneration(sessionsDatabase, recovering.id);
     persistTerminalRelease(sessionsDatabase, terminating.id);
 

@@ -2217,6 +2217,7 @@ dependencies = [
  "awaken-memory-store",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
+ "awaken-sandbox-fs",
  "fuser",
  "libc",
  "nix 0.29.0",

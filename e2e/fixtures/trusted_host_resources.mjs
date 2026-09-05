@@ -37,7 +37,7 @@ export async function installHostResourceFixture(root, temp, data, runtime) {
   return { ...process.env, PATH: [bin, process.env.PATH].join(path.delimiter) };
 }
 
-export async function verifyTrustedHostResources({ client, request, temp, runtime, restart }) {
+export async function verifyAgentResources({ client, request, temp, runtime, restart, nativeModel }) {
   // Cause/effect graph:
   // C1 API binds trusted_host version 1; C2 cwd={default,repo/src};
   // C3 File+Memory+Repository; C4 two Sessions share a MemoryStore and host
@@ -49,6 +49,11 @@ export async function verifyTrustedHostResources({ client, request, temp, runtim
   // R4 independent random File/Memory/Repo bytes + exact HEAD must ALL contribute
   // to the output; apply the exported patch to a fresh checkout as a separate
   // oracle. A static seed, guessed HEAD or string-shaped invalid patch fails.
+  // N1 Native reuses the SAME resources, receipt and independent output oracle.
+  // Its Bash Hand changes cwd explicitly: Native has no ACP session cwd option.
+  // This covers default/nested TOOL cwd, not an invented Native Agent setting.
+  const native = runtime === 'native';
+  assert.equal(native, typeof nativeModel === 'string', 'Native needs an explicit published model');
   const betas = ['managed-agents-2026-04-01'];
   const memoryHeaders = { 'anthropic-beta': 'agent-memory-2026-07-22' };
   const api = async (method, route, body, expected = 200) => {
@@ -57,14 +62,16 @@ export async function verifyTrustedHostResources({ client, request, temp, runtim
     return result.value;
   };
   await api('POST', '/v1/awaken/sandbox-execution-policies', {
-    id: 'resource-host', config: { isolation: 'workdir', host_access: 'trusted_host' },
+    id: 'resource-host', config: native
+      ? { isolation: 'namespace' }
+      : { isolation: 'workdir', host_access: 'trusted_host' },
   }, 201);
   const environment = await api('POST', '/v1/awaken/environments', {
     command_id: 'resource-host-create', name: 'Resource host',
     config: { type: 'self_hosted' }, sandbox_policy: { policy_id: 'resource-host', version: 1 },
   }, 201);
   assert.deepEqual(environment.sandbox_policy, { policy_id: 'resource-host', version: 1 });
-  await api('POST', '/v1/awaken/environments', {
+  if (!native) await api('POST', '/v1/awaken/environments', {
     command_id: 'reject-cloud-host', name: 'Rejected cloud',
     config: { type: 'cloud', networking: { type: 'unrestricted' }, packages: {} },
     sandbox_policy: { policy_id: 'resource-host', version: 1 },
@@ -99,12 +106,12 @@ export async function verifyTrustedHostResources({ client, request, temp, runtim
   for (const [name, cwd] of [['default', undefined], ['nested', 'repo/src']]) {
     const agent = `resource-${runtime}-${name}`;
     await api('PUT', `/v1/config/agents/${agent}`, {
-      name: agent, model: {
+      name: agent, model: native ? { id: nativeModel } : {
         mode: 'backend_default', backend_ref: `acp:${runtime}`,
         ...(cwd ? { configuration: { working_directory: cwd } } : {}),
       },
       system: 'Follow the resource mission exactly. Read resource instructions before file operations.',
-      tools: [],
+      tools: native ? [{ id: 'bash' }] : [],
     });
     await api('POST', `/v1/config/agents/${agent}/publish`);
     const marker = `RESOURCE_BYTES_${runtime}_${name}_${randomUUID()}`;
@@ -133,7 +140,8 @@ export async function verifyTrustedHostResources({ client, request, temp, runtim
     const receipt = await client.beta.sessions.events.send(session.id, {
       betas, events: [{ type: 'user.message', content: [{ type: 'text', text:
         `AWK_RESOURCE_MISSION\nAWK_RESULT=result-${name}\nAWK_ATTEMPT=${attempt}\nRead the uploaded File using its mounted path, seed.md in Memory, and README.md in the mounted Repository. Their exact bytes are independent secrets not supplied in this user message. Obtain the Repository HEAD using git rev-parse HEAD. Construct exactly five lines: File bytes, Memory seed bytes, Repository README bytes, the HEAD hash, and this message's AWK_ATTEMPT value, joined by LF with NO trailing newline. Write this combined text into result-${name}.md inside Memory, result-${name}.txt inside Repository, and result.txt inside the injected outputs directory. Run git add -N result-${name}.txt and save git diff -- result-${name}.txt into repository.patch in the outputs directory. Do not publish to the remote. Reply RESOURCE_OK followed by the File bytes, a space, and this message's AWK_ATTEMPT value. Use the injected paths relative to your current working directory.`
-        + (previous ? `\nAWK_PREVIOUS=${previous}\nBefore overwriting anything, verify that the existing Memory and Repository result files both still contain the same four resource lines followed by AWK_PREVIOUS. Stop with an error if either prior edit was lost during Worker replacement.` : ''),
+        + (previous ? `\nAWK_PREVIOUS=${previous}\nBefore overwriting anything, verify that the existing Memory and Repository result files both still contain the same four resource lines followed by AWK_PREVIOUS. Stop with an error if either prior edit was lost during Worker replacement.` : '')
+        + (native ? `\nAWK_TOOL_CWD=/workspace${name === 'nested' ? '/repo/src' : ''}` : ''),
       }] }],
     });
     const events = await allowManagedToolBoundaries({
@@ -191,5 +199,5 @@ export async function verifyTrustedHostResources({ client, request, temp, runtim
   assert.equal(git(['ls-tree', '-r', '--name-only', 'HEAD'], remote), 'README.md\nsrc/.keep');
   await restart();
   await waitForValue(content, complete, 'R3 actual Worker restart retains both writes', { timeoutMs: 20_000 });
-  console.log(`TRUSTED HOST RESOURCE PASS: ${runtime}, two cwd views, File/Memory/Repository, concurrent writeback, restart`);
+  console.log(`AGENT RESOURCE PASS: ${runtime}, ${native ? 'default/nested Native tool cwd' : 'two ACP cwd views'}, File/Memory/Repository, concurrent writeback, restart`);
 }

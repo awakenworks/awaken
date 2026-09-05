@@ -24,6 +24,71 @@ fn temporary_root() -> PathBuf {
     root
 }
 
+#[tokio::test]
+async fn unavailable_copy_root_is_not_evidence_of_memory_deletion() {
+    // Cause/effect table: C1 frozen nonempty Memory snapshot; C2 root is
+    // missing (M1) or replaced by a regular file (M2); C3 root restored (M3).
+    // M1/M2 => teardown fails, exact durable heads/history and evidence survive;
+    // M3 => retry uses those SAME bases and commits the retained local edit once.
+    // Rename preserves the test-owned tree: missing projection != user unlink.
+    for replacement_file in [false, true] {
+        let root = temporary_root();
+        let database = root.join("memory.sqlite");
+        let repository =
+            Arc::new(SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap());
+        let original = repository
+            .create("s", "/nested/note.md", "base")
+            .await
+            .unwrap();
+        let history = repository.list_versions("s").await.unwrap();
+        let mounter = MemoryStoreMounter::copy_only(repository.clone());
+        let projection = root.join("projection");
+        let retained = root.join("retained");
+        let mount = mounter
+            .mount("s", &projection, MountAccess::ReadWrite)
+            .await
+            .unwrap();
+        let evidence = mount.materialization_heads();
+        std::fs::write(projection.join("nested/note.md"), "local edit").unwrap();
+        std::fs::rename(&projection, &retained).unwrap();
+        if replacement_file {
+            std::fs::write(&projection, "not a directory").unwrap();
+        }
+        let failed = mount.teardown().await;
+        if replacement_file {
+            std::fs::remove_file(&projection).unwrap();
+        }
+        std::fs::rename(&retained, &projection).unwrap();
+        assert!(
+            failed.is_err(),
+            "M1/M2 incomplete scan must fail, got {failed:?}"
+        );
+        assert_eq!(
+            repository
+                .get_by_path("s", "/nested/note.md")
+                .await
+                .unwrap(),
+            Some(original)
+        );
+        assert_eq!(repository.list_versions("s").await.unwrap(), history);
+        assert_eq!(mount.materialization_heads(), evidence);
+        for _ in 0..2 {
+            mount.teardown().await.unwrap();
+            let head = repository
+                .get_by_path("s", "/nested/note.md")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(head.content.as_deref(), Some("local edit"));
+            assert_eq!(head.version, 2);
+        }
+        drop(mount);
+        drop(mounter);
+        drop(repository);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_copy_harvest_preserves_one_winner_and_retry_evidence() {
     // Cause/effect decision table (both mounts capture the SAME initial head):
@@ -142,6 +207,286 @@ async fn concurrent_copy_harvest_preserves_one_winner_and_retry_evidence() {
             drop(reopened);
             std::fs::remove_dir_all(root).unwrap();
         }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unsafe_copy_entries_fail_before_any_durable_mutation() {
+    // Scan decision table: S1 file symlink, S2 directory symlink, S3 cycle,
+    // S4 dangling link, S5 FIFO, S6 non-UTF-8 name, S7 literal backslash name,
+    // S8 a hard-linked external file (the shared exact walker rejects aliases).
+    // All: root exists + one valid dirty entry + unsafe entry => whole scan
+    // fails before ANY create/update/delete. Removing only the unsafe entry
+    // makes the same guard retryable. No permissions/root-user-dependent skip.
+    // These are static corrupt-tree cases, not proof against hostile TOCTOU.
+    use std::os::unix::{ffi::OsStringExt, fs::symlink};
+    for rule in 1..=8 {
+        let root = temporary_root();
+        let repository = Arc::new(
+            SqliteMemoryRepository::open(root.join("memory.sqlite").to_str().unwrap()).unwrap(),
+        );
+        let original = repository.create("s", "/a.md", "base").await.unwrap();
+        let history = repository.list_versions("s").await.unwrap();
+        let projection = root.join("projection");
+        let mounter = MemoryStoreMounter::copy_only(repository.clone());
+        let mount = mounter
+            .mount("s", &projection, MountAccess::ReadWrite)
+            .await
+            .unwrap();
+        std::fs::write(projection.join("a.md"), "dirty").unwrap();
+        let external = root.join("external");
+        std::fs::create_dir(&external).unwrap();
+        std::fs::write(external.join("secret.md"), "not a Memory resource").unwrap();
+        let invalid = match rule {
+            6 => projection.join(std::ffi::OsString::from_vec(vec![0xff])),
+            7 => projection.join("z\\alias.md"),
+            _ => projection.join("z"),
+        };
+        match rule {
+            1 => symlink(external.join("secret.md"), &invalid).unwrap(),
+            2 => symlink(&external, &invalid).unwrap(),
+            3 => symlink(&projection, &invalid).unwrap(),
+            4 => symlink(root.join("absent"), &invalid).unwrap(),
+            5 => nix::unistd::mkfifo(&invalid, nix::sys::stat::Mode::S_IRUSR).unwrap(),
+            8 => std::fs::hard_link(external.join("secret.md"), &invalid).unwrap(),
+            _ => std::fs::write(&invalid, "invalid path").unwrap(),
+        }
+        let result = mount.teardown().await;
+        std::fs::remove_file(&invalid).unwrap();
+        assert!(
+            result.is_err(),
+            "S{rule} must reject the entire scan: {result:?}"
+        );
+        assert_eq!(
+            repository.snapshot_heads("s").await.unwrap(),
+            vec![original]
+        );
+        assert_eq!(repository.list_versions("s").await.unwrap(), history);
+        assert_eq!(
+            std::fs::read_to_string(external.join("secret.md")).unwrap(),
+            "not a Memory resource"
+        );
+        mount.teardown().await.unwrap();
+        assert_eq!(
+            repository
+                .get_by_path("s", "/a.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .version,
+            2
+        );
+        drop(mount);
+        drop(mounter);
+        drop(repository);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn an_existing_empty_copy_is_an_intentional_delete_not_a_missing_tree() {
+    // D1: readable root + captured entry explicitly unlinked => conditional
+    // deletion succeeds; a retry is idempotent. Contrasts M1 missing ROOT.
+    let root = temporary_root();
+    let repository = Arc::new(
+        SqliteMemoryRepository::open(root.join("memory.sqlite").to_str().unwrap()).unwrap(),
+    );
+    repository.create("s", "/note.md", "base").await.unwrap();
+    let projection = root.join("projection");
+    let mounter = MemoryStoreMounter::copy_only(repository.clone());
+    let mount = mounter
+        .mount("s", &projection, MountAccess::ReadWrite)
+        .await
+        .unwrap();
+    std::fs::remove_file(projection.join("note.md")).unwrap();
+    mount.teardown().await.unwrap();
+    let history = repository.list_versions("s").await.unwrap();
+    mount.teardown().await.unwrap();
+    assert!(
+        repository
+            .get_by_path("s", "/note.md")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(repository.list_versions("s").await.unwrap(), history);
+    drop(mount);
+    drop(mounter);
+    drop(repository);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_junction_is_not_a_readable_memory_projection() {
+    // W1 root replaced by a junction; W2 nested junction alongside a valid
+    // dirty file. Both => reject before write-back, preserve store/history and
+    // external bytes. Restoring only the link => same guard commits once.
+    // Directory junctions exercise Windows reparse points without requiring
+    // symlink privileges/Developer Mode. Missing capability FAILS, never skips.
+    for root_link in [false, true] {
+        let root = temporary_root();
+        let repository = Arc::new(
+            SqliteMemoryRepository::open(root.join("memory.sqlite").to_str().unwrap()).unwrap(),
+        );
+        let original = repository.create("s", "/a.md", "base").await.unwrap();
+        let history = repository.list_versions("s").await.unwrap();
+        let mounter = MemoryStoreMounter::copy_only(repository.clone());
+        let projection = root.join("projection");
+        let retained = root.join("retained");
+        let external = root.join("external directory");
+        std::fs::create_dir(&external).unwrap();
+        std::fs::write(external.join("secret.md"), "external bytes").unwrap();
+        let mount = mounter
+            .mount("s", &projection, MountAccess::ReadWrite)
+            .await
+            .unwrap();
+        std::fs::write(projection.join("a.md"), "dirty").unwrap();
+        let junction = if root_link {
+            std::fs::rename(&projection, &retained).unwrap();
+            projection.clone()
+        } else {
+            projection.join("junction")
+        };
+        let created = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&external)
+            .output()
+            .unwrap();
+        assert!(
+            created.status.success(),
+            "junction fixture: {}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+        let result = mount.teardown().await;
+        // Remove the junction itself, never recursively delete its target.
+        std::fs::remove_dir(&junction).unwrap();
+        if root_link {
+            std::fs::rename(&retained, &projection).unwrap();
+        }
+        assert!(result.is_err(), "W1/W2 incomplete projection must fail");
+        assert_eq!(
+            repository.snapshot_heads("s").await.unwrap(),
+            vec![original]
+        );
+        assert_eq!(repository.list_versions("s").await.unwrap(), history);
+        assert_eq!(
+            std::fs::read_to_string(external.join("secret.md")).unwrap(),
+            "external bytes"
+        );
+        mount.teardown().await.unwrap();
+        assert_eq!(
+            repository
+                .get_by_path("s", "/a.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .version,
+            2
+        );
+        drop(mount);
+        drop(mounter);
+        drop(repository);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
+    // Cause/effect table: complete scan + a.md valid update + z.md failure.
+    // P1 z.md stale CAS => a.md commits, teardown fails, z.md retains durable
+    // truth (NO cross-file transaction). P2 z.md exceeds the content limit =>
+    // preflight fails with NO writes; repairing z.md permits one a.md commit.
+    // P3 retry + SQLite reopen + original evidence =>
+    // a.md remains exactly the same version/metadata, z.md still fails; repair
+    // only z.md to its durable content => recovery converges without rebasing.
+    for oversized in [false, true] {
+        let root = temporary_root();
+        let database = root.join("memory.sqlite");
+        let repository =
+            Arc::new(SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap());
+        repository.create("s", "/a.md", "a-base").await.unwrap();
+        let z_base = repository.create("s", "/z.md", "z-base").await.unwrap();
+        let projection = root.join("projection");
+        let mounter = MemoryStoreMounter::copy_only(repository.clone());
+        let mount = mounter
+            .mount("s", &projection, MountAccess::ReadWrite)
+            .await
+            .unwrap();
+        let evidence = MemoryMaterializationEvidence::new(
+            "s",
+            "/workspace/memory",
+            mount.materialization_heads().unwrap(),
+        )
+        .unwrap();
+        let z_local = if oversized {
+            "x".repeat(awaken_memory_store::MAX_MEMORY_BYTES + 1)
+        } else {
+            "z-stale".into()
+        };
+        let z_durable = if oversized {
+            z_base
+        } else {
+            repository
+                .update("s", &z_base.id, "z-winner", &z_base.content_sha256)
+                .await
+                .unwrap()
+        };
+        std::fs::write(projection.join("a.md"), "a-committed").unwrap();
+        std::fs::write(projection.join("z.md"), &z_local).unwrap();
+        let before = repository.snapshot_heads("s").await.unwrap();
+        assert!(mount.teardown().await.is_err());
+        if oversized {
+            assert_eq!(
+                repository.snapshot_heads("s").await.unwrap(),
+                before,
+                "P2 no write before complete valid scan"
+            );
+            std::fs::write(projection.join("z.md"), "z-base").unwrap();
+            mount.teardown().await.unwrap();
+            std::fs::write(projection.join("z.md"), &z_local).unwrap();
+        }
+        let a_durable = repository.get_by_path("s", "/a.md").await.unwrap().unwrap();
+        assert_eq!(a_durable.content.as_deref(), Some("a-committed"));
+        assert_eq!(a_durable.version, 2);
+        let history = repository.list_versions("s").await.unwrap();
+        assert!(mount.teardown().await.is_err());
+        drop(mount);
+        drop(mounter);
+        drop(repository);
+        let repository =
+            Arc::new(SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap());
+        let mounter = MemoryStoreMounter::copy_only(repository.clone());
+        let mut files = vec![
+            ("a.md".into(), b"a-committed".to_vec()),
+            ("z.md".into(), z_local.into_bytes()),
+        ];
+        assert!(
+            mounter
+                .reconcile_recovered_copy("s", &evidence, &files, MountAccess::ReadWrite)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            repository.get_by_path("s", "/a.md").await.unwrap(),
+            Some(a_durable)
+        );
+        assert_eq!(
+            repository.get_by_path("s", "/z.md").await.unwrap(),
+            Some(z_durable.clone())
+        );
+        assert_eq!(repository.list_versions("s").await.unwrap(), history);
+        files[1].1 = z_durable.content.unwrap().into_bytes();
+        mounter
+            .reconcile_recovered_copy("s", &evidence, &files, MountAccess::ReadWrite)
+            .await
+            .unwrap();
+        assert_eq!(repository.list_versions("s").await.unwrap(), history);
+        drop(mounter);
+        drop(repository);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 

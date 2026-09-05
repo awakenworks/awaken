@@ -14,6 +14,7 @@
 // `awaken-server` model reading the neutral request.
 
 import http from 'node:http';
+import path from 'node:path';
 import { closeHttpServer } from '../http_server.mjs';
 
 const FIXTURE_PORT_FIRST = 30_000;
@@ -437,6 +438,63 @@ export const BEHAVIORS = {
   // GitRepoModel: read the seed file, write a new file, then finish (sequenced off
   // the tool-result count).
   gitRepo(parsed) {
+    const readinessMarker = /CODEX-ACP-READY-\d+/u.exec(lastUserText(parsed))?.[0];
+    if (readinessMarker) return text(readinessMarker);
+    if (lastUserText(parsed).includes('AWK_RESOURCE_MISSION')) {
+      // N1: frozen default/custom path prompts + default/nested tool cwd =>
+      // actual Bash Hand reads all resources and exports one independently
+      // checked patch. Never read fixture-side host files or embed seed bytes.
+      const results = currentRunToolResults(parsed);
+      if (results.length) {
+        const result = results.at(-1);
+        if (result.is_error) throw new Error('Native resource mission tool failed');
+        return text(toolResultText(result));
+      }
+      const instructions = systemText(parsed);
+      const mission = lastUserText(parsed);
+      const field = (name, input = mission) => {
+        const value = new RegExp(`^AWK_${name}=(.+)$`, 'mu').exec(input)?.[1];
+        if (!value) throw new Error(`missing Native resource field ${name}`);
+        return value;
+      };
+      const cwd = field('TOOL_CWD');
+      const quoted = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+      const relative = (logical) => {
+        if (!logical?.startsWith('/') || logical.includes('{{awaken.')) {
+          throw new Error('Native resource path must be rendered sandbox-absolute');
+        }
+        return quoted(path.posix.relative(cwd, logical) || '.');
+      };
+      const file = relative(/A file is mounted read-only at `([^`]+)`/u.exec(instructions)?.[1]);
+      const repository = relative(/A git repository is checked out at `([^`]+)`/u.exec(instructions)?.[1]);
+      const memory = relative(field('MEMORY', instructions));
+      const outputs = relative(field('OUTPUTS', instructions));
+      const workspace = relative(field('WORKSPACE', instructions));
+      const result = quoted(field('RESULT'));
+      const attempt = quoted(field('ATTEMPT'));
+      const previous = /^AWK_PREVIOUS=(.+)$/mu.exec(mission)?.[1];
+      return tool(`resources-${field('ATTEMPT')}`, 'bash', { command: [
+        'set -eu',
+        `cd ${quoted(cwd)}`,
+        `test "$PWD" = ${quoted(cwd)}`,
+        `test -d ${workspace}`,
+        `file=${file}; repository=${repository}; memory=${memory}; outputs=${outputs}; result=${result}; attempt=${attempt}`,
+        'file_bytes=$(cat "$file"); memory_bytes=$(cat "$memory/seed.md"); repo_bytes=$(cat "$repository/README.md"); head=$(git -C "$repository" rev-parse HEAD)',
+        'combined=$(printf "%s\\n%s\\n%s\\n%s\\n%s" "$file_bytes" "$memory_bytes" "$repo_bytes" "$head" "$attempt")',
+        ...(previous ? [
+          `prior=$(printf "%s\\n%s\\n%s\\n%s\\n%s" "$file_bytes" "$memory_bytes" "$repo_bytes" "$head" ${quoted(previous)})`,
+          'test "$(cat "$memory/$result.md")" = "$prior"',
+          'test "$(cat "$repository/$result.txt")" = "$prior"',
+        ] : []),
+        'mkdir -p "$outputs"',
+        'printf "%s" "$combined" > "$memory/$result.md"',
+        'printf "%s" "$combined" > "$repository/$result.txt"',
+        'printf "%s" "$combined" > "$outputs/result.txt"',
+        'git -C "$repository" add -N "$result.txt"',
+        'git -C "$repository" diff -- "$result.txt" > "$outputs/repository.patch"',
+        'printf "RESOURCE_OK %s %s" "$file_bytes" "$attempt"',
+      ].join('\n') });
+    }
     switch (toolResults(parsed).length) {
       case 0: return tool('r', 'read', { path: '/workspace/repo/README.md' });
       case 1: return tool('w', 'write', { path: '/workspace/repo/NEW.txt', content: 'AGENT_REPO_MARKER_3390' });

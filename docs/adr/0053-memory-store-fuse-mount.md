@@ -233,6 +233,24 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   heads win and are reported; paths created after materialization are never deleted
   as locally absent. Both realizations back the one durable `MemoryRepository`, so a store is
   portable across FUSE-capable and FUSE-less hosts.
+- **Complete-scan prerequisite for copy write-back.** The one `copy::harvest`
+  first enumerates and reads the whole quiescent projection through
+  `awaken-sandbox-fs::read_tree_nofollow_bounded`, reusing its descriptor walker
+  on Linux/macOS and its explicitly quiescent-path adapter on Windows. Memory
+  owns logical-path validation and Repository mutations, not a second walker.
+  Missing roots, directory/read failures, links or Windows reparse points, special files,
+  invalid names and over-limit content fail before Repository mutations. A
+  readable empty root is distinct: explicit unlink may conditionally delete
+  captured heads. Binary files within the size limit retain presence but are
+  not published as text. File reads are bounded by the existing Memory content
+  limit, and the total captured bytes cannot exceed the existing maximum heads
+  per store multiplied by that content limit. Successful preflight is not a
+  multi-file transaction: a later CAS conflict can leave earlier independent
+  files committed; exact retry and
+  recovery retain those versions and the original bases. The caller must stop
+  writers before scanning; Windows rejects static reparse points but does not
+  provide Unix descriptor identity fencing. This is not an atomic snapshot or
+  confinement of a malicious TrustedHost process.
 - **Workdir tier first, then the namespace splice.** The Workdir `LocalProvider`
   realizes the FUSE mount at the sandbox path with **no mount-namespace splice**
   (directly visible to rooted tools); this is the first integration target. The
