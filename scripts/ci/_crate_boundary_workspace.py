@@ -422,6 +422,92 @@ def production_rust(source: str) -> str:
     return rust_without_comments("".join(projected))
 
 
+def production_module_files(manifests: Iterable[Path]) -> set[Path]:
+    """Structural module reachability from Cargo library/binary roots.
+
+    Reuses the production lexer: test-only branches do not connect evidence,
+    while feature/platform branches are a conservative union, not proof that a
+    particular release configuration executes them. Compiler checks still own
+    cfg resolution, macro expansion and generated OUT_DIR code.
+    """
+    reachable: set[Path] = set()
+    visited: set[tuple[Path, Path]] = set()
+
+    def visit(path: Path, module_dir: Path | None = None) -> None:
+        path = path.resolve()
+        if not path.is_file():
+            return
+        if module_dir is None:
+            module_dir = path.parent if path.name in {"lib.rs", "main.rs", "mod.rs"} else path.with_suffix("")
+        key = (path, module_dir)
+        if key in visited:
+            return
+        visited.add(key)
+        reachable.add(path)
+        source = production_rust(path.read_text(encoding="utf-8"))
+        scan(source, path, module_dir, path.parent)
+
+    def scan(source: str, path: Path, module_dir: Path, path_dir: Path) -> None:
+        syntax = rust_syntax(source)
+        declaration = re.compile(
+            r"(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?"
+            r"\bmod\s+([A-Za-z_][A-Za-z0-9_]*)\s*([;{])"
+            r"|\binclude!\s*\("
+        )
+        cursor = 0
+        while match := declaration.search(syntax, cursor):
+            cursor = match.end()
+            if match.group(1) is None:
+                end = _balanced_end(syntax, cursor - 1, "(", ")")
+                if end is None:
+                    continue
+                argument = source[cursor:end - 1].strip()
+                if re.fullmatch(r'"[^"\\]+"', argument):
+                    visit(path.parent / argument[1:-1], module_dir)
+                cursor = end
+                continue
+            name, delimiter = match.group(1, 2)
+            attributes = source[match.start():match.end()]
+            explicit = re.search(r'#\[\s*path\s*=\s*"([^"]+)"\s*\]', attributes)
+            if delimiter == "{":
+                end = _balanced_end(syntax, cursor - 1, "{", "}")
+                if end is not None:
+                    child_dir = path_dir / explicit.group(1) if explicit else module_dir / name
+                    scan(source[cursor:end - 1], path, child_dir, child_dir)
+                    cursor = end
+            elif explicit:
+                visit(path_dir / explicit.group(1))
+            else:
+                for child in (module_dir / (name + ".rs"), module_dir / name / "mod.rs"):
+                    visit(child)
+
+    for manifest_path in manifests:
+        manifest = load_manifest(manifest_path)
+        root = manifest_path.parent
+        package = manifest.get("package", {})
+        library = manifest.get("lib", {})
+        if "lib" in manifest or (package.get("autolib", True) and (root / "src/lib.rs").is_file()):
+            library_path = root / library.get("path", "src/lib.rs")
+            visit(library_path, library_path.parent)
+        for binary in manifest.get("bin", []):
+            if "path" in binary:
+                binary_path = root / binary["path"]
+                visit(binary_path, binary_path.parent)
+            elif name := binary.get("name"):
+                paths = [root / "src/bin" / (name + ".rs"), root / "src/bin" / name / "main.rs"]
+                if name == package.get("name"):
+                    paths.append(root / "src/main.rs")
+                for binary_path in paths:
+                    visit(binary_path, binary_path.parent)
+        if package.get("autobins", True):
+            visit(root / "src/main.rs", root / "src")
+            for binary_path in (root / "src/bin").glob("*.rs"):
+                visit(binary_path, binary_path.parent)
+            for binary_path in (root / "src/bin").glob("*/main.rs"):
+                visit(binary_path, binary_path.parent)
+    return reachable
+
+
 def normal_dependency_names(manifest: dict) -> set[str]:
     """Normal + build deps only; tests/examples are composition roots."""
     deps: set[str] = set()

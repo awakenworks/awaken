@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 serde_json = "1"
 awaken-agent-contract = { path = "../crates/contract/awaken-agent-contract" }
 awaken-mcp-wire = { path = "../crates/runtime/awaken-mcp-wire" }
+awaken-runtime-contract = { path = "../crates/contract/awaken-runtime-contract" }
 
 [[bin]]
 name = "sse_chunks"
@@ -23,6 +24,13 @@ bench = false
 [[bin]]
 name = "thread_commit_wire"
 path = "fuzz_targets/thread_commit_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tool_batch_transitions"
+path = "fuzz_targets/tool_batch_transitions.rs"
 test = false
 doc = false
 bench = false

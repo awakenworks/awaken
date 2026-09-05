@@ -20,7 +20,7 @@ esac
 # cleanup on both success and failure.
 cleanup_mutation_artifacts() {
   cargo clean -p awaken-mcp-wire >/dev/null 2>&1 || true
-  rm -rf -- mutants.out mutants.out.old
+  cargo clean -p awaken-runtime-contract >/dev/null 2>&1 || true
 }
 cleanup_mutation_artifacts
 python3 scripts/ci/check_reliability.py
@@ -63,6 +63,7 @@ fi
 fuzz_seconds="${AWAKEN_FUZZ_SECONDS:-15}"
 (cd fuzz && cargo +nightly fuzz run sse_chunks -- -max_total_time="$fuzz_seconds")
 (cd fuzz && cargo +nightly fuzz run thread_commit_wire -- -max_total_time="$fuzz_seconds")
+(cd fuzz && cargo +nightly fuzz run tool_batch_transitions -- -max_total_time="$fuzz_seconds")
 cargo +nightly miri test -p awaken-mcp-wire --lib
 sanitizer_target="$(rustc +nightly -vV | sed -n 's/^host: //p')"
 RUSTFLAGS="-Zsanitizer=address" cargo +nightly test -p awaken-mcp-wire --lib \
@@ -70,8 +71,15 @@ RUSTFLAGS="-Zsanitizer=address" cargo +nightly test -p awaken-mcp-wire --lib \
 RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -p awaken-reliability-testkit --lib \
   --target "$sanitizer_target" -Zbuild-std
 trap cleanup_mutation_artifacts EXIT
+mutation_evidence="${AWAKEN_RELIABILITY_EVIDENCE_DIR:-$CARGO_TARGET_DIR/reliability}"
 cargo mutants --package awaken-mcp-wire \
+  --output "$mutation_evidence/sse" \
   --file crates/runtime/awaken-mcp-wire/src/sse.rs --timeout 30 --no-times -- sse::tests
+cargo mutants --package awaken-runtime-contract \
+  --output "$mutation_evidence/tool-batch" \
+  --file crates/contract/awaken-runtime-contract/src/tool_batch.rs \
+  --re 'permits_call_transition|next_execution_attempt' \
+  --timeout 30 --no-times -- tool_batch::tests
 cleanup_mutation_artifacts
 trap - EXIT
 

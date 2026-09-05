@@ -70,7 +70,8 @@ REQUIRED_RELEASE_COMMANDS = (
     "scripts/e2e/k8s_container_e2e.sh",
     "AWAKEN_K3D_REQUIRED=1 e2e/k3d/distributed_control_e2e.sh",
     "AWAKEN_K3D_REQUIRED=1 e2e/k3d/nats_wake_e2e.sh 12",
-    "npm --prefix e2e run test:deterministic",
+    "scripts/ci/e2e-coverage.sh",
+    'run frontend "browser-e2e" pnpm -C web test:e2e',
     "npm --prefix e2e run test:sdk-latest-canary",
     "sandbox_capability_suite.sh --require-substrates",
 )
@@ -273,6 +274,12 @@ def orchestration_errors(
             continue
         if "run test:deterministic" not in text:
             errors.append(f"{relative} does not delegate to test:deterministic")
+        if (
+            'IGNORE="$(python3 scripts/ci/check_changed_e2e_line_coverage.py --print-ignore-filename-regex)"'
+            not in text
+            or len(re.findall(r"^IGNORE=", text, re.MULTILINE)) != 1
+        ):
+            errors.append(f"{relative} does not consume the canonical coverage scope exactly once")
         if not re.search(
             r"^source scripts/ci/_provider_environment\.sh$", text, re.MULTILINE
         ) or not re.search(r"^awaken_unset_ambient_api_keys$", text, re.MULTILINE):
@@ -292,6 +299,8 @@ def release_gate_errors(check_all: str, public_api: str, check_rust: str) -> lis
         for command in REQUIRED_RELEASE_COMMANDS
         if command not in check_all
     ]
+    if "npm --prefix e2e run test:deterministic" in check_all:
+        errors.append("check-all duplicates deterministic E2E already owned by its coverage runner")
     if re.search(r'^excluded="[^"\n]+"', public_api, re.MULTILINE):
         errors.append("public API gate still excludes workspace crates")
     if 'readonly PUBLIC_API_TOOL_VERSION="0.52.0"' not in public_api:
@@ -348,8 +357,24 @@ def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
     for marker in required_quality:
         if marker not in quality:
             errors.append(f"quality workflow does not require: {marker}")
-    if quality.count("run: scripts/ci/check-all.sh") != 1:
-        errors.append("quality workflow must invoke the canonical full gate exactly once")
+    full_job = re.search(r"^  full_quality:\n(?:(?!^  \S).|\n)*", quality, re.MULTILINE)
+    gate_step = re.search(
+        r"^      - name: Run the one complete repository gate\n"
+        r"(?:(?!^      - ).|\n)*",
+        full_job.group(0) if full_job else "",
+        re.MULTILINE,
+    )
+    if (
+        quality.count("run: scripts/ci/check-all.sh") != 1
+        or not gate_step
+        or not re.search(r"^        run: scripts/ci/check-all\.sh$", gate_step.group(0), re.MULTILINE)
+    ):
+        errors.append("quality workflow must invoke the exact canonical full gate once")
+    if (
+        full_job and re.search(r"^    if:", full_job.group(0), re.MULTILINE)
+        or gate_step and re.search(r"^        if:", gate_step.group(0), re.MULTILINE)
+    ):
+        errors.append("quality workflow may not conditionally skip the full gate")
     if "check-all.sh --group" in quality or "check-rust.sh --full" in quality:
         errors.append("quality workflow contains a partial or parallel test manifest")
     if "continue-on-error:" in quality:
@@ -539,6 +564,18 @@ def self_test() -> None:
         }
     ), "P3 dynamic calls cannot merge into one false fixed-port match"
 
+    # Scope rules S1: both runners consume the same denominator; S2: a local
+    # regex or override creates a competing authority and must be rejected.
+    for runner in SECONDARY_RUNNERS:
+        drifted = dict(runners)
+        drifted[runner] += "\nIGNORE='awaken-store-postgres/'\n"
+        assert any(
+            "canonical coverage scope" in error
+            for error in orchestration_errors(
+                scripts, deterministic_suites, stage_text, files, drifted
+            )
+        ), f"S2 duplicate scope in {runner}"
+
     # Deterministic-environment rule: C10=the package entry crosses the one
     # provider-environment sanitizer before Node starts; E10=every expanded leaf
     # receives one already-sanitized environment snapshot. R11 C10=>E10;
@@ -713,6 +750,17 @@ def self_test() -> None:
     public_api = (ROOT / "scripts/ci/check_public_api.sh").read_text(encoding="utf-8")
     check_rust = (ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8")
     assert not release_gate_errors(check_all, public_api, check_rust), "R1/C6"
+    # C11 coverage invokes the canonical deterministic suite once; C12 the
+    # browser suite executes at the frontend boundary. Effects: duplicates or
+    # omission reject the graph (R16/R17), rather than silently losing evidence.
+    assert release_gate_errors(
+        check_all + '\nrun e2e "duplicate" npm --prefix e2e run test:deterministic\n',
+        public_api, check_rust,
+    ), "R16 duplicate deterministic run"
+    assert release_gate_errors(
+        check_all.replace('run frontend "browser-e2e" pnpm -C web test:e2e', ""),
+        public_api, check_rust,
+    ), "R17 missing browser"
     assert release_gate_errors(
         check_all.replace("pg_tests.sh --require-docker", "pg_tests.sh"),
         public_api,
@@ -769,6 +817,8 @@ def self_test() -> None:
     # graph only when C14-C18 all hold; otherwise E15 reject false-green,
     # partial, duplicate, or untraceable execution. Rules W1 all=>E14; W2
     # missing any cause=>E15; W3 a second workflow invokes check-all=>E15.
+    # C19 job/step conditions and shell suffixes can hide execution failures;
+    # W4 either conditional skip or a modified command => E15, never acceptance.
     workflows = {
         path.relative_to(ROOT).as_posix(): path.read_text(encoding="utf-8")
         for path in (ROOT / ".github" / "workflows").glob("*.yml")
@@ -781,6 +831,9 @@ def self_test() -> None:
         quality.replace("pull_request:", "pull_request_removed:", 1),
         quality.replace("if: always()", "if: success()", 1),
         quality.replace("awaken-full-gate", "generic-runner", 1),
+        quality.replace("run: scripts/ci/check-all.sh", "run: scripts/ci/check-all.sh || true", 1),
+        quality.replace("run: scripts/ci/check-all.sh", "if: false\n        run: scripts/ci/check-all.sh", 1),
+        quality.replace("  full_quality:", "  full_quality:\n    if: false", 1),
     )
     for rule, mutated in enumerate(workflow_mutations, 2):
         changed = dict(workflows)

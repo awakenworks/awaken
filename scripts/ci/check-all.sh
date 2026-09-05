@@ -83,6 +83,8 @@ run static "dependency-sources self-test" python3 scripts/ci/check_dependency_so
 run static "authority-arithmetic self-test" python3 scripts/ci/check_authority_arithmetic.py --self-test
 run static "test-orchestration self-test" python3 scripts/ci/check_test_orchestration.py --self-test
 run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
+run static "coverage checker tests" python3 scripts/ci/test_changed_e2e_line_coverage.py
+run static "LCOV export tests" python3 scripts/ci/test_export_homogeneous_lcov.py
 run static "provider-environment self-test" scripts/ci/_provider_environment.sh --self-test
 run static "e2e runner unit" npm --prefix e2e run test:runner
 run static "postgres harness self-test" scripts/ci/pg_tests.sh --self-test
@@ -118,7 +120,8 @@ run kubernetes "kubernetes-container" scripts/e2e/k8s_container_e2e.sh
 run k3d "distributed-k3d" env AWAKEN_K3D_REQUIRED=1 e2e/k3d/distributed_control_e2e.sh
 run k3d "nats-wake-k3d" env AWAKEN_K3D_REQUIRED=1 e2e/k3d/nats_wake_e2e.sh 12
 run frontend "frontend" scripts/ci/check-frontend.sh --full
-run e2e "deterministic-e2e" npm --prefix e2e run test:deterministic
+run frontend "browser-e2e" pnpm -C web test:e2e
+run e2e "deterministic-e2e" scripts/ci/e2e-coverage.sh
 run e2e "latest-managed-sdk" npm --prefix e2e run test:sdk-latest-canary
 run sandbox "sandbox-capabilities" scripts/e2e/sandbox_capability_suite.sh --require-substrates
 

@@ -1,5 +1,8 @@
 version = 1
 
+# One served-process exclusion policy for E2E and combined reports.
+ignore_filename_regex = '''(awaken-store-conformance|awaken-runtime-examples|awaken-eval|awaken-scenario-host)/|awaken-dispatch/src/memory\.rs|awaken-config-resolver/src/reference_stores\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-protocol-acp/src/(error|real_acp)\.rs|awaken-protocol-managed/src/test_support\.rs|awaken-coordinator/src/models\.rs'''
+
 # Audited zero-hit changed executable lines only. The checker counts a selected
 # line only while its LCOV counter is zero, rejects stale entries, and caps this
 # ledger at 15% of changed executable lines.
