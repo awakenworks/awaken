@@ -21,40 +21,80 @@ const RESOURCE_PROMPT_VARIABLES: &[&str] = &[
 /// deliberately strips the provider-private host root, so a trusted local ACP
 /// process receives a usable path without leaking the operator's absolute path
 /// into a potentially remote model request.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) enum AgentPathView {
     #[default]
     SandboxAbsolute,
-    WorkdirRelative,
+    WorkdirRelative {
+        logical_cwd: String,
+    },
 }
 
 impl AgentPathView {
-    fn render(self, logical: &str) -> String {
+    pub(crate) fn sandbox_absolute() -> Self {
+        Self::SandboxAbsolute
+    }
+
+    pub(crate) fn workdir_relative(logical_cwd: impl Into<String>) -> Self {
+        Self::WorkdirRelative {
+            logical_cwd: logical_cwd.into(),
+        }
+    }
+
+    fn render(&self, logical: &str) -> String {
         self.render_with_separator(logical, std::path::MAIN_SEPARATOR)
     }
 
-    fn render_with_separator(self, logical: &str, separator: char) -> String {
+    fn render_with_separator(&self, logical: &str, separator: char) -> String {
         match self {
             Self::SandboxAbsolute => logical.to_string(),
-            Self::WorkdirRelative => {
-                let relative = logical.trim_start_matches('/');
-                if separator == '/' {
-                    relative.to_string()
-                } else {
-                    relative.replace('/', &separator.to_string())
-                }
+            Self::WorkdirRelative { logical_cwd } => {
+                relative_logical_path(logical_cwd, logical, separator)
             }
         }
     }
 
-    fn workspace(self) -> String {
+    fn workspace(&self) -> String {
         match self {
             Self::SandboxAbsolute => awaken_provisioning_contract::WorkspaceLayout::ROOT.into(),
-            // Workdir ACP and Native Hand use the provider root as their cwd.
-            // The private host prefix must not enter a model-visible prompt.
-            Self::WorkdirRelative => ".".into(),
+            Self::WorkdirRelative { logical_cwd } => relative_logical_path(
+                logical_cwd,
+                awaken_provisioning_contract::WorkspaceLayout::ROOT,
+                std::path::MAIN_SEPARATOR,
+            ),
         }
     }
+}
+
+/// Compute a portable relative path between two already-validated logical
+/// sandbox paths. This never observes a provider-private host prefix.
+fn relative_logical_path(from: &str, to: &str, separator: char) -> String {
+    let from = from
+        .trim_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let to = to
+        .trim_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let common = from
+        .iter()
+        .zip(&to)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut result = std::iter::repeat_n("..", from.len() - common)
+        .chain(to[common..].iter().copied())
+        .collect::<Vec<_>>()
+        .join("/");
+    if result.is_empty() {
+        result.push('.');
+    }
+    if separator != '/' {
+        result = result.replace('/', &separator.to_string());
+    }
+    result
 }
 
 #[cfg(test)]
@@ -93,7 +133,7 @@ mod resource_prompt_tests {
         .expect("known template");
         let absolute = projection.render(
             crate::session_slot::ManagedContentDelivery::ManagedFilesystem,
-            AgentPathView::SandboxAbsolute,
+            AgentPathView::sandbox_absolute(),
         );
         assert!(
             absolute.contains("path=/mnt/session/uploads/brief.md"),
@@ -102,17 +142,17 @@ mod resource_prompt_tests {
         assert!(absolute.contains("workspace=/workspace"), "R1");
         assert!(absolute.contains("outputs=/mnt/session/outputs"), "R1");
 
-        let posix_path = AgentPathView::WorkdirRelative
+        let posix_path = AgentPathView::workdir_relative("/workspace")
             .render_with_separator("/mnt/session/uploads/brief.md", '/');
-        let windows_path = AgentPathView::WorkdirRelative
+        let windows_path = AgentPathView::workdir_relative("/workspace")
             .render_with_separator("/mnt/session/uploads/brief.md", '\\');
-        assert_eq!(posix_path, "mnt/session/uploads/brief.md", "R2");
-        assert_eq!(windows_path, "mnt\\session\\uploads\\brief.md", "R3");
+        assert_eq!(posix_path, "../mnt/session/uploads/brief.md", "R2");
+        assert_eq!(windows_path, "..\\mnt\\session\\uploads\\brief.md", "R3");
         assert!(!posix_path.starts_with('/'), "R2 E2");
         assert!(!windows_path.contains(":"), "R3 E2");
         let relative = projection.render(
             crate::session_slot::ManagedContentDelivery::ManagedFilesystem,
-            AgentPathView::WorkdirRelative,
+            AgentPathView::workdir_relative("/workspace"),
         );
         assert!(relative.contains("workspace=."), "R2 working directory");
 
@@ -125,6 +165,53 @@ mod resource_prompt_tests {
                 "{rule}"
             );
         }
+    }
+
+    #[test]
+    fn workdir_prompt_paths_follow_the_effective_nested_cwd_cross_platform() {
+        // Cause/effect graph: C1 cwd={workspace, workspace/repo/src};
+        // C2 target={workspace, repository, File, Memory, outputs};
+        // C3 separator={POSIX, Windows}. E1 every rendered path resolves from
+        // the same logical cwd; E2 common prefixes are removed; E3 no host
+        // drive/root enters model-visible text. Constraints: the authored cwd
+        // is validated upstream and all targets are WorkspaceLayout-owned.
+        // Decision rules: P1 workspace=>workspace-relative; P2 nested+ancestor=>`..`;
+        // P3 nested+sibling-root=>common-prefix traversal; P4 Windows=>the same
+        // components with `\\`; all rules require E3.
+        let nested = AgentPathView::workdir_relative("/workspace/repo/src");
+        for (target, posix, windows) in [
+            ("/workspace", "../..", "..\\.."),
+            ("/workspace/repo", "..", ".."),
+            ("/workspace/repo/README.md", "../README.md", "..\\README.md"),
+            (
+                "/mnt/session/uploads/brief.md",
+                "../../../mnt/session/uploads/brief.md",
+                "..\\..\\..\\mnt\\session\\uploads\\brief.md",
+            ),
+            (
+                "/mnt/memory/team",
+                "../../../mnt/memory/team",
+                "..\\..\\..\\mnt\\memory\\team",
+            ),
+            (
+                "/mnt/session/outputs",
+                "../../../mnt/session/outputs",
+                "..\\..\\..\\mnt\\session\\outputs",
+            ),
+        ] {
+            assert_eq!(nested.render_with_separator(target, '/'), posix, "P2/P3");
+            let rendered = nested.render_with_separator(target, '\\');
+            assert_eq!(rendered, windows, "P4");
+            assert!(!rendered.contains(':') && !rendered.starts_with('\\'), "E3");
+        }
+        assert_eq!(nested.workspace(), "../..", "P2 workspace variable");
+        let workspace = AgentPathView::workdir_relative("/workspace");
+        assert_eq!(workspace.workspace(), ".", "P1 workspace variable");
+        assert_eq!(
+            workspace.render_with_separator("/mnt/memory/team", '/'),
+            "../mnt/memory/team",
+            "P1 sibling mount"
+        );
     }
 
     #[test]
@@ -222,7 +309,7 @@ mod resource_prompt_tests {
             .unwrap()
             .render(
                 crate::session_slot::ManagedContentDelivery::ManagedFilesystem,
-                AgentPathView::WorkdirRelative,
+                AgentPathView::workdir_relative("/workspace"),
             );
         assert!(file.contains("mnt/session/uploads/brief.md"), "E1 file");
         let memory_files =
@@ -230,7 +317,7 @@ mod resource_prompt_tests {
                 .unwrap()
                 .render(
                     crate::session_slot::ManagedContentDelivery::ManagedFilesystem,
-                    AgentPathView::SandboxAbsolute,
+                    AgentPathView::sandbox_absolute(),
                 );
         assert!(memory_files.contains("/mnt/memory"), "E2");
         assert!(memory_files.contains("read-only"), "E4");
@@ -239,7 +326,7 @@ mod resource_prompt_tests {
                 .unwrap()
                 .render(
                     crate::session_slot::ManagedContentDelivery::SemanticTools,
-                    AgentPathView::SandboxAbsolute,
+                    AgentPathView::sandbox_absolute(),
                 );
         assert!(!memory_tools.contains("/mnt/memory"), "E3");
         assert!(memory_tools.contains("binding: \"memory\""), "E3");
@@ -248,7 +335,7 @@ mod resource_prompt_tests {
             .unwrap()
             .render(
                 crate::session_slot::ManagedContentDelivery::ManagedFilesystem,
-                AgentPathView::SandboxAbsolute,
+                AgentPathView::sandbox_absolute(),
             );
         assert!(repository.contains("/workspace/repo"), "E1 repository");
         assert!(repository.contains("commit"), "E4");

@@ -213,16 +213,15 @@ threads. The single-writer + SQLite elegance is preserved **inside** each cell �
 
 ### Subprocess env (the awaken way)
 
-awaken's ACP subprocess `env_clear()`s the ambient env and installs only three
+awaken's ACP subprocess `env_clear()`s the ambient env and installs only two
 typed categories: **① a `["PATH","HOME"]` host passthrough** (so an absolute
 Node-backed wrapper can resolve `node`, and a backend-owned CLI can read its own
-login), **② an adapter catalog-declared state-only directory bound to the
-existing Session Environment when a backend-owned CLI supports that separation**,
-and **③ managed-model/secret env when the publication selected managed
-provisioning**. Codex uses category ② through `CODEX_SQLITE_HOME`; its host login
-and configuration remain under `HOME`, while concurrent Sessions cannot share
-the app-server SQLite files. An ambient `CODEX_SQLITE_HOME` is not passed through
-or trusted. Runtime never invokes `npx -y`: local product startup resolves a
+login and state), and **② managed-model/secret env when the publication selected managed
+provisioning**. Current Codex couples its host login to the SQLite state in the
+host Codex home, so BackendOwned Codex deliberately uses category ①;
+forcing `CODEX_SQLITE_HOME` to a fresh Session directory prevents the app-server
+from initializing. An ambient `CODEX_SQLITE_HOME` is not independently passed
+through or trusted. Runtime never invokes `npx -y`: local product startup resolves a
 pinned wrapper once, while container Workers bake the executable and runtime
 dependencies into their image. Backend-owned credentials stay in the external
 CLI; managed credentials come from the vault. The sandbox is selected by typed

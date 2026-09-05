@@ -1061,7 +1061,7 @@ mod tests {
         std::fs::write(&executable, "fixture").unwrap();
         std::fs::write(
             directory.path().join("codex/package.json"),
-            r#"{"dependencies":{"@agentclientprotocol/codex-acp":"1.1.9"}}"#,
+            r#"{"dependencies":{"@agentclientprotocol/codex-acp":"1.10.0"}}"#,
         )
         .unwrap();
 

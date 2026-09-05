@@ -1127,7 +1127,7 @@ impl LocalSandbox {
         }
     }
 
-    /// Absolute host path used as the Workdir tier's agent workspace.
+    /// Absolute host path of the Workdir tier's complete Session filesystem.
     ///
     /// ACP carries a `cwd` independently from the child process cwd. A bound ACP
     /// adapter must send this exact path in `session/new`; otherwise the protocol

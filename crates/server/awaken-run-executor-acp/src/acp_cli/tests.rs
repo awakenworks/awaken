@@ -101,43 +101,6 @@ fn each_executor_row_owns_its_model_api_dialect_capability() {
 }
 
 #[test]
-fn backend_owned_state_isolation_is_catalog_owned_and_codex_only() {
-    // Cause/effect graph: C1 a backend-owned ACP row is selected; C2 the
-    // external CLI exposes a state-only directory separate from its login
-    // home. Effects: E1 Codex declares one exact Session-directory env;
-    // E2 every other row shares host state; E3 relabeling a row cannot alter
-    // the declared behavior. Constraint: the Runtime Host consumes this
-    // datum and must not recreate an adapter-id allowlist.
-    //
-    // Decision table:
-    // | rule | dedicated state dir | row      | effect |
-    // | S1   | yes                 | Codex    | E1     |
-    // | S2   | no                  | non-Codex| E2     |
-    // | S3   | yes                 | relabeled| E3     |
-    let codex = acp_cli("codex").expect("S1 Codex row");
-    assert_eq!(
-        codex.backend_owned_state_isolation,
-        BackendOwnedStateIsolation::SessionDirectory {
-            env: "CODEX_SQLITE_HOME"
-        },
-        "S1/E1"
-    );
-    assert!(
-        known_acp_clis()
-            .iter()
-            .filter(|row| row.id != "codex")
-            .all(|row| row.backend_owned_state_isolation == BackendOwnedStateIsolation::SharedHost),
-        "S2/E2"
-    );
-    let mut relabeled = *codex;
-    relabeled.id = "fixture";
-    assert_eq!(
-        relabeled.backend_owned_state_isolation, codex.backend_owned_state_isolation,
-        "S3/E3"
-    );
-}
-
-#[test]
 fn publication_projection_preserves_each_catalog_rows_static_facts() {
     // Causes: C1 one executable catalog row; C2 it supports exact model
     // selection; C3 it exposes managed credential environments. Effects:
@@ -765,6 +728,35 @@ fn acquisition_kind_is_the_single_source_for_preinstalled_argv_and_acquisition_p
             "{id}: acquisition must be reproducibly pinned"
         );
     }
+}
+
+#[test]
+fn codex_adapter_pin_matches_the_supported_codex_generation() {
+    // Cause/effect graph: C1 host discovery admits Codex >=0.146; C2 the
+    // startup-owned wrapper is exact; C3 the image requirements reproduce the
+    // wrapper and its compatible Codex generation. Effects: E1 local startup
+    // never selects an ambient stale wrapper; E2 Container preparation gets the
+    // same protocol generation. Decision rule P1=C1+C2+C3=>E1+E2. Live ACP
+    // initialize/prompt behavior is owned by codex_acp_live_e2e.mjs.
+    let cli = acp_cli("codex").unwrap();
+    match cli.acquisition {
+        AcpAcquisition::PinnedNpmWrapper { package, .. } => {
+            assert_eq!(package, "@agentclientprotocol/codex-acp@1.10.0", "C2")
+        }
+        AcpAcquisition::Direct { .. } => panic!("Codex requires the pinned wrapper"),
+    }
+    assert!(
+        cli.image_requirements.iter().any(|requirement| {
+            requirement.requirement == "@agentclientprotocol/codex-acp@1.10.0"
+        }),
+        "C3 wrapper"
+    );
+    assert!(
+        cli.image_requirements
+            .iter()
+            .any(|requirement| requirement.requirement == "@openai/codex@0.153.3"),
+        "C3 Codex"
+    );
 }
 
 #[test]
