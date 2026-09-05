@@ -7,6 +7,8 @@ import pathlib
 import re
 import sys
 
+from formal_profile import PROOF_GRADES, profile_result, validate_proof_grade
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 LEDGER = ROOT / "formal" / "coverage.json"
@@ -17,15 +19,6 @@ ALLOWED = {
     "executable_only",
     "external",
 }
-PROOF_GRADES = {
-    "abstract_model_checked",
-    "abstract_theorem_proved",
-    "production_kernel_proved",
-    "implementation_refined",
-    "external_tcb",
-    "semantic_nonclaim",
-}
-VERIFIED_GRADES = {"production_kernel_proved", "implementation_refined"}
 CLAIM_SCOPES = {"repository_safety", "external_assumption", "semantic_nonclaim"}
 
 
@@ -72,23 +65,6 @@ assumption_data = json.loads(
     (ROOT / "formal" / "assumptions.json").read_text(encoding="utf-8")
 )
 assumption_ids = {item["id"] for item in assumption_data["assumptions"]}
-verified_obligation_ids: set[str] = set()
-all_obligation_ids = {item["id"] for item in obligations}
-for feature in features["features"]:
-    if feature.get("criticality") != "P0":
-        continue
-    for requirement in feature["requirements"]:
-        if (
-            requirement.get("kind") == "safety"
-            and requirement.get("repository_controlled") is True
-        ):
-            verified_obligation_ids.update(requirement.get("obligations", []))
-            for prefix in requirement.get("obligation_prefixes", []):
-                verified_obligation_ids.update(
-                    obligation_id
-                    for obligation_id in all_obligation_ids
-                    if obligation_id.startswith(f"{prefix}.")
-                )
 
 ids: set[str] = set()
 ledger_harnesses: set[str] = set()
@@ -111,8 +87,10 @@ for obligation in obligations:
     production_entrypoints = obligation.get("production_entrypoints")
     if claim_scope not in CLAIM_SCOPES:
         fail(f"{obligation_id} has unknown or missing claim_scope {claim_scope!r}")
-    if proof_grade not in PROOF_GRADES:
-        fail(f"{obligation_id} has unknown or missing proof_grade {proof_grade!r}")
+    try:
+        validate_proof_grade(obligation)
+    except ValueError as error:
+        fail(str(error))
     if not isinstance(bounds, list) or not bounds or not all(isinstance(v, str) and v for v in bounds):
         fail(f"{obligation_id} bounds must be a non-empty string list")
     if not isinstance(tcb_assumptions, list) or not all(isinstance(v, str) and v for v in tcb_assumptions):
@@ -187,14 +165,6 @@ for obligation in obligations:
         relative.endswith("Proof.tla") for relative in evidence
     ):
         fail(f"{obligation_id} theorem-proved grade has no TLAPS proof")
-    if proof_grade == "production_kernel_proved" and not harnesses:
-        fail(f"{obligation_id} production-kernel grade has no Kani harness")
-    if proof_grade == "implementation_refined" and (
-        "crates/runtime/awaken-runtime/tests/formal_refinement.rs" not in evidence
-    ):
-        fail(f"{obligation_id} implementation-refined grade has no runtime refinement trace")
-    if proof_grade in VERIFIED_GRADES and not production_entrypoints:
-        fail(f"{obligation_id} direct production grade has no production entrypoint")
     for relative in production_entrypoints:
         if relative not in evidence:
             fail(f"{obligation_id} production entrypoint is not evidence: {relative}")
@@ -278,17 +248,16 @@ summary = {
         for grade in sorted(PROOF_GRADES)
     },
 }
-verified_gaps = sorted(
-    item["id"]
-    for item in formalizable
-    if item["id"] in verified_obligation_ids
-    and item["proof_grade"] not in VERIFIED_GRADES
-)
+try:
+    qualification = profile_result(features, data)
+except ValueError as error:
+    fail(str(error))
+verified_gaps = qualification["gaps"]
 summary["verified_profile"] = {
     "id": profile["id"],
-    "required": len(verified_obligation_ids),
-    "directly_proved_or_refined": len(verified_obligation_ids) - len(verified_gaps),
-    "eligible": not verified_gaps,
+    "required": qualification["required_obligations"],
+    "directly_proved_or_refined": qualification["directly_proved_or_refined"],
+    "eligible": qualification["eligible"],
     "gaps": verified_gaps,
 }
 if args.json:
@@ -311,7 +280,7 @@ if (args.require_complete or args.require_evidence_complete) and (ratio != 1.0 o
     )
 if args.require_verified_profile and verified_gaps:
     fail(
-        f"verified profile blocked: {len(verified_gaps)}/{len(verified_obligation_ids)} "
+        f"verified profile blocked: {len(verified_gaps)}/{qualification['required_obligations']} "
         "P0 repository safety obligations lack direct production proof/refinement: "
         + ", ".join(verified_gaps)
     )

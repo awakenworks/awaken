@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -17,9 +18,11 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts/ci"))
+from formal_profile import profile_result
+
 HEX64 = re.compile(r"[0-9a-f]{64}")
 PROFILES = {"standard", "awaken-verified-v1"}
-DIRECT_GRADES = {"production_kernel_proved", "implementation_refined"}
 
 
 class ContractError(ValueError):
@@ -46,44 +49,6 @@ def load_json(path: Path) -> dict:
     if not isinstance(value, dict):
         raise ContractError(f"{path}: expected a JSON object")
     return value
-
-
-def verified_obligations(features: dict, coverage: dict) -> set[str]:
-    known = {row["id"] for row in coverage["obligations"]}
-    selected: set[str] = set()
-    for feature in features["features"]:
-        if feature.get("criticality") != "P0":
-            continue
-        for requirement in feature["requirements"]:
-            if (
-                requirement.get("kind") != "safety"
-                or requirement.get("repository_controlled") is not True
-            ):
-                continue
-            selected.update(requirement.get("obligations", []))
-            for prefix in requirement.get("obligation_prefixes", []):
-                selected.update(
-                    obligation_id
-                    for obligation_id in known
-                    if obligation_id.startswith(f"{prefix}.")
-                )
-    return selected
-
-
-def profile_result(features: dict, coverage: dict) -> dict:
-    rows = {row["id"]: row for row in coverage["obligations"]}
-    required = verified_obligations(features, coverage)
-    gaps = sorted(
-        obligation_id
-        for obligation_id in required
-        if rows[obligation_id]["proof_grade"] not in DIRECT_GRADES
-    )
-    return {
-        "required_obligations": len(required),
-        "directly_proved_or_refined": len(required) - len(gaps),
-        "eligible": not gaps,
-        "gaps": gaps,
-    }
 
 
 def proof_toolchain(repository: Path) -> dict:
