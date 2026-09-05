@@ -139,4 +139,105 @@ impl ManagedState {
         }
         Ok(())
     }
+
+    /// Root and child use the same ordered, source-scoped history selection.
+    /// A provider-local call id alone cannot transfer an earlier permission to
+    /// another Thread, Run, tool name or input. Keep every matching boundary:
+    /// one assistant response can contain several separately approved calls.
+    pub(in crate::state::events) fn historical_message_boundaries<'a>(
+        message: &awaken_agent_contract::agent::message::Message,
+        history: &'a std::collections::HashMap<RunLifecycleCursor, Pending>,
+        lifecycle: &'a [RunLifecycleEvent],
+        thread_id: &str,
+        source_run_id: Option<&str>,
+    ) -> Vec<(&'a Pending, &'a awaken_agent_contract::agent::run::Id)> {
+        lifecycle.iter().filter(|event| {
+            event.thread_id.0 == thread_id
+                && source_run_id.is_none_or(|run| event.run_id.0 == run)
+        }).filter_map(|event| {
+            let pending = history.get(&event.cursor)?;
+            message.content.iter().any(|block| matches!(block,
+                ContentBlock::ToolUse { id, name, input }
+                    if id == &pending.tool_use_id && name == &pending.name && input == &pending.input
+            )).then_some((pending, &event.run_id))
+        }).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_history_does_not_cross_message_ownership() {
+        // Causes: Thread, source Run, raw call id, name and input can each
+        // differ. Effects: H1 all equal selects the committed boundary; H2 any
+        // mismatch selects none. Run coordinates absent in older neutral
+        // messages retain exact Thread+call+payload matching (H3).
+        // The table is shared for root/child consumers; a same-name call alone
+        // is never permission evidence. No ordering comes from HashMap keys.
+        let pending = Pending {
+            tool_use_id: "call".into(),
+            name: "write".into(),
+            input: serde_json::json!({"path":"one"}),
+            client_executed: false,
+        };
+        let history = std::collections::HashMap::from([(RunLifecycleCursor(1), pending.clone())]);
+        let lifecycle = vec![RunLifecycleEvent {
+            cursor: RunLifecycleCursor(1),
+            source_commit_cursor: 1,
+            thread_id: awaken_agent_contract::ThreadId("thread".into()),
+            run_id: awaken_agent_contract::agent::run::Id("run".into()),
+            kind: RunLifecycleEventKind::Awaiting,
+            state: awaken_agent_contract::agent::run::RunState::Awaiting,
+            await_reason: None,
+        }];
+        for changed in [
+            None,
+            Some("thread"),
+            Some("run"),
+            Some("id"),
+            Some("name"),
+            Some("input"),
+            Some("no-coordinate"),
+        ] {
+            let mut call = pending.clone();
+            if changed == Some("id") {
+                call.tool_use_id = "other".into();
+            }
+            if changed == Some("name") {
+                call.name = "read".into();
+            }
+            if changed == Some("input") {
+                call.input = serde_json::json!({"path":"other"});
+            }
+            let message = awaken_agent_contract::agent::message::Message::new(
+                awaken_agent_contract::agent::message::Id("message".into()),
+                awaken_agent_contract::agent::message::Role::Assistant,
+                vec![ContentBlock::tool_use(
+                    call.tool_use_id,
+                    call.name,
+                    call.input,
+                )],
+            );
+            let thread = if changed == Some("thread") {
+                "other"
+            } else {
+                "thread"
+            };
+            let run = match changed {
+                Some("run") => Some("other"),
+                Some("no-coordinate") => None,
+                _ => Some("run"),
+            };
+            let selected = ManagedState::historical_message_boundaries(
+                &message, &history, &lifecycle, thread, run,
+            );
+            assert_eq!(
+                selected.len(),
+                usize::from(changed.is_none() || changed == Some("no-coordinate")),
+                "H1-H3 {changed:?}"
+            );
+        }
+    }
 }

@@ -10012,6 +10012,9 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
     // missing sibling ask plus the first result, never duplicate text/tool, then
     // consumes the now-classified source Message; E5 C5 emits one allow/result
     // pair and EndTurn, proving completed work cannot remain frozen.
+    // O6 repeats O2/O4 with the real committed AwaitTarget audit prefix.
+    // Historical first-call evidence must not override the current sibling
+    // ticket: both calls must remain Ask, including a cold read at O4.
     // K1 ResumeTicket and ToolResult are the only disposition authorities; K2
     // the append-only Event log is the partial-projection idempotency ledger; K3
     // root and child call the same occurrence classifier and existing encoder.
@@ -10104,6 +10107,25 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         input: serde_json::json!({"path":"first.txt"}),
         client_executed: false,
     });
+    runtime
+        .audit_events
+        .lock()
+        .unwrap()
+        .push(awaken_agent_contract::audit::record::Record {
+            sequence: 1,
+            run_id: run.clone(),
+            kind: awaken_agent_contract::audit::kind::Kind::RunStateChanged,
+            payload: serde_json::json!({
+                "state": RunState::Awaiting,
+                "await_target": awaken_agent_contract::agent::awaiting::AwaitTarget::ToolCall {
+                    reason: awaken_agent_contract::agent::awaiting::ToolAwaitReason::Permission,
+                    call_id: first_call.into(),
+                    tool: awaken_agent_contract::agent::awaiting::PendingTool {
+                        tool_id: "write".into(), arguments: serde_json::json!({"path":"first.txt"}),
+                    },
+                },
+            }),
+        });
     runtime.lifecycle.lock().unwrap().push(lifecycle(
         2,
         &session.id,
@@ -10167,7 +10189,7 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
 
     let cold = ManagedState::new(runtime.clone())
         .with_config_source(profiles.clone())
-        .with_session_repo(repo);
+        .with_session_repo(repo.clone());
     cold.ensure_session(&session.id).await.unwrap();
     let cold_asks = cold
         .list_events(&session.id, None, None, false)
@@ -10207,6 +10229,21 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         input: serde_json::json!({"path":"second.txt"}),
         client_executed: false,
     });
+    runtime.audit_events.lock().unwrap().push(awaken_agent_contract::audit::record::Record {
+        sequence: 2,
+        run_id: run.clone(),
+        kind: awaken_agent_contract::audit::kind::Kind::RunStateChanged,
+        payload: serde_json::json!({
+            "state": RunState::Awaiting,
+            "await_target": awaken_agent_contract::agent::awaiting::AwaitTarget::ToolCall {
+                reason: awaken_agent_contract::agent::awaiting::ToolAwaitReason::Permission,
+                call_id: sibling_call.into(),
+                tool: awaken_agent_contract::agent::awaiting::PendingTool {
+                    tool_id: "write".into(), arguments: serde_json::json!({"path":"second.txt"}),
+                },
+            },
+        }),
+    });
     runtime.lifecycle.lock().unwrap().extend([
         lifecycle(
             3,
@@ -10234,6 +10271,16 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         .filter(|event| event.type_str() == "agent.tool_use")
         .collect::<Vec<_>>();
     assert_eq!(tool_events.len(), 2, "O4/E4 exact two occurrences");
+    assert!(
+        tool_events.iter().all(|event| matches!(
+            event.kind,
+            OutboundKind::AgentToolUse {
+                evaluated_permission: Some(EvaluatedPermission::Ask),
+                ..
+            }
+        )),
+        "O6 current sibling ticket must not be masked by historical first-call evidence"
+    );
     assert_eq!(
         caught_up
             .iter()
@@ -10254,6 +10301,30 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         state.sessions.lock().unwrap()[&session.id]
             .message_was_projected(&session.id, &tool_message.id.0),
         "O4/E4 fully classified source advances exactly once"
+    );
+
+    let cold_sibling = ManagedState::new(runtime.clone())
+        .with_config_source(profiles.clone())
+        .with_session_repo(repo);
+    cold_sibling.ensure_session(&session.id).await.unwrap();
+    let cold_events = cold_sibling
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data;
+    assert_eq!(
+        cold_events
+            .iter()
+            .filter(|event| matches!(
+                event.kind,
+                OutboundKind::AgentToolUse {
+                    evaluated_permission: Some(EvaluatedPermission::Ask),
+                    ..
+                }
+            ))
+            .map(|event| &event.id)
+            .collect::<std::collections::HashSet<_>>(),
+        tool_events.iter().map(|event| &event.id).collect(),
+        "O6 cold catch-up retains both original asks and exact identities"
     );
 
     let completed_runtime = LifecycleRuntime::default();
