@@ -1,6 +1,7 @@
-// Real Codex ACP end-to-end release gate.
+// ACP end-to-end release gate (AWAKEN_ACP_RUNTIME=codex|claude).
 //
-// One script owns both deployment profiles:
+// One script owns live deployments and the deterministic native-executable peer:
+//   CODEX_ACP_PROFILE=host-fixture node e2e/codex_acp_live_e2e.mjs
 //
 //   CODEX_ACP_LIVE=1 CODEX_ACP_PROFILE=host-login \
 //     node e2e/codex_acp_live_e2e.mjs
@@ -13,13 +14,14 @@
 // C1 explicit live opt-in; C2 deployment profile is host-login or container;
 // C3 Codex owns an available login; C4 Awaken publishes a BackendDefault Agent;
 // C5 one real prompt completes. E1 the committed transcript contains the unique
-// marker and thread running -> idle states. Host-login additionally proves zero-config
-// discovery plus a live Worker capability; container additionally proves a new
+// marker and thread running -> idle states. Host profiles additionally prove
+// discovery, Worker capability and the shared resource mission; container proves a new
 // managed sandbox was observed.
 //
 // Decision table:
 // | Rule | C1 | C2 | C3-C5 | Effect |
 // | H1 | Y | host-login | Y | E1 + live local capability, no auth-file access |
+// | D1 | - | host-fixture | Y | same resource oracle, no inference service |
 // | C1 | Y | container  | Y | E1 + newly observed managed container |
 // | F1 | N | any        | - | fail before invoking Codex |
 // | F2 | Y | other      | - | fail before server/session work |
@@ -37,15 +39,19 @@ import Anthropic from '@anthropic-ai/sdk';
 import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
-import { initializeE2EInstallation, waitForSessionEventReceipt } from './harness.mjs';
+import { snapshotExecutable } from './executable_snapshot.mjs';
+import { initializeE2EInstallation, waitForSessionEventReceipt, stopServer as stop, hardKillServer } from './harness.mjs';
+import { installHostResourceFixture, verifyTrustedHostResources } from './fixtures/trusted_host_resources.mjs';
 
-if (process.env.CODEX_ACP_LIVE !== '1') {
+const profile = process.env.CODEX_ACP_PROFILE;
+const runtime = process.env.AWAKEN_ACP_RUNTIME ?? 'codex';
+assert.ok(['codex', 'claude'].includes(runtime), 'select codex or claude');
+if (profile !== 'host-fixture' && process.env.CODEX_ACP_LIVE !== '1') {
   throw new Error('set CODEX_ACP_LIVE=1 to confirm this test may invoke the real Codex ACP adapter');
 }
 
-const profile = process.env.CODEX_ACP_PROFILE;
-if (!['host-login', 'container'].includes(profile)) {
-  throw new Error('set CODEX_ACP_PROFILE=host-login or CODEX_ACP_PROFILE=container');
+if (!['host-login', 'host-fixture', 'container'].includes(profile)) {
+  throw new Error('set CODEX_ACP_PROFILE=host-login, host-fixture or container');
 }
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -70,7 +76,10 @@ function awakenBin() {
     cwd: ROOT,
     packageName: 'awaken-cli',
     targetName: 'awaken',
-    prebuiltEnvironmentName: AWAKEN_BIN_ENV,
+    // The resource mission uses a local bare Git remote. Reuse the existing
+    // test-support transport aperture; production remains HTTPS-only. Do not
+    // accept an unqualified prebuilt binary with unknown feature provenance.
+    ...(profile === 'container' ? { prebuiltEnvironmentName: AWAKEN_BIN_ENV } : { features: ['test-support'] }),
   });
 }
 
@@ -106,15 +115,6 @@ async function waitReady(child, baseURL, tokenPath) {
   throw new Error('awaken did not become ready');
 }
 
-async function stop(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise((resolve) => child.once('exit', resolve));
-  child.kill('SIGINT');
-  if (await Promise.race([exited.then(() => true), sleep(10_000).then(() => false)])) return;
-  child.kill('SIGKILL');
-  await exited;
-}
-
 async function request(baseURL, apiKey, method, route, body) {
   const response = await fetch(`${baseURL}${route}`, {
     method,
@@ -129,16 +129,25 @@ async function request(baseURL, apiKey, method, route, body) {
 }
 
 async function startHostLoginProfile() {
-  const binary = awakenBin();
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-host-resource-'));
+  let child;
+  try {
+  // Artifact race rule: another scenario may rebuild target/debug/awaken with
+  // different features while doctor/initialization or a restart is pending.
+  // Reuse the runner's copy snapshot so EVERY launch keeps the selected bytes.
+  const binary = snapshotExecutable(awakenBin(), path.join(temp, 'product',
+    process.platform === 'win32' ? 'awaken.exe' : 'awaken'));
+  const environment = profile === 'host-fixture'
+    ? await installHostResourceFixture(ROOT, temp, path.join(temp, 'data'), runtime)
+    : process.env;
   const doctor = spawnSync(binary, ['doctor', 'acp', '--json'], {
-    env: process.env,
+    env: environment,
     encoding: 'utf8',
   });
   assert.equal(doctor.status, 0, doctor.stderr);
-  const codex = JSON.parse(doctor.stdout).acp.find((row) => row.id === 'codex');
+  const codex = JSON.parse(doctor.stdout).acp.find((row) => row.id === runtime);
   assert.equal(codex?.login_state, 'available', JSON.stringify(codex));
 
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-codex-host-live-'));
   const port = await availablePort();
   const config = path.join(temp, 'config.toml');
   fs.writeFileSync(config, [
@@ -151,46 +160,68 @@ async function startHostLoginProfile() {
     // Host-login is the trusted local-process gate. Container isolation has its
     // own profile below, and native sandbox availability is host-specific.
     'sandbox_tier = "local"',
-    // Intentionally no acp_clis, default backend, or credential setting: host
-    // ACP discovery remains the zero-configuration product path.
+    'log_filter = "warn"',
+    `acp_clis = [${JSON.stringify(runtime)}]`,
+    // Select the runtime under test, without configuring a default backend or
+    // credential material. Its login and executable remain discovery-owned.
   ].join('\n'));
-  initializeE2EInstallation(process.env, { binary, configPath: config });
-  const child = spawn(binary, automatedAllInOneArgs('--config', config), {
-    env: process.env,
-    stdio: ['ignore', 'ignore', 'inherit'],
+  initializeE2EInstallation(environment, { binary, configPath: config });
+  const launch = () => {
+    const process = spawn(binary, automatedAllInOneArgs('--config', config), {
+    env: environment,
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+    // Keep diagnostic warnings, but do not emit the installation setup token.
+    for (const stream of [process.stdout, process.stderr]) {
+      let pending = '';
+      stream.on('data', (chunk) => {
+        const lines = (pending + chunk.toString()).split('\n');
+        pending = lines.pop();
+        for (const line of lines) if (!/^\s*Setup\s/u.test(line)) console.error(line);
+      });
+    }
+    return process;
+  };
+  child = launch();
   const baseURL = `http://127.0.0.1:${port}`;
-  try {
     const apiKey = await waitReady(child, baseURL, path.join(temp, 'data', 'admin-token'));
-    await waitForVerifiedAcpCapability(baseURL, 'codex', {
+    await waitForVerifiedAcpCapability(baseURL, runtime, {
       timeoutMs: 60_000,
       pollMs: 200,
       requireAvailableLogin: true,
       apiKey,
     });
 
-    const agent = process.env.AWAKEN_ACP_AGENT ?? 'codex-host-login-live';
+    const agent = process.env.AWAKEN_ACP_AGENT ?? `${runtime}-host-login-live`;
     let result = await request(baseURL, apiKey, 'PUT', `/v1/config/agents/${agent}`, {
       name: 'Real host Codex login',
       system: 'Return exactly the text requested by the user.',
-      model: { mode: 'backend_default', backend_ref: 'acp:codex' },
+      model: { mode: 'backend_default', backend_ref: `acp:${runtime}` },
       tools: [],
     });
     assert.equal(result.response.status, 200, JSON.stringify(result.value));
     result = await request(baseURL, apiKey, 'POST', `/v1/config/agents/${agent}/publish`);
     assert.equal(result.response.status, 200, JSON.stringify(result.value));
-    return { baseURL, apiKey, agent, cleanup: async () => {
+    return { baseURL, apiKey, agent, temp, restart: async ({ crash = false } = {}) => {
+      if (crash) await hardKillServer(child, 'TrustedHost live Session');
+      else await stop(child);
+      child = launch();
+      await waitReady(child, baseURL, path.join(temp, 'data', 'admin-token'));
+      await waitForVerifiedAcpCapability(baseURL, runtime, {
+        timeoutMs: 60_000, pollMs: 200, requireAvailableLogin: true, apiKey,
+      });
+    }, cleanup: async () => {
       await stop(child);
       fs.rmSync(temp, { recursive: true, force: true });
     } };
   } catch (error) {
-    await stop(child);
+    if (child) await stop(child);
     fs.rmSync(temp, { recursive: true, force: true });
     throw error;
   }
 }
 
-const deployment = profile === 'host-login'
+const deployment = profile !== 'container'
   ? await startHostLoginProfile()
   : {
       baseURL: process.env.CODEX_ACP_BASE_URL ?? 'http://127.0.0.1:38080',
@@ -275,6 +306,14 @@ try {
   console.log(
     `CODEX ACP ${profile.toUpperCase()} E2E PASS: ${session.id} committed ${marker}`,
   );
+  if (profile !== 'container') {
+    await client.beta.sessions.delete(session.id, { betas: BETAS });
+    await verifyTrustedHostResources({
+      client, runtime, temp: deployment.temp, restart: deployment.restart,
+      request: (method, route, body) =>
+        request(deployment.baseURL, deployment.apiKey, method, route, body),
+    });
+  }
 } finally {
   await deployment.cleanup();
 }

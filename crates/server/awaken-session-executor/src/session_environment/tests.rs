@@ -2,7 +2,7 @@ use super::*;
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::{
-    IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxProvider, SandboxSpec,
+    IsolationClass, NetworkPolicy, ResourceLimits, SandboxProvider, SandboxSpec,
 };
 use awaken_run_executor_acp::AgentChannelType;
 use awaken_runtime_contract::llm::ToolCall;
@@ -11,7 +11,7 @@ use awaken_sandbox_container::{
     PublishedSandboxControlService, SandboxControlPublishError, SandboxControlService,
     SandboxControlServiceKind, SandboxControlServicePublisher,
 };
-use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
+use awaken_sandbox_local::NamespaceProvider;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::io::AsyncReadExt;
@@ -478,9 +478,41 @@ async fn trusted_host_live_resource_admission_keeps_readonly_advisory() {
         required: true,
     };
     environment
-        .validate_live_mount_replacement(&[], &[readonly])
+        .validate_live_mount_replacement(&[], std::slice::from_ref(&readonly))
         .expect("TrustedHost admits advisory read-only managed resources");
     assert!(!environment.capabilities().enforced_readonly);
+    // L1 trusted + inline RO => attach exact bytes and Copy receipt;
+    // L2 repeat => idempotent bytes; L3 invalid hash => preserve previous bytes;
+    // L4 escape => reject; L5 unresolved source => reject. Admission alone is
+    // insufficient: each rule crosses the actual provider attachment port.
+    for _ in 0..2 {
+        let realized = environment.attach_mount(readonly.clone()).await.unwrap();
+        assert_eq!(realized.realization, pc::Realization::Copy);
+    }
+    let mut invalid = readonly.clone();
+    invalid.source = pc::MountSource::InlineBytes {
+        contents: b"wrong".to_vec(),
+        content_hash: Some("sha256:wrong".into()),
+    };
+    assert!(environment.attach_mount(invalid).await.is_err(), "L3");
+    let mut escape = readonly.clone();
+    escape.mount_path = "/../escape.txt".into();
+    assert!(environment.attach_mount(escape).await.is_err(), "L4");
+    let mut unresolved = readonly;
+    unresolved.source = pc::MountSource::MemoryStore {
+        store_id: "late-store".into(),
+        materialization_reference: None,
+        write_consistency: Default::default(),
+    };
+    assert!(environment.attach_mount(unresolved).await.is_err(), "L5");
+    let files = environment
+        .list_frozen_mount_files("/mnt/session/uploads")
+        .await
+        .unwrap();
+    assert!(
+        files.iter().any(|(_, bytes)| bytes == b"late"),
+        "L1/L3 preserved bytes"
+    );
     environment.dispose().await.unwrap();
 }
 
@@ -549,54 +581,110 @@ async fn trusted_host_filesystem_view_maps_workspace_relative_cwd_once() {
 
 #[tokio::test]
 async fn native_process_and_agent_channel_share_one_live_environment() {
-    // Cause/effect graph: C1=Workdir environment; C2=Native Hand tool;
-    // C3=ACP child process. Effects: E1/E2 both observe state written inside
-    // the same Session owner. Decision rule W1=C1+C2+C3 -> one marker value;
-    // a host-global or provider-selected Hand would fail E1.
-    let base = tempfile::tempdir().unwrap();
-    let local = LocalProvider::new(base.path())
-        .create_sandbox(&spec())
-        .await
-        .unwrap();
-    let original = Sandbox::handle(&local);
-    let environment = SessionEnvironment::workdir(local);
-    assert_eq!(environment.handle(), original);
-
-    let native = environment
-        .sandbox()
-        .spawn(pc::Command::new([
-            "/bin/sh",
-            "-c",
-            "printf shared-state > marker",
-        ]))
-        .await
-        .unwrap();
-    assert_eq!(native.wait().await.unwrap().code, Some(0));
-
-    let hand_output = environment
-        .tool_executor()
-        .invoke(&ToolCall {
-            call_id: "workdir-hand".into(),
-            tool_id: "read".into(),
-            arguments: serde_json::json!({"path": "marker"}),
+    // Cause/effect rules: W1 TrustedHost+default cwd; W2 nested Unicode/space cwd.
+    // Both rules require Native Hand write -> real ACP child read/write -> Hand
+    // read on the SAME mount. E1 actual process cwd equals protocol cwd;
+    // E2 rendered File paths resolve to exact bytes; E3 child writes are visible
+    // through the Native logical path. A file used as cwd fails without starting the
+    // peer (W3). Reuse the Session owner and prompt renderer on all three OSes.
+    use crate::managed_resource_projection::ResourcePromptProjection;
+    for cwd in [None, Some("项目 repo/src")] {
+        let base = tempfile::tempdir().unwrap();
+        let provider =
+            SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false);
+        let environment = provider.create(&spec()).await.unwrap();
+        environment
+            .materialize_inline("/workspace/项目 repo/src/.keep", b"")
+            .await
+            .unwrap();
+        let view = environment.agent_filesystem_view(cwd, AgentFilesystemClient::AcpProcess);
+        let logical = "/mnt/session/uploads/资料 brief.txt";
+        let input = awaken_session_contract::ResolvedInput {
+            binding_id: "file".into(),
+            source: awaken_session_contract::ResolvedInputSource::File {
+                file_id: "file".into(),
+            },
+            mount_path: logical.into(),
+            access: awaken_resource_contract::ResourceAccess::ReadOnly,
+            instructions: Some("{{awaken.resource.path}}".into()),
+        };
+        environment
+            .tool_executor()
+            .invoke(&ToolCall {
+                call_id: "native-before-acp".into(),
+                tool_id: "write".into(),
+                arguments: serde_json::json!({"path": logical, "content": "native-bytes"}),
+            })
+            .await
+            .unwrap();
+        let prompt = ResourcePromptProjection::try_from_input(&input)
+            .unwrap()
+            .render(
+                crate::session_slot::ManagedContentDelivery::ManagedFilesystem,
+                view.prompt_paths,
+            );
+        let relative = prompt.split_once('\n').unwrap().1;
+        let exe = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let mut command = pc::Command::new([
+            exe.as_str(),
+            "--ignored",
+            "--exact",
+            "session_environment::tests::shared_filesystem_child",
+            "--nocapture",
+        ]);
+        command.cwd = view.command_cwd;
+        command.env = [
+            ("AWAKEN_TEST_RESOURCE_PATH", relative),
+            ("AWAKEN_TEST_PROTOCOL_CWD", &view.protocol_cwd),
+        ]
+        .into_iter()
+        .map(|(name, value)| pc::EnvVar {
+            name: name.into(),
+            value: pc::EnvValue::Inline {
+                value: value.into(),
+            },
+            visibility: pc::EnvVisibility::Process,
         })
-        .await
-        .unwrap();
-    assert!(
-        hand_output.text().contains("shared-state"),
-        "W1 Native Hand"
+        .collect();
+        let (agent, mut channel) = environment.spawn_agent(command.clone()).await.unwrap();
+        let mut output = String::new();
+        channel.read_to_string(&mut output).await.unwrap();
+        assert_eq!(agent.wait().await.unwrap().code, Some(0), "{output}");
+        assert!(output.contains("FILESYSTEM_CHILD_OK"));
+        let read = environment
+            .tool_executor()
+            .invoke(&ToolCall {
+                call_id: "native-after-acp".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({"path": logical}),
+            })
+            .await
+            .unwrap();
+        assert!(read.text().contains("acp-bytes"), "E3");
+        command.cwd = logical.into();
+        assert!(environment.spawn_agent(command).await.is_err(), "W3");
+        environment.dispose().await.unwrap();
+    }
+}
+
+#[test]
+#[ignore = "real child of the portable Session filesystem contract"]
+fn shared_filesystem_child() {
+    // The child receives only the production-derived cwd and prompt path.
+    // F1 wrong cwd/path => hard failure; F2 exact view => read/write exact bytes.
+    let expected = std::env::var("AWAKEN_TEST_PROTOCOL_CWD").unwrap();
+    assert_eq!(
+        std::fs::canonicalize(expected).unwrap(),
+        std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap()
     );
-
-    let (agent, mut channel) = environment
-        .spawn_agent(pc::Command::new(["/bin/sh", "-c", "cat marker"]))
-        .await
-        .unwrap();
-    let mut output = String::new();
-    channel.read_to_string(&mut output).await.unwrap();
-    assert_eq!(agent.wait().await.unwrap().code, Some(0));
-    assert_eq!(output, "shared-state");
-
-    environment.dispose().await.unwrap();
+    let path = std::env::var("AWAKEN_TEST_RESOURCE_PATH").unwrap();
+    assert!(!std::path::Path::new(&path).is_absolute());
+    assert_eq!(std::fs::read(&path).unwrap(), b"native-bytes");
+    std::fs::write(&path, b"acp-bytes").unwrap();
+    println!("FILESYSTEM_CHILD_OK");
 }
 
 #[tokio::test]
@@ -2354,7 +2442,14 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
     // exercise both callers. Ordinary attach over either retained Memory
     // participant remains rejected, so recovery never weakens replacement
     // fencing or creates a second Memory authority.
-    for (namespace, label) in [(false, "local"), (true, "namespace")] {
+    // M5 repeats the exact replay/late-attach matrix for TrustedHost. A rebound
+    // provider must preserve the ACP cwd and prompt interpretation and must not
+    // acquire an extra Memory participant when a read-only File arrives later.
+    for (namespace, trusted, label) in [
+        (false, false, "local"),
+        (true, false, "namespace"),
+        (false, true, "trusted-host"),
+    ] {
         let fuse_root = tempfile::tempdir().unwrap();
         let fuse_mounts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let fuse_teardowns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2365,6 +2460,11 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 Arc::new(FakeHandExecutorFactory),
                 "/bin/sh",
                 std::time::Duration::ZERO,
+            )
+        } else if trusted {
+            SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(
+                fuse_root.path(),
+                false,
             )
         } else {
             SessionEnvironmentProvider::workdir(fuse_root.path())
@@ -2401,6 +2501,8 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             .await
             .expect("M1 initial Fuse participant");
         let fuse_handle = created.handle();
+        let before =
+            created.agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
         drop(created);
         let unfenced = match &fuse_provider {
             SessionEnvironmentProvider::Workdir(provider) => {
@@ -2436,8 +2538,19 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             .await
             .expect("M1 adoption reacquires Fuse");
         assert_eq!(fuse_mounts.load(Ordering::SeqCst), 3, "M1 {label}");
+        let after =
+            adopted.agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
+        assert_eq!(before.protocol_cwd, after.protocol_cwd, "M5 stable cwd");
+        assert_eq!(
+            before.command_cwd, after.command_cwd,
+            "M5 stable process cwd"
+        );
+        assert_eq!(
+            before.prompt_paths, after.prompt_paths,
+            "M5 stable prompt view"
+        );
 
-        if namespace {
+        if namespace || trusted {
             let late = pc::MountRequirement {
                 mount_id: "late".into(),
                 source: pc::MountSource::InlineBytes {
@@ -2454,11 +2567,14 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 .await
                 .expect("M4 only the late mount attaches");
             assert_eq!(fuse_mounts.load(Ordering::SeqCst), 3, "M4 no remount");
+            let files = if trusted {
+                adopted.list_frozen_mount_files("/workspace").await
+            } else {
+                adopted.list_workspace_files("").await
+            }
+            .unwrap();
             assert!(
-                adopted
-                    .list_workspace_files("")
-                    .await
-                    .unwrap()
+                files
                     .iter()
                     .any(|(path, bytes)| path == "late.txt" && bytes == b"late"),
                 "M4 late mount is visible"

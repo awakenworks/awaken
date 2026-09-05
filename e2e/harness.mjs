@@ -1236,6 +1236,26 @@ export function stopServer(server) {
   });
 }
 
+// Shared fault-injection boundary (NOT graceful shutdown). Decision rules:
+// live child => SIGKILL exact handle, await exit, unregister; terminal child =>
+// unregister idempotently; failed signal/error => fail the scenario. Register
+// the exit listener before signalling so fast Windows/Unix exits cannot race it.
+export async function hardKillServer(server, rule = 'crash recovery') {
+  if (server.exitCode !== null || server.signalCode !== null) {
+    await stopServer(server);
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    const cleanup = () => { server.off('exit', onExit); server.off('error', onError); };
+    const onExit = () => { cleanup(); resolve(); };
+    const onError = (error) => { cleanup(); reject(error); };
+    server.once('exit', onExit);
+    server.once('error', onError);
+    if (!server.kill('SIGKILL')) onError(new Error(`${rule}: hard crash signal not delivered`));
+  });
+  await stopServer(server);
+}
+
 export function pass(msg) {
   console.log(`  ok: ${msg}`);
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { checkoutLocalCargoEnvironment } from './cargo_binary.mjs';
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 
@@ -82,7 +83,7 @@ function loadAcpRuntimeContract() {
     raw = execFileSync(
       process.env.CARGO || 'cargo',
       ['run', '--quiet', '-p', 'awaken-run-executor-acp', '--example', 'image_runtime_contract'],
-      { cwd: repositoryRoot, encoding: 'utf8' },
+      { cwd: repositoryRoot, encoding: 'utf8', env: checkoutLocalCargoEnvironment(repositoryRoot) },
     );
   } catch (cause) {
     throw new Error('ACP runtime contract generator failed', { cause });
@@ -94,7 +95,8 @@ function loadAcpRuntimeContract() {
   }
 }
 
-const runtimeContract = projectAcpRuntimeContract(loadAcpRuntimeContract());
+export const ACP_RUNTIME_IMAGE_CONTRACT = loadAcpRuntimeContract();
+const runtimeContract = projectAcpRuntimeContract(ACP_RUNTIME_IMAGE_CONTRACT);
 
 export const ACP_RUNTIME_IDS = runtimeContract.ids;
 export const ACP_RUNTIME_VERSION_SPECS = runtimeContract.versionSpecs;

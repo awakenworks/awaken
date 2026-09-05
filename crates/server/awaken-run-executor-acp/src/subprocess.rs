@@ -22,6 +22,10 @@ use tokio::process::Command;
 
 use crate::{AcpCli, AgentChannelSource, AgentSession, OpenError, ResolvedModel};
 
+#[cfg(test)]
+#[path = "subprocess/host_identity_tests.rs"]
+mod host_identity_tests;
+
 /// A resolved launch for an ACP CLI: the argv plus the env to set (model, base
 /// URL, key). Runtime-specific projection lives only in the [`AcpCli`] catalog;
 /// this value is its mechanism-neutral output.
@@ -178,8 +182,13 @@ fn with_backend_owned_host_environment_from(
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Vec<pc::EnvVar> {
     env.retain(|var| {
-        !TRUSTED_UNIX_HOST_ENV.contains(&var.name.as_str())
-            && !TRUSTED_WINDOWS_HOST_ENV.contains(&var.name.as_str())
+        !TRUSTED_UNIX_HOST_ENV
+            .iter()
+            .chain(TRUSTED_WINDOWS_HOST_ENV)
+            .any(|key| match platform {
+                HostPlatform::Unix => var.name == *key,
+                HostPlatform::Windows => var.name.eq_ignore_ascii_case(key),
+            })
     });
     with_host_passthrough(env, platform.trusted_identity_env(), lookup)
 }
@@ -782,6 +791,46 @@ mod tests {
             assert_eq!(env_value(&windows, key), Some(expected.as_str()));
         }
         assert!(env_value(&windows, "OPENAI_API_KEY").is_none(), "X1");
+    }
+
+    #[test]
+    fn backend_owned_identity_case_and_missing_host_decision_table() {
+        // C1 OS={Unix,Windows}; C2 projected identity casing={exact,mixed};
+        // C3 host coordinate={present,missing}. E1 Windows treats identity
+        // keys case-insensitively; E2 Unix preserves distinct ordinary keys;
+        // E3 an absent host identity cannot fall back to a projected identity.
+        // W1 Windows+mixed+present=>one host value; W2 Windows+missing=>none;
+        // U1 Unix+mixed=>ordinary input preserved, canonical host added.
+        for platform in [HostPlatform::Unix, HostPlatform::Windows] {
+            for available in [false, true] {
+                let env = with_backend_owned_host_environment_from(
+                    vec![
+                        inline_env("hOmE", "projected"),
+                        inline_env("Path", "projected"),
+                    ],
+                    platform,
+                    |key| available.then(|| format!("host:{key}")),
+                );
+                let homes: Vec<_> = env
+                    .iter()
+                    .filter(|entry| entry.name.eq_ignore_ascii_case("HOME"))
+                    .collect();
+                assert_eq!(
+                    homes.len(),
+                    usize::from(available) + usize::from(platform == HostPlatform::Unix)
+                );
+                assert_eq!(
+                    env_value(&env, "hOmE").is_some(),
+                    platform == HostPlatform::Unix
+                );
+                assert_eq!(
+                    env_value(&env, "Path").is_some(),
+                    platform == HostPlatform::Unix
+                );
+                assert_eq!(env_value(&env, "HOME"), available.then_some("host:HOME"));
+                assert_eq!(env_value(&env, "PATH"), available.then_some("host:PATH"));
+            }
+        }
     }
 
     #[tokio::test]
