@@ -62,7 +62,11 @@ async fn unix_direct_dial_round_trips() {
 #[tokio::test]
 async fn tcp_direct_dial_round_trips() {
     use awaken_connection_plan::{bind_tcp, connect_with_retry};
-    // Bind on an ephemeral port, then dial it back (the Direct-over-network case).
+    // TCP consolidation decision rules: C1 the exact listener remains bound;
+    // C2 the container/Host dials its resolved ephemeral address; C3 the caller
+    // half-closes after its request. R1 C1+C2 preserves both byte directions;
+    // R2 C3 delivers EOF without losing the reply. Docker/Podman/Kubernetes
+    // now reuse this factory rather than a second TcpChannel/Transport family.
     let listener = bind_tcp(&ConnectionPlan::tcp_listen("127.0.0.1:0"))
         .await
         .expect("bind tcp");
@@ -72,6 +76,7 @@ async fn tcp_direct_dial_round_trips() {
         let mut buf = [0u8; 4];
         hand.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf, b"ping");
+        assert_eq!(hand.read(&mut buf).await.unwrap(), 0, "R2 request EOF");
         hand.write_all(b"pong").await.unwrap();
         hand.flush().await.unwrap();
     });
@@ -87,9 +92,11 @@ async fn tcp_direct_dial_round_trips() {
     .expect("dial tcp");
     brain.write_all(b"ping").await.unwrap();
     brain.flush().await.unwrap();
+    brain.shutdown().await.unwrap();
     let mut back = [0u8; 4];
     brain.read_exact(&mut back).await.unwrap();
     assert_eq!(&back, b"pong");
+    assert_eq!(brain.read(&mut back).await.unwrap(), 0, "R2 reply EOF");
     accept.await.unwrap();
 }
 
@@ -108,9 +115,14 @@ async fn factory_and_bind_error_paths() {
     assert!(bind_unix(&ConnectionPlan::tcp_dial("127.0.0.1:1")).is_err());
     // connect_with_retry to an address nothing listens on errors after its budget
     // (and does not hang, per the per-attempt timeout).
+    // C4 an owned, bound-but-not-listening address -> connection refusal. Keep
+    // it reserved throughout the attempt; port 1 or bind/drop is not evidence
+    // that another process cannot acquire the chosen address during the test.
+    let reserved = tokio::net::TcpSocket::new_v4().unwrap();
+    reserved.bind("127.0.0.1:0".parse().unwrap()).unwrap();
     let r = connect_with_retry(
         &TokioChannelFactory,
-        &ConnectionPlan::tcp_dial("127.0.0.1:1"),
+        &ConnectionPlan::tcp_dial(reserved.local_addr().unwrap().to_string()),
         2,
         std::time::Duration::from_millis(10),
     )

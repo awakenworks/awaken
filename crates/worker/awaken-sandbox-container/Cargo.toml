@@ -26,10 +26,9 @@ thiserror.workspace = true
 # the same id the content-addressed store assigns (parity with awaken-sandbox-local).
 blake3 = "1"
 tar = "0.4"
-# Slice-5 remote transport: awaken-connection (core-only, same foundation rev as
-# awaken-scoped-migration) establishes the container-tier AgentChannel. Optional so
-# the default build stays dependency-light and daemon-free.
-awaken-connection = { workspace = true, optional = true }
+# Container channels reuse the one topology factory; provider lifecycle and
+# authenticated Pod forwarding remain in their respective adapters.
+awaken-connection-plan = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["sync", "rt", "io-util", "time"] }
 tokio-util.workspace = true
 # Real Docker backend (Docker Engine API via the SDK, not the CLI). Optional.
@@ -45,7 +44,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring"], opti
 [features]
 # Real remote transport (TCP dial + reverse-dial pairing) producing an AgentChannel.
 # Enable to build/test the network path; default off.
-connection = ["dep:awaken-connection", "tokio/net", "tokio/io-util", "tokio/rt", "tokio/time"]
+connection = ["dep:awaken-connection-plan", "tokio/net", "tokio/io-util", "tokio/rt", "tokio/time"]
 # Real Docker ContainerRuntime (bollard). Dials the published agent port via the
 # `connection` transport. Compile-verified; running needs a Docker daemon.
 docker = ["dep:bollard", "dep:futures-util", "connection"]

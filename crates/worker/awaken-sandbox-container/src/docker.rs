@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_agent_channel::{AgentChannel, AgentTransport, SplitChannel};
+use awaken_agent_channel::{AgentChannel, SplitChannel};
 use awaken_provisioning_contract as pc;
 use base64::Engine as _;
 use bollard::Docker;
@@ -29,7 +29,6 @@ use bollard::models::{
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
 
-use crate::net::TcpAgentTransport;
 use crate::runtime::{
     ExistingRealization, ExistingRealizationDecision, ExistingRealizationPhase,
     ExistingRealizationRecovery, PhysicalIncarnation, RebuildContinuityEvidence,
@@ -46,6 +45,7 @@ use crate::{
     restoration_metadata, restoration_plan_fingerprint, restore_container_name,
     runtime_container_name, sandbox_scope_identity,
 };
+use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory};
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -1657,7 +1657,10 @@ impl ContainerRuntime for DockerRuntime {
         let mut last: Option<RuntimeError> = None;
         for _ in 0..40 {
             match self.agent_addr(container_id).await {
-                Ok(addr) => match TcpAgentTransport::new(addr).open_channel().await {
+                Ok(addr) => match TokioChannelFactory
+                    .connect(&ConnectionPlan::tcp_dial(addr.to_string()))
+                    .await
+                {
                     Ok(channel) => return Ok(channel),
                     Err(e) => last = Some(backend(e)),
                 },

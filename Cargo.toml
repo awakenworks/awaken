@@ -107,7 +107,6 @@ awaken-control = { path = "crates/control/awaken-control" }
 # Foundation contract half (ADR-0043): RFC-9457 ApiError, pagination, and the
 # allowlisted ListQuery/QuerySchema the admin config API serves its CRUD on.
 awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "248ca11e94e6ad8aa39bcf43699c725e2a96da70" }
-awaken-connection = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "248ca11e94e6ad8aa39bcf43699c725e2a96da70" }
 awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "248ca11e94e6ad8aa39bcf43699c725e2a96da70" }
 awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "248ca11e94e6ad8aa39bcf43699c725e2a96da70" }
 # Embedded IAM for the management plane (ADR-0042/0043 P1): bearer ApiToken

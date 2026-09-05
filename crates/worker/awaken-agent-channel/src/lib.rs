@@ -10,7 +10,7 @@
 //! A provider that reports `tool_transparent` capability additionally implements
 //! [`AgentTransport`]; local/bwrap back the channel with the spawned process's
 //! piped stdio (see [`SplitChannel`]). A distributed provider (Slice 5) backs the
-//! same channel with a `awaken-connection` transport — the consumer (an ACP
+//! same channel through `awaken-connection-plan` — the consumer (an ACP
 //! bridge) is written once against [`AgentChannel`].
 
 use async_trait::async_trait;

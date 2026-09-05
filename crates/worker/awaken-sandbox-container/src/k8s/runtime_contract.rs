@@ -542,8 +542,8 @@ impl ContainerRuntime for K8sRuntime {
             // Reverse-dial: the host listens, the egress-fenced Pod dials out to us.
             Some(addr) => channel::accept_reverse(addr).await,
             // Direct-dial the agent's stdio over its published Service.
-            None => TcpAgentTransport::new(self.agent_addr)
-                .open_channel()
+            None => TokioChannelFactory
+                .connect(&ConnectionPlan::tcp_dial(self.agent_addr.to_string()))
                 .await
                 .map_err(backend),
         }

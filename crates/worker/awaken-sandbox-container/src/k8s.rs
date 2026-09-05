@@ -17,7 +17,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_agent_channel::{AgentChannel, AgentTransport, SplitChannel};
+use awaken_agent_channel::{AgentChannel, SplitChannel};
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_control::SandboxControlServiceKind;
 use k8s_openapi::api::core::v1::{
@@ -34,7 +34,6 @@ use kube::api::{AttachParams, DeleteParams, ListParams, PostParams};
 use kube::{Api, Resource};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::net::TcpAgentTransport;
 use crate::runtime::{
     ExistingRealization, ExistingRealizationDecision, ExistingRealizationPhase,
     ExistingRealizationRecovery, PhysicalIncarnation, RebuildContinuityEvidence,
@@ -47,6 +46,7 @@ use crate::{
     RuntimeError, SandboxControlBindingRequest, container_effect_fence_from_values,
     sandbox_scope_identity,
 };
+use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory};
 mod channel;
 mod client;
 mod continuation;
