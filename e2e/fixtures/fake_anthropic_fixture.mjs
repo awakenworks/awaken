@@ -750,7 +750,9 @@ function systemLines(parsed) {
 // `opts`: `{ behavior, models, failuresBeforeSuccess, alwaysFail, failArrivalKind,
 // faultStatus, delayMs, firstDelayMs }`. `models` enables the same fixture's
 // Anthropic model-directory endpoint for Provider Connection tests.
-// `behavior` (default `'default'`) selects the reproduced scenario model; the
+// `behavior` (default `'default'`) selects a named model or a test callback
+// returning the same {text}/{tool}/{tools} reply. Callbacks inspect request
+// evidence without retaining another raw transcript or implementing HTTP/SSE. The
 // fault-injection knobs drive the runtime's retry + circuit-breaker + error paths.
 export function startFakeAnthropic(apiKey, opts = {}) {
   const {
@@ -764,7 +766,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
     failModel = null,
     failArrivalKind = null,
   } = opts;
-  const reply_of = BEHAVIORS[behavior];
+  const reply_of = typeof behavior === 'function' ? behavior : BEHAVIORS[behavior];
   if (!reply_of) throw new Error(`unknown fake-anthropic behavior: ${behavior}`);
   // `receivedRequests` is the arrival-side ledger; `requests` below is the
   // terminal-response ledger. Keeping both in this one canonical wire fixture
@@ -782,20 +784,31 @@ export function startFakeAnthropic(apiKey, opts = {}) {
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', async () => {
+      const pathname = new URL(req.url, 'http://fixture.invalid').pathname;
       const presented = req.headers['x-api-key'] ?? (req.headers.authorization ?? '').replace(/^Bearer /, '');
-      if (req.method === 'GET' && req.url.startsWith('/v1/models') && models.length > 0) {
-        if (presented !== apiKey) {
-          state.unauthorized += 1;
-          res.writeHead(401, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }));
-          return;
-        }
+      const authorize = () => {
+        if (presented === apiKey) return true;
+        state.unauthorized += 1;
+        res.writeHead(401, { 'content-type':'application/json' });
+        res.end(JSON.stringify({ type:'error', error:{ type:'authentication_error', message:'invalid x-api-key' } }));
+        return false;
+      };
+      if (req.method === 'GET' && pathname.startsWith('/v1/models') && models.length > 0) {
+        if (!authorize()) return;
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
           data: models.map((id) => ({ id })),
           has_more: false,
           last_id: models.at(-1) ?? null,
         }));
+        return;
+      }
+      // SDK count-token probes are not inference. Query parameters likewise
+      // do not rename /messages; both SDK and Native use this one wire codec.
+      if (req.method === 'POST' && pathname.endsWith('/messages/count_tokens')) {
+        if (!authorize()) return;
+        res.writeHead(200, { 'content-type':'application/json' });
+        res.end(JSON.stringify({ input_tokens:10 }));
         return;
       }
       // Count arrival before an optional response delay. Crash/recovery e2e use
@@ -818,17 +831,12 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       state.arrivals.push(arrivalKind);
       const responseDelay = state.received === 1 ? firstDelayMs || delayMs : delayMs;
       if (responseDelay > 0) await new Promise((r) => setTimeout(r, responseDelay));
-      if (req.method !== 'POST' || !req.url.endsWith('/messages')) {
+      if (req.method !== 'POST' || !pathname.endsWith('/messages')) {
         res.writeHead(404, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ type: 'error', error: { type: 'not_found_error', message: `no ${req.method} ${req.url}` } }));
         return;
       }
-      if (presented !== apiKey) {
-        state.unauthorized += 1;
-        res.writeHead(401, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }));
-        return;
-      }
+      if (!authorize()) return;
       state.attempts += 1;
       const parsed = JSON.parse(body || '{}');
       if (failArrivalKind === arrivalKind) {
@@ -864,7 +872,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
         memoryExtractor: systemText(parsed).includes('memory extraction Agent'),
         contentShape: requestContentShape(parsed),
       });
-      const reply = reply_of(parsed);
+      const reply = reply_of(parsed, state.requests.length);
       const id = `msg_${state.requests.length}`;
       const model = parsed.model ?? 'fake-model';
 

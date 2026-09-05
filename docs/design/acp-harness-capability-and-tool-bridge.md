@@ -156,9 +156,14 @@ boundary. Unsupported isolation cannot silently fall back to Workdir.
 Verification is split deliberately: protocol tests cover new/load/fallback and
 metadata; compiler tests cover capability admission; the existing tool-bridge
 E2E covers real governed tools, durable approval, restart and artifacts. The
-pinned SDK and actual ACP adapter tests use a shared loopback inference fixture
-to force an alias-emitted tool use and prove real name resolution. They require
-no external account and do not certify live model task quality.
+pinned SDK and actual ACP adapter tests use the same `fake_anthropic_fixture`
+as Native provider tests. Its behavior callback selects replies; authentication,
+model discovery, token probes and JSON/SSE encoding have one implementation.
+The ACP matrix includes three consecutive approval/relaunch boundaries with
+fresh model tool IDs, prior completed work, and final allow/deny. Each boundary
+checks the actual inference prompt and exact cumulative effects. These checks
+require no external account and do not certify live model task quality or the
+complete production Environment/Session-home recovery path.
 
 Cowork is an API application built on these mechanisms. It owns task entry and
 delivery UX; Agent publication, Session truth, tools, resource admission,
