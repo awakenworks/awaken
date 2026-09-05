@@ -7,6 +7,7 @@
 - Amended: 2026-08-29 — unattempted Dispatch projection amendment is Coordinator-owned
 - Amended: 2026-08-29 — profiled products submit typed Runs through canonical Session admission
 - Amended: 2026-08-31 — registered Workers record terminal publication rejection
+- Amended: 2026-09-06 — committed terminal Dispatch settlement survives Work retirement
 - Supersedes: the late Worker-authored Session-input path in ADR-0063,
   ADR-0065, and ADR-0066
 - Preserves: ADR-0065 claim recovery and attempt execution; ADR-0066 Session
@@ -282,6 +283,17 @@ Failure and retry rules:
   is retried only through the same phase driver;
 - archive/delete/termination remains the sole terminal Session path, retires
   Work, and is retried by the same reconciliation scan after response loss.
+- Work retirement fences further execution, but cannot prevent closure of an
+  already committed terminal Run. The existing Worker settlement endpoint may
+  finish `Done` after Work is retired, reassigned, or lost during release only
+  when the authenticated current Dispatch claim has a matching recovery snapshot
+  proving that exact Run is `Ended`. It never releases another owner's Work or
+  revives stopped Work. Missing/nonterminal proof retains the live Work
+  requirement; Dispatch settlement still checks its epoch after the recovery
+  guard is dropped. Work storage errors remain retryable failures, including a
+  lost release response; the retry uses the same committed Run and Dispatch.
+  This prevents terminal cleanup's retire-then-quiesce sequence from waiting
+  forever on a Dispatch whose completed Runtime effects already justify closure.
 
 ## FMECA and cause-effect analysis
 

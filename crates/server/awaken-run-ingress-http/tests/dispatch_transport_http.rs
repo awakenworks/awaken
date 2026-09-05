@@ -171,6 +171,18 @@ impl DispatchSettlementObserver for FailFirstTerminalSettlement {
 #[derive(Default)]
 struct RecordingSessionWork {
     releases: AtomicUsize,
+    acquisitions: AtomicUsize,
+    mode: Mutex<WorkMode>,
+}
+
+#[derive(Clone, Copy, Default)]
+enum WorkMode {
+    #[default]
+    Owned,
+    Retired,
+    Foreign,
+    ReleaseRace,
+    ReleaseResponseLost,
 }
 
 #[async_trait::async_trait]
@@ -185,13 +197,22 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for Recordin
         awaken_session_contract::work_queue::SessionWorkOwnership,
         awaken_session_contract::work_queue::WorkQueueError,
     > {
+        self.acquisitions.fetch_add(1, Ordering::SeqCst);
+        let mode = *self.mode.lock().unwrap();
+        if matches!(mode, WorkMode::Retired) {
+            return Ok(awaken_session_contract::work_queue::SessionWorkOwnership::Unowned);
+        }
         Ok(
             awaken_session_contract::work_queue::SessionWorkOwnership::Leased(
                 awaken_session_contract::work_queue::SessionWorkLease {
                     work_id: format!("work-{session_id}"),
                     environment_id: "env".into(),
                     session_id: session_id.into(),
-                    owner: worker_owner.into(),
+                    owner: if matches!(mode, WorkMode::Foreign) {
+                        "other-worker".into()
+                    } else {
+                        worker_owner.into()
+                    },
                     epoch: 1,
                     expires_at_unix_ms: now_ms + 60_000,
                 },
@@ -204,7 +225,20 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for Recordin
         _lease: &awaken_session_contract::work_queue::SessionWorkLease,
     ) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
         self.releases.fetch_add(1, Ordering::SeqCst);
-        Ok(true)
+        let mut mode = self.mode.lock().unwrap();
+        match *mode {
+            WorkMode::ReleaseRace => Ok(false),
+            WorkMode::ReleaseResponseLost => {
+                *mode = WorkMode::Retired;
+                Err(
+                    awaken_session_contract::work_queue::WorkQueueError::Storage(
+                        "release committed but its response was lost".into(),
+                    ),
+                )
+            }
+            WorkMode::Foreign => panic!("cannot release another Work owner"),
+            _ => Ok(true),
+        }
     }
 
     async fn release_worker_session_work(
@@ -240,19 +274,25 @@ fn terminal_snapshot(thread_id: &ThreadId, run_id: &RunId, state: RunState) -> R
 
 async fn claimed_terminal_dispatch(
     tag: &str,
+    child: bool,
 ) -> (Arc<MemoryDispatchStore>, RunClaim, ThreadId, ThreadId) {
     let run_id = RunId(format!("terminal-run-{tag}"));
     let thread_id = ThreadId(format!("terminal-child-{tag}"));
-    let session_thread_id = ThreadId(format!("terminal-parent-{tag}"));
+    let session_thread_id = if child {
+        ThreadId(format!("terminal-parent-{tag}"))
+    } else {
+        thread_id.clone()
+    };
     let store = Arc::new(MemoryDispatchStore::new());
-    store
-        .enqueue(
-            RunDispatch::new(activation(&run_id.0, &thread_id.0))
-                .for_session(session_thread_id.clone())
-                .with_traceparent(Some(TERMINAL_TRACEPARENT.to_string())),
-        )
-        .await
-        .unwrap();
+    let mut request = RunDispatch::new(activation(&run_id.0, &thread_id.0))
+        .for_session(session_thread_id.clone())
+        .with_traceparent(Some(TERMINAL_TRACEPARENT.to_string()));
+    if !child {
+        // Settlement starts after the root's activity receipt. Unreceipted
+        // Session admission belongs to the reservation conformance suite.
+        request = request.with_session_activity_epoch(1);
+    }
+    store.enqueue(request).await.unwrap();
     let claimed = store
         .claim("terminal-worker", 30_000, 0, &Default::default())
         .await
@@ -433,7 +473,7 @@ async fn terminal_observer_failure_withholds_remote_child_done_and_parent_work_r
     // R2=(C1,C3,C4)=>200+Done+0 releases+1 success+E3+E4.
     awaken_observability::init(&awaken_observability::ObservabilityConfig::default());
     let (store, claim, session_thread_id, thread_id) =
-        claimed_terminal_dispatch("observer-retry").await;
+        claimed_terminal_dispatch("observer-retry", true).await;
     let run_id = claim.run_id.clone();
     let observer = Arc::new(FailFirstTerminalSettlement::default());
     let work = Arc::new(RecordingSessionWork::default());
@@ -568,7 +608,8 @@ async fn remote_done_requires_one_exact_committed_terminal_recovery_prefix() {
     ];
 
     for (tag, rule, expected_status) in rules {
-        let (store, claim, session_thread_id, thread_id) = claimed_terminal_dispatch(tag).await;
+        let (store, claim, session_thread_id, thread_id) =
+            claimed_terminal_dispatch(tag, true).await;
         let run_id = claim.run_id.clone();
         let observer = Arc::new(FailFirstTerminalSettlement::default());
         let work = Arc::new(RecordingSessionWork::default());
@@ -640,6 +681,252 @@ async fn remote_done_requires_one_exact_committed_terminal_recovery_prefix() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn committed_root_done_settles_after_work_retirement_without_reopening_execution() {
+    // Causes: C1 current authenticated Dispatch claim; C2 matching committed
+    // Ended/Running/Awaiting Run; C3 Done/Awaiting request; C4 Work owned,
+    // retired, foreign, or lost between acquisition and release; C5 terminal
+    // observation configured. Effects: E1 close Done exactly once; E2 release
+    // only an owned Work; E3 retain dispatch for missing/nonterminal proof;
+    // E4 stale epoch/foreign caller cause no recovery, Work, or observer effects.
+    // Constraint: Work retirement remains the execution fence. Only C1+C2=Ended
+    // +C3=Done may finish an already committed Run after that fence disappears.
+    // | Rule | Run | request | Work | observer | status | release | outcome |
+    // | S1 | Cancelled | Done | retired | yes | 200 | 0 | E1 |
+    // | S2 | NaturalEnd | Done | foreign | yes | 200 | 0 | E1,E2 |
+    // | S3 | NaturalEnd | Done | release race | yes | 200 | 1 | E1,E2 |
+    // | S4 | NaturalEnd | Done | owned | yes | 200 | 1 | E1,E2 |
+    // | S5 | Running | Done | retired | yes | 400 | 0 | E3 |
+    // | S6 | Awaiting | Done | retired | yes | 400 | 0 | E3 |
+    // | S7 | Awaiting | Awaiting | retired | yes | 400 | 0 | E3 |
+    // | S8 | Ended | Done | retired | absent | 400 | 0 | E3 |
+    // | S9 | Ended | Done | owned | yes, stale claim/caller | 200 | 0 | E4 |
+    // Existing child R1-R6 cover mismatched/missing/unavailable recovery and
+    // observer failure; child settlement never releases borrowed parent Work.
+    let rows = [
+        (
+            "S1",
+            RunState::Ended(EndCause::Cancelled),
+            "Done",
+            WorkMode::Retired,
+            true,
+            true,
+            0,
+        ),
+        (
+            "S2",
+            RunState::Ended(EndCause::NaturalEnd),
+            "Done",
+            WorkMode::Foreign,
+            true,
+            true,
+            0,
+        ),
+        (
+            "S3",
+            RunState::Ended(EndCause::NaturalEnd),
+            "Done",
+            WorkMode::ReleaseRace,
+            true,
+            true,
+            1,
+        ),
+        (
+            "S4",
+            RunState::Ended(EndCause::NaturalEnd),
+            "Done",
+            WorkMode::Owned,
+            true,
+            true,
+            1,
+        ),
+        (
+            "S5",
+            RunState::Running,
+            "Done",
+            WorkMode::Retired,
+            true,
+            false,
+            0,
+        ),
+        (
+            "S6",
+            RunState::Awaiting,
+            "Done",
+            WorkMode::Retired,
+            true,
+            false,
+            0,
+        ),
+        (
+            "S7",
+            RunState::Awaiting,
+            "Awaiting",
+            WorkMode::Retired,
+            true,
+            false,
+            0,
+        ),
+        (
+            "S8",
+            RunState::Ended(EndCause::NaturalEnd),
+            "Done",
+            WorkMode::Retired,
+            false,
+            false,
+            0,
+        ),
+    ];
+    for (tag, state, outcome, mode, observe, accepted, releases) in rows {
+        let (store, claim, session_id, thread_id) = claimed_terminal_dispatch(tag, false).await;
+        let recovery = terminal_recovery(
+            &session_id,
+            &thread_id,
+            &claim.run_id,
+            Ok(terminal_snapshot(&thread_id, &claim.run_id, state)),
+        );
+        let observer = Arc::new(FailFirstTerminalSettlement {
+            attempts: AtomicUsize::new(1),
+            ..Default::default()
+        });
+        let work = Arc::new(RecordingSessionWork {
+            mode: Mutex::new(mode),
+            ..Default::default()
+        });
+        let mut service = WorkerDispatchService::new(
+            store.clone(),
+            Arc::new(HeaderWorkerAuthenticator),
+            Arc::new(ManualWorkerClock::new(0)),
+            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+        )
+        .with_recovery_source(recovery.clone())
+        .with_session_work_authority(work.clone());
+        if observe {
+            service = service.with_terminal_observer(observer.clone());
+        }
+        let router = dispatch_transport_router_with_service(Arc::new(service));
+        for (worker, epoch) in [
+            ("other-worker", claim.epoch),
+            ("terminal-worker", claim.epoch + 1),
+        ] {
+            let (status, value) = post(
+                &router,
+                worker,
+                "/v1/worker/dispatch/settle",
+                json!({"run_id":claim.run_id.0,"epoch":epoch,"outcome":outcome,"consumed":[]}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{tag}/S9: {value}");
+            assert_eq!(value["settled"], false, "{tag}/S9");
+        }
+        assert!(recovery.observed.lock().unwrap().is_empty(), "{tag}/S9");
+        assert_eq!(work.acquisitions.load(Ordering::SeqCst), 0, "{tag}/S9");
+        assert_eq!(observer.successes.load(Ordering::SeqCst), 0, "{tag}/S9");
+        let (status, value) = post(
+            &router,
+            "terminal-worker",
+            "/v1/worker/dispatch/settle",
+            json!({"run_id":claim.run_id.0,"epoch":claim.epoch,"outcome":outcome,"consumed":[]}),
+        )
+        .await;
+        assert_eq!(
+            status,
+            if accepted {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            "{tag}: {value}"
+        );
+        assert_eq!(work.releases.load(Ordering::SeqCst), releases, "{tag}/E2");
+        assert_eq!(
+            store.list_dispatches().await.unwrap().is_empty(),
+            accepted,
+            "{tag}/E1,E3"
+        );
+        if accepted {
+            assert_eq!(value["settled"], true, "{tag}/E1");
+            let (_, replay) = settle_terminal(&router, &claim).await;
+            assert_eq!(
+                replay["settled"], false,
+                "{tag}/replay has no current claim"
+            );
+            assert_eq!(
+                work.releases.load(Ordering::SeqCst),
+                releases,
+                "{tag}/replay"
+            );
+            assert_eq!(observer.successes.load(Ordering::SeqCst), 1, "{tag}/replay");
+        }
+    }
+}
+
+#[tokio::test]
+async fn work_release_response_loss_retries_done_from_the_same_committed_run() {
+    // S10: current claim + Ended -> Work release commits but response fails ->
+    // HTTP 500 retains Dispatch. S11: same claim retries + Work now retired ->
+    // re-observe the same committed Run, settle Done, no second Work release.
+    // No new execution, Work revival, or fabricated Runtime terminal is allowed.
+    let (store, claim, session_id, thread_id) =
+        claimed_terminal_dispatch("release-loss", false).await;
+    let recovery = terminal_recovery(
+        &session_id,
+        &thread_id,
+        &claim.run_id,
+        Ok(terminal_snapshot(
+            &thread_id,
+            &claim.run_id,
+            RunState::Ended(EndCause::Cancelled),
+        )),
+    );
+    let work = Arc::new(RecordingSessionWork {
+        mode: Mutex::new(WorkMode::ReleaseResponseLost),
+        ..Default::default()
+    });
+    let observer = Arc::new(FailFirstTerminalSettlement {
+        attempts: AtomicUsize::new(1),
+        ..Default::default()
+    });
+    let router = dispatch_transport_router_with_service(Arc::new(
+        WorkerDispatchService::new(
+            store.clone(),
+            Arc::new(HeaderWorkerAuthenticator),
+            Arc::new(ManualWorkerClock::new(0)),
+            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+        )
+        .with_recovery_source(recovery.clone())
+        .with_terminal_observer(observer)
+        .with_session_work_authority(work.clone()),
+    ));
+    assert_eq!(
+        settle_terminal(&router, &claim).await.0,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "S10"
+    );
+    assert_eq!(
+        store.list_dispatches().await.unwrap().len(),
+        1,
+        "S10 retry evidence"
+    );
+    let (status, value) = settle_terminal(&router, &claim).await;
+    assert_eq!(status, StatusCode::OK, "S11: {value}");
+    assert_eq!(value["settled"], true, "S11");
+    assert!(store.list_dispatches().await.unwrap().is_empty(), "S11");
+    assert_eq!(
+        work.releases.load(Ordering::SeqCst),
+        1,
+        "S10/S11 one physical release"
+    );
+    assert_eq!(
+        recovery.observed.lock().unwrap().as_slice(),
+        [
+            (session_id.clone(), thread_id.clone(), claim.run_id.clone()),
+            (session_id, thread_id, claim.run_id)
+        ],
+        "S10/S11 exact recovery coordinates"
+    );
 }
 
 /// Cause/effect graph and decision table for the cross-process live relay.
