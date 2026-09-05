@@ -1653,7 +1653,7 @@ struct CollectingAppender {
     /// committed messages — it lands as Thread state, matching the native engine).
     usage: TokenUsage,
     resumed_call: Option<PermissionResume>,
-    remapped_result: Option<(String, String)>,
+    remapped_result: Option<(String, PermissionResume)>,
 }
 
 impl CollectingAppender {
@@ -1714,6 +1714,30 @@ impl RunFactAppender for CollectingAppender {
             },
             AcpProjectedEvent::ToolCall { id, name, input } => {
                 self.open_text_message = None;
+                let call_id = tool_use_id(&self.run_id, id, seq);
+                let canonical_name = canonical_permission_tool_id(name);
+                if let Some((_, pending)) =
+                    self.remapped_result.as_ref().filter(|(wire, _)| wire == id)
+                {
+                    if canonical_permission_tool_id(&pending.tool_id) == canonical_name
+                        && pending.arguments == *input
+                    {
+                        return Ok(());
+                    }
+                    return Err(AppendError::Append(
+                        "approved ACP call changed after exact resume matching".into(),
+                    ));
+                }
+                let existing = self.messages.iter().position(|message| {
+                    message.content.iter().any(
+                        |block| matches!(block, ContentBlock::ToolUse { id, .. } if id == &call_id),
+                    )
+                });
+                if self.messages.iter().any(|message| message.content.iter().any(|block| {
+                    matches!(block, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == &call_id)
+                })) {
+                    return Err(AppendError::Append("ACP call arguments changed after its terminal result".into()));
+                }
                 if self.resumed_call.as_ref().is_some_and(|pending| {
                     canonical_permission_tool_id(&pending.tool_id)
                         == canonical_permission_tool_id(name)
@@ -1723,8 +1747,28 @@ impl RunFactAppender for CollectingAppender {
                         .resumed_call
                         .take()
                         .expect("matching resumed call is present");
-                    self.remapped_result = Some((id.clone(), pending.call_id));
+                    // Only attempt-local placeholder messages can be removed.
+                    // The original committed ToolUse remains the sole call owner.
+                    if let Some(index) = existing {
+                        self.messages.remove(index);
+                    }
+                    self.remapped_result = Some((id.clone(), pending));
                     return Ok(());
+                }
+                if let Some(index) = existing {
+                    for block in &mut self.messages[index].content {
+                        if let ContentBlock::ToolUse {
+                            id,
+                            name,
+                            input: staged,
+                        } = block
+                            && id == &call_id
+                        {
+                            *name = canonical_name;
+                            *staged = input.clone();
+                            return Ok(());
+                        }
+                    }
                 }
                 let message_id =
                     take_assistant_message_id(&self.run_id, &mut self.next_assistant_step);
@@ -1754,7 +1798,7 @@ impl RunFactAppender for CollectingAppender {
                 let result_id = self
                     .remapped_result
                     .take_if(|(regenerated, _)| regenerated == id)
-                    .map(|(_, original)| original)
+                    .map(|(_, original)| original.call_id)
                     .unwrap_or_else(|| tool_use_id(&self.run_id, id, seq));
                 let body = match &self.spiller {
                     Some(spiller) => {

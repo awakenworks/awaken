@@ -1178,83 +1178,161 @@ fn acp_fact_ids_follow_the_role_specific_identity_authority() {
 
 #[tokio::test]
 async fn regenerated_approved_tool_projects_as_one_logical_call() {
-    // Causes: the fixtures below establish `regenerated approved tool` with the concrete inputs,
-    // state, dependencies, and failure triggers used by this case.
-    // Effects: the observable result `projects as one logical call` and every asserted state
-    // transition or side effect must hold.
-    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
-    // remote protocol state cannot become a parallel Run or transcript truth.
-    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
-    // selects only its stated effect and preserves the authority constraint.
-    // Cause/effect/FMECA: C1=the awaiting transcript already owns original call
-    // O; C2=replacement ACP emits semantically identical call N; C3=N completes;
-    // C4=a later identical call occurs. C1+C2+C3 -> E1 suppress duplicate N use
-    // and correlate its result to O. C4 -> E2 normal new ToolUse after the one-shot
-    // remap is consumed. FM1 was two UI tool rows for one approved side effect;
-    // exact tool/arguments plus one-shot O correlation mitigates duplication
-    // without widening later authority.
-    let run = RunId("run-1".into());
-    let decision = PermissionResume {
-        call_id: "original".into(),
-        tool_id: "bash".into(),
-        arguments: serde_json::json!({"cmd": "echo approved"}),
-        allow: true,
-    };
-    let mut appender = CollectingAppender::new(
-        run,
-        "permission-resume:0".into(),
-        0,
+    // C1 the durable transcript owns original O; C2 replacement streams no
+    // placeholder/null/empty/partial input before exact T/A; C3 result arrives;
+    // C4 later call repeats T/A. R1 every C2 partition + exact T/A -> discard only
+    // staged placeholder and remap result to O once. R2 changed arguments after
+    // matching -> fail closed. R3 C4 -> normal independent ToolUse. No committed
+    // prefix is editable; this appender owns only the current uncommitted turn.
+    for placeholder in [
         None,
-        None,
-        Some(&decision),
-    );
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!({})),
+        Some(serde_json::json!({"cmd":"partial"})),
+    ] {
+        let decision = PermissionResume {
+            call_id: "original".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({"cmd":"echo approved"}),
+            allow: true,
+        };
+        let mut appender = CollectingAppender::new(
+            RunId("run-1".into()),
+            "resume:0".into(),
+            0,
+            None,
+            None,
+            Some(&decision),
+        );
+        if let Some(input) = placeholder {
+            appender
+                .append(
+                    1,
+                    &AcpProjectedEvent::ToolCall {
+                        id: "regenerated".into(),
+                        name: "bash".into(),
+                        input,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let exact = AcpProjectedEvent::ToolCall {
+            id: "regenerated".into(),
+            name: "mcp__awaken_session__bash".into(),
+            input: decision.arguments.clone(),
+        };
+        appender.append(2, &exact).await.unwrap();
+        appender.append(3, &exact).await.unwrap();
+        assert!(
+            appender.messages.is_empty(),
+            "R1 only the committed original owns this call"
+        );
+        assert!(
+            appender
+                .append(
+                    4,
+                    &AcpProjectedEvent::ToolCall {
+                        id: "regenerated".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({"cmd":"different"})
+                    }
+                )
+                .await
+                .is_err(),
+            "R2 no changed approved request"
+        );
+        appender
+            .append(
+                5,
+                &AcpProjectedEvent::ToolResult {
+                    id: "regenerated".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(appender.messages.len(), 1, "R1 one result");
+        assert!(
+            matches!(&appender.messages[0].content[0], ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "original")
+        );
+        appender
+            .append(
+                6,
+                &AcpProjectedEvent::ToolCall {
+                    id: "later".into(),
+                    name: "bash".into(),
+                    input: decision.arguments,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(&appender.messages[1].content[0], ContentBlock::ToolUse { id, .. } if id == "later"),
+            "R3 one-shot remap consumed"
+        );
+    }
+}
+
+#[tokio::test]
+async fn streaming_call_refinements_preserve_one_staged_use_and_terminal_arguments() {
+    // R1 ordinary calls stream empty -> partial -> exact input, interleaved with
+    // another call: refine only the matching use and retain order/message ids.
+    // R2 a result closes that use -> later argument mutation fails, never changes
+    // the completed request. This includes AlwaysAllow tools with no Await edge.
+    let mut appender =
+        CollectingAppender::new(RunId("run".into()), "0".into(), 0, None, None, None);
+    for (seq, id, input) in [
+        (1, "a", serde_json::json!({})),
+        (2, "b", serde_json::json!({"path":"b"})),
+        (3, "a", serde_json::json!({"path":"partial"})),
+        (4, "a", serde_json::json!({"path":"a"})),
+    ] {
+        appender
+            .append(
+                seq,
+                &AcpProjectedEvent::ToolCall {
+                    id: id.into(),
+                    name: "read".into(),
+                    input,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(appender.messages.len(), 2, "R1 no duplicate use");
+    for (index, expected) in [(0, "a"), (1, "b")] {
+        assert!(
+            matches!(&appender.messages[index].content[0], ContentBlock::ToolUse { id, input, .. } if id == expected && input == &serde_json::json!({"path":expected})),
+            "R1 exact correspondence"
+        );
+    }
     appender
         .append(
-            1,
-            &AcpProjectedEvent::ToolCall {
-                id: "regenerated".into(),
-                name: "bash".into(),
-                input: decision.arguments.clone(),
-            },
-        )
-        .await
-        .unwrap();
-    appender
-        .append(
-            2,
+            5,
             &AcpProjectedEvent::ToolResult {
-                id: "regenerated".into(),
+                id: "a".into(),
                 content: "ok".into(),
                 is_error: false,
             },
         )
         .await
         .unwrap();
-    assert_eq!(
-        appender.messages.len(),
-        1,
-        "E1: regenerated use is not duplicated"
+    assert!(
+        appender
+            .append(
+                6,
+                &AcpProjectedEvent::ToolCall {
+                    id: "a".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({"path":"changed"})
+                }
+            )
+            .await
+            .is_err(),
+        "R2 no post-result mutation"
     );
-    assert!(matches!(
-        &appender.messages[0].content[0],
-        ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "original"
-    ));
-
-    appender
-        .append(
-            3,
-            &AcpProjectedEvent::ToolCall {
-                id: "later".into(),
-                name: "bash".into(),
-                input: decision.arguments,
-            },
-        )
-        .await
-        .unwrap();
-    assert!(matches!(
-        &appender.messages[1].content[0],
-        ContentBlock::ToolUse { id, .. } if id == "later"
-    ));
 }
 
 /// Records every lifecycle event the executor emits during bring-up.
@@ -2360,6 +2438,20 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                             if attempt == 0 {
                                 output.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"permission-session\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"tool-1\",\"title\":\"bash\",\"rawInput\":{}}}}\n").await.unwrap();
                             }
+                            if attempt > 0 {
+                                // AR4 actual SDK emits a new placeholder and then
+                                // rawInput progress before the regenerated ask.
+                                for update in [
+                                    serde_json::json!({"sessionUpdate":"tool_call","toolCallId":"tool-2","title":"bash","rawInput":{}}),
+                                    serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"tool-2","rawInput":{"cmd":"echo ok"}}),
+                                ] {
+                                    let frame = serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"permission-session","update":update}});
+                                    output
+                                        .write_all(format!("{frame}\n").as_bytes())
+                                        .await
+                                        .unwrap();
+                                }
+                            }
                             output
                                 .write_all(
                                     if attempt == 0 {
@@ -2380,7 +2472,17 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                             if attempt == 0 {
                                 return;
                             }
+                            let rejected = line.contains("reject");
+                            let terminal = serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"permission-session","update":{
+                                "sessionUpdate":"tool_call_update", "toolCallId":"tool-2",
+                                "status":if rejected {"failed"} else {"completed"},
+                                "content":[{"type":"content","content":{"type":"text","text":if rejected {"denied"} else {"ok"}}}]
+                            }}});
                             let output = lines.get_mut();
+                            output
+                                .write_all(format!("{terminal}\n").as_bytes())
+                                .await
+                                .unwrap();
                             output.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"permission-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"continued\"}}}}\n").await.unwrap();
                             output.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}\n").await.unwrap();
                             output.flush().await.unwrap();
@@ -2527,7 +2629,34 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
             .filter(|message| message.role == Role::Assistant)
             .filter_map(|message| message.id.assistant_step_of(&run))
             .collect::<Vec<_>>();
-        assert_eq!(assistant_steps, vec![0, 1], "AR1-AR2/E6");
+        assert_eq!(
+            assistant_steps,
+            vec![0, 2],
+            "AR4 discarded staging ids are never reused"
+        );
+        let messages = committed.messages();
+        let uses = messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(uses, ["tool-1"], "AR4 one original ToolUse across commits");
+        let results = messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            results,
+            ["tool-1"],
+            "AR4 allowed/denied result answers original exactly once"
+        );
         assert!(
             committed
                 .resume_ticket_for(&RunId("run-1".into()))

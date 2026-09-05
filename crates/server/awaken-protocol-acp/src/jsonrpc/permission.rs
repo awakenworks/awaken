@@ -32,6 +32,27 @@ impl PermissionContext {
         }
     }
 
+    /// Streaming progress refines only a previously observed exact call. Titles
+    /// on progress updates are presentation text, so retain its original identity.
+    pub(super) fn refined_call(
+        &self,
+        update: &agent_client_protocol::ToolCallUpdate,
+    ) -> Option<AcpProjectedEvent> {
+        let id = update.tool_call_id.0.as_ref();
+        let observed = self.matching_observed_tool(id)?;
+        let input = update
+            .fields
+            .raw_input
+            .as_ref()
+            .filter(|input| !input.is_null())?;
+        let input = crate::exact_mcp_tool_arguments(&observed.name, input);
+        (input != observed.input).then(|| AcpProjectedEvent::ToolCall {
+            id: id.to_owned(),
+            name: observed.name.clone(),
+            input,
+        })
+    }
+
     fn matching_observed_tool(&self, call_id: &str) -> Option<&ObservedToolCall> {
         let candidate = self.observed_tools.get_key_value(call_id);
         let requested_id = (!call_id.is_empty()).then_some(call_id);
