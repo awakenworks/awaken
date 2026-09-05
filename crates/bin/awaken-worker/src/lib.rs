@@ -134,6 +134,55 @@ pub struct WorkerNodeBuilder {
     credential_observation_ttl: std::time::Duration,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkerRealizationScopeSource {
+    KubernetesNamespace,
+    PersistedLocalWorkspace,
+}
+
+/// Select the sole stable installation coordinate consumed by container
+/// realization. Keeping this decision closed and pure prevents deployment
+/// manifests from inventing a second Workspace marker for Kubernetes Workers.
+const fn worker_realization_scope_source(
+    sandbox_tier: awaken_session_executor::SandboxTier,
+) -> WorkerRealizationScopeSource {
+    match sandbox_tier {
+        awaken_session_executor::SandboxTier::K8s => WorkerRealizationScopeSource::KubernetesNamespace,
+        awaken_session_executor::SandboxTier::Local
+        | awaken_session_executor::SandboxTier::Namespace
+        | awaken_session_executor::SandboxTier::Docker
+        | awaken_session_executor::SandboxTier::Podman => {
+            WorkerRealizationScopeSource::PersistedLocalWorkspace
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn worker_realization_scope_source_is_total_and_exact() {
+    // Cause/effect decision table. C1 is one of the five closed SandboxTier
+    // variants. E1 K8s selects only its Kubernetes namespace; E2 every host-local
+    // tier selects only the persisted local Workspace. R1 C1=K8s=>E1;
+    // R2 C1 in {Local,Namespace,Docker,Podman}=>E2. The symbolic index covers
+    // every variant and proves no local marker can become a Kubernetes startup
+    // precondition.
+    let index: u8 = kani::any();
+    kani::assume(index < 5);
+    let tier = match index {
+        0 => awaken_session_executor::SandboxTier::Local,
+        1 => awaken_session_executor::SandboxTier::Namespace,
+        2 => awaken_session_executor::SandboxTier::Docker,
+        3 => awaken_session_executor::SandboxTier::Podman,
+        4 => awaken_session_executor::SandboxTier::K8s,
+        _ => unreachable!(),
+    };
+    let source = worker_realization_scope_source(tier);
+    assert_eq!(
+        source == WorkerRealizationScopeSource::KubernetesNamespace,
+        tier == awaken_session_executor::SandboxTier::K8s
+    );
+}
+
 /// Project the physical installation scope shared by every interchangeable
 /// Worker that can realize the same durable Session substrate. Kubernetes owns
 /// a namespace-wide substrate, whereas host-local runtimes retain the existing
@@ -143,18 +192,21 @@ pub struct WorkerNodeBuilder {
 fn worker_realization_namespace(
     deployment: &awaken_session_executor::DeploymentConfig,
 ) -> Result<awaken_sandbox_container::ContainerRealizationNamespace, WorkerNodeBuildError> {
-    let installation_scope = if deployment.sandbox_tier == awaken_session_executor::SandboxTier::K8s {
-        std::borrow::Cow::Borrowed(deployment.sandbox.k8s_namespace.as_str())
-    } else {
-        let installation_root = deployment.storage_dir.as_deref().ok_or_else(|| {
-            WorkerNodeBuildError(
-                "container Worker requires DeploymentConfig::storage_dir for stable realization identity"
-                    .into(),
+    let installation_scope = match worker_realization_scope_source(deployment.sandbox_tier) {
+        WorkerRealizationScopeSource::KubernetesNamespace => {
+            std::borrow::Cow::Borrowed(deployment.sandbox.k8s_namespace.as_str())
+        }
+        WorkerRealizationScopeSource::PersistedLocalWorkspace => {
+            let installation_root = deployment.storage_dir.as_deref().ok_or_else(|| {
+                WorkerNodeBuildError(
+                    "container Worker requires DeploymentConfig::storage_dir for stable realization identity"
+                        .into(),
+                )
+            })?;
+            std::borrow::Cow::Owned(
+                awaken_session_executor::SharedHost::provision_local_workspace_at(installation_root),
             )
-        })?;
-        std::borrow::Cow::Owned(
-            awaken_session_executor::SharedHost::provision_local_workspace_at(installation_root),
-        )
+        }
     };
     awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
         "worker-installation",

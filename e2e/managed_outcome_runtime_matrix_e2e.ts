@@ -4,12 +4,14 @@
 //
 // Cause/effect graph: C1=Worker backend is Native/ACP; C2=Judge backend is
 // Native/ACP; C3=definition uses Text/File rubric; C4=max_iterations is omitted,
-// null, or explicit. Effects: E1=all backend pairs project the same ordered
+// null, or explicit; C5=ACP execution owns its physical Environment and the
+// canonical Session tool-export adapter. Effects: E1=all backend pairs project the same ordered
 // Outcome lifecycle; E2=the retained public definition preserves C3/C4 exactly;
 // E3=only execution maps omitted/null to default 3; E4=explicit limits and input
-// boundaries are enforced. Decision table:
+// boundaries are enforced; E5=ACP Judge reaches its terminal Grade through the
+// same environment/tool composition as an ordinary ACP Run. Decision table:
 // | Rule | Worker/Judge | Rubric | max | Effect |
-// | M1-M4 | Native/ACP cross product | Text | 3 | E1 satisfied at iteration 1 |
+// | M1-M4 | Native/ACP cross product | Text | 3 | E1+E5 satisfied at iteration 1 |
 // | P1 | Native | Text | omitted | E2 null on wire; E3 three Grades |
 // | P2 | Native | Text | null | E2 null on wire; E3 three Grades |
 // | P3 | Native | File | 2 | E2 exact File id + 2; E4 two Grades |

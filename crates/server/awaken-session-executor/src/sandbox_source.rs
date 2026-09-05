@@ -29,6 +29,54 @@ pub(crate) struct BoundLocalChannelSource {
     mcp_servers: Vec<awaken_run_executor_acp::SessionMcpServer>,
 }
 
+/// The single launch-kind decision for Session MCP route ownership.
+/// Projected catalog CLIs must pass their adapter capability gate, the trusted
+/// official-ACP fixture consumes routes already admitted by the Host, and the
+/// legacy newline fixture has no ACP `session/new` surface at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AcpMcpProjectionAdmission {
+    CatalogChecked,
+    TrustedFixedAcp,
+    Omit,
+}
+
+#[must_use]
+const fn acp_mcp_projection_admission(
+    projected: bool,
+    trusted_fixed_acp: bool,
+) -> AcpMcpProjectionAdmission {
+    if projected {
+        AcpMcpProjectionAdmission::CatalogChecked
+    } else if trusted_fixed_acp {
+        AcpMcpProjectionAdmission::TrustedFixedAcp
+    } else {
+        AcpMcpProjectionAdmission::Omit
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn acp_mcp_projection_has_one_exact_authority() {
+    // Causes: C1 the launch is selected from the CLI catalog; C2 the launch is
+    // the trusted official-ACP fixture. Constraint K1: C1 and C2 are mutually
+    // exclusive variants of `LaunchSource`. Effects: E1 catalog capability
+    // checking owns admission; E2 preserve Host-admitted routes exactly; E3
+    // omit routes for the newline-only fixture. Decision table: R1 C1=>E1;
+    // R2 !C1+C2=>E2; R3 !C1+!C2=>E3. The impossible C1+C2 combination is
+    // constrained out so no synthetic precedence is credited as coverage.
+    let projected = kani::any::<bool>();
+    let trusted_fixed_acp = kani::any::<bool>();
+    kani::assume(!(projected && trusted_fixed_acp));
+    let selected = acp_mcp_projection_admission(projected, trusted_fixed_acp);
+    if projected {
+        assert_eq!(selected, AcpMcpProjectionAdmission::CatalogChecked);
+    } else if trusted_fixed_acp {
+        assert_eq!(selected, AcpMcpProjectionAdmission::TrustedFixedAcp);
+    } else {
+        assert_eq!(selected, AcpMcpProjectionAdmission::Omit);
+    }
+}
+
 impl BoundLocalChannelSource {
     pub(crate) fn from_environment(
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
@@ -180,11 +228,17 @@ impl AgentChannelSource for BoundLocalChannelSource {
                 .await
                 .map_err(|error| OpenError(format!("credential_provision_failed: {error}")))?;
         }
-        let mcp_session_servers = match cli {
-            Some(cli) => {
+        let mcp_projection = acp_mcp_projection_admission(
+            cli.is_some(),
+            matches!(&self.launch, LaunchSource::FixedAcp(_)),
+        );
+        let mcp_session_servers = match mcp_projection {
+            AcpMcpProjectionAdmission::CatalogChecked => {
+                let cli = cli.expect("catalog admission requires the selected CLI");
                 awaken_run_executor_acp::admit_mcp_session_servers(cli, &self.mcp_servers)?
             }
-            None => Vec::new(),
+            AcpMcpProjectionAdmission::TrustedFixedAcp => self.mcp_servers.clone(),
+            AcpMcpProjectionAdmission::Omit => Vec::new(),
         };
         let (process, channel) = self
             .sandbox
@@ -1027,6 +1081,56 @@ mod tests {
                 expect_path,
                 "L1/L3: host lookup belongs only to a local launch"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn trusted_fixed_acp_preserves_routes_while_newline_fixed_omits_them() {
+        // Causes: C1 a trusted fixed launch speaks official ACP or newline;
+        // C2 the Host supplies one already-admitted process-local MCP route.
+        // Effects: E1 FixedAcp preserves the exact route for `session/new`; E2
+        // Fixed omits it because newline has no ACP MCP projection. Constraint:
+        // catalog capability checking is inapplicable because neither fixed
+        // launch has a catalog CLI. Rules F1=C1(ACP)+C2=>E1 and
+        // F2=C1(newline)+C2=>E2 cover both fixed launch variants.
+        let routes = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(
+            &std::collections::BTreeMap::from([(
+                "acp".to_string(),
+                serde_json::json!({ "mcp_servers": [{
+                    "name": "awaken-session",
+                    "transport": { "kind": "http", "url": "http://mcp.invalid" }
+                }] }),
+            )]),
+        )
+        .mcp_servers;
+        let mcp_servers = awaken_run_executor_acp::mcp_session_servers_from_routes(&routes);
+
+        for (official_acp, expected_routes) in [(true, 1), (false, 0)] {
+            let sandbox = Arc::new(CapturingAgentSandbox::default());
+            let launch = AcpLaunch::custom(vec!["fixture".into()], vec![]);
+            let source = BoundLocalChannelSource {
+                sandbox,
+                launch: if official_acp {
+                    LaunchSource::FixedAcp(Box::new(launch))
+                } else {
+                    LaunchSource::Fixed(Box::new(launch))
+                },
+                codec: if official_acp {
+                    awaken_run_executor_acp::Codec::Acp
+                } else {
+                    awaken_run_executor_acp::Codec::Newline
+                },
+                backend: awaken_runtime_contract::resolved::Backend::from_ref("acp:fixture"),
+                mcp_servers: mcp_servers.clone(),
+            };
+            let session = source
+                .open(
+                    &acp_activation("acp:fixture"),
+                    &awaken_runtime_contract::RuntimeRunContext::new(),
+                )
+                .await
+                .expect("open fixed launch");
+            assert_eq!(session.mcp_session_servers.len(), expected_routes);
         }
     }
 

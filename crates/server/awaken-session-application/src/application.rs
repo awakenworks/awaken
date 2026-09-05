@@ -1011,12 +1011,10 @@ impl RepositoryEnvironmentBindingSink {
         session: &awaken_session_contract::PersistedSession,
         receipt: &awaken_session_contract::SessionEnvironmentReceipt,
     ) -> Result<awaken_session_contract::SessionEnvironmentState, RunError> {
-        if session.is_terminal() {
-            return Err(RunError::classified(
-                "session_environment_receipt_rejected",
-                "terminal Session cannot publish an Environment binding",
-            ));
-        }
+        // The aggregate receipt kernel has already restricted terminal writes
+        // to the Fenced join window. Accept its exact Store-read Resident value
+        // so terminal cleanup can dispose an Environment whose provider effect
+        // crossed the archive CAS; this function must not re-decide that phase.
         match &session.environment {
             awaken_session_contract::SessionEnvironmentState::Resident {
                 binding,

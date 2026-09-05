@@ -1106,10 +1106,12 @@ async fn happy_path_projects_message_and_idle() {
     // Send-response cause/effect rules: C1 one valid User Event is atomically
     // retained; C2 the opportunistic reconciler may or may not finish before the
     // HTTP response. Effects: W1 returns the complete inbound DTO and stable id;
-    // W2 permits `processed_at` to be null only while queued, while the eventual
-    // history contains the same id marked processed; W3 the committed root Run
+    // W2 keeps the admission receipt's `processed_at` null even if the
+    // opportunistic drive wins, while eventual history contains the same id
+    // marked processed; W3 the committed root Run
     // emits Running/Idle using the public primary Thread id. Decision rules:
-    // R1=C1+not-C2 -> W1+nullable W2; R2=C1+C2 -> W1+timestamp W2; both -> W3.
+    // R1=C1+not-C2 -> W1+W2; R2=C1+C2 -> W1+W2; both -> W3. This keeps an
+    // idempotent response independent of the processing race.
     let sent = json_call(
         &app,
         "POST",
@@ -1127,10 +1129,7 @@ async fn happy_path_projects_message_and_idle() {
         "R1/R2 W1"
     );
     assert!(sent["data"][0]["id"].is_string(), "R1/R2 W1");
-    assert!(
-        sent["data"][0]["processed_at"].is_null() || sent["data"][0]["processed_at"].is_string(),
-        "R1/R2 W2"
-    );
+    assert!(sent["data"][0]["processed_at"].is_null(), "R1/R2 W2");
     let list = json_call(
         &app,
         "GET",
@@ -2461,6 +2460,10 @@ async fn hitl_await_confirm_resume() {
     assert_eq!(confirmation["data"][0]["tool_use_id"], public_tool_id);
     assert_eq!(confirmation["data"][0]["result"], "allow");
     assert!(confirmation["data"][0].get("content").is_none());
+    assert!(
+        confirmation["data"][0]["processed_at"].is_null(),
+        "H6/E1 receipt is the immutable admission view"
+    );
     let list = json_call(
         &app,
         "GET",

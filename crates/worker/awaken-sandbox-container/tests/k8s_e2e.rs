@@ -339,6 +339,36 @@ fn kubectl(args: &[&str]) -> std::process::Output {
         .expect("kubectl runs")
 }
 
+fn assert_pod_present(pod: &str, rule: &str) {
+    let mut observed = kubectl(&[
+        "get",
+        "pod",
+        pod,
+        "-o",
+        "jsonpath={.metadata.uid}:{.status.phase}:{.metadata.deletionTimestamp}",
+    ]);
+    for _ in 0..4 {
+        if observed.status.success() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        observed = kubectl(&[
+            "get",
+            "pod",
+            pod,
+            "-o",
+            "jsonpath={.metadata.uid}:{.status.phase}:{.metadata.deletionTimestamp}",
+        ]);
+    }
+    assert!(
+        observed.status.success(),
+        "{rule} expected the exact Pod to remain observable: status={}, stdout={}, stderr={}",
+        observed.status,
+        String::from_utf8_lossy(&observed.stdout),
+        String::from_utf8_lossy(&observed.stderr)
+    );
+}
+
 fn pod_of(sandbox: &ContainerSandbox<K8sRuntime>) -> String {
     container_id(&pc::Sandbox::handle(sandbox))
 }
@@ -620,15 +650,18 @@ async fn a_k8s_pod_rotates_and_persists_a_native_credential_file() {
 async fn live_credential_failures_preserve_the_k8s_environment_for_retry() {
     /* Credential-disposal FMECA cause/effect graph on the real apiserver:
      * C1 a durable writable credential exists; C2 remote `cat` exits 0;
-     * C3 the broker accepts replacement material. Effects: E1 successful
+     * C3 the broker accepts replacement material; C4 the Kubernetes exec
+     * transport is temporarily unavailable. Effects: E1 successful
      * harvest removes the Pod (covered by the preceding test); E2 !C2 or !C3
      * returns an error, keeps authoritative bytes unchanged, and preserves the
-     * exact Pod for retry.
+     * exact Pod for retry; E3 C4 is distinguished from the intended injected
+     * fault and retries the same idempotent preparation without deleting.
      *
      * | Rule | C2 remote read | C3 broker write | Result |
      * | KCF1 | success | success | E1 |
      * | KCF2 | failure | - | E2 |
      * | KCF3 | success | failure | E2 |
+     * | KCF4 | unavailable then target result | any | E3 then KCF2/KCF3 |
      */
     if !require_live_cluster() {
         return;
@@ -662,12 +695,25 @@ async fn live_credential_failures_preserve_the_k8s_environment_for_retry() {
         "/acp-config/auth.json",
     ]);
     assert!(removed.status.success(), "remove live credential fixture");
-    let error = pc::Sandbox::dispose(&sandbox)
-        .await
-        .expect_err("KCF2 remote read failure must block disposal");
+    let mut read_error = None;
+    for _ in 0..4 {
+        let error = pc::Sandbox::dispose(&sandbox)
+            .await
+            .expect_err("KCF2 remote read failure must block disposal");
+        if error.to_string().contains("exit code") {
+            read_error = Some(error);
+            break;
+        }
+        assert!(
+            error.to_string().contains("Connect"),
+            "KCF2 unexpected preparation error: {error}"
+        );
+        assert_pod_present(&pod, "KCF4 after transient KCF2 transport failure");
+    }
+    let error = read_error.expect("KCF2 reaches the injected remote read failure after retries");
     assert!(error.to_string().contains("exit code"), "KCF2: {error}");
     assert_eq!(read_broker.current.lock().unwrap().as_slice(), initial);
-    assert!(kubectl(&["get", "pod", &pod]).status.success(), "KCF2");
+    assert_pod_present(&pod, "KCF2");
     cleanup_credential_pod(&pod);
 
     let write_scope = format!("k8s-credential-write-failure-{}", std::process::id());
@@ -685,15 +731,28 @@ async fn live_credential_failures_preserve_the_k8s_environment_for_retry() {
         .await
         .expect("create credential Pod");
     let pod = pod_of(&sandbox);
-    let error = pc::Sandbox::dispose(&sandbox)
-        .await
-        .expect_err("KCF3 broker rejection must block disposal");
+    let mut write_error = None;
+    for _ in 0..4 {
+        let error = pc::Sandbox::dispose(&sandbox)
+            .await
+            .expect_err("KCF3 broker rejection must block disposal");
+        if error.to_string().contains("broker rejection") {
+            write_error = Some(error);
+            break;
+        }
+        assert!(
+            error.to_string().contains("Connect"),
+            "KCF3 unexpected preparation error: {error}"
+        );
+        assert_pod_present(&pod, "KCF4 after transient KCF3 transport failure");
+    }
+    let error = write_error.expect("KCF3 reaches the injected broker failure after retries");
     assert!(
         error.to_string().contains("broker rejection"),
         "KCF3: {error}"
     );
     assert_eq!(write_broker.current.lock().unwrap().as_slice(), initial);
-    assert!(kubectl(&["get", "pod", &pod]).status.success(), "KCF3");
+    assert_pod_present(&pod, "KCF3");
     cleanup_credential_pod(&pod);
 }
 
@@ -936,10 +995,7 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
         .prepare_disposal_for_effect(&terminal_fence)
         .await
         .expect("KLI2/E4 prepare source-dependent effects");
-    assert!(
-        kubectl(&["get", "pod", &pod]).status.success(),
-        "KLI2/E4 preparation has zero physical effect"
-    );
+    assert_pod_present(&pod, "KLI2/E4 preparation has zero physical effect");
     recovered
         .dispose_for_effect(&disposal_authorization(&terminal_fence))
         .await
@@ -1151,10 +1207,7 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
         .await
         .expect("R4 prepare source-dependent cleanup after Memory is durable");
     let pod = container_id(&handle);
-    assert!(
-        kubectl(&["get", "pod", &pod]).status.success(),
-        "R4 provider preparation has zero physical effect"
-    );
+    assert_pod_present(&pod, "R4 provider preparation has zero physical effect");
     sandbox
         .dispose_for_effect(&disposal_authorization(&terminal_fence))
         .await

@@ -17,10 +17,10 @@ fn container_realization_namespace_is_installation_wide() {
     // incarnation. Effects: E1 equal C2 preserves one physical namespace across
     // C3; E2 different C2 cannot discover another installation's substrate; E3
     // Kubernetes never substitutes a per-Pod local Workspace for its existing
-    // namespace authority.
+    // namespace authority; E4 a missing local storage root cannot block K8s.
     //
     // | Rule | C1 | C2 | Effect |
-    // | R1 | Kubernetes | equal namespace | E1+E3 same realization namespace |
+    // | R1 | Kubernetes | equal namespace | E1+E3+E4 same realization namespace |
     // | R2 | Kubernetes | different namespace | E2 different realization namespace |
     // | R3 | host-local | equal/different Workspace | E1/E2 respectively |
     //
@@ -38,7 +38,14 @@ fn container_realization_namespace_is_installation_wide() {
     let worker_a = kubernetes("installation-a", first_root.path());
     let replacement = kubernetes("installation-a", replacement_root.path());
     let other_installation = kubernetes("installation-b", first_root.path());
+    let mut markerless_kubernetes = awaken_session_executor::DeploymentConfig::ephemeral();
+    markerless_kubernetes.sandbox_tier = awaken_session_executor::SandboxTier::K8s;
+    markerless_kubernetes.sandbox.k8s_namespace = "installation-a".into();
+    markerless_kubernetes.storage_dir = None;
+    let markerless = worker_realization_namespace(&markerless_kubernetes)
+        .expect("Kubernetes does not require a local Workspace marker");
     assert_eq!(worker_a, replacement, "R1/E1-E3");
+    assert_eq!(worker_a, markerless, "R1/E4");
     assert_ne!(worker_a, other_installation, "R2/E2");
 
     let local = |root: &std::path::Path| {

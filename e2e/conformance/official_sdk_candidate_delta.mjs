@@ -149,7 +149,7 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
   if (delta.declarations.added.length > 0 || delta.declarations.removed.length > 0) {
     throw new Error('candidate adds or removes scoped declaration files; review the SDK scope');
   }
-  const supportedDeclaration = /^(?:beta\/(?:agents\/agents|deployment-runs|deployments|dreams|files|memory-stores\/memories|sessions\/(?:events|sessions)|skills|user-profiles|webhooks)\.d\.ts$|beta\/(?:files|skills)\/.*\.d\.ts$|managed\/(?:lib\/sessions\/accumulate|tools\/agent-toolset\/(?:node(?:\.browser)?|skills))\.d\.ts$)/u;
+  const supportedDeclaration = /^(?:beta\/.+\.d\.ts|ga\/.+\.d\.ts|managed\/(?:lib\/sessions\/accumulate|tools\/agent-toolset\/(?:fs-util|node(?:\.browser)?|skills))\.d\.ts)$/u;
   const unsupportedDeclaration = delta.declarations.changed.find(
     ({ path }) => !supportedDeclaration.test(path),
   );
@@ -169,14 +169,15 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
     throw new Error('candidate changes the Managed helper export surface; add explicit behavior ownership');
   }
   const runtimeOwners = [
+    /^client\.mjs$/u,
     /^(?:core\/middleware|internal\/(?:errors|parse|uploads))\.mjs$/u,
+    /^core\/streaming\.mjs$/u,
     /^core\/credentials\.mjs$/u,
     /^internal\/(?:file-store|node)\.mjs$/u,
     /^lib\/credentials\/(?:credential-chain|identity-token|types|user-oauth)\.mjs$/u,
     /^lib\/middleware\.mjs$/u,
     /^lib\/sessions\/accumulate\.mjs$/u,
-    /^resources\/beta\/(?:files|webhooks)\.mjs$/u,
-    /^resources\/beta\/skills\/(?:skills|versions)\.mjs$/u,
+    /^resources\/(?:beta\/.+|files|models|skills\/(?:skills|versions))\.mjs$/u,
     /^tools\/agent-toolset\/(?:fs-util|memories|node|skills)\.mjs$/u,
     /^version\.mjs$/u,
   ];

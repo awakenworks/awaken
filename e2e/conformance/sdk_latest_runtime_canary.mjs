@@ -6,10 +6,12 @@
 import assert from 'node:assert/strict';
 import {
   existsSync,
+  chmodSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -146,6 +148,9 @@ const managedTypeChangePaths = [
   'beta/user-profiles.d.ts',
 ];
 const managedTypesV123 = managedTypeChangePaths.every((path) => declarationChanged.has(path));
+const workspaceRuntimeChanges = candidateDelta.runtime.changed
+  .map(({ path }) => path)
+  .filter((path) => path.startsWith('resources/'));
 const MISSING_FILE_ID = 'file_missing';
 const webhookProfile = exerciseOfficialWebhookContract(Anthropic);
 completeBehaviorOwner('candidate.webhook-helpers');
@@ -155,6 +160,7 @@ compileOfficialSdkChangePoints(packageRoot, {
   parseUnverified: webhookProfile.parseUnverified,
   resolveSkillVersion: hasResolveSkillVersion,
   managedTypesV123,
+  workspaceRouting: workspaceRuntimeChanges.length > 0,
 });
 completeBehaviorOwner('candidate.typescript-change-points');
 if (managedTypesV123) completeBehaviorOwner('candidate.managed-type-change-points');
@@ -226,6 +232,121 @@ async function exerciseSdkCoreTransport() {
   pass(`registry SDK ${manifest.version} preserves exact transport identity`);
 }
 
+async function exerciseWorkspaceRequestRouting() {
+  if (workspaceRuntimeChanges.length === 0) return;
+  // Cause/effect graph: C1 each changed generated Resource module accepts one
+  // request-scoped Workspace; C2 credentials may address multiple Workspaces;
+  // C3 the selector is absent from query/body transport. Effects: E1 every
+  // changed module sends the exact header once; E2 no URL leaks the selector.
+  // Decision rule W1=C1+C2+C3=>E1+E2. The changed-module inventory is derived
+  // from the reviewed package delta, so a missing or extra probe fails closed.
+  const workspaceID = 'workspace_candidate_request';
+  const observed = [];
+  for (const runtimePath of workspaceRuntimeChanges) {
+    const source = readFileSync(resolve(packageRoot, runtimePath), 'utf8');
+    const destructures = source.match(
+      /const \{[^}]*\bworkspace_id\b[^}]*\} = params(?: \?\? \{\})?;/gu,
+    ) ?? [];
+    const headers = source.match(/'anthropic-workspace-id'/gu) ?? [];
+    const guards = source.match(/workspace_id != null/gu) ?? [];
+    assert.ok(destructures.length > 0, `${runtimePath}: W1 Workspace selector is absent`);
+    assert.equal(headers.length, destructures.length, `${runtimePath}: W1 header coverage`);
+    assert.equal(guards.length, destructures.length, `${runtimePath}: W1 omission guard coverage`);
+  }
+  const client = new Anthropic({
+    apiKey: 'transport-only', // awaken-allow: secret
+    baseURL: 'https://managed.invalid',
+    maxRetries: 0,
+    fetch: async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const url = new URL(request.url);
+      assert.equal(
+        request.headers.get('anthropic-workspace-id'),
+        workspaceID,
+        'W1 exact request-scoped Workspace header',
+      );
+      assert.equal(url.searchParams.has('workspace_id'), false, 'W1 no Workspace query leak');
+      observed.push(url.pathname);
+      return new Response(JSON.stringify({
+        data: [],
+        first_id: null,
+        has_more: false,
+        last_id: null,
+        next_page: null,
+      }), {
+        headers: {
+          'anthropic-workspace-id': workspaceID,
+          'content-type': 'application/json',
+          'request-id': 'request_workspace_candidate',
+        },
+      });
+    },
+  });
+  const probes = new Map([
+    ['resources/beta/agents/agents.mjs', () => client.beta.agents.list({ workspace_id: workspaceID })],
+    ['resources/beta/agents/versions.mjs', () => client.beta.agents.versions.list('agent_candidate', { workspace_id: workspaceID })],
+    ['resources/beta/deployment-runs.mjs', () => client.beta.deploymentRuns.list({ workspace_id: workspaceID })],
+    ['resources/beta/deployments.mjs', () => client.beta.deployments.list({ workspace_id: workspaceID })],
+    ['resources/beta/dreams.mjs', () => client.beta.dreams.list({ workspace_id: workspaceID })],
+    ['resources/beta/environments/environments.mjs', () => client.beta.environments.list({ workspace_id: workspaceID })],
+    ['resources/beta/environments/work.mjs', () => client.beta.environments.work.stats('env_candidate', { workspace_id: workspaceID })],
+    ['resources/beta/files.mjs', () => client.beta.files.list({ workspace_id: workspaceID })],
+    ['resources/beta/memory-stores/memories.mjs', () => client.beta.memoryStores.memories.list('memstore_candidate', { workspace_id: workspaceID })],
+    ['resources/beta/memory-stores/memory-stores.mjs', () => client.beta.memoryStores.list({ workspace_id: workspaceID })],
+    ['resources/beta/memory-stores/memory-versions.mjs', () => client.beta.memoryStores.memoryVersions.list('memstore_candidate', { workspace_id: workspaceID })],
+    ['resources/beta/models.mjs', () => client.beta.models.list({ workspace_id: workspaceID })],
+    ['resources/beta/sessions/events.mjs', () => client.beta.sessions.events.list('session_candidate', { workspace_id: workspaceID })],
+    ['resources/beta/sessions/resources.mjs', () => client.beta.sessions.resources.list('session_candidate', { workspace_id: workspaceID })],
+    ['resources/beta/sessions/sessions.mjs', () => client.beta.sessions.list({ workspace_id: workspaceID })],
+    ['resources/beta/sessions/threads/events.mjs', () => client.beta.sessions.threads.events.list('thread_candidate', { session_id: 'session_candidate', workspace_id: workspaceID })],
+    ['resources/beta/sessions/threads/threads.mjs', () => client.beta.sessions.threads.list('session_candidate', { workspace_id: workspaceID })],
+    ['resources/beta/skills/skills.mjs', () => client.beta.skills.list({ workspace_id: workspaceID })],
+    ['resources/beta/skills/versions.mjs', () => client.beta.skills.versions.list('skill_candidate', { workspace_id: workspaceID })],
+    ['resources/beta/tunnels/certificates.mjs', () => client.beta.tunnels.certificates.list('tunnel_candidate', { workspace_id: workspaceID })],
+    ['resources/beta/tunnels/tunnels.mjs', () => client.beta.tunnels.list({ workspace_id: workspaceID })],
+    ['resources/beta/vaults/credentials.mjs', () => client.beta.vaults.credentials.list('vault_candidate', { workspace_id: workspaceID })],
+    ['resources/beta/vaults/vaults.mjs', () => client.beta.vaults.list({ workspace_id: workspaceID })],
+    ['resources/files.mjs', () => client.files.list({ workspace_id: workspaceID })],
+    ['resources/models.mjs', () => client.models.list({ workspace_id: workspaceID })],
+    ['resources/skills/skills.mjs', () => client.skills.list({ workspace_id: workspaceID })],
+    ['resources/skills/versions.mjs', () => client.skills.versions.list('skill_candidate', { workspace_id: workspaceID })],
+  ]);
+  assert.deepEqual(
+    [...probes.keys()].sort(),
+    [...workspaceRuntimeChanges].sort(),
+    'W1 every changed generated Resource module has one runtime probe',
+  );
+  for (const invoke of probes.values()) await invoke();
+  assert.equal(observed.length, probes.size, 'W1 every probe reached transport once');
+  completeBehaviorOwner('candidate.workspace-request-routing');
+  pass(`registry SDK ${manifest.version} preserves request-scoped Workspace routing`);
+}
+
+async function exerciseStreamingBufferViews() {
+  if (!runtimeChanged('core/streaming.mjs')) return;
+  // Cause/effect graph: C1 multiple complete SSE frames share one byte buffer;
+  // C2 parsing advances through non-copying subarray views. Effects: E1 frames
+  // remain exact; E2 ordering is preserved. Decision rule S1=C1+C2=>E1+E2;
+  // truncation, alias mutation, duplication, or reordering fails this owner.
+  const events = [
+    { id: 'event_candidate_1', type: 'session.status_running' },
+    { id: 'event_candidate_2', type: 'session.status_idle' },
+  ];
+  const client = new Anthropic({
+    apiKey: 'transport-only', // awaken-allow: secret
+    baseURL: 'https://managed.invalid',
+    maxRetries: 0,
+    fetch: async () => sseResponse(events),
+  });
+  const observed = [];
+  for await (const event of await client.beta.sessions.events.stream('session_candidate')) {
+    observed.push(event);
+  }
+  assert.deepEqual(observed, events, 'S1 multiple events sharing one buffer remain exact and ordered');
+  completeBehaviorOwner('candidate.streaming-buffer-views');
+  pass(`registry SDK ${manifest.version} preserves SSE framing across buffer views`);
+}
+
 async function exerciseSdkNodeRuntimeFacade() {
   const changedPaths = [
     'core/credentials.mjs',
@@ -268,7 +389,7 @@ async function exerciseSdkNodeRuntimeFacade() {
   const { writeCredentialsFileAtomic } = await import(
     pathToFileURL(resolve(packageRoot, 'lib/credentials/types.mjs'))
   );
-  const { atomicWriteFile } = await import(
+  const { atomicWriteFile, DIR_CREATE_MODE, FILE_CREATE_MODE } = await import(
     pathToFileURL(resolve(packageRoot, 'tools/agent-toolset/fs-util.mjs'))
   );
   const root = mkdtempSync(resolve(tmpdir(), 'awaken-candidate-node-facade-'));
@@ -329,6 +450,18 @@ async function exerciseSdkNodeRuntimeFacade() {
     const atomicPath = resolve(root, 'atomic.txt');
     await atomicWriteFile(atomicPath, 'atomic-candidate');
     assert.equal(readFileSync(atomicPath, 'utf8'), 'atomic-candidate', 'N1 atomic tool write');
+    if (runtimeChanged('tools/agent-toolset/fs-util.mjs')) {
+      assert.equal(DIR_CREATE_MODE, 0o700, 'N2 owner-only directory creation');
+      assert.equal(FILE_CREATE_MODE, 0o600, 'N2 owner-only file creation');
+      const privateDirectory = resolve(root, 'private-directory');
+      await nodeFacade.fs.promises.mkdir(privateDirectory, { mode: DIR_CREATE_MODE });
+      assert.equal(statSync(privateDirectory).mode & 0o777, 0o700, 'N2 new directory mode');
+      assert.equal(statSync(atomicPath).mode & 0o777, 0o600, 'N2 new file mode');
+      chmodSync(atomicPath, 0o750);
+      await atomicWriteFile(atomicPath, 'atomic-preserved-mode');
+      assert.equal(statSync(atomicPath).mode & 0o777, 0o750, 'N2 existing mode survives rename');
+      completeBehaviorOwner('candidate.agent-toolset-file-permissions');
+    }
 
     const memoryClient = {
       beta: { memoryStores: { memories: {
@@ -502,7 +635,8 @@ async function exerciseSdkHelperRuntime() {
   // known message snapshot is canonical and a future event is non-destructive;
   // E2 every tool remains registered and a bounded range can read a large file;
   // E3 foreign AbortError is classified as a timeout; E4 malformed SSE uses the
-  // configured logger. A changed implementation runs its enduring behavior
+  // configured logger; E5 new files/directories are owner-only while an edit
+  // preserves the existing mode. A changed implementation runs its enduring behavior
   // assertion; unchanged implementations still run their shared smoke path.
   let accumulated = accumulateManagedAgentsEvent(undefined, {
     type: 'event_start',
@@ -1150,6 +1284,8 @@ async function exerciseBetaGaRecovery() {
 }
 
 await exerciseSdkCoreTransport();
+await exerciseWorkspaceRequestRouting();
+await exerciseStreamingBufferViews();
 await exerciseSdkNodeRuntimeFacade();
 await exerciseRefusalFallbackMiddleware();
 await exerciseSdkHelperRuntime();

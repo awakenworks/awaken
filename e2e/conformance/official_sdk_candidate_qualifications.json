@@ -148,6 +148,95 @@
           ]
         }
       ]
+    },
+    {
+      "baseline_version": "0.123.0",
+      "candidate_version": "0.124.0",
+      "module": "@anthropic-ai/sdk-candidate",
+      "package_integrity": "sha512-cN5O8i9UVxHeOQAzj/XjshWXG8KiibJDw9OGpH2Z/eR3n/RBxdoLxDJOcfqAJWvjaMDFfHTBADU04hWRJVkDyA==",
+      "delta_fingerprint": "bc36394a604a3f53f5d0a27a2977e12668e79cf38520e7bd059cde9975321c1f",
+      "evidence_groups": [
+        {
+          "owner": "candidate.workspace-request-routing",
+          "coordinates": [
+            "declarations:changed:beta/agents/agents.d.ts",
+            "declarations:changed:beta/agents/versions.d.ts",
+            "declarations:changed:beta/deployment-runs.d.ts",
+            "declarations:changed:beta/deployments.d.ts",
+            "declarations:changed:beta/dreams.d.ts",
+            "declarations:changed:beta/environments/environments.d.ts",
+            "declarations:changed:beta/environments/work.d.ts",
+            "declarations:changed:beta/files.d.ts",
+            "declarations:changed:beta/memory-stores/memories.d.ts",
+            "declarations:changed:beta/memory-stores/memory-stores.d.ts",
+            "declarations:changed:beta/memory-stores/memory-versions.d.ts",
+            "declarations:changed:beta/models.d.ts",
+            "declarations:changed:beta/sessions/events.d.ts",
+            "declarations:changed:beta/sessions/resources.d.ts",
+            "declarations:changed:beta/sessions/sessions.d.ts",
+            "declarations:changed:beta/sessions/threads/events.d.ts",
+            "declarations:changed:beta/sessions/threads/threads.d.ts",
+            "declarations:changed:beta/skills/skills.d.ts",
+            "declarations:changed:beta/skills/versions.d.ts",
+            "declarations:changed:beta/tunnels/certificates.d.ts",
+            "declarations:changed:beta/tunnels/tunnels.d.ts",
+            "declarations:changed:beta/vaults/credentials.d.ts",
+            "declarations:changed:beta/vaults/vaults.d.ts",
+            "declarations:changed:ga/files.d.ts",
+            "declarations:changed:ga/models.d.ts",
+            "declarations:changed:ga/skills/index.d.ts",
+            "declarations:changed:ga/skills/skills.d.ts",
+            "declarations:changed:ga/skills/versions.d.ts",
+            "runtime:changed:resources/beta/agents/agents.mjs",
+            "runtime:changed:resources/beta/agents/versions.mjs",
+            "runtime:changed:resources/beta/deployment-runs.mjs",
+            "runtime:changed:resources/beta/deployments.mjs",
+            "runtime:changed:resources/beta/dreams.mjs",
+            "runtime:changed:resources/beta/environments/environments.mjs",
+            "runtime:changed:resources/beta/environments/work.mjs",
+            "runtime:changed:resources/beta/files.mjs",
+            "runtime:changed:resources/beta/memory-stores/memories.mjs",
+            "runtime:changed:resources/beta/memory-stores/memory-stores.mjs",
+            "runtime:changed:resources/beta/memory-stores/memory-versions.mjs",
+            "runtime:changed:resources/beta/models.mjs",
+            "runtime:changed:resources/beta/sessions/events.mjs",
+            "runtime:changed:resources/beta/sessions/resources.mjs",
+            "runtime:changed:resources/beta/sessions/sessions.mjs",
+            "runtime:changed:resources/beta/sessions/threads/events.mjs",
+            "runtime:changed:resources/beta/sessions/threads/threads.mjs",
+            "runtime:changed:resources/beta/skills/skills.mjs",
+            "runtime:changed:resources/beta/skills/versions.mjs",
+            "runtime:changed:resources/beta/tunnels/certificates.mjs",
+            "runtime:changed:resources/beta/tunnels/tunnels.mjs",
+            "runtime:changed:resources/beta/vaults/credentials.mjs",
+            "runtime:changed:resources/beta/vaults/vaults.mjs",
+            "runtime:changed:resources/files.mjs",
+            "runtime:changed:resources/models.mjs",
+            "runtime:changed:resources/skills/skills.mjs",
+            "runtime:changed:resources/skills/versions.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.agent-toolset-file-permissions",
+          "coordinates": [
+            "declarations:changed:managed/tools/agent-toolset/fs-util.d.ts",
+            "runtime:changed:tools/agent-toolset/fs-util.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.streaming-buffer-views",
+          "coordinates": [
+            "runtime:changed:core/streaming.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.core-transport",
+          "coordinates": [
+            "runtime:changed:client.mjs",
+            "runtime:changed:version.mjs"
+          ]
+        }
+      ]
     }
   ]
 }

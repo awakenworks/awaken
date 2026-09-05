@@ -3219,10 +3219,12 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
     // reservation caller evicts it; C4 the admitted Namespace provider preserves
     // one path for arbitrary ACP processes; C5 the direct live-authored Skill
     // source exists while initially empty and therefore requires the canonical
-    // ACP tool-export adapter. Effects: E1 execution replaces that context; E2
-    // the replacement owns a physical Environment; E3 Skill tools cross the
-    // existing ACP MCP export boundary. Decision table:
-    // ACP+C1-C5=>E1+E2+E3; ACP+C1-C3+split-Workdir=>fail before effects (owned by
+    // ACP tool-export adapter; C6 the publication selects one Hand descriptor.
+    // Effects: E1 execution replaces that context; E2 the replacement owns a
+    // physical Environment; E3 the coordination envelope performs no ACP MCP
+    // export; E4 execution exports the exact descriptor/executor set once.
+    // Decision table: reservation+C1-C6=>E3; execution+C1-C6=>E1+E2+E4;
+    // ACP+C1-C3+split-Workdir=>fail before effects (owned by
     // `projected_acp_rejects_a_provider_with_split_tool_and_process_paths`).
     // Every execution request rebuilds a coordination envelope; Native
     // on-tool-use/A2A may remain physically deferred only after that rebuild.
@@ -3232,6 +3234,12 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
                 awaken_runtime_contract::resolved::ModelBinding::new("", "", "acp:opencode"),
             ),
         )
+        .tool(
+            crate::config::hand_tool_descriptors()
+                .into_iter()
+                .find(|descriptor| descriptor.id == "read")
+                .expect("canonical read descriptor"),
+        )
         .build();
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("one exact ACP publication");
@@ -3239,14 +3247,13 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
         awaken_run_executor_acp::AcpLaunch::custom(vec!["true".into()], vec![]),
     ));
     let sandbox_root = tempfile::tempdir().expect("Namespace fixture root");
+    let exporter = Arc::new(crate::acp_tool_export::RecordingAcpToolExporter::default());
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub")
         .with_agent_publications(Arc::new(publications))
         .with_acp(Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(
             source,
         )))
-        .with_acp_tool_exporter(Arc::new(
-            crate::acp_tool_export::RecordingAcpToolExporter::default(),
-        ));
+        .with_acp_tool_exporter(exporter.clone());
     raw_host.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root.path(),
@@ -3262,6 +3269,7 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
         .await
         .expect("reservation preflight");
     assert!(reserved.env.is_none(), "C1+C2: reservation is effect-free");
+    assert!(exporter.0.lock().unwrap().is_empty(), "E3 no ACP export");
 
     let executable = host
         .ctx_for("acp-reservation-race", Some("assistant"))
@@ -3274,6 +3282,11 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
     assert!(
         executable.env.is_some(),
         "E2: exact ACP routing is paired with its Session Environment"
+    );
+    assert_eq!(
+        exporter.0.lock().unwrap().as_slice(),
+        &[("awaken_session".into(), vec!["read".into()])],
+        "E4 exact execution-owned export"
     );
 }
 
@@ -3343,6 +3356,58 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
             .message
             .contains("durable Environment was not adopted before context construction"),
         "R2/E2: {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
+    // Cause/effect graph: C1 execution created one resident Environment; C2 its
+    // rebuildable Runtime cache is evicted while the independent Environment
+    // owner survives; C3 coordination or execution reconstructs the context.
+    // Effects: E1 coordination omits the resident Environment without replacing
+    // or disposing it; E2 subsequent execution reuses that exact Environment.
+    // Constraint: the Session Environment owner remains the sole physical source
+    // of truth. Rules: R1=C1+C2+coordination=>E1;
+    // R2=C1+C2+execution=>E2.
+    let thread = "retained-environment-coordination";
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    install_test_session_application(&host);
+    let _managed = install_test_dispatch_runtime(&host);
+
+    let executable = host
+        .ctx_for(thread, None)
+        .await
+        .expect("C1 create executable context");
+    let retained = executable.env.clone().expect("C1 resident Environment");
+    host.evict_session_for_rebuild(thread).await;
+
+    let coordination = host
+        .ctx_for_session_coordination(thread, None)
+        .await
+        .expect("R1 rebuild coordination context");
+    assert!(coordination.is_coordination_envelope(), "R1/E1 purpose");
+    assert!(coordination.env.is_none(), "R1/E1 no physical borrow");
+    assert!(
+        Arc::ptr_eq(
+            &retained,
+            &host
+                .session_environment(thread)
+                .await
+                .expect("R1/E1 physical owner survives"),
+        ),
+        "R1/E1 exact owner is retained independently"
+    );
+
+    let rebuilt = host
+        .ctx_for(thread, None)
+        .await
+        .expect("R2 rebuild executable context");
+    assert!(
+        Arc::ptr_eq(
+            &retained,
+            rebuilt.env.as_ref().expect("R2/E2 Environment reused"),
+        ),
+        "R2/E2 exact retained owner"
     );
 }
 
@@ -18699,18 +18764,19 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
 }
 
 #[tokio::test]
-async fn legacy_missing_memory_evidence_fails_before_terminal_effects() {
-    /* Host legacy-Memory table HM0b. Causes: C1 frozen inputs contain RW
-     * MemoryStore; C2 the aggregate has no Environment binding and therefore
-     * no durable handle; C3 `None` means legacy/unknown, unlike current
-     * `Some([])` WTR/FUSE evidence. Effects: E1 Host delegates C1+C2 unchanged
-     * to the one Option-aware contract join; E2 it returns the typed ambiguous
-     * evidence failure before Artifact recovery or any provider boundary; E3
-     * the exact terminal projection remains installed. Rule HM0b
-     * C1+C2+C3=>E1->E2+E3. `Some([])+RW` and exact RO/RW partitions are owned
-     * by the shared join's adjacent decision table and HM0/HM1 exercise its
-     * Host effect ordering. */
-    let thread = "legacy-missing-terminal-memory-evidence";
+async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence() {
+    /* Host unmaterialized-Memory table HM0b. Causes: C1 frozen inputs contain
+     * RW MemoryStore; C2 the aggregate is Unmaterialized with no binding; C3
+     * the provider atomically proves the exact create-fenced root absent and
+     * publishes its Removed tombstone. Effects: E1 C3 upgrades unknown `None`
+     * to explicit `Some([])` at the existing Option-aware contract join; E2 no
+     * Memory reconciliation intent or live source I/O is produced; E3 the
+     * Artifact phase proves the exact empty batch without a publisher call; E4
+     * the terminal projection remains for the separately authorized disposal.
+     * Rule HM0b C1+C2+C3=>E1+E2->E3+E4.
+     * Constraint: without C3, contract rule T1 still rejects `None`+RW as
+     * ambiguous; the contract decision-table test owns that negative row. */
+    let thread = "proved-absent-terminal-memory-evidence";
     let events = Arc::new(Mutex::new(Vec::new()));
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     raw_host.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
@@ -18741,24 +18807,16 @@ async fn legacy_missing_memory_evidence_fails_before_terminal_effects() {
     .expect("HM0b install exact terminal assignment");
 
     let preparation_authorization = terminal_preparation_authorization(&effect, &projection);
-    let error = managed
+    let preparation = managed
         .prepare_terminal_cleanup_for_effect(effect, preparation_authorization)
         .await
-        .expect_err("HM0b missing handle evidence must remain ambiguous");
-    assert_eq!(
-        error.kind,
-        awaken_session_contract::RunErrorKind::Unavailable,
-        "HM0b/E2",
-    );
-    assert_eq!(
-        error.code, "session_terminal_memory_evidence_unreconciled",
-        "HM0b/E2",
-    );
+        .expect("HM0b exact provider absence closes missing handle evidence");
+    assert!(preparation.artifact_receipts.is_empty(), "HM0b/E3");
     assert!(
         events.lock().unwrap().is_empty(),
-        "HM0b/E2 zero Artifact effects"
+        "HM0b/E2+E3 no Artifact publisher or Memory source effect"
     );
-    assert!(host.session_slots.contains(thread), "HM0b/E3");
+    assert!(host.session_slots.contains(thread), "HM0b/E4");
 }
 
 #[tokio::test]
@@ -19472,6 +19530,79 @@ async fn terminal_quiescence_never_materializes_a_cold_environment() {
             })
             .unwrap_or(true),
         "terminal control may allocate a lock slot but not a Runtime or Environment projection"
+    );
+}
+
+#[tokio::test]
+async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_waiting_for_ttl() {
+    // Cause/effect decision table for the admission/termination race: C1 a
+    // self-affine Session Run remains Reserved inside its exclusive 30-second
+    // admission window; C2 terminal Session truth starts quiescence before the
+    // activity receipt activates that row. Effects: E1 cancellation is durably
+    // ordered first; E2 the existing guarded reservation rejection removes the
+    // unstarted row without a fabricated Run completion; E3 quiescence returns
+    // without waiting for the ordinary reservation-recovery TTL and does not
+    // materialize an Environment. Rule T1=C1+C2=>E1+E2+E3. If activation wins,
+    // guarded rejection stutters and the existing Pending cancellation Worker
+    // owns settlement; the sibling parent/child tests cover that branch.
+    use awaken_dispatch::DispatchQueue as _;
+
+    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let dispatch = host.dispatch_store().expect("T1 dispatch authority");
+    let session = ThreadId("terminal-reservation-session".into());
+    let run = RunId("terminal-reservation-run".into());
+    let activation =
+        crate::host::worker_resolver::test_support::test_activation(&session.0, &run.0);
+    let command = awaken_session_contract::AdmitSessionRun {
+        session_id: session.0.clone(),
+        agent_id: activation.snapshot.root_agent_id.0.clone(),
+        operation_id: "terminal-reservation-operation".into(),
+        run_id: run.clone(),
+        messages: activation.input.clone(),
+        data_subject_id: activation
+            .data_subject_id
+            .as_ref()
+            .map(|subject| subject.0.clone()),
+        traceparent: None,
+        execution_requirements: awaken_session_contract::SessionRunExecutionRequirements {
+            tool_capability_narrowing: activation.tool_capability_narrowing,
+            required_worker_capabilities: Default::default(),
+        },
+        replacement: awaken_session_contract::SessionRunReplacement::PreservePrior,
+    };
+    let request = awaken_dispatch::RunDispatch::new(activation)
+        .for_session(session.clone())
+        .with_session_command_fingerprint(
+            awaken_session_contract::SessionRunCommandFingerprint::current(&command),
+        );
+    assert_eq!(
+        dispatch
+            .reserve_session_run(request, 30_000)
+            .await
+            .expect("T1/C1 reserve"),
+        awaken_dispatch::SessionRunReservationOutcome::Reserved,
+        "T1/C1"
+    );
+
+    tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        host.quiesce_terminal_delegations(&session.0),
+    )
+    .await
+    .expect("T1/E3 does not wait for reservation TTL")
+    .expect("T1 terminal quiescence");
+
+    assert!(
+        dispatch
+            .list_dispatches()
+            .await
+            .expect("T1 inspect dispatch")
+            .is_empty(),
+        "T1/E1+E2"
+    );
+    assert!(
+        host.session_environment(&session.0).await.is_none(),
+        "T1/E3"
     );
 }
 
@@ -22638,7 +22769,10 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
     // repeats the same Agent; C3 it asserts a different Agent. Effects: E1/E2
     // resolve the exact publication; C4 the frozen Agent has no optional
     // publication; E3 fail closed before constructing Runtime; E4 generate the
-    // fallback snapshot with the frozen Agent identity rather than `assistant`.
+    // fallback snapshot with the frozen Agent identity rather than `assistant`;
+    // C5 a provider-driven re-entry supplies only its already delivered exact
+    // publication; E5 derive the selected Agent from that publication instead
+    // of manufacturing a parallel default identity.
     //
     // Decision table:
     // | rule | projected Agent | requested Agent | result                  |
@@ -22646,6 +22780,7 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
     // | R2   | agent-a         | agent-a         | exact agent-a snapshot  |
     // | R3   | agent-a         | assistant       | projection mismatch     |
     // | R4   | built-in        | absent          | fallback id is built-in |
+    // | R5   | absent          | absent+delivered| delivered root identity |
     let snapshot = crate::config::server_config(
         "agent-a",
         "stub",
@@ -22722,6 +22857,22 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
         .await
         .expect("R4 build the generated fallback snapshot");
     assert_eq!(fallback.config.root_agent_id.0, "built-in-agent", "R4/E4");
+
+    let delivered = crate::config::server_config(
+        "delivered-agent",
+        "stub",
+        &HashSet::new(),
+        &HashSet::new(),
+        &[],
+        &Default::default(),
+        &[],
+        awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+    );
+    let (_, selected_agent, selected, _) = fallback_host
+        .resolve_session_publication("delivered-agent-thread", None, Some(delivered.clone()))
+        .expect("R5 use the delivered publication as the retained identity authority");
+    assert_eq!(selected_agent, "delivered-agent", "R5/E5");
+    assert_eq!(selected, Some(delivered), "R5/E5");
 }
 
 #[tokio::test]
