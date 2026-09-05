@@ -235,7 +235,7 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   portable across FUSE-capable and FUSE-less hosts.
 - **Complete-scan prerequisite for copy write-back.** The one `copy::harvest`
   first enumerates and reads the whole quiescent projection through
-  `awaken-sandbox-fs::read_tree_nofollow_bounded`, reusing its descriptor walker
+  `awaken-sandbox-fs::read_tree_nofollow_with_limits`, reusing its descriptor walker
   on Linux/macOS and its explicitly quiescent-path adapter on Windows. Memory
   owns logical-path validation and Repository mutations, not a second walker.
   Missing roots, directory/read failures, links or Windows reparse points, special files,
@@ -244,13 +244,45 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   captured heads. Binary files within the size limit retain presence but are
   not published as text. File reads are bounded by the existing Memory content
   limit, and the total captured bytes cannot exceed the existing maximum heads
-  per store multiplied by that content limit. Successful preflight is not a
+  per store multiplied by that content limit. The physical copy profile also
+  bounds all entries (including empty directories/files) to 4,000 and relative
+  depth to 128; ingress and recovered-file staging preflight the same profile,
+  counting shared ancestors once. These physical limits do not change logical
+  Repository quotas. Successful preflight is not a
   multi-file transaction: a later CAS conflict can leave earlier independent
   files committed; exact retry and
   recovery retain those versions and the original bases. The caller must stop
-  writers before scanning; Windows rejects static reparse points but does not
-  provide Unix descriptor identity fencing. This is not an atomic snapshot or
+  writers before scanning. A live copy mount retains its original root handle
+  and rejects missing, file, or different-directory replacements before harvest;
+  restoring that same directory permits retry without refreshing CAS bases.
+  Windows rejects static reparse points and compares retained file identifiers
+  via `same-file`, relying on stable filesystem IDs and quiescence rather than
+  Unix descriptor-relative confinement. The live root handle is not persisted
+  authority and does not prove process ownership after Worker death.
+  The dependency uses 64-bit Windows file indices, not ReFS 128-bit IDs; this
+  check is not a universal Windows-filesystem identity guarantee.
+  This is not an atomic snapshot or
   confinement of a malicious TrustedHost process.
+- **Portable copy-path admission.** The logical Repository keeps its existing
+  POSIX path contract. Its physical copy adapter validates every component
+  before materialization and recovery: backslashes, drive/ADS syntax, device
+  names, trailing dots/spaces, control bytes and other nonportable components
+  reject on every OS. Device-name rules reuse the sandbox directory-name owner
+  in `awaken-sandbox-fs`; no second Memory path authority is introduced. Files
+  use exclusive creation, so filesystem aliases or occupied destinations fail
+  rather than overwrite. Alias errors can leave a partial unpublished copy;
+  the mounter prepares a fresh projection on retry. Unicode/interior spaces
+  remain supported; filesystem-specific case and normalization behavior is not
+  approximated by lowercasing logical identities.
+- **Failure-window evidence.** `tests/writeback_faults.rs` exercises actual
+  copy teardown against SQLite for create/update/delete, failure/cancellation
+  before or after commit, and with/without a preceding independent commit
+  (24 decision-table rows). Same-handle retry and durable reopen must preserve
+  exact heads/history. `tests/copy_lifecycle.rs` covers permission-denied reads
+  and enumeration, root substitution, unsafe names and metadata overflow;
+  permission cases require an unprivileged Unix runner. The shared reader also
+  tests an I/O error after partial bytes. These do not prove disk power-loss
+  durability or a background operation committing after its caller was aborted.
 - **Workdir tier first, then the namespace splice.** The Workdir `LocalProvider`
   realizes the FUSE mount at the sandbox path with **no mount-namespace splice**
   (directly visible to rooted tools); this is the first integration target. The

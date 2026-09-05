@@ -200,11 +200,13 @@ impl MemoryMounter for MemoryStoreMounter {
 
         // No FUSE (macOS / CI / unprivileged container): copy the store out now and
         // harvest a writable mount back on teardown.
+        let root = awaken_sandbox_fs::ProjectionRoot::capture(host_path).map_err(sandbox_err)?;
         let snapshot = copy::materialize(&*self.fs, store_id, host_path)
             .await
             .map_err(sandbox_err)?;
         let materialization_heads = snapshot.materialization_heads();
         Ok(Box::new(CopyMount {
+            root,
             fs: self.fs.clone(),
             store_id: store_id.to_string(),
             host_path: host_path.to_path_buf(),
@@ -234,21 +236,33 @@ impl MemoryMounter for MemoryStoreMounter {
         ));
         std::fs::create_dir(&root).map_err(sandbox_err)?;
         let result = async {
-            for (relative, bytes) in files {
-                let path = std::path::Path::new(relative);
-                if relative.is_empty()
-                    || path.is_absolute()
-                    || path
-                        .components()
-                        .any(|component| !matches!(component, std::path::Component::Normal(_)))
-                {
-                    return Err(sandbox_err("unsafe recovered Memory copy path"));
-                }
+            let paths = files
+                .iter()
+                .map(|(relative, _)| {
+                    copy::relative_memory_path(&format!("/{relative}")).map_err(|error| {
+                        sandbox_err(format!("unsafe recovered Memory copy path: {error}"))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            copy::validate_copy_entries(
+                paths
+                    .iter()
+                    .zip(files)
+                    .map(|(path, (_, bytes))| (path.as_path(), bytes.len())),
+            )
+            .map_err(sandbox_err)?;
+            for ((_, bytes), path) in files.iter().zip(paths) {
                 let destination = root.join(path);
                 if let Some(parent) = destination.parent() {
                     std::fs::create_dir_all(parent).map_err(sandbox_err)?;
                 }
-                std::fs::write(destination, bytes).map_err(sandbox_err)?;
+                use std::io::Write as _;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(destination)
+                    .and_then(|mut file| file.write_all(bytes))
+                    .map_err(sandbox_err)?;
             }
             let mut snapshot = copy::CopySnapshot::from_materialization_heads(&evidence.heads)
                 .map_err(sandbox_err)?;
@@ -301,6 +315,7 @@ impl MemoryMount for FuseMount {
 
 /// A materialized copy; teardown harvests a writable copy back to the store.
 struct CopyMount {
+    root: awaken_sandbox_fs::ProjectionRoot,
     fs: Arc<dyn MemoryRepository>,
     store_id: String,
     host_path: PathBuf,
@@ -324,6 +339,7 @@ impl MemoryMount for CopyMount {
     async fn teardown(&self) -> Result<(), SandboxError> {
         if self.writable {
             let mut snapshot = self.snapshot.lock().await;
+            self.root.verify(&self.host_path).map_err(sandbox_err)?;
             let report = copy::harvest(&*self.fs, &self.store_id, &self.host_path, &mut snapshot)
                 .await
                 .map_err(sandbox_err)?;
@@ -369,6 +385,7 @@ mod tests {
         std::fs::write(dir.join("note.md"), "v2").unwrap();
         let materialization_heads = snapshot.materialization_heads();
         let guard: Box<dyn MemoryMount> = Box::new(CopyMount {
+            root: awaken_sandbox_fs::ProjectionRoot::capture(&dir).unwrap(),
             fs: mounter.fs.clone(),
             store_id: "s".into(),
             host_path: dir.clone(),
@@ -508,6 +525,7 @@ mod tests {
         std::fs::write(dir.join("note.md"), "tampered").unwrap();
         let materialization_heads = snapshot.materialization_heads();
         let guard: Box<dyn MemoryMount> = Box::new(CopyMount {
+            root: awaken_sandbox_fs::ProjectionRoot::capture(&dir).unwrap(),
             fs: mounter.fs.clone(),
             store_id: "s".into(),
             host_path: dir.clone(),

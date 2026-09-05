@@ -2136,6 +2136,7 @@ version = "1.0.0"
 dependencies = [
  "cap-std",
  "rustix 1.1.4",
+ "same-file",
 ]
 
 [[package]]
@@ -2179,6 +2180,7 @@ dependencies = [
  "fuser",
  "libc",
  "nix 0.29.0",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

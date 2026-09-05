@@ -9,6 +9,7 @@ impl Drop for OwnedDirectory {
 }
 
 #[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn atomic_directory_publication_decision_table_is_total() {
     // Cause/effect table: C1 stage is an absolute directory, C2 destination
     // is an absolute sibling, C3 destination is absent/occupied. R1
@@ -60,6 +61,7 @@ fn atomic_directory_publication_decision_table_is_total() {
 }
 
 #[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn exclusive_file_lock_is_one_inode_one_writer_and_drop_releases() {
     // Cause/effect table: C1 path is absent/regular/symlink, C2 the exact
     // inode is unlocked/locked, C3 an unrelated child is absent/between fork
@@ -105,6 +107,7 @@ fn exclusive_file_lock_is_one_inode_one_writer_and_drop_releases() {
 }
 
 #[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn retained_parent_sibling_effects_fail_closed_after_parent_replacement() {
     // Retained-parent cause/effect table: C1 configured parent still names
     // the retained inode/replaced inode; C2 sibling operation is classify,
@@ -166,6 +169,7 @@ fn retained_parent_sibling_effects_fail_closed_after_parent_replacement() {
 }
 
 #[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn atomic_file_publication_decision_table_is_total() {
     // Cause/effect table: C1 destination is absent/occupied, C2 one/two
     // publishers race, C3 bytes are empty/non-empty. R1 absent publishes
@@ -218,6 +222,7 @@ fn atomic_file_publication_decision_table_is_total() {
 }
 
 #[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn descriptor_relative_mutation_rejects_substituted_roots_and_symlinks() {
     // Cause/effect table: C1 root identity exact/foreign; C2 target is
     // regular/missing/symlink/hard-linked/directory tree; C3 operation is
@@ -318,6 +323,7 @@ fn descriptor_relative_mutation_rejects_substituted_roots_and_symlinks() {
 }
 
 #[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn descriptor_tree_read_propagates_every_non_missing_boundary_fault() {
     // Cause/effect decision table: C1 sandbox root exact/missing/foreign;
     // C2 requested subtree present/missing; C3 descendant regular/directory/
@@ -409,6 +415,7 @@ fn descriptor_tree_read_propagates_every_non_missing_boundary_fault() {
 }
 
 #[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn bounded_tree_reader_reuses_exact_walk_and_enforces_the_supplied_limit() {
     // B1 file length = limit (including 0) => exact bytes and sorted snapshot;
     // B2 file length > limit => InvalidData, never a partial snapshot;
@@ -476,4 +483,68 @@ fn bounded_tree_reader_reuses_exact_walk_and_enforces_the_supplied_limit() {
         std::io::ErrorKind::InvalidData,
         "B5 over"
     );
+}
+
+#[test]
+fn metadata_budgets_count_empty_entries_and_depth_before_descent() {
+    // B6 empty file/empty directory each consumes one entry. B7 a nested entry
+    // consumes depth even when its content is empty. Bound-1 rejects, exact
+    // bound succeeds. B8 the old unbounded reader preserves its contract.
+    // Unlike descriptor-only tests, B6-B8 run on Windows too: its quiescent-path
+    // adapter must enforce exactly the same caller-owned budgets.
+    let root = std::env::temp_dir().join(format!(
+        "awaken-tree-limits-{}-{}",
+        std::process::id(),
+        PRIVATE_STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(root.join("d")).unwrap();
+    let _owned = OwnedDirectory(root.clone());
+    std::fs::write(root.join("a"), b"").unwrap();
+    std::fs::write(root.join("d/b"), b"").unwrap();
+    for (entries, depth, valid) in [(2, 2, false), (3, 1, false), (3, 2, true), (0, 0, false)] {
+        let result = read_tree_nofollow_with_limits(
+            &root,
+            TreeReadLimits {
+                file_bytes: 0,
+                total_bytes: 0,
+                entries,
+                depth,
+            },
+        );
+        assert_eq!(result.is_ok(), valid, "B6/B7 {entries}/{depth}");
+        if let Err(error) = result {
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        }
+    }
+    assert_eq!(
+        read_tree_nofollow_bounded(&root, 0, 0).unwrap().files.len(),
+        2,
+        "B8"
+    );
+}
+
+#[test]
+fn a_read_error_after_partial_bytes_never_returns_a_partial_file() {
+    // IO1 some valid bytes then injected EIO => original error, no snapshot,
+    // and no consumed budget reported as a successfully read file. This drives
+    // the production read primitive, not an independently implemented reader.
+    struct FailsAfterPrefix(bool);
+    impl std::io::Read for FailsAfterPrefix {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.0 {
+                return Err(std::io::Error::from_raw_os_error(5));
+            }
+            self.0 = true;
+            buffer[0] = b'a';
+            Ok(1)
+        }
+    }
+    let mut remaining = 16;
+    assert_eq!(
+        read_tree_file_bounded(FailsAfterPrefix(false), 16, &mut remaining)
+            .unwrap_err()
+            .raw_os_error(),
+        Some(5)
+    );
+    assert_eq!(remaining, 16, "IO1 rejected read does not publish progress");
 }

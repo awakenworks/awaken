@@ -8,12 +8,49 @@
 //! unchanged). [`fuse_available`] is the capability check a provider gates on.
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 
 use awaken_provisioning_contract::MemoryMaterializationHead;
 use awaken_resource_contract::{MemErr, MemoryRepository, memory_sha256_hex as sha256_hex};
 
 use crate::FuseError;
+
+// One physical projection profile for ingress, recovery and harvest. Logical
+// Repository paths/quotas remain owned by resource-contract.
+const COPY_LIMITS: awaken_sandbox_fs::TreeReadLimits = awaken_sandbox_fs::TreeReadLimits {
+    file_bytes: awaken_resource_contract::MAX_MEMORY_BYTES as u64,
+    total_bytes: (awaken_resource_contract::MAX_MEMORY_BYTES
+        * awaken_resource_contract::MAX_MEMORIES_PER_STORE) as u64,
+    entries: awaken_resource_contract::MAX_MEMORIES_PER_STORE * 2,
+    depth: 128,
+};
+
+pub(crate) fn validate_copy_entries<'a>(
+    entries: impl IntoIterator<Item = (&'a Path, usize)>,
+) -> Result<(), FuseError> {
+    let mut physical_entries = HashSet::new();
+    let mut remaining = COPY_LIMITS.total_bytes;
+    for (path, bytes) in entries {
+        if path.components().count() > COPY_LIMITS.depth
+            || bytes as u64 > COPY_LIMITS.file_bytes
+            || bytes as u64 > remaining
+        {
+            return Err(scan_error("Memory projection exceeds copy budget"));
+        }
+        remaining -= bytes as u64;
+        for entry in path
+            .ancestors()
+            .take_while(|entry| !entry.as_os_str().is_empty())
+        {
+            physical_entries.insert(entry);
+            if physical_entries.len() > COPY_LIMITS.entries {
+                return Err(scan_error("Memory projection exceeds entry budget"));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// True when this host can mount FUSE (`/dev/fuse` present + `fusermount` /
 /// `fusermount3` on `PATH`). When false, use [`materialize`] / [`harvest`].
@@ -109,12 +146,30 @@ pub async fn materialize(
     root: &Path,
 ) -> Result<CopySnapshot, FuseError> {
     let mut snapshot = CopySnapshot::default();
-    for memory in fs.snapshot_heads(store).await? {
-        let dest = root.join(memory.path.trim_start_matches('/'));
+    let memories = fs.snapshot_heads(store).await?;
+    // Validate the ENTIRE logical set before the first filesystem mutation.
+    // Store paths remain POSIX logical identities; host path syntax is never
+    // accepted merely because this particular OS would allow it in a filename.
+    let paths = memories
+        .iter()
+        .map(|memory| relative_memory_path(&memory.path))
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_copy_entries(paths.iter().zip(&memories).map(|(path, memory)| {
+        (
+            path.as_path(),
+            memory.content.as_deref().unwrap_or_default().len(),
+        )
+    }))?;
+    for (memory, relative) in memories.into_iter().zip(paths) {
+        let dest = root.join(relative);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| FuseError::Internal(e.to_string()))?;
         }
-        std::fs::write(&dest, memory.content.unwrap_or_default())
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&dest)
+            .and_then(|mut file| file.write_all(memory.content.unwrap_or_default().as_bytes()))
             .map_err(|e| FuseError::Internal(e.to_string()))?;
         let path = memory.path;
         snapshot.heads.insert(
@@ -149,13 +204,8 @@ pub async fn harvest(
     // A missing/unreadable tree is not an empty tree and cannot authorize delete.
     // The caller must quiesce writers; this is not an atomic filesystem snapshot
     // or a sandbox against an actively hostile TrustedHost process.
-    let tree = awaken_sandbox_fs::read_tree_nofollow_bounded(
-        root,
-        awaken_resource_contract::MAX_MEMORY_BYTES as u64,
-        (awaken_resource_contract::MAX_MEMORY_BYTES
-            * awaken_resource_contract::MAX_MEMORIES_PER_STORE) as u64,
-    )
-    .map_err(scan_error)?;
+    let tree =
+        awaken_sandbox_fs::read_tree_nofollow_with_limits(root, COPY_LIMITS).map_err(scan_error)?;
     for directory in &tree.directories {
         memory_path(&directory.relative_path)?;
     }
@@ -272,6 +322,21 @@ fn scan_error(error: impl std::fmt::Display) -> FuseError {
     FuseError::Internal(format!("Memory copy scan incomplete: {error}"))
 }
 
+/// One projection validator for initial materialization and recovered bytes.
+pub(crate) fn relative_memory_path(logical: &str) -> Result<PathBuf, FuseError> {
+    let relative = logical
+        .strip_prefix('/')
+        .ok_or_else(|| scan_error("Memory path is not absolute"))?;
+    awaken_resource_contract::validate_path_len(logical).map_err(scan_error)?;
+    if relative
+        .split('/')
+        .any(|name| !awaken_sandbox_fs::is_portable_component(name))
+    {
+        return Err(scan_error("Memory path cannot be projected portably"));
+    }
+    Ok(relative.split('/').collect())
+}
+
 /// Memory owns only its portable logical-name projection; directory walking,
 /// nofollow opens and byte limits remain in the shared filesystem authority.
 fn memory_path(relative: &Path) -> Result<String, FuseError> {
@@ -283,12 +348,13 @@ fn memory_path(relative: &Path) -> Result<String, FuseError> {
         let name = name
             .to_str()
             .ok_or_else(|| scan_error("non-UTF-8 filename"))?;
-        if name.contains('\\') {
-            return Err(scan_error("filename contains a nonportable separator"));
+        if !awaken_sandbox_fs::is_portable_component(name) {
+            return Err(scan_error("filename is not a portable component"));
         }
         logical.push('/');
         logical.push_str(name);
     }
+    relative_memory_path(&logical)?;
     Ok(logical)
 }
 
@@ -301,6 +367,48 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use awaken_memory_store::VolatileMemoryRepository;
+
+    #[test]
+    fn copy_admission_uses_the_same_physical_budgets_as_harvest() {
+        // Decision rules: depth/bytes <= limit and distinct ancestor count <=
+        // limit => admit. Any excess => reject before filesystem writes. Shared
+        // parents count once; empty bytes still consume metadata budget.
+        for (depth, bytes, admitted) in [
+            (128, COPY_LIMITS.file_bytes as usize, true),
+            (129, 0, false),
+            (1, COPY_LIMITS.file_bytes as usize + 1, false),
+        ] {
+            let path: PathBuf = std::iter::repeat_n("d", depth).collect();
+            assert_eq!(
+                validate_copy_entries([(path.as_path(), bytes)]).is_ok(),
+                admitted
+            );
+        }
+        for (shared, admitted) in [(true, true), (false, false)] {
+            let paths: Vec<PathBuf> = (0..2000)
+                .map(|i| {
+                    if shared {
+                        format!("a/b/{i}")
+                    } else {
+                        format!("{i}/a/b")
+                    }
+                    .into()
+                })
+                .collect();
+            assert_eq!(
+                validate_copy_entries(paths.iter().map(|p| (p.as_path(), 0))).is_ok(),
+                admitted
+            );
+        }
+        let path = Path::new("same");
+        assert!(
+            validate_copy_entries(std::iter::repeat_n(
+                (path, COPY_LIMITS.file_bytes as usize),
+                awaken_resource_contract::MAX_MEMORIES_PER_STORE + 1,
+            ))
+            .is_err()
+        );
+    }
 
     fn temp(tag: &str) -> PathBuf {
         let n = SystemTime::now()

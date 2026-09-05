@@ -6,31 +6,13 @@ use super::*;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) fn read_plain_tree_bounded(
     root: &Path,
-    max_file_bytes: u64,
-    mut max_total_bytes: u64,
+    limits: TreeReadLimits,
 ) -> std::io::Result<TreeSnapshot> {
-    fn reject_link(metadata: &std::fs::Metadata) -> std::io::Result<()> {
-        #[cfg(windows)]
-        let link = {
-            use std::os::windows::fs::MetadataExt;
-            metadata.file_attributes() & 0x400 != 0
-        };
-        #[cfg(not(windows))]
-        let link = metadata.file_type().is_symlink();
-        if link {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "tree contains a link or reparse point",
-            ))
-        } else {
-            Ok(())
-        }
-    }
+    use super::projection_root::reject_projection_link as reject_link;
     fn visit(
         root: &Path,
         relative: &Path,
-        max_file_bytes: u64,
-        remaining_bytes: &mut u64,
+        budget: &mut ReadBudget,
         snapshot: &mut TreeSnapshot,
     ) -> std::io::Result<()> {
         let directory = root.join(relative);
@@ -45,6 +27,7 @@ pub(super) fn read_plain_tree_bounded(
         for entry in std::fs::read_dir(&directory)? {
             let entry = entry?;
             let relative_path = relative.join(entry.file_name());
+            budget.entry(&relative_path)?;
             let metadata = std::fs::symlink_metadata(entry.path())?;
             reject_link(&metadata)?;
             if metadata.is_dir() {
@@ -52,20 +35,14 @@ pub(super) fn read_plain_tree_bounded(
                     relative_path: relative_path.clone(),
                     mode: 0,
                 });
-                visit(
-                    root,
-                    &relative_path,
-                    max_file_bytes,
-                    remaining_bytes,
-                    snapshot,
-                )?;
+                visit(root, &relative_path, budget, snapshot)?;
             } else if metadata.is_file() {
                 snapshot.files.push(TreeFile {
                     relative_path,
                     bytes: read_tree_file_bounded(
                         File::open(entry.path())?,
-                        max_file_bytes,
-                        remaining_bytes,
+                        budget.limits.file_bytes,
+                        &mut budget.bytes,
                     )?,
                     mode: 0,
                 });
@@ -82,8 +59,7 @@ pub(super) fn read_plain_tree_bounded(
     visit(
         root,
         Path::new(""),
-        max_file_bytes,
-        &mut max_total_bytes,
+        &mut ReadBudget::new(limits),
         &mut snapshot,
     )?;
     snapshot
@@ -98,6 +74,14 @@ pub(super) fn read_plain_tree_bounded(
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn directory_entry_names<Fd: std::os::fd::AsFd>(
     directory: Fd,
+) -> std::io::Result<Vec<std::ffi::CString>> {
+    directory_entry_names_bounded(directory, usize::MAX)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn directory_entry_names_bounded<Fd: std::os::fd::AsFd>(
+    directory: Fd,
+    max_entries: usize,
 ) -> std::io::Result<Vec<std::ffi::CString>> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt as _;
@@ -114,6 +98,12 @@ pub(super) fn directory_entry_names<Fd: std::os::fd::AsFd>(
         let name = entry.file_name();
         if name.as_bytes() == b"." || name.as_bytes() == b".." {
             continue;
+        }
+        if entries.len() == max_entries {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "directory entry budget exceeded",
+            ));
         }
         entries.push(CString::new(name.as_bytes()).map_err(|_| {
             std::io::Error::new(

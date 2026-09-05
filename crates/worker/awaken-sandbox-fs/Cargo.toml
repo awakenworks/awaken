@@ -13,5 +13,8 @@ authority = "sandbox-filesystem"
 cap-std = "4"
 rustix = { version = "1", features = ["fs"] }
 
+[target.'cfg(not(any(target_os = "linux", target_os = "macos")))'.dependencies]
+same-file = "1.0.6"
+
 [lints]
 workspace = true

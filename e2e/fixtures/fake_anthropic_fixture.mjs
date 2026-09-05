@@ -473,6 +473,7 @@ export const BEHAVIORS = {
       const result = quoted(field('RESULT'));
       const attempt = quoted(field('ATTEMPT'));
       const previous = /^AWK_PREVIOUS=(.+)$/mu.exec(mission)?.[1];
+      const contention = /^AWK_CONTEND=(.+)$/mu.exec(mission)?.[1];
       return tool(`resources-${field('ATTEMPT')}`, 'bash', { command: [
         'set -eu',
         `cd ${quoted(cwd)}`,
@@ -481,6 +482,12 @@ export const BEHAVIORS = {
         `file=${file}; repository=${repository}; memory=${memory}; outputs=${outputs}; result=${result}; attempt=${attempt}`,
         'file_bytes=$(cat "$file"); memory_bytes=$(cat "$memory/seed.md"); repo_bytes=$(cat "$repository/README.md"); head=$(git -C "$repository" rev-parse HEAD)',
         'combined=$(printf "%s\\n%s\\n%s\\n%s\\n%s" "$file_bytes" "$memory_bytes" "$repo_bytes" "$head" "$attempt")',
+        ...(contention ? [
+          'test "$(cat "$memory/shared-a-identical.md")" = "$memory_bytes"',
+          'test "$(cat "$memory/shared-z-conflict.md")" = "$memory_bytes"',
+          `printf "%s\\n%s" "$memory_bytes" ${quoted(contention)} > "$memory/shared-a-identical.md"`,
+          'printf "%s" "$combined" > "$memory/shared-z-conflict.md"',
+        ] : []),
         ...(previous ? [
           `prior=$(printf "%s\\n%s\\n%s\\n%s\\n%s" "$file_bytes" "$memory_bytes" "$repo_bytes" "$head" ${quoted(previous)})`,
           'test "$(cat "$memory/$result.md")" = "$prior"',
