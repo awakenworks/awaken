@@ -2505,6 +2505,21 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
         let prompts = prompts.lock().unwrap();
         assert_eq!(prompts.len(), 1);
         assert!(prompts[0].contains(if allow { "approved" } else { "denied" }));
+        // AR3 loaded SDK state may record the prior tool as cancelled. The
+        // continuation includes the ticket's exact JSON, never claims execution,
+        // and distinguishes reissuing an approval from suppressing a denial.
+        assert!(
+            prompts[0].contains(r#"{"cmd":"echo ok"}"#),
+            "AR3 exact frozen arguments"
+        );
+        assert!(
+            prompts[0].contains(if allow {
+                "This tool has not executed. Reissue exactly"
+            } else {
+                "Do not execute this denied request."
+            }),
+            "AR3 decision semantics"
+        );
         let run = RunId("run-1".into());
         let assistant_steps = committed
             .messages()

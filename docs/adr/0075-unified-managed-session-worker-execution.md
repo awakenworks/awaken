@@ -177,6 +177,17 @@ a settlement reachability witness prevents vacuous success. These are bounded
 model checks plus executable tests, not a Rust-to-model refinement proof or a
 guarantee of progress during a permanent Control/database outage.
 
+The process-local Session slot remains the only realization owner. Claimed Run
+admission publishes its claim after acquiring that slot's realization fence;
+retirement that removed the slot requires acquisition of the replacement fence.
+Lease-only heartbeat I/O remains independent of a slow Stage/Publish operation.
+Its response may update only the exact selected slot and lease tuple, including
+expiry. Conclusive loss acquires the realization fence and checks that identity
+again before interrupting and retiring the projection. An obsolete response
+cannot overwrite a newer lease, remove a new claim, or recreate a removed slot.
+Temporary failure retains only an unexpired, still-current lease. No additional
+lease registry or realization driver participates in this ordering.
+
 The Coordinator's `Dispatch` projection is not a Worker realization receipt.
 Before any external attempt observes a pending Resource generation, the Session
 aggregate may revise that generation in place; the Coordinator may therefore
