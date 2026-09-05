@@ -68,8 +68,16 @@ cargo +nightly miri test -p awaken-mcp-wire --lib
 sanitizer_target="$(rustc +nightly -vV | sed -n 's/^host: //p')"
 RUSTFLAGS="-Zsanitizer=address" cargo +nightly test -p awaken-mcp-wire --lib \
   --target "$sanitizer_target" -Zbuild-std
-RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -p awaken-reliability-testkit --lib \
-  --target "$sanitizer_target" -Zbuild-std
+# T1 the exact existing production-cache workload runs under TSan; T2 zero
+# selected/ignored/failed tests or tool failure reject. CrashProcess is a helper
+# library with no tests, not a concurrent production workload.
+tsan_log="target/test-timings/worker-heartbeat-tsan.log"
+mkdir -p "$(dirname "$tsan_log")"
+RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -p awaken-worker --lib \
+  --target "$sanitizer_target" -Zbuild-std \
+  credential_liveness::tests::heartbeat_snapshot_never_mixes_concurrent_publication_batches \
+  -- --exact 2>&1 | tee "$tsan_log"
+python3 scripts/ci/check_reliability.py --tsan-log "$tsan_log"
 trap cleanup_mutation_artifacts EXIT
 mutation_evidence="${AWAKEN_RELIABILITY_EVIDENCE_DIR:-$CARGO_TARGET_DIR/reliability}"
 cargo mutants --package awaken-mcp-wire \
