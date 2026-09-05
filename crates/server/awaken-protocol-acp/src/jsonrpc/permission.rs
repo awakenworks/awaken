@@ -3,6 +3,15 @@
 use super::*;
 use crate::{PermissionConsensus, permission_consensus_class};
 
+/// Shared fail-closed policy for prompt-free discovery and cancelled-turn drain.
+pub(super) struct RejectPermission;
+#[async_trait::async_trait]
+impl PermissionResolver for RejectPermission {
+    async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
+        PermissionVerdict::Deny
+    }
+}
+
 #[derive(Clone)]
 struct ObservedToolCall {
     name: String,
@@ -99,7 +108,8 @@ pub(super) async fn answer_request(
     method: &str,
     params: Option<serde_json::Value>,
     resolver: &dyn PermissionResolver,
-    context: &PermissionContext,
+    context: &mut PermissionContext,
+    projection: (&mut dyn RunFactAppender, &mut u64),
 ) -> Result<(), AcpError> {
     if method == CLIENT_METHOD_NAMES.session_request_permission {
         let outcome = match params.and_then(|p| {
@@ -109,6 +119,17 @@ pub(super) async fn answer_request(
         }) {
             Some((raw, req)) => {
                 let ask = permission_ask(&raw, context);
+                // Permission carries the resolved target and complete execution
+                // input. Refine the same call before policy/dispatch so transcript,
+                // one-shot grant and later streaming results share one identity.
+                let event = AcpProjectedEvent::ToolCall {
+                    id: ask.call_id.clone(),
+                    name: ask.tool.clone(),
+                    input: ask.arguments.clone(),
+                };
+                *projection.1 += 1;
+                projection.0.append(*projection.1, &event).await?;
+                context.observe(&event);
                 match resolver.resolve(&ask).await {
                     PermissionVerdict::Await { correlation_id } => {
                         wire.send(&OutResult {
@@ -173,7 +194,13 @@ fn permission_ask(raw: &serde_json::Value, context: &PermissionContext) -> Permi
         arguments,
     };
     if let Some(observed) = context.matching_observed_tool(&ask.call_id) {
-        ask.tool.clone_from(&observed.name);
+        // Claude reports alias display text during streaming, then the resolved
+        // MCP name at permission time. Explicit MCP requests own that identity;
+        // generic requests (e.g. Codex execute) still use exact-id observation.
+        // Retain even malformed MCP-looking requests for downstream rejection.
+        if !ask.tool.starts_with("mcp__") && !ask.tool.starts_with("mcp.") {
+            ask.tool.clone_from(&observed.name);
+        }
         // Streaming tool_call notifications may still contain {} or partial
         // fields. The permission request is the execution-boundary input; an
         // exact prior observation supplies arguments only when that input is
@@ -375,6 +402,35 @@ mod tests {
         let empty = permission_ask(&raw(""), &context);
         assert_eq!(empty.tool, "execute", "empty ids fail closed");
         assert!(empty.arguments.is_null(), "empty ids fail closed");
+    }
+
+    #[test]
+    fn resolved_mcp_permission_identity_supersedes_alias_display_title() {
+        // Identity graph: request contains resolved MCP target (C1), exact-id
+        // prior display notification (C2), complete request input (C3).
+        // R1 C1+C2 -> resolved target, never the alias display title; R2 !C1+C2
+        // -> existing observed identity for generic Codex requests; R3 C1+!C2
+        // -> request identity. Both MCP encodings share these rules. Input C3
+        // is authoritative in every row (including an explicit empty object).
+        for target in ["mcp__awaken_session__read", "mcp.awaken_session.read"] {
+            let mut context = PermissionContext::default();
+            context.observe(&AcpProjectedEvent::ToolCall {
+                id: "exact".into(),
+                name: "Read File".into(),
+                input: serde_json::json!({}),
+            });
+            for id in ["exact", "foreign"] {
+                let ask = permission_ask(
+                    &serde_json::json!({"toolCall": {
+                        "toolCallId":id, "title":target,
+                        "rawInput":{"file_path":"/mnt/session/uploads/brief.txt"}
+                    }}),
+                    &context,
+                );
+                assert_eq!(ask.tool, target, "R1/R3");
+                assert_eq!(ask.arguments["file_path"], "/mnt/session/uploads/brief.txt");
+            }
+        }
     }
 
     /// Permission input decision table: I1 present request input supersedes an
