@@ -186,6 +186,13 @@ resume, exact regenerated arguments remove only the new staged placeholder and
 correlate the result to the original committed call once. Changed arguments after
 matching or after a result fail closed; there is no transcript repair lane.
 
+Terminal ACP tool status is committed through the existing neutral
+`ContentBlock::ToolResult.is_error`, exactly as in Native. The appender preserves
+content and the original resumed call identity; it does not encode failure as a
+synthetic text prefix. Session projection and UI consume that one typed fact.
+Historical committed prefixes remain immutable and are not repaired by guessing
+from error-looking text.
+
 A loaded ACP session may remember a permission-boundary request as cancelled.
 The continuation therefore carries the immutable ticket's exact arguments and
 asks the agent to reissue that request after approval, or refrain after denial.

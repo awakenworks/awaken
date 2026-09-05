@@ -1247,15 +1247,16 @@ async fn regenerated_approved_tool_projects_as_one_logical_call() {
                 5,
                 &AcpProjectedEvent::ToolResult {
                     id: "regenerated".into(),
-                    content: "ok".into(),
-                    is_error: false,
+                    content: "failed original operation".into(),
+                    is_error: true,
                 },
             )
             .await
             .unwrap();
         assert_eq!(appender.messages.len(), 1, "R1 one result");
         assert!(
-            matches!(&appender.messages[0].content[0], ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "original")
+            matches!(&appender.messages[0].content[0], ContentBlock::ToolResult { tool_use_id, is_error: true, .. } if tool_use_id == "original"),
+            "R1 resumed failure retains the original id and typed error flag"
         );
         appender
             .append(
@@ -2883,27 +2884,35 @@ async fn a_tool_call_without_an_id_gets_a_correlating_fallback_id() {
 }
 
 #[tokio::test]
-async fn a_failed_tool_result_is_marked_in_the_committed_text() {
+async fn acp_result_status_is_committed_as_the_same_typed_fact_as_native() {
     use awaken_agent_contract::agent::content::ContentBlock;
-
-    let e = exec(vec![
-        r#"{"type":"tool_result","id":"c9","content":"denied","is_error":true}"#.into(),
-        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
-    ]);
-    let coord = Arc::new(RecordingCoordinator::default());
-    e.execute(
-        activation(),
-        RuntimeRunContext::new().with_commit(coord.clone()),
-    )
-    .await
-    .unwrap();
-
-    let commits = coord.commits.lock().unwrap();
-    match &commits[0].messages[1].content[0] {
-        ContentBlock::ToolResult { content, .. } => {
-            assert_eq!(content[0], ContentBlock::text("[tool error] denied"));
+    // Decision table: terminal ACP success/failure x ordinary/empty/error-like
+    // text -> preserve the exact status AND unchanged content in the commit.
+    // A literal error-looking success must not be reclassified by text; a
+    // failure must not become success or depend on a synthetic text prefix.
+    for is_error in [false, true] {
+        for body in ["denied", "", "[tool error] literal user document"] {
+            let e = exec(vec![
+                serde_json::json!({"type":"tool_result", "id":"c9", "content":body, "is_error":is_error}).to_string(),
+                r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+            ]);
+            let coord = Arc::new(RecordingCoordinator::default());
+            e.execute(
+                activation(),
+                RuntimeRunContext::new().with_commit(coord.clone()),
+            )
+            .await
+            .unwrap();
+            let commits = coord.commits.lock().unwrap();
+            assert_eq!(
+                commits[0].messages[1].content[0],
+                ContentBlock::tool_result_with_error(
+                    "c9",
+                    vec![ContentBlock::text(body)],
+                    is_error
+                ),
+            );
         }
-        other => panic!("expected a ToolResult, got {other:?}"),
     }
 }
 

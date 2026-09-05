@@ -12,6 +12,7 @@ import {
   managedSessionStatusPresentation,
   mergeCommittedEvents,
   projectManagedSessionRuntime,
+  pairToolResults,
   reduceLivePreview,
   type ManagedEvent,
   type ManagedStreamEvent,
@@ -21,6 +22,23 @@ const event = (value: Record<string, unknown>): ManagedEvent => value as unknown
 const stream = (value: Record<string, unknown>): ManagedStreamEvent => value as unknown as ManagedStreamEvent;
 
 describe("Managed Session committed projection decision table", () => {
+  it("pairs exact calls independently of order, family, status and text", () => {
+    // P1 same-name calls + reversed results -> exact ids, never name/order.
+    // P2 builtin/MCP x success/failure -> retain the original typed result.
+    // P3 error-looking success remains success; unrelated/missing ids and
+    // user-supplied result events never supply a server outcome.
+    const first = event({ id: "r1", type: "agent.tool_result", tool_use_id: "a", is_error: false, content: [{ type: "text", text: "[tool error] literal" }] });
+    const second = event({ id: "r2", type: "agent.tool_result", tool_use_id: "b", is_error: true });
+    const mcp = event({ id: "r3", type: "agent.mcp_tool_result", mcp_tool_use_id: "m", is_error: true });
+    const log = [event({ id: "a", type: "agent.tool_use", name: "read" }), event({ id: "b", type: "agent.tool_use", name: "read" }), second, mcp, first,
+      event({ id: "user", type: "user.tool_result", tool_use_id: "a" }), event({ id: "missing", type: "agent.tool_result" })];
+    const results = pairToolResults(log);
+    expect([...results.keys()].sort()).toEqual(["a", "b", "m"]);
+    expect(results.get("a")).toBe(first);
+    expect(results.get("b")).toBe(second);
+    expect(results.get("m")).toBe(mcp);
+  });
+
   /**
    * Cause/effect rules:
    * R0: C0 the current SDK oracle adds/removes committed or preview types ->

@@ -14,6 +14,18 @@ export {
 } from "@awaken/managed-sdk-oracle/current-wire";
 
 export type ManagedEvent = BetaManagedAgentsSessionEvent;
+/** Pair committed server results by exact call id, shared by every transcript. */
+export function pairToolResults<T extends { readonly type: string }>(log: readonly T[]): Map<string, T> {
+  const results = new Map<string, T>();
+  for (const event of log) {
+    const result = event as T & { tool_use_id?: unknown; mcp_tool_use_id?: unknown };
+    const id = event.type === "agent.tool_result" ? result.tool_use_id
+      : event.type === "agent.mcp_tool_result" ? result.mcp_tool_use_id : undefined;
+    if (typeof id === "string" && id.length > 0) results.set(id, event);
+  }
+  return results;
+}
+
 export type ManagedStreamEvent = BetaManagedAgentsStreamSessionEvents;
 export type ManagedSessionStatus = BetaManagedAgentsSession["status"];
 
