@@ -4,6 +4,9 @@
 // same restart followed by denial -> zero invocations. R4/R5 repeat three
 // approval boundaries, with prior completed work surviving each restart; the
 // last request is allowed/denied -> exactly three/two effects, never a replay.
+// R6/R7 use the same three boundaries but first send session/cancel and await
+// the prompt acknowledgement before reaping; both final allow/deny must retain
+// the same exact effect history. R2-R5 retain abrupt-stop coverage.
 // Each model emission has a fresh wire id. Every row retains alias
 // metadata, exact arguments and disabled builtins. R2/R3 inspect actual provider
 // input and streaming updates, not only accepted ACP request envelopes.
@@ -62,17 +65,33 @@ function startClient(root, provider, decide) {
     const timer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }, 3000);
     try { await exited; } finally { clearTimeout(timer); }
   }
-  return { rpc, stop, updates, permissions };
+  return { rpc, stop, updates, permissions,
+    cancel: sessionId => send({jsonrpc:'2.0',method:'session/cancel',params:{sessionId}}) };
 }
 
-for (const [mode, boundaries, finalDecision] of [
+for (const [mode, boundaries, finalDecision, settle = false, primed = false] of [
   ['immediate', 0, 'allow'], ['resume-allow', 1, 'allow'], ['resume-deny', 1, 'deny'],
   ['repeated-allow', 3, 'allow'], ['repeated-deny', 3, 'deny'],
+  ['settled-allow', 3, 'allow', true], ['settled-deny', 3, 'deny', true],
+  ['primed-settled', 1, 'allow', true, true],
 ]) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'awaken-real-acp-alias-'));
-  let phase = 0; let emissions = 0; let expectedPrompt = ''; let promptObserved = false;
+  let phase = 0; let emissions = 0; let primerEmitted = false; let primerHistoryRetained = true; let expectedPrompt = ''; let promptObserved = false;
   const provider = await startFakeAnthropic('fixture-key', { behavior: (body, turn) => {
     promptObserved ||= body.messages.some(message => (typeof message.content === 'string' ? [message.content] : message.content.filter(block => block.type === 'text').map(block => block.text)).some(text => text.includes(expectedPrompt)));
+    // R8 a successful operation precedes the very first pending approval.
+    // On resume, verify its actual successful tool result reached the provider;
+    // a side-effect file alone cannot prove that SDK conversation was retained.
+    if (primed && phase > 0 && body.tools?.length) {
+      const blocks = body.messages.flatMap(message => Array.isArray(message.content) ? message.content : []);
+      const primer = blocks.find(block => block.type === 'tool_use' && block.input?.command === argumentsFor(0).command);
+      primerHistoryRetained &&= Boolean(primer && blocks.some(block =>
+        block.type === 'tool_result' && block.tool_use_id === primer.id && !block.is_error));
+    }
+    if (primed && phase === 0 && !primerEmitted) {
+      primerEmitted = true;
+      return {tool:{id:`toolu_primer_${turn}`,name:'Bash',input:argumentsFor(0)}};
+    }
     // One pending request before the first restart. Each resumed prompt first
     // reissues its exact request; only after its result can it ask for the next.
     const ordinal = Math.max(phase, 1) + emissions++;
@@ -94,6 +113,7 @@ for (const [mode, boundaries, finalDecision] of [
       const cancelled = new Promise(resolve => { cancelSeen = resolve; });
       const expectsCancellation = phase < boundaries;
       const active = startClient(root, provider, call => {
+        if (primed && phase === 0 && call.rawInput?.command === argumentsFor(0).command) return 'allow';
         const ordinal = phase === 0 ? 1 : phase;
         const approved = phase > 0 && JSON.stringify(call.rawInput) === JSON.stringify(argumentsFor(ordinal));
         if (expectsCancellation && !approved) { cancelSeen(); return 'cancel'; }
@@ -111,14 +131,19 @@ for (const [mode, boundaries, finalDecision] of [
         const interrupted = prompt.catch(() => undefined);
         await Promise.race([cancelled, prompt]);
         assert.deepEqual(active.permissions.at(-1)?.rawInput, argumentsFor(phase + 1), `${mode}/${phase}: exact cancelled request`);
+        if (settle) {
+          active.cancel(sessionId);
+          await interrupted;
+        }
         await active.stop(); await interrupted;
       } else {
         assert.equal((await prompt).stopReason, 'end_turn');
         await active.stop();
       }
       assert.ok(promptObserved, `${mode}/${phase}: actual model receives this prompt`);
+      assert.ok(primerHistoryRetained, `${mode}: completed primer remains in actual provider history`);
       const completed = boundaries === 0 ? 1 : phase - (phase === boundaries && finalDecision === 'deny' ? 1 : 0);
-      assert.deepEqual(await recorded(), Array.from({ length:completed }, (_, index) => argumentsFor(index + 1)), `${mode}/${phase}: exact cumulative effects, no replay`);
+      assert.deepEqual(await recorded(), [...(primed ? [argumentsFor(0)] : []), ...Array.from({ length:completed }, (_, index) => argumentsFor(index + 1))], `${mode}/${phase}: exact cumulative effects, no replay`);
       assert.ok(active.permissions.length > 0, `${mode}/${phase}: real permission request`);
       // I1 alias streaming titles are presentation; the actual SDK permission
       // request must identify the resolved MCP target independently of them.

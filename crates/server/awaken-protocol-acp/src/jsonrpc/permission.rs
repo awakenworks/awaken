@@ -3,6 +3,15 @@
 use super::*;
 use crate::{PermissionConsensus, permission_consensus_class};
 
+/// Shared fail-closed policy for prompt-free discovery and cancelled-turn drain.
+pub(super) struct RejectPermission;
+#[async_trait::async_trait]
+impl PermissionResolver for RejectPermission {
+    async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
+        PermissionVerdict::Deny
+    }
+}
+
 #[derive(Clone)]
 struct ObservedToolCall {
     name: String,

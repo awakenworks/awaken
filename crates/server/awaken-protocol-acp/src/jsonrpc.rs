@@ -39,7 +39,7 @@ use handshake::{handshake_step, initialize_agent, open_new_session};
 use wire::{JSONRPC, Wire};
 
 use mcp::to_acp_mcp_servers;
-use permission::{PermissionContext, answer_request};
+use permission::{PermissionContext, RejectPermission, answer_request};
 use response::{RpcResponse, is_missing_session_error, pump_response, pump_to_response};
 
 #[cfg(test)]
@@ -347,10 +347,18 @@ pub async fn run_turn_with_config(
     wire.send_request(
         ID_PROMPT,
         AGENT_METHOD_NAMES.session_prompt,
-        PromptRequest::new(session_id, vec![ContentBlock::from(prompt)]),
+        PromptRequest::new(session_id.clone(), vec![ContentBlock::from(prompt)]),
     )
     .await?;
-    let prompt_result = pump_to_response(&mut wire, ID_PROMPT, sink, &mut seq, resolver).await?;
+    let prompt_result = response::pump_prompt(
+        &mut wire,
+        &session_id,
+        sink,
+        &mut seq,
+        resolver,
+        config.permission_settle_deadline,
+    )
+    .await?;
     let response: PromptResponse = parse(prompt_result)?;
 
     // Project the turn's token usage (when reported) so the executor records it as
@@ -407,16 +415,6 @@ mod tests {
             self.last = seq;
             self.events.push((seq, event.clone()));
             Ok(())
-        }
-    }
-
-    /// A resolver that denies every ask — stands in for a `ToolPermissionPolicy` that
-    /// refuses the CLI's tool.
-    struct DenyAll;
-    #[async_trait]
-    impl PermissionResolver for DenyAll {
-        async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
-            PermissionVerdict::Deny
         }
     }
 
@@ -871,7 +869,7 @@ mod tests {
     #[tokio::test]
     async fn a_denying_policy_selects_the_agents_reject_option() {
         // The neutral policy denies → we select the agent's own reject option.
-        let (reply, _) = drive_permission(&DenyAll, vec![], PERM.into()).await;
+        let (reply, _) = drive_permission(&RejectPermission, vec![], PERM.into()).await;
         assert!(
             reply.contains("\"id\":42"),
             "replied to the request id: {reply}"
@@ -911,7 +909,7 @@ mod tests {
             let mut permission: serde_json::Value = serde_json::from_str(PERM).unwrap();
             permission["params"]["toolCall"]["title"] = target.into();
             let (reply, sink) = drive_permission(
-                if allow { &resolver } else { &DenyAll },
+                if allow { &resolver } else { &RejectPermission },
                 vec![notification],
                 permission.to_string(),
             )

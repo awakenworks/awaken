@@ -61,6 +61,15 @@ call ID. The protocol refines that same call with the permission identity and
 complete input before evaluating policy, so transcript, grant and resume ticket
 cannot disagree. Progress titles do not subsequently rename the operation.
 
+An Await boundary cancels the permission request, then sends `session/cancel`
+and drains the prompt response for at most five seconds before physical reap.
+The drain reuses the normal response pump and the same reject-all resolver as
+capability discovery. Late tool requests are denied and late messages/results
+are discarded; EOF, malformed responses and timeout retain the original Await
+ticket. This protocol acknowledgement is not proof that an opaque SDK has
+persisted every prior message. Production recovery must still be verified;
+file existence or an isolated SDK restart alone is insufficient.
+
 The exported MCP tool is guarded independently. `Always allow` may execute
 directly. `Always ask` or deny cannot cross the dispatch boundary without the
 one-shot grant observed from the ACP permission resolver. A grant matches
@@ -167,7 +176,9 @@ E2E covers real governed tools, durable approval, restart and artifacts. The
 pinned SDK and actual ACP adapter tests use the same `fake_anthropic_fixture`
 as Native provider tests. Its behavior callback selects replies; authentication,
 model discovery, token probes and JSON/SSE encoding have one implementation.
-The ACP matrix includes three consecutive approval/relaunch boundaries with
+The ACP matrix includes abrupt and acknowledged cancellation, a successful tool
+before the first approval whose result must reach resumed inference, and three
+consecutive approval/relaunch boundaries with
 fresh model tool IDs, prior completed work, and final allow/deny. Each boundary
 checks the actual inference prompt and exact cumulative effects. These checks
 require no external account and do not certify live model task quality or the

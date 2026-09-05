@@ -441,6 +441,9 @@ pub struct TurnConfig<'a> {
     /// the turn/job deadline: it only fences `initialize` and `session/new|load`
     /// so a live child that never answers cannot retain a Run claim forever.
     pub handshake_step_deadline: std::time::Duration,
+    /// Bounded protocol cancellation drain after an Await boundary. The pending
+    /// ticket remains authoritative even if the adapter does not acknowledge.
+    pub permission_settle_deadline: std::time::Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -467,6 +470,7 @@ impl<'a> TurnConfig<'a> {
             auth_method_id: None,
             expected_capability: None,
             handshake_step_deadline: std::time::Duration::from_secs(30),
+            permission_settle_deadline: std::time::Duration::from_secs(5),
         }
     }
 }
