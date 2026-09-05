@@ -153,8 +153,15 @@ fn permission_ask(raw: &serde_json::Value, context: &PermissionContext) -> Permi
     };
     if let Some(observed) = context.matching_observed_tool(&ask.call_id) {
         ask.tool.clone_from(&observed.name);
-        ask.arguments.clone_from(&observed.input);
+        // Streaming tool_call notifications may still contain {} or partial
+        // fields. The permission request is the execution-boundary input; an
+        // exact prior observation supplies arguments only when that input is
+        // absent/null (as with adapters that send a generic execution request).
+        if ask.arguments.is_null() {
+            ask.arguments.clone_from(&observed.input);
+        }
     }
+    ask.arguments = crate::exact_mcp_tool_arguments(&ask.tool, &ask.arguments);
     ask
 }
 
@@ -347,6 +354,69 @@ mod tests {
         let empty = permission_ask(&raw(""), &context);
         assert_eq!(empty.tool, "execute", "empty ids fail closed");
         assert!(empty.arguments.is_null(), "empty ids fail closed");
+    }
+
+    /// Permission input decision table: I1 present request input supersedes an
+    /// empty/partial/drifted streaming observation; I2 explicit {} is present,
+    /// not a request to reuse old fields; I3 absent/null retains the exact-id
+    /// observed fallback; I4 mismatched ids lend neither name nor arguments.
+    /// Exact MCP envelopes use the existing normalizer after identity selection;
+    /// a mismatched envelope is retained for fail-closed admission, not unwrapped.
+    #[test]
+    fn permission_request_owns_complete_arguments_after_streaming_placeholders() {
+        for observed_input in [serde_json::json!({}), serde_json::json!({"command":"old"})] {
+            let mut context = PermissionContext::default();
+            context.observe(&AcpProjectedEvent::ToolCall {
+                id: "exact".into(),
+                name: "mcp__awaken_session__bash".into(),
+                input: observed_input.clone(),
+            });
+            for requested in [
+                serde_json::json!({"command":"echo approved", "timeout":30}),
+                serde_json::json!({}),
+            ] {
+                let ask = permission_ask(
+                    &serde_json::json!({"toolCall":{"toolCallId":"exact","title":"execute","rawInput":requested}}),
+                    &context,
+                );
+                assert_eq!(ask.tool, "mcp__awaken_session__bash", "I1 identity");
+                assert_eq!(ask.arguments, requested, "I1/I2 exact request input");
+            }
+            for raw in [
+                serde_json::json!({"toolCallId":"exact","title":"execute"}),
+                serde_json::json!({"toolCallId":"exact","title":"execute","rawInput":null}),
+            ] {
+                let ask = permission_ask(&serde_json::json!({"toolCall":raw}), &context);
+                assert_eq!(ask.arguments, observed_input, "I3");
+            }
+            let ask = permission_ask(
+                &serde_json::json!({"toolCall":{"toolCallId":"foreign","title":"read","rawInput":{"path":"file"}}}),
+                &context,
+            );
+            assert_eq!(ask.tool, "read", "I4");
+            assert_eq!(ask.arguments, serde_json::json!({"path":"file"}), "I4");
+        }
+        let mut context = PermissionContext::default();
+        context.observe(&AcpProjectedEvent::ToolCall {
+            id: "mcp".into(),
+            name: "mcp.pilot.set_plan".into(),
+            input: serde_json::json!({}),
+        });
+        for server in ["pilot", "foreign"] {
+            let envelope = serde_json::json!({"server":server,"tool":"set_plan","arguments":{"summary":"ship"}});
+            let ask = permission_ask(
+                &serde_json::json!({"toolCall":{"toolCallId":"mcp","title":"execute","rawInput":envelope}}),
+                &context,
+            );
+            assert_eq!(
+                ask.arguments,
+                if server == "pilot" {
+                    serde_json::json!({"summary":"ship"})
+                } else {
+                    envelope
+                }
+            );
+        }
     }
 
     fn perm_req(options: serde_json::Value) -> RequestPermissionRequest {

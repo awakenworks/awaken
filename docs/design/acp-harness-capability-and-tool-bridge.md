@@ -171,6 +171,13 @@ batch/ticket validation. There is no ACP-specific approval bypass. Legacy wire
 names are normalized through the same function for decision matching and the
 committed transcript; changed arguments and consumed decisions still fail closed.
 
+A permission request owns its complete arguments. Earlier streaming tool-call
+notifications may contain empty or partial input and cannot override them. An
+exact observed call supplies identity and, only when request input is absent or
+null, fallback arguments. Before the Await commit, the current attempt refines
+its staged ToolUse to the same input as the resume ticket. A committed prefix
+is immutable; conflicting reuse of an already committed call id is rejected.
+
 Physical Hand exports are created only after Environment binding, never during
 deferred reservation. The MCP `RawTool` port delegates to
 `Environment::tool_executor()`, preserving Workdir rooting and Namespace/Container
