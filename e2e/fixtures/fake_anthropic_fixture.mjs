@@ -752,7 +752,9 @@ function systemLines(parsed) {
 // faultStatus, delayMs, firstDelayMs, listenHost }`. `models` enables the same fixture's
 // Anthropic model-directory endpoint for Provider Connection tests.
 // `behavior` (default `'default'`) selects a named model or a test callback
-// returning the same {text}/{tool}/{tools} reply. Callbacks inspect request
+// returning the same {text}/{tool}/{tools} reply, optionally asynchronously.
+// Its third argument is an AbortSignal for response connection closure, so a
+// held inference can settle when the real caller cancels. Callbacks inspect request
 // evidence without retaining another raw transcript or implementing HTTP/SSE. The
 // fault-injection knobs drive the runtime's retry + circuit-breaker + error paths.
 export function startFakeAnthropic(apiKey, opts = {}) {
@@ -874,8 +876,24 @@ export function startFakeAnthropic(apiKey, opts = {}) {
         memoryExtractor: systemText(parsed).includes('memory extraction Agent'),
         contentShape: requestContentShape(parsed),
       });
-      const reply = reply_of(parsed, state.requests.length);
-      const id = `msg_${state.requests.length}`;
+      const ordinal = state.requests.length;
+      const pending = new AbortController();
+      const closed = () => pending.abort();
+      res.once('close', closed);
+      let reply;
+      try {
+        reply = await reply_of(parsed, ordinal, pending.signal);
+      } catch {
+        if (!res.destroyed) {
+          res.writeHead(500, { 'content-type':'application/json' });
+          res.end(JSON.stringify({ type:'error', error:{ type:'api_error', message:'fixture behavior failed' } }));
+        }
+        return;
+      } finally {
+        res.off('close', closed);
+      }
+      if (res.destroyed) return;
+      const id = `msg_${ordinal}`;
       const model = parsed.model ?? 'fake-model';
 
       if (parsed.stream) {

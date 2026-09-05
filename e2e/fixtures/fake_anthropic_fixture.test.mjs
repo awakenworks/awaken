@@ -3,6 +3,65 @@ import test from 'node:test';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fake_anthropic_fixture.mjs';
 
+test('held inference observes cancellation without blocking another request', { timeout:10_000 }, async () => {
+  // W12/W13: JSON/SSE x held reply + another request -> independent completion
+  // and original request ordinal. W14/W15: cancel held JSON/SSE -> callback
+  // observes connection closure; its late tool reply is never emitted. A fresh
+  // request still succeeds. W16: rejected behavior -> bounded wire 500, no
+  // unhandled rejection. These are socket facts, not Runtime cancellation proof.
+  const held = [];
+  const upstream = await startFakeAnthropic('fixture-key', {
+    behavior:async (body, ordinal, signal) => {
+      if (body.model === 'reject') throw new Error('synthetic failure');
+      if (body.model === 'hold') {
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        const closed = new Promise(resolve => signal.addEventListener('abort', resolve, { once:true }));
+        held.push({ release, closed });
+        await Promise.race([gate, closed]);
+      }
+      return { text:`reply-${ordinal}` };
+    },
+  });
+  const client = new Anthropic({ baseURL:upstream.url, apiKey:'fixture-key', maxRetries:0 }); // awaken-allow: secret -- synthetic local test credential
+  const params = { max_tokens:32, messages:[{ role:'user', content:'fixture' }] };
+  let ordinal = 0;
+  const controllers = [];
+  try {
+    for (const stream of [false, true]) {
+      for (const cancel of [false, true]) {
+        const controller = new AbortController(); controllers.push(controller);
+        const index = held.length;
+        const response = stream
+          ? client.messages.stream({ ...params, model:'hold' }, { signal:controller.signal }).finalMessage()
+          : client.messages.create({ ...params, model:'hold' }, { signal:controller.signal });
+        const outcome = Promise.resolve(response).then(value => ({ value }), error => ({ error }));
+        const deadline = Date.now() + 2_000;
+        while (held.length === index && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+        assert.equal(held.length, index + 1, 'inference reached its barrier');
+        const original = ++ordinal;
+        const other = await client.messages.create({ ...params, model:'ready' });
+        assert.equal(other.id, `msg_${++ordinal}`);
+        if (cancel) {
+          controller.abort(); await held[index].closed;
+          assert.ok((await outcome).error);
+        } else {
+          held[index].release();
+          const { value } = await outcome;
+          assert.equal(value.id, `msg_${original}`);
+          assert.equal(value.content[0].text, `reply-${original}`);
+        }
+      }
+    }
+    await assert.rejects(client.messages.create({ ...params, model:'reject' }), error => error.status === 500);
+    assert.equal((await client.messages.create({ ...params, model:'ready' })).stop_reason, 'end_turn');
+  } finally {
+    for (const controller of controllers) controller.abort();
+    for (const item of held) item.release();
+    await upstream.close();
+  }
+});
+
 test('explicit bind address serves the same authenticated model wire', async () => {
   // W10 default address -> loopback URL; W11 explicit reachable bind address ->
   // exact advertised host and unchanged discovery/inference/authentication. The
