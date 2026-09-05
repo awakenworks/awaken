@@ -573,16 +573,20 @@ impl RunAttemptExecutor for AcpRunExecutor {
                     .filter(|value| !value.trim().is_empty())
                     .map(|value| format!(" Reason: {value}"))
                     .unwrap_or_default();
-                // RunResume the loaded ACP session with a new, explicit continuation
-                // Step. Replaying the original user prompt could duplicate all work
-                // before the permission boundary; this asks the agent to continue
-                // and the one-shot resolver below answers the repeated tool ask.
+                // Resume from the immutable ticket, not a model reconstruction
+                // of its cancelled request. The one-shot resolver still matches
+                // exact tool + arguments and never approves a changed command.
+                let continuation = if allow {
+                    "This tool has not executed. Reissue exactly this tool request with exactly these arguments before continuing; do not replace it with a different command."
+                } else {
+                    "Do not execute this denied request. Continue without it; any different request requires its own permission decision."
+                };
                 activation.input = vec![Message::text(
                     MessageId(format!("acp-permission-{}", command.correlation_id)),
                     Role::User,
                     format!(
-                        "The pending {} request ({call_id}) was {decision}.{suffix} Continue from the permission boundary.",
-                        pending.tool_id
+                        "The pending {} request ({call_id}) was {decision}.{suffix} {continuation}\nExact request arguments (JSON):\n{}",
+                        pending.tool_id, pending.arguments
                     ),
                 )];
                 self.execute_with_permission_resume(

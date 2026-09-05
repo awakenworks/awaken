@@ -178,6 +178,14 @@ null, fallback arguments. Before the Await commit, the current attempt refines
 its staged ToolUse to the same input as the resume ticket. A committed prefix
 is immutable; conflicting reuse of an already committed call id is rejected.
 
+A loaded ACP session may remember a permission-boundary request as cancelled.
+The continuation therefore carries the immutable ticket's exact arguments and
+asks the agent to reissue that request after approval, or refrain after denial.
+The existing one-shot resolver still requires exact tool and argument equality;
+this prompt does not grant a different command or establish that execution has
+already occurred. Real SDK continuation remains a separate acceptance boundary
+from deterministic JSON-RPC resume tests.
+
 Physical Hand exports are created only after Environment binding, never during
 deferred reservation. The MCP `RawTool` port delegates to
 `Environment::tool_executor()`, preserving Workdir rooting and Namespace/Container
