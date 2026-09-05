@@ -193,6 +193,14 @@ synthetic text prefix. Session projection and UI consume that one typed fact.
 Historical committed prefixes remain immutable and are not repaired by guessing
 from error-looking text.
 
+MCP invocation IDs use the shared process-scoped fallback identity generator.
+An export can be reconstructed while its Environment executor still retains an
+unresolved Hand call; a per-export counter would alias independent calls across
+that boundary. Fresh invocation identities do not authorize replay of an old
+effect or replace Runtime-owned durable operation tokens. The relay still keeps
+the unresolved old operation indeterminate and rejects a distinct unsent call
+through the existing pre-dispatch replacement path.
+
 A loaded ACP session may remember a permission-boundary request as cancelled.
 The continuation therefore carries the immutable ticket's exact arguments and
 asks the agent to reissue that request after approval, or refrain after denial.
