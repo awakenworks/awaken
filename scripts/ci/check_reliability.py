@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -41,10 +42,23 @@ REQUIRED_TOOL_GATES = (
     "cargo +nightly miri test -p awaken-mcp-wire --lib",
     "-Zsanitizer=address",
     "-Zsanitizer=thread",
+    "cargo +nightly test -p awaken-worker --lib",
+    "credential_liveness::tests::heartbeat_snapshot_never_mixes_concurrent_publication_batches",
+    'python3 scripts/ci/check_reliability.py --tsan-log "$tsan_log"',
     "cargo mutants",
     "cleanup_mutation_artifacts",
     "cleanup_mutation_artifacts\npython3 scripts/ci/check_reliability.py",
 )
+
+
+def tsan_workload_passed(output: str) -> bool:
+    """The single exact libtest target must execute, not merely compile."""
+    summaries = re.findall(
+        r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;",
+        output,
+        re.MULTILINE,
+    )
+    return summaries == [("ok", "1", "0", "0")]
 
 
 def validation_errors(
@@ -124,6 +138,21 @@ def current_inputs() -> tuple[dict[str, object], str, set[str], dict[str, str]]:
 
 
 class ReliabilityCheckerTests(unittest.TestCase):
+    def test_tsan_requires_one_executed_passing_workload(self) -> None:
+        # Cause/effect table: T1 exact target executes and passes => accept;
+        # T2 renamed/filter-missed target executes zero => reject; T3 ignored,
+        # failed, absent, extra or duplicated summaries => reject. Exit status
+        # is independently enforced by the shell's pipefail before this check.
+        accepted = "test result: ok. 1 passed; 0 failed; 0 ignored; 39 filtered out;"
+        self.assertTrue(tsan_workload_passed(accepted), "T1")
+        for rejected in (
+            "", "test result: ok. 0 passed; 0 failed; 0 ignored; 40 filtered out;",
+            "test result: ok. 0 passed; 0 failed; 1 ignored; 39 filtered out;",
+            "test result: FAILED. 0 passed; 1 failed; 0 ignored; 39 filtered out;",
+            accepted.replace("1 passed", "2 passed"), accepted + "\n" + accepted,
+        ):
+            self.assertFalse(tsan_workload_passed(rejected), "T2/T3")
+
     def test_decision_table_rejects_each_parallel_or_incomplete_path(self) -> None:
         # Cause/effect graph: C1 every surface/tool gate exists; C2 every
         # non-semantic external assumption has a bounded objective and drill;
@@ -161,11 +190,26 @@ class ReliabilityCheckerTests(unittest.TestCase):
             validation_errors(inputs[0], cleanup_mutant, inputs[2], inputs[3]), "R5"
         )
 
+        # R6 restoring the former zero-test helper target or removing the
+        # executed-test receipt check must fail the static release surface gate.
+        for old, new in (
+            ("cargo +nightly test -p awaken-worker --lib", "cargo +nightly test -p awaken-reliability-testkit --lib"),
+            ('--tsan-log "$tsan_log"', "--unused-log"),
+        ):
+            self.assertTrue(validation_errors(inputs[0], inputs[1].replace(old, new), inputs[2], inputs[3]), "R6")
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--tsan-log", type=Path)
     args = parser.parse_args(argv)
+    if args.tsan_log is not None:
+        if not tsan_workload_passed(args.tsan_log.read_text(encoding="utf-8")):
+            print("ERROR: TSan must execute exactly one passing, non-ignored production workload", file=sys.stderr)
+            return 1
+        print("TSan production workload: 1 executed / 1 passed")
+        return 0
     if args.self_test:
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(ReliabilityCheckerTests)
         return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
