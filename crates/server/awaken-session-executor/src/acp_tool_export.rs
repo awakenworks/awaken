@@ -200,6 +200,45 @@ impl RawTool for PermissionGuardedAcpTool {
     }
 }
 
+/// Bind the MCP-facing RawTool port to the existing Environment executor.
+/// Workdir, Namespace and Container use this same dispatch path; this adapter
+/// owns neither a tool registry nor a second execution/sandbox lifecycle.
+pub(crate) struct EnvironmentAcpTool {
+    id: String,
+    executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor>,
+}
+impl EnvironmentAcpTool {
+    pub(crate) fn new(
+        id: String,
+        executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor>,
+    ) -> Self {
+        Self { id, executor }
+    }
+}
+#[async_trait::async_trait]
+impl RawTool for EnvironmentAcpTool {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn recovery_capability(&self) -> awaken_runtime_contract::tool::ToolRecoveryCapability {
+        self.executor.recovery_capability(&self.id)
+    }
+    fn concurrency(
+        &self,
+        args: &serde_json::Value,
+    ) -> awaken_runtime_contract::tool::ToolConcurrency {
+        self.executor.concurrency(&self.id, args)
+    }
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        if call.tool_id != self.id {
+            return Err(ToolError::Execution(
+                "ACP tool identity does not match the bound Environment tool".into(),
+            ));
+        }
+        self.executor.invoke(&call).await
+    }
+}
+
 /// Export one exact descriptor/executor set through the existing ACP MCP port.
 /// The complete set is served by one Session MCP endpoint and one lifetime
 /// lease. Native and ACP therefore consume identical contracts without turning
@@ -481,5 +520,54 @@ mod tests {
             "R2"
         );
         assert!(missing.0.lock().unwrap().is_empty(), "R2 no side effect");
+    }
+}
+
+#[cfg(test)]
+mod environment_tool_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Executor(AtomicUsize);
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::tool::ToolExecutor for Executor {
+        fn concurrency(
+            &self,
+            _: &str,
+            _: &serde_json::Value,
+        ) -> awaken_runtime_contract::tool::ToolConcurrency {
+            awaken_runtime_contract::tool::ToolConcurrency::Serial
+        }
+        async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(call.tool_id, "write");
+            assert_eq!(call.call_id, "call");
+            assert_eq!(
+                call.arguments,
+                serde_json::json!({"path":"/mnt/session/outputs/file"})
+            );
+            Ok(ToolOutput::ok(&call.call_id, "bound environment"))
+        }
+    }
+    #[tokio::test]
+    async fn bound_environment_is_the_only_dispatch_owner() {
+        // Causes: matching canonical id + exact call/args + selected executor.
+        // R1 match => forward once with original correlation and concurrency;
+        // R2 mismatch => refuse before dispatch. Actual Namespace/Docker realization
+        // is covered by the topology E2Es, never inferred from this fake executor.
+        let executor = Arc::new(Executor(AtomicUsize::new(0)));
+        let tool = EnvironmentAcpTool::new("write".into(), executor.clone());
+        let mut call = ToolCall {
+            tool_id: "write".into(),
+            call_id: "call".into(),
+            arguments: serde_json::json!({"path":"/mnt/session/outputs/file"}),
+        };
+        assert!(matches!(
+            tool.concurrency(&call.arguments),
+            awaken_runtime_contract::tool::ToolConcurrency::Serial
+        ));
+        tool.invoke(call.clone()).await.unwrap();
+        call.tool_id = "bash".into();
+        assert!(tool.invoke(call).await.is_err());
+        assert_eq!(executor.0.load(Ordering::SeqCst), 1);
     }
 }

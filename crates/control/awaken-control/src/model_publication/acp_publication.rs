@@ -75,6 +75,11 @@ impl CatalogModelPublicationResolver {
             capability_fingerprint,
             session_configuration.clone(),
         )
+        .map(|candidate| {
+            candidate.with_acp_tool_alias_support(self.acp_capabilities.iter().any(|row| {
+                row.backend_ref == error_binding.backend_ref && row.supports_tool_aliases
+            }))
+        })
         .map_err(|error| PublicationResolutionError::CandidateUnavailable {
             binding: error_binding,
             reason: error.to_string(),

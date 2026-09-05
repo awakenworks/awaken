@@ -370,6 +370,8 @@ impl AcpModelSelectionSupport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcpPublicationCapability {
+    #[serde(default)]
+    pub supports_tool_aliases: bool,
     pub backend_ref: String,
     pub model_api_dialects: Vec<String>,
     pub model_selection: AcpModelSelectionSupport,
@@ -612,6 +614,7 @@ mod tests {
         // delivery. Effects: E1 ProviderAdapter, E2 exact EnvironmentVariable,
         // E3 reject. Rules P1=C1 -> E1; P2=C2 -> E2; P3=C3||C4 -> E3.
         let capability = AcpPublicationCapability {
+            supports_tool_aliases: false,
             backend_ref: "acp:test".into(),
             model_api_dialects: vec!["anthropic_messages".into()],
             model_selection: AcpModelSelectionSupport::DefaultAndExact,

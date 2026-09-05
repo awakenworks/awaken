@@ -32,6 +32,7 @@ pub struct RuntimeCapability {
     pub cli: Option<String>,
     pub description: String,
     pub local: Option<LocalRuntimeCapability>,
+    pub supports_tool_aliases: bool,
 }
 
 /// One startup observation of a supported runtime on this host. This is a
@@ -59,6 +60,7 @@ impl RuntimeCapability {
             description: "Runs in-process on the awaken runtime — no external CLI, no sandbox."
                 .into(),
             local: None,
+            supports_tool_aliases: false,
         }
     }
 
@@ -76,6 +78,7 @@ impl RuntimeCapability {
             cli: Some(cli),
             description: description.into(),
             local: None,
+            supports_tool_aliases: false,
         }
     }
 
@@ -126,6 +129,10 @@ impl RuntimeCapability {
             "description": self.description,
             "supported": true,
             "features": {
+                "tool_aliases": if native { "supported" } else if self.supports_tool_aliases { awaken_tool_bridge } else { "unavailable" },
+                "tool_alias_semantics": if native { "presentation" } else { "lookup" },
+                "tool_description_override": if native { "supported" } else { "unavailable" },
+                "tool_discovery": if native { "supported" } else { "unavailable" },
                 "environment_session": "supported",
                 "context_projection": "supported",
                 "awaken_tool_bridge": awaken_tool_bridge,
@@ -774,5 +781,49 @@ mod tests {
                 .iter()
                 .any(|model| model == "claude-sonnet-5")
         );
+    }
+}
+
+#[cfg(test)]
+mod tool_alias_capability_tests {
+    use super::*;
+    #[test]
+    fn capability_evidence_decision_table() {
+        // R1 native => full presentation. R2 catalog absent => unavailable.
+        // R3 catalog present, no negotiation => conditional. R4 live MCP =>
+        // lookup supported, description/discovery unavailable. R5 no MCP or
+        // missing installation => unavailable. Availability is not permission.
+        assert_eq!(
+            RuntimeCapability::native().to_json()["features"]["tool_alias_semantics"],
+            "presentation"
+        );
+        let mut row = RuntimeCapability::acp("fixture", "Fixture", "test");
+        assert_eq!(row.to_json()["features"]["tool_aliases"], "unavailable");
+        row.supports_tool_aliases = true;
+        assert_eq!(row.to_json()["features"]["tool_aliases"], "conditional");
+        for (detected, http, expected) in [
+            (true, true, "supported"),
+            (true, false, "unavailable"),
+            (false, true, "unavailable"),
+        ] {
+            let effective = row
+                .clone()
+                .with_local(LocalRuntimeCapability {
+                    detected,
+                    version: None,
+                    login_state: None,
+                    reason_code: None,
+                    remediation: None,
+                    negotiated: Some(json!({"mcp_http":http})),
+                })
+                .to_json();
+            assert_eq!(effective["features"]["tool_aliases"], expected);
+            assert_eq!(effective["features"]["tool_alias_semantics"], "lookup");
+            assert_eq!(
+                effective["features"]["tool_description_override"],
+                "unavailable"
+            );
+            assert_eq!(effective["features"]["tool_discovery"], "unavailable");
+        }
     }
 }

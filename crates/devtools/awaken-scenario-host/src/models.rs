@@ -321,16 +321,23 @@ impl LlmExecutor for ProbeModel {
             .find(|m| m.role == Role::User)
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
+        // Explicit fixture input selects an Artifact path while retaining the
+        // existing relative-path probe for all other protocol journeys.
+        let path = if user_text.contains("AWAKEN_PROBE_ARTIFACT") {
+            "/mnt/session/outputs/probe.txt"
+        } else {
+            "probe.txt"
+        };
         let output = match tool_results {
             0 => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "w".into(),
                 tool_id: "write".into(),
-                arguments: serde_json::json!({ "path": "probe.txt", "content": user_text }),
+                arguments: serde_json::json!({ "path": path, "content": user_text }),
             }]),
             1 => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "r".into(),
                 tool_id: "read".into(),
-                arguments: serde_json::json!({ "path": "probe.txt" }),
+                arguments: serde_json::json!({ "path": path }),
             }]),
             _ => AssistantOutput::text("done"),
         };

@@ -709,6 +709,7 @@ mod tests {
             },
             model_selection: awaken_runtime_contract::resolved::BackendModelSelection::Default,
             acp: awaken_runtime_contract::resolved::AcpExecutionProfile {
+                supports_tool_aliases: false,
                 capability_adapter_version: "test".into(),
                 capability_fingerprint: "sha256:test-capability".into(),
                 session_configuration: Default::default(),

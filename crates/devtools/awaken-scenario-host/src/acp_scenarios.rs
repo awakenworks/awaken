@@ -225,7 +225,7 @@ pub async fn build_acp_tool_bridge_router() -> Router {
     ))
     .strip_prefix("#!/usr/bin/env node\n")
     .unwrap_or_else(|| panic!("ACP tool bridge fixture must retain its canonical Node shebang"));
-    let launch = awaken_run_executor_acp::AcpLaunch::custom(
+    let mut launch = awaken_run_executor_acp::AcpLaunch::custom(
         vec![
             "node".into(),
             "--input-type=module".into(),
@@ -234,6 +234,22 @@ pub async fn build_acp_tool_bridge_router() -> Router {
         ],
         vec![],
     );
+    // The deterministic ACP loop checks the exact SDK projection, while the
+    // existing host still owns tool dispatch, permissions, restart and artifacts.
+    let presentation = awaken_runtime_contract::resolved::ToolPresentation::from_overrides([(
+        "write".into(),
+        awaken_runtime_contract::resolved::ToolPresentationOverride {
+            alias: Some("Write".into()),
+            description: None,
+            exposure: None,
+        },
+    )]);
+    launch
+        .project_tool_aliases(
+            awaken_run_executor_acp::acp_cli("claude").unwrap(),
+            &presentation,
+        )
+        .unwrap();
     let mut hand = awaken_ext_builtin_tools::builtin_tools()
         .into_iter()
         .filter(|tool| matches!(tool.descriptor().id.as_str(), "read" | "write"))
@@ -247,6 +263,7 @@ pub async fn build_acp_tool_bridge_router() -> Router {
             "acp:claude",
         )))
         .tools(hand)
+        .tool_presentation(presentation)
         .agent_bindings(ask_tool_bindings("write"))
         .build();
     let publication = fixed_agent_publication([snapshot]);

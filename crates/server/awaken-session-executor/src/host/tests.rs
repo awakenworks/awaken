@@ -14479,6 +14479,7 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
                     credential,
                     endpoint,
                     awaken_runtime_contract::resolved::AcpExecutionProfile {
+                        supports_tool_aliases: false,
                         capability_fingerprint: "sha256:test-capability".into(),
                         capability_adapter_version: "test".into(),
                         session_configuration: Default::default(),

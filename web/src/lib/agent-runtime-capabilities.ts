@@ -45,3 +45,18 @@ export function runtimeCapabilitySupport(
     background_tools: acp ? (features?.background_tools ?? "unavailable") : "supported",
   };
 }
+
+/** Unknown or conditional evidence cannot enable an ACP editor control. */
+export function toolPresentationControls(acp: boolean, features?: {
+  tool_aliases?: RuntimeSupport;
+  tool_description_override?: RuntimeSupport;
+  tool_discovery?: RuntimeSupport;
+  tool_alias_semantics?: "lookup" | "presentation";
+}) {
+  return {
+    aliasUnavailable: acp && features?.tool_aliases !== "supported",
+    descriptionUnavailable: acp && features?.tool_description_override !== "supported",
+    discoveryUnavailable: acp && features?.tool_discovery !== "supported",
+    lookupAliases: acp && features?.tool_alias_semantics === "lookup",
+  };
+}
