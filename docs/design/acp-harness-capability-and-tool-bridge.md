@@ -91,6 +91,19 @@ canonical tool ID plus arguments and is consumed once. It is deliberately not
 durable: the approval ticket is durable truth and a recovered ACP process asks
 again, receiving a new one-shot grant only after the stored decision is applied.
 
+When an ACP continuation changes the requested tool/arguments or ends without
+reissuing the original request, an unconsumed one-shot decision proves the old
+request received no execution grant. The existing ACP ThreadCommit projection
+adds an error ToolResult addressed to that original call, together with the new
+Await ticket or terminal disposition. A changed request receives its own policy
+and approval; its result never answers the old request. Denial without a reissue
+is settled by the same path. The original ToolUse and its arguments stay immutable.
+An already observed result is preserved, and a consumed grant with a missing
+result is not labelled "not executed". No effect may be replayed on that inference.
+The production probe has exact and changed-request rows for the real Claude
+ACP/SDK: the changed row requires a third approval, one original not-executed
+result, four successful results and only the revised first file's bytes.
+
 ## Working directory
 
 `configuration.working_directory` is optional and relative to the Session

@@ -677,7 +677,8 @@ impl AcpRunExecutor {
                     AcpLaunchEvent::with_detail(AcpLaunchStage::Failed, open.0.clone()),
                 );
                 let failure = classify_error(Stage::Initialize, &RawAcpError::message(open.0));
-                return finish_failure(context, &activation, &failure).await;
+                return finish_failure(context, &activation, &failure, permission_resume.as_ref())
+                    .await;
             }
         };
         self.apply_session_mcp_projection(&mut session);
@@ -890,7 +891,15 @@ impl AcpRunExecutor {
                         Err(open) => {
                             let failure =
                                 classify_error(Stage::Initialize, &RawAcpError::message(open.0));
-                            return finish_failure(context, &activation, &failure).await;
+                            return finish_failure(
+                                context,
+                                &activation,
+                                &failure,
+                                resumed_permission
+                                    .as_ref()
+                                    .and_then(ResumedPermissionResolver::unconsumed_decision),
+                            )
+                            .await;
                         }
                     };
                     self.apply_session_mcp_projection(&mut session);
@@ -936,6 +945,9 @@ impl AcpRunExecutor {
                     let state = disposition.state();
                     commit(
                         context,
+                        resumed_permission
+                            .as_ref()
+                            .and_then(ResumedPermissionResolver::unconsumed_decision),
                         &activation.thread_id,
                         disposition,
                         committed,
@@ -968,6 +980,9 @@ impl AcpRunExecutor {
                     let state = disposition.state();
                     commit(
                         context,
+                        resumed_permission
+                            .as_ref()
+                            .and_then(ResumedPermissionResolver::unconsumed_decision),
                         &activation.thread_id,
                         disposition,
                         committed,
@@ -1005,6 +1020,9 @@ impl AcpRunExecutor {
                 let state = disposition.state();
                 commit(
                     context,
+                    resumed_permission
+                        .as_ref()
+                        .and_then(ResumedPermissionResolver::unconsumed_decision),
                     &activation.thread_id,
                     disposition,
                     committed,
@@ -1041,6 +1059,9 @@ impl AcpRunExecutor {
                 let state = disposition.state();
                 commit(
                     context,
+                    resumed_permission
+                        .as_ref()
+                        .and_then(ResumedPermissionResolver::unconsumed_decision),
                     &activation.thread_id,
                     disposition,
                     committed,
@@ -1076,6 +1097,9 @@ impl AcpRunExecutor {
                             let state = disposition.state();
                             commit(
                                 context,
+                                resumed_permission
+                                    .as_ref()
+                                    .and_then(ResumedPermissionResolver::unconsumed_decision),
                                 &activation.thread_id,
                                 disposition,
                                 committed,
@@ -1105,6 +1129,9 @@ impl AcpRunExecutor {
                     let state = disposition.state();
                     commit(
                         context,
+                        resumed_permission
+                            .as_ref()
+                            .and_then(ResumedPermissionResolver::unconsumed_decision),
                         &activation.thread_id,
                         disposition,
                         committed,
@@ -1126,6 +1153,9 @@ impl AcpRunExecutor {
                     let state = disposition.state();
                     commit(
                         context,
+                        resumed_permission
+                            .as_ref()
+                            .and_then(ResumedPermissionResolver::unconsumed_decision),
                         &activation.thread_id,
                         disposition,
                         committed,
@@ -1203,110 +1233,6 @@ fn classify_from_acp_error(err: &AcpError) -> AcpFailure {
         AcpError::HardLimit(failure) => failure.clone(),
         _ => classify_error(Stage::Prompt, &RawAcpError::message(err.to_string())),
     }
-}
-
-/// Commit a terminal failure that occurred before/instead of a Step (open fault):
-/// the activation input and one assistant message with the failure prompt, plus
-/// the terminal state.
-async fn finish_failure(
-    context: &RuntimeRunContext,
-    activation: &RunActivation,
-    failure: &AcpFailure,
-) -> Result<RunState> {
-    let disposition = RunDisposition::ended(activation.run_id.clone(), failure_cause(failure));
-    let state = disposition.state();
-    let mut messages = activation.input.clone();
-    let mut next_assistant_step = assistant_step_base(context, activation);
-    push_assistant_text(
-        &mut messages,
-        &activation.run_id,
-        &mut next_assistant_step,
-        failure.prompt(),
-    );
-    commit(
-        context,
-        &activation.thread_id,
-        disposition,
-        messages,
-        Vec::new(),
-    )
-    .await?;
-    Ok(state)
-}
-
-/// Commit the Step's messages and disposition through the one boundary (G13).
-async fn commit(
-    context: &RuntimeRunContext,
-    thread_id: &ThreadId,
-    disposition: RunDisposition,
-    messages: Vec<Message>,
-    state: Vec<StateCommand>,
-) -> Result<()> {
-    // Only Awaken-owned continuations execute through the Runtime ToolBatch.
-    // Opaque ACP permissions retain the explicit RunAttemptExecutor authority.
-    let mut state = state;
-    if let Some(ticket) = disposition.resume_ticket()
-        && let AwaitTarget::ToolCall {
-            reason: ToolAwaitReason::Permission,
-            call_id,
-            tool,
-            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
-        } = ticket.target()
-    {
-        let mut batch = awaken_runtime_contract::ToolBatch::for_step(
-            ticket.run_id.clone(),
-            messages.len(),
-            [(
-                ToolCall {
-                    call_id: call_id.clone(),
-                    tool_id: tool.tool_id.clone(),
-                    arguments: tool.arguments.clone(),
-                },
-                awaken_runtime_contract::tool::ToolRecoveryPolicy::default(),
-            )],
-        )
-        .map_err(|error| Error::Commit(error.to_string()))?;
-        batch
-            .mark_awaiting(
-                call_id,
-                awaken_runtime_contract::ToolWaitKind::ToolPermission,
-                &ticket.correlation_id,
-            )
-            .map_err(|error| Error::Commit(error.to_string()))?;
-        state.push(awaken_runtime_contract::ActiveToolBatch::write(&Some(
-            batch,
-        )));
-    } else {
-        state.push(awaken_runtime_contract::ActiveToolBatch::remove());
-    }
-    let terminal = match disposition.state() {
-        RunState::Ended(cause) => Some(CommittedTerminalRun {
-            run_id: disposition.run_id().clone(),
-            thread_id: thread_id.clone(),
-            cause,
-        }),
-        RunState::Running | RunState::Awaiting => None,
-    };
-    let coordinator = context
-        .commit
-        .as_ref()
-        .ok_or_else(|| Error::Commit("ACP execution requires a CommitCoordinator".to_string()))?;
-    awaken_agent_contract::thread::commit::commit_run(
-        coordinator.as_ref(),
-        thread_id,
-        disposition,
-        messages,
-        state,
-    )
-    .await
-    .map_err(|e| Error::Commit(e.to_string()))?;
-
-    if let Some(terminal) = &terminal {
-        // Observation is post-commit and failure-isolated by the shared
-        // runtime-contract helper. Stable-id recovery may redeliver.
-        let _ = deliver_committed_terminal(&context.terminal_observers, terminal).await;
-    }
-    Ok(())
 }
 
 /// The committed thread-state command recording `usage` under the bound model —
@@ -1589,6 +1515,13 @@ struct ResumedPermissionResolver<'a> {
 }
 
 impl<'a> ResumedPermissionResolver<'a> {
+    /// Absence of consumption means the guarded original request never received
+    /// execution authority in this continuation. A changed request can obtain
+    /// its own decision, but it cannot consume or complete this one.
+    fn unconsumed_decision(&self) -> Option<&PermissionResume> {
+        (!self.consumed.load(std::sync::atomic::Ordering::Acquire)).then_some(self.decision)
+    }
+
     fn new(
         base: &'a dyn PermissionResolver,
         decision: &'a PermissionResume,
@@ -1896,6 +1829,8 @@ fn ensure_pending_tool_use(
 }
 
 mod acp_cli;
+mod commit;
+use commit::{commit, finish_failure};
 mod config_home;
 mod discovery_spec;
 mod session_home;
