@@ -143,6 +143,7 @@ impl awaken_dispatch_contract::dispatch::CommitEpochGuard
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::cancellation_requested(&self) -> bool
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::expires_ms(&self) -> u64
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::is_live_at(&self, u64) -> bool
+pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::matches_execution_scope(&self, &str, &str) -> bool
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool) -> Self
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new_releasing(impl core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool) -> Self
 pub async fn awaken_dispatch_contract::dispatch::CommitEpochGuard::release(self) -> core::result::Result<(), alloc::string::String>
@@ -571,6 +572,7 @@ impl awaken_dispatch_contract::dispatch::CommitEpochGuard
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::cancellation_requested(&self) -> bool
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::expires_ms(&self) -> u64
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::is_live_at(&self, u64) -> bool
+pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::matches_execution_scope(&self, &str, &str) -> bool
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool) -> Self
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new_releasing(impl core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool) -> Self
 pub async fn awaken_dispatch_contract::dispatch::CommitEpochGuard::release(self) -> core::result::Result<(), alloc::string::String>

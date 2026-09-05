@@ -74,6 +74,14 @@ pub fn file_store_bundle() -> Result<MigrationBundle, MigrationError> {
                 "terminal cleanup association on canonical artifact Files",
                 "ALTER TABLE {prefix}_file ADD COLUMN artifact_idempotency_scope TEXT",
             )?,
+            Migration::new(
+                6,
+                "complete output capture references owned by FileCatalog",
+                "CREATE TABLE {prefix}_artifact_capture (\
+                 workspace_id TEXT NOT NULL, session_id TEXT NOT NULL, \
+                 revision BIGINT NOT NULL, file_ids_json TEXT NOT NULL, \
+                 PRIMARY KEY (workspace_id, session_id))",
+            )?,
         ],
     )
 }

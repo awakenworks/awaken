@@ -28,6 +28,7 @@ fn hosted_runtime_routes_are_projected_from_the_authorization_table() {
         ("prefix", "/v1/ag-ui"),
         ("prefix", "/v1/durable"),
         ("prefix", "/v1/files"),
+        ("prefix", "/v1/awaken/files"),
         ("prefix", "/v1/skills"),
         ("prefix", "/v1/memory_stores"),
         ("prefix", "/v1/models"),

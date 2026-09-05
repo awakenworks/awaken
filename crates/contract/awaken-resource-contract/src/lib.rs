@@ -21,12 +21,16 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+mod artifact_capture;
 mod execution;
 mod input;
 mod lifecycle;
 mod memory_application;
 mod registry;
 
+pub use artifact_capture::{
+    ArtifactCapture, ReplaceArtifactCapture, ReplaceArtifactCaptureOutcome,
+};
 pub use execution::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     ArtifactRecovery, FileContentSource, FileContentSourceError, FileReadPurpose,
@@ -232,6 +236,25 @@ pub enum FileCatalogError {
 /// [`FileStore`]. Lists are newest-first with `id` as the deterministic tie-break.
 #[async_trait]
 pub trait FileCatalog: Send + Sync {
+    /// Latest complete output observation. None means no capture was committed;
+    /// Some with no ids is a positively observed empty output directory.
+    async fn artifact_capture(
+        &self,
+        _workspace_id: &str,
+        _session_id: &str,
+    ) -> Result<Option<ArtifactCapture>, FileCatalogError> {
+        Err(FileCatalogError::Storage(
+            "File catalog output capture is unavailable".into(),
+        ))
+    }
+    async fn replace_artifact_capture(
+        &self,
+        _request: ReplaceArtifactCapture,
+    ) -> Result<ReplaceArtifactCaptureOutcome, FileCatalogError> {
+        Err(FileCatalogError::Storage(
+            "File catalog output capture is unavailable".into(),
+        ))
+    }
     async fn create_file(
         &self,
         record: FileRecord,
@@ -291,6 +314,23 @@ pub trait FileStore: Send + Sync {
 /// FileCatalog, and lifecycle persistence; consumers cannot reproduce it.
 #[async_trait]
 pub trait FileApplicationService: Send + Sync {
+    async fn artifact_capture(
+        &self,
+        _workspace_id: &str,
+        _session_id: &str,
+    ) -> Result<Option<ArtifactCapture>, ResourcePurgeError> {
+        Err(ResourcePurgeError::Storage(
+            "File application output capture is unavailable".into(),
+        ))
+    }
+    async fn replace_artifact_capture(
+        &self,
+        _request: ReplaceArtifactCapture,
+    ) -> Result<ReplaceArtifactCaptureOutcome, ResourcePurgeError> {
+        Err(ResourcePurgeError::Storage(
+            "File application output capture is unavailable".into(),
+        ))
+    }
     async fn get(
         &self,
         workspace_id: &str,

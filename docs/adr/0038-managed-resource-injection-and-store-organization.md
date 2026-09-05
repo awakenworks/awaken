@@ -346,7 +346,7 @@ Static ownership remains deliberately small:
 |---|---|
 | `Sandbox::artifacts/read_artifact` | the one runtime output enumeration/read port |
 | `FileStore` | immutable content-addressed bytes (`blob_id`) |
-| `FileCatalog` | public `file_...` identity, metadata, Workspace, optional Session scope/path, harvest idempotency |
+| `FileCatalog` | public `file_...` identity, metadata, Workspace, optional Session scope/path, harvest idempotency and complete output observations |
 | resource lifecycle index | File-to-blob reference preventing premature physical reclamation |
 
 `FileCatalog` is the logical Files API aggregate, not an Artifact Store. An output
@@ -357,12 +357,14 @@ remaining independent public Files.
 The authoritative transition is:
 
 ```text
-step completion or terminal release
+live step completion or terminal release
+  -> read FileCatalog output capture revision
   -> Sandbox::artifacts/read_artifact
   -> verify Artifact.id == content_hash == FileStore content id
   -> FileStore.put(bytes)
   -> FileCatalog.create(file_..., session/path/blob metadata)
   -> add Artifact lifecycle reference to blob
+  -> CAS the complete receipt File-id set against the observed revision
   -> only then may terminal release dispose the Sandbox
 ```
 
@@ -378,6 +380,98 @@ Managed input Files use their public File id for the API and resolve through the
 catalog to a private blob id. They are OS-enforced read-only at
 `/mnt/session/uploads/...`; a provider without path fidelity and enforced
 read-only capability fails closed instead of silently projecting a writable copy.
+
+### A5: Complete output observations reference the canonical Files
+
+A4's harvest key deliberately reuses an existing File when content changes
+A→B→A at one logical path. Creation timestamps and catalog list order therefore
+cannot select the output of the latest complete observation. No existing File
+metadata field, terminal publication receipt, or Session status owns that choice.
+
+**Static ownership.** Reuse `FileStore`, immutable File identities, publication
+receipts, and File-owned lifecycle references unchanged. Extend the existing
+`FileCatalog` and `FileApplicationService` with a complete output observation:
+`ArtifactCapture { workspace_id, session_id, revision, file_ids }`. The only new
+persistence is the V6 reference row in the same catalog migration scope; it
+contains no duplicated File metadata, bytes, ownership index, or Run ledger.
+Memory, SQLite, and PostgreSQL share the contract's admission and CAS reducer.
+SQL revision encoding reuses the foundation's `StoredU64` boundary.
+V5 migration preserves all Files and does not infer a capture for old Sessions.
+
+**Dynamic contract.** A caller reads the revision before enumerating outputs,
+uses the existing publication path to persist every File and reference, then
+submits the entire File-id set with that expected revision. Replacement validates
+all selected Files under the same catalog lock/transaction: exact Workspace and
+Session, live downloadable artifacts, valid distinct logical paths, canonical
+harvest identities, and no duplicate ids. One invalid member rejects the entire
+replacement. CAS conflict requires a fresh observation, not a revised expected
+revision attached to stale bytes. An exact response-loss replay acknowledges the
+same revision and canonical set without another mutation.
+
+No capture means unknown; an explicit empty set means the complete observation
+was empty. Deleting a selected File leaves its exact id in the observation and
+the canonical download path denies access. It never falls back to another
+same-name File. Captures add no blob references and do not revive deleted Files.
+A capture records observed outputs; it does not assert Run success or the user's
+final acceptance.
+
+**Execution wiring.** The existing generic `ArtifactPublisher` owns capture
+reads and replacement alongside per-File publication and terminal receipt
+recovery. `ApplicationArtifactPublisher` delegates to `FileApplicationService`;
+the local Coordinator decorator and registered-Worker HTTP adapter apply their
+existing Run/checkpoint/terminal authority before every capture edge. Run guards
+remain held across the File operation. Both topologies compare Workspace and
+execution Thread with the locked Dispatch through
+`CommitEpochGuard::matches_execution_scope` and reject an expired claim. A child
+Run retains its own output scope; its parent Session recovery/history affinity
+does not authorize reading or replacing the parent's outputs. Worker identity
+checks remain at the HTTP boundary; checkpoint and terminal operations retain
+their existing Session-root decisions.
+No capture-specific execution permission or Resource authority is introduced.
+
+The shared `ArtifactHarvester` used after Native/ACP/A2A attempts reads and
+verifies the observation before the existing complete Sandbox scan, publishes
+all File receipts, then submits the entire selected set. A publication failure,
+invalid receipt or CAS conflict fails the harvest without a partial replacement
+or an automatic rebase. An already-failed attempt retains its original execution
+error while still attempting output preservation, as before. Exact replacement
+replay is accepted; a new complete scan may advance the observation revision
+even when its bytes are unchanged. A missing Environment is not an observed
+empty directory. Terminal receipt-only recovery remains read-only and does not
+invent a capture from historical File metadata.
+
+**Public read projection.** `awaken-protocol-awaken` owns the read-only
+`GET /v1/awaken/files/output-capture?scope_id=...` path and its strong wire types.
+The existing Resources router injects a method adapter over the same
+`FileApplicationService` and required edge-selected Workspace as standard Files.
+The authorization route registry classifies this extension under `file.read`;
+its existing Hosted profile and Workspace path wrapper project the same family.
+A scope id is a File filter, not a Session existence query: an unknown or foreign
+Session filter returns no capture in this Workspace and creates no Session state.
+Missing Workspace fails 404, invalid query fails 400, and unavailable/corrupt
+capture evidence fails 503 instead of being represented as unknown. There is no
+public replacement endpoint. Revisions are decimal strings so JavaScript clients
+retain the full portable catalog range without integer rounding.
+
+Cowork reads this observation before fetching standard Files metadata, partitions
+current versus historical files by the exact returned ids, and downloads by id
+through the existing authenticated Files API. Unknown, explicit empty, deleted
+selected File, and failed observation reads have distinct presentations. A missing
+selected File stays unavailable; neither a historical version nor successful bytes
+from another id can replace it. A failed refresh removes the current presentation
+until authoritative reread succeeds; transient read errors clear after recovery.
+Historical Files and immutable bytes keep their original lifecycle. An observation
+is still not a Run success or user acceptance declaration.
+
+**Implementation boundary (2026-09-06).** Catalog/application ports, three storage
+adapters, Harvester, local/HTTP publication adapters and public read projection
+are wired. Cowork consumes exact output selection and preserves historical Files.
+Mechanism and API/UI tests are not completed Native/Claude multi-turn business E2E
+or evidence of equivalent behavior in the Claude Cowork application.
+Cause/effect rules live beside catalog/application, Worker HTTP transport,
+Coordinator fencing and Runtime Host tests. They cover database migration and
+reconnect, first-write races, A→B→A, authority and response validation, failures
+at each capture stage, exact acknowledgement-loss replay and no stale rebase.
 
 ### Consequences of the amendment
 

@@ -1,10 +1,13 @@
 pub mod awaken_file_store
+pub use awaken_file_store::ArtifactCapture
 pub use awaken_file_store::CreateFileRecordOutcome
 pub use awaken_file_store::FileCatalog
 pub use awaken_file_store::FileCatalogError
 pub use awaken_file_store::FileRecord
 pub use awaken_file_store::FileStore
 pub use awaken_file_store::FileStoreError
+pub use awaken_file_store::ReplaceArtifactCapture
+pub use awaken_file_store::ReplaceArtifactCaptureOutcome
 pub use awaken_file_store::content_id
 pub struct awaken_file_store::FsFileStore
 impl awaken_file_store::FsFileStore

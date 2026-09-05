@@ -34,6 +34,48 @@ pub fn files_router(files: Arc<dyn FileApplicationService>) -> Router {
         .with_state(files)
 }
 
+/// Method adapter for the explicitly namespaced read-only output observation.
+/// Scope is a File filter, as in beta Files list: unknown/foreign Session filters
+/// expose no capture and do not consult or create another Session authority.
+pub(super) async fn read_output_capture(
+    State(files): State<Arc<dyn FileApplicationService>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
+    RawQuery(raw): RawQuery,
+) -> axum::response::Response {
+    use awaken_protocol_awaken::{
+        FileOutputCapture, FileOutputCaptureParams, FileOutputCaptureResponse,
+    };
+    let params = match serde_urlencoded::from_str::<FileOutputCaptureParams>(
+        raw.as_deref().unwrap_or_default(),
+    ) {
+        Ok(params) if !params.scope_id.trim().is_empty() => params,
+        _ => return error(StatusCode::BAD_REQUEST, "one nonempty scope_id is required"),
+    };
+    let capture = match files.artifact_capture(&workspace, &params.scope_id).await {
+        Ok(capture) => capture,
+        Err(_) => {
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "output capture is unavailable",
+            );
+        }
+    };
+    if capture
+        .as_ref()
+        .is_some_and(|capture| capture.verify_scope(&workspace, &params.scope_id).is_err())
+    {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "output capture is invalid");
+    }
+    Json(FileOutputCaptureResponse {
+        scope_id: params.scope_id,
+        capture: capture.map(|capture| FileOutputCapture {
+            revision: capture.revision.to_string(),
+            file_ids: capture.file_ids,
+        }),
+    })
+    .into_response()
+}
+
 fn ga_metadata(record: &FileRecord) -> FileMetadata {
     FileMetadata {
         id: record.id.clone(),

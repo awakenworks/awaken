@@ -4,6 +4,14 @@ pub awaken_protocol_awaken::ProfiledSessionMode::Interactive
 pub awaken_protocol_awaken::ProfiledSessionMode::WorkUnit
 impl awaken_protocol_awaken::ProfiledSessionMode
 pub const fn awaken_protocol_awaken::ProfiledSessionMode::mutation_policy(self) -> awaken_session_contract::baseline::SessionMutationPolicy
+pub struct awaken_protocol_awaken::FileOutputCapture
+pub awaken_protocol_awaken::FileOutputCapture::file_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_protocol_awaken::FileOutputCapture::revision: alloc::string::String
+pub struct awaken_protocol_awaken::FileOutputCaptureParams
+pub awaken_protocol_awaken::FileOutputCaptureParams::scope_id: alloc::string::String
+pub struct awaken_protocol_awaken::FileOutputCaptureResponse
+pub awaken_protocol_awaken::FileOutputCaptureResponse::capture: core::option::Option<awaken_protocol_awaken::FileOutputCapture>
+pub awaken_protocol_awaken::FileOutputCaptureResponse::scope_id: alloc::string::String
 pub struct awaken_protocol_awaken::ProfiledSessionCreate
 pub awaken_protocol_awaken::ProfiledSessionCreate::agent_id: alloc::string::String
 pub awaken_protocol_awaken::ProfiledSessionCreate::env: alloc::vec::Vec<awaken_provisioning_contract::vocab::EnvVar>
@@ -58,6 +66,7 @@ pub awaken_protocol_awaken::ProfiledSessionRunSubmit::operation_id: alloc::strin
 pub awaken_protocol_awaken::ProfiledSessionRunSubmit::run_id: awaken_agent_contract::agent::run::Id
 pub fn awaken_protocol_awaken::dream_policy_router(alloc::sync::Arc<dyn awaken_session_contract::dream::DreamPolicyApplication>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::environment_extensions_router(alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>, core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>) -> axum::routing::Router
+pub fn awaken_protocol_awaken::file_output_capture_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::live_inbox_router(alloc::sync::Arc<dyn awaken_session_contract::session::LiveInboxApplication>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::profiled_session_release_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::profiled_session_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
