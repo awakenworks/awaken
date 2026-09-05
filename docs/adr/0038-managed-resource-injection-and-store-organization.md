@@ -424,11 +424,14 @@ supports only these namespaced variables:
 `{{awaken.resource.access}}`. Unknown or unterminated `awaken.*` variables fail
 before realization; unrelated braces remain authored text.
 
-The frozen logical mount is never replaced by a host-absolute path. Namespace
-and Container render sandbox-absolute POSIX paths. TrustedHost/Workdir renders
-relative paths with the platform separator so the process resolves them from
-its working directory without sending the operator's private root through the
-model prompt; `{{awaken.workspace}}` is `.` in that mode. Filesystem Memory
+The frozen logical mount is never replaced by a host-absolute path. Namespace,
+Container, and Native Hand tools render sandbox-absolute POSIX paths.
+TrustedHost/Workdir ACP renders relative paths with the platform separator so
+the CLI resolves them from its working directory without sending the
+operator's private root through the model prompt. In that ACP view,
+`{{awaken.workspace}}` is the relative path from the effective Agent cwd to
+`/workspace` (`.` for the default cwd and `../..`, for example, from
+`/workspace/repo/src`). Filesystem Memory
 mounts keep their typed access intent there, but read-only is explicitly
 advisory because an unconfined host Agent can mutate it; isolated Workdir
 admission still rejects the same request, while Namespace/Container retain

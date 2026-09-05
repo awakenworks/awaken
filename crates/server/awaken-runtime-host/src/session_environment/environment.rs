@@ -36,11 +36,90 @@ pub(crate) enum SessionEnvironment {
 }
 
 impl SessionEnvironment {
-    pub(crate) fn agent_path_view(&self) -> crate::managed_resource_projection::AgentPathView {
+    pub(crate) fn agent_prompt_path_view(
+        &self,
+        working_directory: Option<&str>,
+        has_acp: bool,
+        has_native: bool,
+    ) -> Result<crate::managed_resource_projection::AgentPathView, &'static str> {
+        if matches!(self, Self::Workdir(_)) && has_acp && has_native {
+            return Err(
+                "TrustedHost fallback candidates cannot mix ACP and Native filesystem clients",
+            );
+        }
+        let client = if has_acp {
+            super::AgentFilesystemClient::AcpProcess
+        } else {
+            super::AgentFilesystemClient::NativeTools
+        };
+        Ok(self
+            .agent_filesystem_view(working_directory, client)
+            .prompt_paths)
+    }
+
+    pub(crate) fn agent_filesystem_view(
+        &self,
+        working_directory: Option<&str>,
+        client: super::AgentFilesystemClient,
+    ) -> super::AgentFilesystemView {
         match self {
-            Self::Workdir(_) => crate::managed_resource_projection::AgentPathView::WorkdirRelative,
+            Self::Workdir(sandbox) => {
+                let logical_cwd = working_directory.map_or_else(
+                    || pc::WorkspaceLayout::ROOT.to_string(),
+                    |relative| {
+                        format!(
+                            "{}/{}",
+                            pc::WorkspaceLayout::ROOT.trim_end_matches('/'),
+                            relative
+                        )
+                    },
+                );
+                let workspace = sandbox
+                    .workspace_path()
+                    .join(pc::WorkspaceLayout::ROOT.trim_start_matches('/'));
+                let protocol_cwd = working_directory
+                    .map_or_else(|| workspace.clone(), |relative| workspace.join(relative));
+                super::AgentFilesystemView {
+                    protocol_cwd: protocol_cwd.to_string_lossy().into_owned(),
+                    command_cwd: working_directory.map_or_else(
+                        || pc::WorkspaceLayout::ROOT.to_string(),
+                        |relative| {
+                            format!(
+                                "{}/{}",
+                                pc::WorkspaceLayout::ROOT.trim_end_matches('/'),
+                                relative
+                            )
+                        },
+                    ),
+                    prompt_paths: match client {
+                        super::AgentFilesystemClient::NativeTools => {
+                            crate::managed_resource_projection::AgentPathView::sandbox_absolute()
+                        }
+                        super::AgentFilesystemClient::AcpProcess => {
+                            crate::managed_resource_projection::AgentPathView::workdir_relative(
+                                logical_cwd,
+                            )
+                        }
+                    },
+                }
+            }
             Self::Namespace { .. } | Self::Container { .. } => {
-                crate::managed_resource_projection::AgentPathView::SandboxAbsolute
+                let protocol_cwd = working_directory.map_or_else(
+                    || pc::WorkspaceLayout::ROOT.to_string(),
+                    |relative| {
+                        format!(
+                            "{}/{}",
+                            pc::WorkspaceLayout::ROOT.trim_end_matches('/'),
+                            relative
+                        )
+                    },
+                );
+                super::AgentFilesystemView {
+                    command_cwd: protocol_cwd.clone(),
+                    protocol_cwd,
+                    prompt_paths:
+                        crate::managed_resource_projection::AgentPathView::sandbox_absolute(),
+                }
             }
         }
     }

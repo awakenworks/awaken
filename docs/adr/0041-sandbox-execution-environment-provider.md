@@ -538,7 +538,7 @@ The three provider choices have deliberately different guarantees:
 |---|---|---|---|
 | Namespace | stable sandbox-absolute path | excluded by OS namespace/Seatbelt capability | only capabilities attested by that provider |
 | Container | stable sandbox-absolute path | excluded except declared mounts/broker routes | provider capability admission is mandatory |
-| TrustedHost/Workdir | provider-owned host directory; Agent prompt uses a relative path | explicitly available to local Native tools and BackendOwned ACP | no isolation claim; read-only is advisory; no network, allowlist, or resource-limit enforcement |
+| TrustedHost/Workdir | provider-owned host directory; ACP prompts use cwd-relative paths while Native Hand keeps logical paths | explicitly available to local Native tools and BackendOwned ACP | no isolation claim; read-only is advisory; no network, allowlist, or resource-limit enforcement |
 
 Workdir is therefore a convenience and ownership boundary, not a cloud security
 boundary. A network policy, read-only mount flag, or resource request must never

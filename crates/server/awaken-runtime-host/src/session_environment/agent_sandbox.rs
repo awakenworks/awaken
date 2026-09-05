@@ -5,6 +5,28 @@ use awaken_provisioning_contract as pc;
 
 use super::SessionEnvironment;
 
+/// One derived view of the process, ACP, and prompt-visible filesystem.
+///
+/// `command_cwd` remains sandbox-logical so every provider consumes the same
+/// command contract. `protocol_cwd` is the path visible to the ACP process.
+/// `prompt_paths` deliberately omits the Workdir provider's private host root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AgentFilesystemView {
+    pub protocol_cwd: String,
+    pub command_cwd: String,
+    pub prompt_paths: crate::managed_resource_projection::AgentPathView,
+}
+
+/// The component that will interpret a model-visible resource path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AgentFilesystemClient {
+    /// Awaken Hand tools consume provider-neutral sandbox-absolute paths.
+    NativeTools,
+    /// An ACP CLI consumes paths relative to its protocol working directory on
+    /// TrustedHost and sandbox-absolute paths in Namespace/Container.
+    AcpProcess,
+}
+
 /// Segregated capability needed by the ACP channel adapter. Keeping it beside
 /// the Session owner avoids teaching the neutral provisioning contract about
 /// async byte channels.
@@ -27,6 +49,27 @@ pub(crate) trait AgentSandbox: Send + Sync {
 
     /// Workspace path understood by the ACP agent inside this environment.
     fn workspace_cwd(&self) -> String;
+
+    /// Derive every cwd/path projection from one validated Agent configuration.
+    fn filesystem_view(&self, working_directory: Option<&str>) -> AgentFilesystemView {
+        let workspace = self.workspace_cwd();
+        let (protocol_cwd, command_cwd) = working_directory.map_or_else(
+            || (workspace.clone(), workspace),
+            |relative| {
+                let logical = format!(
+                    "{}/{}",
+                    pc::WorkspaceLayout::ROOT.trim_end_matches('/'),
+                    relative
+                );
+                (logical.clone(), logical)
+            },
+        );
+        AgentFilesystemView {
+            protocol_cwd,
+            command_cwd,
+            prompt_paths: crate::managed_resource_projection::AgentPathView::sandbox_absolute(),
+        }
+    }
 
     async fn materialize_inline(
         &self,
@@ -89,6 +132,10 @@ impl AgentSandbox for SessionEnvironment {
                 pc::WorkspaceLayout::ROOT.to_string()
             }
         }
+    }
+
+    fn filesystem_view(&self, working_directory: Option<&str>) -> AgentFilesystemView {
+        self.agent_filesystem_view(working_directory, AgentFilesystemClient::AcpProcess)
     }
 
     async fn materialize_inline(

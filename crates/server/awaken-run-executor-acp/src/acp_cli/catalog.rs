@@ -76,7 +76,6 @@ const CLAUDE: AcpCli = AcpCli {
         flag: "-c",
         key: "model",
     },
-    backend_owned_state_isolation: BackendOwnedStateIsolation::SharedHost,
     managed_model_interface: ManagedModelInterface::Environment,
     managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     managed_provider_config: None,
@@ -106,7 +105,7 @@ const CODEX: AcpCli = AcpCli {
     description: "OpenAI Codex via the pinned ACP adapter. Reads AGENTS.md.",
     acquisition: AcpAcquisition::PinnedNpmWrapper {
         installer: "npm",
-        package: "@agentclientprotocol/codex-acp@1.1.9",
+        package: "@agentclientprotocol/codex-acp@1.10.0",
         bin: "codex-acp",
     },
     discovery: AcpDiscoverySpec {
@@ -139,11 +138,11 @@ const CODEX: AcpCli = AcpCli {
     image_requirements: &[
         AcpImageRequirement {
             manager: "npm",
-            requirement: "@agentclientprotocol/codex-acp@1.1.9",
+            requirement: "@agentclientprotocol/codex-acp@1.10.0",
         },
         AcpImageRequirement {
             manager: "npm",
-            requirement: "@openai/codex@0.146.0",
+            requirement: "@openai/codex@0.153.3",
         },
     ],
     container_argv: &["codex-acp"],
@@ -161,9 +160,6 @@ const CODEX: AcpCli = AcpCli {
     }),
     model_api_dialects: &["open_ai_responses"],
     backend_model_interface: BackendModelInterface::SessionConfigOption { config_id: "model" },
-    backend_owned_state_isolation: BackendOwnedStateIsolation::SessionDirectory {
-        env: "CODEX_SQLITE_HOME",
-    },
     managed_model_interface: ManagedModelInterface::Environment,
     managed_credential_delivery: ManagedCredentialDelivery::Artifact(CredentialArtifactSpec {
         codec: CredentialArtifactCodec::CodexAuthJson,
@@ -253,7 +249,6 @@ const GEMINI: AcpCli = AcpCli {
     }),
     model_api_dialects: &["gemini"],
     backend_model_interface: BackendModelInterface::Flag { flag: "--model" },
-    backend_owned_state_isolation: BackendOwnedStateIsolation::SharedHost,
     managed_model_interface: ManagedModelInterface::Environment,
     managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     managed_provider_config: None,
@@ -328,7 +323,6 @@ const OPENCODE: AcpCli = AcpCli {
     }),
     model_api_dialects: &["open_ai_chat"],
     backend_model_interface: BackendModelInterface::Unsupported,
-    backend_owned_state_isolation: BackendOwnedStateIsolation::SharedHost,
     managed_model_interface: ManagedModelInterface::Environment,
     managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     managed_provider_config: Some(ManagedProviderConfigDelivery {
@@ -423,7 +417,6 @@ const HERMES: AcpCli = AcpCli {
     }),
     model_api_dialects: &["open_ai_chat"],
     backend_model_interface: BackendModelInterface::Unsupported,
-    backend_owned_state_isolation: BackendOwnedStateIsolation::SharedHost,
     managed_model_interface: ManagedModelInterface::SessionModel,
     managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     managed_provider_config: None,

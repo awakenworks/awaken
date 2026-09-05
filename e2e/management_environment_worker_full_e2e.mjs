@@ -41,6 +41,12 @@ import {
   waitForValue,
 } from './harness.mjs';
 import { requireOrSkipBwrap } from './bwrap_capability.mjs';
+import {
+  AWAKEN_BIN_ENV,
+  SCENARIO_HOST_BIN_ENV,
+  cargoExecutable,
+  cargoScenarioHostBundle,
+} from './cargo_binary.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38341);
@@ -592,6 +598,21 @@ if (process.env.AWAKEN_WORKER_MANAGED_MOUNT_NAMESPACE === '1') {
   }
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const targetDir = join(repositoryRoot, 'target');
+  // Build the canonical scenario-host/Hand bundle before the checkout becomes
+  // read-only. The child consumes this exact sibling pair through the shared
+  // Cargo resolver; it must not run Vite, a build script, or Cargo inside the
+  // namespace merely to rediscover already-qualified executable bytes.
+  const bundle = cargoScenarioHostBundle({
+    cwd: repositoryRoot,
+    environment: process.env,
+  });
+  const awaken = cargoExecutable({
+    cwd: repositoryRoot,
+    packageName: 'awaken-cli',
+    targetName: 'awaken',
+    environment: process.env,
+    prebuiltEnvironmentName: AWAKEN_BIN_ENV,
+  });
   const result = spawnSync('bwrap', [
     '--unshare-user',
     '--uid', '0',
@@ -606,7 +627,12 @@ if (process.env.AWAKEN_WORKER_MANAGED_MOUNT_NAMESPACE === '1') {
     '--', process.execPath, fileURLToPath(import.meta.url),
   ], {
     cwd: process.cwd(),
-    env: { ...process.env, AWAKEN_WORKER_MANAGED_MOUNT_NAMESPACE: '1' },
+    env: {
+      ...process.env,
+      [AWAKEN_BIN_ENV]: awaken,
+      AWAKEN_WORKER_MANAGED_MOUNT_NAMESPACE: '1',
+      [SCENARIO_HOST_BIN_ENV]: bundle.scenarioHost,
+    },
     stdio: 'inherit',
   });
   if (result.error) throw result.error;

@@ -14,7 +14,7 @@ mod provider;
 mod repository_realizer;
 mod session_files;
 mod session_hand;
-pub(crate) use agent_sandbox::AgentSandbox;
+pub(crate) use agent_sandbox::{AgentFilesystemClient, AgentFilesystemView, AgentSandbox};
 pub(crate) use environment::SessionEnvironment;
 pub(crate) use provider::SessionEnvironmentProvider;
 pub use session_hand::HandExecutorFactory;

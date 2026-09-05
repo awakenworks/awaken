@@ -435,21 +435,27 @@ impl SessionRuntimeSlots {
     /// inputs. The durable baseline/resource aggregates remain authoritative;
     /// executors call this at attempt time so late realization cannot leave a
     /// construction-time prompt snapshot behind.
-    pub fn prompts(&self, session: &str) -> Vec<String> {
+    pub fn prompts(
+        &self,
+        session: &str,
+        working_directory: Option<&str>,
+        has_acp: bool,
+        has_native: bool,
+    ) -> Result<Vec<String>, String> {
         self.read(session, |slot| {
             let mut prompts = slot.resources.prompts.clone();
             let delivery = slot.content_delivery.unwrap_or_default();
-            let path_view = slot
-                .environment_owner
-                .resident()
-                .map_or_else(Default::default, |environment| {
-                    environment.agent_path_view()
-                });
+            let path_view = match slot.environment_owner.resident() {
+                Some(environment) => environment
+                    .agent_prompt_path_view(working_directory, has_acp, has_native)
+                    .map_err(str::to_owned)?,
+                None => Default::default(),
+            };
             prompts.extend(
                 slot.resources
                     .resource_prompts
                     .iter()
-                    .map(|prompt| prompt.render(delivery, path_view)),
+                    .map(|prompt| prompt.render(delivery, path_view.clone())),
             );
             if let Some(baseline) = &slot.baseline {
                 prompts.extend(baseline.prompts.clone());
@@ -457,9 +463,9 @@ impl SessionRuntimeSlots {
             if let Some(skill_prompt) = &slot.skill_prompt {
                 prompts.push(skill_prompt.clone());
             }
-            prompts
+            Ok(prompts)
         })
-        .unwrap_or_default()
+        .unwrap_or_else(|| Ok(Vec::new()))
     }
 
     pub fn realization_lock(&self, session: &str) -> Arc<tokio::sync::Mutex<()>> {

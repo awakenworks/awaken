@@ -60,10 +60,17 @@ again, receiving a new one-shot grant only after the stored decision is applied.
 
 `configuration.working_directory` is optional and relative to the Session
 workspace. Publication rejects empty paths, absolute paths, drive/prefix syntax,
-backslashes, empty segments, `.` and `..`. Runtime maps it to either the physical
-Workdir root or `/workspace` inside Namespace/Container and sends that value in
-ACP `session/new.cwd`. The process cwd remains an implementation detail and does
-not grant filesystem authority.
+backslashes, empty segments, `.` and `..`. Runtime derives one filesystem view:
+the default is `/workspace`, and an authored value extends it. Namespace and
+Container pass the sandbox-absolute value to both the process and ACP
+`session/new.cwd`; Workdir passes the logical value to the process launcher and
+the matching platform-native host path to ACP. Resource prompt paths are made
+relative to that same cwd for ACP, so no private Workdir root is injected.
+Native Hand tools retain provider-neutral sandbox-absolute paths because their
+path jail interprets the logical sandbox contract rather than a host process
+cwd. A TrustedHost fallback pool cannot mix these two path consumers in one
+attempt; Namespace/Container may mix them because both consume the same
+sandbox-absolute view. The process cwd does not grant filesystem authority.
 
 ## Diagnostics
 

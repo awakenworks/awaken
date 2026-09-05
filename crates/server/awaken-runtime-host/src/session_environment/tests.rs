@@ -485,6 +485,69 @@ async fn trusted_host_live_resource_admission_keeps_readonly_advisory() {
 }
 
 #[tokio::test]
+async fn trusted_host_filesystem_view_maps_workspace_relative_cwd_once() {
+    // Cause/effect graph: C1 cwd={default,repo/src}; C2 client={Native Hand,
+    // ACP process}; C3 host separator={Windows,POSIX}. E1 default selects the
+    // canonical workspace while relative /mnt projections remain reachable; E2 an
+    // authored cwd is based on the canonical logical /workspace; E3 ACP gets
+    // the platform-native physical path; E4 process gets the provider-neutral
+    // logical path; E5 prompts contain no host prefix. Decision rules:
+    // T1 ACP+default=>E1+E5; T2 ACP+configured=>E2+E3+E4+E5;
+    // T3 Native=>sandbox-logical prompt paths; T4 Workdir+mixed=>reject.
+    let base = tempfile::tempdir().unwrap();
+    let provider =
+        SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false);
+    let environment = provider.create(&spec()).await.unwrap();
+    let root = AgentSandbox::workspace_cwd(&environment);
+
+    let default = environment.agent_filesystem_view(None, AgentFilesystemClient::AcpProcess);
+    assert_eq!(
+        default.protocol_cwd,
+        std::path::Path::new(&root)
+            .join("workspace")
+            .to_string_lossy(),
+        "T1/E1"
+    );
+    assert_eq!(default.command_cwd, "/workspace", "T1/E1");
+    assert_eq!(
+        default.prompt_paths,
+        crate::managed_resource_projection::AgentPathView::workdir_relative("/workspace"),
+        "T1/E5"
+    );
+
+    let configured =
+        environment.agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
+    assert_eq!(
+        configured.protocol_cwd,
+        std::path::Path::new(&root)
+            .join("workspace")
+            .join("repo")
+            .join("src")
+            .to_string_lossy(),
+        "T2/E2+E3"
+    );
+    assert_eq!(configured.command_cwd, "/workspace/repo/src", "T2/E4");
+    assert_eq!(
+        configured.prompt_paths,
+        crate::managed_resource_projection::AgentPathView::workdir_relative("/workspace/repo/src"),
+        "T2/E5"
+    );
+    let native = environment.agent_filesystem_view(None, AgentFilesystemClient::NativeTools);
+    assert_eq!(
+        native.prompt_paths,
+        crate::managed_resource_projection::AgentPathView::sandbox_absolute(),
+        "Native Hand paths remain sandbox-logical"
+    );
+    assert!(
+        environment
+            .agent_prompt_path_view(None, true, true)
+            .is_err(),
+        "T4 mixed Workdir path consumers"
+    );
+    environment.dispose().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_process_and_agent_channel_share_one_live_environment() {
     // Cause/effect graph: C1=Workdir environment; C2=Native Hand tool;
     // C3=ACP child process. Effects: E1/E2 both observe state written inside
