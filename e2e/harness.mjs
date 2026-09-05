@@ -389,6 +389,7 @@ function preparedServerProcessEnv(addr, configured = {}, inheritedEnvironment = 
  *   fields?: Record<string, unknown>,
  *   extraEnv?: NodeJS.ProcessEnv,
  *   stderr?: import('node:child_process').StdioOptions[2],
+ *   stdout?: import('node:child_process').StdioOptions[1],
  *   identityMode?: string,
  * }} [options]
  */
@@ -402,8 +403,10 @@ export function spawnProduction(
     fields = {},
     extraEnv = {},
     stderr = 'inherit',
+    stdout = 'ignore',
     identityMode = 'no-login',
   } = {},
+  inheritedEnvironment = process.env,
 ) {
   // Production-composition E2Es that use this generic helper do not exercise
   // ACP. Keep their startup independent of host CLI discovery and network
@@ -411,7 +414,7 @@ export function spawnProduction(
   // through their own production config.
   const isolatedFields = { acp_clis: [], ...fields };
   const env = {
-    ...process.env,
+    ...inheritedEnvironment,
     ...deploymentEnv(dataDir, {
       identityMode,
       controlSealKey,
@@ -426,7 +429,7 @@ export function spawnProduction(
     port,
     spawn(ensureProductionBuilt(), automatedAllInOneArgs('--port', String(port)), {
       env,
-      stdio: ['ignore', 'ignore', stderr],
+      stdio: ['ignore', stdout, stderr],
     }),
   );
 }
@@ -610,11 +613,14 @@ export async function publishManagementAgent(baseUrl, agentId, config) {
 
 // Real-provider setup shared by compatibility certification and application
 // tasks. Graph: live connection -> discovered offering -> exact credential
-// profile -> publication caller. P1 each successful edge returns the selected
+// model selection -> publication caller. P1 each successful edge returns the selected
 // model; P2 any failed edge or missing explicitly selected model fails closed.
 // Secret bytes never enter returned evidence or error messages. Configuration,
 // discovery and credential ownership stay in the real Control API.
-export async function provisionProviderTestProfile(base, workspace, item, profileId) {
+export async function provisionProviderTestModel(base, workspace, item, profileId, { backendRef = 'genai' } = {}) {
+  if (backendRef !== 'genai' && !/^acp:[a-z][a-z0-9-]*$/u.test(backendRef)) {
+    throw new Error('Provider test setup requires a Native or ACP backend reference');
+  }
   const request = async (method, route, body) => {
     const response = await fetch(`${base}${route}`, {
       method, headers: body === undefined ? {} : { 'content-type': 'application/json' },
@@ -639,21 +645,29 @@ export async function provisionProviderTestProfile(base, workspace, item, profil
   if (!(connection.sync.discovered > 0)) throw new Error(`${item.id}: provider discovered no models`);
   const catalog = await request('GET', '/v1/config/catalog');
   const offerings = catalog.offerings.filter((offering) =>
-    offering.provider_id === item.provider_id && (offering.status ?? 'active') === 'active');
+    offering.provider_id === item.provider_id && offering.protocol_endpoint_id === connection.endpoint.id
+      && (offering.status ?? 'active') === 'active');
   const offering = item.model_id
     ? offerings.find((candidate) => candidate.model_id === item.model_id)
     : offerings[0];
   if (!offering) throw new Error(`${item.id}: selected model has no active offering`);
-  await request('PUT', `/v1/config/inference-profiles/${profileId}`, {
-    workspace_id: workspace,
-    primary: {
-      target: { model_id: offering.model_id, provider_id: offering.provider_id,
-        protocol_endpoint_id: offering.protocol_endpoint_id },
-      credential_binding: { type: 'exact', credential_source_id: connection.credential.id },
-    },
-    fallbacks: [], disabled_endpoint_ids: [],
-  });
-  return { offering, discoveredModels: connection.sync.discovered };
+  const target = { model_id: offering.model_id, provider_id: offering.provider_id,
+    protocol_endpoint_id: offering.protocol_endpoint_id };
+  // Profiles select Native today. ACP must author the existing exact Target
+  // via the Managed model-id wire; the internal Target object is not public.
+  // Writing a Native profile and relabelling its run
+  // would not exercise ACP. Control still owns dialect/capability admission and
+  // credential selection, and freezes the selected source in the publication.
+  let model = `${encodeURIComponent(offering.model_id)};provider=${encodeURIComponent(offering.provider_id)};api=${item.dialect};executor=${backendRef}`;
+  if (backendRef === 'genai') {
+    await request('PUT', `/v1/config/inference-profiles/${profileId}`, {
+      workspace_id: workspace,
+      primary: { target, credential_binding: { type: 'exact', credential_source_id: connection.credential.id } },
+      fallbacks: [], disabled_endpoint_ids: [],
+    });
+    model = { mode: 'profile', profile_id: profileId };
+  }
+  return { offering, endpoint: connection.endpoint, discoveredModels: connection.sync.discovered, model };
 }
 
 // Fixture owner for binding one immutable Sandbox execution policy. Endpoint
