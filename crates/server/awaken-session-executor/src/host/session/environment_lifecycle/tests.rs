@@ -1220,6 +1220,143 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
 }
 
 #[tokio::test]
+async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
+    // Cause/effect table: C1 exact durable Resident was revoked; C2 provider
+    // subsequently proves that physical incarnation closed; C3 frozen policy
+    // permits rebuild. R1 C1+C2+C3 => consume the exact revoked owner, retain
+    // source binding/generation for aggregate Rebuild, never reuse its Hand.
+    // Revocation is not a competing RecoveryDiscard intent: changing its cause
+    // would be rejected by the retirement priority fence before any rebuild.
+    let thread = "closed-revoked-durable-rebuild";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let environment = environment(&provider, thread).await;
+    let binding = serde_json::to_string(&environment.handle()).unwrap();
+    let source_generation = generation(thread).id;
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    host.session_slots.update(thread, |slot| {
+        slot.environment_owner = resident(thread, environment.clone());
+    });
+    host.retire_current_environment(
+        thread,
+        SessionEnvironmentRetirementCause::RealizationRevocation,
+        RetirementSelection::Exact(&environment),
+    )
+    .expect("C1 exact revocation")
+    .expect("C1 retained owner");
+    dispose_current_environment(&environment, thread).await;
+    // R0 C1+C2+!C3 => reject and retain the exact revoked owner; only the
+    // frozen aggregate policy may authorize the subsequent R1 rebuild.
+    assert!(
+        host.adopt_bound_session_environment(
+            thread,
+            Some(&binding),
+            &provider,
+            Some(&source_generation),
+            false
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        matches!(
+            host.session_slots
+                .read(thread, |slot| slot.environment_owner.clone()),
+            Some(SessionEnvironmentOwner::Retiring(_))
+        ),
+        "R0 retain revoked owner"
+    );
+    let disposition = host
+        .adopt_bound_session_environment(
+            thread,
+            Some(&binding),
+            &provider,
+            Some(&source_generation),
+            true,
+        )
+        .await
+        .expect("R1 closed revoked owner must permit canonical rebuild");
+    assert_eq!(
+        disposition,
+        SessionEnvironmentAdoptionDisposition::RebuildRequired
+    );
+    assert!(
+        host.session_environment_owner_is_vacant(thread),
+        "R1 closed owner consumed"
+    );
+    assert_eq!(
+        host.session_slots
+            .read(thread, |slot| slot.environment_rebuild_source.clone())
+            .flatten(),
+        Some((binding, Some(source_generation))),
+        "R1 exact aggregate rebuild predecessor retained"
+    );
+}
+
+#[tokio::test]
+async fn closed_recovery_cannot_override_protected_retirements() {
+    // C1 exact closed physical owner; C2 Terminal or Checkpoint owns retirement;
+    // C3 rebuild is enabled. R2 C1+C2+C3 => error, identical protected fence,
+    // no rebuild predecessor. Physical absence is not lifecycle authority.
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    for terminal in [false, true] {
+        let thread = if terminal {
+            "closed-terminal"
+        } else {
+            "closed-checkpoint"
+        };
+        let environment = environment(&provider, thread).await;
+        let binding = serde_json::to_string(&environment.handle()).unwrap();
+        let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+        host.session_slots.update(thread, |slot| {
+            slot.environment_owner = resident(thread, environment.clone());
+        });
+        let cause = if terminal {
+            SessionEnvironmentRetirementCause::Terminal {
+                effect_id: "terminal".into(),
+            }
+        } else {
+            let generation = generation(thread);
+            SessionEnvironmentRetirementCause::CheckpointSource {
+                operation: awaken_session_contract::SessionEnvironmentOperation::new(
+                    "workspace",
+                    thread,
+                    "suspend",
+                    &generation,
+                    1,
+                    None,
+                    None,
+                ),
+                generation,
+            }
+        };
+        let protected = host
+            .retire_current_environment(thread, cause, RetirementSelection::Exact(&environment))
+            .unwrap()
+            .unwrap();
+        dispose_current_environment(&environment, thread).await;
+        assert!(
+            host.adopt_bound_session_environment(thread, Some(&binding), &provider, None, true)
+                .await
+                .is_err(),
+            "R2 protected intent"
+        );
+        assert!(
+            matches!(host.session_slots.read(thread, |slot| slot.environment_owner.clone()),
+            Some(SessionEnvironmentOwner::Retiring(current)) if current.exact_matches(&protected.owner)),
+            "R2 identical fence"
+        );
+        assert!(
+            host.session_slots
+                .read(thread, |slot| slot.environment_rebuild_source.is_none())
+                .unwrap(),
+            "R2 no rebuild"
+        );
+    }
+}
+
+#[tokio::test]
 async fn stale_same_binding_retirement_cannot_clear_an_aba_replacement() {
     // Cause/effect graph: C1 two wrappers carry the same durable identity,
     // handle, and binding; C2 their Arc identities differ; C3 stale owner
@@ -1241,44 +1378,45 @@ async fn stale_same_binding_retirement_cannot_clear_an_aba_replacement() {
     assert_eq!(first.handle(), second.handle(), "R17/C1");
     assert!(!Arc::ptr_eq(&first, &second), "R17/C2");
 
-    let mut owner = resident("aba-retirement", first);
-    let stale = owner
-        .begin_retirement(
-            SessionEnvironmentRetirementCause::RecoveryDiscard,
-            RetirementSelection::Current,
-        )
-        .unwrap()
-        .unwrap();
-    owner = resident("aba-retirement", second);
-    let replacement = owner
-        .begin_retirement(
-            SessionEnvironmentRetirementCause::RecoveryDiscard,
-            RetirementSelection::Current,
-        )
-        .unwrap()
-        .unwrap();
-    assert!(
-        !owner
-            .observe_retirement_status::<()>(
-                &stale,
-                Ok(awaken_provisioning_contract::SandboxStatus::Terminated),
-            )
-            .unwrap(),
-        "R17/E1"
-    );
-    assert!(
-        matches!(owner, SessionEnvironmentOwner::Retiring(_)),
-        "R17/E1"
-    );
-    assert!(
-        owner
-            .observe_retirement_status::<()>(
-                &replacement,
-                Ok(awaken_provisioning_contract::SandboxStatus::Terminated),
-            )
-            .unwrap(),
-        "R17/E2"
-    );
+    // R17 also covers revoked-owner completion: neither same binding nor same
+    // generation can substitute for the exact captured wrapper identity.
+    for cause in [
+        SessionEnvironmentRetirementCause::RecoveryDiscard,
+        SessionEnvironmentRetirementCause::RealizationRevocation,
+    ] {
+        let mut owner = resident("aba-retirement", first.clone());
+        let stale = owner
+            .begin_retirement(cause.clone(), RetirementSelection::Current)
+            .unwrap()
+            .unwrap();
+        owner = resident("aba-retirement", second.clone());
+        let replacement = owner
+            .begin_retirement(cause, RetirementSelection::Current)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !owner
+                .observe_retirement_status::<()>(
+                    &stale,
+                    Ok(awaken_provisioning_contract::SandboxStatus::Terminated),
+                )
+                .unwrap(),
+            "R17/E1"
+        );
+        assert!(
+            matches!(owner, SessionEnvironmentOwner::Retiring(_)),
+            "R17/E1"
+        );
+        assert!(
+            owner
+                .observe_retirement_status::<()>(
+                    &replacement,
+                    Ok(awaken_provisioning_contract::SandboxStatus::Terminated),
+                )
+                .unwrap(),
+            "R17/E2"
+        );
+    }
 }
 
 #[tokio::test]
