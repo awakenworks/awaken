@@ -34,6 +34,7 @@ rendered_trace_dir="$formal_tmp_root/rendered-traces"
 
 python3 scripts/ci/check_feature_coverage.py --require-complete
 python3 scripts/ci/check_formal_coverage.py --require-complete
+python3 scripts/ci/test_formal_profile.py
 python3 scripts/release/verification_manifest.py self-test
 python3 scripts/ci/test_formal_surface.py
 python3 scripts/ci/check_formal_surface.py --require-complete

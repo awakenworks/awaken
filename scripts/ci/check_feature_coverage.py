@@ -15,6 +15,8 @@ import pathlib
 import re
 import sys
 
+from formal_profile import resolve_obligations
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FEATURES = ROOT / "formal" / "features.json"
@@ -277,23 +279,10 @@ def main() -> None:
             if not all(isinstance(value, list) for value in (explicit, prefixes, references)):
                 fail(f"{requirement_id} obligation and assumption fields must be lists")
 
-            matched: set[str] = set()
-            for obligation_id in explicit:
-                obligation_id = str(obligation_id)
-                if obligation_id not in obligations_by_id:
-                    fail(f"{requirement_id} names missing obligation {obligation_id}")
-                matched.add(obligation_id)
-            for prefix in prefixes:
-                prefix = str(prefix)
-                prefix_matches = {
-                    obligation_id
-                    for obligation_id in obligations_by_id
-                    if obligation_id.startswith(f"{prefix}.")
-                    and obligations_by_id[obligation_id]["formalizable"]
-                }
-                if not prefix_matches:
-                    fail(f"{requirement_id} prefix {prefix!r} matches no formalizable obligation")
-                matched.update(prefix_matches)
+            try:
+                matched = resolve_obligations(requirement, obligations_by_id, requirement_id)
+            except ValueError as error:
+                fail(str(error))
             used_obligations.update(matched)
             feature_obligations[feature_id].update(matched)
 
