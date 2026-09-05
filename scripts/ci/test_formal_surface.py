@@ -4,8 +4,13 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import io
+import json
 import pathlib
+import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = pathlib.Path(__file__).with_name("check_formal_surface.py")
@@ -16,6 +21,116 @@ SPEC.loader.exec_module(MODULE)
 
 
 class FormalSurfaceProductionSourceTests(unittest.TestCase):
+    def test_explicit_targets_survive_disabled_cargo_auto_discovery(self) -> None:
+        # T1 auto roots disabled -> conventional unregistered lib/bin files do
+        # not earn evidence. T2 explicit custom library/binary paths and named
+        # binaries -> reachable, including child modules beside custom roots.
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = root / "Cargo.toml"
+            manifest.write_text(
+                '[package]\nname="fixture"\nversion="0.0.0"\nautolib=false\nautobins=false\n'
+                '[[bin]]\nname="explicit"\npath="entry/serve.rs"\n'
+                '[[bin]]\nname="named"\n'
+            )
+            for relative in ["src/lib.rs", "src/main.rs", "src/bin/orphan.rs", "src/bin/named.rs", "entry/serve.rs", "entry/root.rs", "entry/child.rs"]:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("mod child;" if relative == "entry/root.rs" else "")
+            linked = MODULE._crate_boundary_workspace.production_module_files([manifest])
+            self.assertEqual({p.relative_to(root).as_posix() for p in linked}, {"entry/serve.rs", "src/bin/named.rs"}, "T1")
+            with manifest.open("a") as output:
+                output.write('[lib]\npath="entry/root.rs"\n')
+            linked = MODULE._crate_boundary_workspace.production_module_files([manifest])
+            self.assertEqual({p.relative_to(root).as_posix() for p in linked}, {"entry/serve.rs", "src/bin/named.rs", "entry/root.rs", "entry/child.rs"}, "T2")
+
+    def test_ledger_cannot_credit_a_file_after_its_module_edge_is_removed(self) -> None:
+        # Causes L1 the ledger points to an existing reachable production module;
+        # L2 only its mod declaration is removed; L3 an exclusion attempts to
+        # disguise the same proof as test-only. Effects: L1 passes; L2/L3 reject
+        # the actual strict checker, even though the evidence file still exists.
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            crate = root / "crates/runtime/example"
+            (crate / "src").mkdir(parents=True)
+            manifest = crate / "Cargo.toml"
+            manifest.write_text('[package]\nname="example"\nversion="0.0.0"\n')
+            (crate / "src/lib.rs").write_text("mod policy;")
+            policy = "crates/runtime/example/src/policy.rs"
+            (root / policy).write_text("fn authorize() {}")
+            ledger = root / "coverage.json"
+            ledger.write_text(json.dumps({"obligations": [{
+                "id": "example", "status": "model_linked", "evidence": [policy],
+            }]}))
+            features = root / "features.json"
+            features.write_text('{"features":[]}')
+            exclusions = root / "exclusions.json"
+            with (
+                mock.patch.multiple(
+                    MODULE, ROOT=root, LEDGER=ledger, FEATURES=features,
+                    EXCLUSIONS=exclusions, CLASSIFICATIONS=root / "classifications.json",
+                    PRODUCTION_ROOTS=[root / "crates"],
+                ),
+                mock.patch.object(MODULE._crate_boundary_workspace, "iter_crate_manifests", return_value=[manifest]),
+                mock.patch("sys.argv", ["check_formal_surface.py", "--require-complete"]),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                MODULE.main()
+                (crate / "src/lib.rs").write_text("")
+                with self.assertRaises(SystemExit) as error:
+                    MODULE.main()
+                self.assertEqual(error.exception.code, 1, "L2")
+                exclusions.write_text(json.dumps({"exclusions": [{
+                    "path": policy, "boundary": "test_only", "reason": "invalid camouflage",
+                }]}))
+                with self.assertRaises(SystemExit) as error:
+                    MODULE.main()
+                self.assertEqual(error.exception.code, 1, "L3")
+
+    def test_module_links_exclude_detached_and_test_only_evidence(self) -> None:
+        # Causes: C1 a Cargo target reaches ordinary/inline/path/include modules;
+        # C2 the only edge is cfg(test); C3 an edge is removed but its file stays;
+        # C4 a feature/platform branch may compile in a production profile.
+        # Effects: M1 C1/C4 -> structurally linked; M2 C2/C3 -> no evidence.
+        # A source string/comment mentioning a module is not an edge (M3).
+        # Constraint: this is a union of non-test configurations, not a compiler
+        # or macro-expansion proof; release builds retain cfg/target authority.
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = root / "Cargo.toml"
+            manifest.write_text('[package]\nname = "fixture"\nversion = "0.0.0"\n')
+            files = {
+                "src/lib.rs": (
+                    'mod ordinary; mod inline { mod nested; }\n'
+                    '#[path = "renamed.rs"] mod alias;\n'
+                    'include!("included.rs");\n'
+                    '#[cfg(test)] mod tests;\n'
+                    '#[cfg(any(test, feature = "support"))] mod feature;\n'
+                    '// mod orphan;\nconst TEXT: &str = "mod orphan;";\n'
+                ),
+                "src/ordinary.rs": "mod child;",
+                "src/ordinary/child.rs": "",
+                "src/inline/nested.rs": "",
+                "src/renamed.rs": "",
+                "src/included.rs": "",
+                "src/tests.rs": "mod fake;",
+                "src/tests/fake.rs": "",
+                "src/feature.rs": "",
+                "src/orphan.rs": "fn authorize() {}",
+                "src/main.rs": "",
+            }
+            for relative, source in files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(source)
+            linked = MODULE._crate_boundary_workspace.production_module_files([manifest])
+            expected = set(files) - {"src/tests.rs", "src/tests/fake.rs", "src/orphan.rs"}
+            self.assertEqual({p.relative_to(root).as_posix() for p in linked}, expected, "M1-M3")
+            (root / "src/lib.rs").write_text("mod ordinary;")
+            linked = MODULE._crate_boundary_workspace.production_module_files([manifest])
+            self.assertNotIn(root / "src/renamed.rs", linked, "M2 removed edge")
+
     def test_only_production_modules_enter_the_surface_denominator(self) -> None:
         # Cause/effect decision table:
         # P1 crates/*/src/lib.rs -> production surface; P2 tests.rs/test.rs,

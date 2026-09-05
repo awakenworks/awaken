@@ -2,12 +2,15 @@ import { defineConfig, devices } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const backendPort = Number(process.env.AWAKEN_E2E_BACKEND_PORT ?? "38080");
 const webPort = Number(process.env.AWAKEN_E2E_WEB_PORT ?? "3002");
 const backendUrl = `http://127.0.0.1:${backendPort}`;
 const webUrl = `http://127.0.0.1:${webPort}`;
-const cargoTargetDir = process.env.AWAKEN_E2E_CARGO_TARGET_DIR ?? "/tmp/awaken-target-console-e2e";
+const cargoTargetDir = process.env.AWAKEN_E2E_CARGO_TARGET_DIR
+  ?? process.env.CARGO_TARGET_DIR
+  ?? fileURLToPath(new URL("../target", import.meta.url));
 const backendDataDir = process.env.AWAKEN_E2E_OWNED_DATA_DIR
   ?? mkdtempSync(join(tmpdir(), "awaken-console-e2e."));
 process.env.AWAKEN_E2E_OWNED_DATA_DIR = backendDataDir;
@@ -26,8 +29,9 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   fullyParallel: false,
   workers: 1,
+  forbidOnly: true,
   retries: 0,
-  reporter: [["list"]],
+  reporter: [["list"], ["json", { outputFile: "test-results/results.json" }]],
   globalTeardown: "./e2e/global-teardown.ts",
   use: {
     baseURL: webUrl,
@@ -46,18 +50,23 @@ export default defineConfig({
       // Exercise application behavior in the explicit no-login deployment mode;
       // local-browser authentication has its own control-plane integration tests.
       command: "node web/e2e/start-backend.mjs",
+      env: {
+        CARGO_TARGET_DIR: cargoTargetDir,
+        AWAKEN_E2E_BACKEND_PORT: String(backendPort),
+        AWAKEN_E2E_OWNED_DATA_DIR: backendDataDir,
+      },
       cwd: "..",
       url: `${backendUrl}/v1/config/catalog`,
       // A cold Rust build on constrained CI runners can exceed four minutes;
       // keep the browser gate reliable while still bounding startup.
       timeout: 600_000,
-      reuseExistingServer: true,
+      reuseExistingServer: false,
     },
     {
       command: `AWAKEN_HTTP_URL=${backendUrl} pnpm exec vite --host 127.0.0.1 --port ${webPort}`,
       url: webUrl,
       timeout: 60_000,
-      reuseExistingServer: true,
+      reuseExistingServer: false,
     },
   ],
 });

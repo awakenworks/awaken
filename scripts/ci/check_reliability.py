@@ -29,11 +29,15 @@ REQUIRED_SURFACES = (
     "scripts/ci/postgres_recovery_drill.sh",
     "fuzz/fuzz_targets/sse_chunks.rs",
     "fuzz/fuzz_targets/thread_commit_wire.rs",
+    "fuzz/fuzz_targets/tool_batch_transitions.rs",
 )
 
 REQUIRED_TOOL_GATES = (
     "cargo +nightly fuzz run sse_chunks",
     "cargo +nightly fuzz run thread_commit_wire",
+    "cargo +nightly fuzz run tool_batch_transitions",
+    "--re 'permits_call_transition|next_execution_attempt'",
+    "cargo clean -p awaken-runtime-contract",
     "cargo +nightly miri test -p awaken-mcp-wire --lib",
     "-Zsanitizer=address",
     "-Zsanitizer=thread",
@@ -131,8 +135,10 @@ class ReliabilityCheckerTests(unittest.TestCase):
         inputs = current_inputs()
         self.assertEqual(validation_errors(*inputs), [], "R1")
 
-        script_mutant = inputs[1].replace("cargo +nightly fuzz run sse_chunks", "cargo test")
-        self.assertTrue(validation_errors(inputs[0], script_mutant, inputs[2], inputs[3]), "R2")
+        for marker in REQUIRED_TOOL_GATES:
+            with self.subTest(missing_gate=marker):
+                script_mutant = inputs[1].replace(marker, "removed_gate")
+                self.assertTrue(validation_errors(inputs[0], script_mutant, inputs[2], inputs[3]), "R2")
 
         assumptions_mutant = json.loads(json.dumps(inputs[0]))
         next(

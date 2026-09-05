@@ -623,12 +623,17 @@ The checked scenarios are:
   attempt committed before executor re-entry;
 - crash recovery of an `Executing` never-replay call, proving fail-closed
   `Indeterminate` completion without executor re-entry.
+- an external effect applied before its response returns, followed by aborting
+  and joining the real async owner and reconstructing a new Runtime: Idempotent
+  recovery retains the same call identity and one fixture receipt, while
+  NeverReplay records Indeterminate without another invocation. The fixture's
+  receipt contract does not prove arbitrary external services.
 
 The production bridge remains layered around that direct trace check:
 
 1. Kani universally checks the finite production Rust transition kernels.
 2. TLAPS proves the commit projection's safety for every modeled transition,
-   not only the nine captured traces.
+   not only the captured traces.
 3. Runtime tests cover the typed `RunDelegations`, `PendingChildRunResults`, and
    `ActiveToolBatch` cells
    through actual async dispatch, approval, resume, cancellation, and recovery.
@@ -665,6 +670,24 @@ checks them; no checked-in hand-authored trace can become stale.
 The repository-wide CI entry point runs the strict formal-verification gate.
 `check-all.sh` passes `--require-tools`, so missing Kani,
 TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
+
+PR, main, manual, and tag release qualification reuse the single `quality.yml`
+workflow, whose named self-hosted runner contract supplies the required tools
+and substrates. It invokes the complete `check-all.sh` once at the exact
+workflow SHA. The orchestration checker rejects a partial, conditional, or
+suppressed qualification step. Browser tests are owned by the frontend group; the E2E
+group delegates to the existing instrumented runner, which invokes the single
+deterministic suite graph and enforces changed-line coverage. Both coverage
+reports read their served-process exclusions from `e2e_unreachable.toml`.
+The reliability gate mutates the production ToolBatch transition guards in
+addition to SSE parsing. Its aggregate tests own the phase/command/identity
+decision table; the stateful `tool_batch_transitions` fuzz target applies
+bounded command histories to that same aggregate and checks rejected-command
+stuttering, terminal absorption, stable identities, and recovery decoding.
+Neither mutation detection nor a time-bounded fuzz run establishes exhaustive
+implementation coverage. Mutation reports are retained as release artifacts.
+Recorded tool identities and per-check timings are release evidence, not proof
+that a check which did not execute passed.
 
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
@@ -719,6 +742,14 @@ formalizable obligations. The gate also compares the unique Kani harnesses in
 the source tree with the ledger; repeated ledger references are allowed only
 when one production proof supports more than one precisely stated obligation.
 
+Registered production evidence must also be structurally reachable from a
+Cargo library or binary module root. The inventory reuses the crate-boundary
+lexer for ordinary, inline, path-attributed, and literal-include module edges;
+removing an edge while retaining its evidence file fails the gate. This is a
+conservative union of non-test feature/platform branches. Actual target and cfg
+selection, generated code, macro expansion, and production call reachability
+remain compiler and implementation-review responsibilities.
+
 The Web inventory is a separate generated denominator. Classified TypeScript
 and TSX candidates use `product_boundary_only`; the gate reports any uncovered
 candidate instead of treating it as proved or silently omitting it. This is an
@@ -730,7 +761,7 @@ remaining product limits honest. Every requirement-only surface, plus any
 feature explicitly marked as retaining an external tail after its kernel proof, has one exact
 external, semantic, unbounded-input, effect-adapter, or UI/human boundary plus
 an architecture change, target proof method, and acceptance gate. The boundary
-checker currently requires all 43 residual requirements and rejects missing or
+checker requires every residual requirement and rejects missing or
 invented rows. This documents how typestate permits, bounded protocol algebras,
 event-sourced reducers, commit receipts, and durable inbox/outbox identities can
 move additional adapter behavior under proof without claiming that networks,

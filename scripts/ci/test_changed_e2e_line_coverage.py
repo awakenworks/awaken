@@ -67,6 +67,21 @@ evidence = "cargo test -p example"
         self.assertEqual(by_path["crates/example/src/lib.rs"], {2, 3, 5})
         self.assertEqual(len(entries), 1)
 
+    def test_reports_share_one_validated_exclusion_policy(self) -> None:
+        # Causes C1 a versioned scope exists, C2 its regex is valid.
+        # Effects E1 both reports obtain the exact same scope, E2 invalid or
+        # missing scope rejects before counters are interpreted. Rules:
+        # S1=C1+C2 -> E1; S2=!C1 -> E2; S3=C1+!C2 -> E2.
+        self.write_manifest("version = 1\nignore_filename_regex = 'fixture/'\n")
+        self.assertEqual(MODULE.coverage_exclusions("waivers.toml"), "fixture/", "S1")
+        for body in ["version = 1\n", "version = 2\nignore_filename_regex = 'x'\n"]:
+            self.write_manifest(body)
+            with self.assertRaises(ValueError, msg="S2"):
+                MODULE.coverage_exclusions("waivers.toml")
+        self.write_manifest("version = 1\nignore_filename_regex = '['\n")
+        with self.assertRaises(re.error, msg="S3"):
+            MODULE.coverage_exclusions("waivers.toml")
+
     def test_rejects_overlapping_or_out_of_bounds_ranges(self) -> None:
         self.write_manifest(
             """version = 1

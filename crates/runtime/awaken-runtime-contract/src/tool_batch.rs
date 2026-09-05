@@ -828,6 +828,103 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_result_commands_follow_the_complete_phase_decision_table() {
+        // Causes: C1 predecessor phase (five closed variants), C2 command,
+        // C3 exact/missing call identity, C4 open/finalized batch.
+        // Effects: E1 accepted commands produce the named terminal phase;
+        // E2 every rejection preserves the entire aggregate. Constraints:
+        // Completed replay uses the identical output; only complete batches
+        // can be finalized. This table is independent of permits_call_transition
+        // and exercises the aggregate callers too, so bypassing a guard cannot
+        // hide behind a correct Kani kernel.
+        //
+        // Rule | Phase         | complete | immediate | indeterminate | stage
+        // R1   | Requested     | reject   | Completed | Indeterminate | reject
+        // R2   | Executing     | Completed| reject    | Indeterminate | reject
+        // R3   | Awaiting      | Completed| reject    | Indeterminate | reject
+        // R4   | Completed     | replay   | replay    | reject        | accept
+        // R5   | Indeterminate | reject   | reject    | Indeterminate | accept
+        // R6: !C3 overrides R1-R5 with E2; R7: !C4 overrides with E2.
+        let done = ToolOutput::ok("c", "done");
+        for (phase, allowed) in [
+            (ToolCallPhase::Requested, [false, true, true, false]),
+            (
+                ToolCallPhase::Executing { attempt: 1 },
+                [true, false, true, false],
+            ),
+            (
+                ToolCallPhase::Awaiting {
+                    wait: ToolWait {
+                        kind: ToolWaitKind::ToolPermission,
+                        correlation_id: "ticket".into(),
+                    },
+                },
+                [true, false, true, false],
+            ),
+            (
+                ToolCallPhase::Completed(done.clone()),
+                [true, true, false, true],
+            ),
+            (
+                ToolCallPhase::Indeterminate {
+                    reason: "prior".into(),
+                },
+                [false, false, true, true],
+            ),
+        ] {
+            for (command, accepts_phase) in allowed.into_iter().enumerate() {
+                for exact in [true, false] {
+                    for finalized in [false, true] {
+                        if finalized && !phase.is_terminal() {
+                            continue;
+                        }
+                        let mut candidate = batch();
+                        candidate.calls[0].phase = phase.clone();
+                        if finalized {
+                            candidate.phase = ToolBatchPhase::Finalized;
+                        }
+                        candidate.validate().unwrap();
+                        let before = candidate.clone();
+                        let id = if exact { "c" } else { "missing" };
+                        let result = match command {
+                            0 => candidate.complete(ToolOutput::ok(id, "done")),
+                            1 => candidate.complete_immediate(ToolOutput::ok(id, "done")),
+                            2 => candidate.mark_indeterminate(id, "unknown"),
+                            3 => candidate.set_result_messages(id, Vec::new()),
+                            _ => unreachable!(),
+                        };
+                        let accepted = accepts_phase && exact && !finalized;
+                        assert_eq!(
+                            result.is_ok(),
+                            accepted,
+                            "{phase:?}/{command}/{exact}/{finalized}"
+                        );
+                        if !accepted {
+                            assert_eq!(candidate, before, "E2 rejected command stutters");
+                        } else {
+                            match command {
+                                0 | 1 => assert_eq!(
+                                    candidate.calls[0].phase,
+                                    ToolCallPhase::Completed(done.clone())
+                                ),
+                                2 => assert_eq!(
+                                    candidate.calls[0].phase,
+                                    ToolCallPhase::Indeterminate {
+                                        reason: "unknown".into()
+                                    }
+                                ),
+                                3 => assert_eq!(candidate.calls[0].phase, phase),
+                                _ => unreachable!(),
+                            }
+                            candidate.validate().unwrap();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn attempt_budget_is_enforced() {
         let mut batch = batch();
         assert_eq!(batch.mark_executing("c"), Ok(1));

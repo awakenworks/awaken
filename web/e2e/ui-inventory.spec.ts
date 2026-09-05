@@ -82,8 +82,12 @@ test("Agent configuration exposes every controllable capability by user intent",
 
   await page.getByRole("tab", { name: "Build", exact: true }).click();
   await page.getByRole("tab", { name: "Tools & permissions", exact: true }).click();
-  await expect(page.getByText("Permissions", { exact: true })).toBeVisible();
+  // Typed ToolSet authoring owns permissions after the legacy editor removal.
+  await expect(page.getByText("Permission preset", { exact: true })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: /bash Run a shell command/ })).toBeVisible();
+  // Advanced policies are collapsed initially; expansion exposes the same
+  // canonical tool controls without adding another authoring surface.
+  await page.getByText("Advanced tool presentation and background policies", { exact: true }).click();
   await expect(page.getByRole("button", { name: /override an MCP tool/ })).toBeVisible();
 
   await page.getByRole("tab", { name: "Skills & MCP", exact: true }).click();

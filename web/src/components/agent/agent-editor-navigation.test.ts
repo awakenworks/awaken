@@ -1,27 +1,40 @@
 import { describe, expect, it } from "vitest";
 import {
-  advancedSectionForQuery,
   advancedSectionForPath,
-  builderSectionForQuery,
-  builderSectionForPath,
   stageForQuery,
+  builderSectionForQuery,
+  advancedSectionForQuery,
+  builderSectionForPath,
   stageForPath,
 } from "./agent-editor-navigation";
 
 describe("agent authoring navigation", () => {
-  it("normalizes route query values through one closed navigation table", () => {
-    // Cause/effect decision table: C1 stage is build/advanced/unknown; C2 section
-    // is a member of its closed section algebra or unknown. R1 known values
-    // preserve their exact effect; R2 absent/unknown values fail to Quickstart,
-    // Instructions, and Orchestration. Initial mount and route replacement call
-    // these same reducers, so their timing cannot select different sections.
-    expect(stageForQuery("build")).toBe("build");
-    expect(stageForQuery("advanced")).toBe("advanced");
-    expect(stageForQuery("unknown")).toBe("quickstart");
-    expect(builderSectionForQuery("knowledge")).toBe("knowledge");
-    expect(builderSectionForQuery(null)).toBe("instructions");
-    expect(advancedSectionForQuery("release")).toBe("release");
-    expect(advancedSectionForQuery("unknown")).toBe("orchestration");
+  it("uses one total query decision table for initial render and route reset", () => {
+    // Causes: stage and section independently absent, invalid, or recognized.
+    // Constraints: sections belong to one family; unrelated query keys are inert.
+    // Effects: recognized values survive exactly; each invalid/absent value uses
+    // its family default. Cartesian rules N1-N50 cover both valid and fallback
+    // branches, including a section belonging to the inactive stage.
+    const stages = [[null, "quickstart"], ["bad", "quickstart"], ["quickstart", "quickstart"], ["build", "build"], ["advanced", "advanced"]];
+    const sections = [
+      [null, "instructions", "orchestration"], ["bad", "instructions", "orchestration"],
+      ["instructions", "instructions", "orchestration"], ["tools", "tools", "orchestration"],
+      ["integrations", "integrations", "orchestration"], ["knowledge", "knowledge", "orchestration"],
+      ["orchestration", "instructions", "orchestration"], ["extensions", "instructions", "extensions"],
+      ["source", "instructions", "source"], ["release", "instructions", "release"],
+    ];
+    for (const [inputStage, stage] of stages) for (const [section, builderSection, advancedSection] of sections) {
+      const query = new URLSearchParams("parent=unchanged");
+      if (inputStage !== null) query.set("stage", inputStage);
+      if (section !== null) query.set("section", section);
+      const before = query.toString();
+      expect({
+        stage: stageForQuery(query.get("stage")),
+        builderSection: builderSectionForQuery(query.get("section")),
+        advancedSection: advancedSectionForQuery(query.get("section")),
+      }).toEqual({ stage, builderSection, advancedSection });
+      expect(query.toString()).toBe(before);
+    }
   });
 
   it("routes everyday authoring fields into Build", () => {

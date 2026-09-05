@@ -143,8 +143,14 @@ test("Skills: import a bundle and publish an online edit as a new version", asyn
   const editor = page.locator("textarea");
   await expect(editor).toHaveValue(/version one/);
   await editor.fill(`---\nname: ${marker}\ndescription: browser import\n---\nversion two`);
+  // Wait for the durable publication receipt, then the exact version cell.
+  // A row-wide substring "2" can match the fixture timestamp before v2 exists.
+  const published = page.waitForResponse((response) => response.request().method() === "POST"
+    && /^\/v1\/skills\/[^/]+\/versions$/.test(logicalApiPath(response.url())));
   await page.getByRole("button", { name: /Publish new version|发布新版本/ }).click();
-  await expect(row).toContainText("2");
+  const publication = await published;
+  expect(publication.ok(), await publication.text()).toBe(true);
+  await expect(row.locator('td[data-label="Version"]')).toHaveText("2");
 
   const catalog = await (await request.get(await workspaceApiPath(request, "/v1/skills"), { headers: SKILLS_HEADERS })).json();
   const skill = catalog.data.find((candidate: { display_title?: string }) => candidate.display_title === marker);
@@ -154,6 +160,11 @@ test("Skills: import a bundle and publish an online edit as a new version", asyn
   const archiveEntries = skillFilesFromTar(new Uint8Array(await archiveResponse.body()));
   expect(new TextDecoder().decode(archiveEntries.find((file) => file.path === "SKILL.md")?.bytes)).toContain("version two");
   expect(archiveEntries.find((file) => file.path === "helper.bin")?.executable).toBe(true);
+  const previous = await request.get(await workspaceApiPath(request, `/v1/skills/${skill.id}/versions/1/content`), { headers: SKILLS_HEADERS });
+  expect(previous.ok()).toBe(true);
+  const previousEntries = skillFilesFromTar(new Uint8Array(await previous.body()));
+  expect(new TextDecoder().decode(previousEntries.find((file) => file.path === "SKILL.md")?.bytes)).toContain("version one");
+  expect(previousEntries.find((file) => file.path === "helper.bin")?.executable).toBe(false);
 });
 
 test("Agent Resources: bind a memory store to an agent and persist it", async ({ page, request }) => {
@@ -308,6 +319,9 @@ test("Tool presentation: alias a tool in the editor and persist it", async ({ pa
 
   await page.goto(`/w/default/agents/${agent}`);
   await openBuild(page, "Tools & permissions");
+  // Initial mount and reload both collapse advanced policies; expand before
+  // editing or checking rehydration of the same persisted tool override.
+  await page.getByText("Advanced tool presentation and background policies", { exact: true }).click();
   await page.getByRole("button", { name: /override a selected tool/ }).click();
   // The override row: canonical target input defaults to "read", followed by alias.
   await page.getByPlaceholder("rename").fill("open_file");
@@ -318,6 +332,7 @@ test("Tool presentation: alias a tool in the editor and persist it", async ({ pa
   // Reload → the override rehydrates from the stored config.
   await page.reload();
   await openBuild(page, "Tools & permissions");
+  await page.getByText("Advanced tool presentation and background policies", { exact: true }).click();
   await expect(page.getByPlaceholder("rename")).toHaveValue("open_file");
   await expect(page.getByPlaceholder("override description")).toHaveValue("Read a file.");
 });

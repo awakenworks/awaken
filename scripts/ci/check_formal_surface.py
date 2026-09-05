@@ -336,6 +336,22 @@ def main() -> None:
     classifications = load_classifications(
         set(obligations_by_id), load_requirement_ids()
     )
+    reachable = _crate_boundary_workspace.production_module_files(
+        _crate_boundary_workspace.iter_crate_manifests()
+    )
+    detached = sorted(
+        relative
+        for relative in set(by_source) | set(classifications) | set(exclusions)
+        if is_production_source(ROOT / relative)
+        and (ROOT / relative).resolve() not in reachable
+        and not (
+            exclusions.get(relative, {}).get("boundary") == "test_only"
+            and relative not in by_source
+            and relative not in classifications
+        )
+    )
+    if detached:
+        fail("registered production evidence is detached from Cargo module roots: " + ", ".join(detached))
     inventory: list[dict[str, object]] = []
     for root in PRODUCTION_ROOTS:
         for path in root.glob("**/*.rs"):

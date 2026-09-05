@@ -57,6 +57,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11.6.0
@@ -85,14 +86,18 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           npm ci --prefix e2e
+          pnpm -C web exec playwright install chromium
       - name: Run the one complete repository gate
         env:
           AWAKEN_TEST_TIMINGS_FILE: target/test-timings/check-all.tsv
+          AWAKEN_RELIABILITY_EVIDENCE_DIR: target/test-timings/reliability
         run: scripts/ci/check-all.sh
       - name: Retain exact-SHA quality evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: quality-${{ github.sha }}-${{ github.run_attempt }}
-          path: target/test-timings/
+          path: |
+            target/test-timings/
+            web/test-results/
           if-no-files-found: error

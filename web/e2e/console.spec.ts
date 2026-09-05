@@ -127,7 +127,7 @@ test("agent editor Build/Advanced stages are data-driven from /v1/capabilities",
   await expect(page.getByLabel("Built-in auxiliary Agent")).toBeChecked();
 });
 
-test("ACP authoring exposes only verified Harness capabilities and validates cwd before Try", async ({ page }) => {
+async function mockAcpCapabilities(page: Page) {
   await page.route(/\/v1(?:\/workspaces\/[^/]+)?\/capabilities(?:\?|$)/, async (route) => {
     const response = await route.fetch();
     const original = await response.json();
@@ -163,13 +163,22 @@ test("ACP authoring exposes only verified Harness capabilities and validates cwd
     });
   });
 
+}
+
+// Causes: verified ACP capabilities and invalid/valid relative cwd. Effects:
+// invalid cwd blocks Try; valid cwd preserves unsupported-feature controls.
+// The capability response is synthetic; this checks UI projection, not a CLI.
+test("ACP authoring exposes only verified Harness capabilities and validates cwd before Try", async ({ page }) => {
+  await mockAcpCapabilities(page);
   await page.goto("/w/default/agents/new");
   await openBuild(page, "Instructions");
-  await page.getByLabel("Execution runtime").selectOption("acp:codex");
+  await page.getByRole("combobox", { name: "Execution runtime", exact: true }).selectOption("acp:codex");
   await expect(page.getByLabel("ACP working directory")).toBeVisible();
   await expect(page.getByText("Codex is ready for governed Awaken tools")).toBeVisible();
-  await page.getByText("Capability support", { exact: true }).click();
+  await page.locator(".runtime-capability-summary summary").click();
   await expect(page.getByText("Tools, ToolSets, and MCP", { exact: true })).toBeVisible();
+  await expect(page.locator(".runtime-capability-row", { hasText: "Background tool execution" }))
+    .toContainText("Unavailable");
   await page.getByLabel("ACP working directory").fill("../outside");
   await expect(page.getByRole("alert").filter({ hasText: /Remove \. or \.\./ })).toBeVisible();
   await page.getByRole("button", { name: /Try draft/ }).click();
@@ -178,19 +187,17 @@ test("ACP authoring exposes only verified Harness capabilities and validates cwd
 
   await page.getByLabel("ACP working directory").fill("repo/src");
   await expect(page.getByText("Resolved inside Session workspace: /repo/src")).toBeVisible();
-  await page.getByLabel("Execution runtime").selectOption("awaken");
-  await page.getByLabel("Execution runtime").selectOption("acp:codex");
+  await page.getByRole("combobox", { name: "Execution runtime", exact: true }).selectOption("awaken");
+  await page.getByRole("combobox", { name: "Execution runtime", exact: true }).selectOption("acp:codex");
   await expect(page.getByLabel("ACP working directory")).toHaveValue("repo/src");
   await page.getByRole("button", { name: "Use workspace root" }).click();
   await expect(page.getByText("The Harness starts at the Session workspace root.")).toBeVisible();
   await page.getByLabel("ACP working directory").fill("repo/src");
   await openAdvanced(page, "Orchestration");
   const stateMachine = page.locator(".behavior-card", { hasText: "Agent behavior state machine" });
-  const background = page.locator(".behavior-card", { hasText: "Background tool execution" });
   await expect(stateMachine.getByRole("switch")).toBeDisabled();
-  if (await background.count() > 0) {
-    await expect(background.getByRole("switch")).toBeDisabled();
-  }
+  // Background eligibility is now tool-owned; no legacy Plugin switch remains.
+  await expect(page.getByRole("switch", { name: "Background tool execution" })).toHaveCount(0);
   await expect(stateMachine).toContainText("Unavailable for this runtime");
 });
 
@@ -217,7 +224,7 @@ test("ACP authoring disables tools without a verified bridge before publication"
   });
   await page.goto("/w/default/agents/new");
   await openBuild(page, "Instructions");
-  await page.getByLabel("Execution runtime").selectOption("acp:codex");
+  await page.getByRole("combobox", { name: "Execution runtime", exact: true }).selectOption("acp:codex");
   await expect(page.getByText(/needs a verified tool bridge/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Refresh status" })).toBeVisible();
   await openBuild(page, "Tools & permissions");
@@ -226,12 +233,17 @@ test("ACP authoring disables tools without a verified bridge before publication"
 });
 
 test("Models gives one actionable ACP installation, login and bridge status view", async ({ page }) => {
+  // Same synthetic capability authority as authoring: detected + logged in +
+  // verified bridge -> named runtime, Executable and Awaken tools ready (M1).
+  // Host CLI discovery is deliberately outside this UI projection fixture.
+  await mockAcpCapabilities(page);
   await page.goto("/w/default/models");
   const runtimes = page.locator(".card", { hasText: "Agent runtimes & harnesses" });
   await expect(runtimes).toBeVisible();
   await expect(runtimes.getByText("Native Awaken", { exact: true }).first()).toBeVisible();
   await expect(runtimes.getByText(/Codex|Claude|Gemini/).first()).toBeVisible();
-  await expect(runtimes.getByText(/Executable|Login required|Not available/).first()).toBeVisible();
+  await expect(runtimes.getByText("Executable", { exact: true })).toHaveCount(2);
+  await expect(runtimes.getByText("Awaken tools ready", { exact: true })).toBeVisible();
   await expect(runtimes.getByText("Working directory").first()).toBeVisible();
   await expect(runtimes.getByRole("button", { name: "Refresh status" })).toBeVisible();
   await expect(runtimes.locator(".runtime-status-card").first()).toBeVisible();
@@ -412,7 +424,8 @@ test("controlled preset persists one typed Toolset without legacy permission con
   // Controlled-preset cause/effect table: C1=the preset is applied to a draft;
   // C2=no tools are selected; C3=the draft is saved and reloaded. E1=one typed
   // Agent ToolSet owns the approval policy; E2=controlled members are ask-only
-  // but remain disabled; E3=no legacy plugin permission document is persisted;
+  // with Bash enabled and unselected write/edit disabled, as owned by
+  // apply_agent_permission_preset; E3=no legacy permission config is persisted;
   // E4=the preset remains editable after reload. R1 C1+C2+C3 -> E1+E2+E3+E4.
   const id = `perm-e2e-${Date.now()}`;
   await page.goto("/w/default/agents/new");
@@ -442,7 +455,7 @@ test("controlled preset persists one typed Toolset without legacy permission con
     expect(agentToolsets[0].configs).toEqual(expect.arrayContaining([
       expect.objectContaining({
         name,
-        enabled: false,
+        enabled: name === "bash",
         permission_policy: { type: "always_ask" },
       }),
     ]));
@@ -497,6 +510,9 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
     .selectOption({ label: model });
 
   await openBuild(page, "Tools & permissions");
+  // Collapsed advanced policies hide the controls; explicit expansion makes
+  // presentation editable while the saved canonical MCP identity stays exact.
+  await page.getByText("Advanced tool presentation and background policies", { exact: true }).click();
   await page.getByRole("button", { name: /override an MCP tool/ }).click();
   await page.getByLabel("Canonical tool id 1").fill("mcp__issues__create_issue");
   await page.getByLabel("Alias").fill("file_issue");
@@ -1614,23 +1630,26 @@ test("Agent-authored fields and the State Machine behavior are highlighted after
 });
 
 test("publish preview shows the config diff, domain-labeled", async ({ page, request }) => {
+  // D1 a runnable saved draft is loaded, then edited without resetting the
+  // baseline -> Review saves and validates it, and shows the named old/new diff.
+  // D2 invalid draft -> no publish confirmation is covered by the adjacent
+  // invalid-Draft test. Neither branch may silently pass on a missing preview.
   const id = `diff-e2e-${Date.now()}`;
-  await request.put(await workspaceApiPath(request, `/v1/config/agents/${id}`), { data: { id, system: "original", tools: [], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
+  const model = `${id}-model`;
+  await syntheticModels.configure(request, model);
+  const saved = await request.put(await workspaceApiPath(request, `/v1/config/agents/${id}`), {
+    data: { id, model: { id: model }, system: "original", tools: [], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 },
+  });
+  expect(saved.ok(), await saved.text()).toBe(true);
   await page.goto(`/w/default/agents/${id}`);
   await openBuild(page, "Instructions");
-  // Wait for the stored config to load into the field before editing, else the load
-  // effect would overwrite the edit (and the diff would be empty).
-  await expect(page.locator("textarea").first()).toHaveValue("original");
-  await page.locator("textarea").first().fill("edited instructions");
-  await page.getByRole("button", { name: "Save draft", exact: true }).click();
-  await expect(page.locator(".ui-toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
+  await expect(page.getByLabel("System instructions")).toHaveValue("original");
+  await page.getByLabel("System instructions").fill("edited instructions");
   await page.getByRole("button", { name: /^Review & publish/ }).click();
-  // The diff names the change with its domain label (not the raw path).
-  const diff = page.locator(".modal").getByText("System instructions");
-  const previewed = await diff.waitFor({ state: "visible", timeout: 2_000 })
-    .then(() => true)
-    .catch(() => false);
-  if (!previewed) await expect(page.locator(".modal")).toHaveCount(0);
+  const modal = page.locator(".modal");
+  await expect(modal.getByText("System instructions", { exact: true })).toBeVisible();
+  await expect(modal).toContainText("original → edited instructions");
+  await expect(modal.getByRole("button", { name: /^Publish/ })).toBeEnabled();
 });
 
 test("validation issues are field-routed to their section", async ({ page, request }) => {

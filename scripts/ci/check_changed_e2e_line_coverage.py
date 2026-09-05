@@ -262,9 +262,20 @@ def unreachable_lines(manifest: str | None) -> tuple[dict[str, set[int]], list[d
     return dict(by_path), normalized
 
 
+def coverage_exclusions(manifest: str = "scripts/ci/e2e_unreachable.toml") -> str:
+    """The served-process denominator has one owner, shared by both reports."""
+    document = tomllib.loads((ROOT / manifest).read_text(encoding="utf-8"))
+    pattern = document.get("ignore_filename_regex")
+    if document.get("version") != 1 or not isinstance(pattern, str) or not pattern:
+        raise ValueError(f"{manifest}: expected version 1 and ignore_filename_regex")
+    re.compile(pattern)
+    return pattern
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base", default="origin/1.0.0-dev")
+    parser.add_argument("--print-ignore-filename-regex", action="store_true")
+    parser.add_argument("--base", default="origin/main")
     parser.add_argument("--minimum", type=float, default=0.95)
     parser.add_argument(
         "--ignore-filename-regex",
@@ -294,6 +305,9 @@ def main() -> None:
         help="human-readable authority name printed in the report and failures",
     )
     args = parser.parse_args()
+    if args.print_ignore_filename_regex:
+        print(coverage_exclusions())
+        return
     if not 0.0 < args.minimum < 1.0:
         parser.error("--minimum must be between zero and one")
     if not 0.0 <= args.maximum_unreachable_fraction < 1.0:

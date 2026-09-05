@@ -1162,6 +1162,146 @@ async fn never_replay_crash_recovery_is_fail_closed() {
     emit_trace("never_replay_recovery", &trace);
 }
 
+/// An external service retains its idempotency receipt independently of the
+/// Runtime owner. The first invocation applies the effect but loses its reply.
+struct ResponseLossTool {
+    trace: TracingCoordinator,
+    entered: tokio::sync::Notify,
+    calls: Mutex<Vec<String>>,
+    receipts: Mutex<BTreeSet<String>>,
+}
+
+#[async_trait::async_trait]
+impl RawTool for ResponseLossTool {
+    fn id(&self) -> &str {
+        "receipt_tool"
+    }
+
+    fn recovery_capability(&self) -> ToolRecoveryCapability {
+        ToolRecoveryCapability::Idempotent
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        assert_execution_was_committed(&self.trace, &call.call_id);
+        let first = {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push(call.call_id.clone());
+            assert_eq!(
+                self.trace.latest_batch().unwrap().calls()[0].phase,
+                ToolCallPhase::Executing {
+                    attempt: calls.len() as u16
+                },
+                "every executor entry follows its own durable attempt"
+            );
+            calls.len() == 1
+        };
+        self.receipts.lock().unwrap().insert(call.call_id.clone());
+        if first {
+            self.entered.notify_one();
+            std::future::pending::<()>().await;
+        }
+        Ok(ToolOutput::ok(call.call_id, "one external effect"))
+    }
+}
+
+#[tokio::test]
+async fn response_loss_recovery_preserves_effect_identity_and_never_replay() {
+    // Causes: C1 Executing is durable; C2 the external service applies its
+    // effect; C3 the owner dies before receiving/staging the result; C4 recovery
+    // policy is Idempotent or NeverReplay. Effects: E1 C1 precedes every entry;
+    // E2 one external receipt survives owner replacement; E3 exact stable-id
+    // replay completes with attempt 2; E4 NeverReplay makes no second call and
+    // records Indeterminate. Decision rules: RL1=C1+C2+C3+Idempotent -> E1/E2/E3;
+    // RL2=C1+C2+C3+NeverReplay -> E1/E2/E4. Constraint: a Notify barrier fixes
+    // the failure window, abort/join drops the real async owner, and a new Runtime
+    // reconstructs from committed truth. External receipt persistence is a
+    // fixture contract, not a proof of arbitrary provider exactly-once behavior.
+    for (mode, entries, trace_name) in [
+        (ToolRecoveryMode::Idempotent, 2, "idempotent_response_loss"),
+        (
+            ToolRecoveryMode::NeverReplay,
+            1,
+            "never_replay_response_loss",
+        ),
+    ] {
+        let trace = TracingCoordinator::default();
+        let policy = ToolRecoveryPolicy::try_new(mode, 3).unwrap();
+        let mut snapshot = snapshot(&["receipt_tool"]);
+        snapshot.resolved_spec.tool_descriptors[0] = snapshot.resolved_spec.tool_descriptors[0]
+            .clone()
+            .with_recovery(policy);
+        let tool = Arc::new(ResponseLossTool {
+            trace: trace.clone(),
+            entered: tokio::sync::Notify::new(),
+            calls: Mutex::new(Vec::new()),
+            receipts: Mutex::new(BTreeSet::new()),
+        });
+        let context = RuntimeRunContext::new()
+            .with_commit(Arc::new(trace.clone()))
+            .with_reader(Arc::new(trace.inner.clone()));
+        let owner = Runtime::new()
+            .with_llm(Arc::new(CallsThenText::new(vec![tool_call(
+                "receipt_call",
+                "receipt_tool",
+            )])))
+            .with_tool(tool.clone());
+        register_snapshot(&owner, &snapshot);
+        let first_activation = activation(snapshot.clone());
+        let first_context = context.clone();
+        let task =
+            tokio::spawn(async move { owner.execute(first_activation, first_context).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), tool.entered.notified())
+            .await
+            .expect("external effect reached before the owner is interrupted");
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(matches!(
+            trace.latest_batch().unwrap().calls()[0].phase,
+            ToolCallPhase::Executing { attempt: 1 }
+        ));
+        assert_eq!(
+            tool.receipts.lock().unwrap().len(),
+            1,
+            "RL1/RL2 effect survived"
+        );
+
+        let replacement = Runtime::new()
+            .with_llm(Arc::new(TextOnly))
+            .with_tool(tool.clone());
+        register_snapshot(&replacement, &snapshot);
+        assert_eq!(
+            replacement
+                .execute(activation(snapshot), context)
+                .await
+                .unwrap(),
+            RunState::Ended(EndCause::NaturalEnd)
+        );
+        assert_eq!(
+            *tool.calls.lock().unwrap(),
+            vec!["receipt_call"; entries],
+            "stable identity"
+        );
+        assert_eq!(
+            tool.receipts.lock().unwrap().len(),
+            1,
+            "one external effect"
+        );
+        let batch = trace.latest_batch().unwrap();
+        match mode {
+            ToolRecoveryMode::Idempotent => assert!(matches!(
+                batch.calls()[0].phase,
+                ToolCallPhase::Completed(_)
+            )),
+            ToolRecoveryMode::NeverReplay => assert!(matches!(
+                batch.calls()[0].phase,
+                ToolCallPhase::Indeterminate { .. }
+            )),
+            _ => unreachable!(),
+        }
+        emit_trace(trace_name, &trace);
+    }
+}
+
 #[tokio::test]
 async fn durable_delegation_crash_recovery_reuses_the_child_relationship() {
     let trace = TracingCoordinator::default();
