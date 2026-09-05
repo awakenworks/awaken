@@ -5,7 +5,6 @@ use std::sync::Arc;
 use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     ArtifactRecovery, FileApplicationService, MAX_MANAGED_FILE_SIZE_BYTES, ResourcePurgeError,
-    content_id,
 };
 use awaken_dispatch_contract::{ArtifactPublicationFence, DispatchQueue, RunClaim};
 use awaken_session_contract::{
@@ -329,26 +328,6 @@ fn decode_metadata(headers: &HeaderMap) -> Result<ArtifactPublicationRequest, ()
     serde_json::from_slice(&bytes).map_err(|_| ())
 }
 
-fn valid_metadata(metadata: &ArtifactPublicationRequest) -> bool {
-    !metadata.workspace_id.trim().is_empty()
-        && !metadata.session_id.trim().is_empty()
-        && !metadata.logical_path.trim().is_empty()
-        && metadata.logical_path.len() <= 1024
-        && !metadata.logical_path.starts_with('/')
-        && metadata
-            .logical_path
-            .split('/')
-            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
-        && !metadata.mime_type.trim().is_empty()
-        && metadata.mime_type.len() <= 255
-        && !metadata.content_id.trim().is_empty()
-        && !metadata.effect_id.trim().is_empty()
-        && metadata
-            .idempotency_scope
-            .as_deref()
-            .is_none_or(|scope| !scope.trim().is_empty())
-}
-
 async fn authorize_session_worker_lease(
     service: &WorkerArtifactPublicationService,
     worker: &VerifiedWorkerContext,
@@ -464,11 +443,19 @@ async fn publish_artifact(
     let Ok(metadata) = decode_metadata(&headers) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    if !valid_metadata(&metadata) {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    let operation_fence = metadata.operation_fence.clone();
-    if content_id(&bytes) != metadata.content_id {
+    let identity = metadata.identity;
+    let publication = ArtifactPublication {
+        effect_id: metadata.effect_id,
+        workspace_id: metadata.workspace_id,
+        session_id: metadata.session_id,
+        logical_path: metadata.logical_path,
+        mime_type: metadata.mime_type,
+        content_id: metadata.content_id,
+        bytes: bytes.to_vec(),
+        idempotency_scope: metadata.idempotency_scope,
+        fence: Some(metadata.operation_fence),
+    };
+    if publication.verify().is_err() {
         return StatusCode::BAD_REQUEST.into_response();
     }
     // Cause/effect decision table:
@@ -480,19 +467,19 @@ async fn publish_artifact(
     // authorization reads; R4 authority unavailable => retryable 503, never an
     // unfenced fallback. Only Terminal may carry File association scope.
     let mut run_guard = None;
-    match &operation_fence {
+    match publication.fence.as_ref().expect("decoded Worker fence") {
         ArtifactPublicationFence::SessionMaterialization(_)
         | ArtifactPublicationFence::RepositoryPublication { .. } => {
             return StatusCode::FORBIDDEN.into_response();
         }
         ArtifactPublicationFence::Run(claim) => {
-            if metadata.idempotency_scope.is_some() {
+            if publication.idempotency_scope.is_some() {
                 return StatusCode::BAD_REQUEST.into_response();
             }
             if verify_claim_owner(
                 Some(service.directory.as_ref()),
                 &worker,
-                metadata.identity.as_ref(),
+                identity.as_ref(),
                 claim,
                 unix_now_ms(),
             )
@@ -510,24 +497,24 @@ async fn publish_artifact(
             let scope_matches = dispatch
                 .execution_scope
                 .as_ref()
-                .is_some_and(|scope| scope.0.0 == metadata.workspace_id);
-            let session_matches = dispatch.session_thread_id().0 == metadata.session_id;
+                .is_some_and(|scope| scope.0.0 == publication.workspace_id);
+            let session_matches = dispatch.session_thread_id().0 == publication.session_id;
             if !scope_matches || !session_matches {
                 return StatusCode::FORBIDDEN.into_response();
             }
             run_guard = Some(guard);
         }
         ArtifactPublicationFence::CheckpointRelease(operation) => {
-            if metadata.idempotency_scope.is_some() {
+            if publication.idempotency_scope.is_some() {
                 return StatusCode::BAD_REQUEST.into_response();
             }
             if let Err(status) = authorize_checkpoint_release_artifact(
                 service.as_ref(),
                 &worker,
-                metadata.identity.as_ref(),
+                identity.as_ref(),
                 operation,
-                &metadata.workspace_id,
-                &metadata.session_id,
+                &publication.workspace_id,
+                &publication.session_id,
             )
             .await
             {
@@ -535,16 +522,16 @@ async fn publish_artifact(
             }
         }
         ArtifactPublicationFence::Terminal(effect) => {
-            let Some(idempotency_scope) = metadata.idempotency_scope.as_deref() else {
+            let Some(idempotency_scope) = publication.idempotency_scope.as_deref() else {
                 return StatusCode::BAD_REQUEST.into_response();
             };
             if let Err(status) = authorize_terminal_artifact(
                 service.as_ref(),
                 &worker,
-                metadata.identity.as_ref(),
+                identity.as_ref(),
                 effect,
-                &metadata.workspace_id,
-                &metadata.session_id,
+                &publication.workspace_id,
+                &publication.session_id,
                 idempotency_scope,
             )
             .await
@@ -552,20 +539,6 @@ async fn publish_artifact(
                 return status.into_response();
             }
         }
-    }
-    let publication = ArtifactPublication {
-        effect_id: metadata.effect_id,
-        workspace_id: metadata.workspace_id,
-        session_id: metadata.session_id,
-        logical_path: metadata.logical_path,
-        mime_type: metadata.mime_type,
-        content_id: metadata.content_id,
-        bytes: bytes.to_vec(),
-        idempotency_scope: metadata.idempotency_scope,
-        fence: Some(operation_fence),
-    };
-    if publication.verify().is_err() {
-        return StatusCode::BAD_REQUEST.into_response();
     }
     let _run_guard = run_guard;
     let file_publication = publication.into_file_application();
@@ -589,31 +562,28 @@ async fn recover_artifacts(
     // effect + exact Workspace/Session/scope => one File list and canonical
     // receipt projection; R2 any stale/foreign/mismatched authority => zero
     // File reads and writes; R3 File authority unavailable => retryable 503.
-    if request.workspace_id.trim().is_empty()
-        || request.session_id.trim().is_empty()
-        || request.idempotency_scope.trim().is_empty()
-    {
+    let recovery = ArtifactRecovery {
+        workspace_id: request.workspace_id,
+        session_id: request.session_id,
+        idempotency_scope: request.idempotency_scope,
+        fence: request.terminal_effect,
+    };
+    if recovery.verify().is_err() {
         return StatusCode::BAD_REQUEST.into_response();
     }
     if let Err(status) = authorize_terminal_artifact(
         service.as_ref(),
         &worker,
         request.identity.as_ref(),
-        &request.terminal_effect,
-        &request.workspace_id,
-        &request.session_id,
-        &request.idempotency_scope,
+        &recovery.fence,
+        &recovery.workspace_id,
+        &recovery.session_id,
+        &recovery.idempotency_scope,
     )
     .await
     {
         return status.into_response();
     }
-    let recovery = ArtifactRecovery {
-        workspace_id: request.workspace_id,
-        session_id: request.session_id,
-        idempotency_scope: request.idempotency_scope,
-        fence: ArtifactPublicationFence::Terminal(request.terminal_effect),
-    };
     let records = match service
         .application
         .list_including_deleted(&recovery.workspace_id, Some(&recovery.session_id))
@@ -664,38 +634,10 @@ mod tests {
     }
 
     #[test]
-    fn metadata_and_application_errors_fail_closed_by_cause_class() {
-        // Adapter-validation FMECA/cause-effect decision table. Causes: C1 all
-        // bounded relative metadata is present; C2 authority/path field is empty,
-        // absolute, dot-segmented, or oversized; C3 application rejects caller
-        // input; C4 application detects a concurrency conflict; C5 dependency
-        // state is unavailable/unknown. Effects: E1 admit to fence checks; E2 400
-        // before application; E3 400 non-retryable; E4 409 retry/reconcile; E5
-        // 503 without false success. Rules V1 C1=>E1; V2 C2=>E2; V3 C3=>E3;
-        // V4 C4=>E4; V5 C5=>E5.
-        assert!(valid_metadata(&metadata("reports/result.txt")), "V1");
-        for invalid in [
-            "",
-            "/absolute",
-            ".",
-            "..",
-            "a/./b",
-            "a/../b",
-            "a//b",
-            &"x".repeat(1025),
-        ] {
-            assert!(!valid_metadata(&metadata(invalid)), "V2: {invalid:?}");
-        }
-        let mut missing_scope = metadata("result.txt");
-        missing_scope.workspace_id.clear();
-        assert!(!valid_metadata(&missing_scope), "V2 workspace");
-        let mut missing_session = metadata("result.txt");
-        missing_session.session_id.clear();
-        assert!(!valid_metadata(&missing_session), "V2 session");
-        let mut missing_digest = metadata("result.txt");
-        missing_digest.content_id.clear();
-        assert!(!valid_metadata(&missing_digest), "V2 digest");
-
+    fn application_errors_fail_closed_by_cause_class() {
+        // Adapter decision table: invalid input -> 400; concurrency conflict ->
+        // 409; unavailable storage -> 503. Publication shape is checked only by
+        // ArtifactPublication::verify; local/HTTP parity has a transport test.
         assert_eq!(
             application_error_status(&ResourcePurgeError::Invalid("quota".into())),
             StatusCode::BAD_REQUEST,

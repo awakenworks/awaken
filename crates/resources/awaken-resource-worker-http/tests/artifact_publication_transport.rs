@@ -10,8 +10,8 @@ use awaken_resource_contract::{
     FileRecord, FileStore, FileStoreError, ResourcePurgeError, content_id,
 };
 use awaken_resource_worker_http::{
-    ARTIFACT_METADATA_HEADER, ARTIFACT_PUBLICATION_PATH, HttpArtifactPublisher,
-    WorkerArtifactPublicationService, worker_artifact_publication_router,
+    ARTIFACT_METADATA_HEADER, ARTIFACT_PUBLICATION_PATH, ArtifactPublicationRequest,
+    HttpArtifactPublisher, WorkerArtifactPublicationService, worker_artifact_publication_router,
 };
 use awaken_dispatch::{
     ArtifactPublicationFence, DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch,
@@ -374,7 +374,7 @@ impl FileStore for FailingFileStore {
 /// | A6 | valid | yes | foreign Workspace/Session | valid | available | 403; publish nothing |
 /// | A7 | valid | yes | exact | substituted digest | available | 400; publish nothing |
 /// | A8 | stale incarnation | yes | exact | valid | available | 403; publish nothing |
-/// | A9 | valid | yes | exact | traversal path | available | 400; publish nothing |
+/// | A9 | valid | yes | exact | traversal path | available | client preflight rejection; publish nothing |
 /// | A10 | valid | yes | exact | valid | unavailable | 503; claim remains unsettled |
 /// | A11 | valid | absent | exact | valid | available | Worker client fails closed pre-I/O |
 /// | A12 | valid | malformed metadata | any | any | available | 400; publish nothing |
@@ -518,7 +518,7 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
             "thread-session-artifacts",
             "../escape.html",
             "A9",
-            "400",
+            "bounded relative path",
         ),
     ] {
         let error = publisher
@@ -653,6 +653,161 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         dispatch.lock_commit_epoch(&unavailable_claim).await.is_ok(),
         "A10: a dependency outage must not settle or invalidate the retryable claim"
     );
+}
+
+#[tokio::test]
+async fn embedded_and_raw_http_artifact_admission_have_the_same_resource_effects() {
+    // Decision graph: publication metadata valid/invalid x embedded/raw HTTP.
+    // P1 valid Unicode and exact path/MIME byte limits -> same immutable File;
+    // P2 malformed metadata -> Invalid locally, HTTP 400 remotely, zero new
+    // catalog/blob writes in either path. A raw request intentionally bypasses
+    // HttpArtifactPublisher's preflight, proving the server also uses the rule.
+    // P3 invalid + SDK publisher -> preflight rejection, not an assumed HTTP 400.
+    // Existing A1-A12 separately own identity, epoch and outage combinations.
+    let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+    let application = Arc::new(awaken_resource_application::FileApplication::new(
+        files.clone(),
+        files.clone(),
+        Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap()),
+    ));
+    let (directory, identity) = support::ready_worker("worker-admission").await;
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let claim = claimed_dispatch(&dispatch, "admission", &identity.lease_owner()).await;
+    let address = support::serve(worker_artifact_publication_router(Arc::new(
+        WorkerArtifactPublicationService::new(
+            application.clone(),
+            dispatch,
+            Arc::new(HeaderWorkerAuthenticator),
+            directory,
+        ),
+    )))
+    .await;
+    let upstream =
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone());
+    let publisher = HttpArtifactPublisher::new(upstream.clone());
+
+    for fault in [
+        "valid",
+        "path_limit",
+        "mime_limit",
+        "empty_path",
+        "absolute",
+        "dot",
+        "parent",
+        "empty_segment",
+        "trailing_slash",
+        "long_path",
+        "empty_mime",
+        "long_mime",
+        "empty_workspace",
+        "empty_session",
+        "empty_scope",
+    ] {
+        let mut candidate = publication(
+            Some(claim.clone()),
+            "workspace-artifacts",
+            "thread-admission",
+            "报告/销售 数据.xlsx",
+            fault.as_bytes(),
+        );
+        match fault {
+            "path_limit" => candidate.logical_path = "x".repeat(1024),
+            "mime_limit" => candidate.mime_type = "x".repeat(255),
+            "empty_path" => candidate.logical_path.clear(),
+            "absolute" => candidate.logical_path = "/result".into(),
+            "dot" => candidate.logical_path = "a/./b".into(),
+            "parent" => candidate.logical_path = "a/../b".into(),
+            "empty_segment" => candidate.logical_path = "a//b".into(),
+            "trailing_slash" => candidate.logical_path = "a/".into(),
+            "long_path" => candidate.logical_path = "x".repeat(1025),
+            "empty_mime" => candidate.mime_type = "  ".into(),
+            "long_mime" => candidate.mime_type = "x".repeat(256),
+            "empty_workspace" => candidate.workspace_id = " ".into(),
+            "empty_session" => candidate.session_id = " ".into(),
+            "empty_scope" => candidate.idempotency_scope = Some(" ".into()),
+            "valid" => {}
+            _ => unreachable!(),
+        }
+        candidate.effect_id = awaken_resource_contract::harvest_idempotency_key(
+            &candidate.session_id,
+            &candidate.logical_path,
+            &candidate.content_id,
+        );
+        let valid = matches!(fault, "valid" | "path_limit" | "mime_limit");
+        let before_files = application
+            .list(&candidate.workspace_id, None)
+            .await
+            .unwrap();
+        let before_blobs = files.list().await.unwrap();
+        let local = application
+            .create_artifact(&candidate.clone().into_file_application())
+            .await;
+        assert_eq!(local.is_ok(), valid, "P1/P2 embedded {fault}");
+        if !valid {
+            assert!(
+                matches!(local, Err(ResourcePurgeError::Invalid(_))),
+                "P2 {fault}"
+            );
+            assert!(
+                publisher.publish(candidate.clone()).await.is_err(),
+                "P3 {fault}"
+            );
+        }
+        let metadata = ArtifactPublicationRequest {
+            operation_fence: candidate.fence.clone().unwrap(),
+            identity: Some(identity.clone()),
+            workspace_id: candidate.workspace_id.clone(),
+            session_id: candidate.session_id.clone(),
+            effect_id: candidate.effect_id.clone(),
+            logical_path: candidate.logical_path.clone(),
+            mime_type: candidate.mime_type.clone(),
+            content_id: candidate.content_id.clone(),
+            idempotency_scope: candidate.idempotency_scope.clone(),
+        };
+        let request = upstream
+            .http_client()
+            .post(format!("http://{address}{ARTIFACT_PUBLICATION_PATH}"))
+            .header(
+                ARTIFACT_METADATA_HEADER,
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(serde_json::to_vec(&metadata).unwrap()),
+            )
+            .body(candidate.bytes);
+        let response = upstream
+            .authorize_request("POST", ARTIFACT_PUBLICATION_PATH, request)
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if valid {
+                reqwest::StatusCode::OK
+            } else {
+                reqwest::StatusCode::BAD_REQUEST
+            },
+            "P1/P2 raw HTTP {fault}"
+        );
+        if valid {
+            let receipt: awaken_resource_contract::ArtifactPublicationReceipt =
+                response.json().await.unwrap();
+            assert_eq!(receipt.record.id, local.unwrap().id, "P1 same File {fault}");
+        } else {
+            assert_eq!(
+                application
+                    .list(&candidate.workspace_id, None)
+                    .await
+                    .unwrap(),
+                before_files,
+                "P2 zero File writes {fault}"
+            );
+            assert_eq!(
+                files.list().await.unwrap(),
+                before_blobs,
+                "P2 zero blob writes {fault}"
+            );
+        }
+    }
 }
 
 /// Terminal Artifact generation cause/effect table. The Axum body is fully
