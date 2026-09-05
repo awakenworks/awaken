@@ -257,13 +257,7 @@ impl<C> ArtifactPublication<C> {
         // a local publisher must not bypass the Worker HTTP admission rules.
         if self.workspace_id.trim().is_empty()
             || self.session_id.trim().is_empty()
-            || self.logical_path.trim().is_empty()
-            || self.logical_path.len() > 1024
-            || self.logical_path.starts_with('/')
-            || self
-                .logical_path
-                .split('/')
-                .any(|part| part.is_empty() || part == "." || part == "..")
+            || !valid_artifact_logical_path(&self.logical_path)
             || self.mime_type.trim().is_empty()
             || self.mime_type.len() > 255
         {
@@ -552,6 +546,16 @@ pub trait MemoryMaterializationReferenceEncoder<C>: Send + Sync {
         access: ResourceAccess,
         fence: &C,
     ) -> Result<String, MemoryMaterializationReferenceError>;
+}
+
+/// One path rule shared by publication admission and catalog capture references.
+pub(crate) fn valid_artifact_logical_path(path: &str) -> bool {
+    !path.trim().is_empty()
+        && path.len() <= 1024
+        && !path.starts_with('/')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
 #[cfg(test)]

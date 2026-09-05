@@ -379,6 +379,50 @@ catalog to a private blob id. They are OS-enforced read-only at
 `/mnt/session/uploads/...`; a provider without path fidelity and enforced
 read-only capability fails closed instead of silently projecting a writable copy.
 
+### A5: Complete output observations reference the canonical Files
+
+A4's harvest key deliberately reuses an existing File when content changes
+A→B→A at one logical path. Creation timestamps and catalog list order therefore
+cannot select the output of the latest complete observation. No existing File
+metadata field, terminal publication receipt, or Session status owns that choice.
+
+**Static ownership.** Reuse `FileStore`, immutable File identities, publication
+receipts, and File-owned lifecycle references unchanged. Extend the existing
+`FileCatalog` and `FileApplicationService` with a complete output observation:
+`ArtifactCapture { workspace_id, session_id, revision, file_ids }`. The only new
+persistence is the V6 reference row in the same catalog migration scope; it
+contains no duplicated File metadata, bytes, ownership index, or Run ledger.
+Memory, SQLite, and PostgreSQL share the contract's admission and CAS reducer.
+SQL revision encoding reuses the foundation's `StoredU64` boundary.
+V5 migration preserves all Files and does not infer a capture for old Sessions.
+
+**Dynamic contract.** A caller reads the revision before enumerating outputs,
+uses the existing publication path to persist every File and reference, then
+submits the entire File-id set with that expected revision. Replacement validates
+all selected Files under the same catalog lock/transaction: exact Workspace and
+Session, live downloadable artifacts, valid distinct logical paths, canonical
+harvest identities, and no duplicate ids. One invalid member rejects the entire
+replacement. CAS conflict requires a fresh observation, not a revised expected
+revision attached to stale bytes. An exact response-loss replay acknowledges the
+same revision and canonical set without another mutation.
+
+No capture means unknown; an explicit empty set means the complete observation
+was empty. Deleting a selected File leaves its exact id in the observation and
+the canonical download path denies access. It never falls back to another
+same-name File. Captures add no blob references and do not revive deleted Files.
+A capture records observed outputs; it does not assert Run success or the user's
+final acceptance.
+
+**Implementation boundary (2026-09-06).** This amendment's catalog/application
+ports and three adapters are implemented. Harvesters, claim-fenced Worker
+transport, public API projection, and Cowork's multi-turn final-delivery journey
+are not yet wired to them. Until those paths are integrated and verified, public
+Files listing and Cowork retain their current historical-version behavior;
+this storage contract is not evidence of completed multi-turn E2E support.
+Cause/effect rules live beside the shared catalog contract tests and the existing
+FileApplication publication/deletion test, including actual database migration,
+reconnect, first-write races, corruption rejection, and A→B→A identity reuse.
+
 ### Consequences of the amendment
 
 - Resources has **exactly one content-addressed blob store** as its byte

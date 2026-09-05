@@ -8,10 +8,12 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{
-    ArtifactPublication, CreateFileRecordOutcome, FileApplicationService, FileCatalog,
-    FileCatalogError, FileRecord, FileStore, MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES,
-    ResourceKind, ResourcePurgeError, ResourcePurgeIntent, ResourceReclamationRepository,
-    ResourceReference, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget, content_id,
+    ArtifactCapture, ArtifactPublication, CreateFileRecordOutcome, FileApplicationService,
+    FileCatalog, FileCatalogError, FileRecord, FileStore, MAX_MANAGED_FILE_SIZE_BYTES,
+    MAX_WORKSPACE_FILE_BYTES, ReplaceArtifactCapture, ReplaceArtifactCaptureOutcome, ResourceKind,
+    ResourcePurgeError, ResourcePurgeIntent, ResourceReclamationRepository, ResourceReference,
+    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
+    content_id,
 };
 
 /// Complete logical-File creation command. Public uploads, generated outputs,
@@ -356,6 +358,27 @@ impl FileApplication {
 
 #[async_trait::async_trait]
 impl FileApplicationService for FileApplication {
+    async fn artifact_capture(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+    ) -> Result<Option<ArtifactCapture>, ResourcePurgeError> {
+        self.catalog
+            .artifact_capture(workspace_id, session_id)
+            .await
+            .map_err(file_catalog_error)
+    }
+
+    async fn replace_artifact_capture(
+        &self,
+        request: ReplaceArtifactCapture,
+    ) -> Result<ReplaceArtifactCaptureOutcome, ResourcePurgeError> {
+        self.catalog
+            .replace_artifact_capture(request)
+            .await
+            .map_err(file_catalog_error)
+    }
+
     async fn get(
         &self,
         workspace_id: &str,
@@ -558,6 +581,86 @@ mod tests {
             idempotency_scope: idempotency_scope.map(str::to_owned),
             fence: None,
         }
+    }
+
+    #[tokio::test]
+    async fn capture_selection_reuses_file_identity_bytes_and_deletion_authority() {
+        // A1 publish A/B/A at the same path -> two immutable Files, latest
+        // capture selects reused A id. A2 losing the replacement response ->
+        // exact replay, no extra File/blob/reference. A3 deleting selected A ->
+        // capture keeps the exact id but File download is denied; B is never
+        // substituted. Application delegates CAS to its existing catalog.
+        let app = application();
+        let a = app
+            .create_artifact(&artifact_publication("report.txt", b"A", None))
+            .await
+            .unwrap();
+        let b = app
+            .create_artifact(&artifact_publication("report.txt", b"B", None))
+            .await
+            .unwrap();
+        let reused = app
+            .create_artifact(&artifact_publication("report.txt", b"A", None))
+            .await
+            .unwrap();
+        assert_eq!(a.id, reused.id, "A1");
+        for (revision, id) in [a.id.clone(), b.id.clone(), reused.id.clone()]
+            .into_iter()
+            .enumerate()
+        {
+            let command = ReplaceArtifactCapture {
+                workspace_id: "workspace-a".into(),
+                session_id: "session-a".into(),
+                expected_revision: revision as u64,
+                file_ids: vec![id],
+            };
+            assert!(
+                matches!(
+                    app.replace_artifact_capture(command.clone()).await.unwrap(),
+                    ReplaceArtifactCaptureOutcome::Applied(_)
+                ),
+                "A1"
+            );
+            assert!(
+                matches!(
+                    app.replace_artifact_capture(command).await.unwrap(),
+                    ReplaceArtifactCaptureOutcome::Replayed(_)
+                ),
+                "A2"
+            );
+        }
+        assert_eq!(
+            app.list("workspace-a", Some("session-a"))
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "A1/A2"
+        );
+        assert_eq!(
+            app.bytes("workspace-a", &a.id).await.unwrap().unwrap().1,
+            b"A",
+            "A1"
+        );
+        app.delete("workspace-a", &a.id, 1).await.unwrap();
+        assert_eq!(
+            app.artifact_capture("workspace-a", "session-a")
+                .await
+                .unwrap()
+                .unwrap()
+                .file_ids,
+            [a.id.clone()],
+            "A3"
+        );
+        assert!(
+            app.bytes("workspace-a", &a.id).await.unwrap().is_none(),
+            "A3"
+        );
+        assert_eq!(
+            app.bytes("workspace-a", &b.id).await.unwrap().unwrap().1,
+            b"B",
+            "A3 history remains"
+        );
     }
 
     #[test]
