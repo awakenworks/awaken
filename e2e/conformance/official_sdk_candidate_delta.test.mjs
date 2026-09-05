@@ -11,11 +11,11 @@ import {
 const empty = () => ({ added: [], removed: [], changed: [] });
 
 test('candidate delta ownership fails closed outside exercised change points', () => {
-  // Cause/effect graph: C1 no operation is added/removed; C2 only existing Beta
-  // Files/Skills request signatures change; C3 only declarations and runtime
-  // modules with an executable owner change in place, except the one reviewed
-  // Node facade addition; C4 any other delta. Effects: E1 reuse the exact
-  // candidate runtime proof; E2 require a new explicit owner.
+  // Cause/effect graph: C1 no operation is added/removed; C2 only existing
+  // operations already exercised by a candidate owner change; C3 only scoped
+  // declarations and runtime modules with an executable owner change in place,
+  // except the one reviewed Node facade addition; C4 any other delta. Effects:
+  // E1 reuse the exact candidate runtime proof; E2 require a new explicit owner.
   // Decision rule D1 C1+C2+C3->E1; D2 C4->E2. This prevents a green smoke of
   // unchanged calls from certifying a newly added or unrelated SDK capability.
   const owned = {
@@ -41,6 +41,8 @@ test('candidate delta ownership fails closed outside exercised change points', (
       ...empty(),
       added: [{ path: 'internal/node.mjs' }],
       changed: [
+        { path: 'client.mjs' },
+        { path: 'core/streaming.mjs' },
         { path: 'core/credentials.mjs' },
         { path: 'core/middleware.mjs' },
         { path: 'internal/file-store.mjs' },
@@ -49,7 +51,9 @@ test('candidate delta ownership fails closed outside exercised change points', (
         { path: 'lib/middleware.mjs' },
         { path: 'lib/sessions/accumulate.mjs' },
         { path: 'resources/beta/files.mjs' },
+        { path: 'resources/beta/sessions/threads/events.mjs' },
         { path: 'resources/beta/skills/versions.mjs' },
+        { path: 'resources/models.mjs' },
         { path: 'resources/beta/webhooks.mjs' },
         { path: 'tools/agent-toolset/fs-util.mjs' },
         { path: 'tools/agent-toolset/memories.mjs' },
@@ -68,7 +72,7 @@ test('candidate delta ownership fails closed outside exercised change points', (
     { ...owned, operations: { ...empty(), added: [{ id: 'beta.files.share' }] } },
     { ...owned, operations: { ...empty(), changed: [{ id: 'beta.sessions.create' }] } },
     { ...owned, declarations: { ...empty(), added: [{ path: 'beta/files/new.d.ts' }] } },
-    { ...owned, declarations: { ...empty(), changed: [{ path: 'beta/sessions.d.ts' }] } },
+    { ...owned, declarations: { ...empty(), changed: [{ path: 'organization/admin.d.ts' }] } },
     { ...owned, runtime: { ...empty(), added: [{ path: 'lib/new-helper.mjs' }] } },
     { ...owned, runtime: { ...empty(), changed: [{ path: 'lib/tools/SessionToolRunner.mjs' }] } },
     { ...owned, exports: { ...empty(), added: [{ id: 'tools/agent-toolset/node.mjs#newTool' }] } },

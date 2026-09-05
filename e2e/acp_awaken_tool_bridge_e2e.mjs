@@ -19,6 +19,11 @@ import {
 const PORT = Number(process.env.E2E_PORT ?? 39783);
 const BASE = `http://127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
+// Permission/tool identity decision table: C1 the ACP client calls the Session
+// MCP server's `write`; C2 protocol projection qualifies MCP identities.
+// R1 C1+C2 => the durable approval event and its decision both use this one
+// canonical identity. A bare `write` would test a deprecated parallel alias.
+const QUALIFIED_WRITE = 'mcp.awaken_session.write';
 const STORAGE = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-tool-bridge-'));
 
 async function listEvents(client, sessionId) {
@@ -47,13 +52,14 @@ async function begin(client) {
     receiptId,
     BETAS,
     ({ delta }) => delta.some((event) => event.type === 'agent.tool_use'
-      && event.name === 'write'
+      && event.name === QUALIFIED_WRITE
       && event.evaluated_permission === 'ask')
       && delta.some((event) => event.type === 'session.status_idle'
         && event.stop_reason?.type === 'requires_action'),
     'ACP Session MCP write to reach durable approval',
   );
-  const tool = awaiting.delta.find((event) => event.type === 'agent.tool_use' && event.name === 'write');
+  const tool = awaiting.delta.find((event) => event.type === 'agent.tool_use'
+    && event.name === QUALIFIED_WRITE);
   assert.ok(tool);
   assert.deepEqual(tool.input, {
     path: '/mnt/session/outputs/acp-hitl.txt',
@@ -76,9 +82,16 @@ async function decide(client, sessionId, toolId, result) {
 }
 
 async function main() {
+  // Substrate decision table: C1 the ACP fixture requests sandbox-absolute
+  // Awaken Session MCP write/read paths; C2 the provider is Workdir/Namespace.
+  // R1 C1+Namespace preserves path identity across ACP and tool processes;
+  // R2 C1+Workdir must fail closed. This positive bridge case therefore owns
+  // its Namespace selection explicitly instead of depending on ambient shell
+  // state; provider rejection remains covered by the negative matrix.
   const environment = {
     SESSION_DEPLOYMENT_STORAGE_DIR: STORAGE,
     SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
   };
   let server = spawnServer('acp-tool-bridge', PORT, environment).server;
   try {

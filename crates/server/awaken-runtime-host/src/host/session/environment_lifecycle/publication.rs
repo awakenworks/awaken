@@ -44,6 +44,18 @@ impl SharedHost {
         })
     }
 
+    pub(crate) fn retain_committed_session_environment_candidate(
+        &self,
+        thread: &str,
+        candidate: &UnboundSessionEnvironment,
+        identity: BoundSessionEnvironmentIdentity,
+    ) -> Result<UnboundSessionEnvironment, HostError> {
+        self.session_slots.update(thread, |slot| {
+            slot.environment_owner
+                .retain_committed_candidate(candidate, identity)
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn prepared_session_environment(
         &self,
@@ -95,7 +107,8 @@ impl SharedHost {
         candidate: &UnboundSessionEnvironment,
     ) -> Result<BoundSessionEnvironmentIdentity, HostError> {
         let source_binding = match &candidate.origin {
-            crate::session_slot::UnboundSessionEnvironmentOrigin::New => None,
+            crate::session_slot::UnboundSessionEnvironmentOrigin::New
+            | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableCreate(_) => None,
             crate::session_slot::UnboundSessionEnvironmentOrigin::Adoption
             | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
                 Some(candidate.binding.as_str())

@@ -215,6 +215,71 @@ mod mutation_tests {
     }
 
     #[test]
+    fn terminal_environment_receipt_joins_only_before_cleanup_targets_freeze() {
+        // Cause/effect graph: C1 an exact Create receipt was authorized while
+        // the Session was active; C2 archive commits terminal cleanup Fenced;
+        // C3 cleanup freezes its complete target set; C4 the receipt arrives.
+        // Effects: E1 active and C2/Fenced admit the exact receipt; E2 C3/
+        // Requested rejects it because it is no longer in the frozen target
+        // set. Decision rules: active+C4=>E1; terminal+Fenced+C4=>E1;
+        // terminal+Requested+C4=>E2. Constraint: the Environment state machine
+        // still validates the receipt identity, fingerprint, and source phase.
+        fn frozen_session(id: &str) -> PersistedSession {
+            let mut session = session(id, SessionRevision(1));
+            let crate::SessionBaselineState::Preparing(intent) = session.baseline.clone() else {
+                unreachable!("fixture starts Preparing")
+            };
+            session.baseline = crate::SessionBaselineState::Frozen(
+                intent.finalize().expect("fixture baseline").baseline,
+            );
+            session
+        }
+
+        fn receipt(id: &str) -> crate::SessionEnvironmentReceipt {
+            let intent = crate::SessionEnvironmentEffectIntent::new(
+                id,
+                crate::SessionEnvironmentEffectKind::Create,
+                None,
+            )
+            .for_environment("config");
+            crate::SessionEnvironmentReceipt::from_intent(&intent, "sandbox-binding")
+                .expect("exact Create receipt")
+        }
+
+        let mut active = frozen_session("late-environment-active");
+        assert!(
+            active
+                .try_apply_environment_receipt("workspace", &receipt("late-environment-active"), 1,)
+                .expect("active receipt"),
+            "active/E1"
+        );
+
+        let mut fenced = frozen_session("late-environment-fenced");
+        fenced.archive("2026-09-05T00:00:00Z").unwrap();
+        assert!(fenced.terminal_cleanup.is_fenced(), "C2");
+        assert!(
+            fenced
+                .try_apply_environment_receipt("workspace", &receipt("late-environment-fenced"), 1,)
+                .expect("Fenced in-flight receipt"),
+            "terminal+Fenced/E1"
+        );
+
+        let mut requested = frozen_session("late-environment-requested");
+        requested.archive("2026-09-05T00:00:00Z").unwrap();
+        requested.freeze_terminal_cleanup_targets([], 0, 0).unwrap();
+        assert!(requested.terminal_cleanup.is_requested(), "C3");
+        assert_eq!(
+            requested.try_apply_environment_receipt(
+                "workspace",
+                &receipt("late-environment-requested"),
+                1,
+            ),
+            Err(crate::SessionEnvironmentReceiptError::WrongPhase),
+            "terminal+Requested/E2"
+        );
+    }
+
+    #[test]
     fn terminal_memory_authority_joins_cleanup_input_and_current_handle_exactly_once() {
         // Cause/effect decision table:
         // | Rule | cleanup | active input | current handle A | request | Effect |

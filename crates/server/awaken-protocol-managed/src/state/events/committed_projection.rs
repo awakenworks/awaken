@@ -836,9 +836,16 @@ impl ManagedState {
                 .iter()
                 .any(|entry| !entry.processed && entry.projection_anchor.is_none())
         }) {
-            // Project only root-owned accepted receipts at the end of the issued
-            // prefix. Runtime-derived facts remain withheld until the anchor CAS.
-            let projections = unanchored_inbound_projections(session_id, &persisted.event_batches);
+            // Project the complete root-owned inbound partition: already
+            // anchored history may coexist with a later unanchored User tail
+            // (notably when an Interrupt crosses queued work). Runtime-derived
+            // facts remain withheld until every accepted command has its anchor
+            // CAS, but the pending tail must not hide earlier durable progress.
+            let projections = inbound_projections(
+                session_id,
+                &persisted.event_batches,
+                InboundProjectionView::RootBarrierHistory,
+            );
             let mut candidate = base_record;
             let previous_event_ids = candidate
                 .events

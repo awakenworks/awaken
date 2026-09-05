@@ -2,6 +2,22 @@ export type AuthorStage = "quickstart" | "build" | "advanced";
 export type BuilderSection = "instructions" | "tools" | "integrations" | "knowledge";
 export type AdvancedSection = "orchestration" | "extensions" | "source" | "release";
 
+export function stageForQuery(value: string | null): AuthorStage {
+  return value === "build" || value === "advanced" ? value : "quickstart";
+}
+
+export function builderSectionForQuery(value: string | null): BuilderSection {
+  return value === "tools" || value === "integrations" || value === "knowledge"
+    ? value
+    : "instructions";
+}
+
+export function advancedSectionForQuery(value: string | null): AdvancedSection {
+  return value === "extensions" || value === "source" || value === "release"
+    ? value
+    : "orchestration";
+}
+
 export function stageForPath(path: string): AuthorStage {
   const top = path.split(".")[0];
   if (["multiagent", "delegation_limits", "metadata", "compaction"].includes(top)) {

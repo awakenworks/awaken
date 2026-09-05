@@ -44,13 +44,13 @@ kubectl kustomize "$REPO_ROOT/deploy/k3d/distributed-control" >"$RENDERED"
 # C1 all six Control stores and both Coordinator stores have explicit URLs;
 # C2 local platform-workspace-id projection is absent. D10+C1+C2 => migration,
 # replicas, and recovery share only the PostgreSQL installation binding.
-# D11 replicated Worker identity: C1 each Worker otherwise owns a distinct
-# emptyDir; C2 the installation ConfigMap owns one platform-workspace-id; C3
-# that single key is mounted read-only at the Worker data-root identity path.
-# E1 every replica derives the same ContainerRealizationNamespace; E2 a fresh
-# Worker can validate and adopt another replica's exact durable Sandbox handle.
-# D11-D1=C1+C2+C3=>E1+E2; omitting the shared subPath reproduces the cross-Worker
-# provider-effective adoption-fingerprint conflict caught by the live chaos rule.
+# D11 replicated Worker identity: C1 each Worker owns a distinct disposable
+# emptyDir; C2 every Worker is configured for the same Kubernetes namespace;
+# C3 the production selector treats that namespace, not local storage, as the
+# stable realization scope. E1 every replica derives the same
+# ContainerRealizationNamespace; E2 no unproduced platform-workspace-id can gate
+# startup. D11-D1=C1+C2+C3=>E1+E2. The Kani harness owns C3 for all SandboxTier
+# variants; this rendered contract owns absence of the redundant deployment path.
 # Each assertion owns one observable terminal effect; the manifest remains the
 # sole deployment source of truth.
 grep -q '/usr/local/bin/awaken-worker' "$RENDERED"
@@ -115,14 +115,6 @@ grep -q 'k8s_namespace = "awaken-adr71"' "$RENDERED"
 grep -q 'container_image = "awaken-sandbox:local"' "$RENDERED"
 grep -q 'serviceAccountName: worker-runtime' "$RENDERED"
 grep -q 'name: worker-runtime' "$RENDERED"
-# Keep this assertion scoped to the Worker StatefulSet: Control and Coordinator
-# intentionally consume the same authority at their own role-specific paths.
-WORKER_STATEFULSET="$(sed -n '/^kind: StatefulSet$/,/^---$/p' "$RENDERED" \
-  | sed -n '/^  name: worker$/,$p')"
-grep -q 'mountPath: /var/lib/awaken/worker/platform-workspace-id' <<<"$WORKER_STATEFULSET"
-grep -q 'subPath: platform-workspace-id' <<<"$WORKER_STATEFULSET"
-grep -q 'name: workspace' <<<"$WORKER_STATEFULSET"
-grep -q 'name: adr71-installation' <<<"$WORKER_STATEFULSET"
 # Continuation-RBAC table: a retained Session needs C1 PVC create, C2 exact UID
 # observation, and C3 terminal delete. E1 all three render in one PVC-only rule;
 # E2 update/list/watch remain absent from that rule. KRB1=C1+C2+C3=>E1+E2.

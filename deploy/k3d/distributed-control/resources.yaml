@@ -172,14 +172,11 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /etc/awaken, readOnly: true }
             - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
-            - { name: workspace, mountPath: /var/lib/awaken/control/platform-workspace-id, subPath: platform-workspace-id, readOnly: true }
       volumes:
         - name: config
           secret: { secretName: adr71-role-config }
         - name: auth
           secret: { secretName: adr71-control-auth }
-        - name: workspace
-          configMap: { name: adr71-installation }
 ---
 apiVersion: batch/v1
 kind: Job
@@ -201,14 +198,11 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /etc/awaken, readOnly: true }
             - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
-            - { name: workspace, mountPath: /var/lib/awaken/coordinator/platform-workspace-id, subPath: platform-workspace-id, readOnly: true }
       volumes:
         - name: config
           secret: { secretName: adr71-role-config }
         - name: auth
           secret: { secretName: adr71-coordinator-auth }
-        - name: workspace
-          configMap: { name: adr71-installation }
 ---
 apiVersion: v1
 kind: Service
@@ -255,14 +249,11 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /etc/awaken, readOnly: true }
             - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
-            - { name: workspace, mountPath: /var/lib/awaken/control/platform-workspace-id, subPath: platform-workspace-id, readOnly: true }
       volumes:
         - name: config
           secret: { secretName: adr71-role-config }
         - name: auth
           secret: { secretName: adr71-control-auth }
-        - name: workspace
-          configMap: { name: adr71-installation }
 ---
 apiVersion: v1
 kind: Service
@@ -303,7 +294,6 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /etc/awaken, readOnly: true }
             - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
-            - { name: workspace, mountPath: /var/lib/awaken/coordinator/platform-workspace-id, subPath: platform-workspace-id, readOnly: true }
         - name: worker-tls
           image: nginx:1.27-alpine
           imagePullPolicy: Never
@@ -339,8 +329,6 @@ spec:
           secret: { secretName: adr71-role-config }
         - name: auth
           secret: { secretName: adr71-coordinator-auth }
-        - name: workspace
-          configMap: { name: adr71-installation }
         - name: worker-tls-route
           configMap: { name: adr71-worker-tls-route }
         - name: worker-tls-identity
@@ -443,10 +431,6 @@ spec:
             - { name: upstream-tls, mountPath: /etc/awaken-worker-tls, readOnly: true }
             - { name: material, mountPath: /var/run/awaken/credentials, readOnly: true }
             - { name: data, mountPath: /var/lib/awaken }
-            # Every replica must derive the same ContainerRealizationNamespace.
-            # The per-Pod emptyDir remains the owner of disposable Worker state;
-            # only the installation-wide workspace identity is projected into it.
-            - { name: workspace, mountPath: /var/lib/awaken/worker/platform-workspace-id, subPath: platform-workspace-id, readOnly: true }
       volumes:
         - name: template
           secret:
@@ -466,8 +450,6 @@ spec:
                 path: envelopes/61647237312d656e76656c6f7065/7368613235363a61647237312d70726f76696465722d7061796c6f6164/61647237312d70726f76696465722d63726564656e7469616c/1/776f726b73706163652d6164723731/666e76316136343a37616138653836326333363034333234/secret
               - key: payload-fingerprint
                 path: envelopes/61647237312d656e76656c6f7065/7368613235363a61647237312d70726f76696465722d7061796c6f6164/61647237312d70726f76696465722d63726564656e7469616c/1/776f726b73706163652d6164723731/666e76316136343a37616138653836326333363034333234/payload_fingerprint
-        - name: workspace
-          configMap: { name: adr71-installation }
         - name: data
           emptyDir: {}
 ---

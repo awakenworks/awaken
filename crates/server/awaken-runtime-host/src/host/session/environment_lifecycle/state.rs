@@ -165,6 +165,40 @@ enum DurableProjectionIdentityDecision {
     Conflict,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateCommitClass {
+    New,
+    Adoption,
+    DurableCreate,
+    DurableAdoption,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateCommitDecision {
+    BindCreate,
+    BindAdoption,
+    Replay,
+    Conflict,
+}
+
+const fn candidate_commit_decision(
+    class: CandidateCommitClass,
+    committed_identity_is_exact: bool,
+) -> CandidateCommitDecision {
+    match class {
+        CandidateCommitClass::New => CandidateCommitDecision::BindCreate,
+        CandidateCommitClass::Adoption => CandidateCommitDecision::BindAdoption,
+        CandidateCommitClass::DurableCreate | CandidateCommitClass::DurableAdoption
+            if committed_identity_is_exact =>
+        {
+            CandidateCommitDecision::Replay
+        }
+        CandidateCommitClass::DurableCreate | CandidateCommitClass::DurableAdoption => {
+            CandidateCommitDecision::Conflict
+        }
+    }
+}
+
 const fn durable_projection_identity_decision(
     identity_is_exact: bool,
     binding_is_exact: bool,
@@ -180,6 +214,52 @@ const fn durable_projection_identity_decision(
 }
 
 impl SessionEnvironmentOwner {
+    /// Retain Store-read proof when the Session root commit succeeded but a
+    /// later derivative dispatch binding was fenced. The Candidate stays
+    /// hidden, retains its exact Arc/handle, and preserves Create versus Adopt
+    /// retry semantics; terminal cleanup may then take over that same owner.
+    pub(super) fn retain_committed_candidate(
+        &mut self,
+        expected: &UnboundSessionEnvironment,
+        identity: BoundSessionEnvironmentIdentity,
+    ) -> Result<UnboundSessionEnvironment, HostError> {
+        let Self::Preparing(SessionEnvironmentPreparation::Candidate(current)) = self else {
+            return Err(HostError::internal(
+                "committed Session Environment Candidate lost its Preparing owner",
+            ));
+        };
+        if !current.exact_matches(expected) {
+            return Err(HostError::internal(
+                "committed Session Environment Candidate lost its exact fence",
+            ));
+        }
+        let (class, exact) = match &current.origin {
+            UnboundSessionEnvironmentOrigin::New => (CandidateCommitClass::New, false),
+            UnboundSessionEnvironmentOrigin::Adoption => (CandidateCommitClass::Adoption, false),
+            UnboundSessionEnvironmentOrigin::DurableCreate(current) => {
+                (CandidateCommitClass::DurableCreate, current == &identity)
+            }
+            UnboundSessionEnvironmentOrigin::DurableAdoption(current) => {
+                (CandidateCommitClass::DurableAdoption, current == &identity)
+            }
+        };
+        match candidate_commit_decision(class, exact) {
+            CandidateCommitDecision::BindCreate => {
+                current.origin = UnboundSessionEnvironmentOrigin::DurableCreate(identity);
+            }
+            CandidateCommitDecision::BindAdoption => {
+                current.origin = UnboundSessionEnvironmentOrigin::DurableAdoption(identity);
+            }
+            CandidateCommitDecision::Replay => {}
+            CandidateCommitDecision::Conflict => {
+                return Err(HostError::internal(
+                    "committed Session Environment Candidate changed durable identity",
+                ));
+            }
+        }
+        Ok(current.clone())
+    }
+
     pub(super) fn install_projection(
         &mut self,
         projected: ProjectedEnvironmentOwner,
@@ -554,6 +634,40 @@ impl SessionEnvironmentOwner {
         Ok(retiring)
     }
 
+    /// Move a root-committed but locally unpublished Candidate directly behind
+    /// the terminal fence. It never becomes Resident/tool-visible; the durable
+    /// identity and exact Arc become one Bound retirement owner so preparation
+    /// and disposal retries share the ordinary terminal path.
+    pub(super) fn begin_retirement_with_committed_candidate(
+        &mut self,
+        expected: &UnboundSessionEnvironment,
+        cause: SessionEnvironmentRetirementCause,
+    ) -> Result<RetiringSessionEnvironment, HostError> {
+        let Self::Preparing(SessionEnvironmentPreparation::Candidate(current)) = self else {
+            return Err(HostError::internal(
+                "terminal committed Candidate has no Preparing owner",
+            ));
+        };
+        if !current.exact_matches(expected) {
+            return Err(HostError::internal(
+                "terminal committed Candidate lost its exact local fence",
+            ));
+        }
+        let identity = current.durable_identity().cloned().ok_or_else(|| {
+            HostError::internal("terminal Candidate has no Store-read durable identity")
+        })?;
+        let retiring = RetiringSessionEnvironment {
+            cause,
+            owned: RetiringEnvironmentOwner::Bound(BoundSessionEnvironment {
+                identity,
+                binding: current.binding.clone(),
+                environment: current.environment.clone(),
+            }),
+        };
+        *self = Self::Retiring(retiring.clone());
+        Ok(retiring)
+    }
+
     pub(super) fn confirm_terminated(&mut self, expected: &RetiringSessionEnvironment) -> bool {
         let Self::Retiring(current) = self else {
             return false;
@@ -647,6 +761,37 @@ fn durable_projection_identity_is_exact_or_a_same_physical_owner_stutter() {
         decision == DurableProjectionIdentityDecision::SamePhysicalOwnerStutter,
         !identity_is_exact && binding_is_exact && generation_is_exact
     );
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn committed_candidate_retains_effect_kind_and_rejects_identity_relabeling() {
+    // Cause/effect decision table: C1 is the closed Candidate origin class; C2
+    // a previously committed identity is exact. E1 New binds DurableCreate;
+    // E2 Adoption binds DurableAdoption; E3 either durable class plus exact C2
+    // replays; E4 either durable class plus !C2 conflicts. The reducer returns
+    // no Resident decision, so every row remains hidden until the canonical
+    // publication or terminal-retirement owner consumes it.
+    let class = match kani::any::<u8>() % 4 {
+        0 => CandidateCommitClass::New,
+        1 => CandidateCommitClass::Adoption,
+        2 => CandidateCommitClass::DurableCreate,
+        _ => CandidateCommitClass::DurableAdoption,
+    };
+    let exact: bool = kani::any();
+    let decision = candidate_commit_decision(class, exact);
+    match class {
+        CandidateCommitClass::New => assert_eq!(decision, CandidateCommitDecision::BindCreate),
+        CandidateCommitClass::Adoption => {
+            assert_eq!(decision, CandidateCommitDecision::BindAdoption)
+        }
+        CandidateCommitClass::DurableCreate | CandidateCommitClass::DurableAdoption if exact => {
+            assert_eq!(decision, CandidateCommitDecision::Replay)
+        }
+        CandidateCommitClass::DurableCreate | CandidateCommitClass::DurableAdoption => {
+            assert_eq!(decision, CandidateCommitDecision::Conflict)
+        }
+    }
 }
 
 pub(in crate::host::session) fn committed_identity(

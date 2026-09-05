@@ -266,7 +266,11 @@ fn durable_inbound_projection_uses_only_session_root_provenance() {
         queued.is_empty(),
         "R1 unanchored receipts are not falsely classified as anchored history"
     );
-    let pending = unanchored_inbound_projections(session_id, std::slice::from_ref(&batch));
+    let pending = inbound_projections(
+        session_id,
+        std::slice::from_ref(&batch),
+        InboundProjectionView::RootBarrierHistory,
+    );
     assert_eq!(
         pending.len(),
         3,
@@ -323,6 +327,84 @@ fn durable_inbound_projection_uses_only_session_root_provenance() {
             .map(|projection| projection.event.id.as_str())
             .collect::<Vec<_>>(),
         "R3/E3"
+    );
+}
+
+#[tokio::test]
+async fn pending_tail_does_not_hide_processed_interrupt_history() {
+    // Cause/effect graph: C1 a User command remains accepted but unanchored;
+    // C2 a later Interrupt crosses it and commits its processed anchor; C3 the
+    // projection is warm or rebuilt cold. Effects: E1 the User receipt remains
+    // visible with null processed_at; E2 the Interrupt is visible with its
+    // durable processed marker; E3 warm and cold projections agree. Constraint:
+    // Runtime-derived suffixes remain withheld while C1 is unanchored; this test
+    // changes only the Session-root inbound partition.
+    //
+    // | Rule | C1 pending | C2 anchored | C3 | Expected |
+    // |---|---|---|---|---|
+    // | P1 | T | T | warm | E1 + E2 |
+    // | P2 | T | T | cold | E1 + E2 + E3 |
+    let runtime = LifecycleRuntime::default();
+    let repository = Arc::new(ephemeral_session_repo());
+    let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+    let session = warm
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    warm.application
+        .append_session_event_batch(
+            &session.id,
+            vec![SessionEventInput::UserMessage {
+                content: vec![ContentBlock::text("queued")],
+            }],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let interrupt = warm
+        .application
+        .append_session_event_batch(
+            &session.id,
+            vec![SessionEventInput::Interrupt(SessionEventInterrupt {
+                requested_target: None,
+                targets: vec![SessionThreadTarget::Primary],
+            })],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    persist_batch_projection_anchors(&warm, &session.id, &interrupt.batch_id, &[7]).await;
+
+    warm.refresh_committed_events(&session.id).await.unwrap();
+    let warm_events = warm
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data;
+    assert_eq!(
+        warm_events
+            .iter()
+            .map(|event| (event.type_str(), event.processed_at.is_some()))
+            .collect::<Vec<_>>(),
+        vec![("user.message", false), ("user.interrupt", true)],
+        "P1/E1+E2"
+    );
+
+    let cold = ManagedState::new(runtime).with_session_repo(repository);
+    cold.refresh_committed_events(&session.id).await.unwrap();
+    assert_eq!(
+        cold.list_events(&session.id, None, None, false)
+            .unwrap()
+            .data,
+        warm_events,
+        "P2/E1+E2+E3"
     );
 }
 

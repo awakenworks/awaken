@@ -6,7 +6,10 @@
 use std::sync::Arc;
 
 use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+use awaken_runtime_contract::tool::{
+    RawTool, ToolCall, ToolConcurrency, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput,
+    ToolRecoveryCapability,
+};
 
 pub struct AcpToolExport {
     pub server: awaken_run_executor_acp::McpServerConfig,
@@ -44,6 +47,53 @@ pub trait AcpToolExporter: Send + Sync {
         self.export_set(server_name, vec![descriptor], vec![tool])
             .await
     }
+}
+
+/// ACP transport adapter for the Environment's one canonical `ToolExecutor`.
+/// The descriptor owns the public id; invocation, path projection, recovery and
+/// concurrency remain owned by the already-bound Environment executor.
+struct ExecutorBackedAcpTool {
+    id: String,
+    executor: Arc<dyn ToolExecutor>,
+}
+
+#[async_trait::async_trait]
+impl RawTool for ExecutorBackedAcpTool {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn execution_target(&self) -> ToolExecutionTarget {
+        ToolExecutionTarget::Sandbox
+    }
+
+    fn recovery_capability(&self) -> ToolRecoveryCapability {
+        self.executor.recovery_capability(&self.id)
+    }
+
+    fn concurrency(&self, arguments: &serde_json::Value) -> ToolConcurrency {
+        self.executor.concurrency(&self.id, arguments)
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.executor.invoke(&call).await
+    }
+}
+
+/// Bind the selected Hand descriptors to one Environment executor without
+/// rebuilding a host-side RawTool registry for Namespace or Container tiers.
+pub(crate) fn environment_executor_tools(
+    ids: impl IntoIterator<Item = String>,
+    executor: Arc<dyn ToolExecutor>,
+) -> Vec<Arc<dyn RawTool>> {
+    ids.into_iter()
+        .map(|id| {
+            Arc::new(ExecutorBackedAcpTool {
+                id,
+                executor: executor.clone(),
+            }) as Arc<dyn RawTool>
+        })
+        .collect()
 }
 
 /// Session-local one-shot authority minted only after the ACP permission path
@@ -166,12 +216,22 @@ pub(crate) async fn export_tools(
     ),
     String,
 > {
+    let descriptor_ids = descriptors
+        .iter()
+        .map(|descriptor| descriptor.id.clone())
+        .collect::<Vec<_>>();
+    let executor_ids = executors
+        .iter()
+        .map(|tool| tool.id().to_string())
+        .collect::<Vec<_>>();
     let executors = executors
         .into_iter()
         .map(|tool| (tool.id().to_string(), tool))
         .collect::<std::collections::BTreeMap<_, _>>();
     if descriptors.len() != executors.len() {
-        return Err("ACP tool descriptor/executor sets differ in size".into());
+        return Err(format!(
+            "ACP tool descriptor/executor sets differ: descriptors={descriptor_ids:?}, executors={executor_ids:?}"
+        ));
     }
     let mut paired_descriptors = Vec::with_capacity(descriptors.len());
     let mut paired_executors = Vec::with_capacity(descriptors.len());
@@ -288,6 +348,61 @@ mod tests {
                 correlation_id: format!("approval:{}", call.call_id),
             }
         }
+    }
+
+    #[derive(Default)]
+    struct RecordingExecutor(std::sync::Mutex<Vec<ToolCall>>);
+
+    #[async_trait::async_trait]
+    impl ToolExecutor for RecordingExecutor {
+        fn recovery_capability(&self, tool_id: &str) -> ToolRecoveryCapability {
+            assert_eq!(tool_id, "write");
+            ToolRecoveryCapability::Idempotent
+        }
+
+        fn concurrency(&self, tool_id: &str, _arguments: &serde_json::Value) -> ToolConcurrency {
+            assert_eq!(tool_id, "write");
+            ToolConcurrency::Serial
+        }
+
+        async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
+            self.0.lock().unwrap().push(call.clone());
+            Ok(ToolOutput::ok(call.call_id.clone(), "environment-hand"))
+        }
+    }
+
+    #[tokio::test]
+    async fn acp_hand_adapter_delegates_only_to_the_bound_environment_executor() {
+        // Causes: C1 a publication selects Hand id `write`; C2 the realized
+        // Environment supplies its canonical executor; C3 ACP calls that id.
+        // Effects: E1 recovery/concurrency are delegated for the same id; E2 the
+        // exact call reaches the Environment executor once; E3 no default
+        // host-side RawTool is constructed. Decision rule H1=C1+C2+C3=>E1+E2;
+        // E3 follows structurally because this adapter stores only id+executor.
+        let executor = Arc::new(RecordingExecutor::default());
+        let tools = environment_executor_tools(
+            ["write".to_string()],
+            executor.clone() as Arc<dyn ToolExecutor>,
+        );
+        let tool = &tools[0];
+        assert_eq!(
+            tool.recovery_capability(),
+            ToolRecoveryCapability::Idempotent
+        );
+        assert_eq!(
+            tool.concurrency(&serde_json::json!({})),
+            ToolConcurrency::Serial
+        );
+        let call = ToolCall {
+            call_id: "call-1".into(),
+            tool_id: "write".into(),
+            arguments: serde_json::json!({"file_path":"/mnt/session/outputs/result.txt"}),
+        };
+        assert_eq!(
+            tool.invoke(call.clone()).await.unwrap().text(),
+            "environment-hand"
+        );
+        assert_eq!(executor.0.lock().unwrap().as_slice(), &[call]);
     }
 
     #[tokio::test]

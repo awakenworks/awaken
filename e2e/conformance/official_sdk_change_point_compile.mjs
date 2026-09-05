@@ -116,12 +116,48 @@ function managedTypesFixture(enabled) {
   void createProfile; void updateProfile; void listProfiles; void declarationOwners;`;
 }
 
+function workspaceRoutingFixture(enabled) {
+  if (!enabled) return '';
+  return `
+  const workspace_id = 'workspace_compile';
+  await client.beta.agents.list({ workspace_id });
+  await client.beta.agents.versions.list('agent_compile', { workspace_id });
+  await client.beta.deploymentRuns.list({ workspace_id });
+  await client.beta.deployments.list({ workspace_id });
+  await client.beta.dreams.list({ workspace_id });
+  await client.beta.environments.list({ workspace_id });
+  await client.beta.environments.work.stats('env_compile', { workspace_id });
+  await client.beta.files.list({ workspace_id });
+  await client.beta.memoryStores.memories.list('memstore_compile', { workspace_id });
+  await client.beta.memoryStores.list({ workspace_id });
+  await client.beta.memoryStores.memoryVersions.list('memstore_compile', { workspace_id });
+  await client.beta.models.list({ workspace_id });
+  await client.beta.sessions.events.list('session_compile', { workspace_id });
+  await client.beta.sessions.resources.list('session_compile', { workspace_id });
+  await client.beta.sessions.list({ workspace_id });
+  await client.beta.sessions.threads.events.list('thread_compile', {
+    session_id: 'session_compile', workspace_id,
+  });
+  await client.beta.sessions.threads.list('session_compile', { workspace_id });
+  await client.beta.skills.list({ workspace_id });
+  await client.beta.skills.versions.list('skill_compile', { workspace_id });
+  await client.beta.tunnels.certificates.list('tunnel_compile', { workspace_id });
+  await client.beta.tunnels.list({ workspace_id });
+  await client.beta.vaults.credentials.list('vault_compile', { workspace_id });
+  await client.beta.vaults.list({ workspace_id });
+  await client.files.list({ workspace_id });
+  await client.models.list({ workspace_id });
+  await client.skills.list({ workspace_id });
+  await client.skills.versions.list('skill_compile', { workspace_id });`;
+}
+
 export function officialSdkChangePointFixture({
   filesProjection,
   skillsProjection,
   parseUnverified,
   resolveSkillVersion,
   managedTypesV123 = false,
+  workspaceRouting = false,
 }) {
   return `// Generated in memory by official_sdk_change_point_compile.mjs.
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
@@ -149,6 +185,7 @@ async function exerciseChangePoints() {
 ${filesFixture(filesProjection)}
 ${skillsFixture(skillsProjection)}
 ${managedTypesFixture(managedTypesV123)}
+${workspaceRoutingFixture(workspaceRouting)}
   client.beta.webhooks.unwrap('{}', { headers: {
     'webhook-id': 'event_compile',
     'webhook-timestamp': '0',
@@ -164,10 +201,14 @@ void exerciseChangePoints();
 export function compileOfficialSdkChangePoints(packageRoot, profile) {
   // Cause/effect graph: C1 official generated request signatures select one
   // Files/Skills projection; C2 the SDK exposes a reviewed Webhook helper set;
-  // C3 an exact, externally provisioned package root owns declaration lookup.
+  // C3 an exact, externally provisioned package root owns declaration lookup;
+  // C4 request-scoped Workspace routing is present or absent as one versioned
+  // capability across the complete changed Resource declaration set.
   // Effect: E1 every changed method accepts its intended strongly typed input
   // and exposes the required response fields. Decision rule T1 C1+C2+C3->E1;
   // any missing/renamed field, parameter, method, or module fails compilation.
+  // W1 C4=>every changed Resource family accepts the same typed Workspace
+  // selector; W2 !C4=>no candidate-only call is emitted.
   // Constraint: the fixture contains no any, cast, ts-ignore, or handwritten
   // declaration and exists only in the compiler host, never in product code.
   const source = officialSdkChangePointFixture(profile);

@@ -274,14 +274,17 @@ pub(crate) async fn prepare_terminal_memory_replay(
         super::realization_marker::TerminalReceiptObservation::Incomplete => (None, true),
         super::realization_marker::TerminalReceiptObservation::Closed => (None, false),
     };
-    if incomplete {
-        super::terminal_copy_materializations(spec, None)?;
-        if handle.is_some() {
-            return Err(pc::SandboxError::new(
-                "terminal handle targets a realization without a Ready receipt",
-            ));
-        }
+    if incomplete && handle.is_some() {
+        return Err(pc::SandboxError::new(
+            "terminal handle targets a realization without a Ready receipt",
+        ));
     }
+
+    // An Incomplete marker has no Ready receipt. Therefore the provider never
+    // returned a Sandbox to Runtime and no Agent could have observed or
+    // mutated a writable Memory mount. The terminal fence may dispose that
+    // exact session-scoped partial realization with zero materializations.
+    // A durable handle above remains contradictory and is rejected.
 
     let terminal = super::realization_marker::begin_terminal_takeover(
         root,
@@ -294,7 +297,12 @@ pub(crate) async fn prepare_terminal_memory_replay(
     let Some((realization, removal)) = terminal else {
         return Ok(None);
     };
-    let (realized, materializations) = match (ready_projection, removal.completed_receipt()?) {
+    let completed_receipt = if incomplete {
+        None
+    } else {
+        removal.completed_receipt()?
+    };
+    let (realized, materializations) = match (ready_projection, completed_receipt) {
         (Some((ready_receipt, realized, materializations)), Some(receipt))
             if receipt == &ready_receipt =>
         {

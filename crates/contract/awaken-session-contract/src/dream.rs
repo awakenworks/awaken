@@ -315,9 +315,17 @@ pub enum DreamStatusEvent {
     Cancel,
 }
 
+/// Closed admission result for the one durable Dream cleanup saga.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DreamCleanupAdmission {
+    Invalid,
+    Retry,
+    Settled,
+}
+
 impl DreamStatus {
     #[must_use]
-    pub fn is_terminal(&self) -> bool {
+    pub const fn is_terminal(&self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Canceled)
     }
 
@@ -330,6 +338,20 @@ impl DreamStatus {
             Self::Running
         } else {
             self
+        }
+    }
+
+    /// Decide whether a terminal command must re-enter cleanup. This is kept on
+    /// the status owner so API retries and startup recovery cannot grow
+    /// independent interpretations of `cleanup_pending`.
+    #[must_use]
+    pub const fn cleanup_admission(self, cleanup_pending: bool) -> DreamCleanupAdmission {
+        if !self.is_terminal() {
+            DreamCleanupAdmission::Invalid
+        } else if cleanup_pending {
+            DreamCleanupAdmission::Retry
+        } else {
+            DreamCleanupAdmission::Settled
         }
     }
 
@@ -349,7 +371,7 @@ impl DreamStatus {
 
 #[cfg(kani)]
 mod dream_status_proofs {
-    use super::{DreamStatus, DreamStatusEvent};
+    use super::{DreamCleanupAdmission, DreamStatus, DreamStatusEvent};
 
     fn status(code: u8) -> DreamStatus {
         match code {
@@ -475,6 +497,28 @@ mod dream_status_proofs {
         }
         if matches!(public, DreamStatus::Completed | DreamStatus::Failed) {
             assert!(!cleanup_pending);
+        }
+    }
+
+    #[kani::proof]
+    fn dream_cleanup_admission_is_total_and_retries_every_pending_terminal() {
+        // Causes: C1 every closed Dream status; C2 cleanup is pending/settled.
+        // Effects: E1 nonterminal is invalid, E2 every pending terminal retries,
+        // E3 every receipted terminal is settled. Constraint: cancellation is
+        // absorbing but cannot turn a missing cleanup receipt into success.
+        // Rules: R1=!terminal=>E1; R2=terminal+C2(pending)=>E2;
+        // R3=terminal+C2(settled)=>E3.
+        let status_code: u8 = kani::any();
+        let cleanup_pending = kani::any::<bool>();
+        kani::assume(status_code <= 4);
+        let current = status(status_code);
+        let admission = current.cleanup_admission(cleanup_pending);
+        if !current.is_terminal() {
+            assert_eq!(admission, DreamCleanupAdmission::Invalid);
+        } else if cleanup_pending {
+            assert_eq!(admission, DreamCleanupAdmission::Retry);
+        } else {
+            assert_eq!(admission, DreamCleanupAdmission::Settled);
         }
     }
 }

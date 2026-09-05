@@ -22,6 +22,12 @@ Finish(status) ==
     /\ sessionCleanup' = "Requested"
     /\ cleanupPending' = TRUE
 
+Cancel ==
+    /\ dreamStatus = "Running"
+    /\ dreamStatus' = "Canceled"
+    /\ sessionCleanup' = "Requested"
+    /\ cleanupPending' = TRUE
+
 SessionCleanupCompletes ==
     /\ sessionCleanup = "Requested"
     /\ sessionCleanup' = "Completed"
@@ -40,6 +46,7 @@ CleanupCommitsAfterReceipt ==
 
 Next ==
     \/ \E status \in {"Completed", "Failed"}: Finish(status)
+    \/ Cancel
     \/ SessionCleanupCompletes
     \/ CleanupRetryBeforeReceipt
     \/ CleanupCommitsAfterReceipt
@@ -52,7 +59,7 @@ PublicStatus ==
     ELSE dreamStatus
 
 TypeOK ==
-    /\ dreamStatus \in {"Running", "Completed", "Failed"}
+    /\ dreamStatus \in {"Running", "Completed", "Failed", "Canceled"}
     /\ sessionCleanup \in {"NotRequested", "Requested", "Completed"}
     /\ cleanupPending \in BOOLEAN
 
@@ -61,12 +68,16 @@ PublicTerminalRequiresEveryReceipt ==
         ~cleanupPending /\ sessionCleanup = "Completed"
 
 UnsettledSessionKeepsDreamCleanupPending ==
-    dreamStatus \in {"Completed", "Failed"} /\ sessionCleanup # "Completed" =>
+    dreamStatus \in {"Completed", "Failed", "Canceled"} /\ sessionCleanup # "Completed" =>
         cleanupPending
+
+CanceledCleanupSettlesOnlyAfterReceipt ==
+    dreamStatus = "Canceled" /\ ~cleanupPending => sessionCleanup = "Completed"
 
 Safety ==
     /\ TypeOK
     /\ PublicTerminalRequiresEveryReceipt
     /\ UnsettledSessionKeepsDreamCleanupPending
+    /\ CanceledCleanupSettlesOnlyAfterReceipt
 
 =============================================================================

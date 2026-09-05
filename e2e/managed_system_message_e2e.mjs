@@ -65,18 +65,20 @@ async function main() {
       await expectInvalid(client, session.id, [user, system, system], 'S2 rejects multiple System events');
       assert.deepEqual(await listTypes(client, session.id), [], 'S2 has no partial Event or Run');
 
-      // The valid User+System pair is acknowledged in wire order. Depending on
-      // scheduling, the response can race the same Run's commit, so the System
-      // receipt may already be processed; the durable history must converge on
-      // the same id with a timestamp in either case.
+      // Cause/effect row S1: a valid User+System pair is atomically admitted and
+      // its Run may commit before or after the HTTP response. Effect: both
+      // admission receipts remain null in wire order while durable history
+      // converges on those same ids with timestamps. The response therefore
+      // cannot encode which side of the processing race won.
       const receipt = await client.beta.sessions.events.send(session.id, {
         events: [user, system],
         betas: BETAS,
       });
       assert.deepEqual(receipt.data.map((event) => event.type), ['user.message', 'system.message']);
-      assert.ok(
-        receipt.data[1].processed_at === null || typeof receipt.data[1].processed_at === 'string',
-        'System receipt reflects whichever side of the concurrent Thread commit won',
+      assert.equal(
+        receipt.data[1].processed_at,
+        null,
+        'S1 System admission receipt is processing-race stable',
       );
       const systemReceiptId = receipt.data[1]?.id;
       assert.equal(typeof systemReceiptId, 'string', 'S1 exact final System Event receipt');

@@ -294,6 +294,72 @@ async fn a_memory_store_mount_without_a_mounter_fails_loud() {
 }
 
 #[tokio::test]
+async fn terminal_takeover_disposes_incomplete_writable_memory_without_inventing_heads() {
+    // Incomplete terminal-takeover decision table: C1 an exact session-scoped
+    // marker is Creating and has/has not published Ready; C2 the frozen spec
+    // contains a writable MemoryStore; C3 a durable handle is absent/present.
+    // R1 C1=Creating+C2+C3=absent reconstructs the one terminal participant,
+    // reports zero materializations, and permits fenced disposal because no
+    // Sandbox was returned to Runtime and no Agent could mutate Memory. R2 the
+    // Ready row remains owned by the exact receipt reconciliation table below;
+    // R3 Creating+handle is contradictory and rejected in the shared helper.
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path());
+    let spec = ns_spec(
+        "terminal-incomplete-writable-memory",
+        vec![pc::MountRequirement {
+            mount_id: "memory".into(),
+            source: pc::MountSource::MemoryStore {
+                store_id: "store".into(),
+                materialization_reference: None,
+                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+            },
+            mount_path: "/workspace/memory".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Session,
+            required: true,
+        }],
+    );
+    let create =
+        pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX - 1).unwrap();
+    let terminal =
+        pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX).unwrap();
+    let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec);
+    let root = crate::sandbox_dir(tmp.path(), &spec.scope);
+    let creation =
+        crate::realization_marker::begin(&root, &fingerprint, &create, None, None).unwrap();
+    creation.prepare_root().unwrap();
+    std::fs::create_dir_all(root.join("workspace/memory")).unwrap();
+    std::fs::write(root.join("workspace/memory/partial"), b"not-observable").unwrap();
+    drop(creation);
+
+    let terminal_sandbox = provider
+        .prepare_terminal_sandbox_for_effect(&spec, None, Some(&create), &terminal)
+        .await
+        .unwrap()
+        .expect("R1 exact incomplete participant");
+    assert_eq!(
+        pc::Sandbox::handle(&terminal_sandbox)
+            .memory_materializations()
+            .unwrap(),
+        Some(&[][..]),
+        "R1 no invented Memory heads"
+    );
+    pc::Sandbox::acknowledge_memory_reconciliation(&terminal_sandbox, &terminal, &[])
+        .await
+        .expect("R1 zero-head reconciliation");
+    terminal_sandbox
+        .prepare_disposal_for_effect(&terminal)
+        .await
+        .expect("R1 preparation");
+    terminal_sandbox
+        .dispose_for_effect(&crate::test_disposal_authorization(&terminal))
+        .await
+        .expect("R1 fenced disposal");
+    assert!(!root.exists(), "R1 partial root removed");
+}
+
+#[tokio::test]
 async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
     // Namespace terminal-copy preparation/authorization table: C1 the current
     // handle carries the complete canonical copy evidence; C2 ack evidence is

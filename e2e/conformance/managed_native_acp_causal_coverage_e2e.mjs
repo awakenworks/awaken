@@ -56,11 +56,11 @@ const groups = [
       'ids.contains("run_in_background")',
     ),
     ...acpPartitions(
-      'crates/control/awaken-agent-config/src/compile.rs',
+      'crates/control/awaken-agent-config/src/compile/tests.rs',
       'R2 ACP + background_task',
     ),
     a2a: evidence(
-      'crates/control/awaken-agent-config/src/compile.rs',
+      'crates/control/awaken-agent-config/src/compile/tests.rs',
       'R3 A2A + background_task',
     ),
     negative: evidence(
