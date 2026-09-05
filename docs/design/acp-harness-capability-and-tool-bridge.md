@@ -53,6 +53,23 @@ The expected write path is:
 -> ACP resume -> one-shot execution grant -> Session MCP tool -> rooted RawTool
 -> Artifact/Trace -> completion`.
 
+Claude streams alias display titles (for example `Read File`) before its
+permission request identifies the resolved `mcp__awaken_session__read` target.
+An explicit MCP permission identity supersedes that earlier display title;
+generic adapter requests still recover identity only from the exact observed
+call ID. The protocol refines that same call with the permission identity and
+complete input before evaluating policy, so transcript, grant and resume ticket
+cannot disagree. Progress titles do not subsequently rename the operation.
+
+An Await boundary cancels the permission request, then sends `session/cancel`
+and drains the prompt response for at most five seconds before physical reap.
+The drain reuses the normal response pump and the same reject-all resolver as
+capability discovery. Late tool requests are denied and late messages/results
+are discarded; EOF, malformed responses and timeout retain the original Await
+ticket. This protocol acknowledgement is not proof that an opaque SDK has
+persisted every prior message. Production recovery must still be verified;
+file existence or an isolated SDK restart alone is insufficient.
+
 The exported MCP tool is guarded independently. `Always allow` may execute
 directly. `Always ask` or deny cannot cross the dispatch boundary without the
 one-shot grant observed from the ACP permission resolver. A grant matches
@@ -156,9 +173,16 @@ boundary. Unsupported isolation cannot silently fall back to Workdir.
 Verification is split deliberately: protocol tests cover new/load/fallback and
 metadata; compiler tests cover capability admission; the existing tool-bridge
 E2E covers real governed tools, durable approval, restart and artifacts. The
-pinned SDK and actual ACP adapter tests use a shared loopback inference fixture
-to force an alias-emitted tool use and prove real name resolution. They require
-no external account and do not certify live model task quality.
+pinned SDK and actual ACP adapter tests use the same `fake_anthropic_fixture`
+as Native provider tests. Its behavior callback selects replies; authentication,
+model discovery, token probes and JSON/SSE encoding have one implementation.
+The ACP matrix includes abrupt and acknowledged cancellation, a successful tool
+before the first approval whose result must reach resumed inference, and three
+consecutive approval/relaunch boundaries with
+fresh model tool IDs, prior completed work, and final allow/deny. Each boundary
+checks the actual inference prompt and exact cumulative effects. These checks
+require no external account and do not certify live model task quality or the
+complete production Environment/Session-home recovery path.
 
 Cowork is an API application built on these mechanisms. It owns task entry and
 delivery UX; Agent publication, Session truth, tools, resource admission,

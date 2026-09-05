@@ -23,6 +23,45 @@ pub(super) async fn pump_to_response(
     }
 }
 
+/// Read the active prompt to its business boundary, then settle a suspended
+/// turn before the caller tears down its opaque process.
+pub(super) async fn pump_prompt(
+    wire: &mut Wire<'_>,
+    session_id: &SessionId,
+    sink: &mut dyn RunFactAppender,
+    seq: &mut u64,
+    resolver: &dyn PermissionResolver,
+    settle_deadline: std::time::Duration,
+) -> Result<serde_json::Value, AcpError> {
+    let outcome = pump_to_response(wire, ID_PROMPT, sink, seq, resolver).await;
+    if matches!(&outcome, Err(AcpError::PermissionAwait { .. })) {
+        // Cancelling the permission request alone does not finish the SDK turn.
+        // Let the adapter interrupt and flush its session before process teardown.
+        // Late frames are attempt-local cancellation residue: never commit them
+        // or authorize another call using the original resolver's one-shot grant.
+        let settle = async {
+            wire.send(&serde_json::json!({
+                "jsonrpc": JSONRPC,
+                "method": AGENT_METHOD_NAMES.session_cancel,
+                "params": agent_client_protocol::CancelNotification::new(session_id.clone()),
+            }))
+            .await?;
+            pump_to_response(
+                wire,
+                ID_PROMPT,
+                &mut crate::DiscardRunFacts,
+                &mut 0,
+                &RejectPermission,
+            )
+            .await
+        };
+        // EOF, a bad acknowledgement or timeout cannot replace the durable Await
+        // with success/failure. The supervisor still owns bounded physical reap.
+        let _ = tokio::time::timeout(settle_deadline, settle).await;
+    }
+    outcome
+}
+
 pub(super) enum RpcResponse {
     Result(serde_json::Value),
     Error(serde_json::Value),
@@ -80,7 +119,8 @@ pub(super) async fn pump_response(
                     method,
                     msg.params,
                     resolver,
-                    &permission_context,
+                    &mut permission_context,
+                    (sink, seq),
                 )
                 .await?;
             }
@@ -148,6 +188,133 @@ mod tests {
         ) -> Result<(), crate::AppendError> {
             self.0.push(event.clone());
             Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_await_settles_without_committing_late_work_or_changing_the_ticket() {
+        // Causes: durable Await; late permission/notifications; terminal ack,
+        // closed wire, malformed frame, or absent ack. R1 ack -> wait for ack;
+        // R2 late permission -> reject, do not call original policy; R3/R4/R5
+        // EOF/malformed/deadline -> retain original Await, bounded return.
+        // All rows: only original ToolUse reaches the sink; no late result/text
+        // replaces the pending operation. This is cancellation, not task success.
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+        struct Awaiting(Arc<AtomicUsize>);
+        #[async_trait::async_trait]
+        impl PermissionResolver for Awaiting {
+            async fn resolve(&self, _: &PermissionAsk) -> PermissionVerdict {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                PermissionVerdict::Await {
+                    correlation_id: "original-ticket".into(),
+                }
+            }
+        }
+        for ending in ["ack", "late-permission", "closed", "malformed", "timeout"] {
+            let (mut ours, mut theirs) = tokio::io::duplex(8192);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let resolver = Awaiting(calls.clone());
+            let acknowledged = Arc::new(AtomicBool::new(false));
+            let peer_acknowledged = acknowledged.clone();
+            let (release, held) = tokio::sync::oneshot::channel();
+            let agent = tokio::spawn(async move {
+                let mut wire = Wire::new(&mut theirs);
+                let permission = |id| {
+                    serde_json::json!({"jsonrpc":"2.0","id":id,
+                    "method":"session/request_permission","params":{"sessionId":"s",
+                    "toolCall":{"toolCallId":"original","title":"write","rawInput":{"path":"proof"}},
+                    "options":[{"optionId":"yes","name":"Allow","kind":"allow_once"},
+                        {"optionId":"no","name":"Deny","kind":"reject_once"}]}})
+                };
+                wire.send(&permission(42)).await.unwrap();
+                assert_eq!(
+                    wire.read().await.unwrap().unwrap().result.unwrap()["outcome"]["outcome"],
+                    "cancelled"
+                );
+                let cancel =
+                    tokio::time::timeout(std::time::Duration::from_millis(250), wire.read())
+                        .await
+                        .expect("R1 cancellation must reach the agent")
+                        .unwrap()
+                        .unwrap();
+                assert_eq!(cancel.method.as_deref(), Some("session/cancel"));
+                assert_eq!(cancel.params.unwrap()["sessionId"], "s");
+                match ending {
+                    "closed" => return,
+                    "timeout" => {
+                        let _ = held.await;
+                        return;
+                    }
+                    "malformed" => {
+                        wire.send(&serde_json::json!({"id":3,"method":42}))
+                            .await
+                            .unwrap();
+                        return;
+                    }
+                    "late-permission" => {
+                        wire.send(&permission(43)).await.unwrap();
+                        let result = wire.read().await.unwrap().unwrap().result.unwrap();
+                        assert_eq!(result["outcome"]["optionId"], "no");
+                    }
+                    _ => {}
+                }
+                wire.send(
+                    &serde_json::json!({"jsonrpc":"2.0","method":"session/update",
+                    "params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update",
+                    "toolCallId":"original","status":"failed"}}}),
+                )
+                .await
+                .unwrap();
+                wire.send(
+                    &serde_json::json!({"jsonrpc":"2.0","method":"session/update",
+                    "params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk",
+                    "content":{"type":"text","text":"late text must not commit"}}}}),
+                )
+                .await
+                .unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                peer_acknowledged.store(true, Ordering::SeqCst);
+                wire.send(&serde_json::json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"cancelled"}})).await.unwrap();
+            });
+            let mut sink = Sink::default();
+            let outcome = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                pump_prompt(
+                    &mut Wire::new(&mut ours),
+                    &SessionId::new("s"),
+                    &mut sink,
+                    &mut 0,
+                    &resolver,
+                    std::time::Duration::from_millis(100),
+                ),
+            )
+            .await
+            .expect("R5 drain must return while peer remains open");
+            let _ = release.send(());
+            if matches!(ending, "ack" | "late-permission") {
+                assert!(
+                    acknowledged.load(Ordering::SeqCst),
+                    "R1 must observe acknowledgement before returning"
+                );
+            }
+            assert!(
+                matches!(outcome, Err(AcpError::PermissionAwait { correlation_id, ask })
+                if correlation_id == "original-ticket" && ask.call_id == "original" && ask.arguments["path"] == "proof")
+            );
+            agent.await.unwrap();
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "late requests never reuse policy/grants"
+            );
+            assert_eq!(
+                sink.0.len(),
+                1,
+                "only original requested operation is retained"
+            );
         }
     }
 

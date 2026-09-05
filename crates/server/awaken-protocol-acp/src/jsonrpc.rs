@@ -35,11 +35,11 @@ mod permission;
 mod response;
 mod wire;
 pub use handshake::negotiate_capabilities;
-use handshake::{initialize_agent, open_new_session};
+use handshake::{handshake_step, initialize_agent, open_new_session};
 use wire::{JSONRPC, Wire};
 
 use mcp::to_acp_mcp_servers;
-use permission::{PermissionContext, answer_request};
+use permission::{PermissionContext, RejectPermission, answer_request};
 use response::{RpcResponse, is_missing_session_error, pump_response, pump_to_response};
 
 #[cfg(test)]
@@ -347,10 +347,18 @@ pub async fn run_turn_with_config(
     wire.send_request(
         ID_PROMPT,
         AGENT_METHOD_NAMES.session_prompt,
-        PromptRequest::new(session_id, vec![ContentBlock::from(prompt)]),
+        PromptRequest::new(session_id.clone(), vec![ContentBlock::from(prompt)]),
     )
     .await?;
-    let prompt_result = pump_to_response(&mut wire, ID_PROMPT, sink, &mut seq, resolver).await?;
+    let prompt_result = response::pump_prompt(
+        &mut wire,
+        &session_id,
+        sink,
+        &mut seq,
+        resolver,
+        config.permission_settle_deadline,
+    )
+    .await?;
     let response: PromptResponse = parse(prompt_result)?;
 
     // Project the turn's token usage (when reported) so the executor records it as
@@ -375,21 +383,6 @@ pub async fn run_turn_with_config(
     sink.append(seq, &AcpProjectedEvent::TurnEnd { reason })
         .await?;
     Ok(reason)
-}
-
-async fn handshake_step<T>(
-    deadline: std::time::Duration,
-    stage: &'static str,
-    operation: impl std::future::Future<Output = Result<T, AcpError>>,
-) -> Result<T, AcpError> {
-    tokio::time::timeout(deadline, operation)
-        .await
-        .map_err(|_| {
-            AcpError::Io(format!(
-                "ACP {stage} handshake timed out after {} ms",
-                deadline.as_millis()
-            ))
-        })?
 }
 
 fn parse<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, AcpError> {
@@ -422,16 +415,6 @@ mod tests {
             self.last = seq;
             self.events.push((seq, event.clone()));
             Ok(())
-        }
-    }
-
-    /// A resolver that denies every ask — stands in for a `ToolPermissionPolicy` that
-    /// refuses the CLI's tool.
-    struct DenyAll;
-    #[async_trait]
-    impl PermissionResolver for DenyAll {
-        async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
-            PermissionVerdict::Deny
         }
     }
 
@@ -843,7 +826,11 @@ mod tests {
 
     /// Drive one turn where the agent asks `PERM` mid-turn, decided by `resolver`;
     /// return the client's raw permission reply line.
-    async fn drive_permission(resolver: &dyn PermissionResolver) -> String {
+    async fn drive_permission(
+        resolver: &dyn PermissionResolver,
+        notifications: Vec<String>,
+        permission: String,
+    ) -> (String, RecordingSink) {
         let (mut ours, theirs) = channel();
         let seen = Arc::new(Mutex::new(String::new()));
         let seen2 = seen.clone();
@@ -858,7 +845,10 @@ mod tests {
             io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}}"#)
                 .await;
             io.read().await; // prompt request (id 3)
-            io.write_line(PERM).await;
+            for notification in notifications {
+                io.write_line(&notification).await;
+            }
+            io.write_line(&permission).await;
             io.read().await; // the client's permission reply
             *seen2.lock().unwrap() = io.line.clone();
             io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
@@ -873,13 +863,13 @@ mod tests {
         assert_eq!(reason, TerminationReason::NaturalEnd);
         agent.await.unwrap();
 
-        seen.lock().unwrap().clone()
+        (seen.lock().unwrap().clone(), sink)
     }
 
     #[tokio::test]
     async fn a_denying_policy_selects_the_agents_reject_option() {
         // The neutral policy denies → we select the agent's own reject option.
-        let reply = drive_permission(&DenyAll).await;
+        let (reply, _) = drive_permission(&RejectPermission, vec![], PERM.into()).await;
         assert!(
             reply.contains("\"id\":42"),
             "replied to the request id: {reply}"
@@ -893,7 +883,7 @@ mod tests {
         // The neutral policy allows → we select the agent's own allow option, and
         // the driver projected the request into a neutral ask (tool + args + id).
         let resolver = RecordingResolver::default();
-        let reply = drive_permission(&resolver).await;
+        let (reply, _) = drive_permission(&resolver, vec![], PERM.into()).await;
         assert!(reply.contains("selected"), "selected an option: {reply}");
         assert!(reply.contains("\"ok\""), "the allow option id: {reply}");
         let seen = resolver.seen.lock().unwrap();
@@ -901,6 +891,46 @@ mod tests {
         assert_eq!(seen[0].tool, "bash");
         assert_eq!(seen[0].call_id, "t1");
         assert_eq!(seen[0].arguments["cmd"], "ls");
+    }
+
+    #[tokio::test]
+    async fn resolved_permission_refines_the_same_streamed_call_before_execution() {
+        // P1 alias stream title + exact resolved permission -> both policy and
+        // transcript use the resolved target/complete input. P2 denied requests
+        // still project the exact requested operation without permitting execution.
+        // Existing Await test covers P3 durable suspension with the same ask.
+        for allow in [true, false] {
+            let resolver = RecordingResolver::default();
+            let target = "mcp__awaken_session__read";
+            let notification = serde_json::json!({"jsonrpc":"2.0","method":"session/update",
+                "params":{"sessionId":"sess-1","update":{"sessionUpdate":"tool_call",
+                    "toolCallId":"t1","title":"Read File","rawInput":{}}}})
+            .to_string();
+            let mut permission: serde_json::Value = serde_json::from_str(PERM).unwrap();
+            permission["params"]["toolCall"]["title"] = target.into();
+            let (reply, sink) = drive_permission(
+                if allow { &resolver } else { &RejectPermission },
+                vec![notification],
+                permission.to_string(),
+            )
+            .await;
+            assert!(reply.contains(if allow { "\"ok\"" } else { "\"no\"" }));
+            if allow {
+                assert_eq!(resolver.seen.lock().unwrap()[0].tool, target);
+            }
+            let calls: Vec<_> = sink
+                .events
+                .iter()
+                .filter_map(|(_, event)| match event {
+                    AcpProjectedEvent::ToolCall { id, name, input } => Some((id, name, input)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(calls.len(), 2, "one placeholder and one refinement");
+            assert_eq!(calls[0].0, calls[1].0, "same operation");
+            assert_eq!(calls[1].1, target);
+            assert_eq!(calls[1].2["cmd"], "ls");
+        }
     }
 
     #[tokio::test]

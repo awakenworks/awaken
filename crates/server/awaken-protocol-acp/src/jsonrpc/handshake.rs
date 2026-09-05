@@ -8,8 +8,8 @@ use awaken_acp_contract::{AcpCapabilityProbeConfig, NegotiatedAcpCapabilities};
 use awaken_agent_channel::AgentChannel;
 
 use super::{
-    AcpError, ID_AUTHENTICATE, ID_INITIALIZE, ID_NEW_SESSION, PermissionAsk, PermissionResolver,
-    PermissionVerdict, RunFactAppender, Wire, parse, pump_to_response, to_acp_mcp_servers,
+    AcpError, ID_AUTHENTICATE, ID_INITIALIZE, ID_NEW_SESSION, PermissionResolver, RejectPermission,
+    RunFactAppender, Wire, parse, pump_to_response, to_acp_mcp_servers,
 };
 
 pub(super) async fn initialize_agent(
@@ -89,13 +89,6 @@ pub async fn negotiate_capabilities(
     channel: &mut dyn AgentChannel,
     config: &AcpCapabilityProbeConfig,
 ) -> Result<NegotiatedAcpCapabilities, AcpError> {
-    struct RejectPermission;
-    #[async_trait::async_trait]
-    impl PermissionResolver for RejectPermission {
-        async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
-            PermissionVerdict::Deny
-        }
-    }
     let cwd = config.session_cwd.as_deref().unwrap_or("/");
     let resolver = RejectPermission;
     let mut sink = crate::DiscardRunFacts;
@@ -120,4 +113,21 @@ pub async fn negotiate_capabilities(
     )
     .await?;
     Ok(crate::capabilities::project(init, session))
+}
+
+// Handshake deadlines share the setup module. The full driver tests retain
+// initialize/session-new timeout coverage at their actual call boundary.
+pub(super) async fn handshake_step<T>(
+    deadline: std::time::Duration,
+    stage: &'static str,
+    operation: impl std::future::Future<Output = Result<T, AcpError>>,
+) -> Result<T, AcpError> {
+    tokio::time::timeout(deadline, operation)
+        .await
+        .map_err(|_| {
+            AcpError::Io(format!(
+                "ACP {stage} handshake timed out after {} ms",
+                deadline.as_millis()
+            ))
+        })?
 }
