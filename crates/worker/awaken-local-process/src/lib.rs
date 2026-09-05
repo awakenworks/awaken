@@ -27,6 +27,8 @@ pub struct LocalProcess {
     id: String,
     #[cfg(unix)]
     process_group: Option<nix::unistd::Pid>,
+    #[cfg(unix)]
+    graceful_group: Option<nix::unistd::Pid>,
     child: Mutex<Child>,
 }
 
@@ -40,8 +42,44 @@ impl LocalProcess {
             id: pid.map(|value| value.to_string()).unwrap_or_default(),
             #[cfg(unix)]
             process_group: pid.map(|value| nix::unistd::Pid::from_raw(value as i32)),
+            #[cfg(unix)]
+            graceful_group: None,
             child: Mutex::new(child),
         }
+    }
+    /// Bind the private session group reported by an owned isolating launcher.
+    /// The caller must obtain this identity from that launcher's private control
+    /// descriptor, never from task input or a scan of unrelated host processes.
+    /// TERM/INT then reach the inner group without killing its monitor; KILL
+    /// retains the original outer-group teardown. Wait for setsid before exposing
+    /// the handle, since launchers can report the child before isolation finishes.
+    #[cfg(unix)]
+    pub async fn bind_private_signal_group(&mut self, group: u32) -> Result<(), SandboxError> {
+        use nix::unistd::{Pid, getpgid};
+        use std::time::Duration;
+        let group = i32::try_from(group)
+            .ok()
+            .filter(|group| *group > 1)
+            .ok_or_else(|| SandboxError::new("invalid private signal group"))?;
+        let group = Pid::from_raw(group);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if self.poll().await?.is_some() {
+                    return Ok(());
+                }
+                match getpgid(Some(group)) {
+                    Ok(actual) if actual == group => {
+                        self.graceful_group = Some(group);
+                        return Ok(());
+                    }
+                    Ok(_) | Err(nix::errno::Errno::ESRCH) => {}
+                    Err(error) => return Err(SandboxError::new(error.to_string())),
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .map_err(|_| SandboxError::new("private signal group setup timed out"))?
     }
 }
 
@@ -82,7 +120,12 @@ impl ProcessHandle for LocalProcess {
     async fn signal(&self, signal: Signal) -> Result<(), SandboxError> {
         #[cfg(unix)]
         {
-            let Some(group) = self.process_group else {
+            let target = if matches!(signal, Signal::Kill) {
+                self.process_group
+            } else {
+                self.graceful_group.or(self.process_group)
+            };
+            let Some(group) = target else {
                 return Ok(());
             };
             let signal = match signal {

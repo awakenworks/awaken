@@ -54,11 +54,7 @@ impl pc::Sandbox for NamespaceSandbox {
         self.require_root_identity()?;
         let stdio = command.stdio;
         let command = self.materialize_command(command).await?;
-        let argv = self.render_argv(&command)?;
-        let mut cmd = TokioCommand::new(&argv[0]);
-        awaken_local_process::configure_process_group(&mut cmd);
-        cmd.args(&argv[1..]);
-        self.configure_command(&mut cmd, &command)?;
+        let (mut cmd, launch_info) = self.process_command(&command)?;
         let (out, e) = match stdio {
             pc::Stdio::Inherit => (ProcStdio::inherit(), ProcStdio::inherit()),
             pc::Stdio::Piped => (ProcStdio::piped(), ProcStdio::piped()),
@@ -66,7 +62,8 @@ impl pc::Sandbox for NamespaceSandbox {
         };
         cmd.stdout(out).stderr(e);
         let child = cmd.spawn().map_err(err)?;
-        Ok(Box::new(LocalProcess::spawned(child)))
+        drop(cmd);
+        Ok(Box::new(launch_info.bind(child).await?))
     }
 
     async fn attach(

@@ -39,6 +39,9 @@ tempfile = "3"
 tar = "0.4"
 url.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+command-fds = "0.3.3"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util"] }
 # Tests wire a real content-addressed store behind the `BlobSource` port via a small
