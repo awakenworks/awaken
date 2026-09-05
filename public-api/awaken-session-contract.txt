@@ -214,6 +214,10 @@ pub awaken_session_contract::CoordinatedThreadTarget::Agent::agent_id: alloc::st
 impl awaken_session_contract::CoordinatedThreadTarget
 pub fn awaken_session_contract::CoordinatedThreadTarget::advisor_model(&self) -> core::option::Option<&str>
 pub fn awaken_session_contract::CoordinatedThreadTarget::agent_id(&self) -> core::option::Option<&str>
+pub enum awaken_session_contract::DreamCleanupAdmission
+pub awaken_session_contract::DreamCleanupAdmission::Invalid
+pub awaken_session_contract::DreamCleanupAdmission::Retry
+pub awaken_session_contract::DreamCleanupAdmission::Settled
 pub enum awaken_session_contract::DreamInput
 pub awaken_session_contract::DreamInput::MemoryStore
 pub awaken_session_contract::DreamInput::MemoryStore::memory_store_id: alloc::string::String
@@ -245,7 +249,8 @@ pub awaken_session_contract::DreamStatus::Failed
 pub awaken_session_contract::DreamStatus::Pending
 pub awaken_session_contract::DreamStatus::Running
 impl awaken_session_contract::DreamStatus
-pub fn awaken_session_contract::DreamStatus::is_terminal(&self) -> bool
+pub const fn awaken_session_contract::DreamStatus::cleanup_admission(self, bool) -> awaken_session_contract::DreamCleanupAdmission
+pub const fn awaken_session_contract::DreamStatus::is_terminal(&self) -> bool
 pub const fn awaken_session_contract::DreamStatus::public_projection(self, bool) -> Self
 pub const fn awaken_session_contract::DreamStatus::transition(self, awaken_session_contract::DreamStatusEvent) -> core::option::Option<Self>
 pub enum awaken_session_contract::DreamStatusEvent

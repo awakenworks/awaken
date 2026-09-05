@@ -53,9 +53,21 @@ impl SharedHost {
                 ));
             }
             awaken_session_contract::FrozenAgentPublicationDecision::Mismatch => {
-                return Err(HostError::internal(
-                    "Session Agent/model publication does not match its frozen coordinates",
-                ));
+                let actual = installed.as_ref().map(|publication| {
+                    format!(
+                        "agent={}, revision={}, backend={}",
+                        publication.root_agent_id.0,
+                        publication.metadata.source.revision,
+                        publication.resolved_spec.model_binding.backend_ref,
+                    )
+                });
+                return Err(HostError::internal(format!(
+                    "Session Agent/model publication does not match its frozen coordinates \
+                     (expected agent={}, revision={:?}; actual={})",
+                    coordinates.agent(),
+                    coordinates.agent_revision(),
+                    actual.as_deref().unwrap_or("missing"),
+                )));
             }
         }
         let installed = installed
@@ -120,7 +132,18 @@ impl SharedHost {
                 "session Agent projection `{projected}` does not match requested Agent `{asserted}`"
             )));
         }
-        let selected_agent = agent.or(projected_agent.as_deref()).unwrap_or("assistant");
+        // A provider-driven re-entry may carry neither the original request
+        // argument nor a resident Thread projection. The already delivered
+        // immutable publication is authoritative in that case; defaulting to
+        // `assistant` would manufacture a second Agent identity and make the
+        // exact-publication fence reject its own retained snapshot.
+        let delivered_agent = published_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.root_agent_id.0.clone());
+        let selected_agent = agent
+            .or(projected_agent.as_deref())
+            .or(delivered_agent.as_deref())
+            .unwrap_or("assistant");
         let baseline = self
             .session_slots
             .read(thread, |slot| slot.baseline.clone())
@@ -337,8 +360,7 @@ impl SharedHost {
         if matches!(
             effect.authorization,
             awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned
-        ) && let crate::session_slot::UnboundSessionEnvironmentOrigin::DurableAdoption(identity) =
-            &candidate.origin
+        ) && let Some(identity) = candidate.durable_identity()
         {
             return Ok(identity.clone());
         }
@@ -361,6 +383,7 @@ impl SharedHost {
         )
         .map_err(|error| EnvironmentBindingPersistenceError {
             error: HostError::internal(error.to_string()),
+            committed_identity: None,
         })?;
         // A Resource reservation extends the already-published Environment
         // handle under the Session root. It is not a Run placement and must not
@@ -377,7 +400,10 @@ impl SharedHost {
                 if binds_deferred_dispatch {
                     self.bind_deferred_dispatch_before_publish(thread, &binding)
                         .await
-                        .map_err(|error| EnvironmentBindingPersistenceError { error })?;
+                        .map_err(|error| EnvironmentBindingPersistenceError {
+                            error,
+                            committed_identity: None,
+                        })?;
                 }
                 return Ok(
                     crate::session_slot::BoundSessionEnvironmentIdentity::LegacyDirect(
@@ -393,6 +419,7 @@ impl SharedHost {
                         error: HostError::internal(
                             "Session Environment effect already committed another binding",
                         ),
+                        committed_identity: None,
                     });
                 }
             }
@@ -407,6 +434,7 @@ impl SharedHost {
                 error: HostError::internal(
                     "authorized Session Environment effect has no durable binding sink",
                 ),
+                committed_identity: None,
             })?;
         // Publishing needs Store-read generated identity, not merely a positive
         // authorization readback. If the response is lost, retain the exact
@@ -416,14 +444,26 @@ impl SharedHost {
             .persist(receipt.clone())
             .await
             .map_err(crate::managed_adapter_error::from_run_error)
-            .map_err(|error| EnvironmentBindingPersistenceError { error })?;
+            .map_err(|error| EnvironmentBindingPersistenceError {
+                error,
+                committed_identity: None,
+            })?;
+        let committed_identity = super::environment_lifecycle::committed_identity(
+            &receipt, committed,
+        )
+        .map_err(|error| EnvironmentBindingPersistenceError {
+            error,
+            committed_identity: None,
+        })?;
         if binds_deferred_dispatch {
             self.bind_deferred_dispatch_before_publish(thread, &binding)
                 .await
-                .map_err(|error| EnvironmentBindingPersistenceError { error })?;
+                .map_err(|error| EnvironmentBindingPersistenceError {
+                    error,
+                    committed_identity: Some(committed_identity.clone()),
+                })?;
         }
-        super::environment_lifecycle::committed_identity(&receipt, committed)
-            .map_err(|error| EnvironmentBindingPersistenceError { error })
+        Ok(committed_identity)
     }
 
     /// Atomically publish one created/adopted Environment into the existing
@@ -459,9 +499,15 @@ impl SharedHost {
         {
             Ok(identity) => identity,
             Err(failure) => {
+                if let Some(identity) = failure.committed_identity {
+                    self.retain_committed_session_environment_candidate(
+                        thread, &candidate, identity,
+                    )?;
+                }
                 // Provider realization may have committed even when root CAS or
-                // its response is unavailable. Never let this stale caller run a
-                // destructive compensation; exact-fenced recovery owns cleanup.
+                // its response is unavailable. Retain Store-read identity but
+                // never publish the stale caller; exact-fenced recovery owns
+                // cleanup of the same Candidate.
                 return Err(failure.error);
             }
         };
@@ -492,7 +538,8 @@ impl SharedHost {
             return Ok(None);
         };
         let source_binding = match &candidate.origin {
-            crate::session_slot::UnboundSessionEnvironmentOrigin::New => None,
+            crate::session_slot::UnboundSessionEnvironmentOrigin::New
+            | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableCreate(_) => None,
             crate::session_slot::UnboundSessionEnvironmentOrigin::Adoption
             | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
                 Some(candidate.binding.as_str())
@@ -501,12 +548,23 @@ impl SharedHost {
         let effect = self
             .authorize_environment_effect_before_io(thread, candidate.effect_kind(), source_binding)
             .await?;
-        let identity = self
+        let identity = match self
             .persist_authorized_environment_before_publish(thread, &candidate, &effect)
             .await
-            .map_err(|failure| failure.error)?;
+        {
+            Ok(identity) => identity,
+            Err(failure) => {
+                if let Some(identity) = failure.committed_identity {
+                    self.retain_committed_session_environment_candidate(
+                        thread, &candidate, identity,
+                    )?;
+                }
+                return Err(failure.error);
+            }
+        };
         let reconciliation = match &candidate.origin {
-            crate::session_slot::UnboundSessionEnvironmentOrigin::New => {
+            crate::session_slot::UnboundSessionEnvironmentOrigin::New
+            | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableCreate(_) => {
                 crate::session_slot::EnvironmentResourceReconciliation::Fresh
             }
             crate::session_slot::UnboundSessionEnvironmentOrigin::Adoption

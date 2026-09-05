@@ -2,9 +2,9 @@
 // against awaken-server (echo model).
 //
 // A client drives "pending -> acknowledged" UI off processed_at. The POST
-// .../events receipt may race the Run commit and therefore expose null or the
-// timestamp; authoritative history must converge on the same id with a non-null
-// timestamp, and every generated committed Event must also be timestamped.
+// .../events admission receipt is immutable and always exposes null;
+// authoritative history must converge on the same id with a non-null timestamp,
+// and every generated committed Event must also be timestamped.
 //
 // Run: (from e2e/)  node managed_processed_at_e2e.mjs
 
@@ -26,12 +26,12 @@ async function main() {
       });
 
       // Cause/effect graph: C1=a User event is durably accepted; C2=its Run has
-      // not committed before the HTTP receipt projection; C3=its Run has already
-      // committed before that projection. Effects: E1=the receipt owns a stable
-      // id; E2=C2 exposes processed_at:null and later history timestamps the same
-      // id; E3=C3 may already expose that timestamp; E4=history is ordered and
+      // not committed before the HTTP response; C3=its Run has already committed
+      // before that response. Effects: E1=the admission receipt owns a stable id
+      // and null processed_at; E2=history later timestamps that same id; E3=C3
+      // cannot mutate the admission representation; E4=history is ordered and
       // every committed Event is timestamped. Decision table: P1(C1+C2)->E1+E2;
-      // P2(C1+C3)->E1+E3; P3(three sequential P1/P2 cases)->E4. The test waits
+      // P2(C1+C3)->E1+E2+E3; P3(three sequential P1/P2 cases)->E4. The test waits
       // between inputs so it measures receipt/commit races, not awaiting-Run
       // admission, which is owned by the event-batch E2E. Constraints/invariant:
       // receipt/history identity is stable and committed Events never retain a
@@ -46,10 +46,7 @@ async function main() {
         const r = receipt.data[0];
         assert.equal(r.type, 'user.message', 'the receipt echoes the queued event type');
         assert.ok(r.id, 'the receipt assigns an event id');
-        assert.ok(
-          r.processed_at === null || typeof r.processed_at === 'string',
-          'P1/P2 receipt is either queued or already committed, never ambiguous',
-        );
+        assert.equal(r.processed_at, null, 'P1/P2 admission receipt is processing-race stable');
         receipts.push(r);
         const { events: committed } = await waitForSessionEventReceipt(
           client,
@@ -60,9 +57,7 @@ async function main() {
           `P${index + 1} receipt id to converge in committed history`,
         );
         const persisted = committed.find((event) => event.id === r.id);
-        if (r.processed_at !== null) {
-          assert.equal(persisted.processed_at, r.processed_at, 'P2 receipt and history share the commit timestamp');
-        }
+        assert.equal(typeof persisted.processed_at, 'string', 'P1/P2 history owns processing progress');
       }
       pass('each events.send receipt converges by stable id across the queued/committed race');
 
@@ -85,7 +80,7 @@ async function main() {
       pass('every committed event in events.list() carries a non-null processed_at');
     });
 
-    console.log('E2E PASS: processed_at receipt race -> committed same-id history via TS SDK.');
+    console.log('E2E PASS: stable admission receipt -> committed same-id history via TS SDK.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);

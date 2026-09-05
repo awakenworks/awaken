@@ -1040,17 +1040,19 @@ async function main(): Promise<void> {
       'F3/E1 assigns the durable Event identity',
     );
     assert.equal(
-      typeof resumeFailureReceipt.processed_at,
-      'string',
-      'F3/E1 the result receipt is processed against the committed ToolUse anchor',
+      resumeFailureReceipt.processed_at,
+      null,
+      'F3/E1 admission remains stable while history owns the ToolUse anchor',
     );
-    // F3 negative-observation rule: C1=the official SDK result receipt is
-    // processed against the committed ToolUse anchor; C2=retry reaches the
-    // exact remote context with stable identity; C3=Session remains Running;
-    // C4=the remote response is lost with retryable 503; C5=the prior awaiting
-    // boundary can sort after the result receipt by its own causal anchor.
-    // E1=the exact receipt is committed; E2=no new success/error/idle/terminated
-    // event is fabricated. Decision D1=C1+C2+C3+C4+C5=>E1+E2.
+    // F3 negative-observation rule: C1=the official SDK admission receipt has
+    // stable identity and null processed_at; C2=durable history processes that
+    // same id against the committed ToolUse anchor; C3=retry reaches the exact
+    // remote context with stable identity; C4=Session remains Running; C5=the
+    // remote response is lost with retryable 503; C6=the prior awaiting boundary
+    // can sort after the result receipt by its own causal anchor. E1=admission
+    // remains immutable and the exact history receipt is committed; E2=no new
+    // success/error/idle/terminated event is fabricated. Decision
+    // D1=C1+C2+C3+C4+C5+C6=>E1+E2.
     const retryableResume: {
       session: { status: string };
       events: BetaManagedAgentsSessionEvent[];

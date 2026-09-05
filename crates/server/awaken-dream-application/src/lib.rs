@@ -7,11 +7,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_session_contract::{
-    DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, Dream, DreamCreateParams, DreamError,
-    DreamInput, DreamListParams, DreamModelConfig, DreamModelInput, DreamModelSpeed, DreamOutput,
-    DreamOutputBehavior, DreamPage, DreamPolicyApplication, DreamPolicyApplicationError,
-    DreamPolicyRecord, DreamProcessFailure, DreamProcessRecord, DreamProcessStore, DreamStatus,
-    DreamStatusEvent, DreamUsage,
+    DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, Dream, DreamCleanupAdmission,
+    DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig, DreamModelInput,
+    DreamModelSpeed, DreamOutput, DreamOutputBehavior, DreamPage, DreamPolicyApplication,
+    DreamPolicyApplicationError, DreamPolicyRecord, DreamProcessFailure, DreamProcessRecord,
+    DreamProcessStore, DreamStatus, DreamStatusEvent, DreamUsage,
 };
 pub use awaken_session_contract::{DreamPolicy, DreamPolicyConfig};
 use chrono::{DateTime, Utc};
@@ -223,6 +223,17 @@ impl DreamProcess {
             status: public_status,
             usage,
         }
+    }
+}
+
+fn process_preparation(process: &DreamProcess) -> Option<DreamPreparation> {
+    match (&process.result_memory_store_id, &process.session_id) {
+        (Some(result_memory_store_id), Some(session_id)) => Some(DreamPreparation {
+            result_memory_store_id: result_memory_store_id.clone(),
+            session_id: session_id.clone(),
+            transcript_file_ids: process.transcript_file_ids.clone(),
+        }),
+        _ => None,
     }
 }
 
@@ -989,17 +1000,15 @@ impl DreamApplication {
             let Ok(job) = self.load_process(id) else {
                 return;
             };
-            if !job.cleanup_pending {
-                return;
-            }
-            let preparation = match (&job.result_memory_store_id, &job.session_id) {
-                (Some(result_memory_store_id), Some(session_id)) => Some(DreamPreparation {
-                    result_memory_store_id: result_memory_store_id.clone(),
-                    session_id: session_id.clone(),
-                    transcript_file_ids: job.transcript_file_ids.clone(),
-                }),
-                _ => None,
+            match job.status.cleanup_admission(job.cleanup_pending) {
+                DreamCleanupAdmission::Settled => return,
+                DreamCleanupAdmission::Retry => {}
+                DreamCleanupAdmission::Invalid => {
+                    tracing::warn!(dream_id = %id, "nonterminal Dream reached terminal cleanup");
+                    return;
+                }
             };
+            let preparation = process_preparation(&job);
             if let Err(error) = self
                 .executor
                 .cleanup(&job.request(), preparation.as_ref())
@@ -1013,19 +1022,36 @@ impl DreamApplication {
                 tokio::time::sleep(DREAM_CLEANUP_RETRY_INTERVAL).await;
                 continue;
             }
+            match self.commit_cleanup_receipt(id).await {
+                Ok(_) => return,
+                Err(error) => {
+                    tracing::warn!(dream_id = %id, %error, "Dream cleanup transition did not commit");
+                    tokio::time::sleep(DREAM_CLEANUP_RETRY_INTERVAL).await;
+                }
+            }
+        }
+    }
+
+    async fn commit_cleanup_receipt(&self, id: &str) -> Result<DreamProcess, DreamApiError> {
+        loop {
+            let current = self.load_process(id)?;
+            match current.status.cleanup_admission(current.cleanup_pending) {
+                DreamCleanupAdmission::Settled => return Ok(current),
+                DreamCleanupAdmission::Invalid => {
+                    return Err(DreamApiError::Conflict(
+                        "only a terminal Dream can commit cleanup".into(),
+                    ));
+                }
+                DreamCleanupAdmission::Retry => {}
+            }
             match self.commit_job_update(id, |job| {
                 job.cleanup_pending = false;
                 job.transcript_file_ids.clear();
                 Ok(())
             }) {
-                Ok(_) => return,
-                Err(DreamApiError::Conflict(_)) => {
-                    tokio::task::yield_now().await;
-                }
-                Err(error) => {
-                    tracing::warn!(dream_id = %id, %error, "Dream cleanup transition did not commit");
-                    tokio::time::sleep(DREAM_CLEANUP_RETRY_INTERVAL).await;
-                }
+                Ok(job) => return Ok(job),
+                Err(DreamApiError::Conflict(_)) => tokio::task::yield_now().await,
+                Err(error) => return Err(error),
             }
         }
     }
@@ -1102,51 +1128,52 @@ impl DreamApplication {
         if current.workspace_id != workspace_id {
             return Err(DreamApiError::NotFound);
         }
-        if current.status == DreamStatus::Canceled {
+        if current.status == DreamStatus::Canceled && !current.cleanup_pending {
             return Ok(self.project_process(&current).await);
         }
-        if current.status.is_terminal() {
+        if current.status.is_terminal() && current.status != DreamStatus::Canceled {
             return Err(DreamApiError::BadRequest(
                 "only pending or running Dreams can be canceled".into(),
             ));
         }
-        let canceled_job = self.commit_job_update(id, |job| {
-            job.status = job
-                .status
-                .transition(DreamStatusEvent::Cancel)
-                .ok_or_else(|| {
-                    DreamApiError::BadRequest(
-                        "only pending or running Dreams can be canceled".into(),
-                    )
-                })?;
-            job.ended_at = Some(now_ms());
-            job.cleanup_pending = true;
-            Ok(())
-        })?;
-        if let Some(cancellation) = self.cancellations.lock().unwrap().get(id) {
-            cancellation.cancel();
-        }
-        let preparation = match (
-            canceled_job.result_memory_store_id.clone(),
-            canceled_job.session_id.clone(),
-        ) {
-            (Some(result_memory_store_id), Some(session_id)) => Some(DreamPreparation {
-                result_memory_store_id,
-                session_id,
-                transcript_file_ids: canceled_job.transcript_file_ids.clone(),
-            }),
-            _ => None,
+        let canceled_job = if current.status == DreamStatus::Canceled {
+            current
+        } else {
+            let canceled = self.commit_job_update(id, |job| {
+                job.status = job
+                    .status
+                    .transition(DreamStatusEvent::Cancel)
+                    .ok_or_else(|| {
+                        DreamApiError::BadRequest(
+                            "only pending or running Dreams can be canceled".into(),
+                        )
+                    })?;
+                job.ended_at = Some(now_ms());
+                job.cleanup_pending = true;
+                Ok(())
+            })?;
+            if let Some(cancellation) = self.cancellations.lock().unwrap().get(id) {
+                cancellation.cancel();
+            }
+            canceled
         };
-        self.executor
+        let preparation = process_preparation(&canceled_job);
+        if let Err(error) = self
+            .executor
             .cancel(&canceled_job.request(), preparation.as_ref())
             .await
-            .map_err(|error| DreamApiError::Unavailable(error.message))?;
-        self.commit_job_update(id, |job| {
-            job.cleanup_pending = false;
-            job.transcript_file_ids.clear();
-            Ok(())
-        })?;
-        self.retrieve(workspace_id, id).await
+        {
+            // Another retry may have committed the exact idempotent cleanup
+            // while this request observed a stale external failure. Only the
+            // durable receipt decides whether the API may report success.
+            let observed = self.load_process(id)?;
+            if observed.cleanup_pending {
+                return Err(DreamApiError::Unavailable(error.message));
+            }
+            return Ok(self.project_process(&observed).await);
+        }
+        let settled = self.commit_cleanup_receipt(id).await?;
+        Ok(self.project_process(&settled).await)
     }
 
     pub async fn archive(&self, workspace_id: &str, id: &str) -> Result<Dream, DreamApiError> {

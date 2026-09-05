@@ -2,6 +2,33 @@
 
 use super::*;
 
+/// A terminal aggregate admits an already-started Environment receipt only
+/// while its cleanup fence is still joining in-flight work. Once the target set
+/// is frozen, a late receipt would escape that set and must fail closed.
+#[must_use]
+const fn terminal_environment_receipt_admitted(
+    session_is_terminal: bool,
+    terminal_cleanup_is_fenced: bool,
+) -> bool {
+    !session_is_terminal || terminal_cleanup_is_fenced
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn terminal_environment_receipt_is_admitted_only_during_the_fenced_join() {
+    // Causes: C1 the Session is active/terminal; C2 terminal cleanup is in its
+    // Fenced join or any other phase. Effects: E1 active receipt admission
+    // remains delegated to the Environment kernel; E2 a terminal in-flight
+    // receipt may join only in Fenced; E3 every other terminal receipt fails.
+    // Rules: R1=!C1=>E1; R2=C1+C2=>E2; R3=C1+!C2=>E3.
+    let terminal = kani::any::<bool>();
+    let fenced = kani::any::<bool>();
+    assert_eq!(
+        terminal_environment_receipt_admitted(terminal, fenced),
+        !terminal || fenced
+    );
+}
+
 /// The durable, adapter-side configuration of one Managed session, keyed by its
 /// id (which is also its thread id). Everything here is what the wire `Session`
 /// object needs beyond the runtime's committed transcript.
@@ -930,6 +957,12 @@ impl PersistedSession {
         receipt: &crate::SessionEnvironmentReceipt,
         now_unix_ms: u64,
     ) -> Result<bool, crate::SessionEnvironmentReceiptError> {
+        if !terminal_environment_receipt_admitted(
+            self.is_terminal(),
+            self.terminal_cleanup.is_fenced(),
+        ) {
+            return Err(crate::SessionEnvironmentReceiptError::WrongPhase);
+        }
         receipt.verify()?;
         let intent = receipt.effect_intent()?;
         let authorization = self.authorize_environment_effect(owner_scope, &intent, now_unix_ms)?;

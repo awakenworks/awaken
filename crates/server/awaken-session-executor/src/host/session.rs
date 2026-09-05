@@ -10,7 +10,8 @@ mod input_projection;
 use super::*;
 pub(super) use crate::config::{SessionToolsetProjection, project_session_tool_override};
 use crate::host::session_ctx::{
-    ForegroundRunDelivery, RuntimeContextPurpose, runtime_context_cache_reuse_admitted,
+    ForegroundRunDelivery, RuntimeContextPurpose, RuntimeEnvironmentAdmission,
+    acp_tool_export_admitted, runtime_context_cache_reuse_admitted, runtime_environment_admission,
 };
 pub(crate) use content_delivery::SkillDeliveryEvidence;
 pub(super) use input_projection::{ManagedCoordinationRole, project_managed_coordination_surface};
@@ -31,6 +32,10 @@ struct SessionOpenRequest {
 
 pub(crate) struct EnvironmentBindingPersistenceError {
     pub(crate) error: HostError,
+    /// Store-read proof that the root binding committed before a later
+    /// derivative dispatch-cache edge failed. The lifecycle owner consumes
+    /// this only to retain the same hidden Candidate under durable identity.
+    pub(crate) committed_identity: Option<crate::session_slot::BoundSessionEnvironmentIdentity>,
 }
 
 pub(crate) struct AuthorizedSessionEnvironmentEffect {
@@ -755,17 +760,24 @@ impl SharedHost {
             // local adoption precondition. Ordinary execution retains the
             // stricter rule: policy deferral is allowed only before any binding
             // exists, and a bound-but-unadopted Environment fails closed below.
-            let deferred = retained.is_none()
-                && (force_defer_environment || (expected_binding.is_none() && can_defer));
-            let env = match retained {
-                Some(existing) => Some(existing),
-                None if a2a_only || deferred => None,
-                None if expected_binding.is_some() => {
+            let environment_admission = runtime_environment_admission(
+                requested_purpose,
+                retained.is_some(),
+                a2a_only,
+                expected_binding.is_some(),
+                can_defer,
+            );
+            let env = match environment_admission {
+                RuntimeEnvironmentAdmission::Omit => None,
+                RuntimeEnvironmentAdmission::Reuse => {
+                    Some(retained.expect("Environment admission selected the retained owner"))
+                }
+                RuntimeEnvironmentAdmission::RejectMissingBinding => {
                     return Err(HostError::internal(format!(
                         "Session {thread} durable Environment was not adopted before context construction"
                     )));
                 }
-                None => {
+                RuntimeEnvironmentAdmission::Create => {
                     let provider = self.session_environment_provider(provisioning)?;
                     Some(
                         self.create_reserved_session_environment_under_lifecycle(thread, provider)
@@ -1519,7 +1531,11 @@ impl SharedHost {
             let mut acp_provider_server_tools = Vec::new();
             let mut acp_host_web_tools = Vec::new();
             let mut acp_tool_grants = None;
-            if is_acp {
+            // A coordination envelope owns no physical Environment and must
+            // not publish an executable ACP MCP server. The claim-owning
+            // execution context is rebuilt later and exports the exact
+            // descriptor/executor set once its Environment exists.
+            if acp_tool_export_admitted(requested_purpose, is_acp, env.is_some()) {
                 let acp_cli_id = match &execution_backend {
                     awaken_runtime_contract::resolved::Backend::Acp(backend) => backend.cli(),
                     _ => unreachable!("is_acp is derived from the execution backend"),
@@ -1583,16 +1599,16 @@ impl SharedHost {
                         .cloned(),
                 );
                 if let Some(environment) = env.as_ref() {
-                    let selected = descriptors
+                    let selected_hand_ids = descriptors
                         .iter()
+                        .filter(|descriptor| hand_ids.contains(&descriptor.id))
                         .map(|descriptor| descriptor.id.as_str())
-                        .collect::<std::collections::HashSet<_>>();
-                    executors.extend(
-                        environment
-                            .rooted_tools()
-                            .into_iter()
-                            .filter(|tool| selected.contains(tool.id())),
-                    );
+                        .map(str::to_string)
+                        .collect::<Vec<_>>();
+                    executors.extend(crate::acp_tool_export::environment_executor_tools(
+                        selected_hand_ids,
+                        environment.tool_executor(),
+                    ));
                 }
                 if let Some((skill_descriptors, skill_executors)) = semantic_skill_tools.as_ref() {
                     descriptors.extend(skill_descriptors.iter().cloned());

@@ -118,11 +118,13 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness runtime_intervals_open_once_and_never_close_before_start \
     --harness bounded_runtime_capability_iterator_uses_exact_member_projection \
     --harness runtime_capability_member_projection_is_total_exact_and_bounded \
+    --harness terminal_environment_receipt_is_admitted_only_during_the_fenced_join \
     --harness skill_execution_pin_requires_exact_workspace_revision_and_hash \
     --harness every_skill_execution_pin_axis_is_binding \
     --harness frozen_worker_agent_publication_is_exact_or_fails_closed \
     --harness terminal_dream_statuses_are_absorbing \
     --harness dream_public_terminal_requires_committed_cleanup \
+    --harness dream_cleanup_admission_is_total_and_retries_every_pending_terminal \
     --harness dream_success_and_failure_require_a_running_process \
     --harness dream_recovery_and_cancel_never_widen_terminal_authority \
     --harness dream_transition_table_is_total_exact_and_closed \
@@ -236,6 +238,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness organization_bucket_consumption_is_exact_and_non_over_admitting \
     --harness deployment_run_failure_projection_is_total_exact_and_non_strengthening \
     --harness missing_agent_publication_is_available_only_to_noninteractive_projection \
+    --harness inbound_admission_receipt_is_stable_across_processing_races \
     --harness rollout_update_revision_is_monotonic_and_covers_event \
     --harness user_profile_capability_and_field_projection_is_total_exclusive_and_exact \
     --harness idempotency_key_scan_transition_is_exact_and_invalid_absorbing \
@@ -326,7 +329,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_state_classification_is_exact \
     --harness unknown_transition_trigger_and_result_fail_closed
   run_kani awaken-session-executor \
+    --harness acp_mcp_projection_has_one_exact_authority \
+    --harness acp_tool_export_requires_claim_execution_environment \
     --harness coordination_envelope_never_satisfies_execution_cache_admission \
+    --harness runtime_environment_admission_is_total_and_coordination_never_borrows \
     --harness resume_receipt_classification_is_exact_and_conflict_absorbing \
     --harness file_read_authority_never_changes_path_class_or_admits_unsafe_input \
     --harness hand_availability_has_only_explicit_recovery_and_terminal_transitions \
@@ -344,6 +350,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness durable_dispatch_admission_is_monotonic_in_persistence_evidence \
     --harness sandbox_support_projection_is_total_exact_and_evidence_bound \
     --harness durable_projection_identity_is_exact_or_a_same_physical_owner_stutter \
+    --harness committed_candidate_retains_effect_kind_and_rejects_identity_relabeling \
+    --harness terminal_quiescence_rejects_only_unstarted_reservations \
     --harness unsettled_running_is_always_rejected_and_settled_kinds_never_interchange \
     --harness settled_step_projection_cannot_invent_pending_or_observations
   run_kani awaken-config-service \
@@ -380,6 +388,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness process_readiness_after_startup_is_probe_independent \
     --harness worker_replacement_and_heartbeat_share_one_non_resurrection_boundary \
     --harness worker_dynamic_observation_requires_exact_fact_and_half_open_lease
+  run_kani awaken-worker \
+    --harness worker_realization_scope_source_is_total_and_exact
   run_kani awaken-worker-transport-security \
     --harness worker_transport_selector_admits_only_three_exact_postures \
     --harness remote_transport_never_downgrades_or_widens_identity

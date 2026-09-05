@@ -109,14 +109,11 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /etc/awaken, readOnly: true }
             - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
-            - { name: workspace, mountPath: /var/lib/awaken/$role/platform-workspace-id, subPath: platform-workspace-id, readOnly: true }
       volumes:
         - name: config
           secret: { secretName: adr71-role-config }
         - name: auth
           secret: { secretName: adr71-$role-auth }
-        - name: workspace
-          configMap: { name: adr71-installation }
 YAML
   kubectl -n "$NS" wait --for=condition=complete "job/$job" --timeout=240s
 }

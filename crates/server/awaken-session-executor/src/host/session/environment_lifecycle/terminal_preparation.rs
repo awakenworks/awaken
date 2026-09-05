@@ -121,6 +121,7 @@ impl SharedHost {
         let TerminalEnvironmentInstallation {
             thread,
             binding,
+            committed_candidate,
             provider,
             spec,
             handle,
@@ -214,31 +215,58 @@ impl SharedHost {
                 let cause = SessionEnvironmentRetirementCause::Terminal {
                     effect_id: effect_fence.operation_id.clone(),
                 };
-                if adopted {
-                    let Some(binding) = binding else {
+                if let Some(candidate) = committed_candidate {
+                    if !Arc::ptr_eq(&candidate.environment, &environment)
+                        || candidate.environment.handle() != environment.handle()
+                    {
                         return Err(HostError::internal(
-                            "terminal bound Environment adoption has no durable binding",
-                        ));
-                    };
-                    let (identity, pending_binding) =
-                        self.pending_environment_adoption(thread).ok_or_else(|| {
-                            HostError::internal(
-                                "terminal bound Environment has no pending durable owner",
-                            )
-                        })?;
-                    if pending_binding != binding {
-                        return Err(HostError::internal(
-                            "terminal bound Environment changed its durable binding",
+                            "terminal committed Candidate changed its exact Environment",
                         ));
                     }
                     self.session_slots.update(thread, |slot| {
-                        slot.environment_owner.begin_retirement_with_adopted(
-                            &identity,
-                            binding,
-                            environment.clone(),
-                            cause,
-                        )
+                        slot.environment_owner
+                            .begin_retirement_with_committed_candidate(candidate, cause)
                     })?;
+                } else if adopted {
+                    if let Some(binding) = binding {
+                        let (identity, pending_binding) =
+                            self.pending_environment_adoption(thread).ok_or_else(|| {
+                                HostError::internal(
+                                    "terminal bound Environment has no pending durable owner",
+                                )
+                            })?;
+                        if pending_binding != binding {
+                            return Err(HostError::internal(
+                                "terminal bound Environment changed its durable binding",
+                            ));
+                        }
+                        self.session_slots.update(thread, |slot| {
+                            slot.environment_owner.begin_retirement_with_adopted(
+                                &identity,
+                                binding,
+                                environment.clone(),
+                                cause,
+                            )
+                        })?;
+                    } else {
+                        // A provider may prove and reconstruct an incomplete
+                        // pre-publication realization by the terminal Session
+                        // scope. Keep that exact current handle as the existing
+                        // Unbound retirement owner; it gains no durable binding
+                        // and can only be disposed by this terminal fence.
+                        self.begin_session_environment_preparation(thread, environment.clone())?;
+                        self.retire_current_environment(
+                            thread,
+                            cause,
+                            RetirementSelection::Exact(&environment),
+                        )?
+                        .ok_or_else(|| {
+                            HostError::unavailable_classified(
+                                "session_terminal_environment_owner_changed",
+                                "terminal unbound Environment lost its exact owner fence",
+                            )
+                        })?;
+                    }
                 } else {
                     let retained_terminal_preparation = mode
                         == BoundEnvironmentPreparationMode::TerminalDisposal
@@ -285,12 +313,26 @@ impl SharedHost {
             provider,
             resolved_resources,
         )?;
-        if candidate.is_some() {
-            return Err(HostError::unavailable_classified(
-                "session_terminal_unpublished_candidate",
-                "terminal preparation cannot consume an unpublished Environment Candidate",
-            ));
-        }
+        let committed_candidate = match candidate {
+            Some(candidate)
+                if mode != BoundEnvironmentPreparationMode::LiveSource
+                    && candidate.durable_identity().is_some() =>
+            {
+                Some(candidate)
+            }
+            Some(_) => {
+                return Err(HostError::unavailable_classified(
+                    "session_terminal_unpublished_candidate",
+                    "terminal preparation cannot consume an uncommitted Environment Candidate",
+                ));
+            }
+            None => None,
+        };
+        let resident = resident.or_else(|| {
+            committed_candidate
+                .as_ref()
+                .map(|candidate| candidate.environment.clone())
+        });
         let observation = provider
             .observe_effective_for_effect(&spec, &handle, effect_fence)
             .await
@@ -331,9 +373,13 @@ impl SharedHost {
                 }
             }
         }
-        let (resident, effect_mode) = match observation {
+        let (resident, effect_mode, committed_candidate) = match observation {
             awaken_provisioning_contract::SandboxObservation::Ready => {
-                (resident, TerminalEffectMode::LiveUnprepared)
+                (
+                    resident,
+                    TerminalEffectMode::LiveUnprepared,
+                    committed_candidate,
+                )
             }
             awaken_provisioning_contract::SandboxObservation::Provisioning => {
                 return Err(HostError::unavailable_classified(
@@ -349,23 +395,31 @@ impl SharedHost {
                     .validate_closed_observation(&handle, &observation)
                     .map_err(|error| HostError::internal(error.to_string()))?;
                 if let Some(environment) = resident {
-                    let retained_terminal_preparation = mode
-                        == BoundEnvironmentPreparationMode::TerminalDisposal
-                        && self.retained_terminal_preparation_owner(thread, &environment);
-                    if !retained_terminal_preparation {
-                        self.retire_current_environment(
-                            thread,
-                            SessionEnvironmentRetirementCause::Terminal {
-                                effect_id: effect_fence.operation_id.clone(),
-                            },
-                            RetirementSelection::Exact(&environment),
-                        )?
-                        .ok_or_else(|| {
-                            HostError::unavailable_classified(
-                                "session_environment_effect_fence_lost",
-                                "lost the exact unavailable Environment owner",
-                            )
+                    let cause = SessionEnvironmentRetirementCause::Terminal {
+                        effect_id: effect_fence.operation_id.clone(),
+                    };
+                    if let Some(candidate) = committed_candidate.as_ref() {
+                        self.session_slots.update(thread, |slot| {
+                            slot.environment_owner
+                                .begin_retirement_with_committed_candidate(candidate, cause)
                         })?;
+                    } else {
+                        let retained_terminal_preparation = mode
+                            == BoundEnvironmentPreparationMode::TerminalDisposal
+                            && self.retained_terminal_preparation_owner(thread, &environment);
+                        if !retained_terminal_preparation {
+                            self.retire_current_environment(
+                                thread,
+                                cause,
+                                RetirementSelection::Exact(&environment),
+                            )?
+                            .ok_or_else(|| {
+                                HostError::unavailable_classified(
+                                    "session_environment_effect_fence_lost",
+                                    "lost the exact unavailable Environment owner",
+                                )
+                            })?;
+                        }
                     }
                     // Provider-proved absence closes physical I/O, but the
                     // exact terminal Retiring owner remains the process-local
@@ -379,13 +433,17 @@ impl SharedHost {
                 // the durable handle. Re-enter the same terminal-preparation
                 // seam used by live/terminal observations; it returns `None`
                 // for total absence or a non-executable exact cleanup owner.
-                (None, TerminalEffectMode::RecoverOnlyUnprepared)
+                (None, TerminalEffectMode::RecoverOnlyUnprepared, None)
             }
             observation @ awaken_provisioning_contract::SandboxObservation::Terminal { .. } => {
                 provider
                     .validate_closed_observation(&handle, &observation)
                     .map_err(|error| HostError::internal(error.to_string()))?;
-                (resident, TerminalEffectMode::LiveUnprepared)
+                (
+                    resident,
+                    TerminalEffectMode::LiveUnprepared,
+                    committed_candidate,
+                )
             }
             observation @ awaken_provisioning_contract::SandboxObservation::Disposing { .. } => {
                 provider
@@ -397,7 +455,11 @@ impl SharedHost {
                 // Artifact association; the terminal fence below may recover an
                 // existing receipt or correctly recover none. Reconstruct only
                 // the physical cleanup owner and never reuse a live-I/O wrapper.
-                (resident, TerminalEffectMode::RecoverOnlyAlreadyPrepared)
+                (
+                    resident,
+                    TerminalEffectMode::RecoverOnlyAlreadyPrepared,
+                    committed_candidate,
+                )
             }
             awaken_provisioning_contract::SandboxObservation::Incompatible { reason } => {
                 return Err(HostError::classified(
@@ -411,6 +473,7 @@ impl SharedHost {
                 TerminalEnvironmentInstallation {
                     thread,
                     binding: Some(binding),
+                    committed_candidate: committed_candidate.as_ref(),
                     provider,
                     spec: &spec,
                     handle: Some(&handle),
@@ -443,7 +506,15 @@ impl SharedHost {
         effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<TerminalEnvironmentPreparation, HostError> {
-        let (state, owner, previous_resources, workspace_id, checkpoint_policy) = self
+        let (
+            state,
+            owner,
+            previous_resources,
+            workspace_id,
+            checkpoint_policy,
+            realization_lease,
+            environment_fingerprint,
+        ) = self
             .session_slots
             .read(thread, |slot| {
                 (
@@ -456,6 +527,10 @@ impl SharedHost {
                     slot.baseline
                         .as_ref()
                         .map(|baseline| baseline.environment.idle_retention.clone()),
+                    slot.realization_lease.clone(),
+                    slot.baseline
+                        .as_ref()
+                        .map(|baseline| baseline.environment.config_fingerprint.0.clone()),
                 )
             })
             .ok_or_else(|| {
@@ -562,13 +637,80 @@ impl SharedHost {
                     "terminal aggregate has no binding but Runtime retains an Environment",
                 ));
             }
+            if matches!(
+                &state,
+                awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
+            ) {
+                return Ok(TerminalEnvironmentPreparation {
+                    state,
+                    environment: PreparedBoundEnvironment::new(
+                        None,
+                        None,
+                        TerminalEffectMode::LiveUnprepared,
+                    )
+                    .with_definitive_absence(),
+                    pending_checkpoint,
+                });
+            }
+            let realization_lease = realization_lease.ok_or_else(|| {
+                HostError::unavailable_classified(
+                    "session_terminal_unmaterialized_lease_missing",
+                    "unmaterialized terminal Environment has no realization lease",
+                )
+            })?;
+            let environment_fingerprint = environment_fingerprint.ok_or_else(|| {
+                HostError::unavailable_classified(
+                    "session_terminal_unmaterialized_fingerprint_missing",
+                    "unmaterialized terminal Environment has no frozen fingerprint",
+                )
+            })?;
+            let create_intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
+                thread,
+                awaken_session_contract::SessionEnvironmentEffectKind::Create,
+                Some(realization_lease.clone()),
+            )
+            .for_environment(environment_fingerprint);
+            let expected_effect_fence = realization_lease
+                .sandbox_effect_fence(create_intent.effect_id())
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            let provider = self.projected_session_environment_provider(thread, None)?;
+            let spec = self.session_environment_adoption_spec(
+                thread,
+                provider,
+                previous_resources.as_ref(),
+            );
+            let environment = self
+                .install_bound_environment_under_lifecycle(
+                    TerminalEnvironmentInstallation {
+                        thread,
+                        binding: None,
+                        committed_candidate: None,
+                        provider,
+                        spec: &spec,
+                        handle: None,
+                        expected_effect_fence: Some(&expected_effect_fence),
+                        effect_fence,
+                    },
+                    None,
+                    mode,
+                )
+                .await?;
+            let durable_handle = environment
+                .as_ref()
+                .map(|(environment, _)| environment.handle());
+            let definitive_absence = environment.is_none();
+            let prepared = PreparedBoundEnvironment::new(
+                environment,
+                durable_handle,
+                TerminalEffectMode::LiveUnprepared,
+            );
             return Ok(TerminalEnvironmentPreparation {
                 state,
-                environment: PreparedBoundEnvironment::new(
-                    None,
-                    None,
-                    TerminalEffectMode::LiveUnprepared,
-                ),
+                environment: if definitive_absence {
+                    prepared.with_definitive_absence()
+                } else {
+                    prepared
+                },
                 pending_checkpoint,
             });
         };
@@ -612,12 +754,9 @@ impl SharedHost {
             .ok_or_else(|| {
                 HostError::internal("terminal Memory validation has no frozen Resource transition")
             })?;
-        let materializations = match prepared.durable_handle() {
-            Some(handle) => handle
-                .memory_materializations()
-                .map_err(|error| HostError::internal(error.to_string()))?,
-            None => None,
-        };
+        let materializations = prepared
+            .memory_materializations()
+            .map_err(|error| HostError::internal(error.to_string()))?;
         let (intents, acknowledged_materializations) =
             awaken_session_contract::terminal_memory_reconciliation_intents_from_materializations(
                 transition.previous().resources.inputs(),

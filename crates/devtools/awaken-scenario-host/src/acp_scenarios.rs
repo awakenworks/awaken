@@ -218,14 +218,22 @@ pub async fn build_acp_permission_router_with_deployment(
 /// process is installed through the same SessionEnvironment owner as every
 /// other ACP fixture; the bridge only adds its immutable Hand publication.
 pub async fn build_acp_tool_bridge_router() -> Router {
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../e2e/fixtures/acp_awaken_tool_bridge_fixture.mjs");
+    let deployment = scenario_deployment();
+    let fixture = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../e2e/fixtures/acp_awaken_tool_bridge_fixture.mjs"
+    ))
+    .strip_prefix("#!/usr/bin/env node\n")
+    .unwrap_or_else(|| panic!("ACP tool bridge fixture must retain its canonical Node shebang"));
     let launch = awaken_run_executor_acp::AcpLaunch::custom(
-        vec!["node".into(), fixture.to_string_lossy().into_owned()],
+        vec![
+            "node".into(),
+            "--input-type=module".into(),
+            "--eval".into(),
+            fixture.into(),
+        ],
         vec![],
     );
-    let mut deployment = scenario_deployment();
-    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
     let mut hand = awaken_ext_builtin_tools::builtin_tools()
         .into_iter()
         .filter(|tool| matches!(tool.descriptor().id.as_str(), "read" | "write"))
@@ -249,10 +257,7 @@ pub async fn build_acp_tool_bridge_router() -> Router {
         None,
     )
     .await
-    .map_host(|host| {
-        host.with_acp_tool_exporter(Arc::new(awaken_worker::SessionToolExporter))
-            .with_agent_publications(host_publication)
-    });
+    .map_host(|host| host.with_agent_publications(host_publication));
     mount_with_agent_source(platform, publication)
 }
 
@@ -648,7 +653,12 @@ pub(crate) async fn bind_acp_session_environment(
         .map_host_async(|host| async move {
             let host = host
                 .with_acp_launch_source(awaken_worker::relay_hand_executor_factory(), source)
-                .await;
+                .await
+                // This composition owner mirrors the production Worker/CLI
+                // wiring for every Scenario ACP environment. Individual
+                // scenarios must not remember a second, optional tool-export
+                // installation path.
+                .with_acp_tool_exporter(Arc::new(awaken_worker::SessionToolExporter));
             match secret_broker {
                 Some(broker) => host.with_session_secret_broker(broker),
                 None => host,

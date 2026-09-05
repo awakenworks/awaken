@@ -1,4 +1,5 @@
-import type { AgentConfig, RuntimeCap, ValidationIssue } from "../../lib/api/types";
+import type { AgentConfig, Capabilities, RuntimeCap, ValidationIssue } from "../../lib/api/types";
+import { effectiveAgentToolPermission, selectedAgentToolIds } from "../../lib/agent-toolsets";
 import { labelForPath } from "../../lib/config-diff";
 import { CONSERVATIVE_DELEGATION_LIMITS } from "../../lib/agent-collaboration";
 import { useApp } from "../../lib/app-state";
@@ -6,6 +7,7 @@ import { Button } from "../ui";
 import type { AuthorStage } from "./agent-editor-navigation";
 import { acpWorkingDirectoryIssue } from "../../lib/agent-runtime-capabilities";
 import { runtimeStatus } from "../../lib/readiness";
+import { webSearchProviderOptions } from "./WebSearchBehaviorEditor";
 
 export const BLANK_AGENT_CONFIG: AgentConfig = {
   id: "",
@@ -69,6 +71,39 @@ export function agentModelIsRunnable(
       && (!requiresToolBridge || runtime.features?.awaken_tool_bridge === "supported"));
   }
   return readyModels.length > 0;
+}
+
+export function agentPublicationReadiness(
+  config: AgentConfig,
+  readyModels: readonly string[],
+  capabilities?: Capabilities,
+): { modelIsRunnable: boolean; providerApprovalConflict: boolean } {
+  const agentToolset = capabilities?.toolsets?.find(
+    (toolset) => toolset.type === "agent_toolset_20260401",
+  );
+  const selectedToolIds = selectedAgentToolIds(config.tools, agentToolset?.members ?? []);
+  const providerServerTools = ["web_search", "web_fetch"].filter((toolId) => {
+    const plugin = capabilities?.plugins.find((candidate) => candidate.id === toolId);
+    const providerId = (config.plugin_config[toolId] as { provider_id?: string } | undefined)
+      ?.provider_id;
+    return webSearchProviderOptions(plugin?.config_schema)
+      .some((provider) => provider.id === providerId && provider.realization === "provider_server");
+  });
+  return {
+    modelIsRunnable: agentModelIsRunnable(
+      config.model,
+      readyModels,
+      capabilities?.runtimes ?? [],
+      agentNeedsToolBridge(config, providerServerTools, selectedToolIds),
+    ),
+    providerApprovalConflict: providerServerTools.some((toolId) =>
+      selectedToolIds.includes(toolId)
+        && effectiveAgentToolPermission(
+          config.tools,
+          toolId,
+          agentToolset?.default_config.permission_policy,
+        ).type === "always_ask"),
+  };
 }
 
 const STAGES: Array<{

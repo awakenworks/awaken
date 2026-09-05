@@ -63,6 +63,7 @@ pub(crate) struct PreparedBoundEnvironment {
     pub(crate) environment: Option<(Arc<crate::session_environment::SessionEnvironment>, bool)>,
     durable_handle: Option<awaken_provisioning_contract::SandboxHandle>,
     effect_mode: TerminalEffectMode,
+    definitive_absence: bool,
 }
 
 impl PreparedBoundEnvironment {
@@ -75,7 +76,14 @@ impl PreparedBoundEnvironment {
             environment,
             durable_handle,
             effect_mode,
+            definitive_absence: false,
         }
+    }
+
+    fn with_definitive_absence(mut self) -> Self {
+        debug_assert!(self.environment.is_none() && self.durable_handle.is_none());
+        self.definitive_absence = true;
+        self
     }
 
     /// Join the provider's physical observation with the aggregate's closed
@@ -106,6 +114,19 @@ impl PreparedBoundEnvironment {
 
     fn durable_handle(&self) -> Option<&awaken_provisioning_contract::SandboxHandle> {
         self.durable_handle.as_ref()
+    }
+
+    fn memory_materializations(
+        &self,
+    ) -> Result<
+        Option<&[awaken_provisioning_contract::MemoryMaterializationEvidence]>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        match self.durable_handle() {
+            Some(handle) => handle.memory_materializations(),
+            None if self.definitive_absence => Ok(Some(&[])),
+            None => Ok(None),
+        }
     }
 }
 
@@ -139,6 +160,7 @@ struct UnavailableEnvironmentRecovery<'a> {
 struct TerminalEnvironmentInstallation<'a> {
     thread: &'a str,
     binding: Option<&'a str>,
+    committed_candidate: Option<&'a UnboundSessionEnvironment>,
     provider: &'a crate::session_environment::SessionEnvironmentProvider,
     spec: &'a awaken_provisioning_contract::SandboxSpec,
     handle: Option<&'a awaken_provisioning_contract::SandboxHandle>,

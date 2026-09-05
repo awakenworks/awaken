@@ -460,10 +460,11 @@ mod dispatch_tests {
         // one cause; every rule must build through its canonical scenario
         // platform and expose the shared protocol route. A missing Resources
         // application, alternate Host path, or unmounted adapter is a failed
-        // effect for that exact mode. Modes that instantiate a sandbox receive
-        // the same explicit Local test deployment, so this router-mapping test
-        // does not depend on an ambient Namespace companion; dedicated E2Es own
-        // the real Namespace capability boundary.
+        // effect for that exact mode. Modes that instantiate an injectable
+        // sandbox receive the same explicit Local test deployment, so this
+        // router-mapping test does not depend on an ambient Namespace companion.
+        // `acp-tool-bridge` deliberately consumes the real scenario deployment
+        // and sibling Hand binary; its dedicated durable ACP E2E owns that row.
         // (AWAKEN_MODEL_MODE string, the router its `main()` arm builds). Kept in the
         // same order as the `match` in `main()` so drift is easy to spot.
         let mut local_test_deployment = awaken_session_executor::DeploymentConfig::ephemeral();
@@ -499,7 +500,6 @@ mod dispatch_tests {
                 sh::build_acp_permission_router_with_deployment(local_test_deployment.clone())
                     .await,
             ),
-            ("acp-tool-bridge", sh::build_acp_tool_bridge_router().await),
             (
                 "acp-sandboxed",
                 sh::build_acp_sandboxed_router_with_deployment(local_test_deployment.clone()).await,

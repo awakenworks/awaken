@@ -11,6 +11,7 @@ import {
   cleanupFixtureTree,
   pass,
   realServerEnv,
+  scenarioMemoryStore,
   spawnServer,
   startUpstream,
   stopServer,
@@ -81,25 +82,27 @@ async function main() {
     };
     let server = await start();
 
-    const store = await client.post('/v1/memory_stores', {
-      body: { name: 'conflict-and-long-behavior' },
-      headers: MEMORY_HEADERS,
-    });
+    const store = await scenarioMemoryStore(client, MEMORY_HEADERS);
     const session = () => client.beta.sessions.create({
       agent: 'assistant',
       environment_id: 'env_local',
       betas: BETAS,
-      resources: [{ type: 'memory_store', memory_store_id: store.id, mount_path: '/memory' }],
+      resources: [{ type: 'memory_store', memory_store_id: store.id }],
     });
 
     // Cause/effect graph and decision table:
-    // C1/C2 two terminal Sessions extract the same logical rule path with old/new
-    // values; C3 later Sessions bind the same Store; C4 the Coordinator process is
-    // replaced over the same durable root. E1 one head contains only the new value;
+    // C0 the fixture observes the one Store pinned by the published Agent's
+    // `memory` binding; C1/C2 two terminal Sessions extract the same logical rule
+    // path with old/new values; C3 later Sessions bind that Store through the canonical
+    // server-owned mount projection; C4 the Coordinator process is replaced over
+    // the same durable root. E1 one head contains only the new value;
     // E2 its version log records create then modify; E3 every later behavior uses
     // the new value before and after restart. R1=C1=>old head; R2=C1+C2=>E1+E2;
-    // R3=C1+C2+C3=>E3; R4=C1+C2+C3+C4=>E1+E2+E3. Constraint: MemoryStore head and
-    // version log remain the sole conflict authority; replies are observations.
+    // R0=!C0=>fail before Session creation; R3=C0+C1+C2+C3=>E3;
+    // R4=C0+C1+C2+C3+C4=>E1+E2+E3. Constraint: MemoryStore head and
+    // version log remain the sole conflict authority; replies are observations;
+    // client-authored mount paths are excluded by the Session Resource schema and
+    // are covered by managed_resource_lifecycle_e2e.mjs rather than duplicated here.
     const oldSession = await session();
     await turn(oldSession.id, 'memory-rule-format=PLAIN');
     const oldHead = await waitForValue(

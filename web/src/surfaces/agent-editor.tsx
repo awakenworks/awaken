@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import AgentEditorHeader from "../components/agent/AgentEditorHeader";
 import {
-  agentModelIsRunnable, agentNeedsToolBridge,
+  agentPublicationReadiness,
   AgentEditorStageNavigation, AgentValidationIssues,
   AttachedAgentContext,
   BLANK_AGENT_CONFIG as BLANK,
@@ -15,8 +15,11 @@ import AgentPublicationModals, {
 } from "../components/agent/AgentPublicationModals";
 import {
   advancedSectionForPath,
+  advancedSectionForQuery,
   builderSectionForPath,
+  builderSectionForQuery,
   stageForPath,
+  stageForQuery,
   type AdvancedSection,
   type AuthorStage,
   type BuilderSection,
@@ -47,7 +50,6 @@ import type {
   ValidationResult,
 } from "../lib/api/types";
 import { reconcileMemoryBinding, shouldEnableMemoryExtraction } from "../lib/agent-memory-binding";
-import { effectiveAgentToolPermission, selectedAgentToolIds } from "../lib/agent-toolsets";
 import {
   AUXILIARY_PARENT_KEY,
   AUXILIARY_ROLE_KEY,
@@ -62,7 +64,6 @@ import { hasSurface, quickstartSessionPath } from "../lib/navigation/paths";
 import { useModels } from "../lib/useModels";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import ModelsSurface from "./models";
-import { webSearchProviderOptions } from "../components/agent/WebSearchBehaviorEditor";
 
 export default function AgentEditorSurface() {
   const app = useApp();
@@ -77,22 +78,13 @@ export default function AgentEditorSurface() {
   const parentAgentId = searchParams.get("parent")?.trim() ?? "";
   const attachAuxiliaryId = searchParams.get("attach")?.trim() ?? "";
   const isNew = id === "new";
-  const [stage, setStage] = useState<AuthorStage>(() => {
-    const requested = searchParams.get("stage");
-    return requested === "build" || requested === "advanced" ? requested : "quickstart";
-  });
-  const [builderSection, setBuilderSection] = useState<BuilderSection>(() => {
-    const requested = searchParams.get("section");
-    return ["instructions", "tools", "integrations", "knowledge"].includes(requested ?? "")
-      ? requested as BuilderSection
-      : "instructions";
-  });
-  const [advancedSection, setAdvancedSection] = useState<AdvancedSection>(() => {
-    const requested = searchParams.get("section");
-    return ["orchestration", "extensions", "source", "release"].includes(requested ?? "")
-      ? requested as AdvancedSection
-      : "orchestration";
-  });
+  const [stage, setStage] = useState<AuthorStage>(() => stageForQuery(searchParams.get("stage")));
+  const [builderSection, setBuilderSection] = useState<BuilderSection>(
+    () => builderSectionForQuery(searchParams.get("section")),
+  );
+  const [advancedSection, setAdvancedSection] = useState<AdvancedSection>(
+    () => advancedSectionForQuery(searchParams.get("section")),
+  );
   const [showSandbox, setShowSandbox] = useState(false);
   const [showPublish, setShowPublish] = useState(false);
   const [quickRunIntent, setQuickRunIntent] = useState<QuickRunIntent>();
@@ -143,22 +135,10 @@ export default function AgentEditorSurface() {
     && targetId().length > 0
     && (cfg.system ?? "").trim().length > 0;
   const body = () => buildAgentDraftBody(cfg, targetId(), permissionPreset);
-  const agentToolset = caps.data?.toolsets?.find((toolset) => toolset.type === "agent_toolset_20260401");
-  const selectedToolIds = selectedAgentToolIds(cfg.tools, agentToolset?.members ?? []);
-  const providerServerTools = ["web_search", "web_fetch"].filter((toolId) => {
-    const plugin = caps.data?.plugins?.find((candidate) => candidate.id === toolId);
-    const providerId = (cfg.plugin_config[toolId] as { provider_id?: string } | undefined)?.provider_id;
-    return webSearchProviderOptions(plugin?.config_schema)
-      .some((provider) => provider.id === providerId && provider.realization === "provider_server");
-  });
-  const providerApprovalConflict = providerServerTools.some((toolId) =>
-    selectedToolIds.includes(toolId)
-      && effectiveAgentToolPermission(cfg.tools, toolId, agentToolset?.default_config.permission_policy).type === "always_ask");
-  const modelIsRunnable = agentModelIsRunnable(
-    cfg.model,
+  const { modelIsRunnable, providerApprovalConflict } = agentPublicationReadiness(
+    cfg,
     models,
-    caps.data?.runtimes ?? [],
-    agentNeedsToolBridge(cfg, providerServerTools, selectedToolIds),
+    caps.data,
   );
   const canPublish = canSave && modelIsRunnable && !providerApprovalConflict;
   const publishBlockedReason = !canSave ? undefined : !modelIsRunnable
@@ -221,15 +201,9 @@ export default function AgentEditorSurface() {
   useEffect(() => {
     if (previousRouteId.current === id) return;
     previousRouteId.current = id;
-    const requestedStage = searchParams.get("stage");
-    const requestedSection = searchParams.get("section");
-    setStage(requestedStage === "build" || requestedStage === "advanced" ? requestedStage : "quickstart");
-    setBuilderSection(["instructions", "tools", "integrations", "knowledge"].includes(requestedSection ?? "")
-      ? requestedSection as BuilderSection
-      : "instructions");
-    setAdvancedSection(["orchestration", "extensions", "source", "release"].includes(requestedSection ?? "")
-      ? requestedSection as AdvancedSection
-      : "orchestration");
+    setStage(stageForQuery(searchParams.get("stage")));
+    setBuilderSection(builderSectionForQuery(searchParams.get("section")));
+    setAdvancedSection(advancedSectionForQuery(searchParams.get("section")));
     setIssues([]);
     setRawValid(true);
     setIntegrationsValid(true);

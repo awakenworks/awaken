@@ -77,12 +77,13 @@ def main() -> None:
     # Installation-intent decision table: DB1 a repeatable rollout manifest ->
     # ordinary exact-only migration and no retained initialization authority;
     # DB2 a fresh disposable E2E cluster -> one explicit audited initialization
-    # Job per role, then the same ordinary Jobs converge; DB3 every short-lived
-    # migration/initialization Pod sees the same immutable local installation
-    # coordinate as its long-running role Pod. Effects: E1 rollout manifests
-    # retain no initialization grant; E2 both phases bind PostgreSQL under the
-    # one ConfigMap-owned coordinate instead of a Pod-local marker. The fixture
-    # helper reuses the role commands and is not a second deployment manifest.
+    # Job per role, then the same ordinary Jobs converge; DB3 PostgreSQL mode
+    # carries the configured expected Workspace directly into its one database
+    # binding and never consumes the embedded-only platform-workspace-id marker.
+    # Effects: E1 rollout manifests retain no initialization grant; E2 both
+    # phases use the same PostgreSQL coordinate without a parallel ConfigMap or
+    # Pod-local identity. The fixture helper reuses the role commands and is not
+    # a second deployment manifest.
     assert "--initialize-installation" not in resources
     assert resources.count("suspend: true") == 2
     e2e = (
@@ -93,14 +94,10 @@ def main() -> None:
     assert '"--initialize-installation", "--initialization-reference"' in e2e
     assert 'patch job/control-migrate' in e2e
     assert 'patch job/coordinator-migrate' in e2e
-    for role in ("control", "coordinator"):
-        marker_mount = (
-            f"mountPath: /var/lib/awaken/{role}/platform-workspace-id, "
-            "subPath: platform-workspace-id, readOnly: true"
-        )
-        assert resources.count(marker_mount) == 2
-    assert "mountPath: /var/lib/awaken/$role/platform-workspace-id" in e2e
-    assert e2e.count("configMap: { name: adr71-installation }") == 1
+    assert "platform-workspace-id" not in resources
+    assert "adr71-installation" not in resources
+    assert "platform-workspace-id" not in e2e
+    assert "adr71-installation" not in e2e
     # I4 the deterministic Control fixture changes only the publication resolver:
     # the scenario adapter consumes the deployment's one explicit Control config
     # and assembles the canonical split-Control application. The former HOME

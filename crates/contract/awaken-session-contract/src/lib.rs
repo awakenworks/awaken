@@ -95,11 +95,11 @@ pub trait ExecutableProjectionRefresh: Send + Sync {
 }
 pub use dream::{
     DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, DREAM_SUPPORTED_MODELS, Dream,
-    DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig, DreamModelInput,
-    DreamModelSpeed, DreamOutput, DreamOutputBehavior, DreamPage, DreamPolicy,
-    DreamPolicyApplication, DreamPolicyApplicationError, DreamPolicyConfig, DreamPolicyRecord,
-    DreamProcessFailure, DreamProcessRecord, DreamProcessStore, DreamProcessStoreError,
-    DreamStatus, DreamStatusEvent, DreamUsage,
+    DreamCleanupAdmission, DreamCreateParams, DreamError, DreamInput, DreamListParams,
+    DreamModelConfig, DreamModelInput, DreamModelSpeed, DreamOutput, DreamOutputBehavior,
+    DreamPage, DreamPolicy, DreamPolicyApplication, DreamPolicyApplicationError, DreamPolicyConfig,
+    DreamPolicyRecord, DreamProcessFailure, DreamProcessRecord, DreamProcessStore,
+    DreamProcessStoreError, DreamStatus, DreamStatusEvent, DreamUsage,
 };
 pub use environment::{
     CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef,

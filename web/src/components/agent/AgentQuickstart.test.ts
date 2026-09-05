@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   agentModelIsRunnable,
   agentNeedsToolBridge,
+  agentPublicationReadiness,
   BLANK_AGENT_CONFIG,
   buildAgentDraftBody,
 } from "./AgentEditorChrome";
 import { starterAgentId } from "./AgentQuickstart";
-import type { RuntimeCap } from "../../lib/api/types";
+import type { Capabilities, RuntimeCap } from "../../lib/api/types";
 
 describe("starterAgentId", () => {
   it("fills only a blank draft id and preserves an authored identity", () => {
@@ -42,6 +43,51 @@ describe("agent editor draft derivation", () => {
       .toBe(true);
     expect(agentNeedsToolBridge({ ...blank, tools: ["web_search"] }, ["web_search"]), "R3 provider server")
       .toBe(false);
+  });
+
+  it("combines provider execution ownership and approval into one publish decision", () => {
+    // Cause/effect decision table: C1 the selected Web tool/provider is
+    // provider-executed; C2 its effective policy is always_ask/always_allow.
+    // R1 C1+C2=ask keeps the model route runnable but blocks publication because
+    // Awaken cannot pause that remote call; R2 C1+C2=allow remains runnable and
+    // unblocked. One reducer owns both editor timing paths.
+    const capabilities: Capabilities = {
+      runtime_version: "test",
+      tools: [],
+      plugins: [{
+        id: "web_search",
+        config_sections: [],
+        config_schema: {
+          oneOf: [{
+            "x-awaken-realization": "provider_server",
+            properties: { provider_id: { const: "hosted" } },
+          }],
+        },
+      }],
+      toolsets: [{
+        type: "agent_toolset_20260401",
+        source_kind: "agent",
+        dynamic_members: false,
+        default_config: { enabled: true, permission_policy: { type: "always_ask" } },
+        members: [{
+          name: "web_search",
+          available: true,
+          controlled_modification: false,
+          configurable_fields: [],
+        }],
+      }],
+    };
+    const draft = {
+      ...BLANK_AGENT_CONFIG,
+      model: "ready-model",
+      tools: ["web_search"],
+      plugin_config: { web_search: { provider_id: "hosted" } },
+    };
+    expect(agentPublicationReadiness(draft, ["ready-model"], capabilities), "R1")
+      .toEqual({ modelIsRunnable: true, providerApprovalConflict: true });
+    capabilities.toolsets![0].default_config.permission_policy = { type: "always_allow" };
+    expect(agentPublicationReadiness(draft, ["ready-model"], capabilities), "R2")
+      .toEqual({ modelIsRunnable: true, providerApprovalConflict: false });
   });
 
   it("adds the transient permission preset only to the requested authoring body", () => {

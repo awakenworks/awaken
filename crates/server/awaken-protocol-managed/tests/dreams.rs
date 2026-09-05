@@ -793,6 +793,124 @@ async fn late_worker_completion_cannot_repeat_or_overwrite_cancellation_cleanup(
 }
 
 #[tokio::test]
+async fn canceled_cleanup_retry_cannot_return_success_before_its_receipt() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CleanupFailsOnce {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+        cleanups: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl DreamExecutor for CleanupFailsOnce {
+        async fn validate_inputs(&self, _request: &DreamRequest) -> Result<(), DreamFailure> {
+            Ok(())
+        }
+
+        async fn prepare(&self, request: &DreamRequest) -> Result<DreamPreparation, DreamFailure> {
+            Ok(DreamPreparation {
+                result_memory_store_id: format!("result-{}", request.job_id),
+                session_id: format!("session-{}", request.job_id),
+                transcript_file_ids: vec!["transcript".into()],
+            })
+        }
+
+        async fn execute(
+            &self,
+            _request: &DreamRequest,
+            _preparation: &DreamPreparation,
+            _cancellation: DreamCancellation,
+        ) -> Result<(), DreamFailure> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(())
+        }
+
+        async fn cleanup(
+            &self,
+            _request: &DreamRequest,
+            _preparation: Option<&DreamPreparation>,
+        ) -> Result<(), DreamFailure> {
+            if self.cleanups.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(DreamFailure::new(
+                    "cleanup_pending",
+                    "receipt not committed",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    // Cancellation-replay cause/effect graph: C1 Running with an exact
+    // preparation; C2 cancel commits the absorbing Canceled state but its first
+    // cleanup attempt fails; C3 the client retries; C4 it retries again after
+    // the receipt. Effects: E1 C2 returns 503 and retains cleanup_pending plus
+    // transcript identity; E2 C3 re-enters the same cleanup and only then
+    // returns 200; E3 C4 is idempotent and issues no third cleanup; E4 late
+    // worker completion cannot repeat cleanup or reopen Canceled. Rules:
+    // R1=C1+C2=>E1; R2=C1+C2+C3=>E2; R3=C4=>E3; R4=late worker=>E4.
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let cleanups = Arc::new(AtomicUsize::new(0));
+    let store = Arc::new(InMemoryDreamProcessStore::default());
+    let state = Arc::new(
+        DreamApplication::with_store(
+            Arc::new(CleanupFailsOnce {
+                started: started.clone(),
+                release: release.clone(),
+                cleanups: cleanups.clone(),
+            }),
+            store.clone(),
+        )
+        .unwrap(),
+    );
+    let app = dreams_router(state);
+    let (_, created) = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;
+    let id = created["id"].as_str().unwrap();
+    started.notified().await;
+
+    let (first_status, _) = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None).await;
+    assert_eq!(first_status, StatusCode::SERVICE_UNAVAILABLE, "R1/E1");
+    let pending = store
+        .dream_processes()
+        .unwrap()
+        .into_iter()
+        .find(|process| process.process_id == id)
+        .unwrap();
+    assert!(pending.cleanup_pending, "R1/E1");
+    assert_eq!(pending.transcript_file_ids, ["transcript"], "R1/E1");
+
+    let (retry_status, retried) =
+        request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None).await;
+    assert_eq!(retry_status, StatusCode::OK, "R2/E2");
+    assert_eq!(retried["status"], "canceled", "R2/E2");
+    let (_, repeated) = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None).await;
+    assert_eq!(repeated["status"], "canceled", "R3/E3");
+    assert_eq!(cleanups.load(Ordering::SeqCst), 2, "R2/E2 + R3/E3");
+
+    release.notify_one();
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    let settled = store
+        .dream_processes()
+        .unwrap()
+        .into_iter()
+        .find(|process| process.process_id == id)
+        .unwrap();
+    assert_eq!(
+        settled.status,
+        awaken_session_contract::DreamStatus::Canceled,
+        "R4/E4"
+    );
+    assert!(!settled.cleanup_pending, "R4/E4");
+    assert!(settled.transcript_file_ids.is_empty(), "R4/E4");
+    assert_eq!(cleanups.load(Ordering::SeqCst), 2, "R4/E4");
+}
+
+#[tokio::test]
 async fn running_output_projection_transitions_from_empty_to_prepared() {
     struct PhasedWorker {
         prepare_started: Arc<Notify>,

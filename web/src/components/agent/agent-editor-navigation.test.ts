@@ -1,11 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
+  advancedSectionForQuery,
   advancedSectionForPath,
+  builderSectionForQuery,
   builderSectionForPath,
+  stageForQuery,
   stageForPath,
 } from "./agent-editor-navigation";
 
 describe("agent authoring navigation", () => {
+  it("normalizes route query values through one closed navigation table", () => {
+    // Cause/effect decision table: C1 stage is build/advanced/unknown; C2 section
+    // is a member of its closed section algebra or unknown. R1 known values
+    // preserve their exact effect; R2 absent/unknown values fail to Quickstart,
+    // Instructions, and Orchestration. Initial mount and route replacement call
+    // these same reducers, so their timing cannot select different sections.
+    expect(stageForQuery("build")).toBe("build");
+    expect(stageForQuery("advanced")).toBe("advanced");
+    expect(stageForQuery("unknown")).toBe("quickstart");
+    expect(builderSectionForQuery("knowledge")).toBe("knowledge");
+    expect(builderSectionForQuery(null)).toBe("instructions");
+    expect(advancedSectionForQuery("release")).toBe("release");
+    expect(advancedSectionForQuery("unknown")).toBe("orchestration");
+  });
+
   it("routes everyday authoring fields into Build", () => {
     // Cause/effect table: ordinary profile input -> Instructions; tool grant,
     // presentation, pattern, or recovery input -> Tools; Skill/MCP ->

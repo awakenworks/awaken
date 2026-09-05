@@ -2,6 +2,34 @@
 
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalDispatchAction {
+    Ignore,
+    Cancel,
+    CancelAndRejectReservation,
+}
+
+/// Terminal Session truth makes an unstarted reservation permanently
+/// unexecutable. Reuse the reservation owner's guarded rejection after durable
+/// cancellation instead of waiting for its ordinary admission-recovery TTL.
+/// Every already-activated row still follows the canonical cancellation claim
+/// and physical-quiescence path.
+const fn terminal_dispatch_action(
+    state: awaken_dispatch_contract::DispatchState,
+) -> TerminalDispatchAction {
+    match state {
+        awaken_dispatch_contract::DispatchState::Reserved
+        | awaken_dispatch_contract::DispatchState::ReservationLeased => {
+            TerminalDispatchAction::CancelAndRejectReservation
+        }
+        awaken_dispatch_contract::DispatchState::Pending
+        | awaken_dispatch_contract::DispatchState::Leased
+        | awaken_dispatch_contract::DispatchState::Awaiting
+        | awaken_dispatch_contract::DispatchState::DeadLetter => TerminalDispatchAction::Cancel,
+        awaken_dispatch_contract::DispatchState::Superseded => TerminalDispatchAction::Ignore,
+    }
+}
+
 impl SharedHost {
     pub async fn quiesce_terminal_delegations(
         &self,
@@ -38,18 +66,13 @@ impl SharedHost {
                     }
                 }
                 for dispatch in dispatches.into_iter().filter(|dispatch| {
-                    (dispatch.thread_id == thread_id
-                        || dispatch.session_thread_id.as_ref() == Some(&thread_id))
-                        && matches!(
-                            dispatch.state,
-                            awaken_dispatch_contract::DispatchState::Reserved
-                                | awaken_dispatch_contract::DispatchState::ReservationLeased
-                                | awaken_dispatch_contract::DispatchState::Pending
-                                | awaken_dispatch_contract::DispatchState::Leased
-                                | awaken_dispatch_contract::DispatchState::Awaiting
-                                | awaken_dispatch_contract::DispatchState::DeadLetter
-                        )
+                    dispatch.thread_id == thread_id
+                        || dispatch.session_thread_id.as_ref() == Some(&thread_id)
                 }) {
+                    let action = terminal_dispatch_action(dispatch.state);
+                    if action == TerminalDispatchAction::Ignore {
+                        continue;
+                    }
                     // The root's resident attempt receives the same post-intent
                     // accelerator as an explicit interrupt. Child/cold/remote
                     // attempts retain the durable claim path without a second
@@ -60,6 +83,19 @@ impl SharedHost {
                         .map(|ctx| ctx.runtime.as_ref());
                     self.persist_dispatch_cancellation(&dispatch.run_id, live_runtime)
                         .await?;
+                    if action == TerminalDispatchAction::CancelAndRejectReservation {
+                        // The surrounding Session terminal transition is the
+                        // absorbing authority. A still-Reserved row has no Run
+                        // truth or physical effect to settle, so the canonical
+                        // reservation rejection removes it. If activation won
+                        // this race, guarded rejection returns false and the
+                        // next cancellation pass handles the resulting Pending
+                        // row through its ordinary Worker path.
+                        store
+                            .reject_session_run_reservation(&dispatch.run_id)
+                            .await
+                            .map_err(|error| HostError::internal(error.to_string()))?;
+                    }
                 }
 
                 // Direct ACP and Outcome attempts may own only the foreground
@@ -165,4 +201,38 @@ impl SharedHost {
             .sort_by(|left, right| left.0.cmp(&right.0));
         Ok(snapshot)
     }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn terminal_quiescence_rejects_only_unstarted_reservations() {
+    // Cause/effect decision table: C1 is the closed durable Dispatch phase.
+    // E1 Reserved/ReservationLeased is canceled and guarded-rejected because no
+    // executor was admitted; E2 Pending/Leased/Awaiting/DeadLetter follows the
+    // ordinary cancellation/settlement authority; E3 Superseded is absorbing
+    // and ignored. The seven-state partition is exhaustive, so terminal cleanup
+    // can neither delete activated work as a reservation nor wait on the normal
+    // reservation TTL after Session terminal truth is already durable.
+    let state = match kani::any::<u8>() % 7 {
+        0 => awaken_dispatch_contract::DispatchState::Reserved,
+        1 => awaken_dispatch_contract::DispatchState::ReservationLeased,
+        2 => awaken_dispatch_contract::DispatchState::Pending,
+        3 => awaken_dispatch_contract::DispatchState::Leased,
+        4 => awaken_dispatch_contract::DispatchState::Awaiting,
+        5 => awaken_dispatch_contract::DispatchState::DeadLetter,
+        _ => awaken_dispatch_contract::DispatchState::Superseded,
+    };
+    let action = terminal_dispatch_action(state);
+    assert_eq!(
+        action == TerminalDispatchAction::CancelAndRejectReservation,
+        matches!(
+            state,
+            awaken_dispatch_contract::DispatchState::Reserved
+                | awaken_dispatch_contract::DispatchState::ReservationLeased
+        )
+    );
+    assert_eq!(
+        action == TerminalDispatchAction::Ignore,
+        state == awaken_dispatch_contract::DispatchState::Superseded
+    );
 }

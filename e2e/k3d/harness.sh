@@ -221,6 +221,11 @@ k3d_create_cluster() {
   local args=(
     cluster create "$cluster" --agents "$agents" --wait --timeout 180s
     --runtime-ulimit "nofile=65536:65536"
+    # Repository scenarios install and import every component they exercise.
+    # Disable the unused bundled controllers so an offline proof run cannot
+    # contend with background registry retries for images outside its fixture.
+    --k3s-arg "--disable=traefik@server:*"
+    --k3s-arg "--disable=metrics-server@server:*"
     --k3s-arg "--kubelet-arg=$threshold@server:*"
   )
   if (( agents > 0 )); then
@@ -418,6 +423,13 @@ k3d_harness_selftest() (
   [[ "${k3d_calls[0]}" = "cluster delete awaken-test-1" ]]
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<3%,nodefs.available<3%@server:*"* ]]
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<3%,nodefs.available<3%@agent:*"* ]]
+  # Cluster-fixture dependency rule. C1 repository scenarios import their
+  # exact images; C2 bundled ingress/metrics are not scenario dependencies.
+  # C1+C2 => E1 the canonical builder disables both controllers, preventing
+  # unbounded external image-pull retries from perturbing timing-sensitive
+  # proofs. K3DH1 exercises the only cluster-construction owner.
+  [[ "${k3d_calls[1]}" = *"--k3s-arg --disable=traefik@server:*"* ]]
+  [[ "${k3d_calls[1]}" = *"--k3s-arg --disable=metrics-server@server:*"* ]]
 
   k3d_calls=()
   k3d_create_cluster "awaken-test-1" 0 2

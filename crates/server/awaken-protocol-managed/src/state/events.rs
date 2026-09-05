@@ -40,16 +40,79 @@ struct DurableInboundProjection {
     event: Event,
 }
 
-fn inbound_projections_matching(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InboundProjectionView {
+    AdmissionReceipt,
+    DurableHistory,
+    RootBarrierHistory,
+}
+
+/// The one projection algebra for Session-root inbound commands. Admission
+/// receipts and the root-barrier view retain every accepted command; ordinary
+/// durable history includes only entries whose processing provenance exists.
+/// Admission deliberately hides mutable progress while both history views expose
+/// the root-owned marker.
+#[must_use]
+const fn inbound_projection_visible(
+    view: InboundProjectionView,
+    processed: bool,
+    anchored: bool,
+) -> bool {
+    match view {
+        InboundProjectionView::AdmissionReceipt | InboundProjectionView::RootBarrierHistory => true,
+        InboundProjectionView::DurableHistory => processed || anchored,
+    }
+}
+
+#[must_use]
+const fn inbound_processed_at_visible(view: InboundProjectionView, processed: bool) -> bool {
+    !matches!(view, InboundProjectionView::AdmissionReceipt) && processed
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn inbound_admission_receipt_is_stable_across_processing_races() {
+    let processed: bool = kani::any();
+    let anchored: bool = kani::any();
+    assert!(inbound_projection_visible(
+        InboundProjectionView::AdmissionReceipt,
+        processed,
+        anchored
+    ));
+    assert!(inbound_projection_visible(
+        InboundProjectionView::RootBarrierHistory,
+        processed,
+        anchored
+    ));
+    assert_eq!(
+        inbound_projection_visible(InboundProjectionView::DurableHistory, processed, anchored),
+        processed || anchored
+    );
+    assert!(!inbound_processed_at_visible(
+        InboundProjectionView::AdmissionReceipt,
+        processed
+    ));
+    assert_eq!(
+        inbound_processed_at_visible(InboundProjectionView::DurableHistory, processed),
+        processed
+    );
+    assert_eq!(
+        inbound_processed_at_visible(InboundProjectionView::RootBarrierHistory, processed),
+        processed
+    );
+}
+
+fn inbound_projections(
     session_id: &str,
     batches: &[awaken_session_contract::SessionEventBatch],
-    mut include: impl FnMut(&awaken_session_contract::SessionEventEntry) -> bool,
+    view: InboundProjectionView,
 ) -> Vec<DurableInboundProjection> {
     let mut projections = Vec::new();
     for batch in batches {
         for entry in &batch.events {
-            if include(entry) {
-                projections.push(inbound_projection(session_id, entry));
+            if inbound_projection_visible(view, entry.processed, entry.projection_anchor.is_some())
+            {
+                projections.push(inbound_projection(session_id, entry, view));
             }
         }
     }
@@ -64,42 +127,31 @@ fn durable_inbound_projections(
     session_id: &str,
     batches: &[awaken_session_contract::SessionEventBatch],
 ) -> Vec<DurableInboundProjection> {
-    inbound_projections_matching(session_id, batches, |entry| {
-        // `processed && no anchor` is the isolated pre-anchor schema. Preserve
-        // its functional history at the legacy prefix; new unprocessed and
-        // unanchored receipts belong only to the pending suffix.
-        entry.projection_anchor.is_some() || entry.processed
-    })
-}
-
-/// Accepted root commands that deliberately have no Runtime ordering anchor
-/// yet. They are exposed only as a pending suffix; the committed projector
-/// continues to withhold every dependent Runtime fact until the anchor CAS.
-fn unanchored_inbound_projections(
-    session_id: &str,
-    batches: &[awaken_session_contract::SessionEventBatch],
-) -> Vec<DurableInboundProjection> {
-    inbound_projections_matching(session_id, batches, |entry| {
-        !entry.processed && entry.projection_anchor.is_none()
-    })
+    inbound_projections(session_id, batches, InboundProjectionView::DurableHistory)
 }
 
 fn accepted_inbound_receipts(
     session_id: &str,
     batch: &awaken_session_contract::SessionEventBatch,
 ) -> Vec<DurableInboundProjection> {
-    inbound_projections_matching(session_id, std::slice::from_ref(batch), |_| true)
+    inbound_projections(
+        session_id,
+        std::slice::from_ref(batch),
+        InboundProjectionView::AdmissionReceipt,
+    )
 }
 
 fn inbound_projection(
     session_id: &str,
     entry: &awaken_session_contract::SessionEventEntry,
+    view: InboundProjectionView,
 ) -> DurableInboundProjection {
     DurableInboundProjection {
         event: Event {
             id: durable_inbound_event_id(session_id, entry.event.operation_id()),
             kind: public_inbound_kind_from_command(session_id, &entry.event),
-            processed_at: entry.processed.then(|| PROCESSED_AT.to_string()),
+            processed_at: inbound_processed_at_visible(view, entry.processed)
+                .then(|| PROCESSED_AT.to_string()),
         },
     }
 }

@@ -1579,6 +1579,68 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
 }
 
 #[tokio::test]
+async fn committed_hidden_create_candidate_is_terminally_retired_without_publication() {
+    // Cause/effect decision table for the Dream cancel/create race: C1 one
+    // Create Candidate owns the exact provider Arc; C2 the Session root commit
+    // returns a durable identity; C3 the derivative dispatch binding is fenced
+    // before Resident publication; C4 terminal cleanup takes over. Effects:
+    // E1 C1+C2+C3 retains one hidden DurableCreate with the original Create
+    // retry kind and exact binding; E2 no tool-visible Resident appears; E3
+    // C4 converts that same Arc and durable identity into the sole Bound
+    // terminal-retirement owner. Rule D1=C1+C2+C3=>E1+E2;
+    // D2=D1+C4=>E3. A mismatched replay is rejected by the Kani-proved closed
+    // Candidate commit reducer and cannot relabel Create as Adopt.
+    let thread = "committed-candidate-terminal-takeover";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let environment = environment(&provider, thread).await;
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let candidate = host
+        .begin_session_environment_preparation(thread, environment.clone())
+        .expect("C1 hidden Create Candidate");
+    let identity = identity(thread);
+    let committed = host
+        .retain_committed_session_environment_candidate(thread, &candidate, identity.clone())
+        .expect("C2/C3 retain Store-read identity");
+    assert!(matches!(
+        &committed.origin,
+        UnboundSessionEnvironmentOrigin::DurableCreate(current) if current == &identity
+    ));
+    assert_eq!(
+        committed.effect_kind(),
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
+        "E1"
+    );
+    assert_eq!(
+        host.durable_session_environment_binding(thread).as_deref(),
+        Some(candidate.binding.as_str()),
+        "E1"
+    );
+    assert!(host.session_environment(thread).await.is_none(), "E2");
+
+    let cause = SessionEnvironmentRetirementCause::Terminal {
+        effect_id: "terminal-candidate-takeover".into(),
+    };
+    let retirement = host
+        .session_slots
+        .update(thread, |slot| {
+            slot.environment_owner
+                .begin_retirement_with_committed_candidate(&committed, cause)
+        })
+        .expect("C4 terminal takeover");
+    let RetiringEnvironmentOwner::Bound(owned) = retirement.owned else {
+        panic!("E3 committed Candidate must become one Bound terminal owner")
+    };
+    assert_eq!(owned.identity, identity, "E3 identity");
+    assert_eq!(owned.binding, candidate.binding, "E3 binding");
+    assert!(Arc::ptr_eq(&owned.environment, &environment), "E3 Arc");
+    assert!(
+        host.session_environment(thread).await.is_none(),
+        "E3 hidden"
+    );
+}
+
+#[tokio::test]
 async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident() {
     // Projection-order cause/effect decision table: C1 an Unmaterialized
     // FrozenSessionProjection is read before the lifecycle guard; C2 the exact
