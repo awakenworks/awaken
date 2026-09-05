@@ -4,14 +4,12 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -20,6 +18,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts/ci"))
 from formal_profile import profile_result
+from formal_run_evidence import canonical_bytes, digest_bytes, digest_file, proof_toolchain, validate_record
 
 HEX64 = re.compile(r"[0-9a-f]{64}")
 PROFILES = {"standard", "awaken-verified-v1"}
@@ -29,19 +28,6 @@ class ContractError(ValueError):
     pass
 
 
-def canonical_bytes(value: object) -> bytes:
-    return (
-        json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
-        + "\n"
-    ).encode()
-
-
-def digest_bytes(value: bytes) -> str:
-    return f"sha256:{hashlib.sha256(value).hexdigest()}"
-
-
-def digest_file(path: Path) -> str:
-    return digest_bytes(path.read_bytes())
 
 
 def load_json(path: Path) -> dict:
@@ -51,27 +37,6 @@ def load_json(path: Path) -> dict:
     return value
 
 
-def proof_toolchain(repository: Path) -> dict:
-    rust_toolchain = tomllib.loads(
-        (repository / "rust-toolchain.toml").read_text(encoding="utf-8")
-    )
-    bootstrap = (repository / "scripts/ci/bootstrap_kani.sh").read_text(encoding="utf-8")
-    formal_gate = (repository / "scripts/ci/check_formal.sh").read_text(encoding="utf-8")
-
-    def shell_constant(source: str, name: str) -> str:
-        match = re.search(rf'readonly {name}="([^"]+)"', source)
-        if match is None:
-            raise ContractError(f"missing pinned {name}")
-        return match.group(1)
-
-    return {
-        "rust_toolchain": rust_toolchain["toolchain"]["channel"],
-        "kani_source_revision": shell_constant(bootstrap, "kani_revision"),
-        "kani_nightly": shell_constant(bootstrap, "kani_nightly"),
-        "kani_backend": shell_constant(bootstrap, "kani_backend_version"),
-        "tlc": shell_constant(formal_gate, "tlc_version"),
-        "tlaps": shell_constant(formal_gate, "tlapm_version"),
-    }
 
 
 def build_manifest(
@@ -80,6 +45,7 @@ def build_manifest(
     profile: str,
     source_commit: str,
     repository: Path = ROOT,
+    proof_run: dict | None = None,
 ) -> dict:
     if profile not in PROFILES:
         raise ContractError(f"unknown profile {profile!r}")
@@ -94,6 +60,15 @@ def build_manifest(
         raise ContractError(
             f"verified profile has {len(result['gaps'])} direct-proof gaps"
         )
+    if proof_run is not None:
+        try:
+            validate_record(proof_run, repository)
+        except ValueError as error:
+            raise ContractError(str(error)) from error
+        if proof_run["source"]["commit"] != source_commit:
+            raise ContractError("formal evidence commit does not match the artifact source")
+    elif profile == "awaken-verified-v1":
+        raise ContractError("Verified packaging requires completed strict formal execution evidence")
 
     proof_paths = sorted(
         {
@@ -122,7 +97,7 @@ def build_manifest(
         if item["id"] != "external.llm_semantics"
     ]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "profile": profile,
         "source_commit": source_commit,
         "artifact": {
@@ -139,6 +114,7 @@ def build_manifest(
         },
         "profile_result": result,
         "proof_toolchain": proof_toolchain(repository),
+        "proof_execution": proof_run,
         "proof_inputs_digest": digest_bytes(canonical_bytes(proof_inputs)),
         "proof_inputs": proof_inputs,
         "bounds": sorted(
@@ -202,7 +178,7 @@ def validate_manifest(
     tcb_evidence: dict | None = None,
     now: int | None = None,
 ) -> None:
-    if manifest.get("schema_version") != 1:
+    if manifest.get("schema_version") != 2:
         raise ContractError("unsupported manifest schema")
     if manifest.get("profile") not in PROFILES:
         raise ContractError("unknown manifest profile")
@@ -215,6 +191,7 @@ def validate_manifest(
         profile=manifest["profile"],
         source_commit=source_commit(repository),
         repository=repository,
+        proof_run=manifest.get("proof_execution"),
     )
     if canonical_bytes(manifest) != canonical_bytes(expected):
         raise ContractError("manifest does not match the exact source, proof inputs, or ledgers")
@@ -257,12 +234,10 @@ class VerificationManifestTests(unittest.TestCase):
             self.assertFalse(standard["profile_result"]["eligible"])
             eligible = dict(blocked, directly_proved_or_refined=2, eligible=True, gaps=[])
             with patch(f"{__name__}.profile_result", return_value=eligible):
-                verified = build_manifest(
-                    artifact,
-                    profile="awaken-verified-v1",
-                    source_commit="a" * 40,
-                )
-            self.assertTrue(verified["profile_result"]["eligible"])
+                # V2: a green structural ledger without an executed gate must
+                # fail. The old mocked-eligibility test manufactured a badge.
+                with self.assertRaisesRegex(ContractError, "execution evidence"):
+                    build_manifest(artifact, profile="awaken-verified-v1", source_commit="a" * 40)
 
     # Cause/effect graph: C1 artifact bytes match; C2 ledger digests match;
     # C3 Verified identity/eligibility match; C4 every exact TCB observation is
@@ -330,6 +305,7 @@ def main() -> int:
     generate.add_argument("--artifact", type=Path, required=True)
     generate.add_argument("--output", type=Path, required=True)
     generate.add_argument("--profile", choices=sorted(PROFILES), default="standard")
+    generate.add_argument("--proof-run", type=Path)
     validate = subparsers.add_parser("validate")
     validate.add_argument("--artifact", type=Path, required=True)
     validate.add_argument("--manifest", type=Path, required=True)
@@ -348,6 +324,7 @@ def main() -> int:
             args.artifact,
             profile=args.profile,
             source_commit=source_commit(ROOT),
+            proof_run=load_json(args.proof_run) if args.proof_run else None,
         )
         write_manifest(manifest, args.output)
         print(digest_bytes(canonical_bytes(manifest)))

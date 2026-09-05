@@ -487,6 +487,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     checksum = write_checksum(archive)
     profile = os.environ.get("AWAKEN_RELEASE_PROFILE", "standard")
+    proof_run = os.environ.get("AWAKEN_FORMAL_RUN_EVIDENCE")
     verification_manifest = archive.with_name(f"{archive.name}.verification.json")
     subprocess.run(
         [
@@ -499,6 +500,7 @@ def main(argv: list[str] | None = None) -> int:
             str(verification_manifest),
             "--profile",
             profile,
+            *(["--proof-run", proof_run] if proof_run else []),
         ],
         cwd=REPOSITORY,
         check=True,
