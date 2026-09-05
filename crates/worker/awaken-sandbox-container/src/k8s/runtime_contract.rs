@@ -355,6 +355,7 @@ impl ContainerRuntime for K8sRuntime {
             expectation.realization_fingerprint,
             expectation.effect_fence,
             &observations,
+            expectation.retained_attempt,
         )?;
         let observation = if continuation == ContinuationObservationDisposition::Disposing {
             match observation {

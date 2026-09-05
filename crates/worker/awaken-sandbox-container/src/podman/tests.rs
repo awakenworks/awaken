@@ -154,6 +154,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
         ContainerRuntime::observe(
             &runtime,
             crate::ContainerObservationExpectation {
+                retained_attempt: None,
                 container_id: "container-1",
                 adoption_fingerprint: Some(&fingerprint),
                 realization_fingerprint: Some(&fingerprint),
@@ -172,6 +173,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
         ContainerRuntime::observe(
             &terminal_runtime,
             crate::ContainerObservationExpectation {
+                retained_attempt: None,
                 container_id: "container-1",
                 adoption_fingerprint: Some(&fingerprint),
                 realization_fingerprint: Some(&fingerprint),
@@ -208,6 +210,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
             ContainerRuntime::observe(
                 &runtime,
                 crate::ContainerObservationExpectation {
+                    retained_attempt: None,
                     container_id: "container-1",
                     adoption_fingerprint: Some(&fingerprint),
                     realization_fingerprint: Some(&wrong_fingerprint),
@@ -231,6 +234,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
             ContainerRuntime::observe(
                 &missing_fingerprint,
                 crate::ContainerObservationExpectation {
+                    retained_attempt: None,
                     container_id: "container-1",
                     adoption_fingerprint: Some(&fingerprint),
                     realization_fingerprint: Some(&fingerprint),
@@ -250,6 +254,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
         ContainerRuntime::observe(
             &missing,
             crate::ContainerObservationExpectation {
+                retained_attempt: None,
                 container_id: "container-1",
                 adoption_fingerprint: Some(&fingerprint),
                 realization_fingerprint: Some(&fingerprint),
@@ -269,6 +274,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
             ContainerRuntime::observe(
                 &missing,
                 crate::ContainerObservationExpectation {
+                    retained_attempt: None,
                     container_id: "container-1",
                     adoption_fingerprint: None,
                     realization_fingerprint: None,
@@ -288,6 +294,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
         ContainerRuntime::observe(
             &unavailable,
             crate::ContainerObservationExpectation {
+                retained_attempt: None,
                 container_id: "container-1",
                 adoption_fingerprint: Some(&fingerprint),
                 realization_fingerprint: Some(&fingerprint),

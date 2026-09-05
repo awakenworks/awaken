@@ -1089,6 +1089,7 @@ impl ContainerRuntime for PodmanRuntime {
             expectation.realization_fingerprint,
             expectation.effect_fence,
             &observed,
+            expectation.retained_attempt,
         )
     }
 

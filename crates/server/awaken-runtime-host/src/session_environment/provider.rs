@@ -442,6 +442,32 @@ impl SessionEnvironmentProvider {
         self.adopt_effective(&layout.spec, handle).await
     }
 
+    /// The Host has validated the retained lifecycle owner; recheck exact
+    /// handle equality before borrowing its unpersisted create-attempt proof.
+    /// A matching serialized handle alone cannot mint this proof after restart.
+    fn container_observation_adoption<'a>(
+        spec: &'a pc::SandboxSpec,
+        handle: &'a pc::SandboxHandle,
+        retained: Option<&'a super::SessionEnvironment>,
+    ) -> Result<awaken_sandbox_container::ContainerEnvironmentAdoption<'a>, pc::SandboxError> {
+        let mut adoption =
+            awaken_sandbox_container::ContainerEnvironmentAdoption::new(spec, handle);
+        if let Some(environment) = retained {
+            let super::SessionEnvironment::Container { sandbox, .. } = environment else {
+                return Err(pc::SandboxError::new(
+                    "retained Environment belongs to another provider",
+                ));
+            };
+            if &environment.handle() != handle {
+                return Err(pc::SandboxError::new(
+                    "retained Environment differs from observed handle",
+                ));
+            }
+            adoption.retained_attempt = sandbox.retained_create_attempt();
+        }
+        Ok(adoption)
+    }
+
     /// Effect-free observation through the exact provider selected for this
     /// Session. This is the only Runtime projection of the neutral observation
     /// contract; backend errors remain indeterminate and are never translated
@@ -450,6 +476,7 @@ impl SessionEnvironmentProvider {
         &self,
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
+        retained: Option<&super::SessionEnvironment>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         match self {
             Self::Workdir(provider) => pc::SandboxProvider::observe(provider, handle).await,
@@ -458,9 +485,9 @@ impl SessionEnvironmentProvider {
             }
             Self::Container { provider, .. } => {
                 provider
-                    .observe_environment(
-                        awaken_sandbox_container::ContainerEnvironmentAdoption::new(spec, handle),
-                    )
+                    .observe_environment(Self::container_observation_adoption(
+                        spec, handle, retained,
+                    )?)
                     .await
             }
         }
@@ -474,6 +501,7 @@ impl SessionEnvironmentProvider {
         &self,
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
+        retained: Option<&super::SessionEnvironment>,
         effect_fence: &pc::SandboxEffectFence,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         match self {
@@ -486,7 +514,7 @@ impl SessionEnvironmentProvider {
             Self::Container { provider, .. } => {
                 provider
                     .observe_environment_for_effect(
-                        awaken_sandbox_container::ContainerEnvironmentAdoption::new(spec, handle),
+                        Self::container_observation_adoption(spec, handle, retained)?,
                         effect_fence,
                     )
                     .await

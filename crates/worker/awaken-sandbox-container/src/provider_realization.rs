@@ -213,6 +213,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             ),
         )?;
         Ok(ContainerSandbox {
+            retained_attempt: None,
             runtime: self.runtime.clone(),
             id: spec.scope.clone(),
             container_id,
@@ -325,6 +326,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             retained_host_staging(payload.runtime_handle.as_ref()).map_err(err)?;
 
         Ok(ContainerSandbox {
+            retained_attempt: None,
             runtime: self.runtime.clone(),
             id: handle.sandbox_id.clone(),
             container_id,

@@ -2971,7 +2971,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
         .await
         .unwrap();
     let terminal_observation = namespace
-        .observe_effective_for_effect(&namespace_spec, &handle, &terminal_fence)
+        .observe_effective_for_effect(&namespace_spec, &handle, None, &terminal_fence)
         .await
         .unwrap();
     assert!(

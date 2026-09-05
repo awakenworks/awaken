@@ -649,128 +649,10 @@ pub(crate) fn existing_realization_decision(
     })
 }
 
-/// Project one adapter observation into the provider-neutral adoption result.
-///
-/// Discovery remains adapter-owned, but absence, immutable-incarnation
-/// matching, and phase semantics are shared here so Docker, Podman, and
-/// Kubernetes cannot independently decide that a transport error or an
-/// ambiguous physical object is safe to replace.
 #[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) fn sandbox_observation(
-    expected_incarnation: Option<&str>,
-    expected_adoption: Option<&pc::SandboxRealizationFingerprint>,
-    expected_fingerprint: Option<&pc::SandboxRealizationFingerprint>,
-    expected_fence: Option<&pc::SandboxEffectFence>,
-    observed: &[ExistingRealization],
-) -> Result<pc::SandboxObservation, RuntimeError> {
-    if expected_incarnation.is_some() != expected_fingerprint.is_some()
-        || expected_incarnation.is_some() != expected_adoption.is_some()
-    {
-        return Ok(pc::SandboxObservation::Incompatible {
-            reason:
-                "current Sandbox observation requires incarnation, adoption, and realization fingerprints"
-                    .into(),
-        });
-    }
-    if expected_incarnation.is_some_and(|value| value.trim().is_empty()) {
-        return Ok(pc::SandboxObservation::Incompatible {
-            reason: "Sandbox observation requires immutable incarnation evidence".into(),
-        });
-    }
-    let [observed] = observed else {
-        return if observed.is_empty() && expected_incarnation.is_some() {
-            Ok(pc::SandboxObservation::DefinitivelyUnavailable {
-                physical_incarnation: expected_incarnation.map(str::to_owned),
-            })
-        } else {
-            Ok(pc::SandboxObservation::Incompatible {
-                reason: format!(
-                    "durable Sandbox observation resolved to {} physical realizations without exact current evidence",
-                    observed.len()
-                ),
-            })
-        };
-    };
-    if expected_incarnation.is_some()
-        && let Some(expected_fence) = expected_fence
-    {
-        let Some(observed_fence) = observed.fence.as_ref() else {
-            return Ok(pc::SandboxObservation::Incompatible {
-                reason: format!(
-                    "durable Sandbox incarnation `{}` has no effect-fence evidence",
-                    observed.incarnation.identity
-                ),
-            });
-        };
-        if !observed_fence.authorizes_successor(expected_fence) {
-            return Ok(pc::SandboxObservation::Incompatible {
-                reason: format!(
-                    "durable Sandbox incarnation `{}` is fenced by a newer or foreign realization lease",
-                    observed.incarnation.identity
-                ),
-            });
-        }
-    }
-    if let Some(expected_adoption) = expected_adoption
-        && observed.adoption_fingerprint.as_deref() != Some(expected_adoption.as_str())
-    {
-        return Ok(pc::SandboxObservation::Incompatible {
-            reason: format!(
-                "durable Sandbox incarnation `{}` has missing or different adoption fingerprint",
-                observed.incarnation.identity
-            ),
-        });
-    }
-    if let Some(expected_fingerprint) = expected_fingerprint
-        && observed.fingerprint.as_deref() != Some(expected_fingerprint.as_str())
-    {
-        return Ok(pc::SandboxObservation::Incompatible {
-            reason: format!(
-                "durable Sandbox incarnation `{}` has missing or different realization fingerprint",
-                observed.incarnation.identity
-            ),
-        });
-    }
-    if expected_incarnation.is_some_and(|expected| observed.incarnation.identity != expected) {
-        return Ok(pc::SandboxObservation::Incompatible {
-            reason: format!(
-                "durable Sandbox incarnation `{}` resolved to foreign physical incarnation `{}`",
-                expected_incarnation.unwrap_or_default(),
-                observed.incarnation.identity
-            ),
-        });
-    }
-    if expected_incarnation.is_some()
-        && observed.recovery == ExistingRealizationRecovery::CurrentAttemptOnly
-        && matches!(
-            observed.phase,
-            ExistingRealizationPhase::Creating | ExistingRealizationPhase::Ready
-        )
-    {
-        return Ok(pc::SandboxObservation::Incompatible {
-            reason: format!(
-                "durable Sandbox incarnation `{}` depends on a prior process-local realization attempt",
-                observed.incarnation.identity
-            ),
-        });
-    }
-    match observed.phase {
-        ExistingRealizationPhase::Creating => Ok(pc::SandboxObservation::Provisioning),
-        ExistingRealizationPhase::Ready => Ok(pc::SandboxObservation::Ready),
-        ExistingRealizationPhase::Terminal if expected_incarnation.is_some() => {
-            Ok(pc::SandboxObservation::Terminal {
-                physical_incarnation: observed.incarnation.identity.clone(),
-            })
-        }
-        ExistingRealizationPhase::Terminal => Ok(pc::SandboxObservation::Incompatible {
-            reason: "legacy Sandbox observation cannot prove terminal incarnation ownership".into(),
-        }),
-        ExistingRealizationPhase::Indeterminate => Err(RuntimeError::Backend(format!(
-            "Sandbox observation for `{}` is in an indeterminate phase",
-            expected_incarnation.unwrap_or("legacy-handle")
-        ))),
-    }
-}
+mod observation;
+#[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
+pub(crate) use observation::sandbox_observation;
 
 /// Non-authoritative liveness projection used by the legacy Sandbox status
 /// surface. Unlike `sandbox_observation`, Gone here is never deletion evidence;
@@ -1235,6 +1117,73 @@ mod realization_tests {
     }
 
     #[test]
+    fn retained_attempt_observation_preserves_cold_recovery_and_fences() {
+        // Cause graph: C1 live phase is Creating/Ready; C2 the creating wrapper
+        // retains its exact opaque attempt, no attempt, or a different attempt;
+        // C3 incarnation, adoption fingerprint, realization fingerprint, fence
+        // and physical attempt label are intact or one differs. R1 C1+exact C2
+        // +intact C3 -> Provisioning/Ready; R2 !exact C2 -> Incompatible (cold
+        // and foreign wrappers cannot adopt host-bind participants); R3 any C3
+        // fault -> Incompatible even with an exact retained wrapper. Terminal
+        // observation uses the existing exact-incarnation disposal rules.
+        let exact = fingerprint("exact");
+        let retained = crate::ContainerCreateAttempt("attempt-1".into());
+        let other = crate::ContainerCreateAttempt("other-attempt".into());
+        for phase in [
+            ExistingRealizationPhase::Creating,
+            ExistingRealizationPhase::Ready,
+        ] {
+            for proof in [None, Some(&retained), Some(&other)] {
+                for fault in [
+                    None,
+                    Some("incarnation"),
+                    Some("adoption"),
+                    Some("fingerprint"),
+                    Some("fence"),
+                    Some("attempt-label"),
+                ] {
+                    let mut physical = observed(Some(exact.clone()), phase);
+                    let fence = physical.fence.clone().unwrap();
+                    match fault {
+                        Some("incarnation") => physical.incarnation.identity = "foreign".into(),
+                        Some("adoption") => physical.adoption_fingerprint = None,
+                        Some("fingerprint") => physical.fingerprint = None,
+                        Some("fence") => physical.fence = None,
+                        Some("attempt-label") => physical.attempt_id = None,
+                        _ => {}
+                    }
+                    let observed = sandbox_observation(
+                        Some("incarnation-1"),
+                        Some(&exact),
+                        Some(&exact),
+                        Some(&fence),
+                        &[physical],
+                        proof,
+                    )
+                    .unwrap();
+                    let allowed = proof == Some(&retained) && fault.is_none();
+                    if allowed {
+                        assert_eq!(
+                            observed,
+                            if phase == ExistingRealizationPhase::Ready {
+                                pc::SandboxObservation::Ready
+                            } else {
+                                pc::SandboxObservation::Provisioning
+                            },
+                            "R1"
+                        );
+                    } else {
+                        assert!(
+                            matches!(observed, pc::SandboxObservation::Incompatible { .. }),
+                            "R2/R3 {phase:?} {proof:?} {fault:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn exact_adoption_observation_decision_table_is_total() {
         // Cause/effect table: C1 exact query yields 0/1/>1 objects; C2 the one
         // object's immutable incarnation is exact/foreign; C3 phase is
@@ -1259,8 +1208,15 @@ mod realization_tests {
         let indeterminate = observed(Some(exact.clone()), ExistingRealizationPhase::Indeterminate);
 
         assert_eq!(
-            sandbox_observation(Some("incarnation-1"), Some(&exact), Some(&exact), None, &[],)
-                .unwrap(),
+            sandbox_observation(
+                Some("incarnation-1"),
+                Some(&exact),
+                Some(&exact),
+                None,
+                &[],
+                None
+            )
+            .unwrap(),
             pc::SandboxObservation::DefinitivelyUnavailable {
                 physical_incarnation: Some("incarnation-1".into()),
             },
@@ -1273,6 +1229,7 @@ mod realization_tests {
                 Some(&exact),
                 None,
                 &[creating],
+                None
             )
             .unwrap(),
             pc::SandboxObservation::Provisioning,
@@ -1285,6 +1242,7 @@ mod realization_tests {
                 Some(&exact),
                 None,
                 std::slice::from_ref(&ready),
+                None
             )
             .unwrap(),
             pc::SandboxObservation::Ready,
@@ -1297,6 +1255,7 @@ mod realization_tests {
                 Some(&exact),
                 None,
                 std::slice::from_ref(&terminal),
+                None
             )
             .unwrap(),
             pc::SandboxObservation::Terminal {
@@ -1314,6 +1273,7 @@ mod realization_tests {
                 Some(&exact),
                 None,
                 &[indeterminate],
+                None
             )
             .is_err(),
             "R3 indeterminate"
@@ -1325,6 +1285,7 @@ mod realization_tests {
                 Some(&exact),
                 None,
                 &[foreign],
+                None,
             ),
             sandbox_observation(
                 Some("incarnation-1"),
@@ -1332,10 +1293,11 @@ mod realization_tests {
                 Some(&exact),
                 None,
                 &[ready.clone(), ready],
+                None,
             ),
-            sandbox_observation(Some(""), Some(&exact), Some(&exact), None, &[]),
-            sandbox_observation(None, None, None, None, &[]),
-            sandbox_observation(None, None, None, None, &[terminal]),
+            sandbox_observation(Some(""), Some(&exact), Some(&exact), None, &[], None),
+            sandbox_observation(None, None, None, None, &[], None),
+            sandbox_observation(None, None, None, None, &[terminal], None),
             sandbox_observation(
                 Some("incarnation-1"),
                 Some(&exact),
@@ -1345,6 +1307,7 @@ mod realization_tests {
                     Some(exact.clone()),
                     ExistingRealizationPhase::Ready,
                 )],
+                None,
             ),
         ] {
             assert!(
@@ -1362,6 +1325,7 @@ mod realization_tests {
                 None,
                 None,
                 &[observed(None, ExistingRealizationPhase::Ready)],
+                None
             )
             .unwrap(),
             pc::SandboxObservation::Ready,
@@ -1379,6 +1343,7 @@ mod realization_tests {
                     Some(&exact),
                     None,
                     &[wrong_adoption],
+                    None
                 )
                 .unwrap(),
                 pc::SandboxObservation::Incompatible { .. }
@@ -1393,6 +1358,7 @@ mod realization_tests {
                     Some(&wrong_fingerprint),
                     None,
                     &[reconstructible(ExistingRealizationPhase::Ready)],
+                    None
                 )
                 .unwrap(),
                 pc::SandboxObservation::Incompatible { .. }
@@ -1410,6 +1376,7 @@ mod realization_tests {
                     Some(&exact),
                     None,
                     &[missing_physical],
+                    None
                 )
                 .unwrap(),
                 pc::SandboxObservation::Incompatible { .. }
@@ -1447,6 +1414,7 @@ mod realization_tests {
                     Some(&exact),
                     Some(&current_fence),
                     &[admitted],
+                    None
                 )
                 .unwrap(),
                 pc::SandboxObservation::Ready,
@@ -1486,6 +1454,7 @@ mod realization_tests {
                         Some(&exact),
                         Some(current),
                         &[rejected],
+                        None
                     )
                     .unwrap(),
                     pc::SandboxObservation::Incompatible { .. }

@@ -558,7 +558,7 @@ impl SharedHost {
             })?
             .spec;
         let observation = provider
-            .observe_effective(&spec, &handle)
+            .observe_effective(&spec, &handle, Some(environment.as_ref()))
             .await
             .map_err(|error| {
                 HostError::unavailable_classified(
@@ -690,13 +690,22 @@ impl SharedHost {
                 "Session Environment adoption effect already committed another binding",
             ));
         }
+        let retained = if revoked_durable.is_none() {
+            resident.as_deref().or_else(|| {
+                candidate
+                    .as_ref()
+                    .map(|candidate| candidate.environment.as_ref())
+            })
+        } else {
+            None
+        };
         let observation = match effect.provider_fence.as_ref() {
             Some(effect_fence) => {
                 provider
-                    .observe_effective_for_effect(&spec, &handle, effect_fence)
+                    .observe_effective_for_effect(&spec, &handle, retained, effect_fence)
                     .await
             }
-            None => provider.observe_effective(&spec, &handle).await,
+            None => provider.observe_effective(&spec, &handle, retained).await,
         }
         .map_err(|error| {
             HostError::unavailable_classified(

@@ -1294,6 +1294,7 @@ pub use provider::ContainerProvider;
 /// A realized Session-owned container environment. The opaque agent channel is
 /// returned together with the exact exec process by [`ContainerEnvironment::spawn_agent_process`].
 pub struct ContainerSandbox<R: ContainerRuntime> {
+    retained_attempt: Option<ContainerCreateAttempt>,
     runtime: Arc<R>,
     id: String,
     container_id: String,
@@ -1397,6 +1398,10 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R> {
+    fn retained_create_attempt(&self) -> Option<&ContainerCreateAttempt> {
+        self.retained_attempt.as_ref()
+    }
+
     fn outputs_path(&self) -> &str {
         &self.outputs_path
     }
