@@ -1215,14 +1215,14 @@ impl Tool for BashTool {
             Err(ToolError::Execution(if output.is_empty() {
                 format!("exit {exit_code}")
             } else {
-                output
+                format!("exit {exit_code}\n{output}")
             }))
         }
     }
 }
 
 struct BashSession {
-    _child: tokio::process::Child,
+    child: tokio::process::Child,
     stdin: tokio::process::ChildStdin,
     stdout: tokio::process::ChildStdout,
     stderr: Option<tokio::process::ChildStderr>,
@@ -1271,7 +1271,7 @@ impl BashSession {
             .ok_or_else(|| ToolError::Execution("capture /bin/bash stdout".into()))?;
         let stderr = child.stderr.take();
         Ok(Self {
-            _child: child,
+            child,
             stdin,
             stdout,
             stderr,
@@ -1284,42 +1284,65 @@ impl BashSession {
         let sentinel = format!("__ANT_CMD_{}_DONE__", uuid::Uuid::new_v4());
         let split = format!("{}''{}", &sentinel[..8], &sentinel[8..]);
         let wrapped = format!("{{ {command}\n}} </dev/null 2>&1; printf '\\n{split}%d\\n' $?\n");
-        self.stdin
-            .write_all(wrapped.as_bytes())
-            .await
-            .map_err(|error| ToolError::Execution(format!("bash: {error}")))?;
-        self.stdin
-            .flush()
-            .await
-            .map_err(|error| ToolError::Execution(format!("bash: {error}")))?;
-
+        // Cover the first cancellable write as well as response reads. A
+        // partially submitted command must not survive a cancelled invocation.
         let invalidated = self.invalidated.clone();
         let mut cancellation_guard =
             InvocationProcessGuard::new(self.process_group.pid(), invalidated.clone());
         let read = async {
+            self.stdin
+                .write_all(wrapped.as_bytes())
+                .await
+                .map_err(|error| ToolError::Execution(format!("bash: {error}")))?;
+            self.stdin
+                .flush()
+                .await
+                .map_err(|error| ToolError::Execution(format!("bash: {error}")))?;
             let mut collected = Vec::new();
             let mut truncated = false;
             let mut stdout_chunk = [0_u8; 8192];
             let mut stderr_chunk = [0_u8; 8192];
+            let mut stdout_open = true;
             loop {
-                let (read, bytes) = if let Some(stderr) = self.stderr.as_mut() {
+                if !stdout_open && self.stderr.is_none() {
+                    // `exit` and inherited `set -e` can end Bash before its
+                    // completion marker. Drain both pipes, preserve diagnostics,
+                    // and use the actual child status; never replay the command.
+                    invalidated.store(true, Ordering::SeqCst);
+                    let status = self.child.wait().await.map_err(|error| {
+                        ToolError::Execution(format!("bash: wait for shell: {error}"))
+                    })?;
+                    let output = render_bash_output(&collected, truncated);
+                    return match status.code() {
+                        Some(code) => Ok((output, code)),
+                        None => Err(ToolError::Execution(format!(
+                            "bash: bash session terminated by signal\n{output}"
+                        ))),
+                    };
+                }
+                let (read, bytes, from_stdout) = if let Some(stderr) = self.stderr.as_mut() {
                     tokio::select! {
-                        result = self.stdout.read(&mut stdout_chunk) => {
-                            result.map(|read| (read, &stdout_chunk[..read]))
+                        result = self.stdout.read(&mut stdout_chunk), if stdout_open => {
+                            result.map(|read| (read, &stdout_chunk[..read], true))
                         },
                         result = stderr.read(&mut stderr_chunk) => {
-                            result.map(|read| (read, &stderr_chunk[..read]))
+                            result.map(|read| (read, &stderr_chunk[..read], false))
                         },
                     }
                 } else {
                     self.stdout
                         .read(&mut stdout_chunk)
                         .await
-                        .map(|read| (read, &stdout_chunk[..read]))
+                        .map(|read| (read, &stdout_chunk[..read], true))
                 }
                 .map_err(|error| ToolError::Execution(format!("bash: {error}")))?;
                 if read == 0 {
-                    return Err(ToolError::Execution("bash: bash session terminated".into()));
+                    if from_stdout {
+                        stdout_open = false;
+                    } else {
+                        self.stderr.take();
+                    }
+                    continue;
                 }
                 collected.extend_from_slice(bytes);
                 if collected.len() > BASH_OUTPUT_LIMIT {
@@ -1327,22 +1350,11 @@ impl BashSession {
                     collected.drain(..drain);
                     truncated = true;
                 }
-                if let Some(index) = find_bytes(&collected, sentinel.as_bytes()) {
-                    let tail = &collected[index + sentinel.len()..];
-                    let digits = tail
-                        .iter()
-                        .take_while(|byte| byte.is_ascii_digit() || **byte == b'-')
-                        .copied()
-                        .collect::<Vec<_>>();
-                    let exit_code = String::from_utf8_lossy(&digits).parse().unwrap_or(-1);
-                    let mut output = strip_ansi(&String::from_utf8_lossy(&collected[..index]));
-                    while output.ends_with('\n') {
-                        output.pop();
-                    }
-                    if truncated {
-                        output.insert_str(0, "[output truncated]\n");
-                    }
-                    return Ok((output, exit_code));
+                if let Some((index, exit_code)) = bash_completion(&collected, &sentinel) {
+                    return Ok((
+                        render_bash_output(&collected[..index], truncated),
+                        exit_code,
+                    ));
                 }
             }
         };
@@ -1360,6 +1372,27 @@ impl BashSession {
             }
         }
     }
+}
+
+fn bash_completion(collected: &[u8], sentinel: &str) -> Option<(usize, i32)> {
+    let index = find_bytes(collected, sentinel.as_bytes())?;
+    let tail = &collected[index + sentinel.len()..];
+    // A pipe read may split anywhere, including inside the decimal status.
+    // Read the entire framed line before accepting a terminal outcome.
+    let end = tail.iter().position(|byte| *byte == b'\n')?;
+    let status = std::str::from_utf8(&tail[..end]).ok()?.parse().ok()?;
+    Some((index, status))
+}
+
+fn render_bash_output(bytes: &[u8], truncated: bool) -> String {
+    let mut output = strip_ansi(&String::from_utf8_lossy(bytes));
+    while output.ends_with('\n') {
+        output.pop();
+    }
+    if truncated {
+        output.insert_str(0, "[output truncated]\n");
+    }
+    output
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1444,6 +1477,68 @@ mod bash_tests {
 
     use super::*;
 
+    #[test]
+    fn bash_completion_requires_the_whole_status_line() {
+        // F1 graph: marker/status/newline can each span reads. Every proper
+        // prefix is nonterminal; only the full frame yields the exact status.
+        // F2 malformed/overflowing status is never converted to a fake -1.
+        for code in [0, 1, 127, 255] {
+            let frame = format!("output\n__marker__{code}\n");
+            for end in 0..frame.len() {
+                assert_eq!(
+                    bash_completion(&frame.as_bytes()[..end], "__marker__"),
+                    None
+                );
+            }
+            assert_eq!(
+                bash_completion(frame.as_bytes(), "__marker__"),
+                Some((7, code))
+            );
+        }
+        for invalid in ["", "abc", "99999999999999999999999999"] {
+            assert_eq!(
+                bash_completion(format!("__marker__{invalid}\n").as_bytes(), "__marker__"),
+                None
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn closed_stderr_does_not_discard_live_stdout_or_shell_state() {
+        // E1 stderr closes before any reply, stdout stays live -> complete
+        // output/status, not shell termination. E2 the same shell still owns
+        // exported state on the next invocation; no hidden restart occurs.
+        let context = HandToolContext::default().with_bash_launcher(
+            "/bin/bash",
+            [
+                "-c".into(),
+                "exec 2>&-; exec /bin/bash --noprofile --norc".into(),
+            ],
+        );
+        let tool = BashTool::new(&context);
+        for command in [
+            "export PIPE_STATE=kept; printf first",
+            "printf '%s' \"$PIPE_STATE\"",
+        ] {
+            let output = tool
+                .call(BashArgs {
+                    command: command.into(),
+                    restart: false,
+                    timeout_ms: Some(1000),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                output,
+                if command.starts_with("export") {
+                    "first"
+                } else {
+                    "kept"
+                }
+            );
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn bash_wait_does_not_starve_runtime_control_tasks() {
         // A long local command must yield the sole async runtime thread. Worker
@@ -1509,6 +1604,61 @@ mod bash_tests {
             "a descendant survived cancellation and wrote {}",
             leaked.display()
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_blocked_command_write_obeys_cancellation_and_timeout() {
+        // W1 launcher is live but has not read stdin; a command larger than the
+        // pipe capacity blocks in write_all. W2 cancellation/timeout -> existing
+        // process-group guard stops the launcher and descendants before their
+        // delayed effect. W3 the same tool accepts a distinct next invocation;
+        // the cancelled command is never replayed. Read-phase cancellation and
+        // background-job preservation are covered by adjacent existing tests.
+        for timeout in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let context = HandToolContext::new(directory.path()).with_bash_launcher(
+                "/bin/bash", ["-c".into(), "if [ ! -e ready ]; then printf ready > ready; sleep 0.5; printf leaked > leaked; fi; exec /bin/bash --noprofile --norc".into()],
+            );
+            let tool = Arc::new(BashTool::new(&context));
+            let pending = {
+                let tool = tool.clone();
+                tokio::spawn(async move {
+                    tool.call(BashArgs {
+                        command: format!("# {}\ntouch replayed", "x".repeat(2 * 1024 * 1024)),
+                        restart: false,
+                        timeout_ms: Some(if timeout { 100 } else { 2000 }),
+                    })
+                    .await
+                })
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while !directory.path().join("ready").exists() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            if timeout {
+                let error = pending.await.unwrap().unwrap_err();
+                assert!(error.to_string().contains("timed out after 100ms"));
+            } else {
+                pending.abort();
+                assert!(pending.await.unwrap_err().is_cancelled());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            assert!(!directory.path().join("leaked").exists());
+            assert!(!directory.path().join("replayed").exists());
+            let next = tool
+                .call(BashArgs {
+                    command: "printf next".into(),
+                    restart: false,
+                    timeout_ms: Some(1000),
+                })
+                .await
+                .unwrap();
+            assert_eq!(next, "next");
+        }
     }
 
     #[cfg(unix)]

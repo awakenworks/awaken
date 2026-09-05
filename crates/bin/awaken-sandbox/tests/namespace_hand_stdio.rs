@@ -279,6 +279,30 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
     );
     assert!(!unchanged.contains("mutated"), "P3/E3: {unchanged}");
 
+    // B1 real Namespace + a successful command leaves `set -e` active;
+    // B2 a later failure -> exact exit 1 and original diagnostic, no replay.
+    // B3 the next command gets a clean shell but the same workspace; B4 a
+    // replacement Hand below must also retain that workspace file. Temporary
+    // process mounts are not used as a cross-call continuation authority.
+    rendered(executor.call_hand(&ToolCall {
+        call_id: "bash-errexit-setup".into(), tool_id: "bash".into(),
+        arguments: serde_json::json!({"command": "printf retained > /workspace/continuation.txt; export PREVIOUS=yes; set -e"}),
+    }).await.unwrap());
+    let failed = executor.call_hand(&ToolCall {
+        call_id: "bash-errexit-failure".into(), tool_id: "bash".into(),
+        arguments: serde_json::json!({"command": "printf original-diagnostic >&2; false; touch /workspace/replayed"}),
+    }).await.unwrap();
+    assert!(
+        matches!(failed, HandResult::Err { ref error }
+        if error.message.contains("exit 1") && error.message.contains("original-diagnostic")),
+        "B2 {failed:?}"
+    );
+    let resumed = rendered(executor.call_hand(&ToolCall {
+        call_id: "bash-after-exit".into(), tool_id: "bash".into(),
+        arguments: serde_json::json!({"command": "test ! -e /workspace/replayed && test -z \"$PREVIOUS\" && cat /workspace/continuation.txt"}),
+    }).await.unwrap());
+    assert!(resumed.contains("retained"), "B3 {resumed}");
+
     drop(executor);
     let _ = process.signal(pc::Signal::Term).await;
     let _ = process.wait().await;
@@ -314,6 +338,17 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
             .expect("request reached the dispatch boundary"),
     );
     assert!(adopted_read.contains("namespace-hand-token"), "P4/E4");
+    let retained = rendered(
+        adopted_executor
+            .call_hand(&ToolCall {
+                call_id: "adopted-workspace-continuation".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({"file_path": "/workspace/continuation.txt"}),
+            })
+            .await
+            .unwrap(),
+    );
+    assert!(retained.contains("retained"), "B4 {retained}");
     drop(adopted_executor);
     let _ = adopted_process.signal(pc::Signal::Term).await;
     let _ = adopted_process.wait().await;

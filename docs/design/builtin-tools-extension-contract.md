@@ -58,6 +58,21 @@ Rules:
 6. filesystem, shell, and network operations run in-process in the extension; the
    runtime owns execution and commits the result through the normal tool path.
 
+Bash state belongs to one live Hand toolset: working directory, exports and
+shell options persist until restart, cancellation, timeout or process exit.
+`set -e` therefore also affects later invocations. The one Bash reader drains
+stdout and stderr independently; closing one pipe does not prove process exit.
+A complete response marker or actual child exit status determines the outcome.
+Normal exits preserve their numeric status and bounded diagnostic output; signal
+termination remains an error. Cancellation and timeout cover command submission
+as well as output reads and reuse the same process-group cleanup. No failed
+command is replayed; only a distinct next call starts a fresh shell.
+
+Workspace files belong to the Environment and survive shell/Hand replacement.
+A provider's private `/tmp` can be process-local and has no such continuity
+contract. Cross-call working files must use the workspace; final files use the
+existing output publication directory. This does not expand file-tool roots.
+
 ### Web provider realizations
 
 The Web provider catalog is one discovery and validation authority with separate
