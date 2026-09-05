@@ -119,40 +119,36 @@ YAML
 }
 
 log "1/10 build production roles and the protocol-only Provider fixture"
-if [ "${ADR71_REUSE_IMAGE:-0}" != "1" ]; then
-  CONTROL_BIN=$(resolve_cargo_executable awaken-cli awaken-control)
-  COORDINATOR_BIN=$(resolve_cargo_executable awaken-cli awaken-coordinator)
-  WORKER_BIN=$(resolve_cargo_executable awaken-worker awaken-worker --features container-k8s)
-  SCENARIO_BIN=$(resolve_cargo_executable awaken-scenario-host awaken-scenario-host)
-  [ -n "$CONTROL_BIN" ] && [ -n "$COORDINATOR_BIN" ] && [ -n "$WORKER_BIN" ] && [ -n "$SCENARIO_BIN" ] \
-    || { err "could not resolve executables"; exit 1; }
-  cp "$CONTROL_BIN" "$DEPLOY_DIR/awaken-control"
-  cp "$COORDINATOR_BIN" "$DEPLOY_DIR/awaken-coordinator"
-  cp "$WORKER_BIN" "$DEPLOY_DIR/awaken-worker"
-  cp "$SCENARIO_BIN" "$DEPLOY_DIR/awaken-server"
-  # Cargo's debug executables retain hundreds of MiB of symbols that are not
-  # exercised inside the black-box cluster. Strip only the disposable image
-  # copies so K3D does not need a second multi-GiB tar while importing the image.
-  strip --strip-unneeded "$DEPLOY_DIR/awaken-control" "$DEPLOY_DIR/awaken-coordinator" "$DEPLOY_DIR/awaken-worker" "$DEPLOY_DIR/awaken-server"
-fi
+# The canonical Cargo/Docker caches own incremental reuse. An existing tag
+# alone cannot establish that any of these four binaries matches this tree.
+CONTROL_BIN=$(resolve_cargo_executable awaken-cli awaken-control)
+COORDINATOR_BIN=$(resolve_cargo_executable awaken-cli awaken-coordinator)
+WORKER_BIN=$(resolve_cargo_executable awaken-worker awaken-worker --features container-k8s)
+SCENARIO_BIN=$(resolve_cargo_executable awaken-scenario-host awaken-scenario-host)
+[ -n "$CONTROL_BIN" ] && [ -n "$COORDINATOR_BIN" ] && [ -n "$WORKER_BIN" ] && [ -n "$SCENARIO_BIN" ] \
+  || { err "could not resolve executables"; exit 1; }
+cp "$CONTROL_BIN" "$DEPLOY_DIR/awaken-control"
+cp "$COORDINATOR_BIN" "$DEPLOY_DIR/awaken-coordinator"
+cp "$WORKER_BIN" "$DEPLOY_DIR/awaken-worker"
+cp "$SCENARIO_BIN" "$DEPLOY_DIR/awaken-server"
+# Cargo's debug executables retain hundreds of MiB of symbols that are not
+# exercised inside the black-box cluster. Strip only the disposable image
+# copies so K3D does not need a second multi-GiB tar while importing the image.
+strip --strip-unneeded "$DEPLOY_DIR/awaken-control" "$DEPLOY_DIR/awaken-coordinator" "$DEPLOY_DIR/awaken-worker" "$DEPLOY_DIR/awaken-server"
 
 log "2/10 create three K3S worker nodes and import immutable test images"
-"$REPO_ROOT/deploy/images/sandbox/build.sh" --ensure-hand awaken-sandbox:local ""
-if [ "${ADR71_REUSE_IMAGE:-0}" = "1" ]; then
-  docker image inspect "$IMAGE" >/dev/null 2>&1 \
-    || { err "ADR71_REUSE_IMAGE requires an existing $IMAGE"; exit 1; }
-else
-  k3d_docker_build --load -q -t "$IMAGE" \
-    --build-arg AUXILIARY_EXECUTABLE=awaken-control \
-    -f "$DEPLOY_DIR/Dockerfile" "$DEPLOY_DIR" >/dev/null
-fi
+"$REPO_ROOT/deploy/images/sandbox/build.sh" awaken-sandbox:local ""
+k3d_docker_build --load -q -t "$IMAGE" \
+  --build-arg AUXILIARY_EXECUTABLE=awaken-control \
+  -f "$DEPLOY_DIR/Dockerfile" "$DEPLOY_DIR" >/dev/null
 IMAGE_ID=$(docker image inspect "$IMAGE" --format '{{.Id}}')
 echo "using immutable test image $IMAGE_ID"
 # An absolute threshold keeps this nested K3d qualification independent of the
 # host volume's total size. Imported role images live in each Docker-backed K3s
 # node's small writable layer, so reserve 128 MiB there; the host runner owns
 # the separate capacity preflight and cleanup policy.
-k3d_create_cluster "$CLUSTER" 3 128Mi
+k3d_ensure_images "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
+k3d_create_cluster "$CLUSTER" 3 128Mi "" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
 k3d_import_images "$CLUSTER" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
 # Cause/effect decision table: D1 one default CoreDNS replica + its node stops ->
 # replacement application Pods cannot resolve authority Services; D2 two replicas
