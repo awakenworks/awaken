@@ -584,6 +584,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/memory-cas" \
     -config formal/tla/MemoryCAS.cfg formal/tla/MemoryCAS.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/memory-cas-copy" \
+    -config formal/tla/MemoryCASCopy.cfg formal/tla/MemoryCAS.tla
+  python3 scripts/ci/check_formal_mutations.py --memory-copy-model-mutant "$tla_jar"
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/skill-version-pin" \
     -config formal/tla/SkillVersionPin.cfg formal/tla/SkillVersionPin.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \

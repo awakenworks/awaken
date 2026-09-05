@@ -273,4 +273,84 @@ mod loom_tests {
             }
         });
     }
+
+    #[test]
+    fn reordered_login_revocation_never_restores_trusted_host_admission() {
+        // Cause/effect rules: H1 exact host backend + current login => admitted;
+        // H2 Available(seq=1) racing LoginRequired(seq=2) => seq=2 wins under
+        // EVERY mutex schedule; H3 a ready cloud Worker with valid login but no
+        // exact backend cannot substitute. Readiness remains Ready, so H2 is
+        // specifically credential fail-closed, not incidental Worker drain.
+        // Runs the production register/heartbeat/admission code with only its
+        // mutex replaced by Loom; complements WorkerCredentialLiveness.tla.
+        loom::model(|| {
+            use awaken_worker_contract::{
+                PlacementRequirements, TRUSTED_HOST_SANDBOX_BACKEND, WorkerCredentialObservation,
+                WorkerCredentialRevision, WorkerCredentialState,
+            };
+            let credential = WorkerCredentialRevision {
+                id: "host-login".into(),
+                revision: 1,
+            };
+            let required = PlacementRequirements {
+                sandbox_backend: Some(TRUSTED_HOST_SANDBOX_BACKEND.into()),
+                required_credentials: [credential.clone()].into(),
+                ..Default::default()
+            };
+            let directory = Arc::new(MemoryWorkerDirectory::new());
+            let mut host = registration("host");
+            host.manifest
+                .sandbox_backends
+                .insert(TRUSTED_HOST_SANDBOX_BACKEND.into());
+            let registered = directory.register_sync(host, 0, 100).unwrap();
+            let identity = registered.snapshot.identity.clone();
+            let available = WorkerCredentialObservation::available(credential.clone(), 0, 100);
+            let mut baseline = registered.snapshot;
+            baseline.state = WorkerState::Ready;
+            baseline.credential_observations.insert(available.clone());
+            assert!(baseline.accepts(&required, 1), "H1 positive control");
+            let mut cloud = baseline.clone();
+            cloud.manifest.sandbox_backends = ["container".into()].into();
+            cloud.capability_fingerprint = cloud.manifest.fingerprint().unwrap();
+            assert!(!cloud.accepts(&required, 1), "H3 no trust fallback");
+            let mut handles = Vec::new();
+            for sequence in [1, 2] {
+                let directory = directory.clone();
+                let identity = identity.clone();
+                let mut observation = available.clone();
+                if sequence == 2 {
+                    observation.state = WorkerCredentialState::LoginRequired;
+                }
+                handles.push(thread::spawn(move || {
+                    directory
+                        .heartbeat_sync(
+                            &identity,
+                            WorkerHeartbeat {
+                                sequence,
+                                ready: true,
+                                in_flight: 0,
+                                warm_environment_shapes: Default::default(),
+                                credential_observations: [observation].into(),
+                                acp_capability_observations: Default::default(),
+                            },
+                            1,
+                            100,
+                        )
+                        .unwrap();
+                }));
+            }
+            for handle in handles {
+                handle.join().unwrap();
+            }
+            let workers = directory.workers.lock().unwrap();
+            let current = workers.get("worker").unwrap();
+            assert_eq!(current.heartbeat_sequence, 2);
+            assert_eq!(current.snapshot.state, WorkerState::Ready);
+            assert!(!current.snapshot.accepts(&required, 1), "H2 revoked login");
+            assert!(
+                !cloud.accepts(&required, 1),
+                "H3 still no cloud substitution"
+            );
+        });
+    }
 }

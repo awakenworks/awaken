@@ -39,7 +39,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
-import { initializeE2EInstallation, waitForSessionEventReceipt } from './harness.mjs';
+import { snapshotExecutable } from './executable_snapshot.mjs';
+import { initializeE2EInstallation, waitForSessionEventReceipt, stopServer as stop, hardKillServer } from './harness.mjs';
 import { installHostResourceFixture, verifyTrustedHostResources } from './fixtures/trusted_host_resources.mjs';
 
 const profile = process.env.CODEX_ACP_PROFILE;
@@ -114,15 +115,6 @@ async function waitReady(child, baseURL, tokenPath) {
   throw new Error('awaken did not become ready');
 }
 
-async function stop(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise((resolve) => child.once('exit', resolve));
-  child.kill('SIGINT');
-  if (await Promise.race([exited.then(() => true), sleep(10_000).then(() => false)])) return;
-  child.kill('SIGKILL');
-  await exited;
-}
-
 async function request(baseURL, apiKey, method, route, body) {
   const response = await fetch(`${baseURL}${route}`, {
     method,
@@ -137,10 +129,14 @@ async function request(baseURL, apiKey, method, route, body) {
 }
 
 async function startHostLoginProfile() {
-  const binary = awakenBin();
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-host-resource-'));
   let child;
   try {
+  // Artifact race rule: another scenario may rebuild target/debug/awaken with
+  // different features while doctor/initialization or a restart is pending.
+  // Reuse the runner's copy snapshot so EVERY launch keeps the selected bytes.
+  const binary = snapshotExecutable(awakenBin(), path.join(temp, 'product',
+    process.platform === 'win32' ? 'awaken.exe' : 'awaken'));
   const environment = profile === 'host-fixture'
     ? await installHostResourceFixture(ROOT, temp, path.join(temp, 'data'), runtime)
     : process.env;
@@ -206,8 +202,9 @@ async function startHostLoginProfile() {
     assert.equal(result.response.status, 200, JSON.stringify(result.value));
     result = await request(baseURL, apiKey, 'POST', `/v1/config/agents/${agent}/publish`);
     assert.equal(result.response.status, 200, JSON.stringify(result.value));
-    return { baseURL, apiKey, agent, temp, restart: async () => {
-      await stop(child);
+    return { baseURL, apiKey, agent, temp, restart: async ({ crash = false } = {}) => {
+      if (crash) await hardKillServer(child, 'TrustedHost live Session');
+      else await stop(child);
       child = launch();
       await waitReady(child, baseURL, path.join(temp, 'data', 'admin-token'));
       await waitForVerifiedAcpCapability(baseURL, runtime, {
@@ -218,7 +215,7 @@ async function startHostLoginProfile() {
       fs.rmSync(temp, { recursive: true, force: true });
     } };
   } catch (error) {
-    await stop(child);
+    if (child) await stop(child);
     fs.rmSync(temp, { recursive: true, force: true });
     throw error;
   }

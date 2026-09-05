@@ -104,5 +104,56 @@ StaleDeleteDoesNotRemove == lastAction = "stale_delete" => (lastPresentBefore /\
 MatchedDeleteRemovesHead == lastAction = "delete" => (lastPresentBefore /\ ~lastPresentAfter)
 AbsentDeleteIsIdempotent == lastAction = "absent_delete" => (~lastPresentBefore /\ ~lastPresentAfter)
 
-Spec == Init /\ [][Next]_vars
+\* Copy-mode refinement boundary: existing CAS/delete actions remain the only
+\* durable writer. Each projection captures one base before editing; crashes
+\* lose only its live handle, not the persisted materialization evidence.
+\* Rules C1 two mounted writers => one CAS winner; C2 update/delete => one
+\* linearization; C3 commit then crash before acknowledgement => idempotent
+\* same-content retry; C4 intervening writer => stale retry cannot rebase.
+\* Tests: copy_lifecycle.rs concurrent_copy_harvest_* / recovered_copy_retries_*.
+\* Bounds: one pending edit per writer, surviving tree, atomic Repository calls.
+\* This is safety checking, not a proof of eventual recovery or Rust refinement.
+VARIABLES mounted, crashed, materializationBase
+copyVars == <<vars, mounted, crashed, materializationBase>>
+CopyInit == /\ Init
+            /\ mounted = [w \in Writers |-> FALSE]
+            /\ crashed = [w \in Writers |-> FALSE]
+            /\ materializationBase = [w \in Writers |-> 0]
+
+CopyCapture(w) == /\ ~mounted[w] /\ headPresent
+                  /\ Read(w)
+                  /\ mounted' = [mounted EXCEPT ![w] = TRUE]
+                  /\ materializationBase' = [materializationBase EXCEPT ![w] = generation]
+                  /\ UNCHANGED crashed
+
+CopyFlush(w) == /\ mounted[w] /\ ~crashed[w]
+                /\ IF headPresent /\ value = w
+                      THEN IdempotentWrite
+                      ELSE CAS(w) \/ StaleCAS(w)
+                /\ UNCHANGED <<mounted, crashed, materializationBase>>
+
+CopyDelete(w) == /\ mounted[w] /\ ~crashed[w]
+                 /\ DeleteIfMatch(w) \/ StaleDelete(w) \/ AlreadyAbsentDelete
+                 /\ UNCHANGED <<mounted, crashed, materializationBase>>
+
+CopyCrash(w) == /\ mounted[w] /\ ~crashed[w]
+                /\ crashed' = [crashed EXCEPT ![w] = TRUE]
+                /\ UNCHANGED <<vars, mounted, materializationBase>>
+
+CopyRecover(w) == /\ crashed[w]
+                  /\ crashed' = [crashed EXCEPT ![w] = FALSE]
+                  /\ UNCHANGED <<vars, mounted, materializationBase>>
+
+CopyNext == \E w \in Writers:
+              CopyCapture(w) \/ CopyFlush(w) \/ CopyDelete(w)
+              \/ CopyCrash(w) \/ CopyRecover(w)
+CopyTypeOK == /\ TypeOK
+              /\ mounted \in [Writers -> BOOLEAN]
+              /\ crashed \in [Writers -> BOOLEAN]
+              /\ materializationBase \in [Writers -> 0..MaxGeneration]
+CopyRecoveryKeepsMaterializationBase ==
+    \A w \in Writers: mounted[w] => expected[w] = materializationBase[w]
+CopySpec == CopyInit /\ [][CopyNext]_copyVars
+\* The original Repository configuration keeps projection history inert.
+Spec == CopyInit /\ [][Next /\ UNCHANGED <<mounted, crashed, materializationBase>>]_copyVars
 =============================================================================

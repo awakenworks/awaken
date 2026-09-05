@@ -24,6 +24,7 @@ import {
   spawnServer,
   startUpstream,
   stopServer,
+  hardKillServer as hardKill,
   waitForPort,
   waitForSessionEventReceipt,
   waitForValue,
@@ -111,13 +112,6 @@ async function reply(sessionId) {
     events.push(event);
   }
   return assistantText(events);
-}
-
-async function hardKill(server) {
-  if (server.exitCode !== null || server.signalCode !== null) return;
-  const exited = new Promise((resolve) => server.once('exit', resolve));
-  server.kill('SIGKILL');
-  await exited;
 }
 
 async function createMemory(storeId, pathName, content) {

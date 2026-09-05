@@ -32,6 +32,7 @@ cargo test -p awaken-worker-contract --lib
 cargo test -p awaken-cli --lib acp_local_credentials
 cargo test -p awaken-sandbox-local --lib
 cargo test -p awaken-sandbox-memoryd --lib
+cargo test -p awaken-sandbox-memoryd --test copy_lifecycle
 
 # Composition rules: each installed fixture is a real native executable, and
 # each runtime must perform File/Memory/Repository I/O through the production

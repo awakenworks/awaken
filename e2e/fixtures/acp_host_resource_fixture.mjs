@@ -53,23 +53,34 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
         const repository = /A git repository is checked out at `([^`]+)`/u.exec(text)?.[1];
         assert.ok(file && repository, 'default File and Repository instructions');
         const seed = fs.readFileSync(file, 'utf8');
-        assert.equal(fs.readFileSync(path.join(repository, 'README.md'), 'utf8'), 'REPOSITORY_SEED');
-        assert.equal(fs.readFileSync(path.join(memory, 'seed.md'), 'utf8'), 'MEMORY_SEED');
+        const repoSeed = fs.readFileSync(path.join(repository, 'README.md'), 'utf8');
+        const memorySeed = fs.readFileSync(path.join(memory, 'seed.md'), 'utf8');
         assert.ok(fs.statSync(workspace).isDirectory());
         assert.ok(!text.includes(cwd), 'host root is absent from the model input');
         const resultName = /^AWK_RESULT=(result-(?:default|nested))$/mu.exec(text)?.[1];
         assert.ok(resultName);
-        fs.writeFileSync(path.join(memory, resultName + '.md'), seed);
-        fs.writeFileSync(path.join(repository, resultName + '.txt'), seed);
-        fs.mkdirSync(outputs, { recursive: true });
-        fs.writeFileSync(path.join(outputs, 'result.txt'), seed);
         const head = execFileSync('git', ['-C', repository, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
         assert.match(head, /^[0-9a-f]{40}$/u);
+        const attempt = [...text.matchAll(/^AWK_ATTEMPT=(.+)$/gmu)].at(-1)?.[1];
+        assert.ok(attempt);
+        const combined = [seed, memorySeed, repoSeed, head, attempt].join('\n');
+        const previous = [...text.matchAll(/^AWK_PREVIOUS=(.+)$/gmu)].at(-1)?.[1];
+        if (previous) {
+          const prior = [seed, memorySeed, repoSeed, head, previous].join('\n');
+          assert.equal(fs.readFileSync(path.join(memory, resultName + '.md'), 'utf8'), prior,
+            'Memory prior edit survives Worker replacement');
+          assert.equal(fs.readFileSync(path.join(repository, resultName + '.txt'), 'utf8'), prior,
+            'Repository prior edit survives Worker replacement');
+        }
+        fs.writeFileSync(path.join(memory, resultName + '.md'), combined);
+        fs.writeFileSync(path.join(repository, resultName + '.txt'), combined);
+        fs.mkdirSync(outputs, { recursive: true });
+        fs.writeFileSync(path.join(outputs, 'result.txt'), combined);
         execFileSync('git', ['-C', repository, 'add', '-N', resultName + '.txt']);
         fs.writeFileSync(path.join(outputs, 'repository.patch'),
           execFileSync('git', ['-C', repository, 'diff', '--', resultName + '.txt']));
         send({ method: 'session/update', params: { sessionId, update: {
-          sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `RESOURCE_OK ${seed}` },
+          sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `RESOURCE_OK ${seed} ${attempt}` },
         } } });
       }
       result = { stopReason: 'end_turn' };
