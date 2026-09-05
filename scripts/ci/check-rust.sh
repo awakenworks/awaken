@@ -19,11 +19,6 @@ if [ ! -f Cargo.toml ]; then
   exit 0
 fi
 
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "ERROR: Cargo is required for Rust checks." >&2
-  exit 1
-fi
-
 locked=()
 if [ -f Cargo.lock ]; then
   locked=(--locked)
@@ -90,14 +85,23 @@ if [ "$mode" = "--self-test" ]; then
   exit 0
 fi
 
-step "fmt" "cargo fmt --all" \
-  cargo fmt --all -- --check
 step "dependency-sources" "use an allowlisted HTTPS Git repository and pin a full 40-character rev" \
   python3 scripts/ci/check_dependency_sources.py
 step "authority-arithmetic" "replace lossy or saturating authority arithmetic with checked conversions" \
   python3 scripts/ci/check_authority_arithmetic.py
 step "crate-boundaries" "remove the illegal dependency shown above (a lower layer must not import a higher one)" \
   python3 scripts/ci/check_crate_boundaries.py
+
+# The sole Rust gate runs toolchain-independent checks even without Cargo.
+# A missing toolchain still fails; it cannot suppress the static evidence or
+# become a successful skip after removal of the redundant standalone hooks.
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "ERROR: Cargo is required for Rust checks." >&2
+  exit 1
+fi
+
+step "fmt" "cargo fmt --all" \
+  cargo fmt --all -- --check
 
 # Cause/effect rule CR1: when Runtime Host is resolved without default
 # features (cause), its neutral credential-refresh port must still compile
