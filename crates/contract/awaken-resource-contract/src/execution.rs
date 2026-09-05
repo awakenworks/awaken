@@ -252,6 +252,25 @@ impl<C> ArtifactPublication<C> {
     }
 
     pub fn verify(&self) -> Result<(), ArtifactPublicationError> {
+        // Resources owns publication shape for embedded and remote callers.
+        // Transport adapters decode their fence, then call this same contract;
+        // a local publisher must not bypass the Worker HTTP admission rules.
+        if self.workspace_id.trim().is_empty()
+            || self.session_id.trim().is_empty()
+            || self.logical_path.trim().is_empty()
+            || self.logical_path.len() > 1024
+            || self.logical_path.starts_with('/')
+            || self
+                .logical_path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            || self.mime_type.trim().is_empty()
+            || self.mime_type.len() > 255
+        {
+            return Err(ArtifactPublicationError::new(
+                "artifact requires an exact Workspace, Session, bounded relative path, and MIME type",
+            ));
+        }
         let actual = content_id(&self.bytes);
         let expected_effect =
             harvest_idempotency_key(&self.session_id, &self.logical_path, &self.content_id);
@@ -576,6 +595,65 @@ mod tests {
             },
         };
         (publication, receipt)
+    }
+
+    #[test]
+    fn artifact_metadata_admission_is_owned_by_the_publication_contract() {
+        // Cause/effect graph: C1 exact nonblank Workspace/Session, C2 bounded
+        // relative path without empty/dot segments, C3 bounded nonblank MIME,
+        // C4 matching bytes/effect and optional nonblank terminal scope.
+        // M1 all causes -> admit; M2 any missing cause -> reject. Recompute the
+        // effect after changing metadata so a bad path is not rejected merely
+        // by an unrelated digest mismatch. UTF-8 names and inclusive byte-size
+        // limits pass; one byte over each limit fails without normalization.
+        let (base, _) = artifact();
+        for (path, admitted) in [
+            ("报告/销售 数据.xlsx".to_string(), true),
+            ("x".repeat(1024), true),
+            (String::new(), false),
+            ("  ".to_string(), false),
+            ("/absolute".to_string(), false),
+            (".".to_string(), false),
+            ("..".to_string(), false),
+            ("a/./b".to_string(), false),
+            ("a/../b".to_string(), false),
+            ("a//b".to_string(), false),
+            ("a/".to_string(), false),
+            ("x".repeat(1025), false),
+        ] {
+            let mut candidate = base.clone();
+            candidate.logical_path = path.clone();
+            candidate.effect_id = harvest_idempotency_key(
+                &candidate.session_id,
+                &candidate.logical_path,
+                &candidate.content_id,
+            );
+            assert_eq!(candidate.verify().is_ok(), admitted, "M1/M2 path {path:?}");
+        }
+        for (mime, admitted) in [
+            ("text/plain".to_string(), true),
+            ("x".repeat(255), true),
+            (String::new(), false),
+            ("  ".to_string(), false),
+            ("x".repeat(256), false),
+        ] {
+            let mut candidate = base.clone();
+            candidate.mime_type = mime;
+            assert_eq!(candidate.verify().is_ok(), admitted, "M1/M2 MIME");
+        }
+        for value in ["", " \t"] {
+            let mut candidate = base.clone();
+            candidate.workspace_id = value.to_string();
+            assert!(candidate.verify().is_err(), "M2 Workspace");
+            let mut candidate = base.clone();
+            candidate.session_id = value.to_string();
+            candidate.effect_id = harvest_idempotency_key(
+                &candidate.session_id,
+                &candidate.logical_path,
+                &candidate.content_id,
+            );
+            assert!(candidate.verify().is_err(), "M2 Session");
+        }
     }
 
     #[test]

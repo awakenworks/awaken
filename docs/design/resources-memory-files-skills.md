@@ -284,7 +284,7 @@ Released and Failed generations; `SessionCleanupOperation` owns terminal receipt
 | authorization PDP/PIP | External/shared authorization domain | IAM | decide principal/action/scope/resource facts under active policy | mounts, resource configuration, storage |
 | `SessionResourceCoordinator` | Existing in Managed Session application service | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
 | `ResourcesApplication` | Implemented canonical Resources application | Resources | derive the one File command service and purge scheduler from one `ResourceAuthorities`; expose the same services to HTTP, Runtime artifact harvesting, and cleanup | HTTP, Runtime, Coordinator, IAM, or a second resource aggregate |
-| `FileApplicationService` / `FileApplication` | Implemented sole File command path | Resources | logical File get/list/create/bytes/delete, quota, idempotent artifact harvesting, ownership reference ordering, and purge intent | route DTOs, Runtime execution, direct physical reclamation, or parallel catalog writes |
+| `FileApplicationService` / `FileApplication` | Implemented sole File command path | Resources | logical File get/list/create/bytes/delete, quota, idempotent artifact harvesting, ownership reference ordering, and purge intent; `ArtifactPublication::verify` owns identity, bounded relative path/MIME, digest and effect admission for embedded and HTTP publishers | route DTOs, Runtime execution, direct physical reclamation, or parallel catalog writes |
 | `FileStore` | Existing | Resources / File aggregate | immutable content-addressed bytes | Workspace authorization; mutable overwrite |
 | `FileContentSource` | Implemented boundary port | Worker/File boundary | resolve one exact Workspace-scoped public `FileId` under the current claim and verify the immutable digest before read-only materialization | File ownership, mutable write-back, private blob-id authority, database access |
 | `StoreFileContentSource` | Implemented local adapter | Resources / File aggregate | reuse `FileCatalog` then `FileStore` as the sole logical-to-content resolution path | Worker identity, dispatch ownership, HTTP, a second catalog |
@@ -499,8 +499,8 @@ effects.
 
 ### Configure
 
-The Files API delegates to `FileApplication`, which checks the Workspace quota,
-stores immutable bytes, creates one logical File record, and writes its ownership
+The Files API delegates to `FileApplication`; artifacts first pass `ArtifactPublication::verify`
+before quota, immutable blob or catalog effects. The application writes the File ownership
 reference through the lifecycle repository. `FileStore` computes the BLAKE3
 `blob_id`; equal bytes may share that blob while distinct uploads retain distinct
 logical `FileId` values. Knowing either id is never authority.
