@@ -152,6 +152,103 @@ async fn opaque_process_writes_to_the_artifact_scan_output_root() {
     sandbox.dispose().await.unwrap();
 }
 
+/// Real npm closure graph: N1 an executable inside a scoped package imports a
+/// hoisted sibling; N2 it tries writing that dependency; N3 it reads a sibling
+/// outside node_modules; N4 it writes a Session output. With Linux isolation
+/// and Node available: N1 succeeds, N2/N3 fail, N4 succeeds. No network/model
+/// fixture can substitute for these physical mount assertions. Other hosts
+/// retain the pure cross-platform renderer coverage in namespace/tests.rs.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn npm_agent_loads_hoisted_dependencies_with_read_only_runtime_boundary() {
+    use std::os::unix::fs::PermissionsExt as _;
+    if !bwrap_works().await {
+        eprintln!("skipping: bwrap/userns unavailable on this host");
+        return;
+    }
+    if !tokio::process::Command::new("node")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|status| status.success())
+    {
+        eprintln!("skipping: Node runtime unavailable on this host");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let install = tmp.path().join("installation");
+    let modules = install.join("node_modules");
+    let package = modules.join("@fixture/acp/dist");
+    let dependency = modules.join("@fixture/sdk");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::create_dir_all(&dependency).unwrap();
+    std::fs::write(
+        dependency.join("package.json"),
+        r#"{"type":"module","exports":"./index.js"}"#,
+    )
+    .unwrap();
+    std::fs::write(dependency.join("index.js"), "export default 'hoisted-sdk';").unwrap();
+    std::fs::write(install.join("private.txt"), "outside runtime").unwrap();
+    let entry = package.join("index.mjs");
+    std::fs::write(&entry, r#"#!/usr/bin/env node
+import sdk from '@fixture/sdk';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const modules = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+assert.equal(sdk, 'hoisted-sdk');
+assert.throws(() => fs.writeFileSync(path.join(modules, '@fixture/sdk/index.js'), 'changed'), {code:'EROFS'});
+assert.equal(fs.existsSync(path.join(modules, '../private.txt')), false);
+fs.writeFileSync(path.join(process.env.AWAKEN_OUTPUTS_DIR, 'result.txt'), sdk);
+console.log('dependency-loaded;runtime-readonly;parent-hidden');
+"#).unwrap();
+    std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let sandbox = NamespaceProvider::new(tmp.path().join("sandboxes"))
+        .create_sandbox(&spec("npm-runtime-boundary"))
+        .await
+        .unwrap();
+    let mut command = pc::Command::new([entry.to_string_lossy().as_ref()]);
+    command.env.push(pc::EnvVar {
+        name: "PATH".into(),
+        value: pc::EnvValue::Inline {
+            value: std::env::var("PATH").unwrap(),
+        },
+        visibility: pc::EnvVisibility::Process,
+    });
+    let (process, mut channel) = sandbox.spawn_agent(command).await.unwrap();
+    let mut output = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        channel.read_to_string(&mut output),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        process.wait().await.unwrap().code,
+        Some(0),
+        "N1-N4: {output}"
+    );
+    assert_eq!(
+        output.trim(),
+        "dependency-loaded;runtime-readonly;parent-hidden"
+    );
+    let artifacts = sandbox.artifacts().await.unwrap();
+    assert_eq!(artifacts.len(), 1, "N4");
+    assert_eq!(
+        sandbox.read_artifact(&artifacts[0].id).await.unwrap(),
+        b"hoisted-sdk"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dependency.join("index.js")).unwrap(),
+        "export default 'hoisted-sdk';",
+        "N2"
+    );
+    sandbox.dispose().await.unwrap();
+}
+
 #[tokio::test]
 async fn seatbelt_enforces_files_env_cwd_and_outputs_on_macos() {
     if !seatbelt_works().await {

@@ -918,6 +918,79 @@ fn bubblewrap_projects_an_explicit_non_system_executable_read_only() {
     assert!(projected_runtime_roots_for_command(&[], &[s("bash")]).is_empty());
 }
 
+/// Runtime closure decision table: N1 scoped/unscoped npm entry -> outer
+/// node_modules read-only; N2 nested dependency -> same hoisted closure; N3
+/// PATH .bin plus absolute entry -> one projection; N4 system -> existing
+/// system root; N5 relative or lookalike component -> no npm expansion. Both
+/// OS renderers consume the same selector. Neither may grant runtime writes or
+/// expose the installation parent (which can hold credentials/application data).
+#[test]
+fn npm_runtime_projection_retains_dependencies_without_exposing_the_install_parent() {
+    for (entry, expected) in [
+        (
+            "/opt/acp/node_modules/@scope/acp/dist/index.js",
+            Some("/opt/acp/node_modules"),
+        ),
+        (
+            "/opt/acp/node_modules/acp/bin/cli.js",
+            Some("/opt/acp/node_modules"),
+        ),
+        (
+            "/opt/acp/node_modules/acp/node_modules/dep/bin/cli.js",
+            Some("/opt/acp/node_modules"),
+        ),
+        (
+            "/opt/acp/node_modules/.bin/cli",
+            Some("/opt/acp/node_modules"),
+        ),
+        ("/usr/lib/node_modules/acp/bin/cli.js", None),
+        ("node_modules/.bin/cli", None),
+        (
+            "/opt/acp/not_node_modules/bin/cli",
+            Some("/opt/acp/not_node_modules/bin"),
+        ),
+    ] {
+        let argv = vec![s(entry)];
+        let roots = projected_runtime_roots_for_command(&[], &argv);
+        assert_eq!(
+            roots,
+            expected.into_iter().map(s).collect::<Vec<_>>(),
+            "{entry}"
+        );
+        if let Some(root) = expected {
+            let ws = PathBuf::from("/host/ws");
+            let out = PathBuf::from("/host/out");
+            let input = input(&ws, &out, &[], &[], &pc::NetworkPolicy::None, &argv);
+            let linux = bubblewrap_argv(&input);
+            assert!(
+                linux.windows(3).any(|w| w == ["--ro-bind-try", root, root]),
+                "{entry}"
+            );
+            assert!(!linux.iter().any(|v| v == "/opt/acp"), "{entry}");
+            let macos = sandbox_exec_argv(&input);
+            assert!(
+                macos[2].contains(&format!(
+                    "(allow file-read* (literal \"{root}\")(subpath \"{root}\"))"
+                )),
+                "{entry}"
+            );
+            assert!(
+                !macos[2].contains(&format!("(allow file-write* (literal \"{root}\")")),
+                "{entry}"
+            );
+        }
+    }
+    let env = vec![(s("PATH"), s("/opt/acp/node_modules/.bin:/usr/bin"))];
+    assert_eq!(
+        projected_runtime_roots_for_command(
+            &env,
+            &[s("/opt/acp/node_modules/@scope/acp/dist/index.js")]
+        ),
+        vec![s("/opt/acp/node_modules")],
+        "N3 deduplicated runtime"
+    );
+}
+
 #[test]
 fn bubblewrap_chdirs_into_a_custom_cwd_when_the_command_sets_one() {
     // The cwd decision branch: an empty cwd renders `--chdir /workspace` (covered

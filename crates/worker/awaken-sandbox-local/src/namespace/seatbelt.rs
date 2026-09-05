@@ -13,7 +13,20 @@ fn runtime_projection_root(entry: PathBuf) -> Option<PathBuf> {
     let is_bin = entry.file_name().is_some_and(|name| name == "bin");
     let path = entry.to_string_lossy();
     Some(
-        if let Some((prefix, _)) = path.split_once("/.local/share/uv/python/") {
+        if let Some(modules) = entry
+            .ancestors()
+            .filter(|ancestor| {
+                ancestor
+                    .file_name()
+                    .is_some_and(|name| name == "node_modules")
+            })
+            .last()
+        {
+            // npm entrypoints import hoisted siblings and nested dependencies.
+            // The outer installation tree is the runtime closure; its parent
+            // may contain application data and is deliberately not projected.
+            modules.to_path_buf()
+        } else if let Some((prefix, _)) = path.split_once("/.local/share/uv/python/") {
             PathBuf::from(format!("{prefix}/.local/share/uv/python"))
         } else if is_bin && (path.contains("/venv/") || path.ends_with("/venv/bin")) {
             entry
@@ -105,6 +118,11 @@ pub fn sandbox_exec_argv(input: &RenderInput) -> Vec<String> {
         readable.push(root.join("mnt"));
     }
     readable.extend(input.mounts.iter().map(|mount| mount.host.clone()));
+    readable.extend(
+        projected_runtime_roots_for_command(input.env, input.argv)
+            .into_iter()
+            .map(PathBuf::from),
+    );
     let mut writable = vec![
         input.host_workspace.to_path_buf(),
         input.host_outputs.to_path_buf(),
