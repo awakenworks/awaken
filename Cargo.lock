@@ -2163,6 +2163,7 @@ dependencies = [
  "awaken-sandbox-memoryd",
  "awaken-session-contract",
  "blake3",
+ "command-fds",
  "getrandom 0.2.17",
  "serde",
  "serde_json",
@@ -3173,6 +3174,16 @@ checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "command-fds"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b60b5124979fccd9addd89d8b97a1d6eebb4950694520c75ddd722535ea443f"
+dependencies = [
+ "nix 0.31.3",
+ "thiserror",
 ]
 
 [[package]]
