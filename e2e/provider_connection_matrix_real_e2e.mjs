@@ -15,6 +15,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import {
   deploymentEnv,
   pass,
+  publishManagementAgent,
+  provisionProviderTestProfile,
   spawnServer,
   stopServer,
   waitForPort,
@@ -29,16 +31,6 @@ import {
 
 const BETAS = ['managed-agents-2026-04-01'];
 const BASE_PORT = Number(process.env.E2E_PORT ?? 38327);
-
-async function request(base, method, uri, body) {
-  const response = await fetch(`${base}${uri}`, {
-    method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await response.text();
-  return { status: response.status, body: text ? JSON.parse(text) : null };
-}
 
 async function managedRun(base, agent, marker) {
   const client = new Anthropic({ apiKey: 'local-provider-certification', baseURL: base }); // awaken-allow: secret (local fixture)
@@ -81,14 +73,6 @@ async function managedRun(base, agent, marker) {
   // cleanup drains. Keep the owned server alive long enough to observe that
   // boundary instead of cancelling cleanup during fixture teardown.
   await new Promise((resolve) => setTimeout(resolve, 500));
-}
-
-async function publishConfigAgent(base, agent, config, label = agent) {
-  let result = await request(base, 'PUT', `/v1/config/agents/${agent}`, config);
-  assert.equal(result.status, 200, `${label}: author agent`);
-  result = await request(base, 'POST', `/v1/config/agents/${agent}/publish`);
-  assert.equal(result.status, 200, `${label}: publish agent`);
-  assert.equal(result.body.installed, true, `${label}: agent was not installed`);
 }
 
 const eventText = (event) => (event.content ?? [])
@@ -250,62 +234,20 @@ async function certifyProvider(item, index) {
     await waitForPort(port, 180_000, server);
     const base = `http://127.0.0.1:${port}`;
     const workspace = fs.readFileSync(path.join(directory, 'platform-workspace-id'), 'utf8').trim();
-    const authentication = item.auth === 'oauth_helper'
-      ? {
-          configuration: item.configuration,
-          oauth_helper: item.oauth_helper,
-        }
-      : { base_url: item.base_url, secret: item.secret };
-    let result = await request(base, 'POST', '/v1/config/provider-connections', {
-      idempotency_key: `provider-certification-${item.id}`,
-      workspace_id: workspace,
-      provider_id: item.provider_id,
-      display_name: `Compatibility ${item.id}`,
-      dialect: item.dialect,
-      timeout_secs: item.timeout_secs,
-      ...authentication,
-    });
-    assert.equal(result.status, 201, `${item.id}: provider connection failed (${result.status})`);
-    assert.ok(result.body.sync.discovered > 0, `${item.id}: provider discovered no models`);
-    if (item.secret !== undefined) {
-      assert.ok(!JSON.stringify(result.body).includes(item.secret), `${item.id}: secret leaked`);
-    }
-    const discoveredModels = result.body.sync.discovered;
-
-    const credentialId = result.body.credential.id;
-    result = await request(base, 'GET', '/v1/config/catalog');
-    assert.equal(result.status, 200, `${item.id}: catalog`);
-    const offerings = result.body.offerings.filter((offering) => (
-      offering.provider_id === item.provider_id && (offering.status ?? 'active') === 'active'
-    ));
-    const offering = offerings.find((candidate) => candidate.model_id === item.model_id)
-      ?? offerings[0];
-    assert.ok(offering, `${item.id}: no active offering`);
-
-    result = await request(base, 'PUT', `/v1/config/inference-profiles/provider-${item.id}`, {
-      workspace_id: workspace,
-      primary: {
-        target: {
-          model_id: offering.model_id,
-          provider_id: offering.provider_id,
-          protocol_endpoint_id: offering.protocol_endpoint_id,
-        },
-        credential_binding: { type: 'exact', credential_source_id: credentialId },
-      },
-      fallbacks: [],
-      disabled_endpoint_ids: [],
-    });
-    assert.equal(result.status, 200, `${item.id}: inference profile`);
+    const { offering, discoveredModels } = await provisionProviderTestProfile(
+      base, workspace, item, `provider-${item.id}`,
+    );
 
     const agent = `provider-cert-${item.id}`;
-    await publishConfigAgent(base, agent, {
+    const published = await publishManagementAgent(base, agent, {
       id: agent,
       name: `Provider certification ${item.id}`,
       system: 'Follow the user instruction exactly and answer briefly.',
       max_steps: 2,
       model: { mode: 'profile', profile_id: `provider-${item.id}` },
       tools: [],
-    }, item.id);
+    });
+    assert.equal(published.installed, true, `${item.id}: agent was not installed`);
 
     const marker = `AWAKEN-PROVIDER-${item.id.toUpperCase()}-OK`;
     await managedRun(base, agent, marker);
@@ -319,7 +261,7 @@ async function certifyProvider(item, index) {
         sendAccepted: `${markerPrefix}-SEND-ACCEPTED`,
         reportAck: `${markerPrefix}-REPORT-ACK`,
       };
-      await publishConfigAgent(base, coordinator, {
+      const publishedCoordinator = await publishManagementAgent(base, coordinator, {
         id: coordinator,
         name: `Provider certification ${item.id} coordinator`,
         system: [
@@ -338,7 +280,8 @@ async function certifyProvider(item, index) {
           type: 'coordinator',
           agents: [{ type: 'agent', id: agent, version: 1 }],
         },
-      }, `${item.id}: coordinator`);
+      });
+      assert.equal(publishedCoordinator.installed, true, `${item.id}: coordinator was not installed`);
       await managedMultiagentRun(base, coordinator, agent, offering.model_id, markers);
       pass(`${item.id}: real coordinator -> fixed tools -> child -> report -> aggregate idle`);
     }

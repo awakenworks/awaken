@@ -608,6 +608,54 @@ export async function publishManagementAgent(baseUrl, agentId, config) {
   return published.body;
 }
 
+// Real-provider setup shared by compatibility certification and application
+// tasks. Graph: live connection -> discovered offering -> exact credential
+// profile -> publication caller. P1 each successful edge returns the selected
+// model; P2 any failed edge or missing explicitly selected model fails closed.
+// Secret bytes never enter returned evidence or error messages. Configuration,
+// discovery and credential ownership stay in the real Control API.
+export async function provisionProviderTestProfile(base, workspace, item, profileId) {
+  const request = async (method, route, body) => {
+    const response = await fetch(`${base}${route}`, {
+      method, headers: body === undefined ? {} : { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const result = await response.json();
+    if (item.secret && JSON.stringify(result).includes(item.secret)) {
+      throw new Error(`${item.id}: provider response exposed credential material`);
+    }
+    if (!response.ok) throw new Error(`${item.id}: ${route} failed (${response.status})`);
+    return result;
+  };
+  const authentication = item.auth === 'oauth_helper'
+    ? { configuration: item.configuration, oauth_helper: item.oauth_helper }
+    : { base_url: item.base_url, secret: item.secret };
+  const connection = await request('POST', '/v1/config/provider-connections', {
+    idempotency_key: `provider-certification-${item.id}`,
+    workspace_id: workspace, provider_id: item.provider_id,
+    display_name: `Compatibility ${item.id}`, dialect: item.dialect,
+    timeout_secs: item.timeout_secs, ...authentication,
+  });
+  if (!(connection.sync.discovered > 0)) throw new Error(`${item.id}: provider discovered no models`);
+  const catalog = await request('GET', '/v1/config/catalog');
+  const offerings = catalog.offerings.filter((offering) =>
+    offering.provider_id === item.provider_id && (offering.status ?? 'active') === 'active');
+  const offering = item.model_id
+    ? offerings.find((candidate) => candidate.model_id === item.model_id)
+    : offerings[0];
+  if (!offering) throw new Error(`${item.id}: selected model has no active offering`);
+  await request('PUT', `/v1/config/inference-profiles/${profileId}`, {
+    workspace_id: workspace,
+    primary: {
+      target: { model_id: offering.model_id, provider_id: offering.provider_id,
+        protocol_endpoint_id: offering.protocol_endpoint_id },
+      credential_binding: { type: 'exact', credential_source_id: connection.credential.id },
+    },
+    fallbacks: [], disabled_endpoint_ids: [],
+  });
+  return { offering, discoveredModels: connection.sync.discovered };
+}
+
 // Fixture owner for binding one immutable Sandbox execution policy. Endpoint
 // conformance tests continue to issue raw requests because they verify the wire;
 // behavior scenarios use this helper so policy publication is not reimplemented.

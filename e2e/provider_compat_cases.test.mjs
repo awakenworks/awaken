@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { provisionProviderTestProfile } from './harness.mjs';
 import {
   loadProviderCases,
   providerDialects,
@@ -150,3 +151,54 @@ test('duplicate identities fail before provider I/O', () => {
     /ids must be unique/u,
   );
 });
+
+// Setup decision graph: C1 accepted connection + nonempty discovery; C2 explicit
+// model present (or omitted); C3 secret-free response; C4 profile accepted.
+// P1 C1+C2+C3+C4 -> one exact-credential profile; P2 !C1 stops at connection;
+// P3 !C2 stops after catalog, never substitutes another model; P4 !C3 returns
+// only a redacted diagnostic; P5 !C4 fails publication setup. API-key/OAuth
+// branches preserve their existing exclusive ownership of credential ingress.
+for (const mode of ['key', 'oauth', 'implicit', 'missing-model', 'empty', 'leak', 'denied', 'profile-denied']) {
+  test(`shared provider setup: ${mode}`, async (t) => {
+    const calls = [];
+    const secret = 'inert-provider-test-material'; // awaken-allow: secret -- loopback-only test
+    const item = { id: 'fixture', provider_id: 'fixture', dialect: 'open_ai_chat',
+      base_url: 'https://provider.invalid', timeout_secs: 300,
+      ...(mode === 'implicit' ? {} : { model_id: mode === 'missing-model' ? 'absent' : 'chosen' }),
+      ...(mode === 'oauth' ? { auth: 'oauth_helper', oauth_helper: 'fixture-helper', configuration: { project_id: 'project' } }
+        : { auth: 'api_key', secret }),
+    };
+    t.mock.method(globalThis, 'fetch', async (url, init) => {
+      const route = new URL(url).pathname;
+      calls.push({ route, method: init.method, body: init.body ? JSON.parse(init.body) : undefined });
+      if (route === '/v1/config/provider-connections') {
+        return Response.json({ credential: { id: 'credential' }, sync: { discovered: mode === 'empty' ? 0 : 2 },
+          ...(mode === 'leak' ? { leaked: secret } : {}) }, { status: mode === 'denied' ? 403 : 201 });
+      }
+      if (route === '/v1/config/catalog') return Response.json({ offerings: [
+        { model_id: 'wrong-provider', provider_id: 'other', protocol_endpoint_id: 'other' },
+        { model_id: 'chosen', provider_id: 'fixture', protocol_endpoint_id: 'endpoint', status: 'active' },
+      ] });
+      assert.equal(route, '/v1/config/inference-profiles/profile');
+      return Response.json({}, { status: mode === 'profile-denied' ? 400 : 200 });
+    });
+    if (['key', 'oauth', 'implicit'].includes(mode)) {
+      const result = await provisionProviderTestProfile('http://localhost', 'workspace', item, 'profile');
+      assert.equal(result.offering.model_id, 'chosen');
+      assert.equal(calls.length, 3);
+      assert.deepEqual(calls[2].body.primary, {
+        target: { model_id: 'chosen', provider_id: 'fixture', protocol_endpoint_id: 'endpoint' },
+        credential_binding: { type: 'exact', credential_source_id: 'credential' },
+      });
+      assert.equal(calls[0].body.workspace_id, 'workspace');
+      assert.equal(calls[0].body.secret, mode === 'oauth' ? undefined : secret);
+      assert.equal(calls[0].body.oauth_helper, mode === 'oauth' ? 'fixture-helper' : undefined);
+    } else {
+      await assert.rejects(provisionProviderTestProfile('http://localhost', 'workspace', item, 'profile'), (error) => {
+        assert.ok(!error.message.includes(secret));
+        return true;
+      });
+      assert.equal(calls.length, mode === 'missing-model' ? 2 : mode === 'profile-denied' ? 3 : 1);
+    }
+  });
+}
