@@ -89,7 +89,7 @@ fi
 # reviewed in e2e_unreachable.toml. The checker validates every range/reason,
 # rejects stale entries, still counts hits inside those ranges, and caps the
 # audited share at 15% so the manifest cannot become an unbounded escape hatch.
-IGNORE='(awaken-store-conformance|awaken-runtime-examples|awaken-eval|awaken-scenario-host)/|awaken-dispatch/src/memory\.rs|awaken-config-resolver/src/reference_stores\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-protocol-acp/src/(error|real_acp)\.rs|awaken-protocol-managed/src/test_support\.rs|awaken-coordinator/src/models\.rs'
+IGNORE="$(python3 scripts/ci/check_changed_e2e_line_coverage.py --print-ignore-filename-regex)"
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/awaken-e2e-coverage}"
 export CARGO_LLVM_COV_TARGET_DIR="${CARGO_LLVM_COV_TARGET_DIR:-$CARGO_TARGET_DIR}"
@@ -159,7 +159,7 @@ for report in "${lcov_reports[@]}"; do
   lcov_arguments+=(--lcov-path "$report")
 done
 "$coverage_python" scripts/ci/check_changed_e2e_line_coverage.py \
-  --base "${AWAKEN_COVERAGE_BASE:-origin/1.0.0-dev}" \
+  --base "${AWAKEN_COVERAGE_BASE:-origin/main}" \
   --minimum "${AWAKEN_CHANGED_E2E_MINIMUM:-0.95}" \
   --ignore-filename-regex "$IGNORE" \
   "${lcov_arguments[@]}" \

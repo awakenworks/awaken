@@ -29,7 +29,7 @@ cargo build --quiet -p awaken-scenario-host --bin awaken-scenario-host
 npm --prefix e2e run test:deterministic
 
 echo "[3/3] combined coverage report"
-IGNORE='(awaken-protocol-mcp|awaken-store-postgres|awaken-store-conformance|awaken-runtime-examples|awaken-sandbox-container|awaken-file-store)/|awaken-dispatch/src/(memory|postgres)\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-sandbox-local/src/(namespace|provider)\.rs|awaken-protocol-acp/src/error\.rs'
+IGNORE="$(python3 scripts/ci/check_changed_e2e_line_coverage.py --print-ignore-filename-regex)"
 echo "== overall (all linked crates) =="
 cargo llvm-cov report --summary-only 2>/dev/null | grep -E "^Filename|^TOTAL"
 echo "== e2e-surface (server + protocols + config + runtime-core + ingress) =="
