@@ -294,6 +294,14 @@ the complete decision table, while SessionEnvironmentProjection.tla proves
 that exact and stale same-owner projection are identity stutters and cannot
 rewrite a Resident or Retiring fence.
 
+Closed physical observation after realization revocation consumes the captured
+Retiring owner through the same exact confirmation transition; it does not
+replace RealizationRevocation with RecoveryDiscard. The projection model also
+checks exact/closed/policy admission and protected Terminal/Checkpoint rejection.
+Owner tests retain stale-wrapper ABA, policy rejection and exact source identity
+cases. This extension is abstract model evidence, not a production refinement
+claim or a promise of recovery when external observation remains indeterminate.
+
 ### Proof-carrying release and deployment admission
 
 The shared qualification implementation in `scripts/ci/formal_profile.py` owns

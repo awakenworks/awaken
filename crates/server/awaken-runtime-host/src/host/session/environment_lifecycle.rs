@@ -148,6 +148,7 @@ struct UnavailableEnvironmentRecovery<'a> {
     binding: &'a str,
     source_generation_id: Option<&'a str>,
     pending_adoption: Option<(BoundSessionEnvironmentIdentity, String)>,
+    revoked_durable: Option<&'a RetiringSessionEnvironment>,
     policy: SessionEnvironmentUnavailablePolicy,
     provider: &'a crate::session_environment::SessionEnvironmentProvider,
     handle: &'a awaken_provisioning_contract::SandboxHandle,
@@ -803,6 +804,7 @@ impl SharedHost {
                         binding: encoded,
                         source_generation_id,
                         pending_adoption,
+                        revoked_durable: revoked_durable.as_ref(),
                         policy: unavailable_policy,
                         provider,
                         handle: &handle,
@@ -832,6 +834,7 @@ impl SharedHost {
             binding,
             source_generation_id,
             pending_adoption,
+            revoked_durable,
             policy,
             provider,
             handle,
@@ -846,7 +849,17 @@ impl SharedHost {
                 handle.sandbox_id
             ))),
             SessionEnvironmentUnavailablePolicy::Rebuild => {
-                if let Some(environment) = resident
+                // A revoked durable owner already has an exact retirement
+                // fence. Consume that captured fence after closed observation;
+                // do not relabel it as a competing RecoveryDiscard operation.
+                // Terminal takeover or an ABA replacement rejects unchanged.
+                if let Some(retiring) = revoked_durable {
+                    if !self.confirm_terminated_retirement(thread, retiring) {
+                        return Err(HostError::internal(format!(
+                            "lost the revoked sandbox recovery fence for Session {thread}"
+                        )));
+                    }
+                } else if let Some(environment) = resident
                     && !self.discard_observed_session_environment(thread, environment)
                 {
                     return Err(HostError::internal(format!(
