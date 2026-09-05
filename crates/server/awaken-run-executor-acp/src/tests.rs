@@ -182,6 +182,7 @@ async fn managed_acp_terminal_cannot_escape_without_commit_capability() {
     // (severity 10, occurrence 4, detection 8), so Managed ACP fails closed.
     let error = commit(
         &RuntimeRunContext::new(),
+        None,
         &ThreadId("thread-no-commit".into()),
         RunDisposition::ended(RunId("run-no-commit".into()), EndCause::NaturalEnd),
         Vec::new(),
@@ -844,6 +845,188 @@ fn advertises_remote_abort_and_auth_wait() {
     let caps = exec(vec![]).capabilities();
     assert_eq!(caps.cancellation, Cancellation::RemoteAbort);
     assert_eq!(caps.wait, Wait::Auth);
+}
+
+#[tokio::test]
+async fn unreissued_permission_is_settled_with_the_continuation_commit() {
+    // Causes: C1 committed original permission ticket; C2 allow/deny; C3 the
+    // resumed agent never requests the exact tool; C4 natural/refusal/EOF/open
+    // failure/provider failure/empty end. C1+C3 => no one-shot execution grant.
+    // For every C2 x C4 row: E1 exactly one error result addresses the original
+    // call and states it was not executed; E2 the same terminal ThreadCommit
+    // removes its ticket/batch; E3 immutable original arguments are retained.
+    // The source/Coordinator are existing fixtures; no alternate resume path.
+    for allow in [true, false] {
+        for mode in ["natural", "refusal", "eof", "open", "provider", "empty"] {
+            let active = activation();
+            let ticket = permission_ticket(&active);
+            let call_id = ticket.call_id().unwrap().to_string();
+            let original = Message {
+                id: MessageId::assistant(&active.run_id, 0),
+                role: Role::Assistant,
+                content: vec![ContentBlock::tool_use(
+                    &call_id,
+                    "bash",
+                    serde_json::json!({}),
+                )],
+            };
+            let recorded = Arc::new(RecordingCoordinator::default());
+            let context = RuntimeRunContext::new()
+                .with_reader(recorded.clone())
+                .with_commit(recorded.clone());
+            commit(
+                &context,
+                None,
+                &active.thread_id,
+                RunDisposition::awaiting(ticket.clone()),
+                vec![original.clone()],
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+            let frames = match mode {
+                "natural" => vec![r#"{"type":"message","text":"continued without the old request"}"#.into(),
+                    r#"{"type":"turn_end","reason":"natural_end"}"#.into()],
+                "refusal" => vec![r#"{"type":"turn_end","reason":"refusal"}"#.into()],
+                "provider" => vec![r#"{"type":"message","text":"{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"upstream unavailable\"}}"}"#.into(),
+                    r#"{"type":"turn_end","reason":"natural_end"}"#.into()],
+                "empty" => vec![r#"{"type":"turn_end","reason":"natural_end"}"#.into()],
+                _ => vec![],
+            };
+            let executor = AcpRunExecutor::new(Arc::new(ScriptedSource {
+                frames,
+                open_error: (mode == "open").then(|| "launch failed".into()),
+            }));
+            let result = if allow {
+                ResumeResult::allow()
+            } else {
+                ResumeResult::deny(None)
+            };
+            let state = executor
+                .resume(
+                    active.clone(),
+                    ResumeCommand::from_ticket(&ticket, result, 1),
+                    context,
+                )
+                .await
+                .unwrap();
+            match mode {
+                "natural" => assert_eq!(state, RunState::Ended(EndCause::NaturalEnd)),
+                "refusal" => assert_eq!(
+                    state,
+                    RunState::Ended(EndCause::Stopped("agent refused".into()))
+                ),
+                _ => assert!(
+                    matches!(state, RunState::Ended(EndCause::Error(_))),
+                    "{mode}/{allow}: settlement cannot mask the execution error"
+                ),
+            }
+            let commits = recorded.commits.lock().unwrap();
+            assert_eq!(
+                commits.len(),
+                2,
+                "E2 settlement is part of the terminal commit"
+            );
+            assert_eq!(
+                commits[0].messages,
+                [original],
+                "E3 original remains immutable"
+            );
+            let answers = commits[1]
+                .messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(|block| match block {
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    } if tool_use_id == &call_id => Some((content, *is_error)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                answers.len(),
+                1,
+                "E1 {mode}/{allow}: abandoned approval must settle"
+            );
+            assert!(answers[0].1);
+            assert!(answers[0].0.iter().any(|block| matches!(block, ContentBlock::Text { text } if text.contains("not executed"))));
+            drop(commits);
+            assert!(recorded.resume_ticket_for(&active.run_id).is_none(), "E2");
+            assert!(
+                awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
+                    &recorded.committed_state(&active.thread_id)
+                ))
+                .unwrap()
+                .is_none(),
+                "E2"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn permission_settlement_preserves_an_observed_result_and_an_unknown_outcome() {
+    // S1 a result already exists -> retain its exact status/body once, regardless
+    // of missing permission notification. S2 an exact grant was consumed but
+    // result is absent -> do not fabricate a not-executed/success result. The
+    // caller's error disposition remains authoritative for that unknown outcome.
+    for observed in [true, false] {
+        let decision = PermissionResume {
+            call_id: "original".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({}),
+            allow: true,
+        };
+        let resolver = ResumedPermissionResolver::new(&AllowAll, &decision, None);
+        let mut appender =
+            CollectingAppender::new(RunId("run-1".into()), "test".into(), 0, None, None, None);
+        if observed {
+            appender
+                .append(
+                    1,
+                    &AcpProjectedEvent::ToolResult {
+                        id: "original".into(),
+                        content: "observed bytes".into(),
+                        is_error: false,
+                    },
+                )
+                .await
+                .unwrap();
+        } else {
+            assert_eq!(
+                resolver
+                    .resolve(&PermissionAsk {
+                        call_id: "regenerated".into(),
+                        tool: "bash".into(),
+                        arguments: serde_json::json!({})
+                    })
+                    .await,
+                PermissionVerdict::Allow
+            );
+        }
+        let recorded = Arc::new(RecordingCoordinator::default());
+        let disposition = RunDisposition::ended(
+            RunId("run-1".into()),
+            EndCause::Stopped("result unavailable".into()),
+        );
+        commit(
+            &RuntimeRunContext::new().with_commit(recorded.clone()),
+            resolver.unconsumed_decision(),
+            &ThreadId("thread-1".into()),
+            disposition,
+            appender.messages.clone(),
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            recorded.messages(),
+            appender.messages,
+            "no fabricated or duplicate results"
+        );
+    }
 }
 
 #[tokio::test]
@@ -2284,6 +2467,10 @@ async fn resumed_permission_is_one_shot_and_semantically_exact_across_new_wire_i
         allow: true,
     };
     let resolver = ResumedPermissionResolver::new(&AskResolver, &decision, None);
+    assert!(
+        resolver.unconsumed_decision().is_some(),
+        "unused authorization is known not dispatched"
+    );
     let altered = PermissionAsk {
         tool: "bash".into(),
         call_id: "old-wire-id".into(),
@@ -2302,6 +2489,11 @@ async fn resumed_permission_is_one_shot_and_semantically_exact_across_new_wire_i
     assert_eq!(
         resolver.resolve(&regenerated).await,
         PermissionVerdict::Allow
+    );
+    // A missing response after this point is not evidence of non-execution.
+    assert!(
+        resolver.unconsumed_decision().is_none(),
+        "consumed grant has no not-executed proof"
     );
     assert!(matches!(
         resolver.resolve(&regenerated).await,
@@ -2353,25 +2545,23 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
     use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
     use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 
-    const FIRST_PERMISSION: &str = r#"{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{"sessionId":"permission-session","toolCall":{"toolCallId":"tool-1","title":"bash","rawInput":{"cmd":"echo ok"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}"#;
-    const REGENERATED_PERMISSION: &str = r#"{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{"sessionId":"permission-session","toolCall":{"toolCallId":"tool-2","title":"bash","rawInput":{"cmd":"echo ok"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}"#;
-
     struct AskPolicy;
     #[async_trait]
     impl ToolPermissionPolicy for AskPolicy {
         async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
-            assert_eq!(
-                call.arguments,
-                serde_json::json!({"cmd":"echo ok"}),
+            let changed = call.arguments == serde_json::json!({"cmd":"echo changed"});
+            assert!(
+                changed || call.arguments == serde_json::json!({"cmd":"echo ok"}),
                 "AR0 permission input supersedes placeholder"
             );
             ToolPermissionVerdict::RequireConfirmation {
-                correlation_id: "approval-1".to_string(),
+                correlation_id: if changed { "approval-2" } else { "approval-1" }.to_string(),
             }
         }
     }
 
     struct PermissionSource {
+        changed: bool,
         opens: AtomicUsize,
         permission_replies: Arc<Mutex<Vec<String>>>,
         resumed_prompts: Arc<Mutex<Vec<String>>>,
@@ -2386,6 +2576,16 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
             _context: &RuntimeRunContext,
         ) -> std::result::Result<AgentSession, OpenError> {
             let attempt = self.opens.fetch_add(1, Ordering::SeqCst);
+            let changed = self.changed && attempt > 0;
+            let wire_id = if attempt == 0 {
+                "tool-1"
+            } else if changed && attempt > 1 {
+                "tool-3"
+            } else {
+                "tool-2"
+            };
+            let arguments =
+                serde_json::json!({"cmd": if changed { "echo changed" } else { "echo ok" }});
             let replies = self.permission_replies.clone();
             let prompts = self.resumed_prompts.clone();
             let events = self.permission_events.clone();
@@ -2443,8 +2643,8 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                                 // AR4 actual SDK emits a new placeholder and then
                                 // rawInput progress before the regenerated ask.
                                 for update in [
-                                    serde_json::json!({"sessionUpdate":"tool_call","toolCallId":"tool-2","title":"bash","rawInput":{}}),
-                                    serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"tool-2","rawInput":{"cmd":"echo ok"}}),
+                                    serde_json::json!({"sessionUpdate":"tool_call","toolCallId":wire_id,"title":"bash","rawInput":{}}),
+                                    serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":wire_id,"rawInput":arguments}),
                                 ] {
                                     let frame = serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"permission-session","update":update}});
                                     output
@@ -2453,29 +2653,27 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                                         .unwrap();
                                 }
                             }
+                            // One wire request builder owns original/exact/changed
+                            // cases; only call identity and input vary.
+                            let permission = serde_json::json!({"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{
+                                "sessionId":"permission-session", "toolCall":{"toolCallId":wire_id,"title":"bash","rawInput":arguments},
+                                "options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]
+                            }});
                             output
-                                .write_all(
-                                    if attempt == 0 {
-                                        FIRST_PERMISSION
-                                    } else {
-                                        REGENERATED_PERMISSION
-                                    }
-                                    .as_bytes(),
-                                )
+                                .write_all(format!("{permission}\n").as_bytes())
                                 .await
                                 .unwrap();
-                            output.write_all(b"\n").await.unwrap();
                             output.flush().await.unwrap();
                             line.clear();
                             lines.read_line(&mut line).await.unwrap();
                             replies.lock().unwrap().push(line.trim().to_string());
                             events.notify_one();
-                            if attempt == 0 {
+                            if attempt == 0 || (changed && attempt == 1) {
                                 return;
                             }
                             let rejected = line.contains("reject");
                             let terminal = serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"permission-session","update":{
-                                "sessionUpdate":"tool_call_update", "toolCallId":"tool-2",
+                                "sessionUpdate":"tool_call_update", "toolCallId":wire_id,
                                 "status":if rejected {"failed"} else {"completed"},
                                 "content":[{"type":"content","content":{"type":"text","text":if rejected {"denied"} else {"ok"}}}]
                             }}});
@@ -2508,11 +2706,15 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
         }
     }
 
-    for allow in [true, false] {
+    // AR5/AR6 allow/deny O -> changed request N: no transfer of permission;
+    // close O as not executed in the same commit that publishes N's new ticket.
+    // After approving N, only N's result may settle it, with no dangling O.
+    for (allow, changed) in [(true, false), (false, false), (true, true), (false, true)] {
         let replies = Arc::new(Mutex::new(Vec::new()));
         let prompts = Arc::new(Mutex::new(Vec::new()));
         let events = Arc::new(tokio::sync::Notify::new());
         let source: Arc<dyn AgentChannelSource> = Arc::new(PermissionSource {
+            changed,
             opens: AtomicUsize::new(0),
             permission_replies: replies.clone(),
             resumed_prompts: prompts.clone(),
@@ -2581,7 +2783,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
         } else {
             ResumeResult::deny(Some("operator policy".to_string()))
         };
-        let resumed = AcpRunExecutor::new(source)
+        let resumed = AcpRunExecutor::new(source.clone())
             .with_permission_policy(Arc::new(AskPolicy))
             .resume(
                 activation(),
@@ -2593,6 +2795,104 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
             .await
             .expect("replacement consumes the durable decision");
         events.notified().await;
+        if changed {
+            assert_eq!(
+                resumed,
+                RunState::Awaiting,
+                "AR5 no grant for changed arguments"
+            );
+            let replacement = committed.resume_ticket_for(&ticket.run_id).unwrap();
+            assert_eq!(replacement.call_id(), Some("tool-2"));
+            assert_eq!(replacement.correlation_id, "approval-2");
+            assert_eq!(
+                replacement.pending_tool().unwrap().arguments,
+                serde_json::json!({"cmd":"echo changed"})
+            );
+            let batch = awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
+                &committed.committed_state(&ticket.thread_id),
+            ))
+            .unwrap()
+            .unwrap();
+            batch
+                .validate_awaiting_ticket(&ticket.thread_id, &replacement)
+                .unwrap();
+            {
+                let commits = committed.commits.lock().unwrap();
+                assert_eq!(commits.len(), 2, "AR5 atomic settlement and replacement");
+                let original_results = commits[1]
+                    .messages
+                    .iter()
+                    .flat_map(|message| &message.content)
+                    .filter_map(|block| match block {
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                        } if tool_use_id == "tool-1" => Some((content, *is_error)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(original_results.len(), 1, "AR5 original call is settled");
+                assert!(original_results[0].1);
+                assert!(original_results[0].0.iter().any(|block| matches!(block, ContentBlock::Text { text } if text.contains("not executed"))));
+            }
+            assert!(replies.lock().unwrap()[1].contains("cancelled"));
+            let executor = AcpRunExecutor::new(source).with_permission_policy(Arc::new(AskPolicy));
+            assert!(
+                executor
+                    .resume(
+                        activation(),
+                        ResumeCommand::from_ticket(&ticket, ResumeResult::allow(), 1),
+                        RuntimeRunContext::new()
+                            .with_commit(committed.clone())
+                            .with_reader(committed.clone())
+                    )
+                    .await
+                    .is_err(),
+                "AR5 old decision cannot replace the new ticket"
+            );
+            let finished = executor
+                .resume(
+                    activation(),
+                    ResumeCommand::from_ticket(&replacement, ResumeResult::allow(), 1),
+                    RuntimeRunContext::new()
+                        .with_commit(committed.clone())
+                        .with_reader(committed.clone()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(finished, RunState::Ended(EndCause::NaturalEnd));
+            assert!(committed.resume_ticket_for(&ticket.run_id).is_none());
+            let history = committed.messages();
+            let uses = history
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(|block| match block {
+                    ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let answers = history
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(|block| match block {
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        is_error,
+                        ..
+                    } => Some((tool_use_id.as_str(), *is_error)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(uses, ["tool-1", "tool-2"]);
+            assert_eq!(
+                answers,
+                [("tool-1", true), ("tool-2", false)],
+                "AR6 exact results, no transfer or duplicate"
+            );
+            assert_eq!(committed.commits.lock().unwrap().len(), 3);
+            continue;
+        }
         assert_eq!(resumed, RunState::Ended(EndCause::NaturalEnd));
         assert!(
             awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
