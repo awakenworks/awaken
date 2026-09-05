@@ -30,12 +30,33 @@ use tokio::sync::Mutex;
 #[cfg(test)]
 use awaken_resource_contract::harvest_idempotency_key;
 pub use awaken_resource_contract::{
-    CreateFileRecordOutcome, FileCatalog, FileCatalogError, FileRecord, FileStore, FileStoreError,
-    content_id,
+    ArtifactCapture, CreateFileRecordOutcome, FileCatalog, FileCatalogError, FileRecord, FileStore,
+    FileStoreError, ReplaceArtifactCapture, ReplaceArtifactCaptureOutcome, content_id,
 };
 
 fn e(x: impl ToString) -> FileStoreError {
     FileStoreError(x.to_string())
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+fn decode_artifact_capture(
+    workspace_id: String,
+    session_id: String,
+    revision: i64,
+    file_ids_json: &str,
+) -> Result<ArtifactCapture, FileCatalogError> {
+    let revision = awaken_sql_storage::StoredU64::try_from(revision)
+        .map(awaken_sql_storage::StoredU64::domain_value)
+        .map_err(|error| FileCatalogError::Storage(error.to_string()))?;
+    let capture = ArtifactCapture {
+        workspace_id,
+        session_id,
+        revision,
+        file_ids: serde_json::from_str(file_ids_json)
+            .map_err(|error| FileCatalogError::Storage(error.to_string()))?,
+    };
+    capture.verify_scope(&capture.workspace_id, &capture.session_id)?;
+    Ok(capture)
 }
 
 static FILE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -175,7 +196,14 @@ async fn sync_directory(path: &Path) -> Result<(), FileStoreError> {
 #[derive(Default)]
 pub struct InMemoryFileStore {
     blobs: Mutex<HashMap<String, Vec<u8>>>,
-    files: Mutex<HashMap<String, FileRecord>>,
+    catalog: Mutex<MemoryFileCatalog>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+struct MemoryFileCatalog {
+    files: HashMap<String, FileRecord>,
+    captures: HashMap<(String, String), ArtifactCapture>,
 }
 
 #[cfg(any(
@@ -334,12 +362,46 @@ fn same_harvest_identity(left: &FileRecord, right: &FileRecord) -> bool {
 #[async_trait]
 #[cfg(any(test, feature = "test-support"))]
 impl FileCatalog for InMemoryFileStore {
+    async fn artifact_capture(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+    ) -> Result<Option<ArtifactCapture>, FileCatalogError> {
+        Ok(self
+            .catalog
+            .lock()
+            .await
+            .captures
+            .get(&(workspace_id.into(), session_id.into()))
+            .cloned())
+    }
+
+    async fn replace_artifact_capture(
+        &self,
+        request: ReplaceArtifactCapture,
+    ) -> Result<ReplaceArtifactCaptureOutcome, FileCatalogError> {
+        let mut catalog = self.catalog.lock().await;
+        let key = (request.workspace_id.clone(), request.session_id.clone());
+        let outcome = request.decide(catalog.captures.get(&key))?;
+        if let ReplaceArtifactCaptureOutcome::Applied(capture) = &outcome {
+            let records = capture
+                .file_ids
+                .iter()
+                .filter_map(|id| catalog.files.get(id).cloned())
+                .collect::<Vec<_>>();
+            capture.verify_files(&records)?;
+            catalog.captures.insert(key, capture.clone());
+        }
+        Ok(outcome)
+    }
+
     async fn create_file(
         &self,
         record: FileRecord,
     ) -> Result<CreateFileRecordOutcome, FileCatalogError> {
         validate_record(&record)?;
-        let mut files = self.files.lock().await;
+        let mut catalog = self.catalog.lock().await;
+        let files = &mut catalog.files;
         if let Some(key) = record.harvest_key.as_deref() {
             let matching = files
                 .values()
@@ -396,9 +458,10 @@ impl FileCatalog for InMemoryFileStore {
         include_deleted: bool,
     ) -> Result<Option<FileRecord>, FileCatalogError> {
         Ok(self
-            .files
+            .catalog
             .lock()
             .await
+            .files
             .get(file_id)
             .filter(|record| {
                 record.workspace_id == workspace_id && (include_deleted || !record.deleted)
@@ -412,9 +475,10 @@ impl FileCatalog for InMemoryFileStore {
         scope_id: Option<&str>,
     ) -> Result<Vec<FileRecord>, FileCatalogError> {
         let mut records = self
-            .files
+            .catalog
             .lock()
             .await
+            .files
             .values()
             .filter(|record| {
                 !record.deleted
@@ -438,9 +502,10 @@ impl FileCatalog for InMemoryFileStore {
         scope_id: Option<&str>,
     ) -> Result<Vec<FileRecord>, FileCatalogError> {
         let mut records = self
-            .files
+            .catalog
             .lock()
             .await
+            .files
             .values()
             .filter(|record| {
                 record.workspace_id == workspace_id
@@ -462,7 +527,8 @@ impl FileCatalog for InMemoryFileStore {
         workspace_id: &str,
         file_id: &str,
     ) -> Result<Option<FileRecord>, FileCatalogError> {
-        let mut files = self.files.lock().await;
+        let mut catalog = self.catalog.lock().await;
+        let files = &mut catalog.files;
         let Some(record) = files
             .get_mut(file_id)
             .filter(|record| record.workspace_id == workspace_id)
@@ -475,9 +541,10 @@ impl FileCatalog for InMemoryFileStore {
 
     async fn active_size_bytes(&self, workspace_id: &str) -> Result<u64, FileCatalogError> {
         Ok(self
-            .files
+            .catalog
             .lock()
             .await
+            .files
             .values()
             .filter(|record| !record.deleted && record.workspace_id == workspace_id)
             .map(|record| record.size_bytes)
@@ -1194,8 +1261,8 @@ mod tests {
 
         assert_eq!(
             runner.run_bundle(&full).await.unwrap().len(),
-            1,
-            "V5 terminal association is a separate additive migration"
+            full.migrations().len() - through_v4.migrations().len(),
+            "later additive migrations remain separate from the V4 width upgrade"
         );
         runner.verify_bundle(&full).await.unwrap();
 

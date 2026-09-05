@@ -58,7 +58,11 @@ pub struct ResourcesRouterInput {
 /// Mount all public resource families once. File, Memory, and Skill retain their
 /// independent aggregates and routes; this function only joins their HTTP routes.
 pub fn resources_router(input: ResourcesRouterInput) -> Router {
-    files_router(input.files)
+    files_router(input.files.clone())
+        .merge(
+            awaken_protocol_awaken::file_output_capture_router(files::read_output_capture)
+                .with_state(input.files),
+        )
         .merge(memory_stores_router(input.memories, input.memory_stores))
         .merge(skills_router(input.skills, input.purge))
 }
@@ -122,6 +126,7 @@ mod tests {
         });
         for (path, rule) in [
             ("/v1/files", "R1"),
+            ("/v1/awaken/files/output-capture?scope_id=session", "R4"),
             ("/v1/memory_stores", "R2"),
             ("/v1/skills", "R3"),
         ] {

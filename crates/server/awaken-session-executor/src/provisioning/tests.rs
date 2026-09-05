@@ -1851,6 +1851,75 @@ async fn artifact_harvest_has_one_file_authority_and_no_magic_bundle_gate() {
         replay.receipts[0].record.id, first.receipts[0].record.id,
         "R2/E3"
     );
+    // R3 real output bytes change A->B->A -> capture tracks the latest scan
+    // using the original A File id, while historical B remains addressable.
+    // R4 deleting the physical output -> explicit empty capture, no deletion
+    // of prior Files. A missing Environment is different and preserves it.
+    let application = host.file_application().unwrap();
+    let mut versions = Vec::new();
+    for bytes in [
+        b"second revision".as_slice(),
+        b"diff --git a/a b/a\n".as_slice(),
+    ] {
+        std::fs::write(&output, bytes).unwrap();
+        let harvested = host.harvest_thread_artifacts("plain-files").await.unwrap();
+        let capture = application
+            .artifact_capture("workspace-a", "plain-files")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            capture.file_ids,
+            [harvested.receipts[0].record.id.clone()],
+            "R3 exact selection"
+        );
+        assert_eq!(
+            application
+                .bytes("workspace-a", &capture.file_ids[0])
+                .await
+                .unwrap()
+                .unwrap()
+                .1,
+            bytes,
+            "R3 bytes"
+        );
+        versions.push(capture.file_ids[0].clone());
+    }
+    assert_ne!(versions[0], first.receipts[0].record.id);
+    assert_eq!(versions[1], first.receipts[0].record.id, "R3 reused A");
+    assert_eq!(
+        application
+            .list("workspace-a", Some("plain-files"))
+            .await
+            .unwrap()
+            .len(),
+        2,
+        "R3 history"
+    );
+    std::fs::remove_file(&output).unwrap();
+    assert!(
+        host.harvest_thread_artifacts("plain-files")
+            .await
+            .unwrap()
+            .receipts
+            .is_empty()
+    );
+    let empty = application
+        .artifact_capture("workspace-a", "plain-files")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(empty.file_ids.is_empty(), "R4 observed empty");
+    assert_eq!(empty.revision, 5, "R4 one revision per full scan");
+    assert_eq!(
+        application
+            .list("workspace-a", Some("plain-files"))
+            .await
+            .unwrap()
+            .len(),
+        2,
+        "R4 no history deletion"
+    );
 }
 
 struct FailingFileCatalog;
@@ -1859,6 +1928,15 @@ use awaken_resource_contract::CreateFileRecordOutcome;
 
 #[async_trait::async_trait]
 impl FileCatalog for FailingFileCatalog {
+    async fn artifact_capture(
+        &self,
+        _workspace: &str,
+        _session: &str,
+    ) -> Result<Option<awaken_resource_contract::ArtifactCapture>, FileCatalogError> {
+        // This fixture fails the later File write, not the pre-scan read.
+        Ok(None)
+    }
+
     async fn create_file(
         &self,
         _record: FileRecord,
@@ -2086,4 +2164,216 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+struct CaptureFaultPublisher {
+    inner: Arc<
+        dyn awaken_resource_contract::ArtifactPublisher<
+                awaken_dispatch::ArtifactPublicationFence,
+            >,
+    >,
+    mode: &'static str,
+    scans: Arc<std::sync::atomic::AtomicUsize>,
+    calls: std::sync::Mutex<[usize; 3]>,
+}
+
+#[async_trait::async_trait]
+impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublicationFence>
+    for CaptureFaultPublisher
+{
+    async fn capture(
+        &self,
+        workspace: &str,
+        session: &str,
+        fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+    ) -> Result<
+        Option<awaken_resource_contract::ArtifactCapture>,
+        awaken_resource_contract::ArtifactPublicationError,
+    > {
+        self.calls.lock().unwrap()[0] += 1;
+        assert_eq!(
+            self.scans.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "F1 revision must precede scan"
+        );
+        if self.mode == "read_failure" {
+            return Err(awaken_resource_contract::ArtifactPublicationError::new(
+                "injected capture read failure",
+            ));
+        }
+        let mut current = self.inner.capture(workspace, session, fence).await?;
+        if self.mode == "corrupt_read" {
+            current.as_mut().unwrap().workspace_id = "foreign".into();
+        }
+        if self.mode == "conflict" {
+            self.inner
+                .replace_capture(
+                    awaken_resource_contract::ReplaceArtifactCapture {
+                        workspace_id: workspace.into(),
+                        session_id: session.into(),
+                        expected_revision: current.as_ref().unwrap().revision,
+                        file_ids: Vec::new(),
+                    },
+                    fence,
+                )
+                .await?;
+        }
+        Ok(current)
+    }
+
+    async fn publish(
+        &self,
+        request: awaken_resource_contract::ArtifactPublication<
+            awaken_dispatch::ArtifactPublicationFence,
+        >,
+    ) -> Result<
+        awaken_resource_contract::ArtifactPublicationReceipt,
+        awaken_resource_contract::ArtifactPublicationError,
+    > {
+        let count = {
+            let mut calls = self.calls.lock().unwrap();
+            calls[1] += 1;
+            calls[1]
+        };
+        assert_eq!(
+            self.scans.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "F1 one completed scan before publication"
+        );
+        if self.mode == "publish_first" && count == 1 || self.mode == "publish_second" && count == 2
+        {
+            return Err(awaken_resource_contract::ArtifactPublicationError::new(
+                "injected File publication failure",
+            ));
+        }
+        self.inner.publish(request).await
+    }
+
+    async fn replace_capture(
+        &self,
+        request: awaken_resource_contract::ReplaceArtifactCapture,
+        fence: Option<&awaken_dispatch::ArtifactPublicationFence>,
+    ) -> Result<
+        awaken_resource_contract::ReplaceArtifactCaptureOutcome,
+        awaken_resource_contract::ArtifactPublicationError,
+    > {
+        self.calls.lock().unwrap()[2] += 1;
+        assert_eq!(
+            self.calls.lock().unwrap()[1],
+            2,
+            "F1 all File publications precede replacement"
+        );
+        if self.mode == "replace_failure" {
+            return Err(awaken_resource_contract::ArtifactPublicationError::new(
+                "injected capture replacement failure",
+            ));
+        }
+        if self.mode == "corrupt_reply" {
+            return Ok(
+                awaken_resource_contract::ReplaceArtifactCaptureOutcome::Applied(
+                    awaken_resource_contract::ArtifactCapture {
+                        workspace_id: request.workspace_id,
+                        session_id: request.session_id,
+                        revision: request.expected_revision + 1,
+                        file_ids: vec!["foreign-file".into()],
+                    },
+                ),
+            );
+        }
+        if self.mode == "replay" {
+            self.inner.replace_capture(request.clone(), fence).await?;
+        }
+        self.inner.replace_capture(request, fence).await
+    }
+}
+
+#[tokio::test]
+async fn artifact_capture_failures_do_not_publish_partial_or_rebased_sets() {
+    // Causes: F1 canonical ordering; F2 read/first File/second File/CAS outage;
+    // F3 another complete observation wins after revision read; F4 response
+    // loss replay; F5 malformed read or replacement receipt. Effects: error
+    // leaves the complete head unchanged (including a concurrently newer head),
+    // successful/replayed CAS selects both outputs, and each File retains its
+    // independent publication lifecycle. No conflict-triggered reread/rebase.
+    // Table columns: mode, success, scans, File calls, CAS calls, head revision,
+    // durable File count. This tests the real Harvester and resource application;
+    // only the named boundary fault is injected into the existing publisher.
+    for (mode, success, scans_expected, publishes, replaces, revision, files) in [
+        ("success", true, 1, 2, 1, 2, 2),
+        ("replay", true, 1, 2, 1, 2, 2),
+        ("read_failure", false, 0, 0, 0, 1, 0),
+        ("corrupt_read", false, 0, 0, 0, 1, 0),
+        ("publish_first", false, 1, 1, 0, 1, 0),
+        ("publish_second", false, 1, 2, 0, 1, 1),
+        ("replace_failure", false, 1, 2, 1, 1, 2),
+        ("conflict", false, 1, 2, 1, 2, 2),
+        ("corrupt_reply", false, 1, 2, 1, 1, 2),
+    ] {
+        let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider = Arc::new(BatchArtifactContainerProvider {
+            files: vec![
+                awaken_sandbox_container::EnvironmentFile {
+                    path: "a.txt".into(),
+                    bytes: b"a".to_vec(),
+                },
+                awaken_sandbox_container::EnvironmentFile {
+                    path: "b.txt".into(),
+                    bytes: b"b".to_vec(),
+                },
+            ],
+            scans: scans.clone(),
+        });
+        let mut host = SharedHost::new(Arc::new(NoLlm), "test").with_session_container_provider(
+            provider,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+        );
+        let application = host.file_application().unwrap();
+        let request = awaken_resource_contract::ReplaceArtifactCapture {
+            workspace_id: "workspace-a".into(),
+            session_id: "capture-fault".into(),
+            expected_revision: 0,
+            file_ids: Vec::new(),
+        };
+        application.replace_artifact_capture(request).await.unwrap();
+        let publisher = Arc::new(CaptureFaultPublisher {
+            inner: host.artifact_publisher.clone(),
+            mode,
+            scans: scans.clone(),
+            calls: std::sync::Mutex::new([0; 3]),
+        });
+        host.artifact_publisher = publisher.clone();
+        install_batch_artifact_environment(&host, "capture-fault", "workspace-a").await;
+        let result = host.harvest_thread_artifacts("capture-fault").await;
+        assert_eq!(result.is_ok(), success, "{mode}: {result:?}");
+        assert_eq!(
+            scans.load(std::sync::atomic::Ordering::SeqCst),
+            scans_expected,
+            "{mode}"
+        );
+        assert_eq!(
+            *publisher.calls.lock().unwrap(),
+            [1, publishes, replaces],
+            "{mode}: no hidden retry"
+        );
+        let capture = application
+            .artifact_capture("workspace-a", "capture-fault")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(capture.revision, revision, "{mode}");
+        assert_eq!(
+            capture.file_ids.len(),
+            if success { 2 } else { 0 },
+            "{mode}: no partial or forged head"
+        );
+        assert_eq!(
+            application
+                .list("workspace-a", Some("capture-fault"))
+                .await
+                .unwrap()
+                .len(),
+            files,
+            "{mode}: independent File lifecycle"
+        );
+    }
 }

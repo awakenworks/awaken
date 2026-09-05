@@ -11,9 +11,10 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 
 use crate::schema::{NS, file_store_bundle};
 use crate::{
-    ArtifactAssociationDecision, CreateFileRecordOutcome, FileCatalog, FileCatalogError,
-    FileRecord, FileStore, FileStoreError, artifact_association_decision, content_id,
-    same_harvest_identity,
+    ArtifactAssociationDecision, ArtifactCapture, CreateFileRecordOutcome, FileCatalog,
+    FileCatalogError, FileRecord, FileStore, FileStoreError, ReplaceArtifactCapture,
+    ReplaceArtifactCaptureOutcome, artifact_association_decision, content_id,
+    decode_artifact_capture, same_harvest_identity,
 };
 
 fn e(x: impl ToString) -> FileStoreError {
@@ -175,6 +176,57 @@ impl FileStore for SqliteFileStore {
 
 #[async_trait]
 impl FileCatalog for SqliteFileStore {
+    async fn artifact_capture(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+    ) -> Result<Option<ArtifactCapture>, FileCatalogError> {
+        let workspace_id = workspace_id.to_string();
+        let session_id = session_id.to_string();
+        self.with_conn(move |conn| {
+            let row: Option<(i64, String)> = conn.query_row(
+                &format!("SELECT revision,file_ids_json FROM {NS}_artifact_capture WHERE workspace_id=?1 AND session_id=?2"),
+                params![workspace_id, session_id], |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional().map_err(e)?;
+            Ok(row.map(|(revision, ids)| decode_artifact_capture(workspace_id, session_id, revision, &ids)).transpose())
+        }).await.map_err(ce)?
+    }
+
+    async fn replace_artifact_capture(
+        &self,
+        request: ReplaceArtifactCapture,
+    ) -> Result<ReplaceArtifactCaptureOutcome, FileCatalogError> {
+        self.with_conn(move |conn| {
+            let transaction = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(e)?;
+            let row: Option<(i64, String)> = transaction.query_row(
+                &format!("SELECT revision,file_ids_json FROM {NS}_artifact_capture WHERE workspace_id=?1 AND session_id=?2"),
+                params![request.workspace_id, request.session_id], |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional().map_err(e)?;
+            let current = match row.map(|(revision, ids)| decode_artifact_capture(request.workspace_id.clone(), request.session_id.clone(), revision, &ids)).transpose() {
+                Ok(current) => current, Err(error) => return Ok(Err(error)),
+            };
+            let outcome = match request.decide(current.as_ref()) {
+                Ok(outcome) => outcome, Err(error) => return Ok(Err(error)),
+            };
+            if let ReplaceArtifactCaptureOutcome::Applied(capture) = &outcome {
+                let mut records = Vec::new();
+                for id in &capture.file_ids {
+                    if let Some(record) = transaction.query_row(
+                        &format!("SELECT {FILE_COLUMNS} FROM {NS}_file WHERE id=?1"),
+                        params![id], row_record,
+                    ).optional().map_err(e)? { records.push(record); }
+                }
+                if let Err(error) = capture.verify_files(&records) { return Ok(Err(error)); }
+                transaction.execute(
+                    &format!("INSERT INTO {NS}_artifact_capture (workspace_id,session_id,revision,file_ids_json) VALUES (?1,?2,?3,?4) ON CONFLICT(workspace_id,session_id) DO UPDATE SET revision=excluded.revision,file_ids_json=excluded.file_ids_json"),
+                    params![capture.workspace_id, capture.session_id, awaken_sql_storage::StoredU64::try_from(capture.revision).map_err(e)?.database_value(), serde_json::to_string(&capture.file_ids).map_err(e)?],
+                ).map_err(e)?;
+            }
+            transaction.commit().map_err(e)?;
+            Ok(Ok(outcome))
+        }).await.map_err(ce)?
+    }
+
     async fn create_file(
         &self,
         record: FileRecord,

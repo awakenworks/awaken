@@ -12,7 +12,8 @@ mod skill_bundle_transport;
 mod worker_authority;
 
 pub use artifact_publication_http::{
-    ARTIFACT_METADATA_HEADER, ARTIFACT_PUBLICATION_PATH, ARTIFACT_RECOVERY_PATH,
+    ARTIFACT_CAPTURE_PATH, ARTIFACT_METADATA_HEADER, ARTIFACT_PUBLICATION_PATH,
+    ARTIFACT_RECOVERY_PATH, ArtifactCaptureOperation, ArtifactCaptureRequest,
     ArtifactPublicationRequest, ArtifactRecoveryRequest, HttpArtifactPublisher,
     WorkerArtifactPublicationService, worker_artifact_publication_router,
 };

@@ -29,6 +29,7 @@ use crate::worker_authority::{
 };
 
 pub const ARTIFACT_PUBLICATION_PATH: &str = "/v1/worker/resources/files/artifacts";
+pub const ARTIFACT_CAPTURE_PATH: &str = "/v1/worker/resources/files/artifacts/capture";
 pub const ARTIFACT_RECOVERY_PATH: &str = "/v1/worker/resources/files/artifacts/recovery";
 pub const ARTIFACT_METADATA_HEADER: &str = "x-awaken-artifact-publication";
 
@@ -119,6 +120,40 @@ pub struct ArtifactRecoveryRequest {
     pub idempotency_scope: String,
 }
 
+/// One authenticated transport envelope for reading/replacing a complete
+/// output observation. This carries only File references, never output bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactCaptureRequest {
+    pub operation_fence: ArtifactPublicationFence,
+    pub identity: Option<WorkerIdentity>,
+    pub operation: ArtifactCaptureOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ArtifactCaptureOperation {
+    Read {
+        workspace_id: String,
+        session_id: String,
+    },
+    Replace {
+        request: awaken_resource_contract::ReplaceArtifactCapture,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(
+    tag = "result",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+enum ArtifactCaptureResponse {
+    Current(Option<awaken_resource_contract::ArtifactCapture>),
+    Replaced(awaken_resource_contract::ReplaceArtifactCaptureOutcome),
+}
+
 /// Worker-side peer of the claim-fenced artifact HTTP endpoint.
 #[derive(Clone)]
 pub struct HttpArtifactPublisher {
@@ -130,10 +165,107 @@ impl HttpArtifactPublisher {
     pub fn new(upstream: WorkerUpstream) -> Self {
         Self { upstream }
     }
+
+    async fn exchange_capture(
+        &self,
+        operation: ArtifactCaptureOperation,
+        fence: Option<&ArtifactPublicationFence>,
+    ) -> Result<ArtifactCaptureResponse, ArtifactPublicationError> {
+        let fence = fence.ok_or_else(|| {
+            ArtifactPublicationError::new("remote artifact capture requires an execution fence")
+        })?;
+        let payload = ArtifactCaptureRequest {
+            operation_fence: fence.clone(),
+            identity: self.upstream.worker_identity().cloned(),
+            operation,
+        };
+        let request = self
+            .upstream
+            .http_client()
+            .post(format!(
+                "{}{ARTIFACT_CAPTURE_PATH}",
+                self.upstream.base_url()
+            ))
+            .json(&payload);
+        let request = self
+            .upstream
+            .authorize_request("POST", ARTIFACT_CAPTURE_PATH, request)
+            .map_err(ArtifactPublicationError::new)?;
+        let response = request
+            .send()
+            .await
+            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(ArtifactPublicationError::new(format!(
+                "artifact capture authority returned HTTP {}",
+                response.status()
+            )));
+        }
+        response
+            .json()
+            .await
+            .map_err(|error| ArtifactPublicationError::new(error.to_string()))
+    }
 }
 
 #[async_trait::async_trait]
 impl ArtifactPublisher<ArtifactPublicationFence> for HttpArtifactPublisher {
+    async fn capture(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+        fence: Option<&ArtifactPublicationFence>,
+    ) -> Result<Option<awaken_resource_contract::ArtifactCapture>, ArtifactPublicationError> {
+        let response = self
+            .exchange_capture(
+                ArtifactCaptureOperation::Read {
+                    workspace_id: workspace_id.into(),
+                    session_id: session_id.into(),
+                },
+                fence,
+            )
+            .await?;
+        let ArtifactCaptureResponse::Current(capture) = response else {
+            return Err(ArtifactPublicationError::new(
+                "artifact capture authority returned the wrong operation",
+            ));
+        };
+        if let Some(capture) = &capture {
+            capture
+                .verify_scope(workspace_id, session_id)
+                .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+        }
+        Ok(capture)
+    }
+
+    async fn replace_capture(
+        &self,
+        request: awaken_resource_contract::ReplaceArtifactCapture,
+        fence: Option<&ArtifactPublicationFence>,
+    ) -> Result<awaken_resource_contract::ReplaceArtifactCaptureOutcome, ArtifactPublicationError>
+    {
+        request
+            .decide(None)
+            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+        let response = self
+            .exchange_capture(
+                ArtifactCaptureOperation::Replace {
+                    request: request.clone(),
+                },
+                fence,
+            )
+            .await?;
+        let ArtifactCaptureResponse::Replaced(outcome) = response else {
+            return Err(ArtifactPublicationError::new(
+                "artifact capture authority returned the wrong operation",
+            ));
+        };
+        request
+            .verify_outcome(&outcome)
+            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+        Ok(outcome)
+    }
+
     async fn publish(
         &self,
         publication: ArtifactPublication<ArtifactPublicationFence>,
@@ -307,6 +439,7 @@ pub fn worker_artifact_publication_router(
     Router::new()
         .route(ARTIFACT_PUBLICATION_PATH, post(publish_artifact))
         .route(ARTIFACT_RECOVERY_PATH, post(recover_artifacts))
+        .route(ARTIFACT_CAPTURE_PATH, post(capture_artifacts))
         .layer(DefaultBodyLimit::max(
             usize::try_from(MAX_MANAGED_FILE_SIZE_BYTES).unwrap_or(usize::MAX),
         ))
@@ -434,6 +567,84 @@ async fn authorize_checkpoint_release_artifact(
     )
 }
 
+async fn authorize_artifact_effect(
+    service: &WorkerArtifactPublicationService,
+    worker: &VerifiedWorkerContext,
+    identity: Option<&WorkerIdentity>,
+    fence: &ArtifactPublicationFence,
+    workspace_id: &str,
+    session_id: &str,
+    idempotency_scope: Option<&str>,
+) -> Result<Option<awaken_dispatch_contract::CommitEpochGuard>, StatusCode> {
+    let mut run_guard = None;
+    match fence {
+        ArtifactPublicationFence::SessionMaterialization(_)
+        | ArtifactPublicationFence::RepositoryPublication { .. } => return Err(StatusCode::FORBIDDEN),
+        ArtifactPublicationFence::Run(claim) => {
+            if idempotency_scope.is_some() {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            if verify_claim_owner(
+                Some(service.directory.as_ref()),
+                worker,
+                identity,
+                claim,
+                unix_now_ms(),
+            )
+            .await
+            .is_err()
+            {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            let guard = match service.dispatch.lock_commit_epoch(claim).await {
+                Ok(Some(guard)) if guard.is_live_at(unix_now_ms()) => guard,
+                Ok(_) => return Err(StatusCode::CONFLICT),
+                Err(_) => return Err(StatusCode::SERVICE_UNAVAILABLE),
+            };
+            if !guard.matches_execution_scope(workspace_id, session_id) {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            run_guard = Some(guard);
+        }
+        ArtifactPublicationFence::CheckpointRelease(operation) => {
+            if idempotency_scope.is_some() {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            if let Err(status) = authorize_checkpoint_release_artifact(
+                service,
+                worker,
+                identity,
+                operation,
+                workspace_id,
+                session_id,
+            )
+            .await
+            {
+                return Err(status);
+            }
+        }
+        ArtifactPublicationFence::Terminal(effect) => {
+            let Some(idempotency_scope) = idempotency_scope else {
+                return Err(StatusCode::BAD_REQUEST);
+            };
+            if let Err(status) = authorize_terminal_artifact(
+                service,
+                worker,
+                identity,
+                effect,
+                workspace_id,
+                session_id,
+                idempotency_scope,
+            )
+            .await
+            {
+                return Err(status);
+            }
+        }
+    }
+    Ok(run_guard)
+}
+
 async fn publish_artifact(
     State(service): State<Arc<WorkerArtifactPublicationService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
@@ -466,81 +677,20 @@ async fn publish_artifact(
     // CheckpointRelease/Terminal+C1..C4 linearize at their exact Session-root
     // authorization reads; R4 authority unavailable => retryable 503, never an
     // unfenced fallback. Only Terminal may carry File association scope.
-    let mut run_guard = None;
-    match publication.fence.as_ref().expect("decoded Worker fence") {
-        ArtifactPublicationFence::SessionMaterialization(_)
-        | ArtifactPublicationFence::RepositoryPublication { .. } => {
-            return StatusCode::FORBIDDEN.into_response();
-        }
-        ArtifactPublicationFence::Run(claim) => {
-            if publication.idempotency_scope.is_some() {
-                return StatusCode::BAD_REQUEST.into_response();
-            }
-            if verify_claim_owner(
-                Some(service.directory.as_ref()),
-                &worker,
-                identity.as_ref(),
-                claim,
-                unix_now_ms(),
-            )
-            .await
-            .is_err()
-            {
-                return StatusCode::FORBIDDEN.into_response();
-            }
-            let guard = match service.dispatch.lock_commit_epoch(claim).await {
-                Ok(Some(guard)) if guard.is_live_at(unix_now_ms()) => guard,
-                Ok(_) => return StatusCode::CONFLICT.into_response(),
-                Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-            };
-            let dispatch = guard.request();
-            let scope_matches = dispatch
-                .execution_scope
-                .as_ref()
-                .is_some_and(|scope| scope.0.0 == publication.workspace_id);
-            let session_matches = dispatch.session_thread_id().0 == publication.session_id;
-            if !scope_matches || !session_matches {
-                return StatusCode::FORBIDDEN.into_response();
-            }
-            run_guard = Some(guard);
-        }
-        ArtifactPublicationFence::CheckpointRelease(operation) => {
-            if publication.idempotency_scope.is_some() {
-                return StatusCode::BAD_REQUEST.into_response();
-            }
-            if let Err(status) = authorize_checkpoint_release_artifact(
-                service.as_ref(),
-                &worker,
-                identity.as_ref(),
-                operation,
-                &publication.workspace_id,
-                &publication.session_id,
-            )
-            .await
-            {
-                return status.into_response();
-            }
-        }
-        ArtifactPublicationFence::Terminal(effect) => {
-            let Some(idempotency_scope) = publication.idempotency_scope.as_deref() else {
-                return StatusCode::BAD_REQUEST.into_response();
-            };
-            if let Err(status) = authorize_terminal_artifact(
-                service.as_ref(),
-                &worker,
-                identity.as_ref(),
-                effect,
-                &publication.workspace_id,
-                &publication.session_id,
-                idempotency_scope,
-            )
-            .await
-            {
-                return status.into_response();
-            }
-        }
-    }
-    let _run_guard = run_guard;
+    let _run_guard = match authorize_artifact_effect(
+        service.as_ref(),
+        &worker,
+        identity.as_ref(),
+        publication.fence.as_ref().expect("decoded Worker fence"),
+        &publication.workspace_id,
+        &publication.session_id,
+        publication.idempotency_scope.as_deref(),
+    )
+    .await
+    {
+        Ok(guard) => guard,
+        Err(status) => return status.into_response(),
+    };
     let file_publication = publication.into_file_application();
     match service.application.create_artifact(&file_publication).await {
         Ok(record) => {
@@ -550,6 +700,81 @@ async fn publish_artifact(
             }
         }
         Err(error) => application_error_status(&error).into_response(),
+    }
+}
+
+async fn capture_artifacts(
+    State(service): State<Arc<WorkerArtifactPublicationService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<ArtifactCaptureRequest>,
+) -> Response {
+    let (workspace, session) = match &request.operation {
+        ArtifactCaptureOperation::Read {
+            workspace_id,
+            session_id,
+        } => (workspace_id, session_id),
+        ArtifactCaptureOperation::Replace { request } => {
+            if request.decide(None).is_err() {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+            (&request.workspace_id, &request.session_id)
+        }
+    };
+    let scope = match &request.operation_fence {
+        ArtifactPublicationFence::Terminal(effect) => Some(effect.operation_id()),
+        _ => None,
+    };
+    // The exact same guard as per-File publication stays alive through CAS.
+    // A capture read is fenced too: an obsolete Worker cannot scan a successor's
+    // revision and then attempt to attach its own stale output bytes to it.
+    let _guard = match authorize_artifact_effect(
+        service.as_ref(),
+        &worker,
+        request.identity.as_ref(),
+        &request.operation_fence,
+        workspace,
+        session,
+        scope,
+    )
+    .await
+    {
+        Ok(guard) => guard,
+        Err(status) => return status.into_response(),
+    };
+    match request.operation {
+        ArtifactCaptureOperation::Read {
+            workspace_id,
+            session_id,
+        } => {
+            match service
+                .application
+                .artifact_capture(&workspace_id, &session_id)
+                .await
+            {
+                Ok(capture) => {
+                    if capture.as_ref().is_some_and(|capture| {
+                        capture.verify_scope(&workspace_id, &session_id).is_err()
+                    }) {
+                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
+                    Json(ArtifactCaptureResponse::Current(capture)).into_response()
+                }
+                Err(error) => application_error_status(&error).into_response(),
+            }
+        }
+        ArtifactCaptureOperation::Replace { request } => {
+            match service
+                .application
+                .replace_artifact_capture(request.clone())
+                .await
+            {
+                Ok(outcome) if request.verify_outcome(&outcome).is_ok() => {
+                    Json(ArtifactCaptureResponse::Replaced(outcome)).into_response()
+                }
+                Ok(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                Err(error) => application_error_status(&error).into_response(),
+            }
+        }
     }
 }
 

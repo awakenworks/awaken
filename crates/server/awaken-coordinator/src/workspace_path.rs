@@ -197,6 +197,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn output_capture_uses_one_flat_route_after_workspace_rewriting() {
+        // W1 flat uses the platform Workspace; W2 the generic wrapper selects
+        // the path Workspace before the same resource handler. Query scope_id
+        // remains a File filter in both cases; no second prefixed route exists.
+        async fn read(
+            axum::Extension(scope): axum::Extension<WorkspaceScope>,
+            axum::extract::Query(query): axum::extract::Query<
+                awaken_protocol_awaken::FileOutputCaptureParams,
+            >,
+        ) -> String {
+            format!("{}|{}", scope.0, query.scope_id)
+        }
+        let app = with_workspace_path_addressing(with_platform_workspace(
+            awaken_protocol_awaken::file_output_capture_router(read),
+            "local".into(),
+        ));
+        for (uri, expected) in [
+            (
+                "/v1/awaken/files/output-capture?scope_id=session",
+                "local|session",
+            ),
+            (
+                "/v1/workspaces/team/awaken/files/output-capture?scope_id=session",
+                "team|session",
+            ),
+        ] {
+            let (status, body) = get_path(&app, uri).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body, expected);
+        }
+    }
+
+    #[tokio::test]
     async fn profiled_session_run_uses_the_single_flat_and_workspace_route_owner() {
         // Addressing causes: C1 protocol registers only the flat profiled-Run
         // POST; C2 the generic wrapper sees a Workspace-prefixed spelling.
