@@ -117,7 +117,7 @@ function installCodexAdapterFixture() {
   const executable = path.join(prefix, 'node_modules', '.bin', 'codex-acp');
   fs.mkdirSync(path.dirname(executable), { recursive: true });
   fs.writeFileSync(path.join(prefix, 'package.json'), JSON.stringify({
-    dependencies: { '@agentclientprotocol/codex-acp': '1.1.9' },
+    dependencies: { '@agentclientprotocol/codex-acp': '1.10.0' },
   }));
   fs.writeFileSync(executable, `#!${process.execPath}
 const readline = require('node:readline');

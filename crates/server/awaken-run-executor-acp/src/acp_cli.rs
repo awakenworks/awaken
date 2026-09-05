@@ -46,23 +46,6 @@ pub enum BackendModelInterface {
     Unsupported,
 }
 
-/// Where a backend-owned CLI writes mutable process state while retaining the
-/// host user's login and configuration identity.
-///
-/// This is deliberately narrower than [`AcpCli::config_home_env`]: moving the
-/// whole config home would also move credentials and user configuration. A CLI
-/// selects Session isolation only when it exposes a dedicated non-secret state
-/// directory such as Codex's SQLite home.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendOwnedStateIsolation {
-    /// The CLI has no independently configurable state directory, so its state
-    /// remains part of the trusted host identity.
-    SharedHost,
-    /// Point the declared environment variable at the existing Session-owned
-    /// config directory. The Runtime Host owns realization and teardown.
-    SessionDirectory { env: &'static str },
-}
-
 /// How an ACP CLI receives the managed route's exact model id. Most adapters
 /// read it from their catalog-declared environment projection; adapters that
 /// own model selection at the protocol layer receive `session/set_model` after
@@ -190,9 +173,6 @@ pub struct AcpCli {
     /// Exact-model interface for backend-owned local login. Default-model
     /// selection never consumes it.
     pub backend_model_interface: BackendModelInterface,
-    /// Mutable-state isolation for backend-owned local login. This never moves
-    /// the CLI's credential or user configuration home.
-    pub backend_owned_state_isolation: BackendOwnedStateIsolation,
     /// Exact-model interface for an Awaken-managed provider route.
     pub managed_model_interface: ManagedModelInterface,
     /// Managed provider credential delivery. Local backend-owned login is a

@@ -5,6 +5,7 @@
 //! prompts, and MCP generations come only from the frozen Control projection
 //! and are installed into the same Session slot for the Native/ACP backend path.
 
+mod agent_filesystem_context;
 mod realization_control_deadline;
 
 use std::sync::Arc;
@@ -17,6 +18,7 @@ use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecutor};
 use futures_util::stream::{self, StreamExt};
 
+use agent_filesystem_context::consistent_agent_filesystem_context;
 use realization_control_deadline::DeadlineSessionRealizationControl;
 
 /// Independent Session lease renewals are fast root CAS operations. Bound them
@@ -374,7 +376,16 @@ impl SessionContextAttemptExecutor {
                 ))
             })?;
         }
-        let prompts = self.slots.prompts(&self.session_id);
+        let filesystem = consistent_agent_filesystem_context(&activation.snapshot)?;
+        let prompts = self
+            .slots
+            .prompts(
+                &self.session_id,
+                filesystem.working_directory.as_deref(),
+                filesystem.has_acp,
+                filesystem.has_native,
+            )
+            .map_err(awaken_runtime_contract::execution::Error::Resolution)?;
         if prompts.is_empty() {
             return Ok(activation);
         }
@@ -1713,7 +1724,9 @@ impl crate::SharedHost {
 
     #[cfg(test)]
     pub(crate) fn thread_session_prompts(&self, thread: &str) -> Vec<String> {
-        self.session_slots.prompts(thread)
+        self.session_slots
+            .prompts(thread, None, false, true)
+            .expect("test Native prompt projection")
     }
 }
 

@@ -147,7 +147,7 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
-[ "$package" = "@agentclientprotocol/codex-acp@1.1.9" ] || exit 21
+[ "$package" = "@agentclientprotocol/codex-acp@1.10.0" ] || exit 21
 /bin/mkdir -p "$prefix/node_modules/.bin" || exit 22
 /bin/cat > "$prefix/node_modules/.bin/codex-acp" <<'WRAPPER'
 #!/bin/sh
@@ -175,7 +175,7 @@ done
 WRAPPER
 /bin/chmod 755 "$prefix/node_modules/.bin/codex-acp" || exit 23
 /bin/cat > "$prefix/package.json" <<'MANIFEST'
-{"dependencies":{"@agentclientprotocol/codex-acp":"1.1.9"}}
+{"dependencies":{"@agentclientprotocol/codex-acp":"1.10.0"}}
 MANIFEST
 printf '%s\n' "$package" >> ${JSON.stringify(NPM_LOG)}
 `);
@@ -435,7 +435,7 @@ esac
     assert.equal(codex.local.detected, true, 'L1');
     assert.equal(codex.local.login_state, 'available', 'L1');
     assert.deepEqual(fs.readFileSync(NPM_LOG, 'utf8').trim().split('\n'), [
-      '@agentclientprotocol/codex-acp@1.1.9',
+      '@agentclientprotocol/codex-acp@1.10.0',
     ]);
 
     let result = await request('PUT', `/v1/config/agents/${AGENT}`, {
