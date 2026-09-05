@@ -12,6 +12,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static PRIVATE_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+mod portable_name;
+pub use portable_name::{is_portable_component, is_reserved_component};
+mod projection_root;
+pub use projection_root::ProjectionRoot;
+mod tree_limits;
+use tree_limits::ReadBudget;
+pub use tree_limits::TreeReadLimits;
+
 /// Immutable identity of one opened directory inode.
 ///
 /// This is policy-free physical evidence. Provider adapters decide whether an
@@ -1484,17 +1492,17 @@ fn read_tree_from<Fd: std::os::fd::AsFd>(
     relative_parent: &Path,
     excluded: &[PathBuf],
     snapshot: &mut TreeSnapshot,
-    max_file_bytes: u64,
-    remaining_bytes: &mut u64,
+    budget: &mut ReadBudget,
 ) -> std::io::Result<()> {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt as _;
 
-    for name in directory_entry_names(directory.as_fd())? {
+    for name in directory_tree::directory_entry_names_bounded(directory.as_fd(), budget.entries)? {
         let relative_path = relative_parent.join(OsString::from_vec(name.to_bytes().to_vec()));
         if tree_path_is_excluded(&relative_path, excluded) {
             continue;
         }
+        budget.entry(&relative_path)?;
         match rustix::fs::openat(
             directory.as_fd(),
             &name,
@@ -1514,14 +1522,7 @@ fn read_tree_from<Fd: std::os::fd::AsFd>(
                     relative_path: relative_path.clone(),
                     mode: opened.st_mode as u32 & 0o777,
                 });
-                read_tree_from(
-                    &child,
-                    &relative_path,
-                    excluded,
-                    snapshot,
-                    max_file_bytes,
-                    remaining_bytes,
-                )?;
+                read_tree_from(&child, &relative_path, excluded, snapshot, budget)?;
                 let named = rustix::fs::statat(
                     directory.as_fd(),
                     &name,
@@ -1572,8 +1573,8 @@ fn read_tree_from<Fd: std::os::fd::AsFd>(
                 }
                 let bytes = read_tree_file_bounded(
                     File::from(descriptor),
-                    max_file_bytes,
-                    remaining_bytes,
+                    budget.limits.file_bytes,
+                    &mut budget.bytes,
                 )?;
                 let named_after = rustix::fs::statat(
                     directory.as_fd(),
@@ -1635,8 +1636,12 @@ pub fn read_tree_nofollow_excluding(
         expected_root,
         relative_tree,
         excluded,
-        u64::MAX,
-        u64::MAX,
+        TreeReadLimits {
+            file_bytes: u64::MAX,
+            total_bytes: u64::MAX,
+            entries: usize::MAX,
+            depth: usize::MAX,
+        },
     )
 }
 
@@ -1646,8 +1651,7 @@ fn read_tree_nofollow_limited(
     expected_root: DirectoryIdentity,
     relative_tree: &Path,
     excluded: &[PathBuf],
-    max_file_bytes: u64,
-    mut max_total_bytes: u64,
+    limits: TreeReadLimits,
 ) -> std::io::Result<TreeSnapshot> {
     validate_relative_tree_path(relative_tree, true)?;
     for path in excluded {
@@ -1680,8 +1684,7 @@ fn read_tree_nofollow_limited(
         Path::new(""),
         excluded,
         &mut snapshot,
-        max_file_bytes,
-        &mut max_total_bytes,
+        &mut ReadBudget::new(limits),
     )?;
     snapshot
         .directories
@@ -1703,6 +1706,22 @@ pub fn read_tree_nofollow_bounded(
     max_file_bytes: u64,
     max_total_bytes: u64,
 ) -> std::io::Result<TreeSnapshot> {
+    read_tree_nofollow_with_limits(
+        root,
+        TreeReadLimits {
+            file_bytes: max_file_bytes,
+            total_bytes: max_total_bytes,
+            entries: usize::MAX,
+            depth: usize::MAX,
+        },
+    )
+}
+
+/// Required-tree reader with caller-owned metadata and content budgets.
+pub fn read_tree_nofollow_with_limits(
+    root: &Path,
+    limits: TreeReadLimits,
+) -> std::io::Result<TreeSnapshot> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         read_tree_nofollow_limited(
@@ -1710,18 +1729,17 @@ pub fn read_tree_nofollow_bounded(
             directory_identity_nofollow(root)?,
             Path::new(""),
             &[],
-            max_file_bytes,
-            max_total_bytes,
+            limits,
         )
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        directory_tree::read_plain_tree_bounded(root, max_file_bytes, max_total_bytes)
+        directory_tree::read_plain_tree_bounded(root, limits)
     }
 }
 
 fn read_tree_file_bounded(
-    file: File,
+    file: impl std::io::Read,
     max_file_bytes: u64,
     remaining_bytes: &mut u64,
 ) -> std::io::Result<Vec<u8>> {
@@ -1927,6 +1945,6 @@ pub fn remove_directory_tree_exact(
     ))
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;

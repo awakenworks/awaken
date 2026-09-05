@@ -496,16 +496,26 @@ matrix in `e2e/managed_memory_repository_durable_e2e.mjs` drives two clients wit
 the same base hash, both ordered linearizations and simultaneous dispatch,
 identical/different updates, exact retries, version history and restart. It is
 public API evidence, not two Agents contending on one mounted path.
+The shared Agent resource mission additionally gives both mounted Sessions the
+same two initial Memory heads: equal edits converge, distinct edits preserve a
+single winner. It checks exact head/version history after concurrent release
+and restart through the public API, for both ACP fixture identities and Native
+Namespace. The registered Worker uses its existing copy-only mounter. This
+exercises mounted Agent composition; it does not establish in-flight crash
+fencing or that a conflict's pending reclamation has eventually completed.
+The commit/ack fault matrix in `tests/writeback_faults.rs` adds 24 actual SQLite
+teardown interruption rows, including a committed prefix and exact reopen.
 The existing `MemoryCAS` model adds the copy-recovery configuration, with
-automatically rejected rebase and incomplete-scan-delete mutants. Worker login heartbeat reordering runs
+automatically rejected rebase, incomplete-scan-delete and replaced-root mutants.
+It explicitly separates acknowledgement loss from durable commit. Worker login heartbeat reordering runs
 against the production registry under Loom; the existing Kani lease kernel and
 TLA+ activation/projection/reclamation models retain their own boundaries. See
 [formal verification](../../formal/README.md) for the exact model scope.
 
 These gates do not yet establish a complete release matrix: in-flight ACP
 process fencing, a production-feature HTTPS resource composition, actual mixed
-cloud/local Worker placement and loss, and same-path mounted Memory competition
-through two Agents still need dedicated end-to-end evidence. Windows local
+cloud/local Worker placement and loss, and exhaustive Agent-level conflict
+linearizations still need dedicated end-to-end evidence. Windows local
 process termination currently targets the direct child, unlike Unix process
 groups; neither proves ownership recovery after abrupt Worker death while a
 host Agent or descendant is still performing effects. Actual

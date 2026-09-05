@@ -64,6 +64,15 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
         const attempt = [...text.matchAll(/^AWK_ATTEMPT=(.+)$/gmu)].at(-1)?.[1];
         assert.ok(attempt);
         const combined = [seed, memorySeed, repoSeed, head, attempt].join('\n');
+        const contention = [...text.matchAll(/^AWK_CONTEND=(.+)$/gmu)].at(-1)?.[1];
+        if (contention) {
+          for (const name of ['shared-a-identical.md', 'shared-z-conflict.md']) {
+            assert.equal(fs.readFileSync(path.join(memory, name), 'utf8'), memorySeed,
+              'both physical copy projections retain the same initial head');
+          }
+          fs.writeFileSync(path.join(memory, 'shared-a-identical.md'), `${memorySeed}\n${contention}`);
+          fs.writeFileSync(path.join(memory, 'shared-z-conflict.md'), combined);
+        }
         const previous = [...text.matchAll(/^AWK_PREVIOUS=(.+)$/gmu)].at(-1)?.[1];
         if (previous) {
           const prior = [seed, memorySeed, repoSeed, head, previous].join('\n');

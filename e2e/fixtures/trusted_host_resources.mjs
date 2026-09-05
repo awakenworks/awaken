@@ -52,6 +52,10 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
   // N1 Native reuses the SAME resources, receipt and independent output oracle.
   // Its Bash Hand changes cwd explicitly: Native has no ACP session cwd option.
   // This covers default/nested TOOL cwd, not an invented Native Agent setting.
+  // R6 registered Worker copy projections capture the same two heads. On the
+  // last receipt both Agents read those bases, then write identical/different
+  // bytes at shared paths. Concurrent release => one version per path; conflict
+  // never overwrites its winner, including after restart/reclamation retry.
   const native = runtime === 'native';
   assert.equal(native, typeof nativeModel === 'string', 'Native needs an explicit published model');
   const betas = ['managed-agents-2026-04-01'];
@@ -102,6 +106,13 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
   await client.post(`/v1/memory_stores/${memory.id}/memories`, {
     headers: memoryHeaders, body: { path: '/seed.md', content: memoryBytes },
   });
+  const sharedHeads = [];
+  for (const sharedPath of ['/shared-a-identical.md', '/shared-z-conflict.md']) {
+    sharedHeads.push(await client.post(`/v1/memory_stores/${memory.id}/memories`, {
+      headers: memoryHeaders, body: { path: sharedPath, content: memoryBytes },
+    }));
+  }
+  let contention;
   const cases = [];
   for (const [name, cwd] of [['default', undefined], ['nested', 'repo/src']]) {
     const agent = `resource-${runtime}-${name}`;
@@ -141,7 +152,8 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
       betas, events: [{ type: 'user.message', content: [{ type: 'text', text:
         `AWK_RESOURCE_MISSION\nAWK_RESULT=result-${name}\nAWK_ATTEMPT=${attempt}\nRead the uploaded File using its mounted path, seed.md in Memory, and README.md in the mounted Repository. Their exact bytes are independent secrets not supplied in this user message. Obtain the Repository HEAD using git rev-parse HEAD. Construct exactly five lines: File bytes, Memory seed bytes, Repository README bytes, the HEAD hash, and this message's AWK_ATTEMPT value, joined by LF with NO trailing newline. Write this combined text into result-${name}.md inside Memory, result-${name}.txt inside Repository, and result.txt inside the injected outputs directory. Run git add -N result-${name}.txt and save git diff -- result-${name}.txt into repository.patch in the outputs directory. Do not publish to the remote. Reply RESOURCE_OK followed by the File bytes, a space, and this message's AWK_ATTEMPT value. Use the injected paths relative to your current working directory.`
         + (previous ? `\nAWK_PREVIOUS=${previous}\nBefore overwriting anything, verify that the existing Memory and Repository result files both still contain the same four resource lines followed by AWK_PREVIOUS. Stop with an error if either prior edit was lost during Worker replacement.` : '')
-        + (native ? `\nAWK_TOOL_CWD=/workspace${name === 'nested' ? '/repo/src' : ''}` : ''),
+        + (native ? `\nAWK_TOOL_CWD=/workspace${name === 'nested' ? '/repo/src' : ''}` : '')
+        + (contention ? `\nAWK_CONTEND=${contention}\nBefore editing shared paths, verify shared-a-identical.md and shared-z-conflict.md in Memory both equal seed.md exactly. Write seed.md bytes followed by LF and AWK_CONTEND (no final newline) to shared-a-identical.md. Write the five-line combined result text to shared-z-conflict.md. These are intentional same-base concurrent edits; do not retry by reading a newer durable base.` : ''),
       }] }],
     });
     const events = await allowManagedToolBoundaries({
@@ -189,15 +201,37 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
   // recover the surviving tree. The next mission MUST read the previous edits
   // before writing its new attempt marker; re-cloning would fail this oracle.
   await restart({ crash: true });
+  contention = randomUUID();
   await Promise.all(cases.map(execute));
   await Promise.all(cases.map(({ session }) => client.beta.sessions.delete(session.id, { betas })));
   const content = () => client.get(`/v1/memory_stores/${memory.id}/memories?view=full`, { headers: memoryHeaders });
   const complete = (page) => cases.every(({ name, expected }) =>
     page.data.some((entry) => entry.path === `/result-${name}.md` && entry.content === expected));
   await waitForValue(content, complete, 'R2 both concurrent Memory writes persisted', { timeoutMs: 20_000 });
+  const shared = await waitForValue(content, (page) =>
+    page.data.some((entry) => entry.path === '/shared-a-identical.md'
+      && entry.content === `${memoryBytes}\n${contention}`)
+    && page.data.some((entry) => entry.path === '/shared-z-conflict.md'
+      && cases.some(({ expected }) => entry.content === expected)),
+  'R6 mounted same-path writes converge or preserve one CAS winner', { timeoutMs: 20_000 });
+  const assertSharedTruth = async () => {
+    const page = await content();
+    const versions = [];
+    for await (const version of client.beta.memoryStores.memoryVersions.list(memory.id, {
+      betas: ['agent-memory-2026-07-22'],
+    })) versions.push(version);
+    for (const initial of sharedHeads) {
+      assert.deepEqual(page.data.find((entry) => entry.id === initial.id),
+        shared.data.find((entry) => entry.id === initial.id), 'R6 exact winning head survives retry');
+      assert.equal(versions.filter((version) => version.memory_id === initial.id).length, 2,
+        'R6 exactly one initial version plus one winning update');
+    }
+  };
+  await assertSharedTruth();
   assert.equal(git(['rev-parse', 'HEAD'], remote), remoteHead, 'R2 no implicit Git publication');
   assert.equal(git(['ls-tree', '-r', '--name-only', 'HEAD'], remote), 'README.md\nsrc/.keep');
   await restart();
   await waitForValue(content, complete, 'R3 actual Worker restart retains both writes', { timeoutMs: 20_000 });
-  console.log(`AGENT RESOURCE PASS: ${runtime}, ${native ? 'default/nested Native tool cwd' : 'two ACP cwd views'}, File/Memory/Repository, concurrent writeback, restart`);
+  await assertSharedTruth();
+  console.log(`AGENT RESOURCE PASS: ${runtime}, ${native ? 'default/nested Native tool cwd' : 'two ACP cwd views'}, File/Memory/Repository, same-path convergence/conflict, restart`);
 }

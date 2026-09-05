@@ -905,32 +905,7 @@ pub(crate) fn sandbox_dir(base: &Path, id: &str) -> PathBuf {
         || id.chars().any(|character| {
             !character.is_ascii_alphanumeric() && !matches!(character, '.' | '-' | '_')
         });
-    let stem = id.split('.').next().unwrap_or_default();
-    let reserved = matches!(
-        stem.to_ascii_uppercase().as_str(),
-        "CON"
-            | "PRN"
-            | "AUX"
-            | "NUL"
-            | "COM1"
-            | "COM2"
-            | "COM3"
-            | "COM4"
-            | "COM5"
-            | "COM6"
-            | "COM7"
-            | "COM8"
-            | "COM9"
-            | "LPT1"
-            | "LPT2"
-            | "LPT3"
-            | "LPT4"
-            | "LPT5"
-            | "LPT6"
-            | "LPT7"
-            | "LPT8"
-            | "LPT9"
-    );
+    let reserved = awaken_sandbox_fs::is_reserved_component(id);
     if !invalid && !reserved {
         return base.join(id);
     }

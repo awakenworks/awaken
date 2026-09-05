@@ -259,14 +259,14 @@ def check_memory_copy_model_mutant(tlc_jar: Path) -> None:
     source = (ROOT / "formal/tla/MemoryCAS.tla").read_text(encoding="utf-8")
     original = """CopyRecover(w) == /\\ crashed[w]
                   /\\ crashed' = [crashed EXCEPT ![w] = FALSE]
-                  /\\ UNCHANGED <<vars, mounted, materializationBase, scanComplete, lastMutationScan>>"""
+                  /\\ UNCHANGED <<vars, mounted, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck>>"""
     mutant = """CopyRecover(w) == /\\ crashed[w]
                   /\\ crashed' = [crashed EXCEPT ![w] = FALSE]
                   /\\ expected' = [expected EXCEPT ![w] = generation]
                   /\\ UNCHANGED <<generation, value, writes, sourcePresent, targetPresent,
                                   targetIdentity, renameCommitted, headPresent, lastAction,
                                   lastBefore, lastAfter, lastPresentBefore, lastPresentAfter,
-                                  mounted, materializationBase, scanComplete, lastMutationScan>>"""
+                                  mounted, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck>>"""
     if source.count(original) != 1:
         raise SystemExit("Memory copy recovery mutation anchor drifted; review the model")
     # C2: admit delete after an incomplete scan. The exact scan invariant must
@@ -275,10 +275,15 @@ def check_memory_copy_model_mutant(tlc_jar: Path) -> None:
                  /\\ scanComplete[w]"""
     if source.count(delete_guard) != 1:
         raise SystemExit("Memory copy scan mutation anchor drifted; review the model")
+    root_guard = "                 /\\ rootMatches[w]"
+    if source.count(root_guard) != 1:
+        raise SystemExit("Memory copy root mutation anchor drifted; review the model")
     mutations = [
         (source.replace(original, mutant), "CopyRecoveryKeepsMaterializationBase"),
         (source.replace(delete_guard, "CopyDelete(w) == /\\ mounted[w] /\\ ~crashed[w]"),
          "CopyMutationRequiresCompleteScan"),
+        (source.replace(root_guard, "                 /\\ TRUE"),
+         "CopyMutationRequiresOriginalRoot"),
     ]
     for mutated, invariant in mutations:
         with tempfile.TemporaryDirectory(prefix="awaken-memory-copy-mutant-") as temp:
@@ -295,7 +300,7 @@ def check_memory_copy_model_mutant(tlc_jar: Path) -> None:
             )
             if result.returncode != 12 or f"Invariant {invariant} is violated" not in result.stdout:
                 raise SystemExit(f"Memory copy mutant was not killed correctly:\n{result.stdout}")
-    print("Memory copy mutation score: 2/2 killed (frozen base and complete scan)")
+    print("Memory copy mutation score: 3/3 killed (frozen base, complete scan, original root)")
 
 
 if __name__ == "__main__":

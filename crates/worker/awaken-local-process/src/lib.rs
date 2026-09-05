@@ -2,8 +2,8 @@
 //! Local/Namespace sandbox launches.
 //!
 //! Protocol supervisors own *when* to terminate. This adapter owns the
-//! OS-specific guarantee that one signal reaches the launched process and all
-//! descendants in its private process group.
+//! OS-specific termination boundary: Unix targets the private process group;
+//! other platforms currently target the direct child only.
 
 use async_trait::async_trait;
 use awaken_provisioning_contract::{ExitStatus, ProcessHandle, SandboxError, Signal};
@@ -12,6 +12,8 @@ use tokio::sync::Mutex;
 
 /// Configure a command so the child becomes leader of a private process group.
 pub fn configure_process_group(command: &mut Command) {
+    #[cfg(not(unix))]
+    let _ = command;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -19,7 +21,8 @@ pub fn configure_process_group(command: &mut Command) {
     }
 }
 
-/// A locally owned process whose lifecycle signal targets its complete group.
+/// A locally owned process with serialized child access, never a lock held
+/// while waiting for the OS to exit. Unix signals target its private group.
 pub struct LocalProcess {
     id: String,
     #[cfg(unix)]
@@ -56,13 +59,15 @@ impl ProcessHandle for LocalProcess {
     }
 
     async fn wait(&self) -> Result<ExitStatus, SandboxError> {
-        self.child
-            .lock()
-            .await
-            .wait()
-            .await
-            .map(exit)
-            .map_err(|error| SandboxError::new(error.to_string()))
+        loop {
+            if let Some(status) = self.poll().await? {
+                return Ok(status);
+            }
+            // A waiter must not prevent poll/cancel from acquiring the child.
+            // Polling also makes cancellation of this future leave ownership
+            // with the same handle; no detached reaper or second exit ledger.
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 
     async fn poll(&self) -> Result<Option<ExitStatus>, SandboxError> {
@@ -118,13 +123,15 @@ impl ProcessHandle for LocalProcess {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::path::Path;
     use std::process::Stdio;
     use std::time::Duration;
 
+    #[cfg(unix)]
     async fn wait_for_marker(path: &Path, expected: &str) {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -139,6 +146,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn term_reaches_the_spawned_process_and_its_descendant() {
         // Cause/effect graph and decision rule PG1:
         // C1 a command is configured before spawn; C2 it creates a descendant;
@@ -176,6 +184,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn signal_accepts_a_process_group_that_already_exited() {
         // The supervisor can observe a running child, receive its terminal protocol
         // frame, and then race its natural exit while beginning cleanup. Once the
@@ -206,5 +215,68 @@ mod tests {
             .signal(Signal::Term)
             .await
             .expect("an already-exited owned process is settled");
+    }
+
+    #[test]
+    #[ignore = "child participant, invoked by the cross-platform lifecycle matrix"]
+    fn lifecycle_child() {
+        if std::env::var("AWAKEN_LIFECYCLE_CHILD").as_deref() == Ok("wait") {
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_poll_and_cancel_interleavings_remain_bounded() {
+        // W1 wait first, W2 signal first, W3 natural exit, W4 cancelled waiter.
+        // All OS rows use a real native child (no shell portability assumption).
+        // Effects: poll/signal are not blocked by wait, two waiters converge,
+        // repeated wait/cancel settles. This tests direct-child ownership; the
+        // separate Unix group test owns descendant propagation.
+        for order in 0..4 {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", "tests::lifecycle_child", "--ignored"])
+                .env(
+                    "AWAKEN_LIFECYCLE_CHILD",
+                    if order == 2 { "exit" } else { "wait" },
+                )
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true);
+            configure_process_group(&mut command);
+            let process = LocalProcess::spawned(command.spawn().unwrap());
+            let campaign = async {
+                if order == 0 || order == 3 {
+                    let waiting = process.wait();
+                    tokio::pin!(waiting);
+                    tokio::select! {
+                        biased;
+                        result = &mut waiting => panic!("long child exited: {result:?}"),
+                        () = tokio::task::yield_now() => {}
+                    }
+                    assert!(
+                        process.poll().await.unwrap().is_none(),
+                        "W1 wait cannot retain lock"
+                    );
+                    if order == 0 {
+                        process.signal(Signal::Kill).await.unwrap();
+                        waiting.await.unwrap();
+                    }
+                }
+                if order != 2 {
+                    process.signal(Signal::Kill).await.unwrap();
+                }
+                let (a, b) = tokio::join!(process.wait(), process.wait());
+                assert_eq!(a.unwrap().code, b.unwrap().code, "same cached OS exit");
+                process.signal(Signal::Kill).await.unwrap();
+                assert!(process.poll().await.unwrap().is_some());
+            };
+            tokio::time::timeout(Duration::from_secs(5), campaign)
+                .await
+                .expect("W1-W4 bounded lifecycle");
+        }
     }
 }

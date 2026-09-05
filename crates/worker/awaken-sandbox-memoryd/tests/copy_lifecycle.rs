@@ -4,7 +4,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_memory_store::{MemoryRepository, SqliteMemoryRepository};
 use awaken_provisioning_contract::MemoryMaterializationEvidence;
@@ -12,16 +11,274 @@ use awaken_provisioning_contract::{MemoryMounter, MountAccess};
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 
 fn temporary_root() -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock after epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "awaken-memory-mounter-copy-{}-{nonce}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&root).expect("create temporary root");
-    root
+    tempfile::Builder::new()
+        .prefix("awaken-memory-mounter-copy-")
+        .tempdir()
+        .expect("exclusive temporary root")
+        .keep()
+}
+
+#[tokio::test]
+async fn ingress_and_recovery_reject_a_tree_that_cannot_be_harvested() {
+    // B11 a logically valid head exceeds physical depth. Initial projection and
+    // recovered-file staging must BOTH reject, with no partial initial files or
+    // Repository mutation. Tests the production call paths, not just the budget
+    // helper, so removing either admission call cannot leave this row green.
+    let root = tempfile::tempdir().unwrap();
+    let repository = Arc::new(
+        SqliteMemoryRepository::open(root.path().join("memory.sqlite").to_str().unwrap()).unwrap(),
+    );
+    repository.create("s", "/a.md", "valid").await.unwrap();
+    let relative = std::iter::repeat_n("d", 129).collect::<Vec<_>>().join("/");
+    repository
+        .create("s", &format!("/{relative}"), "deep")
+        .await
+        .unwrap();
+    let heads = repository.snapshot_heads("s").await.unwrap();
+    let history = repository.list_versions("s").await.unwrap();
+    let projection = root.path().join("projection");
+    let mounter = MemoryStoreMounter::copy_only(repository.clone());
+    assert!(
+        mounter
+            .mount("s", &projection, MountAccess::ReadWrite)
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read_dir(&projection).unwrap().count(), 0);
+    let evidence = MemoryMaterializationEvidence::new("s", "/workspace/memory", vec![]).unwrap();
+    let error = mounter
+        .reconcile_recovered_copy(
+            "s",
+            &evidence,
+            &[(relative, b"unharvestable".to_vec())],
+            MountAccess::ReadWrite,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Memory projection exceeds copy budget"),
+        "B11 fail at ingress, not at the later scan: {error}"
+    );
+    assert_eq!(repository.snapshot_heads("s").await.unwrap(), heads);
+    assert_eq!(repository.list_versions("s").await.unwrap(), history);
+}
+
+#[tokio::test]
+async fn materialization_rejects_nonportable_store_paths_before_any_file_write() {
+    // I1 logical Repository accepts Windows-special syntax, but every physical
+    // projection rejects it BEFORE writing even a preceding valid head. I2 the
+    // recovery entry uses the same validator. Both preserve outside bytes and
+    // exact durable heads/history; this runs on Linux too, not a cfg-only test.
+    for invalid in [
+        "/..\\outside.txt",
+        "/C:\\outside.txt",
+        "/\\\\server\\share",
+        "/note:stream",
+        "/NUL.txt",
+        "/COM1",
+        "/LPT9.log",
+        "/trailing.",
+        "/trailing ",
+    ] {
+        let root = temporary_root();
+        let repository = Arc::new(
+            SqliteMemoryRepository::open(root.join("memory.sqlite").to_str().unwrap()).unwrap(),
+        );
+        repository.create("s", "/a.md", "valid").await.unwrap();
+        repository
+            .create("s", invalid, "must not escape")
+            .await
+            .unwrap();
+        let heads = repository.snapshot_heads("s").await.unwrap();
+        let history = repository.list_versions("s").await.unwrap();
+        std::fs::write(root.join("outside.txt"), "sentinel").unwrap();
+        let projection = root.join("projection");
+        std::fs::create_dir(&projection).unwrap();
+        assert!(
+            awaken_sandbox_memoryd::copy::materialize(&*repository, "s", &projection)
+                .await
+                .is_err(),
+            "I1 {invalid}"
+        );
+        assert_eq!(
+            std::fs::read_dir(&projection).unwrap().count(),
+            0,
+            "I1 no partial projection"
+        );
+        let mounter = MemoryStoreMounter::copy_only(repository.clone());
+        let evidence =
+            MemoryMaterializationEvidence::new("s", "/workspace/memory", vec![]).unwrap();
+        assert!(
+            mounter
+                .reconcile_recovered_copy(
+                    "s",
+                    &evidence,
+                    &[(invalid.trim_start_matches('/').into(), b"bad".to_vec())],
+                    MountAccess::ReadWrite
+                )
+                .await
+                .is_err(),
+            "I2"
+        );
+        assert_eq!(repository.snapshot_heads("s").await.unwrap(), heads);
+        assert_eq!(repository.list_versions("s").await.unwrap(), history);
+        assert_eq!(
+            std::fs::read_to_string(root.join("outside.txt")).unwrap(),
+            "sentinel"
+        );
+        drop(mounter);
+        drop(repository);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn materialization_never_silently_overwrites_filesystem_aliases() {
+    // A1 case-sensitive filesystem => two exact paths and bytes. A2 the host
+    // aliases those names => exclusive creation rejects; the first file is not
+    // overwritten and Repository truth is untouched. A3 occupied final (e.g.
+    // an alias or leftover projection) => reject rather than truncate.
+    let root = temporary_root();
+    let probe = root.join("probe");
+    std::fs::create_dir(&probe).unwrap();
+    std::fs::write(probe.join("A"), "probe").unwrap();
+    let insensitive = probe.join("a").exists();
+    let repository = Arc::new(
+        SqliteMemoryRepository::open(root.join("memory.sqlite").to_str().unwrap()).unwrap(),
+    );
+    repository.create("s", "/A.md", "upper").await.unwrap();
+    repository.create("s", "/a.md", "lower").await.unwrap();
+    let heads = repository.snapshot_heads("s").await.unwrap();
+    let projection = root.join("projection");
+    std::fs::create_dir(&projection).unwrap();
+    let result = awaken_sandbox_memoryd::copy::materialize(&*repository, "s", &projection).await;
+    assert_eq!(
+        result.is_err(),
+        insensitive,
+        "A1/A2 actual filesystem semantics"
+    );
+    assert_eq!(
+        std::fs::read_to_string(projection.join("A.md")).unwrap(),
+        "upper"
+    );
+    if !insensitive {
+        assert_eq!(
+            std::fs::read_to_string(projection.join("a.md")).unwrap(),
+            "lower"
+        );
+    }
+    assert!(
+        awaken_sandbox_memoryd::copy::materialize(&*repository, "s", &projection)
+            .await
+            .is_err(),
+        "A3"
+    );
+    assert_eq!(repository.snapshot_heads("s").await.unwrap(), heads);
+    drop(repository);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unreadable_projection_never_authorizes_partial_writeback() {
+    // IO2 file read denied; IO3 nested directory enumeration denied. A readable
+    // dirty sibling exists in both cases. Restore permission BEFORE assertions
+    // so even a failed campaign can clean up. This row requires an unprivileged
+    // runner: DAC-bypassing execution is not accepted as proof of read failure.
+    use std::os::unix::fs::PermissionsExt;
+    for directory in [false, true] {
+        let root = temporary_root();
+        let repository = Arc::new(
+            SqliteMemoryRepository::open(root.join("memory.sqlite").to_str().unwrap()).unwrap(),
+        );
+        let original = repository.create("s", "/a.md", "base").await.unwrap();
+        let history = repository.list_versions("s").await.unwrap();
+        let mounter = MemoryStoreMounter::copy_only(repository.clone());
+        let projection = root.join("projection");
+        let mount = mounter
+            .mount("s", &projection, MountAccess::ReadWrite)
+            .await
+            .unwrap();
+        std::fs::write(projection.join("a.md"), "dirty").unwrap();
+        let denied = projection.join("z");
+        if directory {
+            std::fs::create_dir(&denied).unwrap();
+        } else {
+            std::fs::write(&denied, "unreadable").unwrap();
+        }
+        let permissions = std::fs::metadata(&denied).unwrap().permissions();
+        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o0)).unwrap();
+        let result = mount.teardown().await;
+        std::fs::set_permissions(&denied, permissions).unwrap();
+        assert!(
+            result.is_err(),
+            "IO2/IO3 require actual permission denial, not a privileged bypass"
+        );
+        assert_eq!(
+            repository.snapshot_heads("s").await.unwrap(),
+            vec![original]
+        );
+        assert_eq!(repository.list_versions("s").await.unwrap(), history);
+        mount.teardown().await.unwrap();
+        assert_eq!(
+            repository
+                .get_by_path("s", "/a.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .version,
+            2
+        );
+        drop(mount);
+        drop(mounter);
+        drop(repository);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn empty_entry_and_depth_overflows_fail_before_any_repository_write() {
+    // B9 many empty entries bypass byte limits but must consume metadata budget;
+    // B10 deep empty directories must stop before unbounded recursive descent.
+    // Both contain a valid dirty file: failure preserves exact durable history.
+    for deep in [false, true] {
+        let root = temporary_root();
+        let repository = Arc::new(
+            SqliteMemoryRepository::open(root.join("memory.sqlite").to_str().unwrap()).unwrap(),
+        );
+        let original = repository.create("s", "/a.md", "base").await.unwrap();
+        let history = repository.list_versions("s").await.unwrap();
+        let mounter = MemoryStoreMounter::copy_only(repository.clone());
+        let projection = root.join("projection");
+        let mount = mounter
+            .mount("s", &projection, MountAccess::ReadWrite)
+            .await
+            .unwrap();
+        std::fs::write(projection.join("a.md"), "dirty").unwrap();
+        if deep {
+            let mut path = projection.clone();
+            for _ in 0..129 {
+                path.push("d");
+                std::fs::create_dir(&path).unwrap();
+            }
+        } else {
+            for index in 0..awaken_memory_store::MAX_MEMORIES_PER_STORE * 2 {
+                std::fs::write(projection.join(format!("z{index}")), "").unwrap();
+            }
+        }
+        assert!(mount.teardown().await.is_err(), "B9/B10");
+        assert_eq!(
+            repository.snapshot_heads("s").await.unwrap(),
+            vec![original]
+        );
+        assert_eq!(repository.list_versions("s").await.unwrap(), history);
+        drop(mount);
+        drop(mounter);
+        drop(repository);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[tokio::test]
@@ -31,7 +288,9 @@ async fn unavailable_copy_root_is_not_evidence_of_memory_deletion() {
     // M1/M2 => teardown fails, exact durable heads/history and evidence survive;
     // M3 => retry uses those SAME bases and commits the retained local edit once.
     // Rename preserves the test-owned tree: missing projection != user unlink.
-    for replacement_file in [false, true] {
+    // M4/M5 a different plain directory (empty/populated) is NOT user unlink.
+    // Keep the old directory alive so identity reuse cannot mask replacement.
+    for replacement in 0..4 {
         let root = temporary_root();
         let database = root.join("memory.sqlite");
         let repository =
@@ -51,12 +310,26 @@ async fn unavailable_copy_root_is_not_evidence_of_memory_deletion() {
         let evidence = mount.materialization_heads();
         std::fs::write(projection.join("nested/note.md"), "local edit").unwrap();
         std::fs::rename(&projection, &retained).unwrap();
-        if replacement_file {
+        if replacement == 1 {
             std::fs::write(&projection, "not a directory").unwrap();
+        } else if replacement >= 2 {
+            std::fs::create_dir(&projection).unwrap();
+            if replacement == 3 {
+                std::fs::write(projection.join("foreign.md"), "foreign").unwrap();
+            }
         }
         let failed = mount.teardown().await;
-        if replacement_file {
+        if replacement == 1 {
             std::fs::remove_file(&projection).unwrap();
+        } else if replacement >= 2 {
+            if replacement == 3 {
+                assert_eq!(
+                    std::fs::read_to_string(projection.join("foreign.md")).unwrap(),
+                    "foreign"
+                );
+                std::fs::remove_file(projection.join("foreign.md")).unwrap();
+            }
+            std::fs::remove_dir(&projection).unwrap();
         }
         std::fs::rename(&retained, &projection).unwrap();
         assert!(
