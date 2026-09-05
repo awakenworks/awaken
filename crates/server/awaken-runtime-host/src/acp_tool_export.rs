@@ -11,43 +11,7 @@ use awaken_runtime_contract::tool::{
     ToolRecoveryCapability,
 };
 
-pub struct AcpToolExport {
-    pub server: awaken_run_executor_acp::McpServerConfig,
-    _lease: Box<dyn Send + Sync>,
-}
-
-impl AcpToolExport {
-    #[must_use]
-    pub fn new(
-        server: awaken_run_executor_acp::McpServerConfig,
-        lease: impl Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            server,
-            _lease: Box::new(lease),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-pub trait AcpToolExporter: Send + Sync {
-    async fn export_set(
-        &self,
-        server_name: &str,
-        descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-        tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
-    ) -> Result<AcpToolExport, String>;
-
-    async fn export(
-        &self,
-        server_name: &str,
-        descriptor: awaken_runtime_contract::resolved::ToolDescriptor,
-        tool: Arc<dyn awaken_runtime_contract::tool::RawTool>,
-    ) -> Result<AcpToolExport, String> {
-        self.export_set(server_name, vec![descriptor], vec![tool])
-            .await
-    }
-}
+use awaken_runtime_contract::tool_export::{AcpToolExport, AcpToolExporter};
 
 /// ACP transport adapter for the Environment's one canonical `ToolExecutor`.
 /// The descriptor owns the public id; invocation, path projection, recovery and

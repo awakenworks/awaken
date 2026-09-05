@@ -532,7 +532,10 @@ impl SharedHost {
     }
 
     #[must_use]
-    pub fn with_acp_tool_exporter(mut self, exporter: Arc<dyn crate::AcpToolExporter>) -> Self {
+    pub fn with_acp_tool_exporter(
+        mut self,
+        exporter: Arc<dyn awaken_runtime_contract::tool_export::AcpToolExporter>,
+    ) -> Self {
         self.acp_tool_exporter = Some(exporter);
         self
     }

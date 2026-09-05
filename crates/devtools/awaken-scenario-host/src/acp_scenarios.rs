@@ -675,7 +675,7 @@ pub(crate) async fn bind_acp_session_environment(
                 // wiring for every Scenario ACP environment. Individual
                 // scenarios must not remember a second, optional tool-export
                 // installation path.
-                .with_acp_tool_exporter(Arc::new(awaken_worker::SessionToolExporter));
+                .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter));
             match secret_broker {
                 Some(broker) => host.with_session_secret_broker(broker),
                 None => host,

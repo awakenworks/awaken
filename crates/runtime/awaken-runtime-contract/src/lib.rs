@@ -32,6 +32,7 @@ pub mod terminal;
 pub mod tool;
 pub mod tool_batch;
 pub mod tool_discovery;
+pub mod tool_export;
 
 pub use activation::RunActivation;
 pub use boundary::{BoundaryOutcome, evaluate_boundary};

@@ -26,7 +26,6 @@ mod credential_files;
 mod credential_liveness;
 mod lifecycle;
 mod manifest;
-mod mcp_export;
 mod relay_hand;
 
 use credential_liveness::WorkerObservationCache;
@@ -44,7 +43,6 @@ pub use bootstrap::{WorkerBootstrap, WorkerBootstrapInput, WorkerDaemonConfig};
 pub use credential_files::WorkerCredentialFileResolver;
 pub use lifecycle::WorkerShutdown;
 pub use manifest::StandardManifestConfig;
-pub use mcp_export::SessionToolExporter;
 pub use relay_hand::relay_hand_executor_factory;
 
 /// Registration-bound construction of the exact Memory projection adapter.
@@ -1171,6 +1169,9 @@ impl WorkerNode {
             deployment.clone(),
         )
         .with_artifact_publisher(remote_artifacts)
+        // Every execution topology installs the same Session MCP adapter.
+        // Host permission grants and Environment-bound executors remain owners.
+        .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter))
         .with_worker_upstream(upstream)
         .with_memory_reference_encoder(Arc::new(
             awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder,
@@ -1178,7 +1179,6 @@ impl WorkerNode {
         .with_worker_stream_publisher(stream_publisher)
         .with_worker_dispatch(dispatch)
         .with_skill_bundle_source(remote_skills)
-        .with_acp_tool_exporter(Arc::new(SessionToolExporter))
         .with_web_search_provider_registry(self.web_search_providers)
         .with_admin_tools(self.admin_tools);
         if let Some(remote_attempt) = self.remote_attempt {

@@ -178,7 +178,8 @@ pub struct SharedHost {
     /// Higher-layer transport adapter for Session-owned tools exposed to ACP.
     /// The Host names only this contract; concrete MCP server setup remains in
     /// `awaken-coordinator` and does not add a protocol dependency to the substrate.
-    pub(crate) acp_tool_exporter: Option<Arc<dyn crate::AcpToolExporter>>,
+    pub(crate) acp_tool_exporter:
+        Option<Arc<dyn awaken_runtime_contract::tool_export::AcpToolExporter>>,
     /// Remote attempt adapter injected by the process startup. The neutral host
     /// owns only the `RunAttemptExecutor` contract and never names the A2A protocol.
     pub(crate) remote_attempt_executor:

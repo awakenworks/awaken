@@ -267,7 +267,7 @@ pub(crate) struct SessionCtx {
     pub(crate) stream_checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
     /// Session-lifetime leases for every Host-owned tool exported to an ACP
     /// workload (WebSearch plus semantic Skill/Memory tools).
-    pub(crate) _acp_tool_exports: Vec<crate::AcpToolExport>,
+    pub(crate) _acp_tool_exports: Vec<awaken_runtime_contract::tool_export::AcpToolExport>,
     pub(crate) thread_id: ThreadId,
     /// The thread's sandbox environment, reused to build an Outcome Worker runtime
     /// for `define_outcome` (same tools, same environment).
