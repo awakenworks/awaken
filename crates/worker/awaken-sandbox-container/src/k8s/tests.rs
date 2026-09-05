@@ -1416,7 +1416,10 @@ async fn accept_reverse_receives_the_pods_outbound_dial() {
     // Cause/effect rule: C1 an ephemeral listener stays bound under one owner;
     // C2 a stand-in Pod dials its exact resolved address. R1 C1+C2 accepts the
     // bytes on that same listener without a drop/rebind port-allocation race.
-    let listener = crate::net::ReverseListen::bind("127.0.0.1:0".parse().unwrap())
+    // C3 Pod half-close -> EOF on the canonical accepted channel while its
+    // response still reaches the Pod. This exercises the migrated adapter,
+    // not just the shared transport in isolation.
+    let listener = awaken_connection_plan::bind_tcp(&ConnectionPlan::tcp_listen("127.0.0.1:0"))
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1431,11 +1434,18 @@ async fn accept_reverse_receives_the_pods_outbound_dial() {
     };
     pod.write_all(b"ping\n").await.unwrap();
     pod.flush().await.unwrap();
+    pod.shutdown().await.unwrap();
 
     let mut chan = host.await.unwrap().unwrap();
     let mut buf = [0u8; 5];
     chan.read_exact(&mut buf).await.unwrap();
     assert_eq!(&buf, b"ping\n");
+    assert_eq!(chan.read(&mut buf).await.unwrap(), 0);
+    chan.write_all(b"pong\n").await.unwrap();
+    chan.shutdown().await.unwrap();
+    pod.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"pong\n");
+    assert_eq!(pod.read(&mut buf).await.unwrap(), 0);
 }
 
 #[test]

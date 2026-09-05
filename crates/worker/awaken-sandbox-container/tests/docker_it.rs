@@ -16,7 +16,7 @@ use awaken_sandbox_container::{
     ContainerEnvironmentProvider, ContainerPlan, ContainerProvider, ContainerRuntime,
     ContainerState, NetworkMode, RootfsPlan,
 };
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const AGENT_PORT: u16 = 8080;
 
@@ -153,30 +153,46 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
 #[tokio::test]
 async fn docker_open_channel_dials_the_published_agent_port() {
     let Some(rt) = runtime().await else { return };
-    let _ = rt.remove("awaken-it-chan").await;
+    let scope = format!("it-chan-{}", std::process::id());
 
-    // A process-as-container agent that listens on AGENT_PORT (re-listen loop).
+    // Cause/effect rules: D1 a real container publishes an ephemeral Host port
+    // -> the provider resolves it and the canonical factory dials that address;
+    // D2 successful writes alone are insufficient -> require exact echo bytes;
+    // D3 terminal success/failure -> remove only this test's container and
+    // require physical absence. Cold readiness retries remain provider-owned.
     let id = rt
         .create(
-            "it-chan",
-            &plan(&["sh", "-c", "while true; do nc -l -p 8080; done"]),
+            &scope,
+            &plan(&["sh", "-c", "while true; do nc -l -p 8080 -e cat; done"]),
         )
         .await
         .expect("create listening container");
 
-    // The published port is discovered via inspect and dialed via awaken-connection.
+    // The published port is discovered via inspect and dialed via ConnectionPlan.
     // Retry while the in-container listener binds.
     let mut opened = None;
     for _ in 0..25 {
-        if let Ok(mut chan) = rt.open_channel(&id).await
-            && chan.write_all(b"ping").await.is_ok()
-        {
-            opened = Some(());
-            break;
+        if let Ok(mut chan) = rt.open_channel(&id).await {
+            let exchange = async {
+                chan.write_all(b"ping").await?;
+                chan.flush().await?;
+                let mut reply = [0_u8; 4];
+                chan.read_exact(&mut reply).await?;
+                Ok::<_, std::io::Error>(reply)
+            };
+            if matches!(tokio::time::timeout(Duration::from_secs(2), exchange).await,
+                Ok(Ok(reply)) if &reply == b"ping")
+            {
+                opened = Some(());
+                break;
+            }
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    let _ = rt.remove(&id).await;
+    rt.remove(&id)
+        .await
+        .expect("D3 remove this test's container");
+    assert!(rt.inspect(&id).await.is_err(), "D3 physical absence");
     assert!(
         opened.is_some(),
         "open_channel must reach the container's published agent port"
