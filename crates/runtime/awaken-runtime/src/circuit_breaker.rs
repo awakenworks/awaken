@@ -15,6 +15,9 @@ use std::time::{Duration, Instant};
 use awaken_runtime_contract::metrics::MetricsRecorder;
 use parking_lot::Mutex;
 
+mod kernel;
+use kernel::{AdmissionError, CircuitKernel, Completion, PermitKey};
+
 /// Tuning for [`CircuitBreaker`]. Five consecutive failures open the circuit
 /// for a 30s cooldown, then one half-open probe decides.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,28 +40,10 @@ impl Default for CircuitBreakerConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum State {
-    Closed,
-    Open { since: Instant },
-    HalfOpen { probes: u32 },
-}
-
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct ModelCircuit {
-    state: State,
-    consecutive_failures: u32,
-    probe_generation: u64,
-}
-
-impl Default for ModelCircuit {
-    fn default() -> Self {
-        Self {
-            state: State::Closed,
-            consecutive_failures: 0,
-            probe_generation: 0,
-        }
-    }
+    kernel: CircuitKernel,
+    open_since: Option<Instant>,
 }
 
 /// Per-model breaker state shared by every run on one `Runtime`.
@@ -68,36 +53,33 @@ pub(crate) struct CircuitBreaker {
     circuits: Mutex<HashMap<String, ModelCircuit>>,
 }
 
-/// Admission capability for exactly one inference attempt. A half-open permit
-/// carries the generation of the probe cycle that admitted it, so a late result
-/// from an older cycle cannot mutate a newer one. Dropping an unfinished probe
+/// Admission capability for exactly one inference attempt. Every permit carries
+/// its admission phase and generation, so a late ordinary or probe result from
+/// an older cycle cannot mutate a newer one. Dropping an unfinished probe
 /// is fail-closed and reopens that same cycle automatically.
 pub(crate) struct CircuitPermit<'a> {
     breaker: &'a CircuitBreaker,
     metrics: &'a dyn MetricsRecorder,
     model: String,
-    probe_generation: Option<u64>,
+    key: PermitKey,
     finished: bool,
 }
 
 impl CircuitPermit<'_> {
     pub(crate) fn success(mut self) {
         self.breaker
-            .finish_success(&self.model, self.probe_generation);
+            .finish(&self.model, self.key, Completion::Success, self.metrics);
         self.finished = true;
     }
 
     pub(crate) fn failure(mut self, retryable: bool) {
-        if retryable {
-            self.breaker
-                .finish_retryable_failure(&self.model, self.probe_generation);
+        let outcome = if retryable {
+            Completion::RetryableFailure
         } else {
-            self.breaker.finish_inconclusive_probe(
-                &self.model,
-                self.probe_generation,
-                self.metrics,
-            );
-        }
+            Completion::Inconclusive
+        };
+        self.breaker
+            .finish(&self.model, self.key, outcome, self.metrics);
         self.finished = true;
     }
 }
@@ -105,9 +87,10 @@ impl CircuitPermit<'_> {
 impl Drop for CircuitPermit<'_> {
     fn drop(&mut self) {
         if !self.finished {
-            self.breaker.finish_inconclusive_probe(
+            self.breaker.finish(
                 &self.model,
-                self.probe_generation,
+                self.key,
+                Completion::Inconclusive,
                 self.metrics,
             );
         }
@@ -132,97 +115,42 @@ impl CircuitBreaker {
     ) -> Result<CircuitPermit<'a>, String> {
         let mut circuits = self.circuits.lock();
         let circuit = circuits.entry(model.to_string()).or_default();
-        let probe_generation = match circuit.state {
-            State::Closed => None,
-            State::Open { since } => {
-                if since.elapsed() >= self.config.cooldown {
-                    circuit.probe_generation = circuit.probe_generation.wrapping_add(1);
-                    circuit.state = State::HalfOpen { probes: 1 };
-                    Some(circuit.probe_generation)
-                } else {
-                    return Err(format!(
-                        "circuit breaker open for model '{model}': recent consecutive failures; \
-                         retry after cooldown"
-                    ));
-                }
-            }
-            State::HalfOpen { probes } => {
-                if probes < self.config.half_open_max_probes {
-                    circuit.state = State::HalfOpen { probes: probes + 1 };
-                    Some(circuit.probe_generation)
-                } else {
-                    return Err(format!(
-                        "circuit breaker half-open for model '{model}': probe already in flight"
-                    ));
-                }
-            }
-        };
+        let elapsed = circuit
+            .open_since
+            .is_some_and(|since| since.elapsed() >= self.config.cooldown);
+        let key = circuit.kernel.admit(self.config.half_open_max_probes, elapsed)
+            .map_err(|error| match error {
+                AdmissionError::Open => format!("circuit breaker open for model '{model}': recent consecutive failures; retry after cooldown"),
+                AdmissionError::ProbeCapacity => format!("circuit breaker half-open for model '{model}': probe capacity exhausted"),
+                AdmissionError::GenerationExhausted => format!("circuit breaker open for model '{model}': probe generation exhausted"),
+            })?;
         Ok(CircuitPermit {
             breaker: self,
             metrics,
             model: model.to_string(),
-            probe_generation,
+            key,
             finished: false,
         })
     }
 
-    fn finish_success(&self, model: &str, generation: Option<u64>) {
-        let mut circuits = self.circuits.lock();
-        let circuit = circuits.entry(model.to_string()).or_default();
-        if generation.is_some_and(|generation| {
-            !matches!(circuit.state, State::HalfOpen { .. })
-                || circuit.probe_generation != generation
-        }) {
-            return;
-        }
-        circuit.state = State::Closed;
-        circuit.consecutive_failures = 0;
-    }
-
-    fn finish_retryable_failure(&self, model: &str, generation: Option<u64>) {
-        let mut circuits = self.circuits.lock();
-        let circuit = circuits.entry(model.to_string()).or_default();
-        if generation.is_some_and(|generation| {
-            !matches!(circuit.state, State::HalfOpen { .. })
-                || circuit.probe_generation != generation
-        }) {
-            return;
-        }
-        circuit.consecutive_failures = circuit.consecutive_failures.saturating_add(1);
-        match circuit.state {
-            State::HalfOpen { .. } => {
-                circuit.state = State::Open {
-                    since: Instant::now(),
-                };
-            }
-            _ => {
-                if circuit.consecutive_failures >= self.config.failure_threshold {
-                    circuit.state = State::Open {
-                        since: Instant::now(),
-                    };
-                }
-            }
-        }
-    }
-
-    fn finish_inconclusive_probe(
+    fn finish(
         &self,
         model: &str,
-        generation: Option<u64>,
+        key: PermitKey,
+        outcome: Completion,
         metrics: &dyn MetricsRecorder,
     ) {
-        let Some(generation) = generation else {
-            return;
-        };
         let mut circuits = self.circuits.lock();
         let circuit = circuits.entry(model.to_string()).or_default();
-        if matches!(circuit.state, State::HalfOpen { .. }) && circuit.probe_generation == generation
+        if circuit
+            .kernel
+            .finish(key, outcome, self.config.failure_threshold)
         {
-            circuit.state = State::Open {
-                since: Instant::now(),
-            };
+            circuit.open_since = Some(Instant::now());
             drop(circuits);
-            metrics.record_circuit_transition(model, "open");
+            if outcome == Completion::Inconclusive {
+                metrics.record_circuit_transition(model, "open");
+            }
         }
     }
 }
@@ -397,5 +325,119 @@ mod tests {
         );
         peer.success();
         drop(current);
+    }
+
+    #[test]
+    fn late_closed_success_cannot_close_a_current_probe() {
+        // C1 two Closed admissions; C2 one opens the circuit; C3 cooldown
+        // admits a new probe; C4 the old Closed success arrives. R1=C1+C2+C3+C4
+        // => the new probe still owns the sole slot, with no extra admission.
+        let cb = breaker(1, Duration::ZERO);
+        let stale = cb.check("m", &NoopRecorder).unwrap();
+        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        let current = cb.check("m", &NoopRecorder).unwrap();
+        stale.success();
+        assert!(cb.check("m", &NoopRecorder).is_err());
+        current.success();
+    }
+
+    #[test]
+    fn zero_probe_budget_never_admits_a_probe() {
+        // R2: Open + elapsed cooldown + zero probe budget => reject without
+        // advancing generation or issuing a permit, including the first probe.
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 1,
+            cooldown: Duration::ZERO,
+            half_open_max_probes: 0,
+        });
+        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        assert!(cb.check("m", &NoopRecorder).is_err());
+    }
+
+    #[test]
+    fn exhausted_probe_generation_never_wraps() {
+        // R3: Open + elapsed cooldown + u64::MAX generation => absorbing
+        // rejection. Never recycle an old permit's epoch through wrapping_add.
+        let cb = breaker(1, Duration::ZERO);
+        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.circuits.lock().get_mut("m").unwrap().kernel.generation = u64::MAX;
+        assert!(cb.check("m", &NoopRecorder).is_err());
+    }
+
+    #[test]
+    fn every_late_closed_outcome_stutters_across_new_cycle_phases() {
+        // Cartesian decision table: target Open/HalfOpen/new Closed x old
+        // success/retryable/permanent/drop. All 12 rows preserve both the
+        // production kernel and adapter cooldown; no stale metrics are emitted.
+        for phase in 0..3 {
+            for outcome in 0..4 {
+                let cb = breaker(1, Duration::ZERO);
+                let spy = SpyRecorder::default();
+                let stale = cb.check("m", &spy).unwrap();
+                cb.check("m", &spy).unwrap().failure(true);
+                let mut probe = (phase > 0).then(|| cb.check("m", &spy).unwrap());
+                if phase == 2 {
+                    probe.take().unwrap().success();
+                }
+                let before = {
+                    let guard = cb.circuits.lock();
+                    (guard["m"].kernel, guard["m"].open_since)
+                };
+                match outcome {
+                    0 => stale.success(),
+                    1 => stale.failure(true),
+                    2 => stale.failure(false),
+                    _ => drop(stale),
+                }
+                let guard = cb.circuits.lock();
+                assert_eq!((guard["m"].kernel, guard["m"].open_since), before);
+                assert!(spy.transitions.lock().unwrap().is_empty());
+                drop(guard);
+                drop(probe);
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_admissions_share_one_exact_probe_budget() {
+        // Eight threads race after cooldown. A barrier retains every admitted
+        // permit until the admission count is observed, so early Drop cannot
+        // create a new cycle and mask a capacity violation. Budgets 0/1/2 cover
+        // deny-all, exclusive, and peer-probe adapter paths under the real mutex.
+        use std::sync::{
+            Barrier,
+            atomic::{AtomicUsize, Ordering},
+        };
+        for budget in 0..=2 {
+            let cb = CircuitBreaker::new(CircuitBreakerConfig {
+                failure_threshold: 1,
+                cooldown: Duration::ZERO,
+                half_open_max_probes: budget,
+            });
+            cb.check("m", &NoopRecorder).unwrap().failure(true);
+            let start = Barrier::new(9);
+            let admitted = Barrier::new(9);
+            let release = Barrier::new(9);
+            let count = AtomicUsize::new(0);
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    scope.spawn(|| {
+                        start.wait();
+                        let permit = cb.check("m", &NoopRecorder);
+                        if permit.is_ok() {
+                            count.fetch_add(1, Ordering::SeqCst);
+                        }
+                        admitted.wait();
+                        release.wait();
+                        drop(permit);
+                    });
+                }
+                start.wait();
+                admitted.wait();
+                let observed = count.load(Ordering::SeqCst);
+                release.wait();
+                assert_eq!(observed, budget as usize);
+            });
+        }
     }
 }

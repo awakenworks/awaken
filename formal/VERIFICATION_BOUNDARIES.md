@@ -24,6 +24,14 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- Circuit admission and completion now consume one owner-local Rust reducer.
+  Both Closed requests and HalfOpen probes carry phase/epoch fences. Late
+  completions stutter, zero probe capacity rejects even the first probe, and
+  exhausted generations never wrap. Kani checks the production reducer over
+  the complete u32/u64 domains; CircuitBreaker.tla also explores ordinary calls,
+  delayed results and probe budgets 0/1/2. The real-mutex tests retain concurrent
+  permits across a barrier. Clock accuracy, scheduler fairness and provider
+  behavior remain adapter/environment boundaries, not implementation proofs.
 - The canonical product denominator now carries five end-to-end assurance
   journeys. Strict feature coverage requires every product feature to appear in
   at least one journey and every journey to cite formal anchors actually
