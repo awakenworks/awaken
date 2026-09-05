@@ -6,7 +6,6 @@
 //! can reuse that exact host observation instead of probing login twice.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -18,25 +17,51 @@ use awaken_worker_contract::{WorkerAcpCapabilityObservation, WorkerCredentialObs
 
 #[derive(Default)]
 pub(crate) struct WorkerObservationCache {
-    credentials: RwLock<BTreeSet<WorkerCredentialObservation>>,
-    acp_capabilities: RwLock<Vec<WorkerAcpCapabilityObservation>>,
-    refresh_generation: AtomicU64,
+    batch: RwLock<ObservationBatch>,
     refresh_guard: tokio::sync::Mutex<()>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ObservationBatch {
+    generation: u64,
+    pub(crate) credentials: BTreeSet<WorkerCredentialObservation>,
+    pub(crate) acp_capabilities: Vec<WorkerAcpCapabilityObservation>,
+}
+
 impl WorkerObservationCache {
-    pub(crate) fn credential_snapshot(&self) -> BTreeSet<WorkerCredentialObservation> {
-        self.credentials
+    pub(crate) fn snapshot(&self) -> ObservationBatch {
+        self.batch
             .read()
-            .expect("credential observation cache poisoned")
+            .expect("observation batch cache poisoned")
             .clone()
     }
 
-    pub(crate) fn acp_capability_snapshot(&self) -> Vec<WorkerAcpCapabilityObservation> {
-        self.acp_capabilities
+    fn generation(&self) -> u64 {
+        self.batch
             .read()
-            .expect("ACP capability observation cache poisoned")
-            .clone()
+            .expect("observation batch cache poisoned")
+            .generation
+    }
+
+    fn publish(
+        &self,
+        credentials: BTreeSet<WorkerCredentialObservation>,
+        acp_capabilities: Vec<WorkerAcpCapabilityObservation>,
+    ) -> Result<(), String> {
+        let mut batch = self
+            .batch
+            .write()
+            .expect("observation batch cache poisoned");
+        let generation = batch
+            .generation
+            .checked_add(1)
+            .ok_or("observation generation exhausted")?;
+        *batch = ObservationBatch {
+            generation,
+            credentials,
+            acp_capabilities,
+        };
+        Ok(())
     }
 
     pub(crate) async fn refresh(
@@ -49,9 +74,9 @@ impl WorkerObservationCache {
         // Every trigger uses this one operation. A caller that waited behind a
         // successful concurrent refresh consumes that causal batch instead of
         // probing the same host identity a second time.
-        let observed_generation = self.refresh_generation.load(Ordering::Acquire);
+        let observed_generation = self.generation();
         let _refresh = self.refresh_guard.lock().await;
-        if self.refresh_generation.load(Ordering::Acquire) != observed_generation {
+        if self.generation() != observed_generation {
             return Ok(());
         }
         let credentials = credential_observations(resolver)
@@ -67,16 +92,7 @@ impl WorkerObservationCache {
         // Both probes form one causal batch. A hard failure in either source
         // cannot renew only half of the evidence or create mixed-generation
         // credential/capability truth.
-        *self
-            .credentials
-            .write()
-            .expect("credential observation cache poisoned") = credentials;
-        *self
-            .acp_capabilities
-            .write()
-            .expect("ACP capability observation cache poisoned") = acp_capabilities;
-        self.refresh_generation.fetch_add(1, Ordering::Release);
-        Ok(())
+        self.publish(credentials, acp_capabilities)
     }
 }
 
@@ -341,7 +357,7 @@ mod tests {
             )
             .await
             .expect("initial probe succeeds");
-        let before = cache.credential_snapshot();
+        let before = cache.snapshot().credentials;
 
         assert!(
             cache
@@ -350,7 +366,7 @@ mod tests {
                 .is_err()
         );
         assert_eq!(
-            cache.credential_snapshot(),
+            cache.snapshot().credentials,
             before,
             "failed probe cannot renew evidence"
         );
@@ -390,8 +406,8 @@ mod tests {
             )
             .await
             .expect("R1");
-        let credentials_before = cache.credential_snapshot();
-        let capabilities_before = cache.acp_capability_snapshot();
+        let credentials_before = cache.snapshot().credentials;
+        let capabilities_before = cache.snapshot().acp_capabilities;
         assert_eq!(
             capabilities_before[0].valid_until_ms,
             credentials_before
@@ -414,8 +430,8 @@ mod tests {
                 .is_err(),
             "R2"
         );
-        assert_eq!(cache.credential_snapshot(), credentials_before, "R2");
-        assert_eq!(cache.acp_capability_snapshot(), capabilities_before, "R2");
+        assert_eq!(cache.snapshot().credentials, credentials_before, "R2");
+        assert_eq!(cache.snapshot().acp_capabilities, capabilities_before, "R2");
     }
 
     #[tokio::test]
@@ -453,12 +469,14 @@ mod tests {
         refresh.await.expect("refresh task").expect("refresh batch");
 
         let credential = cache
-            .credential_snapshot()
+            .snapshot()
+            .credentials
             .into_iter()
             .next()
             .expect("one credential");
         let capability = cache
-            .acp_capability_snapshot()
+            .snapshot()
+            .acp_capabilities
             .into_iter()
             .next()
             .expect("one capability");
@@ -497,10 +515,10 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(100), entered.notified())
             .await
             .expect("BP1/E1: first probe starts immediately");
-        assert!(cache.acp_capability_snapshot().is_empty(), "BP1/E2");
+        assert!(cache.snapshot().acp_capabilities.is_empty(), "BP1/E2");
         release.notify_one();
         tokio::time::timeout(Duration::from_millis(100), async {
-            while cache.acp_capability_snapshot().is_empty() {
+            while cache.snapshot().acp_capabilities.is_empty() {
                 tokio::task::yield_now().await;
             }
         })
@@ -558,6 +576,79 @@ mod tests {
             .expect("second task")
             .expect("coalesced refresh");
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1, "R1/E1");
-        assert_eq!(cache.refresh_generation.load(Ordering::Acquire), 1, "R1/E3");
+        assert_eq!(cache.generation(), 1, "R1/E3");
+    }
+
+    #[tokio::test]
+    async fn heartbeat_snapshot_never_mixes_concurrent_publication_batches() {
+        // B1 a heartbeat freezes one snapshot; B2 another successful publication
+        // happens before fields are projected => the old snapshot stays paired.
+        // B3 concurrent writers/readers => both observations always carry the
+        // same marker, generation never regresses, and every accepted write
+        // advances exactly once. The adapter test is not a proof of std RwLock.
+        let cache = WorkerObservationCache::default();
+        let credentials = AvailableResolver.credential_observations().await.unwrap();
+        let capabilities = VerifiedCapabilitySource
+            .capability_observations()
+            .await
+            .unwrap();
+        let publish = |marker| {
+            cache
+                .publish(
+                    lease_credential_observations(credentials.clone(), marker, Duration::ZERO),
+                    lease_capability_observations(capabilities.clone(), marker, Duration::ZERO),
+                )
+                .unwrap();
+        };
+        publish(10);
+        let old = cache.snapshot();
+        publish(20);
+        assert_eq!(old.credentials.first().unwrap().valid_until_ms, 10);
+        assert_eq!(old.acp_capabilities[0].valid_until_ms, 10);
+        let start = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for writer in 0..2 {
+                let publish = &publish;
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    for step in 0..128 {
+                        publish(100 + writer * 128 + step);
+                    }
+                });
+            }
+            for _ in 0..2 {
+                let cache = &cache;
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    let mut last = 0;
+                    for _ in 0..256 {
+                        let snapshot = cache.snapshot();
+                        assert!(snapshot.generation >= last);
+                        last = snapshot.generation;
+                        assert_eq!(
+                            snapshot.credentials.first().unwrap().valid_until_ms,
+                            snapshot.acp_capabilities[0].valid_until_ms
+                        );
+                    }
+                });
+            }
+        });
+        assert_eq!(cache.generation(), 258);
+    }
+
+    #[test]
+    fn exhausted_batch_generation_rejects_without_partial_publication() {
+        // B4 exact last successor commits once. B5 exhaustion rejects repeated
+        // attempts without wrapping, clearing evidence or changing either part.
+        let cache = WorkerObservationCache::default();
+        cache.batch.write().unwrap().generation = u64::MAX - 1;
+        cache.publish(BTreeSet::new(), Vec::new()).unwrap();
+        let before = cache.snapshot();
+        for _ in 0..2 {
+            assert!(cache.publish(BTreeSet::new(), Vec::new()).is_err());
+            assert_eq!(cache.snapshot(), before);
+        }
     }
 }

@@ -312,6 +312,7 @@ pub(crate) fn spawn_heartbeat(
             let heartbeat_timeout = timing
                 .request_timeout()
                 .min(proof_deadline.saturating_duration_since(Instant::now()));
+            let observations = lifecycle.observations.snapshot();
             let mutation = tokio::time::timeout(
                 heartbeat_timeout,
                 lifecycle.control.heartbeat(
@@ -321,10 +322,8 @@ pub(crate) fn spawn_heartbeat(
                         ready,
                         in_flight: lifecycle.host.pool_in_flight(),
                         warm_environment_shapes: lifecycle.warm_environment_shapes(),
-                        credential_observations: lifecycle.observations.credential_snapshot(),
-                        acp_capability_observations: lifecycle
-                            .observations
-                            .acp_capability_snapshot(),
+                        credential_observations: observations.credentials,
+                        acp_capability_observations: observations.acp_capabilities,
                     },
                 ),
             )

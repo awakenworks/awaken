@@ -24,6 +24,14 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- Worker credentials, ACP capabilities and their refresh generation now share
+  one atomic observation snapshot. Initial and periodic heartbeats freeze that
+  snapshot once before projecting wire fields; independent getters and the
+  wrapping generation counter are removed. WorkerCredentialLiveness.tla checks
+  producer-batch coherence alongside the existing heartbeat ordering protocol.
+  Concurrent-reader and generation-exhaustion tests exercise the actual cache;
+  std RwLock and Tokio integration remain executable/TCB evidence, not Kani or
+  universal implementation refinement.
 - Circuit admission and completion now consume one owner-local Rust reducer.
   Both Closed requests and HalfOpen probes carry phase/epoch fences. Late
   completions stutter, zero probe capacity rejects even the first probe, and
