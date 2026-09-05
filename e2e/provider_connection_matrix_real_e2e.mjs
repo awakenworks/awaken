@@ -16,7 +16,7 @@ import {
   deploymentEnv,
   pass,
   publishManagementAgent,
-  provisionProviderTestProfile,
+  provisionProviderTestModel,
   spawnServer,
   stopServer,
   waitForPort,
@@ -234,7 +234,7 @@ async function certifyProvider(item, index) {
     await waitForPort(port, 180_000, server);
     const base = `http://127.0.0.1:${port}`;
     const workspace = fs.readFileSync(path.join(directory, 'platform-workspace-id'), 'utf8').trim();
-    const { offering, discoveredModels } = await provisionProviderTestProfile(
+    const { offering, discoveredModels, model } = await provisionProviderTestModel(
       base, workspace, item, `provider-${item.id}`,
     );
 
@@ -244,7 +244,7 @@ async function certifyProvider(item, index) {
       name: `Provider certification ${item.id}`,
       system: 'Follow the user instruction exactly and answer briefly.',
       max_steps: 2,
-      model: { mode: 'profile', profile_id: `provider-${item.id}` },
+      model,
       tools: [],
     });
     assert.equal(published.installed, true, `${item.id}: agent was not installed`);
@@ -274,7 +274,7 @@ async function certifyProvider(item, index) {
           'Never answer the original request directly and never start another child after a child report.',
         ].join('\n'),
         max_steps: 8,
-        model: { mode: 'profile', profile_id: `provider-${item.id}` },
+        model,
         tools: [],
         multiagent: {
           type: 'coordinator',

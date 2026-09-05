@@ -123,9 +123,13 @@ function normalizeCase(input, env) {
   assert.ok(['api_key', 'oauth_helper'].includes(value.auth), `${value.id}: auth is invalid`);
   let secret;
   if (value.auth === 'api_key') {
-    assert.ok(value.base_url && URL.canParse(value.base_url), `${value.id}: base_url must be absolute`);
-    const url = new URL(value.base_url);
-    assert.ok(['https:', 'http:'].includes(url.protocol), `${value.id}: base_url must use HTTP(S)`);
+    // Omitted endpoint uses the Control descriptor, including a provider's
+    // separate model-directory URL. Do not duplicate that catalog here.
+    if (value.base_url !== undefined) {
+      assert.ok(URL.canParse(value.base_url), `${value.id}: base_url must be absolute`);
+      const url = new URL(value.base_url);
+      assert.ok(['https:', 'http:'].includes(url.protocol), `${value.id}: base_url must use HTTP(S)`);
+    }
     assert.match(value.secret_env ?? '', SAFE_ENV, `${value.id}: secret_env is invalid`);
     assert.ok(optional(env[value.secret_env]), `${value.id}: ${value.secret_env} is not configured`);
     assert.equal(value.oauth_helper, undefined, `${value.id}: api_key auth cannot use oauth_helper`);
