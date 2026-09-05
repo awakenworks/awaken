@@ -178,6 +178,14 @@ null, fallback arguments. Before the Await commit, the current attempt refines
 its staged ToolUse to the same input as the resume ticket. A committed prefix
 is immutable; conflicting reuse of an already committed call id is rejected.
 
+The same response pump projects `tool_call_update.rawInput` as refinement of
+its exact previously observed call before projecting any terminal result in that
+frame. Progress titles do not rename tool authority. The existing attempt-local
+appender refines one staged ToolUse, including AlwaysAllow calls. On permission
+resume, exact regenerated arguments remove only the new staged placeholder and
+correlate the result to the original committed call once. Changed arguments after
+matching or after a result fail closed; there is no transcript repair lane.
+
 A loaded ACP session may remember a permission-boundary request as cancelled.
 The continuation therefore carries the immutable ticket's exact arguments and
 asks the agent to reissue that request after approval, or refrain after denial.

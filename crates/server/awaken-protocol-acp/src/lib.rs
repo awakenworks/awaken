@@ -160,7 +160,8 @@ pub enum AcpProjectedEvent {
     },
     /// The agent surfaced a tool call to us (the inbound-tool path). `id` is the
     /// ACP `tool_call_id`, so a later [`ToolResult`](Self::ToolResult) correlates
-    /// to this call.
+    /// to this call. Later occurrences with the same nonempty id refine staged
+    /// arguments; they do not represent another invocation or committed fact.
     ToolCall {
         #[serde(default)]
         id: String,
