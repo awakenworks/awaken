@@ -4,7 +4,7 @@
 // path-addressed `MemoryRepository` (content_sha256 + compare-and-swap) — the same store a
 // write-through FUSE mount projects. This drives that store end-to-end through the
 // real server binary: create path-addressed memories, exercise the CAS precondition
-// (stale → 409, fresh → ok, version bumped), path_prefix listing, then KILL the
+// (stale → 409, fresh → ok, version bumped), path_prefix listing, then stop the
 // server and start a fresh one over the SAME storage dir. The memories must survive —
 // they live in the durable store of record, not an in-memory registry.
 //
@@ -17,9 +17,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import Anthropic from '@anthropic-ai/sdk';
 import { cleanupFixtureTree, spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { sqliteExec, sqliteScalar } from './sqlite.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38513);
 const BETAS = ['agent-memory-2026-07-22'];
@@ -29,6 +29,7 @@ const client = () => new Anthropic({
   apiKey: 'e2e-dummy',
   baseURL: `http://127.0.0.1:${PORT}`,
   defaultHeaders: { 'anthropic-beta': BETAS[0] },
+  maxRetries: 0,
 });
 const drain = async (p) => {
   const out = [];
@@ -38,24 +39,6 @@ const drain = async (p) => {
 
 async function rejectsStatus(operation, status, message) {
   await assert.rejects(operation, (error) => error.status === status, message);
-}
-
-function sqliteQueryOne(database, sql) {
-  const connection = new DatabaseSync(database);
-  try {
-    return connection.prepare(sql).get();
-  } finally {
-    connection.close();
-  }
-}
-
-function sqliteExec(database, sql) {
-  const connection = new DatabaseSync(database);
-  try {
-    connection.exec(sql);
-  } finally {
-    connection.close();
-  }
 }
 
 async function main() {
@@ -344,11 +327,66 @@ async function main() {
     );
     pass('public Memory error graph fails closed at every aggregate boundary');
 
+    // Public CAS decision table (not a substitute for Agent mount competition):
+    // C1 both clients retain the SAME base hash; C2 payloads equal/different;
+    // C3 dispatch simultaneous/left-first/right-first. U1 different => exactly
+    // one success + one 409; ordered rows prescribe the winner. U2 equal => two
+    // successes with ONE version. U3 replay uses original preconditions: winner
+    // idempotent, loser still 409. U4 restart retains exact full head metadata.
+    // No SDK retry can manufacture a different race or hide the first outcome.
+    const raceStore = await c.beta.memoryStores.create({ name: 'CAS race matrix', betas: BETAS });
+    const raceHeads = [];
+    for (const identical of [false, true]) {
+      for (const order of ['simultaneous', 'left-first', 'right-first']) {
+        const initial = await c.beta.memoryStores.memories.create(raceStore.id, {
+          path: `/${identical}-${order}.md`, content: 'base', betas: BETAS,
+        });
+        const writers = [client(), client()];
+        const operations = writers.map((writer, index) => () => writer.beta.memoryStores.memories.update(initial.id, {
+          memory_store_id: raceStore.id, view: 'full',
+          content: identical ? 'same edit' : `writer-${index}`,
+          precondition: { type: 'content_sha256', content_sha256: initial.content_sha256 },
+          betas: BETAS,
+        }));
+        let outcomes;
+        if (order === 'simultaneous') outcomes = await Promise.allSettled(operations.map((operation) => operation()));
+        else {
+          outcomes = [];
+          for (const index of order === 'left-first' ? [0, 1] : [1, 0]) {
+            [outcomes[index]] = await Promise.allSettled([operations[index]()]);
+          }
+        }
+        const successes = outcomes.flatMap((outcome, index) => outcome.status === 'fulfilled' ? [index] : []);
+        assert.equal(successes.length, identical ? 2 : 1, `U1/U2 ${identical}/${order}`);
+        if (!identical && order !== 'simultaneous') assert.equal(successes[0], order === 'left-first' ? 0 : 1);
+        const winner = outcomes[successes[0]].value;
+        assert.notEqual(winner.memory_version_id, initial.memory_version_id);
+        for (const [index, outcome] of outcomes.entries()) {
+          if (outcome.status === 'fulfilled') {
+            assert.equal(outcome.value.memory_version_id, winner.memory_version_id, 'U2 one new version');
+            assert.deepEqual(await operations[index](), winner, 'U3 winning replay preserves exact metadata');
+          } else {
+            assert.equal(outcome.reason.status, 409, 'U1 precise conflict, not an unrelated failure');
+            await rejectsStatus(operations[index], 409, 'U3 stale loser never rebases');
+          }
+        }
+        raceHeads.push(await c.beta.memoryStores.memories.retrieve(initial.id, { memory_store_id: raceStore.id, betas: BETAS }));
+        const history = await drain(c.beta.memoryStores.memoryVersions.list(raceStore.id, { betas: BETAS }));
+        assert.equal(history.filter((version) => version.memory_id === initial.id).length, 2, 'U2/U3 one create plus one update');
+      }
+    }
+    pass('public CAS decision matrix: both linearizations, concurrent dispatch, conflict and idempotent replay');
+
     // -- RESTART over the same storage dir ------------------------------------
     await stopServer(server);
     ({ server } = spawnServer('echo', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR }));
     await waitForPort(PORT);
     c = client();
+    for (const expected of raceHeads) {
+      assert.deepEqual(await c.beta.memoryStores.memories.retrieve(expected.id, {
+        memory_store_id: raceStore.id, betas: BETAS,
+      }), expected, 'U4 restart preserves exact winning head');
+    }
 
     // The memories survive the process death — they were in the durable store of
     // record, not an in-memory registry.
@@ -366,10 +404,10 @@ async function main() {
     // These mutations emulate damaged durable rows; no test-only service route is
     // involved, and each row is restored before checking the next decoder arm.
     const database = `${STORE_DIR}/memory_fs.db`;
-    const modifiedVersion = sqliteQueryOne(
+    const modifiedVersion = sqliteScalar(
       database,
       `SELECT id FROM memory_store_versions WHERE store_id='${store.id}' AND operation='modified' ORDER BY ordinal DESC LIMIT 1`,
-    ).id;
+    );
     sqliteExec(
       database,
       `UPDATE memory_store_versions SET operation='corrupt-operation' WHERE id='${modifiedVersion}'`,

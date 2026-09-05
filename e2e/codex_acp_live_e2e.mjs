@@ -2,6 +2,7 @@
 //
 // One script owns live deployments and the deterministic native-executable peer:
 //   CODEX_ACP_PROFILE=host-fixture node e2e/codex_acp_live_e2e.mjs
+//   CODEX_ACP_PROFILE=native-fixture AWAKEN_ACP_RUNTIME=native node e2e/codex_acp_live_e2e.mjs
 //
 //   CODEX_ACP_LIVE=1 CODEX_ACP_PROFILE=host-login \
 //     node e2e/codex_acp_live_e2e.mjs
@@ -40,18 +41,19 @@ import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 import { snapshotExecutable } from './executable_snapshot.mjs';
-import { initializeE2EInstallation, waitForSessionEventReceipt, stopServer as stop, hardKillServer } from './harness.mjs';
-import { installHostResourceFixture, verifyTrustedHostResources } from './fixtures/trusted_host_resources.mjs';
+import { FAKE_KEY, startUpstream, initializeE2EInstallation, waitForSessionEventReceipt, stopServer as stop, hardKillServer } from './harness.mjs';
+import { installHostResourceFixture, verifyAgentResources } from './fixtures/trusted_host_resources.mjs';
 
 const profile = process.env.CODEX_ACP_PROFILE;
 const runtime = process.env.AWAKEN_ACP_RUNTIME ?? 'codex';
-assert.ok(['codex', 'claude'].includes(runtime), 'select codex or claude');
-if (profile !== 'host-fixture' && process.env.CODEX_ACP_LIVE !== '1') {
+const native = profile === 'native-fixture';
+assert.ok(native ? runtime === 'native' : ['codex', 'claude'].includes(runtime), 'select the exact runtime for this profile');
+if (!['host-fixture', 'native-fixture'].includes(profile) && process.env.CODEX_ACP_LIVE !== '1') {
   throw new Error('set CODEX_ACP_LIVE=1 to confirm this test may invoke the real Codex ACP adapter');
 }
 
-if (!['host-login', 'host-fixture', 'container'].includes(profile)) {
-  throw new Error('set CODEX_ACP_PROFILE=host-login, host-fixture or container');
+if (!['host-login', 'host-fixture', 'native-fixture', 'container'].includes(profile)) {
+  throw new Error('set CODEX_ACP_PROFILE=host-login, host-fixture, native-fixture or container');
 }
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -131,15 +133,21 @@ async function request(baseURL, apiKey, method, route, body) {
 async function startHostLoginProfile() {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-host-resource-'));
   let child;
+  let upstream;
   try {
   // Artifact race rule: another scenario may rebuild target/debug/awaken with
   // different features while doctor/initialization or a restart is pending.
   // Reuse the runner's copy snapshot so EVERY launch keeps the selected bytes.
   const binary = snapshotExecutable(awakenBin(), path.join(temp, 'product',
     process.platform === 'win32' ? 'awaken.exe' : 'awaken'));
+  if (native) snapshotExecutable(cargoExecutable({
+    cwd: ROOT, packageName: 'awaken-sandbox', targetName: 'awaken-sandbox', features: ['hand'],
+  }), path.join(path.dirname(binary), process.platform === 'win32' ? 'awaken-sandbox.exe' : 'awaken-sandbox'));
   const environment = profile === 'host-fixture'
     ? await installHostResourceFixture(ROOT, temp, path.join(temp, 'data'), runtime)
     : process.env;
+  if (native) upstream = await startUpstream('gitRepo', { models: ['fake-haiku'] });
+  if (!native) {
   const doctor = spawnSync(binary, ['doctor', 'acp', '--json'], {
     env: environment,
     encoding: 'utf8',
@@ -147,6 +155,7 @@ async function startHostLoginProfile() {
   assert.equal(doctor.status, 0, doctor.stderr);
   const codex = JSON.parse(doctor.stdout).acp.find((row) => row.id === runtime);
   assert.equal(codex?.login_state, 'available', JSON.stringify(codex));
+  }
 
   const port = await availablePort();
   const config = path.join(temp, 'config.toml');
@@ -159,9 +168,9 @@ async function startHostLoginProfile() {
     `control_seal_key = ${JSON.stringify(randomBytes(32).toString('hex'))}`,
     // Host-login is the trusted local-process gate. Container isolation has its
     // own profile below, and native sandbox availability is host-specific.
-    'sandbox_tier = "local"',
+    `sandbox_tier = "${native ? 'namespace' : 'local'}"`,
     'log_filter = "warn"',
-    `acp_clis = [${JSON.stringify(runtime)}]`,
+    `acp_clis = ${JSON.stringify(native ? [] : [runtime])}`,
     // Select the runtime under test, without configuring a default backend or
     // credential material. Its login and executable remain discovery-owned.
   ].join('\n'));
@@ -185,18 +194,33 @@ async function startHostLoginProfile() {
   child = launch();
   const baseURL = `http://127.0.0.1:${port}`;
     const apiKey = await waitReady(child, baseURL, path.join(temp, 'data', 'admin-token'));
-    await waitForVerifiedAcpCapability(baseURL, runtime, {
+    if (!native) await waitForVerifiedAcpCapability(baseURL, runtime, {
       timeoutMs: 60_000,
       pollMs: 200,
       requireAvailableLogin: true,
       apiKey,
     });
 
+    if (native) {
+      // Native uses the production provider import and real Messages transport,
+      // not a scenario-only route or a second fake provider implementation.
+      const scope = await request(baseURL, apiKey, 'GET', '/v1/capabilities');
+      const workspace = scope.response.headers.get('anthropic-workspace-id');
+      assert.ok(workspace, 'provider import uses the authenticated Workspace response');
+      const imported = await request(baseURL, apiKey, 'POST', '/v1/config/provider-connections', {
+        idempotency_key: 'native-resource-provider', workspace_id: workspace,
+        provider_id: 'anthropic', display_name: 'Native resource fixture',
+        dialect: 'anthropic_messages', base_url: `${upstream.url}/v1/`,
+        timeout_secs: 30, secret: FAKE_KEY,
+      });
+      assert.equal(imported.response.status, 201, JSON.stringify(imported.value));
+    }
+
     const agent = process.env.AWAKEN_ACP_AGENT ?? `${runtime}-host-login-live`;
     let result = await request(baseURL, apiKey, 'PUT', `/v1/config/agents/${agent}`, {
       name: 'Real host Codex login',
       system: 'Return exactly the text requested by the user.',
-      model: { mode: 'backend_default', backend_ref: `acp:${runtime}` },
+      model: native ? { id: 'fake-haiku' } : { mode: 'backend_default', backend_ref: `acp:${runtime}` },
       tools: [],
     });
     assert.equal(result.response.status, 200, JSON.stringify(result.value));
@@ -207,15 +231,17 @@ async function startHostLoginProfile() {
       else await stop(child);
       child = launch();
       await waitReady(child, baseURL, path.join(temp, 'data', 'admin-token'));
-      await waitForVerifiedAcpCapability(baseURL, runtime, {
+      if (!native) await waitForVerifiedAcpCapability(baseURL, runtime, {
         timeoutMs: 60_000, pollMs: 200, requireAvailableLogin: true, apiKey,
       });
     }, cleanup: async () => {
       await stop(child);
+      if (upstream) await upstream.close();
       fs.rmSync(temp, { recursive: true, force: true });
     } };
   } catch (error) {
     if (child) await stop(child);
+    if (upstream) await upstream.close();
     fs.rmSync(temp, { recursive: true, force: true });
     throw error;
   }
@@ -308,8 +334,9 @@ try {
   );
   if (profile !== 'container') {
     await client.beta.sessions.delete(session.id, { betas: BETAS });
-    await verifyTrustedHostResources({
+    await verifyAgentResources({
       client, runtime, temp: deployment.temp, restart: deployment.restart,
+      ...(native ? { nativeModel: 'fake-haiku' } : {}),
       request: (method, route, body) =>
         request(deployment.baseURL, deployment.apiKey, method, route, body),
     });

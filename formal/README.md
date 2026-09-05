@@ -375,8 +375,12 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   committed write whose acknowledgement was lost. This is bounded model-linked
   safety evidence, not Rust refinement, process fencing, multi-file atomicity,
   or eventual recovery after loss of the physical tree.
-  The strict gate also mutates recovery to refresh the base; it requires TLC's
-  exact `CopyRecoveryKeepsMaterializationBase` counterexample, not a tool error.
+  The model additionally gates copy mutation on a complete-scan observation;
+  production tests distinguish a missing root from explicit unlink and reject
+  invalid trees before write-back. Completeness of a quiescent OS scan is an
+  external assumption, not proved filesystem atomicity. The strict gate mutates
+  recovery to refresh the base and deletion to ignore an incomplete scan; both
+  must produce their exact invariant counterexamples, not a tool error.
 - `AuditCommit.tla` and `ConfigActivation.tla` cover transactional durable audit,
   replay fencing, and generation-fenced publication installation.
 - `AcpBoundary.tla`, `CredentialEffectBoundary.tla`, and
@@ -550,7 +554,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | ErasureSaga | 2,469 | 588 | 11 |
 | CredentialCreation | 14 | 8 | 5 |
 | MemoryCAS | 3,511 | 563 | 11 |
-| MemoryCAS copy recovery | 539 | 149 | 8 |
+| MemoryCAS copy recovery and scan admission | 2591 | 545 | 10 |
 | ToolResultProtocol | 273,949 | 18,744 | 14 |
 | WorkerDrain | 44 | 26 | 11 |
 | WorkerCredentialLiveness | 753,391 | 17,784 | 16 |

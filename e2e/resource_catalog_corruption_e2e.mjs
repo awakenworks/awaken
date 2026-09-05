@@ -10,7 +10,8 @@ import path from 'node:path';
 import {
   managedWorkspaceClient,
   spawnProduction,
-  stopServer,
+  stopServer as stop,
+  hardKillServer,
   waitForPort,
   waitForSessionEventReceipt,
   waitForValue,
@@ -45,13 +46,6 @@ function start(directory) {
 
 async function ready(child) {
   await waitForPort(PORT, 180_000, child);
-}
-
-async function stop(child, signal = 'SIGINT') {
-  if (signal === 'SIGINT') return stopServer(child);
-  if (child.exitCode !== null) return;
-  child.kill(signal);
-  await new Promise((resolve) => child.once('exit', resolve));
 }
 
 const scoped = (tail) =>
@@ -263,7 +257,7 @@ async function main() {
       'the catalog baseline command to process after its Resource generation becomes Active',
     );
 
-    await stop(server, 'SIGKILL');
+    await hardKillServer(server);
     const memoryRecord = catalogRecord(resourceDatabase, 'memory_store', memory.id);
     writeCatalogRecord(resourceDatabase, 'memory_store', memory.id, {
       ...memoryRecord,
@@ -347,7 +341,7 @@ async function main() {
 
     // Repair only the missing immutable histories. The already-persisted Session
     // generation remains unchanged and must be the generation that later commits.
-    await stop(server, 'SIGKILL');
+    await hardKillServer(server);
     writeCatalogRecord(resourceDatabase, 'memory_store', memory.id, memoryRecord);
     server = start(directory);
     await ready(server);

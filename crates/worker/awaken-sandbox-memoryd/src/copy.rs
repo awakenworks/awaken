@@ -8,7 +8,7 @@
 //! unchanged). [`fuse_available`] is the capability check a provider gates on.
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use awaken_provisioning_contract::MemoryMaterializationHead;
 use awaken_resource_contract::{MemErr, MemoryRepository, memory_sha256_hex as sha256_hex};
@@ -145,21 +145,43 @@ pub async fn harvest(
     root: &Path,
     snapshot: &mut CopySnapshot,
 ) -> Result<HarvestReport, FuseError> {
-    let mut files = Vec::new();
-    collect_files(root, root, &mut files);
+    // Establish a complete readable projection BEFORE any Repository mutation.
+    // A missing/unreadable tree is not an empty tree and cannot authorize delete.
+    // The caller must quiesce writers; this is not an atomic filesystem snapshot
+    // or a sandbox against an actively hostile TrustedHost process.
+    let tree = awaken_sandbox_fs::read_tree_nofollow_bounded(
+        root,
+        awaken_resource_contract::MAX_MEMORY_BYTES as u64,
+        (awaken_resource_contract::MAX_MEMORY_BYTES
+            * awaken_resource_contract::MAX_MEMORIES_PER_STORE) as u64,
+    )
+    .map_err(scan_error)?;
+    for directory in &tree.directories {
+        memory_path(&directory.relative_path)?;
+    }
+    let files = tree
+        .files
+        .into_iter()
+        .map(|file| {
+            Ok((
+                memory_path(&file.relative_path)?,
+                String::from_utf8(file.bytes).ok(),
+            ))
+        })
+        .collect::<Result<Vec<_>, FuseError>>()?;
     let present: HashSet<&str> = files.iter().map(|(path, _)| path.as_str()).collect();
     let mut report = HarvestReport::default();
-    for (path, host_path) in &files {
-        let Ok(content) = std::fs::read_to_string(host_path) else {
+    for (path, content) in &files {
+        let Some(content) = content else {
             continue; // non-UTF-8 memory bytes are not our model — skip
         };
         match snapshot.heads.get(path).cloned() {
             Some(base) => {
-                if sha256_hex(&content) == base.content_sha256 {
+                if sha256_hex(content) == base.content_sha256 {
                     continue;
                 }
                 match fs
-                    .update(store, &base.id, &content, &base.content_sha256)
+                    .update(store, &base.id, content, &base.content_sha256)
                     .await
                 {
                     Ok(updated) => {
@@ -182,7 +204,7 @@ pub async fn harvest(
                     Err(error) => return Err(error.into()),
                 }
             }
-            None => match fs.create(store, path, &content).await {
+            None => match fs.create(store, path, content).await {
                 Ok(created) => {
                     snapshot.heads.insert(
                         path.clone(),
@@ -197,7 +219,7 @@ pub async fn harvest(
                 Err(MemErr::PathConflict(_)) => {
                     let current = fs.get_by_path(store, path).await?;
                     if let Some(current) = current
-                        && current.content_sha256 == sha256_hex(&content)
+                        && current.content_sha256 == sha256_hex(content)
                     {
                         snapshot.heads.insert(
                             path.clone(),
@@ -246,29 +268,35 @@ pub async fn harvest(
     Ok(report)
 }
 
-/// Recursively collect `(store_path, host_path)` for every file under `base`, where
-/// `store_path` is the memory path (`/` + the path relative to `root`).
-fn collect_files(root: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) {
-    let Ok(entries) = std::fs::read_dir(base) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files(root, &path, out);
-        } else if path.is_file()
-            && let Ok(rel) = path.strip_prefix(root)
-        {
-            let rel = rel.to_string_lossy().replace('\\', "/");
-            out.push((format!("/{rel}"), path));
+fn scan_error(error: impl std::fmt::Display) -> FuseError {
+    FuseError::Internal(format!("Memory copy scan incomplete: {error}"))
+}
+
+/// Memory owns only its portable logical-name projection; directory walking,
+/// nofollow opens and byte limits remain in the shared filesystem authority.
+fn memory_path(relative: &Path) -> Result<String, FuseError> {
+    let mut logical = String::new();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(scan_error("noncanonical relative Memory path"));
+        };
+        let name = name
+            .to_str()
+            .ok_or_else(|| scan_error("non-UTF-8 filename"))?;
+        if name.contains('\\') {
+            return Err(scan_error("filename contains a nonportable separator"));
         }
+        logical.push('/');
+        logical.push_str(name);
     }
+    Ok(logical)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use awaken_memory_store::{MemErr, Memory, MemoryPurgeSummary, MemoryVersion};
+    use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -563,17 +591,19 @@ mod tests {
     }
 
     #[test]
-    fn harvest_on_a_missing_root_is_empty() {
+    fn harvest_on_a_missing_root_fails_even_without_captured_heads() {
+        // M0: missing root + empty base => error, not successful empty harvest.
+        // Nonempty bases and retry after restoration belong to copy_lifecycle.
         let rt = rt();
         let fs = Arc::new(VolatileMemoryRepository::new());
-        let missing = std::env::temp_dir().join("awaken-memcopy-does-not-exist-xyz");
+        let dir = temp("missing");
+        let missing = dir.join("absent");
         let mut snapshot = CopySnapshot::default();
-        assert_eq!(
+        assert!(
             rt.block_on(harvest(&*fs, "s", &missing, &mut snapshot))
-                .unwrap()
-                .changed,
-            0
+                .is_err()
         );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
