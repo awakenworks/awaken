@@ -105,7 +105,6 @@ pub use crate::host::{
 };
 // The neutral session substrate and its resume vocabulary.
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
-pub use crate::acp_tool_export::{AcpToolExport, AcpToolExporter};
 pub use crate::cache_volume::{CacheVolumeInitializer, CacheVolumeWarmup};
 pub use crate::host::{
     AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, SharedHost,

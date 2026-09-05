@@ -1,15 +1,12 @@
-//! Worker-owned adapter that exports one Session tool set to an ACP process.
-//!
-//! Both the all-in-one local worker and a standalone remote worker install this
-//! exact adapter. The neutral Runtime Host owns export timing and lifetime;
-//! this worker infrastructure owns only the loopback MCP transport.
-
-use std::sync::Arc;
+//! MCP assembly for the existing Session tool export port.
 
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::RawTool;
+use std::sync::Arc;
 
-/// Product adapter for Session-owned tools handed to an ACP CLI.
+/// Product adapter for Session-owned tools handed to an ACP CLI. The neutral
+/// Host decides the export lifecycle; this data-plane adapter owns MCP wire
+/// assembly and returns an opaque shutdown lease.
 pub struct SessionToolExporter;
 
 struct SessionToolExportLease {
@@ -25,23 +22,22 @@ impl Drop for SessionToolExportLease {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_executor::AcpToolExporter for SessionToolExporter {
+impl awaken_runtime_contract::tool_export::AcpToolExporter for SessionToolExporter {
     async fn export_set(
         &self,
         server_name: &str,
         descriptors: Vec<ToolDescriptor>,
         tools: Vec<Arc<dyn RawTool>>,
-    ) -> Result<awaken_session_executor::AcpToolExport, String> {
-        let exports = awaken_protocol_mcp::McpExportedTool::try_plain_set(descriptors, tools)
+    ) -> Result<awaken_runtime_contract::tool_export::AcpToolExport, String> {
+        let exports = crate::McpExportedTool::try_plain_set(descriptors, tools)
             .map_err(|error| error.to_string())?;
-        let source = Arc::new(awaken_protocol_mcp::StaticExports::new(exports));
-        let service = Arc::new(awaken_protocol_mcp::McpToolService::new(
+        let source = Arc::new(crate::StaticExports::new(exports));
+        let service = Arc::new(crate::McpToolService::new(
             server_name,
             env!("CARGO_PKG_VERSION"),
             source,
         ));
-        let app =
-            awaken_protocol_mcp::router(service, awaken_protocol_mcp::McpHttpConfig::default());
+        let app = crate::router(service, crate::McpHttpConfig::default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(|error| format!("bind ACP tool export: {error}"))?;
@@ -56,10 +52,10 @@ impl awaken_session_executor::AcpToolExporter for SessionToolExporter {
                 })
                 .await;
         });
-        Ok(awaken_session_executor::AcpToolExport::new(
-            awaken_run_executor_acp::McpServerConfig {
+        Ok(awaken_runtime_contract::tool_export::AcpToolExport::new(
+            awaken_runtime_contract::resolved::AcpMcpServer {
                 name: server_name.into(),
-                transport: awaken_run_executor_acp::McpTransport::Http {
+                transport: awaken_runtime_contract::resolved::AcpMcpTransport::Http {
                     url: format!("http://{address}/mcp"),
                 },
             },
@@ -75,7 +71,7 @@ mod tests {
     use super::*;
     use awaken_ext_mcp::{Credential, HttpTransport, McpToolTransport};
     use awaken_runtime_contract::tool::{ToolCall, ToolOutput};
-    use awaken_session_executor::AcpToolExporter;
+    use awaken_runtime_contract::tool_export::AcpToolExporter;
 
     struct EchoTool(&'static str);
 
@@ -98,13 +94,17 @@ mod tests {
 
     #[tokio::test]
     async fn session_export_discovers_calls_and_reclaims_exact_session_tool_set() {
-        // Cause/effect decision table: A1 either local or remote Worker passes
-        // the exact Web + Skill + four-Memory descriptor/executor set -> one
-        // MCP endpoint lists every id exactly once; A2 each family is called ->
-        // the matching RawTool executes; A3 its sole lease drops -> endpoint
-        // stops. Transport may change Native delivery into ACP MCP, but cannot
-        // split or rewrite the set. Rules A1=>E1, A1+A2=>E2, A3=>E3.
+        // Cause/effect decision table: A1 the exact Hand + Web + Skill + four-Memory
+        // descriptor/executor set enters the neutral Host port -> one MCP endpoint
+        // lists every id exactly once; A2 each listed family is called -> the
+        // matching RawTool executes; A3 the sole export lease is dropped -> the
+        // endpoint stops accepting connections. Constraint: transport may change
+        // Native delivery into ACP MCP, but cannot split or rewrite the set.
         let ids = [
+            "read",
+            "write",
+            "edit",
+            "bash",
             "web_search",
             "list_skills",
             "Skill",
@@ -132,7 +132,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let awaken_run_executor_acp::McpTransport::Http { url } = &export.server.transport else {
+        let awaken_runtime_contract::resolved::AcpMcpTransport::Http { url } =
+            &export.server.transport
+        else {
             panic!("session export must use HTTP MCP");
         };
         let transport = HttpTransport::connect(url, Credential::None).await.unwrap();
