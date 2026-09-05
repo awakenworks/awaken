@@ -82,6 +82,16 @@ replacement Hand in the existing Environment, and retries the undispatched call
 once. A channel loss after dispatch remains indeterminate and is never replayed by
 this lifecycle path; it continues through ADR-0044's existing recovery boundary.
 
+A cancelled request can poison an otherwise live channel while its reply is
+still pending. The channel retains that operation's Runtime token (or scoped
+call id when no token exists), instead of an undifferentiated usability flag.
+A retry of that same operation remains indeterminate. A distinct operation is
+rejected before any bytes are written using `UnavailableBeforeDispatch`, so the
+existing serialized replacement path can admit it on a new connection. Late
+replies never cross operations. The raw relay API exposes this local admission
+result separately from the unchanged Hand wire result; no retry or recovery
+ledger is added, and the neutral `ToolExecutor` contract remains unchanged.
+
 The Worker-local SessionEnvironment owner proactively hibernates that same
 recreatable Hand after its configured process-inactivity horizon. This policy is
 based on actual Hand use, not Coordinator Session status: a long model request or a

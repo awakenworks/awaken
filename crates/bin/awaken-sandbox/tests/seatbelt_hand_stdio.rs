@@ -61,7 +61,8 @@ async fn seatbelt_hand_reads_the_session_mount_when_the_host_mnt_exists() {
                 "file_path": "/mnt/session/uploads/file-1"
             }),
         })
-        .await;
+        .await
+        .expect("request reached the dispatch boundary");
     let output = match result {
         HandResult::Ok { output } => serde_json::to_string(&output).expect("serialize output"),
         other => panic!("Hand call failed: {other:?}"),
@@ -77,7 +78,8 @@ async fn seatbelt_hand_reads_the_session_mount_when_the_host_mnt_exists() {
                 "content": "mutated"
             }),
         })
-        .await;
+        .await
+        .expect("request reached the dispatch boundary");
     assert!(
         matches!(
             write,
@@ -96,7 +98,8 @@ async fn seatbelt_hand_reads_the_session_mount_when_the_host_mnt_exists() {
                 "file_path": "/mnt/session/uploads/file-1"
             }),
         })
-        .await;
+        .await
+        .expect("request reached the dispatch boundary");
     let unchanged = match unchanged {
         HandResult::Ok { output } => serde_json::to_string(&output).expect("serialize output"),
         other => panic!("Hand reread failed: {other:?}"),
@@ -110,7 +113,8 @@ async fn seatbelt_hand_reads_the_session_mount_when_the_host_mnt_exists() {
             tool_id: "read".into(),
             arguments: serde_json::json!({ "file_path": "/etc/passwd" }),
         })
-        .await;
+        .await
+        .expect("request reached the dispatch boundary");
     assert!(
         matches!(outside, HandResult::Err { ref error } if error.message.contains("escapes workdir")),
         "outside path was not rejected: {outside:?}"

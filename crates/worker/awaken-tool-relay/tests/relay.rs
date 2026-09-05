@@ -264,6 +264,26 @@ async fn unknown_tool_reads_identically_to_the_local_path() {
     let _ = hand.await;
 }
 
+// Fault partition PC1 oversized send, PC2 peer lost after reading, PC3 write
+// failure, PC4 wrong correlation, PC5 malformed reply. Every cause leaves the
+// attempted c1 unresolved; none may contaminate a provably unsent c2. Each
+// corresponding transport test below invokes this common effect oracle.
+async fn assert_poisoned_operation_partition(
+    executor: &RemoteToolExecutor<tokio::io::DuplexStream>,
+) {
+    assert_eq!(
+        executor
+            .call_hand(&call("c1", "echo", "retry"))
+            .await
+            .unwrap(),
+        HandResult::Indeterminate
+    );
+    assert!(matches!(
+        executor.call_hand(&call("c2", "echo", "new")).await,
+        Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+    ));
+}
+
 #[tokio::test]
 async fn an_oversized_frame_send_error_is_conservatively_indeterminate() {
     // The executor intentionally does not infer transport-specific atomicity from
@@ -273,8 +293,12 @@ async fn an_oversized_frame_send_error_is_conservatively_indeterminate() {
     let (brain_end, _hand_end) = tokio::io::duplex(64 * 1024);
     let executor = RemoteToolExecutor::new(brain_end);
     let huge = "x".repeat(9 * 1024 * 1024); // > the 8 MiB default max frame length
-    let result = executor.call_hand(&call("c1", "echo", &huge)).await;
+    let result = executor
+        .call_hand(&call("c1", "echo", &huge))
+        .await
+        .expect("request reached the dispatch boundary");
     assert_eq!(result, HandResult::Indeterminate);
+    assert_poisoned_operation_partition(&executor).await;
 }
 
 #[tokio::test]
@@ -290,45 +314,114 @@ async fn dropped_channel_after_dispatch_is_indeterminate() {
     });
 
     let executor = RemoteToolExecutor::new(brain_end);
-    let result = executor.call_hand(&call("c1", "echo", "x")).await;
+    let result = executor
+        .call_hand(&call("c1", "echo", "x"))
+        .await
+        .expect("request reached the dispatch boundary");
     assert_eq!(result, HandResult::Indeterminate);
+    assert_poisoned_operation_partition(&executor).await;
 }
 
 #[tokio::test]
 async fn caller_cancellation_poisons_the_stream_before_a_late_reply_can_cross_calls() {
-    use futures_util::StreamExt;
+    use futures_util::{SinkExt, StreamExt};
     use tokio_util::codec::{Framed, LengthDelimitedCodec};
-
-    let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
-    let request_seen = Arc::new(tokio::sync::Notify::new());
-    let peer_seen = request_seen.clone();
-    let peer = tokio::spawn(async move {
-        let mut framed = Framed::new(hand_end, LengthDelimitedCodec::new());
-        let _first = framed.next().await.expect("request").expect("frame");
-        peer_seen.notify_one();
-        // Keep the connection open without replying. The cancelled caller must
-        // leave it poisoned rather than let a later call consume this reply.
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    });
-    let executor = Arc::new(RemoteToolExecutor::new(brain_end));
-    let first_executor = executor.clone();
-    let first = tokio::spawn(async move {
-        first_executor
-            .call_hand(&call("cancelled", "echo", "first"))
-            .await
-    });
-    request_seen.notified().await;
-    first.abort();
-    let _ = first.await;
-
-    let second = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        executor.call_hand(&call("next", "echo", "second")),
-    )
-    .await
-    .expect("poisoned channel fails without waiting for the stale reply");
-    assert_eq!(second, HandResult::Indeterminate);
-    peer.abort();
+    // Poisoned-stream decision table: C1 an operation was sent then its caller
+    // cancelled; C2 a late correlated reply is queued; C3 the next operation is
+    // equal/different under the Runtime token (fallback: scoped call id).
+    // R1 C1+C2+equal -> Indeterminate, no read/write and no safe-retry signal.
+    // R2 C1+C2+different -> UnavailableBeforeDispatch, zero bytes sent; the
+    // existing Session Hand lifecycle may replace the connection for this new
+    // request only. Cross token presence and wire-id equality: changing a wire
+    // id cannot rename the old operation; reusing it cannot alias a new token.
+    async fn invoke(
+        executor: &RemoteToolExecutor<tokio::io::DuplexStream>,
+        call_id: &str,
+        operation: Option<&str>,
+    ) -> Result<HandResult, awaken_runtime_contract::tool::ToolError> {
+        let request = call(call_id, "echo", "input");
+        match operation {
+            Some(operation) => {
+                with_tool_operation_context(
+                    ToolOperationContext::for_run("run", operation),
+                    executor.call_hand(&request),
+                )
+                .await
+            }
+            None => executor.call_hand(&request).await,
+        }
+    }
+    for (first_operation, next_operation, next_id, same) in [
+        (None, None, "cancelled", true),
+        (None, None, "next", false),
+        (Some("old"), Some("old"), "cancelled", true),
+        (Some("old"), Some("old"), "next", true),
+        (Some("old"), Some("new"), "cancelled", false),
+    ] {
+        let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
+        let request_seen = Arc::new(tokio::sync::Notify::new());
+        let release_reply = Arc::new(tokio::sync::Notify::new());
+        let reply_sent = Arc::new(tokio::sync::Notify::new());
+        let peer = {
+            let seen = request_seen.clone();
+            let release = release_reply.clone();
+            let sent = reply_sent.clone();
+            tokio::spawn(async move {
+                let mut framed = Framed::new(hand_end, LengthDelimitedCodec::new());
+                let first = framed.next().await.unwrap().unwrap();
+                let request: HandRequest = serde_json::from_slice(&first).unwrap();
+                seen.notify_one();
+                release.notified().await;
+                let reply = HandReply {
+                    correlation_id: request.correlation_id,
+                    result: HandResult::ok(ToolOutput::ok(request.call.call_id, "late old result")),
+                };
+                framed
+                    .send(serde_json::to_vec(&reply).unwrap().into())
+                    .await
+                    .unwrap();
+                sent.notify_one();
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_millis(100), framed.next())
+                        .await
+                        .is_err(),
+                    "R1/R2 no second request on poisoned stream"
+                );
+            })
+        };
+        let executor = Arc::new(RemoteToolExecutor::new(brain_end).with_operation_scope("session"));
+        let first = {
+            let executor = executor.clone();
+            tokio::spawn(async move { invoke(&executor, "cancelled", first_operation).await })
+        };
+        request_seen.notified().await;
+        first.abort();
+        let _ = first.await;
+        release_reply.notify_one();
+        reply_sent.notified().await;
+        let second = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            invoke(&executor, next_id, next_operation),
+        )
+        .await
+        .expect("poisoned stream does not wait for a reply");
+        if same {
+            assert_eq!(
+                second.unwrap(),
+                HandResult::Indeterminate,
+                "R1 old operation remains unknown"
+            );
+        } else {
+            assert!(
+                matches!(
+                    second,
+                    Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+                ),
+                "R2 new operation is provably unsent"
+            );
+        }
+        peer.await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -742,9 +835,13 @@ async fn a_write_error_is_indeterminate_even_when_the_peer_is_already_closed() {
     drop(hand_end);
     let executor = RemoteToolExecutor::new(brain_end);
     assert_eq!(
-        executor.call_hand(&call("c1", "echo", "x")).await,
+        executor
+            .call_hand(&call("c1", "echo", "x"))
+            .await
+            .expect("request reached the dispatch boundary"),
         HandResult::Indeterminate
     );
+    assert_poisoned_operation_partition(&executor).await;
 }
 
 #[tokio::test]
@@ -770,9 +867,13 @@ async fn a_reply_with_a_mismatched_correlation_id_is_indeterminate() {
     });
     let executor = RemoteToolExecutor::new(brain_end);
     assert_eq!(
-        executor.call_hand(&call("c1", "echo", "x")).await,
+        executor
+            .call_hand(&call("c1", "echo", "x"))
+            .await
+            .expect("request reached the dispatch boundary"),
         HandResult::Indeterminate
     );
+    assert_poisoned_operation_partition(&executor).await;
 }
 
 #[tokio::test]
@@ -790,9 +891,13 @@ async fn a_reply_frame_that_is_not_a_hand_reply_is_indeterminate() {
     });
     let executor = RemoteToolExecutor::new(brain_end);
     assert_eq!(
-        executor.call_hand(&call("c1", "echo", "x")).await,
+        executor
+            .call_hand(&call("c1", "echo", "x"))
+            .await
+            .expect("request reached the dispatch boundary"),
         HandResult::Indeterminate
     );
+    assert_poisoned_operation_partition(&executor).await;
 }
 
 #[tokio::test]
@@ -910,17 +1015,20 @@ async fn runtime_operation_identity_not_response_call_id_keys_the_hand_ledger() 
         ToolOperationContext::for_run("run-1", "operation-1"),
         executor.call_hand(&call("same-call", "echo", "first")),
     )
-    .await;
+    .await
+    .expect("request reached the dispatch boundary");
     with_tool_operation_context(
         ToolOperationContext::for_run("run-1", "operation-2"),
         executor.call_hand(&call("same-call", "echo", "second")),
     )
-    .await;
+    .await
+    .expect("request reached the dispatch boundary");
     with_tool_operation_context(
         ToolOperationContext::for_run("run-1", "operation-1"),
         executor.call_hand(&call("different-call", "echo", "re-drive")),
     )
-    .await;
+    .await
+    .expect("request reached the dispatch boundary");
 
     let operation_ids = peer.await.unwrap();
     assert_ne!(
