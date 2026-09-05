@@ -8,14 +8,21 @@ VARIABLES workerLive, observationState, observationRevision,
           maxReceivedSequence, revisionAtMaxSequence,
           claimed, currentEpoch, claimEpoch, probeFailures,
           workerDrainedByProbe, executed, executionExact,
-          executionFresh, executionEpochCurrent
+          executionFresh, executionEpochCurrent,
+          cacheGeneration, credentialBatch, capabilityBatch,
+          sentCredentialBatch, sentCapabilityBatch
 
-vars == <<workerLive, observationState, observationRevision,
+batchVars == <<cacheGeneration, credentialBatch, capabilityBatch,
+               sentCredentialBatch, sentCapabilityBatch>>
+
+protocolVars == <<workerLive, observationState, observationRevision,
           observedAt, validUntil, now, localState, heartbeatSequence,
           maxReceivedSequence, revisionAtMaxSequence,
           claimed, currentEpoch, claimEpoch, probeFailures,
           workerDrainedByProbe, executed, executionExact,
           executionFresh, executionEpochCurrent>>
+
+vars == <<protocolVars, batchVars>>
 
 Fresh == observedAt <= now /\ now < validUntil
 Exact == observationRevision = RequiredRevision
@@ -32,6 +39,8 @@ Init == /\ workerLive = TRUE
         /\ probeFailures = 0 /\ workerDrainedByProbe = FALSE
         /\ executed = FALSE /\ executionExact = FALSE
         /\ executionFresh = FALSE /\ executionEpochCurrent = FALSE
+        /\ cacheGeneration = 0 /\ credentialBatch = 0 /\ capabilityBatch = 0
+        /\ sentCredentialBatch = 0 /\ sentCapabilityBatch = 0
 
 Tick == /\ now < MaxTime
         /\ now' = now + 1
@@ -131,9 +140,24 @@ RevalidateAndExecute == /\ claimed /\ claimEpoch = currentEpoch
                                         claimEpoch, probeFailures,
                                         workerDrainedByProbe>>
 
-Next == Tick \/ Heartbeat \/ ProbeFailure
+ProtocolNext == Tick \/ Heartbeat \/ ProbeFailure
         \/ PlaceAndClaim \/ LocalLoss \/ Reclaim \/ LoseWorkerLease
         \/ RevalidateAndExecute
+
+\* Worker-local producer boundary, orthogonal to network delivery ordering.
+\* B1 only a complete successful batch replaces the one cache root; failed
+\* probes stutter. B2 heartbeat takes one immutable snapshot before projecting
+\* its two wire fields. B3 exhausted generations cannot publish or wrap.
+PublishBatch == /\ cacheGeneration < 2
+                /\ cacheGeneration' = cacheGeneration + 1
+                /\ credentialBatch' = cacheGeneration + 1
+                /\ capabilityBatch' = cacheGeneration + 1
+                /\ UNCHANGED <<sentCredentialBatch, sentCapabilityBatch, protocolVars>>
+ReadBatch == /\ sentCredentialBatch' = credentialBatch
+             /\ sentCapabilityBatch' = capabilityBatch
+             /\ UNCHANGED <<cacheGeneration, credentialBatch, capabilityBatch, protocolVars>>
+
+Next == (ProtocolNext /\ UNCHANGED batchVars) \/ PublishBatch \/ ReadBatch
 
 TypeOK == /\ workerLive \in BOOLEAN
           /\ observationState \in {"Unknown", "Available", "LoginRequired", "Expired", "Invalid", "ProbeFailed"}
@@ -146,6 +170,16 @@ TypeOK == /\ workerLive \in BOOLEAN
           /\ probeFailures \in 0..2 /\ workerDrainedByProbe \in BOOLEAN
           /\ executed \in BOOLEAN /\ executionExact \in BOOLEAN
           /\ executionFresh \in BOOLEAN /\ executionEpochCurrent \in BOOLEAN
+          /\ cacheGeneration \in 0..2
+          /\ credentialBatch \in 0..2 /\ capabilityBatch \in 0..2
+          /\ sentCredentialBatch \in 0..2 /\ sentCapabilityBatch \in 0..2
+
+AtomicObservationBatch ==
+    /\ credentialBatch = capabilityBatch
+    /\ credentialBatch = cacheGeneration
+    /\ sentCredentialBatch = sentCapabilityBatch
+    /\ sentCredentialBatch <= cacheGeneration
+ObservationGenerationNeverWraps == [][cacheGeneration' >= cacheGeneration]_vars
 
 ExpiredNeverExecutes == executed => executionFresh
 ExactRevisionOnly == executed => executionExact
