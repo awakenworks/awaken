@@ -95,7 +95,7 @@ pub(super) async fn pump_response(
 }
 
 /// Project one `session/update` notification into the sink (skips updates with no
-/// runtime projection: user echoes, thoughts, plans, tool-call updates).
+/// runtime projection: user echoes, thoughts, plans, argument-free progress).
 async fn project_notification(
     params: Option<serde_json::Value>,
     sink: &mut dyn RunFactAppender,
@@ -106,6 +106,15 @@ async fn project_notification(
         return Ok(());
     };
     let notification: SessionNotification = parse(params)?;
+    // One update can finish arguments and report a result together. Refine the
+    // attempt-local call first, then project its result through the same sink.
+    if let agent_client_protocol::SessionUpdate::ToolCallUpdate(update) = &notification.update
+        && let Some(event) = permission_context.refined_call(update)
+    {
+        *seq += 1;
+        sink.append(*seq, &event).await?;
+        permission_context.observe(&event);
+    }
     if let Some(event) = project_update(&notification.update) {
         // A provider HARD-quota banner can arrive as assistant TEXT ("You've hit
         // your weekly limit · resets …") rather than a structured error — the case
@@ -123,4 +132,79 @@ async fn project_notification(
         permission_context.observe(&event);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[derive(Default)]
+    struct Sink(Vec<AcpProjectedEvent>);
+    #[async_trait::async_trait]
+    impl RunFactAppender for Sink {
+        async fn append(
+            &mut self,
+            _: u64,
+            event: &AcpProjectedEvent,
+        ) -> Result<(), crate::AppendError> {
+            self.0.push(event.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn streamed_arguments_refine_only_the_exact_call_before_its_result() {
+        // C1 known nonempty call id; C2 absent/null/present rawInput; C3 same or
+        // changed arguments; C4 terminal result in the same frame. R1 !C1 ->
+        // no invented call; R2 absent/null/unchanged -> no duplicate fact; R3
+        // changed input -> refinement under original tool identity; R4 R3+C4 ->
+        // refinement precedes result. Progress titles cannot rename authority.
+        let mut context = PermissionContext::default();
+        let mut sink = Sink::default();
+        let mut seq = 0;
+        let frames = [
+            serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"unknown","rawInput":{"x":1}}),
+            serde_json::json!({"sessionUpdate":"tool_call","toolCallId":"c","title":"bash","rawInput":{}}),
+            serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"c","status":"in_progress"}),
+            serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"c","rawInput":null}),
+            serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"c","rawInput":{}}),
+            serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"c","title":"Running command","rawInput":{"command":"first"}}),
+            serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"c","rawInput":{"command":"final"},"status":"completed","content":[{"type":"content","content":{"type":"text","text":"done"}}]}),
+        ];
+        for update in frames {
+            project_notification(
+                Some(serde_json::json!({"sessionId":"s","update":update})),
+                &mut sink,
+                &mut seq,
+                &mut context,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(seq, 4);
+        assert_eq!(
+            sink.0,
+            vec![
+                AcpProjectedEvent::ToolCall {
+                    id: "c".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({})
+                },
+                AcpProjectedEvent::ToolCall {
+                    id: "c".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command":"first"})
+                },
+                AcpProjectedEvent::ToolCall {
+                    id: "c".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command":"final"})
+                },
+                AcpProjectedEvent::ToolResult {
+                    id: "c".into(),
+                    content: "done".into(),
+                    is_error: false
+                },
+            ]
+        );
+    }
 }

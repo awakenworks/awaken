@@ -1,6 +1,6 @@
 // One deterministic provider shared by real SDK and real ACP adapter checks.
 import http from 'node:http';
-export async function startClaudeInference() {
+export async function startClaudeInference({ invokeTool = (_body, turn) => turn === 1 } = {}) {
   let turns = 0; const requests = [];
   const server = http.createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
@@ -8,7 +8,7 @@ export async function startClaudeInference() {
     if (!req.url.startsWith('/v1/messages')) { res.writeHead(200, { 'content-type':'application/json' }); res.end('{}'); return; }
     if (req.url.includes('count_tokens')) { res.writeHead(200, { 'content-type':'application/json' }); res.end('{"input_tokens":10}'); return; }
     turns++; requests.push(body);
-    const invoke = turns === 1;
+    const invoke = invokeTool(body, turns);
     const block = invoke ? { type:'tool_use', id:'toolu_alias_test', name:'Bash', input:{ command:'AWAKEN_ALIAS_SENTINEL' } } : { type:'text', text:'finished' };
     const message = { id:`msg_${turns}`, type:'message', role:'assistant', model:'claude-sonnet-4-6', content:[block], stop_reason:invoke?'tool_use':'end_turn', stop_sequence:null, usage:{ input_tokens:10, output_tokens:5 } };
     if (!body.stream) { res.writeHead(200, { 'content-type':'application/json' }); res.end(JSON.stringify(message)); return; }
