@@ -246,6 +246,7 @@ mod tests {
     fn sandbox(archive: Vec<u8>, code: i32) -> (ContainerSandbox<ScanRuntime>, RecordedCommands) {
         let commands = Arc::new(Mutex::new(Vec::new()));
         let sandbox = ContainerSandbox {
+            retained_attempt: None,
             runtime: Arc::new(ScanRuntime {
                 archive,
                 code,

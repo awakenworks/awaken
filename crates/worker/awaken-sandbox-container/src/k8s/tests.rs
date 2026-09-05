@@ -51,6 +51,7 @@ async fn continuation_handle_kind_is_rejected_before_kubernetes_io() {
     let error = ContainerRuntime::observe(
         &runtime,
         ContainerObservationExpectation {
+            retained_attempt: None,
             container_id: "never-read",
             adoption_fingerprint: None,
             realization_fingerprint: None,

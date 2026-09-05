@@ -1716,6 +1716,7 @@ struct FakeState {
     restore_creates: usize,
     restore_disposals: usize,
     observations: u32,
+    retained_observation_attempts: Vec<Option<String>>,
     observation: Option<pc::SandboxObservation>,
 }
 
@@ -2153,6 +2154,9 @@ impl ContainerRuntime for FakeRuntime {
     ) -> Result<pc::SandboxObservation, RuntimeError> {
         let mut state = self.st.lock().unwrap();
         state.observations += 1;
+        state
+            .retained_observation_attempts
+            .push(expectation.retained_attempt.map(|a| a.as_str().to_string()));
         Ok(state.observation.clone().unwrap_or_else(|| {
             if state.alive.get(expectation.container_id) == Some(&false) {
                 pc::SandboxObservation::DefinitivelyUnavailable {
@@ -2781,6 +2785,12 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
     )
     .await
     .expect("B3/E3 exact adoption");
+    // A4: reconstructed native participants are independently recoverable;
+    // adoption must still never mint the departed creator's in-memory proof.
+    assert!(
+        exact.retained_create_attempt().is_none(),
+        "A4 no creator proof after adoption"
+    );
     assert_eq!(
         recovery::decode_handle(&exact.handle())
             .unwrap()
@@ -3051,6 +3061,65 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
         "A2"
     );
     assert_eq!(runtime.st.lock().unwrap().observations, 1, "A2 zero I/O");
+    // A3 the creating object holds the original attempt (never durable handle
+    // data); both fenced/unfenced observation share fingerprint validation and
+    // pass precisely this proof. A4 an adopted wrapper cannot mint a new one.
+    let mut retained = ContainerEnvironmentAdoption::new(&exact, &handle);
+    retained.retained_attempt = sandbox.retained_create_attempt();
+    assert!(
+        retained.retained_attempt.is_some(),
+        "A3 creator retains proof"
+    );
+    ContainerEnvironmentProvider::observe_environment(&provider, retained)
+        .await
+        .unwrap();
+    let fence = ContainerEffectFence::new("observe", "owner", "runtime", 1, u64::MAX).unwrap();
+    ContainerEnvironmentProvider::observe_environment_for_effect(&provider, retained, &fence)
+        .await
+        .unwrap();
+    let attempts = runtime
+        .st
+        .lock()
+        .unwrap()
+        .retained_observation_attempts
+        .clone();
+    let expected = sandbox
+        .retained_create_attempt()
+        .unwrap()
+        .as_str()
+        .to_string();
+    assert_eq!(
+        attempts,
+        [None, Some(expected.clone()), Some(expected.clone())],
+        "A3 one observer"
+    );
+    // A5 the same creator proceeds from admitted preparation to physical
+    // disposal: its exact proof must reach that second runtime observation,
+    // then removal happens once. A6 response replay adds neither observation
+    // nor removal. The shared runtime matrix still owns cold/wrong-proof and
+    // foreign/expired-fence rejection; preparation alone never grants deletion.
+    pc::Sandbox::prepare_disposal_for_effect(&sandbox, &fence)
+        .await
+        .unwrap();
+    let authorization = disposal_authorization(&fence);
+    pc::Sandbox::dispose_for_effect(&sandbox, &authorization)
+        .await
+        .unwrap();
+    pc::Sandbox::dispose_for_effect(&sandbox, &authorization)
+        .await
+        .unwrap();
+    let state = runtime.st.lock().unwrap();
+    assert_eq!(state.retained_observation_attempts.len(), 4, "A5/A6");
+    assert_eq!(
+        state.retained_observation_attempts.last(),
+        Some(&Some(expected)),
+        "A5 exact creator proof"
+    );
+    assert_eq!(
+        state.removals.len(),
+        1,
+        "A6 disposal replay has no extra effect"
+    );
 }
 
 struct RejectingSecretBroker;

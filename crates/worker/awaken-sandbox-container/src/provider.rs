@@ -442,6 +442,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .filter_map(|mount| mount.materialization.clone())
             .collect();
         Ok(ContainerSandbox {
+            retained_attempt: Some(create_attempt),
             runtime: self.runtime.clone(),
             id: spec.scope.clone(),
             container_id,
@@ -536,7 +537,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .adopt_restored_container_with_spec(adoption.spec, adoption.handle)
                 .await;
         }
-        match self.observe_container_adoption(adoption).await? {
+        match self.observe_container_adoption(adoption, None).await? {
             pc::SandboxObservation::Ready => {
                 self.adopt_observed_container_with_spec(adoption.handle, adoption.spec)
                     .await
@@ -651,6 +652,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             )
         };
         Ok(ContainerSandbox {
+            retained_attempt: None,
             runtime: self.runtime.clone(),
             id: handle.sandbox_id.clone(),
             container_id,
@@ -691,41 +693,23 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     async fn observe_container_adoption(
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
+        effect_fence: Option<&pc::SandboxEffectFence>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        if let Some(fence) = effect_fence {
+            fence.validate_live_at(container_runtime_unix_now_ms()?)?;
+        }
         if let Some(stored) = adoption.handle.container_adoption_fingerprint()? {
             let (_, expected) = self.adoption_plan(adoption.spec)?;
             if stored != &expected {
                 return Ok(pc::SandboxObservation::Incompatible {
-                    reason: "container provider-effective adoption configuration differs from its durable handle"
-                        .into(),
+                    reason: "container provider-effective adoption configuration differs from its durable handle".into(),
                 });
             }
         }
-        self.observe_container_handle(adoption.handle).await
-    }
-
-    async fn observe_container_adoption_for_effect(
-        &self,
-        adoption: ContainerEnvironmentAdoption<'_>,
-        effect_fence: &pc::SandboxEffectFence,
-    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        effect_fence.validate_live_at(container_runtime_unix_now_ms()?)?;
-        if let Some(stored) = adoption.handle.container_adoption_fingerprint()? {
-            let (_, expected) = self.adoption_plan(adoption.spec)?;
-            if stored != &expected {
-                return Ok(pc::SandboxObservation::Incompatible {
-                    reason: "container provider-effective adoption configuration differs from its durable handle"
-                        .into(),
-                });
-            }
-        }
-        self.runtime
-            .observe(ContainerObservationExpectation::from_handle_for_effect(
-                adoption.handle,
-                effect_fence,
-            )?)
-            .await
-            .map_err(err)
+        let mut expectation = ContainerObservationExpectation::from_handle(adoption.handle)?;
+        expectation.effect_fence = effect_fence;
+        expectation.retained_attempt = adoption.retained_attempt;
+        self.runtime.observe(expectation).await.map_err(err)
     }
 
     async fn adopt_container_with_adoption_for_effect(
@@ -740,7 +724,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .await;
         }
         match self
-            .observe_container_adoption_for_effect(adoption, effect_fence)
+            .observe_container_adoption(adoption, Some(effect_fence))
             .await?
         {
             pc::SandboxObservation::Ready => {
@@ -791,7 +775,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // policy owner; the runtime re-observes with the terminal fence below.
         let adoption = ContainerEnvironmentAdoption::new(spec, handle);
         match self
-            .observe_container_adoption_for_effect(adoption, terminal_effect_fence)
+            .observe_container_adoption(adoption, Some(terminal_effect_fence))
             .await?
         {
             pc::SandboxObservation::Terminal { .. } | pc::SandboxObservation::Ready => self
@@ -857,7 +841,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.observe_container_adoption(adoption).await
+        self.observe_container_adoption(adoption, None).await
     }
 
     async fn observe_environment_for_effect(
@@ -865,7 +849,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         adoption: ContainerEnvironmentAdoption<'_>,
         effect_fence: &pc::SandboxEffectFence,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.observe_container_adoption_for_effect(adoption, effect_fence)
+        self.observe_container_adoption(adoption, Some(effect_fence))
             .await
     }
 
@@ -980,9 +964,9 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         handle: &pc::SandboxHandle,
         effect_fence: &pc::SandboxEffectFence,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.observe_container_adoption_for_effect(
+        self.observe_container_adoption(
             ContainerEnvironmentAdoption::new(spec, handle),
-            effect_fence,
+            Some(effect_fence),
         )
         .await
     }

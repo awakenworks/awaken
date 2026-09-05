@@ -1499,6 +1499,7 @@ impl ContainerRuntime for DockerRuntime {
                     expectation.realization_fingerprint,
                     expectation.effect_fence,
                     &[],
+                    expectation.retained_attempt,
                 );
             }
             Err(error) => return Err(backend(error)),
@@ -1509,6 +1510,7 @@ impl ContainerRuntime for DockerRuntime {
             expectation.realization_fingerprint,
             expectation.effect_fence,
             &[docker_realization(&inspected)?],
+            expectation.retained_attempt,
         )
     }
 

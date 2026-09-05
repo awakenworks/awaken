@@ -334,7 +334,7 @@ impl SharedHost {
                 .map(|candidate| candidate.environment.clone())
         });
         let observation = provider
-            .observe_effective_for_effect(&spec, &handle, effect_fence)
+            .observe_effective_for_effect(&spec, &handle, resident.as_deref(), effect_fence)
             .await
             .map_err(|error| {
                 HostError::unavailable_classified(
