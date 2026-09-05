@@ -371,15 +371,19 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   handle loss and restart before acknowledgement. It checks that recovery never
   refreshes a stale base and identical retries never add a generation. Production
   SQLite tests in `awaken-sandbox-memoryd/tests/copy_lifecycle.rs` cover both
-  ordered linearizations, barrier-released teardown, and reopening after a
-  committed write whose acknowledgement was lost. This is bounded model-linked
+  ordered linearizations and barrier-released teardown. `tests/writeback_faults.rs`
+  adds 24 actual SQLite teardown rows for create/update/delete, before/after
+  commit, error/cancellation, and with/without a committed independent prefix,
+  followed by same-handle retry and durable reopen. This is bounded model-linked
   safety evidence, not Rust refinement, process fencing, multi-file atomicity,
   or eventual recovery after loss of the physical tree.
-  The model additionally gates copy mutation on a complete-scan observation;
+  The model additionally gates copy mutation on a complete-scan observation and
+  the original projection root, and separates commit from acknowledgement;
   production tests distinguish a missing root from explicit unlink and reject
   invalid trees before write-back. Completeness of a quiescent OS scan is an
   external assumption, not proved filesystem atomicity. The strict gate mutates
-  recovery to refresh the base and deletion to ignore an incomplete scan; both
+  recovery to refresh the base, deletion to ignore an incomplete scan, and
+  deletion to accept a substituted root; all three
   must produce their exact invariant counterexamples, not a tool error.
 - `AuditCommit.tla` and `ConfigActivation.tla` cover transactional durable audit,
   replay fencing, and generation-fenced publication installation.
@@ -554,7 +558,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | ErasureSaga | 2,469 | 588 | 11 |
 | CredentialCreation | 14 | 8 | 5 |
 | MemoryCAS | 3,511 | 563 | 11 |
-| MemoryCAS copy recovery and scan admission | 2591 | 545 | 10 |
+| MemoryCAS copy recovery, scan/root admission and acknowledgement | 33911 | 4121 | 12 |
 | ToolResultProtocol | 273,949 | 18,744 | 14 |
 | WorkerDrain | 44 | 26 | 11 |
 | WorkerCredentialLiveness | 753,391 | 17,784 | 16 |
