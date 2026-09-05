@@ -63,15 +63,10 @@ impl HostWorkerResolver {
             &authorization,
         );
         let commit = substrate.commit;
-        let acp = host.acp.clone().map(|acp| {
-            let environment = environment.clone();
-            Arc::new(move |backend, permission| {
-                Ok(
-                    acp.executor_for(environment.clone(), permission, backend, Vec::new(), None)
-                        as Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
-                )
-            }) as crate::agent_runner::ChildAcpExecutorFactory
-        });
+        let acp = host
+            .acp
+            .as_ref()
+            .map(|acp| acp.child_executor_factory(environment.clone()));
         let adapters = crate::agent_runner::ChildExecutionAdapters {
             acp,
             remote: host.remote_attempt_executor.clone(),

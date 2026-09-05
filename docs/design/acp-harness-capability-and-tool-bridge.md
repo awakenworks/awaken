@@ -45,6 +45,41 @@ maps back to canonical IDs such as `write`; third-party MCP namespaces retain
 `mcp__server__tool`. State machine and background execution are both Native-only
 at authoring and publication. ACP supports a validated workspace-relative cwd.
 
+## Session tool transport inside containers
+
+The tool set, permission guard and Environment executor remain unchanged.
+Workdir/Namespace use the existing Worker-local HTTP exporter. Container ACP
+uses the same exporter port and MCP service over the provider's existing attached
+process channel; Worker loopback is not a container-reachable address.
+
+For each ACP open, the bound source starts the deployment-selected Sandbox helper
+with a fresh Unix rendezvous, verifies its readiness, exports the exact tool set
+on the attached stream, and then launches ACP. The projected MCP command starts
+that same helper in connect mode inside the same container. Unix dialing and
+binding use the canonical ConnectionPlan factory. No extra network listener,
+permission authority, Git-control message type or tool catalog is introduced.
+
+The helper serves one client and bounds readiness waiting. Its private socket
+is bound exclusively, and cleanup removes only the inode this attempt created.
+Real pipe and Unix socket-pair stdio preserve half-closes and drain replies;
+Tokio's global blocking stdin/stdout are unsuitable for this contract. A safe
+stdio descriptor adapter owns the endpoints without local unsafe code.
+
+The ACP process retains the export lease and helper. Graceful primary termination
+keeps MCP alive for SDK persistence; terminal wait/poll or forced stop revokes the
+export and reaps the helper, escalating after bounded TERM grace. Cancellation
+of opening schedules the same idempotent cleanup; Environment disposal remains
+physical teardown authority when process cleanup fails. Export lease drop closes
+the canonical JSON-RPC peer, rejecting new traffic and releasing its I/O. This
+transport revocation does not undo or replay already dispatched application effects.
+
+Tests attach cause/effect rules to socket framing, real binary pipes/socket pairs,
+MCP export revocation, and source startup/cancellation/process cleanup. These
+mechanism tests do not certify provider reachability or an entire Cowork journey.
+Managed external MCP attachment relays have their own authenticated route lifetime;
+this Session tool transport change does not claim to make their loopback URLs
+reachable inside containers.
+
 ## Approval and replay safety
 
 The expected write path is:

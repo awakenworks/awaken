@@ -15,6 +15,7 @@
 
 import http from 'node:http';
 import path from 'node:path';
+import { isIP } from 'node:net';
 import { closeHttpServer } from '../http_server.mjs';
 
 const FIXTURE_PORT_FIRST = 30_000;
@@ -748,7 +749,7 @@ function systemLines(parsed) {
 }
 
 // `opts`: `{ behavior, models, failuresBeforeSuccess, alwaysFail, failArrivalKind,
-// faultStatus, delayMs, firstDelayMs }`. `models` enables the same fixture's
+// faultStatus, delayMs, firstDelayMs, listenHost }`. `models` enables the same fixture's
 // Anthropic model-directory endpoint for Provider Connection tests.
 // `behavior` (default `'default'`) selects a named model or a test callback
 // returning the same {text}/{tool}/{tools} reply. Callbacks inspect request
@@ -763,6 +764,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
     delayMs = 0,
     firstDelayMs = 0,
     models = [],
+    listenHost = '127.0.0.1',
     failModel = null,
     failArrivalKind = null,
   } = opts;
@@ -898,11 +900,11 @@ export function startFakeAnthropic(apiKey, opts = {}) {
         else reject(error);
       };
       server.once('error', onError);
-      server.listen(port, '127.0.0.1', () => {
+      server.listen(port, listenHost, () => {
         server.off('error', onError);
         const { port } = server.address();
         resolve({
-          url: `http://127.0.0.1:${port}`,
+          url: `http://${isIP(listenHost) === 6 ? `[${listenHost}]` : listenHost}:${port}`,
           requests: state.requests,
           receivedRequests: state.receivedRequests,
           arrivals: state.arrivals,

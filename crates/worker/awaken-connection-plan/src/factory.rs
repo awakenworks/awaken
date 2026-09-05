@@ -144,11 +144,24 @@ impl UnixHandListener {
 /// Bind a Unix listener for a plan whose transport is [`DialAddr::Unix`]. A stale
 /// socket file at the path is removed best-effort first.
 pub fn bind_unix(plan: &ConnectionPlan) -> Result<UnixHandListener, ConnectError> {
+    bind_unix_inner(plan, true)
+}
+
+/// Bind a fresh rendezvous without removing any existing filesystem entry.
+/// Use this for an attempt-specific socket; replacement belongs only to the
+/// caller that explicitly owns an earlier persistent rendezvous.
+pub fn bind_unix_exclusive(plan: &ConnectionPlan) -> Result<UnixHandListener, ConnectError> {
+    bind_unix_inner(plan, false)
+}
+
+fn bind_unix_inner(plan: &ConnectionPlan, replace: bool) -> Result<UnixHandListener, ConnectError> {
     #[cfg(unix)]
     {
         match &plan.transport {
             DialAddr::Unix(path) => {
-                let _ = std::fs::remove_file(path);
+                if replace {
+                    let _ = std::fs::remove_file(path);
+                }
                 let listener =
                     UnixListener::bind(path).map_err(|e| ConnectError::Io(e.to_string()))?;
                 Ok(UnixHandListener { listener })
@@ -160,7 +173,7 @@ pub fn bind_unix(plan: &ConnectionPlan) -> Result<UnixHandListener, ConnectError
     }
     #[cfg(not(unix))]
     {
-        let _ = plan;
+        let _ = (plan, replace);
         Err(ConnectError::Unsupported(
             "unix sockets are not supported on this platform".to_string(),
         ))

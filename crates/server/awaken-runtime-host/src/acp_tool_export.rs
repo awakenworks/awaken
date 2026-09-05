@@ -13,37 +13,6 @@ use awaken_runtime_contract::tool::{
 
 use awaken_runtime_contract::tool_export::{AcpToolExport, AcpToolExporter};
 
-/// ACP transport adapter for the Environment's one canonical `ToolExecutor`.
-/// The descriptor owns the public id; invocation, path projection, recovery and
-/// concurrency remain owned by the already-bound Environment executor.
-struct ExecutorBackedAcpTool {
-    id: String,
-    executor: Arc<dyn ToolExecutor>,
-}
-
-#[async_trait::async_trait]
-impl RawTool for ExecutorBackedAcpTool {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn execution_target(&self) -> ToolExecutionTarget {
-        ToolExecutionTarget::Sandbox
-    }
-
-    fn recovery_capability(&self) -> ToolRecoveryCapability {
-        self.executor.recovery_capability(&self.id)
-    }
-
-    fn concurrency(&self, arguments: &serde_json::Value) -> ToolConcurrency {
-        self.executor.concurrency(&self.id, arguments)
-    }
-
-    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        self.executor.invoke(&call).await
-    }
-}
-
 /// Bind the selected Hand descriptors to one Environment executor without
 /// rebuilding a host-side RawTool registry for Namespace or Container tiers.
 pub(crate) fn environment_executor_tools(
@@ -52,10 +21,7 @@ pub(crate) fn environment_executor_tools(
 ) -> Vec<Arc<dyn RawTool>> {
     ids.into_iter()
         .map(|id| {
-            Arc::new(ExecutorBackedAcpTool {
-                id,
-                executor: executor.clone(),
-            }) as Arc<dyn RawTool>
+            Arc::new(EnvironmentAcpTool::new(id, executor.clone())) as Arc<dyn RawTool>
         })
         .collect()
 }
@@ -181,6 +147,9 @@ impl EnvironmentAcpTool {
 }
 #[async_trait::async_trait]
 impl RawTool for EnvironmentAcpTool {
+    fn execution_target(&self) -> ToolExecutionTarget {
+        ToolExecutionTarget::Sandbox
+    }
     fn id(&self) -> &str {
         &self.id
     }
@@ -203,22 +172,21 @@ impl RawTool for EnvironmentAcpTool {
     }
 }
 
-/// Export one exact descriptor/executor set through the existing ACP MCP port.
-/// The complete set is served by one Session MCP endpoint and one lifetime
-/// lease. Native and ACP therefore consume identical contracts without turning
-/// each semantic tool into a separate server/process lifecycle.
-pub(crate) async fn export_tools(
-    exporter: &dyn AcpToolExporter,
-    namespace: &str,
+pub(crate) struct AttachedToolSet {
+    pub(crate) exporter: Arc<dyn AcpToolExporter>,
+    pub(crate) descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
+    pub(crate) executors: Vec<Arc<dyn RawTool>>,
+}
+
+type PairedTools = (
+    Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
+    Vec<Arc<dyn RawTool>>,
+);
+
+pub(crate) fn pair_tools(
     descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
-    executors: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
-) -> Result<
-    (
-        Vec<awaken_run_executor_acp::SessionMcpServer>,
-        Vec<AcpToolExport>,
-    ),
-    String,
-> {
+    executors: Vec<Arc<dyn RawTool>>,
+) -> Result<PairedTools, String> {
     let descriptor_ids = descriptors
         .iter()
         .map(|descriptor| descriptor.id.clone())
@@ -248,6 +216,26 @@ pub(crate) async fn export_tools(
         paired_descriptors.push(descriptor);
         paired_executors.push(tool);
     }
+    Ok((paired_descriptors, paired_executors))
+}
+
+/// Export one exact descriptor/executor set through the existing ACP MCP port.
+/// The complete set is served by one Session MCP endpoint and one lifetime
+/// lease. Native and ACP therefore consume identical contracts without turning
+/// each semantic tool into a separate server/process lifecycle.
+pub(crate) async fn export_tools(
+    exporter: &dyn AcpToolExporter,
+    namespace: &str,
+    descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
+    executors: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+) -> Result<
+    (
+        Vec<awaken_run_executor_acp::SessionMcpServer>,
+        Vec<AcpToolExport>,
+    ),
+    String,
+> {
+    let (paired_descriptors, paired_executors) = pair_tools(descriptors, executors)?;
     let export = exporter
         .export_set(namespace, paired_descriptors, paired_executors)
         .await?;

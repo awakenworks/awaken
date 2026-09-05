@@ -113,9 +113,17 @@ impl McpStdioServer {
 
         // Export-set changes owe the client a tools/list_changed.
         if let Some(mut changes) = service.source().changes() {
+            let connection = peer.clone();
             tokio::spawn(async move {
-                while changes.changed().await.is_ok() {
-                    awaken_mcp_server_core::notify_tools_list_changed(sink.as_ref()).await;
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = connection.closed() => break,
+                        changed = changes.changed() => {
+                            if changed.is_err() { break; }
+                            awaken_mcp_server_core::notify_tools_list_changed(sink.as_ref()).await;
+                        }
+                    }
                 }
             });
         }
@@ -127,6 +135,11 @@ impl McpStdioServer {
     /// subprocess-launched MCP server binary.
     pub fn serve_stdio(service: Arc<McpToolService>) -> Self {
         Self::serve(service, tokio::io::stdin(), tokio::io::stdout())
+    }
+
+    /// Revoke the connection through the canonical peer lifecycle.
+    pub fn close(&self) {
+        self.peer.close();
     }
 
     /// Whether the connection is still open.

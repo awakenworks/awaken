@@ -11,9 +11,10 @@
 //! producer would only mislead.)
 mod factory;
 mod plan;
+pub mod socket_stdio;
 
 pub use factory::{
     ChannelFactory, ConnectError, TcpHandListener, TokioChannelFactory, UnixHandListener, bind_tcp,
-    bind_unix, connect_with_retry, in_process_pair,
+    bind_unix, bind_unix_exclusive, connect_with_retry, in_process_pair,
 };
 pub use plan::{ConnectionPlan, DialAddr, DialPolicy};

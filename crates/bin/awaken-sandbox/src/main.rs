@@ -7,6 +7,8 @@
 //!       the sandbox image ENTRYPOINT; the CLI argv is the container `Cmd`.
 //!   awaken-sandbox hand <--unix PATH|--listen ADDR|--dial ADDR|--nats URL [SUBJECT]>
 //!       Serve the neutral tool-execution endpoint (ADR-0044/0045). `--features hand`.
+//!   awaken-sandbox channel-listen|channel-connect --unix PATH
+//!       One attached byte channel through an in-sandbox Unix socket. `--features hand`.
 //!   awaken-sandbox git-credential --socket PATH <get|store|erase>
 //!       One-shot Git credential helper over a Session-owned control service.
 //!   awaken-sandbox control-forwarder --unix PATH --listen LOOPBACK_ADDR --ready PATH
@@ -20,6 +22,7 @@
 
 mod control_forwarder;
 mod git_credential;
+mod socket_stdio;
 
 use std::process::ExitCode;
 
@@ -63,6 +66,7 @@ async fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("acp") => run_acp(&args[1..]).await,
         Some("hand") => run_hand(&args[1..]).await,
+        Some("channel-listen" | "channel-connect") => socket_stdio::run(&args).await,
         Some("git-credential") => run_git_credential(&args[1..]).await,
         Some("control-forwarder") => run_control_forwarder(&args[1..]).await,
         Some("control-forwarder-ready") => run_control_forwarder_ready(&args[1..]),
@@ -70,13 +74,13 @@ async fn main() -> ExitCode {
         Some("read-tree-nofollow") => run_read_tree_nofollow(&args[1..]),
         Some(role) => {
             eprintln!(
-                "awaken-sandbox: unknown role `{role}` (expected: acp | hand | git-credential | control-forwarder | control-forwarder-ready | repository-publish-noreplace | read-tree-nofollow)"
+                "awaken-sandbox: unknown role `{role}` (expected: acp | hand | git-credential | control-forwarder | control-forwarder-ready | repository-publish-noreplace | read-tree-nofollow | channel-listen | channel-connect)"
             );
             ExitCode::FAILURE
         }
         None => {
             eprintln!(
-                "usage: awaken-sandbox <acp|hand|git-credential|control-forwarder|control-forwarder-ready|repository-publish-noreplace|read-tree-nofollow> [args...]"
+                "usage: awaken-sandbox <acp|hand|git-credential|control-forwarder|control-forwarder-ready|repository-publish-noreplace|read-tree-nofollow|channel-listen|channel-connect> [args...]"
             );
             ExitCode::FAILURE
         }

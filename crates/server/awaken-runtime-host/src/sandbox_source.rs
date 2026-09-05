@@ -12,6 +12,7 @@ use awaken_run_executor_acp::{AgentChannelSource, AgentSession, OpenError};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_sandbox_local::NamespaceProvider;
 
+mod attached_tools;
 mod launch;
 pub use launch::{AcpLaunchRegistry, LaunchSource};
 
@@ -25,6 +26,7 @@ pub(crate) struct BoundLocalChannelSource {
     codec: awaken_run_executor_acp::Codec,
     backend: awaken_runtime_contract::resolved::Backend,
     mcp_servers: Vec<awaken_run_executor_acp::SessionMcpServer>,
+    attached_tools: Option<Arc<crate::acp_tool_export::AttachedToolSet>>,
 }
 
 /// The single launch-kind decision for Session MCP route ownership.
@@ -94,7 +96,16 @@ impl BoundLocalChannelSource {
             codec,
             backend,
             mcp_servers,
+            attached_tools: None,
         }
+    }
+
+    pub(crate) fn with_attached_tools(
+        mut self,
+        tools: Option<Arc<crate::acp_tool_export::AttachedToolSet>>,
+    ) -> Self {
+        self.attached_tools = tools;
+        self
     }
 
     /// Realize the one writable Session directory used by ACP adapter state and
@@ -215,7 +226,7 @@ impl AgentChannelSource for BoundLocalChannelSource {
             cli.is_some(),
             matches!(&self.launch, LaunchSource::FixedAcp(_)),
         );
-        let mcp_session_servers = match mcp_projection {
+        let mut mcp_session_servers = match mcp_projection {
             AcpMcpProjectionAdmission::CatalogChecked => {
                 let cli = cli.expect("catalog admission requires the selected CLI");
                 awaken_run_executor_acp::admit_mcp_session_servers(cli, &self.mcp_servers)?
@@ -223,17 +234,62 @@ impl AgentChannelSource for BoundLocalChannelSource {
             AcpMcpProjectionAdmission::TrustedFixedAcp => self.mcp_servers.clone(),
             AcpMcpProjectionAdmission::Omit => Vec::new(),
         };
+        let attached = match &self.attached_tools {
+            Some(tools) => {
+                let adapter = cli.ok_or_else(|| {
+                    OpenError("attached MCP tools require a catalog ACP adapter".into())
+                })?;
+                if mcp_session_servers
+                    .iter()
+                    .any(|server| server.name == "awaken_session")
+                {
+                    return Err(OpenError(
+                        "duplicate attached Session MCP server name".into(),
+                    ));
+                }
+                let attached =
+                    attached_tools::AttachedTools::open(self.sandbox.as_ref(), tools).await?;
+                let admitted = match awaken_run_executor_acp::admit_mcp_session_servers(
+                    adapter,
+                    std::slice::from_ref(&attached.server),
+                ) {
+                    Ok(admitted) => admitted,
+                    Err(error) => {
+                        attached
+                            .close()
+                            .await
+                            .map_err(|cleanup| OpenError(format!("{error}; cleanup: {cleanup}")))?;
+                        return Err(error);
+                    }
+                };
+                mcp_session_servers.extend(admitted);
+                Some(attached)
+            }
+            None => None,
+        };
         let filesystem = self
             .sandbox
             .filesystem_view(launch.session_working_directory.as_deref());
-        let (process, channel) = self
-            .sandbox
-            .spawn_agent(launch_command(&launch, &filesystem.command_cwd))
-            .await
-            .map_err(|error| OpenError(format!("bound agent launch: {error}")))?;
+        let spawned = self.sandbox.spawn_agent(launch_command(&launch, &filesystem.command_cwd)).await;
+        let (process, channel) = match spawned {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                if let Some(attached) = &attached {
+                    attached
+                        .close()
+                        .await
+                        .map_err(|error| OpenError(error.to_string()))?;
+                }
+                return Err(OpenError(format!("bound agent launch: {error}")));
+            }
+        };
+        let process: Arc<dyn pc::ProcessHandle> = match attached {
+            Some(attached) => Arc::new(attached_tools::ProcessWithTools { process, attached }),
+            None => Arc::from(process),
+        };
         Ok(AgentSession {
             channel,
-            process: Arc::from(process),
+            process,
             codec: self.codec,
             // ACP's cwd is separate from the spawned process cwd and is authoritative
             // for the CLI's own file tools. Point it at the same Session environment
@@ -320,6 +376,7 @@ pub(crate) fn container_image(image: Option<&str>) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    mod attached;
     use super::*;
     use awaken_run_executor_acp::{AcpLaunch, LaunchResolver};
     use std::sync::Mutex;
@@ -621,7 +678,7 @@ mod tests {
     }
 
     fn bound_projecting_source(
-        sandbox: Arc<CapturingAgentSandbox>,
+        sandbox: Arc<dyn crate::session_environment::AgentSandbox>,
         cli_id: &str,
     ) -> BoundLocalChannelSource {
         let cli = awaken_run_executor_acp::acp_cli(cli_id).expect("known ACP CLI");
@@ -634,6 +691,7 @@ mod tests {
             codec: awaken_run_executor_acp::Codec::Acp,
             backend: awaken_runtime_contract::resolved::Backend::from_ref(&format!("acp:{cli_id}")),
             mcp_servers: Vec::new(),
+            attached_tools: None,
         }
     }
 
@@ -667,6 +725,7 @@ mod tests {
             codec: awaken_run_executor_acp::Codec::Acp,
             backend: awaken_runtime_contract::resolved::Backend::from_ref(&format!("acp:{cli_id}")),
             mcp_servers: Vec::new(),
+            attached_tools: None,
         }
     }
 
@@ -902,6 +961,7 @@ mod tests {
             codec: awaken_run_executor_acp::Codec::Acp,
             backend: awaken_runtime_contract::resolved::Backend::from_ref("acp:codex"),
             mcp_servers: Vec::new(),
+            attached_tools: None,
         };
 
         source
@@ -974,6 +1034,7 @@ mod tests {
                 codec: awaken_run_executor_acp::Codec::Newline,
                 backend: awaken_runtime_contract::resolved::Backend::from_ref("acp:fixture"),
                 mcp_servers: Vec::new(),
+                attached_tools: None,
             };
             source
                 .open(

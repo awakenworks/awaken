@@ -1488,15 +1488,10 @@ impl SharedHost {
         } else {
             None
         };
-        let acp = self.acp.clone().map(|acp| {
-            let sandbox = sandbox.clone();
-            Arc::new(move |backend, permission| {
-                Ok(
-                    acp.executor_for(sandbox.clone(), permission, backend, Vec::new(), None)
-                        as Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
-                )
-            }) as crate::agent_runner::ChildAcpExecutorFactory
-        });
+        let acp = self
+            .acp
+            .as_ref()
+            .map(|acp| acp.child_executor_factory(sandbox.clone()));
         let service = HostRunDelegationService::new(
             self.llm.clone(),
             sandbox,

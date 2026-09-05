@@ -39,6 +39,7 @@ hand = [
     "dep:async-nats",
     "dep:futures",
     "dep:serde_json",
+    "dep:rustix",
 ]
 
 [dependencies]
@@ -69,6 +70,9 @@ futures = { version = "0.3", optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 zeroize = "1"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["stdio"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }

@@ -133,11 +133,15 @@ pub struct JsonRpcPeer {
 #[derive(Clone)]
 pub struct JsonRpcNotifier {
     write_tx: mpsc::Sender<String>,
+    closed: CancellationToken,
 }
 
 impl JsonRpcNotifier {
     /// Send a notification (no id, no reply expected).
     pub async fn notify(&self, method: &str, params: Value) -> Result<(), McpTransportError> {
+        if self.closed.is_cancelled() {
+            return Err(McpTransportError::ConnectionClosed);
+        }
         let line = format!(
             "{}\n",
             json!({ "jsonrpc": "2.0", "method": method, "params": params })
@@ -171,13 +175,18 @@ impl JsonRpcPeer {
         let closed_w = closed.clone();
         tokio::spawn(async move {
             let mut writer = writer;
-            while let Some(line) = write_rx.recv().await {
-                if writer.write_all(line.as_bytes()).await.is_err() || writer.flush().await.is_err()
-                {
-                    closed_w.cancel();
-                    break;
-                }
+            tokio::select! {
+                biased;
+                _ = closed_w.cancelled() => {},
+                _ = async {
+                    while let Some(line) = write_rx.recv().await {
+                        if writer.write_all(line.as_bytes()).await.is_err() || writer.flush().await.is_err() {
+                            break;
+                        }
+                    }
+                } => {},
             }
+            closed_w.cancel();
         });
 
         // Reader task: classify each line and dispatch.
@@ -187,7 +196,12 @@ impl JsonRpcPeer {
         tokio::spawn(async move {
             let mut lines = BufReader::new(reader).lines();
             loop {
-                match lines.next_line().await {
+                let next = tokio::select! {
+                    biased;
+                    _ = closed_r.cancelled() => break,
+                    next = lines.next_line() => next,
+                };
+                match next {
                     Ok(Some(line)) => {
                         if line.trim().is_empty() {
                             continue;
@@ -195,7 +209,11 @@ impl JsonRpcPeer {
                         let Ok(value) = serde_json::from_str::<Value>(&line) else {
                             continue;
                         };
-                        dispatch(value, &pending_r, &notif_tx, &request_handler, &write_tx_r).await;
+                        tokio::select! {
+                            biased;
+                            _ = closed_r.cancelled() => break,
+                            _ = dispatch(value, &pending_r, &notif_tx, &request_handler, &write_tx_r) => {},
+                        }
                     }
                     _ => {
                         closed_r.cancel();
@@ -219,6 +237,13 @@ impl JsonRpcPeer {
         )
     }
 
+    /// Revoke this connection. Reader and writer tasks release their streams;
+    /// pending requests fail closed. Already dispatched application effects are
+    /// not rolled back or replayed by this transport operation.
+    pub fn close(&self) {
+        self.closed.cancel();
+    }
+
     /// Whether the underlying stream is still open.
     pub fn is_alive(&self) -> bool {
         !self.closed.is_cancelled()
@@ -234,6 +259,7 @@ impl JsonRpcPeer {
     pub fn notifier(&self) -> JsonRpcNotifier {
         JsonRpcNotifier {
             write_tx: self.write_tx.clone(),
+            closed: self.closed.clone(),
         }
     }
 
@@ -258,7 +284,13 @@ impl JsonRpcPeer {
             self.pending.lock().await.remove(&id);
             return Err(McpTransportError::ConnectionClosed);
         }
-        match tokio::time::timeout(timeout, rx).await {
+        let received = tokio::select! {
+            biased;
+            // A response already demultiplexed before EOF wins over closure.
+            received = tokio::time::timeout(timeout, rx) => received,
+            _ = self.closed.cancelled() => { self.pending.lock().await.remove(&id); return Err(McpTransportError::ConnectionClosed); },
+        };
+        match received {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(McpTransportError::ConnectionClosed),
             Err(_) => {
@@ -521,6 +553,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn explicit_close_releases_both_streams_and_pending_requests() {
+        // C1 live remote + outstanding request; C2 explicit close (twice).
+        // Rule R1 C1+C2 -> pending request fails before its long deadline,
+        // remote observes EOF without closing itself, retained notifier rejects.
+        // Close is idempotent and does not require a remote cooperation message.
+        use tokio::io::AsyncReadExt;
+        let (peer, _notifications, mut remote, _remote_writer) = wired(None);
+        let peer = Arc::new(peer);
+        let waiting = peer.clone();
+        let request = tokio::spawn(async move {
+            waiting
+                .request("pending", json!({}), Duration::from_secs(60))
+                .await
+        });
+        assert_eq!(read_line(&mut remote).await["method"], "pending");
+        let notifier = peer.notifier();
+        peer.close();
+        peer.close();
+        let error = tokio::time::timeout(Duration::from_secs(2), request)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(error, McpTransportError::ConnectionClosed));
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), remote.read_to_end(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(bytes.is_empty());
+        assert!(matches!(
+            notifier.notify("late", json!({})).await,
+            Err(McpTransportError::ConnectionClosed)
+        ));
+    }
+
+    #[tokio::test]
     async fn notifier_writes_through_the_peer() {
         let (peer, _notif, mut server_r, _server_w) = wired(None);
         let notifier = peer.notifier();
@@ -698,11 +767,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn notify_does_not_check_liveness_unlike_request() {
-        // Characterize the request/notify asymmetry on a closed peer: request()
-        // consults is_alive() and fails fast, but notify() does not — it only
-        // queues to the write task, so the first notify still returns Ok even
-        // though the stream is gone (fire-and-forget, liveness unchecked).
+    async fn notifications_and_requests_reject_a_closed_peer() {
+        // Decision C1 peer EOF -> E1 request and notification both fail closed;
+        // a previously obtained notifier shares that exact connection lifetime.
         let (peer, _notif, server_r, server_w) = wired(None);
         drop(server_w);
         drop(server_r);
@@ -717,8 +784,9 @@ mod tests {
             .expect_err("request rejected on a closed peer");
         assert!(matches!(err, McpTransportError::ConnectionClosed));
 
-        peer.notify("notifications/progress", json!({}))
-            .await
-            .expect("notify queues despite closure — liveness is not checked");
+        assert!(matches!(
+            peer.notify("notifications/progress", json!({})).await,
+            Err(McpTransportError::ConnectionClosed)
+        ));
     }
 }

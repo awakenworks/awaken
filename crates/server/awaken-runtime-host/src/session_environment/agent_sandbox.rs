@@ -34,6 +34,11 @@ pub(crate) enum AgentFilesystemClient {
 pub(crate) trait AgentSandbox: Send + Sync {
     fn is_container(&self) -> bool;
 
+    /// Deployment-selected in-sandbox helper, shared with the Session Hand.
+    fn channel_helper(&self) -> Option<String> {
+        None
+    }
+
     /// Whether a child runs as the trusted host user and can consume that user's
     /// PATH/HOME-owned CLI identity. Namespace and container environments cannot
     /// truthfully provide this without mounting/copying credentials.
@@ -91,6 +96,14 @@ pub(crate) trait AgentSandbox: Send + Sync {
 
 #[async_trait]
 impl AgentSandbox for SessionEnvironment {
+    fn channel_helper(&self) -> Option<String> {
+        match self {
+            Self::Container { hand, .. } | Self::Namespace { hand, .. } => {
+                Some(hand.binary_path().to_string())
+            }
+            Self::Workdir(_) => None,
+        }
+    }
     fn is_container(&self) -> bool {
         matches!(self, Self::Container { .. })
     }

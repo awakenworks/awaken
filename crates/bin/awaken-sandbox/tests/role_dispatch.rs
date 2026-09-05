@@ -51,9 +51,31 @@ fn an_unknown_role_fails_and_names_the_valid_roles() {
             && text.contains("control-forwarder-ready")
             && text.contains("repository-publish-noreplace")
             && text.contains("read-tree-nofollow")
+            && text.contains("channel-listen")
+            && text.contains("channel-connect")
             && !text.contains("memoryd"),
         "the error lists the valid roles: {text}"
     );
+}
+
+#[test]
+fn socket_roles_reject_unavailable_or_invalid_configuration() {
+    // R4 no hand feature -> fail closed with feature diagnostic; R5 hand build
+    // plus missing/wrong/relative arguments -> parser rejection before binding.
+    for role in ["channel-listen", "channel-connect"] {
+        for args in [
+            vec![role],
+            vec![role, "--unix", "relative"],
+            vec![role, "--tcp", "/tmp/socket"],
+        ] {
+            let (ok, text) = run(&args);
+            assert!(!ok);
+            #[cfg(not(feature = "hand"))]
+            assert!(text.contains("--features hand"));
+            #[cfg(all(unix, feature = "hand"))]
+            assert!(text.contains("--unix"), "{text}");
+        }
+    }
 }
 
 #[test]
