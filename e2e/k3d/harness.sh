@@ -12,6 +12,20 @@ set -euo pipefail
 K3D_PLATFORM="${AWAKEN_K3D_PLATFORM:-linux/amd64}"
 K3D_EXIT_CLEANUP_FUNCTION=""
 
+k3d_capacity_preflight() {
+  local nodes="$1"
+  shift
+  python3 "$(dirname "${BASH_SOURCE[0]}")/capacity.py" --nodes "$nodes" "$@"
+}
+
+k3d_ensure_images() {
+  local image
+  for image in "$@"; do
+    docker image inspect "$image" >/dev/null 2>&1 \
+      || docker pull -q "$image" >/dev/null || return "$?"
+  done
+}
+
 k3d_validate_name() {
   [[ "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]]
 }
@@ -190,7 +204,7 @@ k3d_cluster_residue() {
   return 1
 }
 
-# k3d_create_cluster <name> <agent-count> [eviction-threshold] [registry-coordinate]
+# k3d_create_cluster <name> <agent-count> [eviction-threshold] [registry-coordinate] [images...]
 #
 # A bare integer preserves the historical percentage input. Kubernetes absolute
 # quantities are also accepted so image-heavy fixtures on large shared Docker
@@ -201,7 +215,9 @@ k3d_create_cluster() {
     echo "invalid k3d cluster name: $cluster" >&2
     return 2
   }
-  [[ "$agents" =~ ^[0-9]+$ ]] || {
+  # The qualification topology is bounded to 64 nodes. Validate before shell
+  # arithmetic so oversized or octal-shaped input cannot wrap the disk budget.
+  [[ "$agents" =~ ^(0|[1-9][0-9]?)$ ]] && (( agents < 64 )) || {
     echo "invalid k3d agent count: $agents" >&2
     return 2
   }
@@ -213,7 +229,8 @@ k3d_create_cluster() {
     echo "invalid k3d Registry coordinate: $registry" >&2
     return 2
   }
-  k3d_delete_cluster "$cluster"
+  k3d_capacity_preflight "$((agents + 1))" "${@:5}" || return "$?"
+  k3d_delete_cluster "$cluster" || return "$?"
   if [[ "$eviction" =~ ^[0-9]+$ ]]; then
     eviction="${eviction}%"
   fi
@@ -307,12 +324,14 @@ k3d_import_images() {
   done
 
   local archive_dir
+  k3d_ensure_images "${unique[@]}" || return "$?"
+  local nodes
+  nodes=$(docker ps -a --filter "label=k3d.cluster=$cluster" \
+    --format '{{.Label "k3d.role"}}' | awk '$0 == "server" || $0 == "agent" {n++} END {print n+0}') || return "$?"
+  k3d_capacity_preflight "$nodes" "${unique[@]}" || return "$?"
   archive_dir=$(mktemp -d)
   local archives=() status=0
   for image in "${unique[@]}"; do
-    docker image inspect "$image" >/dev/null 2>&1 \
-      || docker pull -q "$image" >/dev/null \
-      || { status=$?; break; }
     local archive="$archive_dir/$(k3d_archive_name "$image").tar"
     docker save --platform "$K3D_PLATFORM" -o "$archive" "$image" \
       || { status=$?; break; }
@@ -327,9 +346,11 @@ k3d_import_images() {
   # returns, so retaining them only creates a second, unbounded image store.
   # Clean the transport files on both success and failure; containerd remains
   # the authoritative runtime image store.
+  local cleanup_status=0
   docker exec "$node" find /k3d/images -mindepth 1 -maxdepth 1 -type f -delete \
-    >/dev/null 2>&1 || true
+    >/dev/null 2>&1 || cleanup_status=$?
   (( status == 0 )) || return "$status"
+  (( cleanup_status == 0 )) || return "$cleanup_status"
   kubectl -n kube-system delete pod -l k8s-app=kube-dns >/dev/null 2>&1 || true
   kubectl -n kube-system rollout status deploy/coredns --timeout=90s
 }
@@ -358,6 +379,7 @@ for line in sys.stdin:
 }
 
 k3d_harness_selftest() (
+  python3 "$(dirname "${BASH_SOURCE[0]}")/capacity.py" --self-test
   # Cause/effect decision table:
   # H1 canonical name/count/percentage -> one delete + create with server and agent
   # thresholds; H2 zero agents -> no agent threshold; H3 option-shaped name or
@@ -387,9 +409,17 @@ k3d_harness_selftest() (
   # | H22  | failure     | residue       | cleanup failure takes precedence |
   # The scenario tests own network and topology effects.
   local k3d_calls=() docker_saves=() docker_execs=() docker_builds=()
-  local delete_fails=0 observation_error="" residue=""
+  local delete_fails=0 observation_error="" residue="" import_failure=0 transport_failure=0
+  local capacity_failure=0 capacity_calls=()
+  k3d_capacity_preflight() {
+    capacity_calls+=("$*")
+    return "$capacity_failure"
+  }
   k3d() {
     k3d_calls+=("$*")
+    if [[ "$1 $2" = "image import" ]]; then
+      return "$import_failure"
+    fi
     if [[ "$1 $2" = "cluster delete" && "$delete_fails" = "1" ]]; then
       return 1
     fi
@@ -447,8 +477,18 @@ k3d_harness_selftest() (
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi@agent:*"* ]]
 
   k3d_calls=()
+  # K2: capacity rejection happens before deleting an existing cluster or
+  # creating a new one. The planner's real arithmetic is checked above.
+  capacity_failure=1
+  ! k3d_create_cluster "awaken-test" 3 128Mi "" roles:exact
+  (( ${#k3d_calls[@]} == 0 ))
+  [[ "${capacity_calls[${#capacity_calls[@]} - 1]}" = "4 roles:exact" ]]
+  capacity_failure=0
   ! k3d_create_cluster "--all" 1 2
   ! k3d_create_cluster "awaken-test" many 2
+  ! k3d_create_cluster "awaken-test" 08 2
+  ! k3d_create_cluster "awaken-test" 64 2
+  ! k3d_create_cluster "awaken-test" 18446744073709551616 2
   ! k3d_create_cluster "awaken-test" 1 low
   ! k3d_create_cluster "awaken-test" 1 0Gi
   (( ${#k3d_calls[@]} == 0 ))
@@ -564,7 +604,11 @@ k3d_harness_selftest() (
       docker_execs+=("$*")
       if [[ "$*" = *"sandbox_image"* ]]; then
         printf '%s' 'rancher/mirrored-pause:3.6'
+      elif [[ "$*" = *"find /k3d/images"* ]]; then
+        return "$transport_failure"
       fi
+    elif [[ "$1" = ps ]]; then
+      printf '%s\n' server agent
     elif [[ "$1 $2" = "image inspect" ]]; then
       return 0
     elif [[ "$1" = save ]]; then
@@ -584,6 +628,25 @@ k3d_harness_selftest() (
   [[ "${docker_saves[*]}" = *"--platform $K3D_PLATFORM"* ]]
   [[ "${k3d_calls[0]}" = image\ import* ]]
   [[ "${docker_execs[${#docker_execs[@]} - 1]}" = "exec k3d-awaken-test-server-0 find /k3d/images -mindepth 1 -maxdepth 1 -type f -delete" ]]
+
+  # K2/K3/K5/K6: capacity fails before archive/import; import failure and
+  # transport-cleanup failure each remain failures. A successful mock import
+  # cannot hide leftover archives; a failing import still attempts cleanup.
+  capacity_failure=1
+  docker_saves=() k3d_calls=()
+  ! k3d_import_images "awaken-test" app:latest
+  (( ${#docker_saves[@]} == 0 && ${#k3d_calls[@]} == 0 ))
+  capacity_failure=0
+  local expected_status actual_status
+  for expected_status in 23 31; do
+    import_failure=0 transport_failure=0
+    if [[ "$expected_status" == 23 ]]; then import_failure=23; else transport_failure=31; fi
+    actual_status=0
+    k3d_import_images "awaken-test" app:latest || actual_status=$?
+    [[ "$actual_status" == "$expected_status" ]]
+    [[ "${docker_execs[${#docker_execs[@]} - 1]}" = *"find /k3d/images"* ]]
+  done
+  import_failure=0 transport_failure=0
 
   unset AWAKEN_K3D_BUILD_NETWORK
   k3d_docker_build --load -t fixture:latest .

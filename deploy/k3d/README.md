@@ -119,9 +119,16 @@ bash e2e/k3d/distributed_control_e2e.sh
 
 Set `ADR71_KEEP_FAILED_CLUSTER=1` only while diagnosing a failure; the default
 always deletes the dedicated `awaken-adr71` cluster and disposable role binaries.
-For a test-script-only rerun, `ADR71_REUSE_IMAGE=1` skips host compilation and
-requires an existing `awaken-roles:latest`; the suite prints and imports that
-immutable digest, while the default continues to build from the current tree.
+Every distributed-control run resolves the current role binaries through Cargo
+and builds the Hand through the canonical sandbox builder. Cargo and Docker
+retain their incremental caches; the old tag-only reuse bypass has been removed
+because tag existence and a working Hand do not establish current-source identity.
+The shared harness checks local Docker/tmp filesystem bytes and inodes before
+cluster replacement and again before image import, accounting for every node,
+transport archives and a reserve. Remote Docker contexts fail closed because
+client filesystem observations cannot establish daemon capacity. These are
+conservative fixture budgets, not reservations: actual import and cleanup errors
+still fail the run.
 
 The scenario driver is the test entry point. Applying a base directly is useful
 for inspection, but it does not constitute end-to-end verification.
