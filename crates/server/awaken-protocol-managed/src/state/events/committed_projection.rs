@@ -650,28 +650,17 @@ impl ManagedState {
             .map(|event| &event.run_id);
         let mut pending_is_in_new_message = false;
         for message in &new_messages {
-            let historical_message_boundary =
-                historical_pending.iter().find_map(|(cursor, pending)| {
-                    message
-                        .content
-                        .iter()
-                        .any(|block| {
-                            matches!(
-                                block,
-                                ContentBlock::ToolUse { id, .. } if id == &pending.tool_use_id
-                            )
-                        })
-                        .then(|| {
-                            all_accepted_lifecycle
-                                .iter()
-                                .find(|event| event.cursor == *cursor)
-                                .map(|event| (pending, &event.run_id))
-                        })
-                        .flatten()
-                });
-            let message_source_run_id = historical_message_boundary
-                .map(|(_, run_id)| run_id)
-                .or(root_pending_source_run_id);
+            let historical_boundaries = Self::historical_message_boundaries(
+                message,
+                &historical_pending,
+                &all_accepted_lifecycle,
+                session_id,
+                root_response_coordinates
+                    .get(&message.id.0)
+                    .map(|(run, _, _)| run.as_str()),
+            );
+            let message_source_run_id = root_pending_source_run_id
+                .or_else(|| historical_boundaries.first().map(|(_, run)| *run));
             let tool_index = record.projected_tool_index_for(None);
             let selected = transcript_evidence.project_message(
                 message,
@@ -679,20 +668,24 @@ impl ManagedState {
                 message_source_run_id.map(|run_id| run_id.0.as_str()),
             );
             pending_is_in_new_message |= selected.pending_occurrence;
-            let message_pending = historical_message_boundary
-                .map(|(pending, _)| pending)
-                .or_else(|| {
-                    selected
-                        .retained_pending_occurrence
-                        .then_some(root_pending)
-                        .flatten()
-                });
+            // The exact current ticket wins over any earlier call in this
+            // source message. Historical permissions are applied per call by
+            // the shared encoder, never chosen by HashMap iteration order.
+            let message_pending = selected
+                .retained_pending_occurrence
+                .then_some(root_pending)
+                .flatten();
+            let pending_history = historical_boundaries
+                .iter()
+                .map(|(pending, _)| *pending)
+                .collect::<Vec<_>>();
             let mut projected = project_messages_with_mcp_ids(
                 std::slice::from_ref(&selected.message),
                 message_pending,
                 &tool_index.all,
                 tool_index.mcp,
                 transcript_evidence.advisor_blocks(),
+                &pending_history,
             );
             self.qualify_tool_projection(
                 record,
@@ -751,6 +744,7 @@ impl ManagedState {
                 &tool_index.all,
                 tool_index.mcp,
                 transcript_evidence.advisor_blocks(),
+                &[],
             );
             self.qualify_tool_projection(
                 record,
