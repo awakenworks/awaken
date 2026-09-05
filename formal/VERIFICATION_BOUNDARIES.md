@@ -280,6 +280,19 @@ rewrite a Resident or Retiring fence.
 
 ### Proof-carrying release and deployment admission
 
+The shared qualification implementation in `scripts/ci/formal_profile.py` owns
+both checker and package selection. Scenario traces retain their model/theorem
+grade and cannot claim universal implementation refinement. Formal mutation
+oracles require a green complete fixture, the specific semantic rejection, and
+a restored green fixture; infrastructure failure is not mutation evidence.
+
+The existing strict formal runner emits one invocation receipt into quality's
+existing artifact directory. Its start and completion bind the same source tree
+and proof toolchain contract. Release manifest schema 2 consumes that receipt
+and rejects incomplete, dirty or mismatched runs. Authenticity relies on the
+trusted CI runner and the existing signed release provenance; the receipt does
+not replace proof reports or establish unbounded Rust refinement.
+
 The generated release manifest extends the existing signed release provenance;
 it is not a second obligation or assumption ledger. A standard artifact records
 all remaining direct-proof gaps. A Verified artifact can be generated only

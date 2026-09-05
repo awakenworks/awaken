@@ -802,6 +802,15 @@ contract. The existing release artifact attestation signs the generated file
 with the other dist subjects. AWAKEN_RELEASE_PROFILE=awaken-verified-v1 turns
 package generation into the strong gate; ordinary releases use standard and
 carry the exact non-eligibility gap set without displaying a Verified identity.
+Manifest schema 2 additionally binds `proof_execution`, the completion receipt
+emitted by the one strict `check_formal.sh` invocation. It replaces any previous
+receipt with `running` before checks and publishes `passed` only after every
+tool stage succeeds. Packaging consumes the exact quality invocation artifact;
+Verified generation rejects absent/incomplete execution, changed source or
+toolchain contracts, and dirty candidate trees. Standard local packages may
+explicitly carry null execution evidence. The receipt is CI testimony signed
+through the existing release attestation, not an independently checkable proof
+certificate; tool and runner trust remain explicit.
 The release-side validator offers validate --require-verified --tcb-evidence;
 runtime startup and Session recovery integration are still required. The current
 validator checks observation completeness, contract identity, digest syntax and

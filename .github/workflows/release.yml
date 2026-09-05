@@ -70,8 +70,15 @@ jobs:
           key: release-${{ matrix.target }}
       - name: Install Console dependencies
         run: pnpm install --frozen-lockfile
+      - name: Download the exact quality invocation evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: quality-${{ github.sha }}-${{ github.run_attempt }}
+          path: target/test-timings
       - name: Build the canonical archive
         shell: bash
+        env:
+          AWAKEN_FORMAL_RUN_EVIDENCE: target/test-timings/formal-run.json
         run: python3 scripts/release/package.py --target "${{ matrix.target }}"
       - name: Parse the Windows installer with the release shell
         if: runner.os == 'Windows'

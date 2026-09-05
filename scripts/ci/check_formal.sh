@@ -26,6 +26,13 @@ if [ "${1:-}" = "--require-tools" ]; then
   require_tools=1
 fi
 
+# One invocation replaces any previous receipt with Running before executing.
+# Only the successful tail below may publish Passed. The quality workflow
+# retains this file beside its existing exact-SHA timing evidence.
+formal_run_record="${AWAKEN_FORMAL_RUN_EVIDENCE:-target/test-timings/formal-run.json}"
+python3 scripts/ci/formal_run_evidence.py begin \
+  --record "$formal_run_record" --strict "$require_tools"
+
 missing=0
 formal_tmp_root="$(mktemp -d)"
 trap 'rm -rf "$formal_tmp_root"' EXIT
@@ -35,6 +42,7 @@ rendered_trace_dir="$formal_tmp_root/rendered-traces"
 python3 scripts/ci/check_feature_coverage.py --require-complete
 python3 scripts/ci/check_formal_coverage.py --require-complete
 python3 scripts/ci/test_formal_profile.py
+python3 scripts/ci/test_formal_run_evidence.py
 python3 scripts/release/verification_manifest.py self-test
 python3 scripts/ci/test_formal_surface.py
 python3 scripts/ci/check_formal_surface.py --require-complete
@@ -738,4 +746,8 @@ fi
 if [ "$require_tools" -eq 1 ] && [ "$missing" -ne 0 ]; then
   echo "formal verification tools are required but unavailable" >&2
   exit 1
+fi
+if [ "$require_tools" -eq 1 ]; then
+  python3 scripts/ci/formal_run_evidence.py finish \
+    --record "$formal_run_record" --missing-tools "$missing"
 fi
