@@ -47,7 +47,7 @@ mod configured_fetch;
 mod providers;
 pub use providers::AwakenDirectFetchProvider;
 use providers::{
-    ProviderServerWebFetchTool, native_server_search_descriptors,
+    ProviderServerWebFetchTool, blocking, native_server_search_descriptors,
     openrouter_server_fetch_descriptor, openrouter_server_search_descriptor,
 };
 
@@ -69,16 +69,6 @@ pub const AWAKEN_CLOUD_PROVIDER_ID: &str = "awaken-cloud";
 
 /// Cap on fetched bytes so a huge response cannot blow up the transcript.
 const MAX_BODY: u64 = 1 << 20;
-
-async fn blocking<F, T>(work: F) -> Result<T, ToolError>
-where
-    F: FnOnce() -> Result<T, ToolError> + Send + 'static,
-    T: Send + 'static,
-{
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|err| ToolError::Execution(format!("blocking task: {err}")))?
-}
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

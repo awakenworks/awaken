@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import readline from 'node:readline';
+import assert from 'node:assert/strict';
 
 const TOOL_CALL_ID = 'awaken-write-call';
 const WRITE_ARGUMENTS = { path: '/mnt/session/outputs/acp-hitl.txt', content: 'AWAKEN-ACP-HITL-OK' };
@@ -58,7 +59,9 @@ async function callAwakenTools() {
     clientInfo: { name: 'awaken-acp-tool-bridge-fixture', version: '1' },
   }, state);
   await mcpNotify(url, 'notifications/initialized', state);
-  await mcpRequest(url, 'tools/call', { name: 'write', arguments: WRITE_ARGUMENTS }, state);
+  const aliasTarget = sessionRequest.params._meta.claudeCode.options.toolAliases.Write;
+  assert.equal(aliasTarget, 'mcp__awaken_session__write');
+  await mcpRequest(url, 'tools/call', { name: aliasTarget.slice('mcp__awaken_session__'.length), arguments: WRITE_ARGUMENTS }, state);
   const read = await mcpRequest(url, 'tools/call', {
     name: 'read',
     arguments: { path: WRITE_ARGUMENTS.path },
@@ -113,6 +116,11 @@ input.on('line', async (line) => {
     return;
   }
   if (request.method === 'session/new' || request.method === 'session/load') {
+    // R1 new and R2 recovered load retain identical alias policy. This fixture
+    // validates delivery; claude_sdk_alias_e2e separately runs the real SDK lookup.
+    assert.deepEqual(request.params._meta?.claudeCode?.options, {
+      toolAliases: { Write: 'mcp__awaken_session__write' }, tools: [], disallowedTools: ['Write'],
+    });
     sessionRequest = request;
     send({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'awaken-tool-bridge-session' } });
     return;

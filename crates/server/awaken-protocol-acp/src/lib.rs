@@ -401,6 +401,7 @@ pub struct SessionConfigOptionSelection {
 /// codec reads/updates it across the handshake; the newline stand-in ignores all
 /// but nothing (it has no session/permission concept).
 pub struct TurnConfig<'a> {
+    pub tool_aliases: std::collections::BTreeMap<String, String>,
     /// Authorizes the agent's mid-turn tool requests (the neutral `ToolPermissionPolicy`
     /// behind an executor adapter).
     pub resolver: &'a dyn PermissionResolver,
@@ -455,6 +456,7 @@ impl<'a> TurnConfig<'a> {
     pub fn new(resolver: &'a dyn PermissionResolver) -> Self {
         Self {
             resolver,
+            tool_aliases: Default::default(),
             mcp_servers: Vec::new(),
             session_id: None,
             session_model: None,

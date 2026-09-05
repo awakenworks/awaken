@@ -55,6 +55,9 @@ async fn acp_permission_titles_use_the_canonical_mcp_tool_identity() {
         ("M1", "mcp.pilot.set_plan", "mcp__pilot__set_plan"),
         ("M2", "mcp.awaken_session.write", "write"),
         ("M3", "bash", "bash"),
+        // M4 Claude SDK canonical MCP target; M5 external identity stays exact.
+        ("M4", "mcp__awaken_session__write", "write"),
+        ("M5", "mcp__pilot__set_plan", "mcp__pilot__set_plan"),
     ] {
         let resolver = NeutralPermissionResolver {
             policy: Arc::new(ExactPolicy {
@@ -306,6 +309,7 @@ impl AgentChannelSource for ScriptedSource {
             mcp_session_servers: Vec::new(),
             session_model: None,
             session_mode: None,
+            tool_aliases: Default::default(),
             session_config_options: Vec::new(),
             expected_capability: None,
         })
@@ -420,6 +424,7 @@ impl AgentChannelSource for CountingSource {
             mcp_session_servers: Vec::new(),
             session_model: None,
             session_mode: None,
+            tool_aliases: Default::default(),
             session_config_options: Vec::new(),
             expected_capability: None,
         })
@@ -1659,12 +1664,15 @@ async fn a_usage_event_is_committed_as_thread_state() {
 
     let commits = coord.commits.lock().unwrap();
     assert_eq!(commits.len(), 1);
-    assert_eq!(
-        commits[0].state.len(),
-        1,
-        "usage committed as one state command"
-    );
-    let cmd = &commits[0].state[0];
+    // A terminal ACP commit also consumes its shared permission batch. Usage
+    // remains exactly one independently owned Thread cell, not the whole plan.
+    let usage_commands = commits[0]
+        .state
+        .iter()
+        .filter(|command| command.key.0 == THREAD_USAGE_STATE_KEY)
+        .collect::<Vec<_>>();
+    assert_eq!(usage_commands.len(), 1, "one usage cell per commit");
+    let cmd = usage_commands[0];
     assert_eq!(cmd.key.0, THREAD_USAGE_STATE_KEY);
     let Action::Set(value) = &cmd.action else {
         panic!("usage is a Set command");
@@ -1733,6 +1741,7 @@ async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_exec
                 mcp_session_servers: Vec::new(),
                 session_model: None,
                 session_mode: None,
+                tool_aliases: Default::default(),
                 session_config_options: Vec::new(),
                 expected_capability: None,
             })
@@ -2306,6 +2315,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                 mcp_session_servers: Vec::new(),
                 session_model: None,
                 session_mode: None,
+                tool_aliases: Default::default(),
                 session_config_options: Vec::new(),
                 expected_capability: None,
             })
@@ -2337,6 +2347,17 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
         let ticket = committed
             .resume_ticket_for(&RunId("run-1".into()))
             .expect("permission ticket");
+        // AR1/AR2: await atomically commits the shared batch and exact ticket;
+        // replacement admission validates the same contract as Native. Either
+        // terminal decision consumes both; no ACP-specific admission bypass.
+        let batch = awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
+            &committed.committed_state(&ticket.thread_id),
+        ))
+        .unwrap()
+        .expect("durable ACP permission batch");
+        batch
+            .validate_awaiting_ticket(&ticket.thread_id, &ticket)
+            .unwrap();
         assert_eq!(ticket.reason(), AwaitReason::ToolPermission);
         assert_eq!(ticket.correlation_id, "approval-1");
         assert_eq!(ticket.call_id(), Some("tool-1"));
@@ -2368,6 +2389,14 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
             .expect("replacement consumes the durable decision");
         events.notified().await;
         assert_eq!(resumed, RunState::Ended(EndCause::NaturalEnd));
+        assert!(
+            awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
+                &committed.committed_state(&ticket.thread_id)
+            ))
+            .unwrap()
+            .is_none(),
+            "terminal continuation clears the shared batch"
+        );
         let replies = replies.lock().unwrap();
         assert_eq!(replies.len(), 2);
         assert!(replies[1].contains(if allow { "allow" } else { "reject" }));
@@ -2910,6 +2939,7 @@ async fn acp_relaunches_the_cli_every_run_so_a_model_switch_takes_effect() {
                 mcp_session_servers: Vec::new(),
                 session_model: None,
                 session_mode: None,
+                tool_aliases: Default::default(),
                 session_config_options: Vec::new(),
                 expected_capability: None,
             })
@@ -3376,6 +3406,7 @@ async fn a_cancelled_token_ends_the_run_cancelled() {
                 mcp_session_servers: Vec::new(),
                 session_model: None,
                 session_mode: None,
+                tool_aliases: Default::default(),
                 session_config_options: Vec::new(),
                 expected_capability: None,
             })
@@ -3608,6 +3639,7 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
                 mcp_session_servers: Vec::new(),
                 session_model: None,
                 session_mode: None,
+                tool_aliases: Default::default(),
                 session_config_options: Vec::new(),
                 expected_capability: None,
             })
@@ -3879,5 +3911,57 @@ async fn every_backend_row_drives_a_plain_run_to_a_committed_reply() {
             .map(|m| m.text_content())
             .unwrap_or_default();
         assert_eq!(reply, "pong", "{}: committed the agent's reply", row.id);
+    }
+}
+
+#[tokio::test]
+async fn canonical_mcp_ticket_and_transcript_survive_wire_name_changes() {
+    // Causes: dot/SDK/canonical name x legacy/canonical persisted ticket x
+    // changed arguments x consumed grant. R1 same semantic tool and arguments
+    // => one allow and canonical transcript; R2 changed args => ask; R3 repeat
+    // => ask. Historical dotted tickets remain readable without a second path.
+    struct Ask;
+    #[async_trait]
+    impl PermissionResolver for Ask {
+        async fn resolve(&self, _: &PermissionAsk) -> PermissionVerdict {
+            PermissionVerdict::Await {
+                correlation_id: "again".into(),
+            }
+        }
+    }
+    for stored in ["write", "mcp.awaken_session.write"] {
+        for wire in [
+            "write",
+            "mcp.awaken_session.write",
+            "mcp__awaken_session__write",
+        ] {
+            let decision = PermissionResume {
+                call_id: "old".into(),
+                tool_id: stored.into(),
+                arguments: serde_json::json!({"path":"a"}),
+                allow: true,
+            };
+            let resolver = ResumedPermissionResolver::new(&Ask, &decision, None);
+            let mut ask = PermissionAsk {
+                call_id: "new".into(),
+                tool: wire.into(),
+                arguments: serde_json::json!({"path":"b"}),
+            };
+            assert!(matches!(
+                resolver.resolve(&ask).await,
+                PermissionVerdict::Await { .. }
+            ));
+            ask.arguments = decision.arguments.clone();
+            assert_eq!(resolver.resolve(&ask).await, PermissionVerdict::Allow);
+            assert!(matches!(
+                resolver.resolve(&ask).await,
+                PermissionVerdict::Await { .. }
+            ));
+            let mut messages = vec![];
+            ensure_pending_tool_use(&RunId("run".into()), &mut 0, &mut messages, &ask);
+            assert!(
+                matches!(&messages[0].content[0], ContentBlock::ToolUse { name, .. } if name == "write")
+            );
+        }
     }
 }

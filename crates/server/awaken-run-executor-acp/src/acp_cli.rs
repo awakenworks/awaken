@@ -22,8 +22,9 @@ pub use catalog::known_acp_clis;
 pub use image_contract::{AcpImageRequirement, image_runtime_contract_json};
 use managed_delivery::project_acp_session;
 pub use managed_delivery::{
-    CredentialArtifactCodec, CredentialArtifactSpec, ManagedCredentialDelivery,
-    ManagedProviderConfigCodec, ManagedProviderConfigDelivery, ModelDelivery,
+    CredentialArtifactCodec, CredentialArtifactRequirement, CredentialArtifactSpec,
+    ManagedCredentialDelivery, ManagedProviderConfigCodec, ManagedProviderConfigDelivery,
+    ModelDelivery, ProcessSecretRequirement, ResolvedModel,
 };
 pub use publication::known_acp_publication_capabilities;
 
@@ -188,6 +189,8 @@ pub struct AcpCli {
     /// through the process-private ACP `session/new` field. Ordinary MCP route
     /// support does not imply this capability.
     pub mcp_client_credential_injection: bool,
+    /// Pinned adapter accepts Claude SDK toolAliases via session metadata.
+    pub supports_tool_aliases: bool,
     /// Env key naming the CLI's isolated config directory (e.g. `CLAUDE_CONFIG_DIR`).
     pub config_home_env: Option<&'static str>,
     /// Additional standard/vendor home variables that point at the same isolated
@@ -240,218 +243,6 @@ impl AcpCli {
             }
             _ => None,
         }
-    }
-}
-
-/// One already-selected process-secret requirement. The opaque reference is
-/// resolved only by the final launch provider through `SecretBroker`; this type
-/// carries no material, policy, or credential-selection behavior.
-#[derive(Clone, PartialEq, Eq)]
-pub struct ProcessSecretRequirement {
-    reference: String,
-    environment_variable: Option<String>,
-}
-
-/// One claim-fenced provider credential artifact. The executor carries only the
-/// broker reference and provider-owned relative path; bytes are materialized by
-/// the sandbox immediately before the ACP process starts.
-#[derive(Clone, PartialEq, Eq)]
-pub struct CredentialArtifactRequirement {
-    reference: String,
-    relative_path: String,
-}
-
-impl CredentialArtifactRequirement {
-    #[must_use]
-    pub fn new(reference: impl Into<String>, relative_path: impl Into<String>) -> Self {
-        Self {
-            reference: reference.into(),
-            relative_path: relative_path.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn reference(&self) -> &str {
-        &self.reference
-    }
-
-    #[must_use]
-    pub fn relative_path(&self) -> &str {
-        &self.relative_path
-    }
-}
-
-impl std::fmt::Debug for CredentialArtifactRequirement {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("CredentialArtifactRequirement(***)")
-    }
-}
-
-impl ProcessSecretRequirement {
-    #[must_use]
-    pub fn new(reference: impl Into<String>) -> Self {
-        Self {
-            reference: reference.into(),
-            environment_variable: None,
-        }
-    }
-
-    #[must_use]
-    pub fn for_environment(
-        reference: impl Into<String>,
-        environment_variable: impl Into<String>,
-    ) -> Self {
-        Self {
-            reference: reference.into(),
-            environment_variable: Some(environment_variable.into()),
-        }
-    }
-
-    #[must_use]
-    pub fn reference(&self) -> &str {
-        &self.reference
-    }
-
-    #[must_use]
-    pub fn environment_variable(&self) -> Option<&str> {
-        self.environment_variable.as_deref()
-    }
-}
-
-impl std::fmt::Debug for ProcessSecretRequirement {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("ProcessSecretRequirement(***)")
-    }
-}
-
-/// Mutually exclusive model ownership handed to the launch projection. Managed
-/// launches carry endpoint and broker requirements; backend-owned launches carry
-/// only an explicit default/exact policy and never have fields for material.
-#[derive(Debug, Clone)]
-pub enum ResolvedModel {
-    Managed {
-        base_url: String,
-        model: String,
-        process_secret: Option<ProcessSecretRequirement>,
-        credential_artifact: Option<CredentialArtifactRequirement>,
-        acp: Option<awaken_runtime_contract::resolved::AcpExecutionProfile>,
-        provider_server_tools: Vec<awaken_runtime_contract::resolved::ProviderServerTool>,
-    },
-    BackendOwned {
-        model_selection: BackendModelSelection,
-        model: String,
-        capability: awaken_protocol_acp::AcpCapabilityExpectation,
-        session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration,
-    },
-}
-
-impl ResolvedModel {
-    /// Cloud-managed egress (D-R2, ADR-0021 §9/R2). An ACP CLI runs inside the
-    /// untrusted sandbox, so it must never hold a raw provider key: its egress is
-    /// mediated by the gateway. `base_url` is the **gateway**, and the CLI's "API
-    /// key" is a brokered requirement for a short-lived **lease token** — the gateway
-    /// injects the real provider credential out of the sandbox's address space. Build
-    /// the ACP model this way from a resolved cloud-managed gateway (base URL + lease
-    /// reference) so neither the lease nor raw key enters planning state as plaintext.
-    #[must_use]
-    pub fn cloud_managed_gateway(
-        gateway_base_url: impl Into<String>,
-        model: impl Into<String>,
-        lease_reference: impl Into<String>,
-    ) -> Self {
-        Self::Managed {
-            base_url: gateway_base_url.into(),
-            model: model.into(),
-            process_secret: Some(ProcessSecretRequirement::new(lease_reference)),
-            credential_artifact: None,
-            acp: None,
-            provider_server_tools: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn managed(
-        base_url: impl Into<String>,
-        model: impl Into<String>,
-        process_secret: Option<ProcessSecretRequirement>,
-        credential_artifact: Option<CredentialArtifactRequirement>,
-    ) -> Self {
-        Self::Managed {
-            base_url: base_url.into(),
-            model: model.into(),
-            process_secret,
-            credential_artifact,
-            acp: None,
-            provider_server_tools: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn managed_with_acp(
-        base_url: impl Into<String>,
-        model: impl Into<String>,
-        process_secret: Option<ProcessSecretRequirement>,
-        credential_artifact: Option<CredentialArtifactRequirement>,
-        acp: awaken_runtime_contract::resolved::AcpExecutionProfile,
-    ) -> Self {
-        Self::Managed {
-            base_url: base_url.into(),
-            model: model.into(),
-            process_secret,
-            credential_artifact,
-            acp: Some(acp),
-            provider_server_tools: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn backend_owned(
-        model_selection: BackendModelSelection,
-        model: impl Into<String>,
-        adapter_id: impl Into<String>,
-        adapter_version: impl Into<String>,
-        fingerprint: impl Into<String>,
-        session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration,
-    ) -> Self {
-        Self::BackendOwned {
-            model_selection,
-            model: model.into(),
-            capability: awaken_protocol_acp::AcpCapabilityExpectation {
-                adapter_id: adapter_id.into(),
-                adapter_version: adapter_version.into(),
-                fingerprint: fingerprint.into(),
-            },
-            session_configuration,
-        }
-    }
-
-    #[must_use]
-    pub fn credential_artifact(&self) -> Option<&CredentialArtifactRequirement> {
-        match self {
-            Self::Managed {
-                credential_artifact,
-                ..
-            } => credential_artifact.as_ref(),
-            Self::BackendOwned { .. } => None,
-        }
-    }
-
-    /// Attach the exact provider-owned tools selected by the immutable Agent
-    /// publication. The ACP adapter still validates that its CLI, API dialect,
-    /// and provider route can realize every entry before launch.
-    #[must_use]
-    pub fn with_provider_server_tools(
-        mut self,
-        tools: impl IntoIterator<Item = awaken_runtime_contract::resolved::ProviderServerTool>,
-    ) -> Self {
-        if let Self::Managed {
-            provider_server_tools,
-            ..
-        } = &mut self
-        {
-            provider_server_tools.extend(tools);
-        }
-        self
     }
 }
 
@@ -644,6 +435,7 @@ impl AcpCli {
                 identity: AcpLaunchIdentity::BackendOwned,
                 session_model: None,
                 session_mode,
+                tool_aliases: Default::default(),
                 session_config_options: session_config_options
                     .into_iter()
                     .map(
@@ -731,6 +523,7 @@ impl AcpCli {
                 identity: AcpLaunchIdentity::Managed,
                 session_model,
                 session_mode,
+                tool_aliases: Default::default(),
                 session_config_options,
                 session_working_directory,
                 expected_capability,
@@ -845,6 +638,7 @@ impl AcpCli {
             identity: AcpLaunchIdentity::Managed,
             session_model,
             session_mode,
+            tool_aliases: Default::default(),
             session_config_options,
             session_working_directory,
             expected_capability,

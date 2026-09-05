@@ -163,7 +163,8 @@ pub async fn run_turn_with_config(
                 ID_NEW_SESSION,
                 AGENT_METHOD_NAMES.session_load,
                 LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str())
-                    .mcp_servers(to_acp_mcp_servers(&config.mcp_servers)),
+                    .mcp_servers(to_acp_mcp_servers(&config.mcp_servers))
+                    .meta(handshake::tool_alias_meta(&config.tool_aliases)),
             )
             .await?;
             // `session/load` may replay the external Agent's entire historical
@@ -207,6 +208,7 @@ pub async fn run_turn_with_config(
                             resolver,
                             &cwd,
                             &config.mcp_servers,
+                            &config.tool_aliases,
                         ),
                     )
                     .await?;
@@ -231,6 +233,7 @@ pub async fn run_turn_with_config(
                     resolver,
                     &cwd,
                     &config.mcp_servers,
+                    &config.tool_aliases,
                 ),
             )
             .await?;
@@ -1884,5 +1887,69 @@ mod tests {
             sink.events
         );
         agent.abort();
+    }
+    #[tokio::test]
+    async fn alias_metadata_survives_new_load_and_missing_session_recovery() {
+        // Cause graph: aliases x prior Session x advertised load x missing id
+        // -> new/load/recovery request -> identical constrained SDK metadata -> prompt.
+        // R1 absent aliases => no extension; R2 new; R3 load; R4 load missing => new;
+        // R5 load unavailable => new. Metadata carries no credential or arbitrary options.
+        for (enabled, prior, can_load, missing) in [
+            (false, false, false, false),
+            (true, false, false, false),
+            (true, true, true, false),
+            (true, true, true, true),
+            (true, true, false, false),
+        ] {
+            let (mut ours, theirs) = channel();
+            let agent = tokio::spawn(async move {
+                let mut io = AgentIo::new(theirs);
+                io.read().await;
+                io.write_line(&serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":can_load}}}).to_string()).await;
+                let attempts = if prior && can_load && missing { 2 } else { 1 };
+                for attempt in 0..attempts {
+                    let request: serde_json::Value = io.read().await.unwrap();
+                    let load = prior && can_load && attempt == 0;
+                    assert_eq!(
+                        request["method"],
+                        if load { "session/load" } else { "session/new" }
+                    );
+                    let meta = &request["params"]["_meta"];
+                    if enabled {
+                        assert_eq!(
+                            meta["claudeCode"]["options"],
+                            serde_json::json!({"toolAliases":{"Bash":"mcp__awaken_session__bash"},"tools":[],"disallowedTools":["Bash"]})
+                        );
+                    } else {
+                        assert!(meta.is_null());
+                    }
+                    let reply = if load && missing {
+                        serde_json::json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Session not found"}})
+                    } else {
+                        serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}})
+                    };
+                    io.write_line(&reply.to_string()).await;
+                }
+                let prompt: serde_json::Value = io.read().await.unwrap();
+                assert_eq!(prompt["method"], "session/prompt");
+                io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                    .await;
+            });
+            let mut sink = RecordingSink::default();
+            let resolver = RecordingResolver::default();
+            let mut config = crate::TurnConfig::new(&resolver);
+            if enabled {
+                config
+                    .tool_aliases
+                    .insert("Bash".into(), "mcp__awaken_session__bash".into());
+            }
+            if prior {
+                config.session_id = Some("sess-1".into());
+            }
+            run_turn_with_config(ours.as_mut(), "task", &mut sink, &mut config, None)
+                .await
+                .unwrap();
+            agent.await.unwrap();
+        }
     }
 }

@@ -100,6 +100,7 @@ pub struct AgentSession {
     /// Backend-owned native ACP configuration to apply after opening the
     /// session. Empty leaves the CLI's own defaults untouched.
     pub session_mode: Option<String>,
+    pub tool_aliases: std::collections::BTreeMap<String, String>,
     pub session_config_options: Vec<awaken_protocol_acp::SessionConfigOptionSelection>,
     pub expected_capability: Option<awaken_protocol_acp::AcpCapabilityExpectation>,
 }
@@ -802,6 +803,7 @@ impl AcpRunExecutor {
             config.session_id = acp_session_id.take();
             config.session_model = session.session_model.clone();
             config.session_mode = session.session_mode.clone();
+            config.tool_aliases = session.tool_aliases.clone();
             config.session_config_options = session.session_config_options.clone();
             config.expected_capability = session.expected_capability.clone();
             config.session_cwd = session.workspace_cwd.clone();
@@ -911,7 +913,7 @@ impl AcpRunExecutor {
                             reason: ToolAwaitReason::Permission,
                             call_id: ask.call_id.clone(),
                             tool: PendingTool {
-                                tool_id: ask.tool,
+                                tool_id: canonical_permission_tool_id(&ask.tool),
                                 arguments: ask.arguments,
                             },
                             authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RunAttemptExecutor,
@@ -1234,6 +1236,43 @@ async fn commit(
     messages: Vec<Message>,
     state: Vec<StateCommand>,
 ) -> Result<()> {
+    // Only Awaken-owned continuations execute through the Runtime ToolBatch.
+    // Opaque ACP permissions retain the explicit RunAttemptExecutor authority.
+    let mut state = state;
+    if let Some(ticket) = disposition.resume_ticket()
+        && let AwaitTarget::ToolCall {
+            reason: ToolAwaitReason::Permission,
+            call_id,
+            tool,
+            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
+        } = ticket.target()
+    {
+        let mut batch = awaken_runtime_contract::ToolBatch::for_step(
+            ticket.run_id.clone(),
+            messages.len(),
+            [(
+                ToolCall {
+                    call_id: call_id.clone(),
+                    tool_id: tool.tool_id.clone(),
+                    arguments: tool.arguments.clone(),
+                },
+                awaken_runtime_contract::tool::ToolRecoveryPolicy::default(),
+            )],
+        )
+        .map_err(|error| Error::Commit(error.to_string()))?;
+        batch
+            .mark_awaiting(
+                call_id,
+                awaken_runtime_contract::ToolWaitKind::ToolPermission,
+                &ticket.correlation_id,
+            )
+            .map_err(|error| Error::Commit(error.to_string()))?;
+        state.push(awaken_runtime_contract::ActiveToolBatch::write(&Some(
+            batch,
+        )));
+    } else {
+        state.push(awaken_runtime_contract::ActiveToolBatch::remove());
+    }
     let terminal = match disposition.state() {
         RunState::Ended(cause) => Some(CommittedTerminalRun {
             run_id: disposition.run_id().clone(),
@@ -1410,6 +1449,12 @@ struct AliasedMcpPermissionResolver<'a> {
 }
 
 fn canonical_permission_tool_id(tool: &str) -> String {
+    if let Some(name) = tool
+        .strip_prefix("mcp__awaken_session__")
+        .filter(|name| !name.is_empty())
+    {
+        return name.to_string();
+    }
     let Some(mcp) = tool.strip_prefix("mcp.") else {
         return tool.to_string();
     };
@@ -1555,7 +1600,8 @@ impl<'a> ResumedPermissionResolver<'a> {
 #[async_trait]
 impl PermissionResolver for ResumedPermissionResolver<'_> {
     async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
-        if ask.tool == self.decision.tool_id
+        if canonical_permission_tool_id(&ask.tool)
+            == canonical_permission_tool_id(&self.decision.tool_id)
             && ask.arguments == self.decision.arguments
             && !self
                 .consumed
@@ -1662,11 +1708,11 @@ impl RunFactAppender for CollectingAppender {
             },
             AcpProjectedEvent::ToolCall { id, name, input } => {
                 self.open_text_message = None;
-                if self
-                    .resumed_call
-                    .as_ref()
-                    .is_some_and(|pending| pending.tool_id == *name && pending.arguments == *input)
-                {
+                if self.resumed_call.as_ref().is_some_and(|pending| {
+                    canonical_permission_tool_id(&pending.tool_id)
+                        == canonical_permission_tool_id(name)
+                        && pending.arguments == *input
+                }) {
                     let pending = self
                         .resumed_call
                         .take()
@@ -1681,7 +1727,7 @@ impl RunFactAppender for CollectingAppender {
                     role: Role::Assistant,
                     content: vec![ContentBlock::tool_use(
                         tool_use_id(&self.run_id, id, seq),
-                        name.clone(),
+                        canonical_permission_tool_id(name),
                         input.clone(),
                     )],
                 });
@@ -1777,7 +1823,7 @@ fn ensure_pending_tool_use(
             role: Role::Assistant,
             content: vec![ContentBlock::tool_use(
                 ask.call_id.clone(),
-                ask.tool.clone(),
+                canonical_permission_tool_id(&ask.tool),
                 ask.arguments.clone(),
             )],
         });

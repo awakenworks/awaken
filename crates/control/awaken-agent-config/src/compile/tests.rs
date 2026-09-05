@@ -11,7 +11,7 @@ fn compile(
     compile_resolved(config, tools, AgentSnapshotMetadata::default())
 }
 
-fn config(tools: &[&str]) -> AgentConfig {
+pub(super) fn config(tools: &[&str]) -> AgentConfig {
     AgentConfig {
         id: "agent-1".to_string(),
         instructions: "be helpful".to_string(),
@@ -29,7 +29,7 @@ fn config(tools: &[&str]) -> AgentConfig {
     }
 }
 
-fn tool(id: &str) -> ToolDescriptor {
+pub(super) fn tool(id: &str) -> ToolDescriptor {
     ToolDescriptor::pinned("test", id, "a tool", serde_json::json!({"type": "object"}))
 }
 

@@ -1,3 +1,4 @@
+import { toolPresentationControls } from "./agent-runtime-capabilities";
 import { describe, expect, it } from "vitest";
 import { acpWorkingDirectoryIssue, runtimeCapabilitySupport } from "./agent-runtime-capabilities";
 
@@ -43,4 +44,15 @@ describe("ACP working directory guidance", () => {
     expect(acpWorkingDirectoryIssue("repo//src")).toBe("empty_segment");
     expect(acpWorkingDirectoryIssue("x".repeat(513))).toBe("too_long");
   });
+});
+
+// C1 runtime owner x C2 reported support x C3 facet => editor admission.
+// Native preserves its implementation; ACP unknown/conditional/unavailable is
+// disabled; supported alias does not imply description/discovery support.
+it("gates each tool facet on reported effective capability", () => {
+  expect(toolPresentationControls(false)).toMatchObject({ aliasUnavailable: false, descriptionUnavailable: false, discoveryUnavailable: false });
+  for (const support of [undefined, "conditional", "unavailable"] as const) {
+    expect(toolPresentationControls(true, { tool_aliases: support }).aliasUnavailable).toBe(true);
+  }
+  expect(toolPresentationControls(true, { tool_aliases: "supported", tool_alias_semantics: "lookup" })).toEqual({ aliasUnavailable: false, descriptionUnavailable: true, discoveryUnavailable: true, lookupAliases: true });
 });

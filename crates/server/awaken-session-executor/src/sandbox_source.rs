@@ -242,6 +242,7 @@ impl AgentChannelSource for BoundLocalChannelSource {
             mcp_session_servers,
             session_model: launch.session_model,
             session_mode: launch.session_mode,
+            tool_aliases: launch.tool_aliases,
             session_config_options: launch.session_config_options,
             expected_capability: launch.expected_capability,
         })

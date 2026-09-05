@@ -181,11 +181,15 @@ impl LaunchSource {
                     &activation.snapshot.resolved_spec.plugin_config,
                 )
                 .compact_window;
-                let launch = selected.cli.try_project_with_argv(
+                let mut launch = selected.cli.try_project_with_argv(
                     &model,
                     window,
                     &extra_env,
                     selected.launch_argv.as_deref(),
+                )?;
+                launch.project_tool_aliases(
+                    &selected.cli,
+                    &activation.snapshot.resolved_spec.tool_presentation,
                 )?;
                 Ok(ResolvedLaunch {
                     launch,
