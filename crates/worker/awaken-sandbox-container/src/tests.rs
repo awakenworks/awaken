@@ -3090,8 +3090,35 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
         .to_string();
     assert_eq!(
         attempts,
-        [None, Some(expected.clone()), Some(expected)],
+        [None, Some(expected.clone()), Some(expected.clone())],
         "A3 one observer"
+    );
+    // A5 the same creator proceeds from admitted preparation to physical
+    // disposal: its exact proof must reach that second runtime observation,
+    // then removal happens once. A6 response replay adds neither observation
+    // nor removal. The shared runtime matrix still owns cold/wrong-proof and
+    // foreign/expired-fence rejection; preparation alone never grants deletion.
+    pc::Sandbox::prepare_disposal_for_effect(&sandbox, &fence)
+        .await
+        .unwrap();
+    let authorization = disposal_authorization(&fence);
+    pc::Sandbox::dispose_for_effect(&sandbox, &authorization)
+        .await
+        .unwrap();
+    pc::Sandbox::dispose_for_effect(&sandbox, &authorization)
+        .await
+        .unwrap();
+    let state = runtime.st.lock().unwrap();
+    assert_eq!(state.retained_observation_attempts.len(), 4, "A5/A6");
+    assert_eq!(
+        state.retained_observation_attempts.last(),
+        Some(&Some(expected)),
+        "A5 exact creator proof"
+    );
+    assert_eq!(
+        state.removals.len(),
+        1,
+        "A6 disposal replay has no extra effect"
     );
 }
 
