@@ -439,6 +439,28 @@ def shared_conformance_errors(
     return errors
 
 
+def rust_hook_errors(hooks: str, gate: str) -> list[str]:
+    """Rust hook composition delegates each static scan to the existing gate."""
+    errors = []
+    pre_commit = hooks.split("pre-commit:", 1)[-1].split("\npre-push:", 1)[0]
+    owner = re.search(r"(?m)^    rust-quick:\n((?:      .*\n)+)", pre_commit)
+    owner_text = owner.group(1) if owner else ""
+    if owner_text.count("run: scripts/ci/check-rust.sh --quick") != 1:
+        errors.append("Rust pre-commit must delegate to the canonical gate once")
+    cargo_gate = gate.find("if ! command -v cargo")
+    for checker in ("check_dependency_sources.py", "check_crate_boundaries.py"):
+        command = f"python3 scripts/ci/{checker}"
+        if command in pre_commit:
+            errors.append(f"Rust pre-commit duplicates {checker}")
+        if gate.count(command) != 1:
+            errors.append(f"Rust gate must execute {checker} exactly once")
+        if f"scripts/ci/{checker}" not in owner_text:
+            errors.append(f"Rust hook does not cover changes to {checker}")
+        if cargo_gate < 0 or gate.find(command) > cargo_gate:
+            errors.append(f"Cargo absence must not suppress {checker}")
+    return errors
+
+
 def validate(root: Path) -> list[str]:
     package = json.loads((root / "e2e/package.json").read_text(encoding="utf-8"))
     scripts: dict[str, str] = package.get("scripts", {})
@@ -471,6 +493,10 @@ def validate(root: Path) -> list[str]:
             (root / "scripts/ci/check-rust.sh").read_text(encoding="utf-8"),
         )
     )
+    errors.extend(rust_hook_errors(
+        (root / "lefthook.yml").read_text(encoding="utf-8"),
+        (root / "scripts/ci/check-rust.sh").read_text(encoding="utf-8"),
+    ))
     errors.extend(
         shared_conformance_errors(
             (root / STORE_CONFORMANCE).read_text(encoding="utf-8"),
@@ -493,6 +519,22 @@ def validate(root: Path) -> list[str]:
 
 
 def self_test() -> None:
+    # Hook cause/effect table: H1 canonical nested owner + checker-edit trigger
+    # + static-before-Cargo -> accept. H2 duplicate direct/nested invocation ->
+    # reject. H3 missing nested invocation/trigger -> reject. H4 Cargo checked
+    # first -> reject, because an absent toolchain must not hide static failures.
+    # Cross H2/H3/H4 with both previously duplicated scans; no second test owner.
+    hooks = (ROOT / "lefthook.yml").read_text(encoding="utf-8")
+    gate = (ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8")
+    assert not rust_hook_errors(hooks, gate), "H1 single owner"
+    for checker in ("check_dependency_sources.py", "check_crate_boundaries.py"):
+        command = f"python3 scripts/ci/{checker}"
+        duplicate = hooks.replace("pre-commit:", f"pre-commit:\n    duplicate:\n      run: {command}", 1)
+        assert rust_hook_errors(duplicate, gate), f"H2 direct {checker}"
+        assert rust_hook_errors(hooks, gate + "\n" + command), f"H2 nested {checker}"
+        assert rust_hook_errors(hooks, gate.replace(command, "true")), f"H3 missing {checker}"
+        assert rust_hook_errors(hooks.replace(f"scripts/ci/{checker},", ""), gate), f"H3 trigger {checker}"
+        assert rust_hook_errors(hooks, "if ! command -v cargo\n" + gate), f"H4 {checker}"
     # Cause/effect decision table for the checker itself:
     # C1 canonical aggregate includes every required package suite and required
     # stage scenario, including the full-chain patch/manifest/apply/test/review-ref
