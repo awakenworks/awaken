@@ -9,6 +9,20 @@ use std::sync::Arc;
 /// assembly and returns an opaque shutdown lease.
 pub struct SessionToolExporter;
 
+fn tool_service(
+    server_name: &str,
+    descriptors: Vec<ToolDescriptor>,
+    tools: Vec<Arc<dyn RawTool>>,
+) -> Result<Arc<crate::McpToolService>, String> {
+    let exports = crate::McpExportedTool::try_plain_set(descriptors, tools)
+        .map_err(|error| error.to_string())?;
+    Ok(Arc::new(crate::McpToolService::new(
+        server_name,
+        env!("CARGO_PKG_VERSION"),
+        Arc::new(crate::StaticExports::new(exports)),
+    )))
+}
+
 struct SessionToolExportLease {
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
 }
@@ -23,20 +37,44 @@ impl Drop for SessionToolExportLease {
 
 #[async_trait::async_trait]
 impl awaken_runtime_contract::tool_export::AcpToolExporter for SessionToolExporter {
+    async fn export_channel_set(
+        &self,
+        server: awaken_runtime_contract::resolved::AcpMcpServer,
+        descriptors: Vec<ToolDescriptor>,
+        tools: Vec<Arc<dyn RawTool>>,
+        reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+        writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+    ) -> Result<awaken_runtime_contract::tool_export::AcpToolExport, String> {
+        if !matches!(
+            server.transport,
+            awaken_runtime_contract::resolved::AcpMcpTransport::Stdio { .. }
+        ) {
+            return Err("attached ACP tool export requires a stdio projection".into());
+        }
+        let service = tool_service(&server.name, descriptors, tools)?;
+        let peer = crate::McpStdioServer::serve(service, reader, writer);
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = peer.closed() => {},
+                _ = stopped => peer.close(),
+            }
+        });
+        Ok(awaken_runtime_contract::tool_export::AcpToolExport::new(
+            server,
+            SessionToolExportLease {
+                shutdown: Some(shutdown),
+            },
+        ))
+    }
+
     async fn export_set(
         &self,
         server_name: &str,
         descriptors: Vec<ToolDescriptor>,
         tools: Vec<Arc<dyn RawTool>>,
     ) -> Result<awaken_runtime_contract::tool_export::AcpToolExport, String> {
-        let exports = crate::McpExportedTool::try_plain_set(descriptors, tools)
-            .map_err(|error| error.to_string())?;
-        let source = Arc::new(crate::StaticExports::new(exports));
-        let service = Arc::new(crate::McpToolService::new(
-            server_name,
-            env!("CARGO_PKG_VERSION"),
-            source,
-        ));
+        let service = tool_service(server_name, descriptors, tools)?;
         let app = crate::router(service, crate::McpHttpConfig::default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -89,6 +127,94 @@ mod tests {
                 call.call_id,
                 format!("same-tool:{}:{}", self.0, call.arguments),
             ))
+        }
+    }
+
+    #[tokio::test]
+    async fn attached_export_uses_the_exact_tools_and_revokes_the_live_peer_on_drop() {
+        // Decision table: S1 exact descriptor/executor pair + attached stdio ->
+        // unchanged projection, tools/list and tools/call use the same service;
+        // S2 lease drop with a still-live client -> peer EOF, no new admission;
+        // S3 incorrect transport or descriptor set -> reject before serving.
+        use awaken_mcp_wire::jsonrpc::JsonRpcPeer;
+        use awaken_runtime_contract::resolved::{AcpMcpServer, AcpMcpTransport};
+        use std::time::Duration;
+        let projection = AcpMcpServer {
+            name: "awaken_session".into(),
+            transport: AcpMcpTransport::Stdio {
+                command: "/helper".into(),
+                args: vec!["channel-connect".into(), "--unix".into(), "/socket".into()],
+            },
+        };
+        let descriptor =
+            ToolDescriptor::pinned("test", "read", "read", serde_json::json!({"type":"object"}));
+        let (client, server) = tokio::io::duplex(8192);
+        let (reader, writer) = tokio::io::split(server);
+        let export = SessionToolExporter
+            .export_channel_set(
+                projection.clone(),
+                vec![descriptor.clone()],
+                vec![Arc::new(EchoTool("read"))],
+                Box::new(reader),
+                Box::new(writer),
+            )
+            .await
+            .unwrap();
+        assert_eq!(export.server, projection);
+        let (reader, writer) = tokio::io::split(client);
+        let (peer, _notifications) = JsonRpcPeer::new(reader, writer, None);
+        let timeout = Duration::from_secs(2);
+        peer.request("initialize", serde_json::json!({"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}), timeout).await.unwrap();
+        let listed = peer
+            .request("tools/list", serde_json::json!({}), timeout)
+            .await
+            .unwrap();
+        assert_eq!(listed["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["tools"][0]["name"], "read");
+        let called = peer
+            .request(
+                "tools/call",
+                serde_json::json!({"name":"read","arguments":{"marker":"unchanged"}}),
+                timeout,
+            )
+            .await
+            .unwrap();
+        assert!(
+            called["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("same-tool:read:{\"marker\":\"unchanged\"}")
+        );
+        drop(export);
+        tokio::time::timeout(timeout, peer.closed())
+            .await
+            .expect("S2 live peer revoked");
+        assert!(
+            peer.request("tools/list", serde_json::json!({}), timeout)
+                .await
+                .is_err()
+        );
+        for wrong_transport in [false, true] {
+            let mut projection = projection.clone();
+            if wrong_transport {
+                projection.transport = AcpMcpTransport::Http {
+                    url: "http://127.0.0.1:1/mcp".into(),
+                };
+            }
+            let (channel, _client) = tokio::io::duplex(64);
+            let (reader, writer) = tokio::io::split(channel);
+            let error = SessionToolExporter
+                .export_channel_set(
+                    projection,
+                    vec![descriptor.clone()],
+                    vec![],
+                    Box::new(reader),
+                    Box::new(writer),
+                )
+                .await
+                .err()
+                .unwrap();
+            assert!(!error.is_empty());
         }
     }
 

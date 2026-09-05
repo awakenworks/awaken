@@ -1531,6 +1531,7 @@ impl SharedHost {
                 Vec::new()
             };
             let mut acp_tool_exports = Vec::new();
+            let mut acp_attached_tools = None;
             let mut acp_provider_server_tools = Vec::new();
             let mut acp_host_web_tools = Vec::new();
             let mut acp_tool_grants = None;
@@ -1637,39 +1638,58 @@ impl SharedHost {
                                 as Arc<dyn awaken_runtime_contract::tool::RawTool>
                         })
                         .collect();
-                    let (servers, exports) = crate::acp_tool_export::export_tools(
-                        self.acp_tool_exporter
-                            .as_ref()
-                            .ok_or_else(|| {
-                                HostError::internal(
-                                    "ACP_TOOL_BRIDGE_MISSING: ACP Session tools require an installed tool-export adapter",
-                                )
-                            })?
-                            .as_ref(),
-                        "awaken_session",
-                        descriptors,
-                        executors,
-                    )
-                    .await
-                    .map_err(|error| {
-                        HostError::internal(format!("ACP_TOOL_BRIDGE_MISSING: {error}"))
+                    let exporter = self.acp_tool_exporter.as_ref().ok_or_else(|| {
+                        HostError::internal("ACP_TOOL_BRIDGE_MISSING: ACP Session tools require an installed tool-export adapter")
                     })?;
-                    acp_mcp_servers = merge_process_local_mcp_servers(acp_mcp_servers, servers)?;
-                    acp_tool_exports.extend(exports);
+                    if matches!(
+                        env.as_deref(),
+                        Some(crate::session_environment::SessionEnvironment::Container { .. })
+                    ) {
+                        let (descriptors, executors) =
+                            crate::acp_tool_export::pair_tools(descriptors, executors)
+                                .map_err(HostError::internal)?;
+                        acp_attached_tools =
+                            Some(Arc::new(crate::acp_tool_export::AttachedToolSet {
+                                exporter: exporter.clone(),
+                                descriptors,
+                                executors,
+                            }));
+                    } else {
+                        let (servers, exports) = crate::acp_tool_export::export_tools(
+                            exporter.as_ref(),
+                            "awaken_session",
+                            descriptors,
+                            executors,
+                        )
+                        .await
+                        .map_err(|error| {
+                            HostError::internal(format!("ACP_TOOL_BRIDGE_MISSING: {error}"))
+                        })?;
+                        acp_mcp_servers =
+                            merge_process_local_mcp_servers(acp_mcp_servers, servers)?;
+                        acp_tool_exports.extend(exports);
+                    }
                 }
             }
             let runtime = Arc::new(runtime);
-            let acp_executor = self.acp.as_ref().zip(env.clone()).map(|(acp, env)| {
-                acp.executor_for(
-                    env.clone(),
-                    permission,
-                    execution_backend.clone(),
-                    acp_mcp_servers,
-                    acp_tool_grants.clone().map(|observer| {
-                        observer as Arc<dyn awaken_run_executor_acp::PermissionGrantObserver>
-                    }),
-                )
-            });
+            let acp_executor = self
+                .acp
+                .as_ref()
+                .zip(env.clone())
+                .map(|(acp, env)| {
+                    acp.executor_for(
+                        env.clone(),
+                        permission,
+                        execution_backend.clone(),
+                        acp_mcp_servers,
+                        acp_attached_tools,
+                        acp_tool_grants.clone().map(|observer| {
+                            observer as Arc<dyn awaken_run_executor_acp::PermissionGrantObserver>
+                        }),
+                    )
+                })
+                .transpose()
+                .map_err(HostError::internal)?;
             let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
                 Arc::new(crate::run_exec::SessionAttemptExecutor::new(
                     runtime.clone(),

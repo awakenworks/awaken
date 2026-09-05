@@ -115,6 +115,19 @@ impl AcpBackend {
         }
     }
 
+    pub(crate) fn child_executor_factory(
+        self: &Arc<Self>,
+        sandbox: Arc<crate::session_environment::SessionEnvironment>,
+    ) -> crate::agent_runner::ChildAcpExecutorFactory {
+        let acp = self.clone();
+        Arc::new(move |backend, permission| {
+            Ok(
+                acp.executor_for(sandbox.clone(), permission, backend, Vec::new(), None, None)?
+                    as Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
+            )
+        })
+    }
+
     /// Materialize the executor for this session. Production local ACP uses a
     /// source bound to the session's existing sandbox; injected/static executors
     /// remain available for remote adapters and deterministic tests.
@@ -124,15 +137,21 @@ impl AcpBackend {
         permission: Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>,
         backend: awaken_runtime_contract::resolved::Backend,
         mcp_servers: Vec<awaken_run_executor_acp::SessionMcpServer>,
+        attached_tools: Option<Arc<crate::acp_tool_export::AttachedToolSet>>,
         grant_observer: Option<Arc<dyn awaken_run_executor_acp::PermissionGrantObserver>>,
-    ) -> Arc<AcpRunExecutor> {
+    ) -> Result<Arc<AcpRunExecutor>, String> {
         match &self.source {
             AcpExecutorSource::Static(executor) => {
-                Arc::new(executor.for_session_servers_with_grant_observer(
+                if attached_tools.is_some() {
+                    return Err(
+                        "attached MCP tools require the bound Environment ACP source".into(),
+                    );
+                }
+                Ok(Arc::new(executor.for_session_servers_with_grant_observer(
                     permission,
                     &mcp_servers,
                     grant_observer,
-                ))
+                )))
             }
             AcpExecutorSource::Bound {
                 launch,
@@ -145,7 +164,8 @@ impl AcpBackend {
                         launch.as_ref().clone(),
                         backend,
                         mcp_servers,
-                    ),
+                    )
+                    .with_attached_tools(attached_tools),
                 );
                 let mut executor = AcpRunExecutor::new(source);
                 if let Some(observer) = observer {
@@ -157,7 +177,7 @@ impl AcpBackend {
                 if let Some(observer) = grant_observer {
                     executor = executor.with_permission_grant_observer(observer);
                 }
-                Arc::new(executor.with_permission_policy(permission))
+                Ok(Arc::new(executor.with_permission_policy(permission)))
             }
         }
     }
