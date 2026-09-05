@@ -20888,6 +20888,193 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
     );
 }
 
+/// Renewal-response decision table: C1 Control I/O is pending; C2 the selected
+/// slot/lease is current, replaced, or removed; C3 reply is success, temporary
+/// failure, or conclusive ownership loss. R1 replaced/removed x every reply ->
+/// no overwrite, interrupt, revocation, or slot recreation. R2 current + success
+/// -> monotonic lease update without waiting for Stage (existing heartbeat test).
+/// R3 current + temporary failure -> preserve live authority (existing timeout
+/// matrix). R4 current + ownership loss -> wait for realization admission, then
+/// recheck the exact tuple before revocation. Claim installation has its own
+/// two-case admission test; this test drives real asynchronous Control replies.
+#[tokio::test]
+async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
+    use awaken_session_contract::SessionRealizationControlFailure as Failure;
+    for failure in [
+        None,
+        Some(Failure::Unavailable("offline".into())),
+        Some(Failure::StaleOwnership),
+    ] {
+        for changed in [
+            "owner",
+            "incarnation",
+            "epoch",
+            "expiry",
+            "removed",
+            "replaced_slot",
+        ] {
+            let control = Arc::new(RemoteTerminalCleanupControl::default());
+            *control.renewal_failure.lock().unwrap() = failure.clone();
+            let gate = Arc::new(tokio::sync::Semaphore::new(0));
+            *control.renewal_gate.lock().unwrap() = Some(gate.clone());
+            let host = Arc::new(
+                SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()),
+            );
+            let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+            let old = awaken_session_contract::SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "boot-1".into(),
+                epoch: 1,
+                expires_at_unix_ms: now + 5_000,
+            };
+            install_test_renewal_authority(&host, &control, "renew-race", old.clone());
+            let fence = host.session_slots.realization_lock("renew-race");
+            let guard = fence.lock().await;
+            let sweep = {
+                let host = host.clone();
+                tokio::spawn(async move {
+                    host.renew_due_session_realizations(
+                        now,
+                        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                            10_000,
+                        ),
+                    )
+                    .await
+                })
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                while control.renewal_sessions.lock().unwrap().is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("R2 renewal enters Control despite held Stage fence");
+            let mut replacement = old;
+            match changed {
+                "owner" => replacement.owner = "replacement".into(),
+                "incarnation" => replacement.runtime_incarnation = "boot-2".into(),
+                "epoch" => replacement.epoch += 1,
+                "expiry" => replacement.expires_at_unix_ms += 1,
+                "removed" | "replaced_slot" => {}
+                _ => unreachable!(),
+            }
+            let claim = awaken_dispatch::RunClaim {
+                run_id: awaken_agent_contract::agent::run::Id("new-run".into()),
+                owner: "replacement".into(),
+                epoch: 2,
+            };
+            if changed == "removed" {
+                host.session_slots.remove("renew-race");
+            } else {
+                if changed == "replaced_slot" {
+                    host.session_slots.remove("renew-race");
+                }
+                host.install_session_realization_lease("renew-race", replacement.clone());
+                host.session_slots.update("renew-race", |slot| {
+                    slot.dispatch_claim = Some(claim.clone());
+                    slot.workspace = Some("new-workspace".into());
+                });
+            }
+            gate.add_permits(1);
+            drop(guard);
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), sweep)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap(),
+                0,
+                "R1 {failure:?}/{changed}"
+            );
+            if changed == "removed" {
+                assert!(!host.session_slots.contains("renew-race"));
+            } else {
+                assert_eq!(
+                    host.session_slots.read("renew-race", |slot| (
+                        slot.realization_lease.clone(),
+                        slot.dispatch_claim.clone(),
+                        slot.workspace.clone()
+                    )),
+                    Some((Some(replacement), Some(claim), Some("new-workspace".into()))),
+                    "R1 {failure:?}/{changed}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn renewal_revocation_rechecks_authority_after_realization_admission() {
+    // R4a conclusive loss while Stage holds admission -> no destructive effects
+    // until Stage releases. R4b Stage installs a new lease while revocation waits
+    // -> recheck absorbs the obsolete response and preserves the new projection.
+    for replaced in [false, true] {
+        let control = Arc::new(RemoteTerminalCleanupControl::default());
+        *control.renewal_failure.lock().unwrap() =
+            Some(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+        let host = Arc::new(
+            SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()),
+        );
+        let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+        let lease = awaken_session_contract::SessionRealizationLease {
+            owner: "worker".into(),
+            runtime_incarnation: "boot".into(),
+            epoch: 1,
+            expires_at_unix_ms: now + 5_000,
+        };
+        install_test_renewal_authority(&host, &control, "renew-revoke", lease.clone());
+        let fence = host.session_slots.realization_lock("renew-revoke");
+        let guard = fence.lock().await;
+        let sweep = {
+            let host = host.clone();
+            tokio::spawn(async move {
+                host.renew_due_session_realizations(
+                    now,
+                    awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                        10_000,
+                    ),
+                )
+                .await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while control.renewal_sessions.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            !sweep.is_finished(),
+            "R4 revocation waits for current admission"
+        );
+        assert!(host.session_slots.contains("renew-revoke"));
+        let mut next = lease;
+        next.epoch += 1;
+        if replaced {
+            host.install_session_realization_lease("renew-revoke", next.clone());
+        }
+        drop(guard);
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), sweep)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            host.session_slots
+                .read("renew-revoke", |slot| slot.realization_lease.clone())
+                .flatten(),
+            replaced.then_some(next),
+            "R4 exact replacement protection"
+        );
+        assert_eq!(host.session_slots.contains("renew-revoke"), replaced);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
     /* Renewal failure cause/effect table: C1 Control does not answer before its

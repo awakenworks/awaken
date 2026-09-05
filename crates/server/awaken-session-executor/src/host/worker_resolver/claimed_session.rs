@@ -8,11 +8,24 @@ use super::*;
 async fn acquire_session_realization_admission(
     host: &SharedHost,
     session_id: &str,
+    claim: &awaken_dispatch::RunClaim,
 ) -> tokio::sync::OwnedMutexGuard<()> {
-    host.session_slots
-        .realization_lock(session_id)
-        .lock_owned()
-        .await
+    loop {
+        let realization = host.session_slots.realization_lock(session_id);
+        let guard = realization.clone().lock_owned().await;
+        // Retirement may clear the claim or remove an empty slot while this
+        // entrant waits. An old Arc never authorizes a replacement slot.
+        let installed = host.session_slots.modify(session_id, |slot| {
+            if !Arc::ptr_eq(&slot.realization, &realization) {
+                return false;
+            }
+            slot.dispatch_claim = Some(claim.clone());
+            true
+        });
+        if installed == Some(true) {
+            return guard;
+        }
+    }
 }
 
 /// A co-located dispatch pool has no outbound Control client because its
@@ -67,9 +80,10 @@ pub(super) async fn install_claimed_session_projection(
     thread_id: &awaken_agent_contract::agent::thread::Id,
     dispatched_resources: Option<&awaken_session_contract::SessionResourceManifest>,
 ) -> Result<(), awaken_dispatch::Error> {
+    let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
+    let _realization = acquire_session_realization_admission(host, &thread_id.0, &claim).await;
     if claimed.request.session_thread_id.is_none() {
         if let Some(manifest) = dispatched_resources {
-            let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
             host.install_dispatched_resources(&thread_id.0, manifest, Some(&claim))
                 .await
                 .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
@@ -90,7 +104,6 @@ pub(super) async fn install_claimed_session_projection(
             )));
         }
         if let Some(manifest) = dispatched_resources {
-            let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
             host.install_dispatched_resources(&thread_id.0, manifest, Some(&claim))
                 .await
                 .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
@@ -102,7 +115,6 @@ pub(super) async fn install_claimed_session_projection(
     // admitted Work/Run owner may advance its realization lease. Serializing
     // before the first Control mutation prevents a later entrant from fencing a
     // slow earlier effect between directive creation and installation.
-    let _realization = acquire_session_realization_admission(host, &thread_id.0).await;
     let dispatch: Arc<dyn awaken_dispatch::DispatchQueue> = host
         .dispatch_store()
         .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
@@ -117,7 +129,6 @@ pub(super) async fn install_claimed_session_projection(
             claimed.lease.run_id.0
         ))
     })?;
-    let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
     let directive = control
         .resume_frozen(&claim, &thread_id.0)
         .await
@@ -354,33 +365,74 @@ mod tests {
     #[tokio::test]
     async fn realization_admission_precedes_concurrent_control_mutation() {
         use std::sync::atomic::{AtomicBool, Ordering};
-
-        // Cause/effect decision table: while C1 first admission is held, C2 a
-        // concurrent entrant must not perform Control mutation (E1). Releasing
-        // C1 permits exactly the waiting entrant (E2).
-        //
-        // | Rule | First held | Second entered | Effect |
-        // | R1 | yes | no | second waits |
-        // | R2 | no | yes | second proceeds |
-        let host = Arc::new(SharedHost::new(
-            Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        ));
-        let first = acquire_session_realization_admission(&host, "shared-session").await;
-        let second_entered = Arc::new(AtomicBool::new(false));
-        let waiting = {
-            let host = host.clone();
-            let second_entered = second_entered.clone();
-            tokio::spawn(async move {
-                let _second = acquire_session_realization_admission(&host, "shared-session").await;
-                second_entered.store(true, Ordering::SeqCst);
-            })
-        };
-
-        tokio::task::yield_now().await;
-        assert!(!second_entered.load(Ordering::SeqCst), "R1");
-        drop(first);
-        waiting.await.expect("second admission joins");
-        assert!(second_entered.load(Ordering::SeqCst), "R2");
+        // Claim publication graph: R1 a current realization fence is held ->
+        // next claimant publishes neither claim nor Control mutation. R2 an old
+        // revocation clears the claim -> the waiter publishes its exact new
+        // claim after release. R3 retirement removes the whole slot -> retry
+        // acquisition on the replacement Arc before publishing. No stale Arc
+        // can lend authority to a newly created Session slot.
+        for remove_slot in [false, true] {
+            let host = Arc::new(SharedHost::new(
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                "stub",
+            ));
+            let old = awaken_dispatch::RunClaim {
+                run_id: awaken_agent_contract::agent::run::Id("run".into()),
+                owner: "old".into(),
+                epoch: 1,
+            };
+            let new = awaken_dispatch::RunClaim {
+                owner: "new".into(),
+                epoch: 2,
+                ..old.clone()
+            };
+            let first = acquire_session_realization_admission(&host, "shared-session", &old).await;
+            let second_entered = Arc::new(AtomicBool::new(false));
+            let waiting = {
+                let host = host.clone();
+                let entered = second_entered.clone();
+                let claim = new.clone();
+                tokio::spawn(async move {
+                    let guard =
+                        acquire_session_realization_admission(&host, "shared-session", &claim)
+                            .await;
+                    entered.store(true, Ordering::SeqCst);
+                    guard
+                })
+            };
+            tokio::task::yield_now().await;
+            assert!(!second_entered.load(Ordering::SeqCst), "R1");
+            assert_eq!(
+                host.session_slots
+                    .read("shared-session", |slot| slot.dispatch_claim.clone())
+                    .flatten(),
+                Some(old),
+                "R1"
+            );
+            if remove_slot {
+                host.session_slots.remove("shared-session");
+            } else {
+                host.session_slots
+                    .update("shared-session", |slot| slot.dispatch_claim = None);
+            }
+            drop(first);
+            let second = waiting.await.expect("next admission joins");
+            assert!(second_entered.load(Ordering::SeqCst), "R2/R3");
+            assert_eq!(
+                host.session_slots
+                    .read("shared-session", |slot| slot.dispatch_claim.clone())
+                    .flatten(),
+                Some(new),
+                "R2/R3"
+            );
+            assert!(
+                host.session_slots
+                    .realization_lock("shared-session")
+                    .try_lock()
+                    .is_err(),
+                "R3 waiter owns the current Arc"
+            );
+            drop(second);
+        }
     }
 }
