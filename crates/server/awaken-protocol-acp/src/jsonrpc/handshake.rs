@@ -121,3 +121,20 @@ pub async fn negotiate_capabilities(
     .await?;
     Ok(crate::capabilities::project(init, session))
 }
+
+// Handshake deadlines share the setup module. The full driver tests retain
+// initialize/session-new timeout coverage at their actual call boundary.
+pub(super) async fn handshake_step<T>(
+    deadline: std::time::Duration,
+    stage: &'static str,
+    operation: impl std::future::Future<Output = Result<T, AcpError>>,
+) -> Result<T, AcpError> {
+    tokio::time::timeout(deadline, operation)
+        .await
+        .map_err(|_| {
+            AcpError::Io(format!(
+                "ACP {stage} handshake timed out after {} ms",
+                deadline.as_millis()
+            ))
+        })?
+}

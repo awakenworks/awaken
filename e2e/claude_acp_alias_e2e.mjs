@@ -120,6 +120,12 @@ for (const [mode, boundaries, finalDecision] of [
       const completed = boundaries === 0 ? 1 : phase - (phase === boundaries && finalDecision === 'deny' ? 1 : 0);
       assert.deepEqual(await recorded(), Array.from({ length:completed }, (_, index) => argumentsFor(index + 1)), `${mode}/${phase}: exact cumulative effects, no replay`);
       assert.ok(active.permissions.length > 0, `${mode}/${phase}: real permission request`);
+      // I1 alias streaming titles are presentation; the actual SDK permission
+      // request must identify the resolved MCP target independently of them.
+      for (const permission of active.permissions) {
+        assert.equal(permission.title, 'mcp__awaken_session__bash', JSON.stringify(permission));
+      }
+
       assert.ok(active.updates.some(update => update.sessionUpdate === 'tool_call_update' && JSON.stringify(update.rawInput) === JSON.stringify(argumentsFor(Math.max(phase, 1)))), `${mode}/${phase}: SDK refines complete streamed input`);
     }
     console.log(`PASS actual Claude ACP/SDK ${mode}: ${boundaries} restarts, exact permission/input/effect history`);

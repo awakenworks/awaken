@@ -53,6 +53,14 @@ The expected write path is:
 -> ACP resume -> one-shot execution grant -> Session MCP tool -> rooted RawTool
 -> Artifact/Trace -> completion`.
 
+Claude streams alias display titles (for example `Read File`) before its
+permission request identifies the resolved `mcp__awaken_session__read` target.
+An explicit MCP permission identity supersedes that earlier display title;
+generic adapter requests still recover identity only from the exact observed
+call ID. The protocol refines that same call with the permission identity and
+complete input before evaluating policy, so transcript, grant and resume ticket
+cannot disagree. Progress titles do not subsequently rename the operation.
+
 The exported MCP tool is guarded independently. `Always allow` may execute
 directly. `Always ask` or deny cannot cross the dispatch boundary without the
 one-shot grant observed from the ACP permission resolver. A grant matches

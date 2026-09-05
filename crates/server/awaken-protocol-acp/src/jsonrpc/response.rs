@@ -80,7 +80,8 @@ pub(super) async fn pump_response(
                     method,
                     msg.params,
                     resolver,
-                    &permission_context,
+                    &mut permission_context,
+                    (sink, seq),
                 )
                 .await?;
             }
