@@ -600,6 +600,72 @@ async fn bash_failure_surfaces_stderr_and_stdout_not_a_swallowed_error() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
+async fn bash_shell_exit_preserves_diagnostics_status_and_next_call() {
+    // X1 explicit exit 0/7, X2 set -e failure in this/a prior invocation,
+    // X3 syntax failure, X4 signal -> drain both streams before classifying.
+    // Exit 0 is success; numeric failure retains its status and diagnostics;
+    // signals stay errors. Never run the sentinel-tail effect after failure,
+    // never replay the old command; a new call starts a clean shell while its
+    // workspace file survives. This recreates the live Cowork set -e failure.
+    for (setup, command, expected_status, diagnostic) in [
+        ("true", "printf saved; exit 0", Some(0), "saved"),
+        (
+            "true",
+            "printf saved; printf detail >&2; exit 7",
+            Some(7),
+            "detail",
+        ),
+        (
+            "true",
+            "set -e; printf saved; printf detail >&2; false; touch replayed",
+            Some(1),
+            "detail",
+        ),
+        (
+            "set -e",
+            "printf saved; printf detail >&2; false; touch replayed",
+            Some(1),
+            "detail",
+        ),
+        ("true", "if ; then", Some(2), "syntax error"),
+        ("true", "printf saved; kill -9 $$", None, "saved"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let bash = tool_at("bash", dir.path());
+        bash.invoke(call("bash", serde_json::json!({"command": format!("printf durable > workspace-file; export OLD_STATE=yes; {setup}")}))).await.unwrap();
+        let result = bash
+            .invoke(call("bash", serde_json::json!({"command": command})))
+            .await;
+        match expected_status {
+            Some(0) => assert_eq!(result.unwrap().text(), diagnostic),
+            code => {
+                let message = result.unwrap_err().to_string();
+                assert!(message.contains(diagnostic), "{command}: {message}");
+                if let Some(code) = code {
+                    assert!(message.contains(&format!("exit {code}")), "{message}");
+                    assert!(
+                        !message.contains("session terminated"),
+                        "numeric exit is known"
+                    );
+                } else {
+                    assert!(message.contains("terminated by signal"), "{message}");
+                }
+            }
+        }
+        assert!(!dir.path().join("replayed").exists());
+        let next = bash
+            .invoke(call(
+                "bash",
+                serde_json::json!({"command": "printf '%s:' \"$OLD_STATE\"; cat workspace-file"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(next.text(), ":durable", "fresh shell, same workspace");
+    }
+}
+
+#[tokio::test]
 async fn bash_persists_cwd_and_environment_and_restart_clears_both() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("nested")).unwrap();
