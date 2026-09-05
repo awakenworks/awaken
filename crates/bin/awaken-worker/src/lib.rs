@@ -1294,6 +1294,7 @@ impl WorkerNode {
         // started. Anchoring locally before I/O prevents response latency from
         // extending the Coordinator-owned expiry in the Worker process.
         let initial_heartbeat_started = std::time::Instant::now();
+        let observations = lifecycle.observations.snapshot();
         let initial = control
             .heartbeat(
                 &lifecycle.identity,
@@ -1304,8 +1305,8 @@ impl WorkerNode {
                     ),
                     in_flight: 0,
                     warm_environment_shapes: lifecycle.warm_environment_shapes(),
-                    credential_observations: lifecycle.observations.credential_snapshot(),
-                    acp_capability_observations: lifecycle.observations.acp_capability_snapshot(),
+                    credential_observations: observations.credentials,
+                    acp_capability_observations: observations.acp_capabilities,
                 },
             )
             .await;
