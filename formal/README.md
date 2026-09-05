@@ -802,8 +802,24 @@ contract. The existing release artifact attestation signs the generated file
 with the other dist subjects. AWAKEN_RELEASE_PROFILE=awaken-verified-v1 turns
 package generation into the strong gate; ordinary releases use standard and
 carry the exact non-eligibility gap set without displaying a Verified identity.
-Deployment admission uses validate --require-verified --tcb-evidence; absent,
-expired, duplicated, or fingerprint-mismatched TCB evidence fails closed.
+The release-side validator offers validate --require-verified --tcb-evidence;
+runtime startup and Session recovery integration are still required. The current
+validator checks observation completeness, contract identity, digest syntax and
+age; authenticating the observer and comparing its version/configuration against
+the actual deployed environment remain deployment admission work.
+
+`scripts/ci/formal_profile.py` owns the shared requirement resolution and P0
+qualification used by feature coverage, formal coverage, and release packaging.
+Captured Runtime traces remain a separately reported evidence dimension; their
+rows retain abstract-model/theorem grades. `implementation_refined` is reserved
+for a future checked universal production-refinement integration and is rejected
+until that integration exists. A ledger's structural eligibility does not attest
+that proof tools ran or that deployed TCB fingerprints were authenticated.
+
+Formal metadata mutation checks require an unmodified green fixture before each
+mutation, the named semantic rejection (not merely nonzero exit), and a green
+fixture after exact restoration. Missing tools, timeouts, parser failures, and
+unrelated missing evidence are infrastructure failures, never killed mutants.
 
 ## Loom concurrency exploration
 
