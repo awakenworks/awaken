@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Mutation-test the formal evidence and residual-boundary gates.
 
-These are deliberately small metadata mutants.  Product-kernel mutations are
-killed by Kani/TLC themselves; this script proves that the repository gate also
+Metadata mutants prove that the repository gate also
 rejects a proof removed from CI, a downgraded proof claim, and incomplete or
-invented residual-boundary documentation.
+invented residual-boundary documentation. The opt-in Memory copy mutant uses
+the pinned TLC supplied by the strict gate to check the recovery-base invariant.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -213,6 +214,12 @@ def mutate_disconnected_product_feature(case_root: Path) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--memory-copy-model-mutant", type=Path, metavar="TLC_JAR")
+    arguments = parser.parse_args()
+    if arguments.memory_copy_model_mutant is not None:
+        check_memory_copy_model_mutant(arguments.memory_copy_model_mutant)
+        return
     # Cause/effect decision table: removing a strict-CI proof, downgrading a
     # claim, detaching a model, omitting/inventing a residual boundary,
     # inventing a production proof grade, deleting a proof grade or TCB
@@ -240,6 +247,46 @@ def main() -> None:
             prepare_case(case_root)
             mutation(case_root)
     print(f"formal gate mutation score: {len(mutations)}/{len(mutations)} killed")
+
+
+def check_memory_copy_model_mutant(tlc_jar: Path) -> None:
+    # Cause/effect rule C1: replace ONLY recovery's frozen expected head with
+    # the current generation. E1: TLC must report the exact base-preservation
+    # invariant, not merely a parse error, timeout or unrelated invariant.
+    # The original positive configuration runs immediately before this in CI.
+    # All mutation bytes are confined to a fresh temporary tree; no production
+    # model is modified and there is no parallel CAS model implementation.
+    source = (ROOT / "formal/tla/MemoryCAS.tla").read_text(encoding="utf-8")
+    original = """CopyRecover(w) == /\\ crashed[w]
+                  /\\ crashed' = [crashed EXCEPT ![w] = FALSE]
+                  /\\ UNCHANGED <<vars, mounted, materializationBase>>"""
+    mutant = """CopyRecover(w) == /\\ crashed[w]
+                  /\\ crashed' = [crashed EXCEPT ![w] = FALSE]
+                  /\\ expected' = [expected EXCEPT ![w] = generation]
+                  /\\ UNCHANGED <<generation, value, writes, sourcePresent, targetPresent,
+                                  targetIdentity, renameCommitted, headPresent, lastAction,
+                                  lastBefore, lastAfter, lastPresentBefore, lastPresentAfter,
+                                  mounted, materializationBase>>"""
+    if source.count(original) != 1:
+        raise SystemExit("Memory copy recovery mutation anchor drifted; review the model")
+    with tempfile.TemporaryDirectory(prefix="awaken-memory-copy-mutant-") as temp:
+        directory = Path(temp)
+        model = directory / "MemoryCAS.tla"
+        model.write_text(source.replace(original, mutant), encoding="utf-8")
+        config = directory / "MemoryCASCopy.cfg"
+        shutil.copy2(ROOT / "formal/tla/MemoryCASCopy.cfg", config)
+        result = subprocess.run(
+            ["java", "-Xmx512m", "-jar", str(tlc_jar.resolve()),
+             "-metadir", str(directory / "states"), "-config", str(config), str(model)],
+            cwd=directory, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=30, check=False,
+        )
+        if (
+            result.returncode != 12
+            or "Invariant CopyRecoveryKeepsMaterializationBase is violated" not in result.stdout
+        ):
+            raise SystemExit(f"Memory copy recovery mutant was not killed correctly:\n{result.stdout}")
+    print("Memory copy recovery mutation score: 1/1 killed (frozen base invariant)")
 
 
 if __name__ == "__main__":

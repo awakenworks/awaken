@@ -12,6 +12,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import {
   spawnServer,
   stopServer,
+  hardKillServer as hardKill,
   waitForPort,
   waitForSessionEventReceipt,
   waitForValue,
@@ -51,16 +52,6 @@ const get = async (path) => {
   const res = await fetch(`${BASE}${path}`);
   return { status: res.status, body: await res.json().catch(() => ({})) };
 };
-
-async function hardKill(server, rule) {
-  const exited = new Promise((resolve, reject) => {
-    server.once('exit', resolve);
-    server.once('error', reject);
-  });
-  assert.equal(server.kill('SIGKILL'), true, `${rule} hard crash signal reached the coordinator`);
-  await exited;
-  await stopServer(server);
-}
 
 function spawnDurable(store, upstream, behavior, coordinatorOnly = false) {
   return spawnServer('real', PORT, {

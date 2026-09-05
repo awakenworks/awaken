@@ -823,6 +823,86 @@ mod tests {
     }
 
     #[test]
+    fn trusted_host_placement_rechecks_login_ttl_and_backend_removal() {
+        // Decision graph: exact host backend AND live Worker AND available
+        // exact credential => eligible. T1 all true=>claim; T2 backend removed,
+        // T3 login revoked, T4 observation expired, T5 Worker expired => no
+        // eligible Worker, even with a stronger Container candidate available.
+        // Each negative row starts from the same successful snapshot; no row
+        // can be satisfied by accidentally failing an unrelated precondition.
+        let credential = WorkerCredentialRevision {
+            id: "host-login".into(),
+            revision: 1,
+        };
+        let mut required = requirements();
+        required.sandbox = SandboxRequirements::default();
+        required.sandbox_backend = Some(TRUSTED_HOST_SANDBOX_BACKEND.into());
+        required.required_credentials.insert(credential.clone());
+        let mut ready = manifest("host", 0);
+        ready
+            .manifest
+            .sandbox_backends
+            .insert(TRUSTED_HOST_SANDBOX_BACKEND.into());
+        ready.capability_fingerprint = ready.manifest.fingerprint().unwrap();
+        ready
+            .credential_observations
+            .insert(WorkerCredentialObservation::available(
+                credential.clone(),
+                5,
+                20,
+            ));
+        assert!(ready.accepts(&required, 10), "T1");
+        for rule in ["removed", "revoked", "credential-expired", "worker-expired"] {
+            let mut worker = ready.clone();
+            match rule {
+                "removed" => {
+                    worker
+                        .manifest
+                        .sandbox_backends
+                        .remove(TRUSTED_HOST_SANDBOX_BACKEND);
+                    worker.capability_fingerprint = worker.manifest.fingerprint().unwrap();
+                }
+                "revoked" => {
+                    worker.credential_observations.clear();
+                    worker
+                        .credential_observations
+                        .insert(WorkerCredentialObservation {
+                            credential: credential.clone(),
+                            state: WorkerCredentialState::LoginRequired,
+                            observed_at_ms: 5,
+                            valid_until_ms: 20,
+                            reason_code: None,
+                        });
+                }
+                "credential-expired" => {
+                    worker.credential_observations.clear();
+                    worker
+                        .credential_observations
+                        .insert(WorkerCredentialObservation::available(
+                            credential.clone(),
+                            5,
+                            10,
+                        ));
+                }
+                "worker-expired" => worker.expires_at_ms = 10,
+                _ => unreachable!(),
+            }
+            assert!(
+                matches!(
+                    place(
+                        &LeastLoadedPolicy,
+                        &context(required.clone()),
+                        &[worker, manifest("cloud", 0)],
+                        10
+                    ),
+                    Err(PlacementError::NoEligibleWorker)
+                ),
+                "{rule}"
+            );
+        }
+    }
+
+    #[test]
     fn least_loaded_is_deterministic() {
         let workers = vec![manifest("b", 1), manifest("a", 1), manifest("c", 3)];
         let selected = place(&LeastLoadedPolicy, &context(requirements()), &workers, 10).unwrap();

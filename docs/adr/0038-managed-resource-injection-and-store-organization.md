@@ -424,6 +424,12 @@ supports only these namespaced variables:
 `{{awaken.resource.access}}`. Unknown or unterminated `awaken.*` variables fail
 before realization; unrelated braces remain authored text.
 
+Substitution scans authored text once: replacement values are literal data and
+cannot introduce additional substitutions. `resource.path` is the resource's
+file or directory path; `resource.directory` is its lexical parent, including
+for MemoryStore and Repository directory mounts. Tests require exact output for
+all variables, both path separators, repeated tokens, and Unicode path names.
+
 The frozen logical mount is never replaced by a host-absolute path. Namespace,
 Container, and Native Hand tools render sandbox-absolute POSIX paths.
 TrustedHost/Workdir ACP renders relative paths with the platform separator so
@@ -440,3 +446,49 @@ renders binding-scoped memory-tool instructions and rejects templates that use
 workspace, outputs, path, or directory variables. Thus path choice occurs only
 after the single Session Environment is known, while resource identity, access,
 instructions, and generation remain pinned by the existing binding.
+
+TrustedHost Repository presence must not promote the frozen Workdir spec to
+Namespace during resource projection. Late File bytes use the existing Sandbox
+`attach` port and rooted atomic writer, including manifest replay after adoption.
+Create-time Memory participants cannot be replaced through that File port;
+Memory teardown/recovery remains owned by its original mount evidence and store
+CAS, including explicit conflict reporting for stale recovered copies.
+
+The executable portability gate is `scripts/ci/check-trusted-host-portability.sh`.
+It runs the same resource mission with native executable ACP peers for Codex and
+Claude: official SDK resource creation, default/nested cwd, File reads, Memory
+writes from concurrent Sessions, Repository edits without implicit remote
+publication, and output download. File/Memory/Repository carry independent
+random bytes; the output must combine all three and the exact Repository HEAD.
+Downloaded patches must apply to an independent checkout and reproduce those
+bytes. Each receipt has a new marker, so an old artifact cannot satisfy recovery.
+The same live Session IDs continue after normal process replacement and SIGKILL;
+before writing again they must read back their previous Memory and Repository
+edits. This crash point is between turns, not while an ACP tool is executing.
+The live
+`host-login` profile in `e2e/codex_acp_live_e2e.mjs` reuses that mission and oracle;
+it requires an available real login and explicit live opt-in. The local Git fixture
+uses the existing `test-support` local Git transport aperture; the production
+Repository transport remains HTTPS-only and does not inherit host Git identity.
+Agent-owned Git commands are a separate trusted-process identity boundary. Fixture success
+does not certify a vendor CLI, and a configured OS matrix is not evidence of
+executed macOS/Windows tests. Cause/effect rules live next to their test owners.
+
+Copy-mode concurrent same-base update/update, update/delete, create/create and
+identical-edit cases are owned by
+`awaken-sandbox-memoryd/tests/copy_lifecycle.rs`: synchronized dispatch plus both
+ordered linearizations, retry, lost acknowledgement and durable SQLite reopen.
+The existing `MemoryCAS` model adds the copy-recovery configuration, with an
+automatically rejected rebase mutant. Worker login heartbeat reordering runs
+against the production registry under Loom; the existing Kani lease kernel and
+TLA+ activation/projection/reclamation models retain their own boundaries. See
+[formal verification](../../formal/README.md) for the exact model scope.
+
+These gates do not yet establish a complete release matrix: in-flight ACP
+process fencing, a production-feature HTTPS resource composition, actual mixed
+cloud/local Worker placement and loss, and Native File+Memory+Repository in one
+default/nested-cwd API mission still need dedicated end-to-end evidence. Actual
+vendor logins, macOS/Windows execution, and OS credential-manager/SSH integration
+must be verified on their corresponding hosts; fixture or model success does
+not substitute for them. Memory/Repository live addition remains an explicit
+create-time-only contract, not a missing hot-plug implementation to emulate.

@@ -16,6 +16,7 @@ import {
   spawnServer,
   startUpstream,
   stopServer,
+  hardKillServer as hardKill,
   waitForPort,
   waitForSessionEventReceipt,
 } from './harness.mjs';
@@ -71,13 +72,6 @@ async function waitUntil(predicate, message, tries = 80) {
     await sleep(100);
   }
   assert.fail(message);
-}
-
-async function hardKill(server) {
-  if (server.exitCode !== null || server.signalCode !== null) return;
-  const exited = new Promise((resolve) => server.once('exit', resolve));
-  server.kill('SIGKILL');
-  await exited;
 }
 
 async function main() {

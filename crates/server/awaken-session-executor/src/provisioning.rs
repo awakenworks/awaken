@@ -627,7 +627,20 @@ impl SharedHost {
             projection.environment,
             projection.network_isolation,
         );
-        session_sandbox_projection(&spec, projection.has_repositories, false).0
+        if projection.environment.is_some_and(|environment| {
+            environment
+                .sandbox
+                .as_ref()
+                .is_some_and(|sandbox| sandbox.host_access == pc::HostAccessPolicy::TrustedHost)
+        }) {
+            // Preserve the frozen exact trust decision, just as placement does.
+            // TrustedHost clients consume AgentFilesystemView, not an asserted
+            // sandbox-absolute process namespace. Provider admission still checks
+            // every requested capability against the exact Workdir provider.
+            spec
+        } else {
+            session_sandbox_projection(&spec, projection.has_repositories, false).0
+        }
     }
 
     pub(crate) fn validate_repository_environment_adoption_paths(

@@ -75,6 +75,35 @@ async fn trusted_host_realizes_readonly_resource_as_advisory_access() {
         "E2"
     );
     assert_eq!(sandbox.realized()[0].access, pc::MountAccess::ReadOnly);
+    // L1 ordinary + late RO => reject before bytes; L2 trusted + late RO =>
+    // copied bytes; L3 a create-time participant or its ancestor => reject.
+    // This extends the same trust table across create and live attach.
+    let ordinary = LocalProvider::new(tmp.path().join("ordinary-late"))
+        .create_sandbox(&workdir_spec("ordinary-late", false))
+        .await
+        .unwrap();
+    let mut late = trusted_spec.mounts[0].clone();
+    late.mount_id = "late".into();
+    late.mount_path = "/workspace/late.txt".into();
+    assert!(ordinary.attach(late.clone()).await.is_err(), "L1");
+    assert!(!ordinary.root.root().join("workspace/late.txt").exists());
+    assert_eq!(
+        sandbox.attach(late.clone()).await.unwrap().realization,
+        pc::Realization::Copy,
+        "L2"
+    );
+    for path in [
+        "/workspace/input.txt",
+        "/workspace",
+        "/workspace/input.txt/child",
+    ] {
+        late.mount_path = path.into();
+        assert!(sandbox.attach(late.clone()).await.is_err(), "L3 {path}");
+    }
+    assert_eq!(
+        std::fs::read(sandbox.root.root().join("workspace/input.txt")).unwrap(),
+        b"managed resource"
+    );
 }
 
 struct FailedCreationMount {
@@ -1223,6 +1252,7 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
 // cannot block extraction.
 #[tokio::test]
 async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     let tmp = tempfile::tempdir().unwrap();
@@ -1232,12 +1262,17 @@ async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
     let file = sandbox.workspace_path().join("workspace/bin/tool");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, b"mutable state").unwrap();
-    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o750)).unwrap();
-    std::fs::set_permissions(
-        file.parent().unwrap(),
-        std::fs::Permissions::from_mode(0o500),
-    )
-    .unwrap();
+    // R3 all platforms prove exact bytes and disposal. POSIX mode metadata is
+    // an additional Unix effect, not a prerequisite that removes Windows R1/R2.
+    #[cfg(unix)]
+    {
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o750)).unwrap();
+        std::fs::set_permissions(
+            file.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o500),
+        )
+        .unwrap();
+    }
     let store = CheckpointStore::default();
     let checkpoint_request = checkpoint_request_for(&spec.scope);
     let receipt = sandbox
@@ -1263,6 +1298,7 @@ async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
         b"mutable state",
         "R1 bytes"
     );
+    #[cfg(unix)]
     assert_eq!(
         std::fs::metadata(&restored_file)
             .unwrap()
@@ -1271,6 +1307,7 @@ async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
             & 0o777,
         0o750
     );
+    #[cfg(unix)]
     assert_eq!(
         std::fs::metadata(restored_root.join("workspace/bin"))
             .unwrap()
