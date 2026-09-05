@@ -1031,7 +1031,7 @@ fn pending_tool_use_is_deduplicated_or_minted_in_the_canonical_step_family() {
         )],
     }];
     let mut next_step = 1;
-    ensure_pending_tool_use(&run, &mut next_step, &mut messages, &ask);
+    ensure_pending_tool_use(&run, &mut next_step, &mut messages, 0, &ask).unwrap();
     assert_eq!(messages.len(), 1, "P1/E1");
     assert_eq!(next_step, 1, "P1/E1");
 
@@ -1039,10 +1039,82 @@ fn pending_tool_use_is_deduplicated_or_minted_in_the_canonical_step_family() {
         call_id: "call-8".into(),
         ..ask
     };
-    ensure_pending_tool_use(&run, &mut next_step, &mut messages, &absent);
+    ensure_pending_tool_use(&run, &mut next_step, &mut messages, 0, &absent).unwrap();
     assert_eq!(messages.len(), 2, "P2/E2");
     assert_eq!(messages[1].id, MessageId::assistant(&run, 1), "P2/E2");
     assert_eq!(next_step, 2, "P2/E2");
+}
+
+/// Pending fact graph: placeholder/full input x staged/committed prefix x
+/// matching/drifted permission request -> exact ToolUse + ticket, or rejection.
+/// P3 staged placeholder/refinement may change without allocating another Step;
+/// P4 committed exact replay stays byte-for-byte unchanged; P5 committed name or
+/// argument drift fails before mutation. Absent-call allocation is P2 above.
+#[test]
+fn pending_permission_refines_only_the_uncommitted_tool_use() {
+    let run = RunId("pending-refinement".into());
+    let ask = PermissionAsk {
+        call_id: "call".into(),
+        tool: "mcp__awaken_session__bash".into(),
+        arguments: serde_json::json!({"command":"echo reviewed"}),
+    };
+    for input in [
+        serde_json::json!({}),
+        serde_json::json!({"command":"partial"}),
+        ask.arguments.clone(),
+    ] {
+        for committed in [false, true] {
+            let mut messages = vec![Message {
+                id: MessageId::assistant(&run, 0),
+                role: Role::Assistant,
+                content: vec![ContentBlock::tool_use("call", "bash", input.clone())],
+            }];
+            let before = messages.clone();
+            let mut step = 1;
+            let result = ensure_pending_tool_use(
+                &run,
+                &mut step,
+                &mut messages,
+                usize::from(committed),
+                &ask,
+            );
+            if committed && input != ask.arguments {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("committed tool call"),
+                    "P5"
+                );
+                assert_eq!(messages, before, "P5 no historical rewrite");
+            } else {
+                result.unwrap();
+                assert_eq!(messages.len(), 1, "P3/P4 single occurrence");
+                assert!(
+                    matches!(&messages[0].content[0], ContentBlock::ToolUse {name,input,..} if name == "bash" && input == &ask.arguments)
+                );
+                if committed {
+                    assert_eq!(messages, before, "P4");
+                }
+            }
+            assert_eq!(step, 1, "no duplicate Step");
+        }
+    }
+    let mut messages = vec![Message {
+        id: MessageId::assistant(&run, 0),
+        role: Role::Assistant,
+        content: vec![ContentBlock::tool_use(
+            "call",
+            "write",
+            ask.arguments.clone(),
+        )],
+    }];
+    let before = messages.clone();
+    assert!(
+        ensure_pending_tool_use(&run, &mut 1, &mut messages, 1, &ask).is_err(),
+        "P5 name drift"
+    );
+    assert_eq!(messages, before);
 }
 
 #[test]
@@ -2208,7 +2280,12 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
     struct AskPolicy;
     #[async_trait]
     impl ToolPermissionPolicy for AskPolicy {
-        async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionVerdict {
+        async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
+            assert_eq!(
+                call.arguments,
+                serde_json::json!({"cmd":"echo ok"}),
+                "AR0 permission input supersedes placeholder"
+            );
             ToolPermissionVerdict::RequireConfirmation {
                 correlation_id: "approval-1".to_string(),
             }
@@ -2276,6 +2353,12 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                                     .unwrap_or_default()
                                     .to_string();
                                 prompts.lock().unwrap().push(prompt);
+                            }
+                            // AR0 Claude streams {} before asking with complete
+                            // arguments. The Await commit must refine this same
+                            // occurrence, with the exact policy input and ticket.
+                            if attempt == 0 {
+                                output.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"permission-session\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"tool-1\",\"title\":\"bash\",\"rawInput\":{}}}}\n").await.unwrap();
                             }
                             output
                                 .write_all(
@@ -2361,6 +2444,25 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
         assert_eq!(ticket.reason(), AwaitReason::ToolPermission);
         assert_eq!(ticket.correlation_id, "approval-1");
         assert_eq!(ticket.call_id(), Some("tool-1"));
+        assert_eq!(
+            ticket.pending_tool().unwrap().arguments,
+            serde_json::json!({"cmd":"echo ok"}),
+            "AR0"
+        );
+        let tool_inputs = committed
+            .messages()
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|block| match block {
+                ContentBlock::ToolUse { id, input, .. } if id == "tool-1" => Some(input.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tool_inputs,
+            vec![serde_json::json!({"cmd":"echo ok"})],
+            "AR0 one complete committed ToolUse"
+        );
         assert_eq!(
             ticket.pending_tool().map(|tool| tool.tool_id.as_str()),
             Some("bash")
@@ -3958,7 +4060,7 @@ async fn canonical_mcp_ticket_and_transcript_survive_wire_name_changes() {
                 PermissionVerdict::Await { .. }
             ));
             let mut messages = vec![];
-            ensure_pending_tool_use(&RunId("run".into()), &mut 0, &mut messages, &ask);
+            ensure_pending_tool_use(&RunId("run".into()), &mut 0, &mut messages, 0, &ask).unwrap();
             assert!(
                 matches!(&messages[0].content[0], ContentBlock::ToolUse { name, .. } if name == "write")
             );

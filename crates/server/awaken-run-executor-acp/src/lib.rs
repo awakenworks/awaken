@@ -896,13 +896,15 @@ impl AcpRunExecutor {
                     correlation_id,
                     ask,
                 }) => {
+                    let first_staged_message = committed.len();
                     committed.extend(appender.messages);
                     ensure_pending_tool_use(
                         &run_id,
                         &mut next_assistant_step,
                         &mut committed,
+                        first_staged_message,
                         &ask,
-                    );
+                    )?;
                     let ticket = ResumeTicket::new(
                         correlation_id,
                         run_id.clone(),
@@ -1801,33 +1803,51 @@ fn tool_use_id(run_id: &RunId, acp_id: &str, seq: u64) -> String {
     }
 }
 
-/// A permission request is itself the pending neutral tool fact. Some ACP agents
-/// emit a `tool_call` update before requesting permission and some do not; append
-/// only when absent so both wire styles project to exactly one Managed tool-use
-/// event whose id matches the durable resume ticket.
+/// Complete the pending ToolUse in this attempt before the single Await commit.
+/// Earlier committed messages are immutable: an exact replay is a no-op and a
+/// conflicting reuse of their call id fails closed. A streaming placeholder in
+/// the current staged suffix is refined to the permission request's exact input.
 fn ensure_pending_tool_use(
     run_id: &RunId,
     next_assistant_step: &mut usize,
     messages: &mut Vec<Message>,
+    first_staged_message: usize,
     ask: &PermissionAsk,
-) {
-    let already_projected = messages.iter().any(|message| {
-        message
-            .content
-            .iter()
-            .any(|block| matches!(block, ContentBlock::ToolUse { id, .. } if id == &ask.call_id))
-    });
-    if !already_projected {
-        messages.push(Message {
-            id: take_assistant_message_id(run_id, next_assistant_step),
-            role: Role::Assistant,
-            content: vec![ContentBlock::tool_use(
-                ask.call_id.clone(),
-                canonical_permission_tool_id(&ask.tool),
-                ask.arguments.clone(),
-            )],
-        });
+) -> Result<()> {
+    let name = canonical_permission_tool_id(&ask.tool);
+    for (index, message) in messages.iter_mut().enumerate() {
+        for block in &mut message.content {
+            if let ContentBlock::ToolUse {
+                id,
+                name: existing_name,
+                input,
+            } = block
+                && id == &ask.call_id
+            {
+                if index < first_staged_message {
+                    if existing_name != &name || input != &ask.arguments {
+                        return Err(Error::Execution(
+                            "ACP permission request conflicts with a committed tool call".into(),
+                        ));
+                    }
+                } else {
+                    *existing_name = name;
+                    input.clone_from(&ask.arguments);
+                }
+                return Ok(());
+            }
+        }
     }
+    messages.push(Message {
+        id: take_assistant_message_id(run_id, next_assistant_step),
+        role: Role::Assistant,
+        content: vec![ContentBlock::tool_use(
+            ask.call_id.clone(),
+            name,
+            ask.arguments.clone(),
+        )],
+    });
+    Ok(())
 }
 
 mod acp_cli;
