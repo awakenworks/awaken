@@ -15,7 +15,6 @@
 //! updates are flushed before the final result is returned, so a client never
 //! sees progress after the response.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
@@ -47,7 +46,6 @@ pub struct AwakenMcpContext {
 struct AwakenMcpHost {
     source: Arc<dyn ToolExportSource>,
     gate: RwLock<Option<Arc<dyn ToolGateHook>>>,
-    next_call_id: AtomicU64,
 }
 
 /// Compatibility facade over the runtime-neutral server core.
@@ -68,7 +66,6 @@ impl McpToolService {
         let host = Arc::new(AwakenMcpHost {
             source: Arc::clone(&source),
             gate: RwLock::new(None),
-            next_call_id: AtomicU64::new(1),
         });
         Self {
             core: McpServer::new(name, version, Arc::clone(&host))
@@ -191,10 +188,10 @@ impl McpToolHost<AwakenMcpContext> for AwakenMcpHost {
             .filter(|token| !token.is_null())
             .cloned();
         let call = ToolCall {
-            call_id: format!(
-                "mcp-srv-{}",
-                self.next_call_id.fetch_add(1, Ordering::SeqCst)
-            ),
+            // An Environment executor can outlive this export. Rebuilding the
+            // server must not reuse an unresolved Hand operation's fallback id.
+            // This shared identity does not grant durable replay authority.
+            call_id: awaken_agent_contract::fresh_process_id("mcp-srv"),
             tool_id: call.name,
             arguments: call.arguments,
         };
