@@ -76,6 +76,12 @@ cwd. A TrustedHost fallback pool cannot mix these two path consumers in one
 attempt; Namespace/Container may mix them because both consume the same
 sandbox-absolute view. The process cwd does not grant filesystem authority.
 
+Namespace projects an explicitly selected npm entrypoint together with its
+outer `node_modules` dependency tree, read-only. Linux bind rendering and macOS
+read grants share the runtime-root selector. The installation parent is not a
+runtime grant. Protocol negotiation on the host alone cannot certify that the
+entrypoint and its imports are reachable inside an execution Environment.
+
 ## Diagnostics
 
 Errors are classified at the failing boundary:
