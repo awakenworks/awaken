@@ -33,11 +33,12 @@ pub enum PathEntry {
     Other,
 }
 
-/// One regular file captured from an exact descriptor-relative tree walk.
+/// One regular file captured by a tree reader.
 ///
 /// `relative_path` is relative to the requested tree root, never to a host
-/// pathname. The bytes come from the same nofollow descriptor whose identity
-/// was checked during the walk.
+/// pathname. Descriptor identity guarantees belong to the reader used:
+/// exact-dirfd APIs check the opened file; the bounded convenience API documents
+/// its platform-specific quiescence requirement.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TreeFile {
     pub relative_path: PathBuf,
@@ -45,14 +46,14 @@ pub struct TreeFile {
     pub mode: u32,
 }
 
-/// One directory captured by the same exact tree walk as [`TreeFile`].
+/// One directory captured by the same tree walk as [`TreeFile`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TreeDirectory {
     pub relative_path: PathBuf,
     pub mode: u32,
 }
 
-/// One complete descriptor-relative tree snapshot. Entries are sorted by their
+/// One complete tree snapshot. Entries are sorted by their
 /// canonical relative paths and never include the requested tree root itself.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TreeSnapshot {
@@ -1483,6 +1484,8 @@ fn read_tree_from<Fd: std::os::fd::AsFd>(
     relative_parent: &Path,
     excluded: &[PathBuf],
     snapshot: &mut TreeSnapshot,
+    max_file_bytes: u64,
+    remaining_bytes: &mut u64,
 ) -> std::io::Result<()> {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt as _;
@@ -1511,7 +1514,14 @@ fn read_tree_from<Fd: std::os::fd::AsFd>(
                     relative_path: relative_path.clone(),
                     mode: opened.st_mode as u32 & 0o777,
                 });
-                read_tree_from(&child, &relative_path, excluded, snapshot)?;
+                read_tree_from(
+                    &child,
+                    &relative_path,
+                    excluded,
+                    snapshot,
+                    max_file_bytes,
+                    remaining_bytes,
+                )?;
                 let named = rustix::fs::statat(
                     directory.as_fd(),
                     &name,
@@ -1560,9 +1570,11 @@ fn read_tree_from<Fd: std::os::fd::AsFd>(
                         "tree entry is not one stable unaliased regular file",
                     ));
                 }
-                let mut file = File::from(descriptor);
-                let mut bytes = Vec::new();
-                file.read_to_end(&mut bytes)?;
+                let bytes = read_tree_file_bounded(
+                    File::from(descriptor),
+                    max_file_bytes,
+                    remaining_bytes,
+                )?;
                 let named_after = rustix::fs::statat(
                     directory.as_fd(),
                     &name,
@@ -1618,6 +1630,25 @@ pub fn read_tree_nofollow_excluding(
     relative_tree: &Path,
     excluded: &[PathBuf],
 ) -> std::io::Result<TreeSnapshot> {
+    read_tree_nofollow_limited(
+        root,
+        expected_root,
+        relative_tree,
+        excluded,
+        u64::MAX,
+        u64::MAX,
+    )
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn read_tree_nofollow_limited(
+    root: &Path,
+    expected_root: DirectoryIdentity,
+    relative_tree: &Path,
+    excluded: &[PathBuf],
+    max_file_bytes: u64,
+    mut max_total_bytes: u64,
+) -> std::io::Result<TreeSnapshot> {
     validate_relative_tree_path(relative_tree, true)?;
     for path in excluded {
         validate_relative_tree_path(path, false)?;
@@ -1644,7 +1675,14 @@ pub fn read_tree_nofollow_excluding(
     }
 
     let mut snapshot = TreeSnapshot::default();
-    read_tree_from(&directory, Path::new(""), excluded, &mut snapshot)?;
+    read_tree_from(
+        &directory,
+        Path::new(""),
+        excluded,
+        &mut snapshot,
+        max_file_bytes,
+        &mut max_total_bytes,
+    )?;
     snapshot
         .directories
         .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
@@ -1652,6 +1690,52 @@ pub fn read_tree_nofollow_excluding(
         .files
         .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(snapshot)
+}
+
+/// Read a required plain tree with caller-owned per-file and total byte limits. Missing
+/// roots and incomplete reads fail; callers never receive a partial snapshot.
+/// Linux/macOS reuse the exact descriptor walker, capturing the root identity
+/// at entry. Other platforms use the quiescent-path adapter below, which rejects
+/// static links/reparse points but does not claim descriptor identity fencing.
+/// This convenience API grants neither publication nor deletion authority.
+pub fn read_tree_nofollow_bounded(
+    root: &Path,
+    max_file_bytes: u64,
+    max_total_bytes: u64,
+) -> std::io::Result<TreeSnapshot> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        read_tree_nofollow_limited(
+            root,
+            directory_identity_nofollow(root)?,
+            Path::new(""),
+            &[],
+            max_file_bytes,
+            max_total_bytes,
+        )
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        directory_tree::read_plain_tree_bounded(root, max_file_bytes, max_total_bytes)
+    }
+}
+
+fn read_tree_file_bounded(
+    file: File,
+    max_file_bytes: u64,
+    remaining_bytes: &mut u64,
+) -> std::io::Result<Vec<u8>> {
+    let limit = max_file_bytes.min(*remaining_bytes);
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "tree exceeds the caller's per-file or total byte limit",
+        ));
+    }
+    *remaining_bytes -= bytes.len() as u64;
+    Ok(bytes)
 }
 
 /// Capture every regular file below one relative subtree without following a
