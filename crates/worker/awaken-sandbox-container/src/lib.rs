@@ -1294,6 +1294,7 @@ pub use provider::ContainerProvider;
 /// A realized Session-owned container environment. The opaque agent channel is
 /// returned together with the exact exec process by [`ContainerEnvironment::spawn_agent_process`].
 pub struct ContainerSandbox<R: ContainerRuntime> {
+    retained_attempt: Option<ContainerCreateAttempt>,
     runtime: Arc<R>,
     id: String,
     container_id: String,
@@ -1397,6 +1398,10 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R> {
+    fn retained_create_attempt(&self) -> Option<&ContainerCreateAttempt> {
+        self.retained_attempt.as_ref()
+    }
+
     fn outputs_path(&self) -> &str {
         &self.outputs_path
     }
@@ -1867,10 +1872,14 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         // and Hand I/O must not be repeated after that persistence boundary.
         let handle = self.handle();
         handle.container_physical_incarnation()?;
-        let expectation = ContainerObservationExpectation::from_handle_for_effect(
+        let mut expectation = ContainerObservationExpectation::from_handle_for_effect(
             &handle,
             authorization.effect_fence(),
         )?;
+        // The same retained participant ownership used for warm observation
+        // remains available at physical disposal. Authorization and immutable
+        // fingerprints still gate deletion; cold wrappers retain no proof.
+        expectation.retained_attempt = self.retained_attempt.as_ref();
         self.lifecycle
             .dispose_once_for_effect(self.runtime.as_ref(), expectation, authorization)
             .await

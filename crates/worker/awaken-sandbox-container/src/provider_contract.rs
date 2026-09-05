@@ -283,6 +283,12 @@ mod realization_context_tests {
 /// Object-safe live container environment owned by one Session.
 #[async_trait]
 pub trait ContainerEnvironment: pc::Sandbox + SandboxControlServicePublisher {
+    /// Borrowed proof that the creating wrapper still owns its local participants.
+    /// Never serialized in a SandboxHandle or reconstructed after process loss.
+    fn retained_create_attempt(&self) -> Option<&ContainerCreateAttempt> {
+        None
+    }
+
     fn outputs_path(&self) -> &str {
         "/outputs"
     }
@@ -344,12 +350,17 @@ pub struct EnvironmentFile {
 pub struct ContainerEnvironmentAdoption<'a> {
     pub spec: &'a pc::SandboxSpec,
     pub handle: &'a pc::SandboxHandle,
+    pub retained_attempt: Option<&'a ContainerCreateAttempt>,
 }
 
 impl<'a> ContainerEnvironmentAdoption<'a> {
     #[must_use]
     pub const fn new(spec: &'a pc::SandboxSpec, handle: &'a pc::SandboxHandle) -> Self {
-        Self { spec, handle }
+        Self {
+            spec,
+            handle,
+            retained_attempt: None,
+        }
     }
 }
 
@@ -365,6 +376,7 @@ pub struct ContainerObservationExpectation<'a> {
     pub realization_fingerprint: Option<&'a pc::SandboxRealizationFingerprint>,
     pub runtime_handle: Option<&'a pc::ContainerContinuationHandle>,
     pub effect_fence: Option<&'a pc::SandboxEffectFence>,
+    pub retained_attempt: Option<&'a ContainerCreateAttempt>,
 }
 
 impl<'a> ContainerObservationExpectation<'a> {
@@ -376,6 +388,7 @@ impl<'a> ContainerObservationExpectation<'a> {
             realization_fingerprint: handle.realization_fingerprint(),
             runtime_handle: payload.runtime_handle.as_ref(),
             effect_fence: None,
+            retained_attempt: None,
         })
     }
 
