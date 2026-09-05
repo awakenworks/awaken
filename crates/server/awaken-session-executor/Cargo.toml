@@ -55,6 +55,7 @@ awaken-dispatch-contract.workspace = true
 awaken-worker-transport-security = { workspace = true }
 awaken-coordinator-client.workspace = true
 awaken-run-executor-acp = { workspace = true }
+awaken-connection-plan.workspace = true
 awaken-acp-contract = { workspace = true }
 awaken-credential-vault = { workspace = true, optional = true }
 awaken-credential-contract.workspace = true

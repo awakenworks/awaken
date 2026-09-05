@@ -20,6 +20,21 @@ impl AcpToolExport {
 
 #[async_trait::async_trait]
 pub trait AcpToolExporter: Send + Sync {
+    /// Serve the same tool set on an already-bound process channel. The Host
+    /// owns channel establishment and supplies the workload's exact stdio
+    /// command; the protocol adapter owns framing. Unsupported adapters fail
+    /// before publishing a transport they cannot serve.
+    async fn export_channel_set(
+        &self,
+        _server: crate::resolved::AcpMcpServer,
+        _descriptors: Vec<crate::resolved::ToolDescriptor>,
+        _tools: Vec<Arc<dyn crate::tool::RawTool>>,
+        _reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+        _writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+    ) -> Result<AcpToolExport, String> {
+        Err("ACP tool exporter does not support attached channels".into())
+    }
+
     async fn export_set(
         &self,
         server_name: &str,

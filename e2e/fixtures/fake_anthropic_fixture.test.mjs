@@ -3,6 +3,22 @@ import test from 'node:test';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fake_anthropic_fixture.mjs';
 
+test('explicit bind address serves the same authenticated model wire', async () => {
+  // W10 default address -> loopback URL; W11 explicit reachable bind address ->
+  // exact advertised host and unchanged discovery/inference/authentication. The
+  // real Docker Cowork rows supply the live bridge gateway to this same option.
+  for (const listenHost of [undefined, process.platform === 'linux' ? '127.0.0.2' : '127.0.0.1']) {
+    const upstream = await startFakeAnthropic('fixture-key', { listenHost, models:['fixture-model'] });
+    try {
+      assert.equal(new URL(upstream.url).hostname, listenHost ?? '127.0.0.1');
+      const response = await fetch(`${upstream.url}/v1/models`, {headers:{'x-api-key':'fixture-key'}}); // awaken-allow: secret -- synthetic local test credential
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).data[0].id, 'fixture-model');
+      assert.equal((await fetch(`${upstream.url}/v1/models`)).status, 401);
+    } finally { await upstream.close(); }
+  }
+});
+
 test('one fixture serves discovery, token probes and inference with the same authentication', async () => {
   // Decision table W1-W6: three routes x valid/invalid credential. Only valid
   // inference invokes the callback; discovery/token probes do not advance the

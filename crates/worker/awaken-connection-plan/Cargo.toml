@@ -14,11 +14,11 @@ awaken-agent-channel.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util", "net"] }
+tokio = { workspace = true, features = ["io-util", "net", "time", "macros"] }
 
 [dev-dependencies]
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "net"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "net", "test-util"] }
 
 [lints]
 workspace = true
