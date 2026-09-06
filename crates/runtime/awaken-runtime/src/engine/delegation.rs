@@ -547,6 +547,7 @@ pub(super) async fn resume_delegation(
         context_messages,
         reader,
         context,
+        ResumeContinuation::NativeLoop,
     )
     .await
 }

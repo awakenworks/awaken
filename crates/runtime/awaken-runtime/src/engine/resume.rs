@@ -6,6 +6,14 @@
 use super::delegation::is_resolved_advisor_call;
 use super::*;
 
+/// Who continues after the common durable tool phase. This selects a control
+/// boundary, not a second executor, permission policy, or recovery algorithm.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResumeContinuation {
+    NativeLoop,
+    ToolBatch,
+}
+
 /// Select the context that still needs to be committed for one durable resume.
 /// Exact committed Messages are replay; a stable id with another payload is a
 /// conflict. Running this before environment resolution also preserves accepted
@@ -51,6 +59,7 @@ pub(super) async fn drive_resumed(
     fresh_context: Vec<Message>,
     reader: &dyn CommittedThreadView,
     context: &RuntimeRunContext,
+    continuation: ResumeContinuation,
 ) -> Result<RunState> {
     let resume_applied = resume_operation_id.map(|operation_id| {
         RunEvent::ResumeApplied {
@@ -355,6 +364,41 @@ pub(super) async fn drive_resumed(
     };
     let mut new_messages = fresh_context;
     new_messages.extend(resumed_new_messages);
+    if continuation == ResumeContinuation::ToolBatch {
+        let mut ledger = StepLedger::new(transcript, new_messages, seed_state, seed_audit);
+        let mut discovery = ToolDiscoveryStateKey::load(&store)
+            .map_err(|error| Error::Execution(error.to_string()))?;
+        if let Some(disposition) = dispatch::recover_pending_tool_batch(
+            runtime,
+            context,
+            ticket.delegation_origin.as_ref(),
+            resolved,
+            env,
+            run_id,
+            thread_id,
+            &mut ledger,
+            &mut store,
+            &mut discovery,
+        )
+        .await?
+        {
+            return finalize(
+                runtime,
+                context,
+                thread_id,
+                run_id.clone(),
+                ledger.into_step_result(disposition),
+            )
+            .await;
+        }
+        // The batch recovery commits ordered results and their state before
+        // returning control. Any remaining context/audit shares that same ledger;
+        // never finalize the Run merely because the tool phase has completed.
+        if ledger.has_uncommitted() {
+            ledger.commit_delta(context, thread_id, run_id).await?;
+        }
+        return Ok(RunState::Running);
+    }
     let step_result = drive(
         runtime,
         resolved,

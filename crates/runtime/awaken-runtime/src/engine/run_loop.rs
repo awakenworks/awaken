@@ -460,38 +460,21 @@ pub(super) async fn drive(
     let mut discovery =
         ToolDiscoveryStateKey::load(&store).map_err(|error| Error::Execution(error.to_string()))?;
 
-    // A reclaimed Running run may have died after committing a Requested/Executing
-    // tool batch. Recover that explicit Run-scoped entity before asking the model
-    // for another Step. Terminal calls are reused, never re-entered.
-    if let Some(batch) = ActiveToolBatch::load(&store)
-        .map_err(|error| Error::Execution(error.to_string()))?
-        .filter(|batch| batch.run_id() == run_id && batch.phase() != ToolBatchPhase::Finalized)
+    if let Some(reached) = dispatch::recover_pending_tool_batch(
+        runtime,
+        context,
+        delegation_origin,
+        resolved,
+        env,
+        run_id,
+        thread_id,
+        &mut ledger,
+        &mut store,
+        &mut discovery,
+    )
+    .await?
     {
-        match dispatch::recover_tool_batch(
-            runtime,
-            context,
-            delegation_origin,
-            resolved,
-            env,
-            run_id,
-            thread_id,
-            batch,
-            &mut ledger,
-            &mut store,
-            &mut discovery,
-        )
-        .await
-        {
-            Ok(Some(reached)) => return Ok(ledger.into_step_result(reached)),
-            Ok(None) => {}
-            Err(Error::StateConflict) => {
-                return Ok(ledger.into_step_result(RunDisposition::ended(
-                    run_id.clone(),
-                    EndCause::Error(Failure::StateConflict),
-                )));
-            }
-            Err(error) => return Err(error),
-        }
+        return Ok(ledger.into_step_result(reached));
     }
 
     for step in 0..resolved.spec.max_steps {

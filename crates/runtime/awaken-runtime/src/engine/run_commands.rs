@@ -245,10 +245,55 @@ pub(crate) async fn resume_run(
     reader: &dyn CommittedThreadView,
     context: RuntimeRunContext,
 ) -> Result<RunState> {
+    resume_with_continuation(
+        runtime,
+        command,
+        reader,
+        context,
+        ResumeContinuation::NativeLoop,
+    )
+    .await
+}
+
+pub(crate) async fn resume_tool_batch(
+    runtime: &Runtime,
+    command: ResumeCommand,
+    reader: &dyn CommittedThreadView,
+    context: RuntimeRunContext,
+) -> Result<RunState> {
+    if context.commit.is_none() {
+        return Err(Error::Execution(
+            "tool-batch handoff requires a durable commit coordinator".to_string(),
+        ));
+    }
+    resume_with_continuation(
+        runtime,
+        command,
+        reader,
+        context,
+        ResumeContinuation::ToolBatch,
+    )
+    .await
+}
+
+async fn resume_with_continuation(
+    runtime: &Runtime,
+    command: ResumeCommand,
+    reader: &dyn CommittedThreadView,
+    context: RuntimeRunContext,
+    continuation: ResumeContinuation,
+) -> Result<RunState> {
     let ticket = reader
         .resume_ticket(&command.run_id)
         .ok_or_else(|| Error::Execution("run is not awaiting".to_string()))?;
     validate_resume(&ticket, &command).map_err(|err| Error::Execution(err.to_string()))?;
+    if continuation == ResumeContinuation::ToolBatch
+        && ticket.reason() != AwaitReason::ToolPermission
+    {
+        return Err(Error::Execution(
+            "tool-batch handoff requires an awaiting tool permission".to_string(),
+        ));
+    }
 
     let context_messages = fresh_resume_context(
         &reader.committed_messages(&command.thread_id),
@@ -313,6 +358,7 @@ pub(crate) async fn resume_run(
         context_messages,
         reader,
         &context,
+        continuation,
     )
     .await
 }
