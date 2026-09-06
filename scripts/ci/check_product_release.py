@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import json
 import os
 import shlex
 import subprocess
@@ -199,9 +201,12 @@ def validate(
         script = shell_step(workflow, "Build, verify, and publish the Management image")
         commands = [shlex.split(line, comments=True) for line in script.replace("\\\n", " ").splitlines()]
         for selection in (["verify_management_payload()", "{"], ["verify_management_payload", "$image"],
-                          ["verify_management_payload", "$STAGING_TAG"]):
+                          ["docker", "pull", "$image"],
+                          ["AWAKEN_MANAGEMENT_IMAGE=$image", "scripts/e2e/management_image_e2e.sh"]):
             if commands.count(selection) != 1:
                 failures.append(f"Management payload has no unique exact selection: {selection}")
+        if ["verify_management_payload", "$STAGING_TAG"] in commands:
+            failures.append("Management payload checks a mutable staging tag")
         if '--certificate-github-workflow-sha "$SOURCE_REVISION"' not in script:
             failures.append("Management signature is not pinned to the source workflow commit")
     except ValueError as error:
@@ -250,10 +255,141 @@ def current_inputs() -> tuple[str, str, str, str, str, str, str, str, tuple[str,
     )
 
 
+@contextmanager
+def management_fixture(fault: str, *, reuse: bool = False):
+    """One synthetic Docker adapter for payload and full workflow regressions."""
+    shim_source = r'''#!/usr/bin/env python3
+import json, os, pathlib, shutil, sys
+root = pathlib.Path(os.environ["FIXTURE_ROOT"])
+args = sys.argv[1:]
+tool = pathlib.Path(sys.argv[0]).name
+fault = os.environ["FAULT"]
+digest = "sha256:" + "a" * 64
+with (root / "calls").open("a") as output:
+    output.write(json.dumps([tool, *args]) + "\n")
+if tool == "git":
+    print("revision")
+elif tool == "cosign":
+    if fault == "signature":
+        raise SystemExit("signature failure")
+elif tool == "management_image_e2e.sh":
+    with (root / "calls").open("a") as output:
+        output.write(json.dumps(["e2e", os.environ["AWAKEN_MANAGEMENT_IMAGE"]]) + "\n")
+    if fault == "e2e":
+        raise SystemExit("E2E failure")
+elif args[:2] == ["image", "inspect"]:
+    field = next(key for key in ("source", "revision", "version") if "image." + key in args[3])
+    print("wrong" if fault == field else {"source": "source", "revision": "revision", "version": "v1"}[field])
+elif args[0] == "create":
+    (root / "created-image").write_text(args[1])
+    print("fixture-container")
+elif args[0] == "cp":
+    name = "binary" if args[1].endswith("/awaken") else "manifest"
+    if fault == "published-manifest" and name == "manifest" and "@" in (root / "created-image").read_text():
+        pathlib.Path(args[2]).write_bytes(b"substituted registry payload")
+    else:
+        shutil.copyfile(root / ("image-" + name), args[2])
+elif args[0] == "rm":
+    assert "--volumes" in args, "anonymous image volumes must be reclaimed"
+    with (root / "removed").open("a") as output: output.write("removed\n")
+elif args[:3] == ["buildx", "imagetools", "inspect"]:
+    marker = root / "inspected"
+    first = not marker.exists()
+    marker.touch()
+    if first and os.environ["REUSE"] == "0":
+        raise SystemExit("manifest unknown")
+    print("Digest: " + ("not-a-digest" if fault == "digest" else digest))
+elif args[:3] == ["buildx", "imagetools", "create"]:
+    pass
+elif args[0] == "build":
+    pass
+elif args[0] == "push":
+    print("fixture: digest: " + ("not-a-digest" if fault == "digest" else digest) + " size: 1")
+elif args[0] == "pull":
+    if fault == "pull":
+        raise SystemExit("pull failed")
+else:
+    raise SystemExit("unexpected adapter call: " + repr(args))
+'''
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        context = root / "deploy/images/management"
+        context.mkdir(parents=True)
+        (context / ".awaken-management.bin").write_bytes(b"binary")
+        (context / ".awaken-verification.json").write_bytes(b"manifest")
+        (root / "image-binary").write_bytes(b"wrong" if fault == "binary" else b"binary")
+        if fault != "missing-manifest":
+            (root / "image-manifest").write_bytes(b"wrong" if fault == "manifest" else b"manifest")
+        (root / "verification-from-management-image.json").write_bytes(b"manifest")
+        shim = root / "adapter"
+        shim.write_text(shim_source)
+        shim.chmod(0o755)
+        for tool in ("docker", "cosign", "git"):
+            (root / tool).symlink_to(shim)
+        e2e = root / "scripts/e2e/management_image_e2e.sh"
+        e2e.parent.mkdir(parents=True)
+        e2e.symlink_to(shim)
+        yield root, dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
+                         FIXTURE_ROOT=str(root), FAULT=fault, REUSE=str(int(reuse)), RUNNER_TEMP=str(root),
+                         SOURCE_REPOSITORY="source", SOURCE_REVISION="revision", GITHUB_REF_NAME="v1",
+                         GITHUB_SHA="revision", GITHUB_REPOSITORY="awakenworks/awaken",
+                         GITHUB_REF="refs/tags/v1", GITHUB_RUN_ID="1", GITHUB_RUN_ATTEMPT="1",
+                         GITHUB_OUTPUT=str(root / "outputs"), WORKFLOW_PATH=".github/workflows/release.yml",
+                         SIGSTORE_OIDC_ISSUER="https://token.actions.githubusercontent.com",
+                         MANAGEMENT_IMAGE_REPOSITORY="ghcr.io/awakenworks/awaken")
+
+
 class ProductReleaseCheckerTests(unittest.TestCase):
+    def test_actual_management_workflow_checks_the_promoted_digest(self) -> None:
+        # Causes: new/reused image; payload at the eventual digest equal/different;
+        # pull, E2E, signature success/failure; valid/malformed digest.
+        # R1 all valid -> check and run exactly the promoted digest, then publish.
+        # R2 changed payload -> no E2E, signing or promotion. Old code checked a
+        # mutable staging tag, so a different push result escaped its comparison.
+        # R3 any listed adapter failure -> no promotion/output. Signature verification
+        # for reused images precedes execution; signing new images follows E2E.
+        # These execute the real workflow Bash with synthetic adapters; no live
+        # registry, Docker, E2E runtime or signature verification is claimed.
+        script = shell_step(WORKFLOW.read_text(), "Build, verify, and publish the Management image")
+        image = "ghcr.io/awakenworks/awaken@sha256:" + "a" * 64
+        for reuse in (False, True):
+            for fault in ("none", "published-manifest", "pull", "e2e", "signature", "digest"):
+                with self.subTest(reuse=reuse, fault=fault), management_fixture(fault, reuse=reuse) as (root, environment):
+                    result = subprocess.run(["bash", "-c", script], cwd=root, env=environment,
+                                            capture_output=True, text=True, timeout=30)
+                    calls = [json.loads(line) for line in (root / "calls").read_text().splitlines()]
+                    promoted = [call for call in calls if call[:4] == ["docker", "buildx", "imagetools", "create"]]
+                    signed = [call for call in calls if call[:2] == ["cosign", "sign"]]
+                    if fault != "none":
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertFalse(promoted, calls)
+                        self.assertFalse((root / "outputs").exists(), calls)
+                        if fault in {"published-manifest", "pull", "digest"}:
+                            self.assertFalse(signed, calls)
+                            self.assertFalse(any(call[0] == "e2e" for call in calls), calls)
+                        if reuse and fault == "signature":
+                            self.assertFalse(any(call[0] == "e2e" for call in calls), calls)
+                        continue
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual([call[2] for call in calls if call[:2] == ["docker", "create"]], [image])
+                    self.assertEqual([call[1] for call in calls if call[0] == "e2e"], [image])
+                    self.assertEqual(len(promoted), int(not reuse))
+                    self.assertEqual(len(signed), int(not reuse))
+                    if signed:
+                        self.assertEqual(signed[0][-1], image)
+                        self.assertEqual(promoted[0][-1], image)
+                        self.assertLess(calls.index(["e2e", image]), calls.index(signed[0]))
+                    if reuse:
+                        verified = next(call for call in calls if call[:2] == ["cosign", "verify"])
+                        self.assertEqual(verified, ["cosign", "verify", "--certificate-identity",
+                            "https://github.com/awakenworks/awaken/.github/workflows/release.yml@refs/tags/v1",
+                            "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
+                            "--certificate-github-workflow-sha", "revision", image])
+                        self.assertLess(calls.index(verified), calls.index(["docker", "create", image]))
+
     def test_image_proof_carrier_and_both_consumers_are_mandatory(self) -> None:
         # M1 removing carrier COPY/readonly mode/build-context allowlist or
-        # either branch's common validator call rejects. A comment mentioning
+        # the common immutable validator call rejects. A comment mentioning
         # the omitted call is not executable linkage to the same authority.
         inputs = current_inputs()
         self.assertEqual(validate(*inputs), [])
@@ -262,8 +398,8 @@ class ProductReleaseCheckerTests(unittest.TestCase):
             (inputs[0], inputs[1].replace("chmod 0444", "chmod 0666"), *inputs[2:]),
             (*inputs[:2], inputs[2].replace("!.awaken-verification.json\n", ""), *inputs[3:]),
         ]
-        for target in ("$image", "$STAGING_TAG"):
-            command = 'verify_management_payload "' + target + '"'
+        for command in ('verify_management_payload "$image"', 'docker pull "$image"',
+                        'AWAKEN_MANAGEMENT_IMAGE="$image" scripts/e2e/management_image_e2e.sh'):
             mutations.append((inputs[0].replace(command, "# " + command), *inputs[1:]))
         for index, mutation in enumerate(mutations):
             with self.subTest(rule=index):
@@ -279,43 +415,10 @@ class ProductReleaseCheckerTests(unittest.TestCase):
         script = shell_step(WORKFLOW.read_text(), "Build, verify, and publish the Management image")
         body = script.split("verify_management_payload() {\n", 1)[1].split("\n}", 1)[0]
         function = "verify_management_payload() {\n" + body + "\n}\n"
-        shim_source = '''#!/usr/bin/env python3
-import os, pathlib, shutil, sys
-root = pathlib.Path(os.environ["FIXTURE_ROOT"])
-args = sys.argv[1:]
-if args[:2] == ["image", "inspect"]:
-    field = next(key for key in ("source", "revision", "version") if "image." + key in args[3])
-    print("wrong" if os.environ["FAULT"] == field else {"source": "source", "revision": "revision", "version": "v1"}[field])
-elif args[0] == "create":
-    print("fixture-container")
-elif args[0] == "cp":
-    name = "binary" if args[1].endswith("/awaken") else "manifest"
-    shutil.copyfile(root / ("image-" + name), args[2])
-elif args[0] == "rm":
-    assert "--volumes" in args, "anonymous image volumes must be reclaimed"
-    with (root / "removed").open("a") as output: output.write("removed\\n")
-else:
-    raise SystemExit("unexpected Docker adapter call: " + repr(args))
-'''
         for fault in ("none", "source", "revision", "version", "binary", "manifest", "missing-manifest"):
-            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                context = root / "deploy/images/management"
-                context.mkdir(parents=True)
-                (context / ".awaken-management.bin").write_bytes(b"binary")
-                (context / ".awaken-verification.json").write_bytes(b"manifest")
-                (root / "image-binary").write_bytes(b"wrong" if fault == "binary" else b"binary")
-                if fault != "missing-manifest":
-                    (root / "image-manifest").write_bytes(b"wrong" if fault == "manifest" else b"manifest")
-                (root / "verification-from-management-image.json").write_bytes(b"manifest")
-                shim = root / "docker"
-                shim.write_text(shim_source)
-                shim.chmod(0o755)
+            with self.subTest(fault=fault), management_fixture(fault) as (root, environment):
                 result = subprocess.run(["bash", "-c", 'set -euo pipefail\n' + function + 'verify_management_payload "fixture-image"\n'],
-                                        cwd=root, capture_output=True, text=True, timeout=30,
-                                        env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
-                                                 FIXTURE_ROOT=str(root), FAULT=fault, RUNNER_TEMP=str(root),
-                                                 SOURCE_REPOSITORY="source", SOURCE_REVISION="revision", GITHUB_REF_NAME="v1"))
+                                        cwd=root, capture_output=True, text=True, timeout=30, env=environment)
                 if fault == "none":
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 else:
