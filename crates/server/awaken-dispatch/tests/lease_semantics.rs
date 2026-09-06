@@ -949,3 +949,59 @@ async fn killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen(
         RunState::Running
     );
 }
+
+#[tokio::test]
+async fn native_cancelled_external_future_does_not_acknowledge_physical_return() {
+    // N1: Native entered an external tool; N2: ownership loss cancels and drops
+    // that tool future; N3: Runtime returns a logical error. E1 no late write;
+    // E2 the physical slot stays occupied; E3 successor cannot re-enter. This
+    // differs from the adjacent cooperative-return case: future Drop is not
+    // termination evidence, even when its enclosing Runtime future returned.
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, calls, entered) =
+        harness::blocking_tool_runtime_with_entry_signal(release.clone());
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    store
+        .enqueue(RunDispatch::new(activation("native-drop")))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("owner-a", LEASE, 0, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let worker =
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-a").with_lease_ms(LEASE);
+    let driven =
+        tokio::spawn(async move { worker.drive_claimed(claimed, harness::clock(0)).await });
+    entered.notified().await;
+    let committed_before = commit.commit_count();
+    let replacement = store
+        .claim("owner-b", LEASE, LEASE + 1, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), driven)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    release.add_permits(1);
+    assert_eq!(commit.commit_count(), committed_before, "E1");
+    assert!(
+        store.list_dispatches().await.unwrap()[0].physical_attempt_active,
+        "E2"
+    );
+    assert_eq!(
+        store
+            .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1)
+            .await
+            .unwrap(),
+        AttemptAdmission::Blocked,
+        "E3"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}

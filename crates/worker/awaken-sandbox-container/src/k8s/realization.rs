@@ -2,7 +2,7 @@ use std::fmt::Debug;
 use std::time::Duration;
 
 use awaken_provisioning_contract as pc;
-use k8s_openapi::api::core::v1::{Pod, PodSpec};
+use k8s_openapi::api::core::v1::Pod;
 use kube::api::PostParams;
 use kube::{Api, Resource, ResourceExt};
 use serde::Serialize;
@@ -14,9 +14,6 @@ use crate::RuntimeError;
 const REALIZATION_DIGEST_ANNOTATION: &str = "awaken.dev/realization-digest";
 const POD_READY_TIMEOUT: Duration = Duration::from_secs(120);
 const POD_READY_POLL: Duration = Duration::from_millis(250);
-
-use super::api_defaults::normalize_pod_spec;
-
 
 /// Stamp the exact desired Kubernetes object before its first API write. A retry
 /// may reuse an existing object only when this immutable realization fingerprint
@@ -424,6 +421,7 @@ pub(super) async fn await_pod_ready(api: &Api<Pod>, name: &str) -> Result<(), Ru
 
 #[cfg(test)]
 mod tests {
+    use super::super::api_defaults::normalize_pod_spec;
     use k8s_openapi::api::core::v1::{
         Container, ContainerState, ContainerStateRunning, ContainerStateTerminated,
         ContainerStateWaiting, ContainerStatus, PersistentVolumeClaimVolumeSource, PodSpec,

@@ -10118,6 +10118,7 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
             payload: serde_json::json!({
                 "state": RunState::Awaiting,
                 "await_target": awaken_agent_contract::agent::awaiting::AwaitTarget::ToolCall {
+                    authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
                     reason: awaken_agent_contract::agent::awaiting::ToolAwaitReason::Permission,
                     call_id: first_call.into(),
                     tool: awaken_agent_contract::agent::awaiting::PendingTool {
@@ -10236,6 +10237,7 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         payload: serde_json::json!({
             "state": RunState::Awaiting,
             "await_target": awaken_agent_contract::agent::awaiting::AwaitTarget::ToolCall {
+                authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
                 reason: awaken_agent_contract::agent::awaiting::ToolAwaitReason::Permission,
                 call_id: sibling_call.into(),
                 tool: awaken_agent_contract::agent::awaiting::PendingTool {

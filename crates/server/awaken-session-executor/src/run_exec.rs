@@ -725,7 +725,9 @@ mod tests {
             let claim = fence.and_then(|fence| match fence {
                 awaken_dispatch::ArtifactPublicationFence::Run(claim) => Some(claim),
                 awaken_dispatch::ArtifactPublicationFence::SessionMaterialization(_)
-                | awaken_dispatch::ArtifactPublicationFence::RepositoryPublication { .. } => None,
+                | awaken_dispatch::ArtifactPublicationFence::RepositoryPublication { .. } => {
+                    None
+                }
                 awaken_dispatch::ArtifactPublicationFence::CheckpointRelease(_) => None,
                 awaken_dispatch::ArtifactPublicationFence::Terminal(_) => None,
             });

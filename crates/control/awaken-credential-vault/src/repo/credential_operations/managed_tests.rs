@@ -8,7 +8,7 @@ use awaken_agent_contract::RedactedString;
 
 #[derive(Default)]
 struct RecordingRolloutTarget {
-    fail: AtomicBool,
+    failure: std::sync::Mutex<Option<ManagedCredentialAdoptionError>>,
     pending: AtomicBool,
     events: std::sync::Mutex<Vec<ManagedCredentialRollout>>,
 }
@@ -19,10 +19,8 @@ impl ManagedCredentialRolloutTarget for RecordingRolloutTarget {
         &self,
         event: &ManagedCredentialRollout,
     ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
-        if self.fail.load(Ordering::SeqCst) {
-            return Err(ManagedCredentialAdoptionError::Unavailable(
-                "service controller unavailable".into(),
-            ));
+        if let Some(error) = self.failure.lock().unwrap().clone() {
+            return Err(error);
         }
         self.events.lock().unwrap().push(event.clone());
         if self.pending.load(Ordering::SeqCst) {
@@ -440,17 +438,48 @@ async fn managed_update_atomically_publishes_exact_rollout_until_service_acknowl
     );
     assert_eq!(repo.managed_rollout("missing").await.unwrap(), None, "R0");
 
+    // R1 additionally requires correlated structured diagnostics, without the
+    // untrusted participant's secret-bearing error text. Future-local capture
+    // keeps this assertion independent of parallel test subscribers.
+    use tracing::instrument::WithSubscriber;
     let target = RecordingRolloutTarget::default();
-    target.fail.store(true, Ordering::SeqCst);
-    assert_eq!(
-        reconcile_managed_credential_rollouts(&repo, &target)
-            .await
-            .unwrap(),
-        0
-    );
-    assert_eq!(repo.pending_managed_rollouts().await.unwrap(), events);
-
-    target.fail.store(false, Ordering::SeqCst);
+    // Every closed port failure shares the durable Pending rule but retains a
+    // distinct stable diagnostic; payload-bearing variants must be redacted.
+    for (error, code) in [
+        (
+            ManagedCredentialAdoptionError::Unavailable("secret-diagnostic-canary".into()),
+            "unavailable",
+        ),
+        (
+            ManagedCredentialAdoptionError::InvalidEvent("secret-diagnostic-canary".into()),
+            "invalid_event",
+        ),
+        (
+            ManagedCredentialAdoptionError::IdentityCollision,
+            "identity_collision",
+        ),
+        (ManagedCredentialAdoptionError::Unauthorized, "unauthorized"),
+    ] {
+        let captured = awaken_reliability_testkit::events::CapturedEvents::default();
+        *target.failure.lock().unwrap() = Some(error);
+        assert_eq!(
+            reconcile_managed_credential_rollouts(&repo, &target)
+                .with_subscriber(captured.clone())
+                .await
+                .unwrap(),
+            0
+        );
+        let diagnostics = captured.snapshot();
+        let delivery = diagnostics
+            .iter()
+            .find(|fields| fields.get("phase").is_some_and(|v| v == "delivery"))
+            .unwrap();
+        assert_eq!(delivery["rollout_id"], events[0].id);
+        assert_eq!(delivery["failure"], code);
+        assert!(!format!("{diagnostics:?}").contains("secret-diagnostic-canary"));
+        assert_eq!(repo.pending_managed_rollouts().await.unwrap(), events);
+    }
+    *target.failure.lock().unwrap() = None;
     target.pending.store(true, Ordering::SeqCst);
     assert_eq!(
         reconcile_managed_credential_rollouts(&repo, &target)

@@ -232,6 +232,7 @@ struct BlockingCancelAttemptExecutor {
 struct OwnershipCancellationAttemptExecutor {
     entered: Arc<tokio::sync::Notify>,
     cancellation_observed: Arc<tokio::sync::Notify>,
+    cleanup_release: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 struct NonQuiescingAttemptExecutor {
@@ -277,6 +278,9 @@ impl awaken_runtime_contract::execution::RunExecutor for OwnershipCancellationAt
         self.entered.notify_one();
         cancellation.cancelled().await;
         self.cancellation_observed.notify_one();
+        if let Some(release) = &self.cleanup_release {
+            release.acquire().await.unwrap().forget();
+        }
         Err(awaken_runtime_contract::execution::Error::Execution(
             "exact claim ownership was lost".into(),
         ))
@@ -933,6 +937,69 @@ async fn expired_replaced_claim_stops_the_only_renewal_and_executes_no_effect() 
 }
 
 #[tokio::test(start_paused = true)]
+async fn physical_return_ack_retries_transport_without_reexecuting_the_attempt() {
+    // Cause/effect table after actual executor return: A1 transient failure
+    // before write; A2 write committed but response lost; A3 request times out;
+    // A4 permanent rejection. A1-A3 -> retry the SAME claim, one inference,
+    // one input and one terminal commit, no occupied slot; A4 -> error, retain
+    // the slot. Empty-slot ACK is the existing idempotent store transition.
+    // This is a Worker integration test, not just a direct store retry oracle.
+    for fault in [
+        harness::FinishFault::BeforeWrite,
+        harness::FinishFault::LostResponse,
+        harness::FinishFault::Timeout,
+        harness::FinishFault::Rejected,
+    ] {
+        let rejected = matches!(fault, harness::FinishFault::Rejected);
+        let store = Arc::new(FlakyDispatchStore::new(0).with_finish_fault(fault));
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let (runtime, infers) = counting_text_runtime();
+        let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "ack-owner")
+            .with_lease_ms(90);
+        store
+            .enqueue(RunDispatch::new(activation("ack-retry")))
+            .await
+            .unwrap();
+        let claimed = store
+            .claim("ack-owner", 90, 0, &Default::default())
+            .await
+            .unwrap()
+            .unwrap();
+        let exact = RunClaim::from(&claimed.lease);
+        let result = tokio::time::timeout(
+            Duration::from_millis(250),
+            worker.drive_claimed(claimed, Arc::new(ManualClock::new(0))),
+        )
+        .await
+        .expect("A3 ACK request timeout must not abandon the observed return");
+        assert_eq!(
+            result.is_err(),
+            rejected,
+            "{fault:?}: retry transport, not execution"
+        );
+        assert_eq!(infers.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            commit.commit_count(),
+            2,
+            "one input and one terminal commit, no replay"
+        );
+        assert_eq!(
+            store.finish_claims(),
+            vec![exact; if rejected { 1 } else { 2 }]
+        );
+        assert_eq!(
+            store
+                .list_dispatches()
+                .await
+                .unwrap()
+                .iter()
+                .any(|row| row.physical_attempt_active),
+            rejected
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn lost_renewal_cancels_the_in_flight_attempt() {
     // Test design — Rule RG5 from the adjacent decision table. Causes: C1 the
     // exact claim has entered its attempt; C2 its lease expires; C3 a peer
@@ -941,6 +1008,10 @@ async fn lost_renewal_cancels_the_in_flight_attempt() {
     // E2 the stale attempt exits without a Thread commit; E3 no later renewal
     // is emitted. Constraint: renewal/fencing remain the only ownership truth;
     // cancellation is a signal projection, not another claim state machine.
+    // RG5b: delayed cleanup acknowledges cancellation, then stays in the same
+    // executor future beyond the lease request budget. Only its later return
+    // may clear the slot; a timed-out observer must remain attached.
+    let cleanup_release = Arc::new(tokio::sync::Semaphore::new(0));
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(
@@ -952,6 +1023,7 @@ async fn lost_renewal_cancels_the_in_flight_attempt() {
     worker.install_attempt_executor(Arc::new(OwnershipCancellationAttemptExecutor {
         entered: entered.clone(),
         cancellation_observed: cancellation_observed.clone(),
+        cleanup_release: Some(cleanup_release.clone()),
     }));
     let clock = Arc::new(ManualClock::new(0));
     store
@@ -983,6 +1055,16 @@ async fn lost_renewal_cancels_the_in_flight_attempt() {
     );
     tokio::time::advance(Duration::from_millis(30)).await;
     observed_wait.await;
+    tokio::time::advance(Duration::from_millis(180)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !driven.is_finished(),
+        "RG5b cleanup observer survives request budget"
+    );
+    assert!(store.list_dispatches().await.unwrap()[0].physical_attempt_active);
+    cleanup_release.add_permits(1);
     assert!(driven.await.expect("drive task joins").is_err(), "RG5/E1");
     assert_eq!(commit.commit_count(), 0, "RG5/E2");
     assert!(
@@ -1035,7 +1117,15 @@ async fn non_quiescing_attempt_blocks_replacement_after_lease_takeover() {
         .unwrap()
         .expect("RG9 B mutation claim");
     tokio::time::advance(Duration::from_millis(15)).await;
-    assert!(driven.await.expect("RG9 old drive joins").is_err(), "E1");
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !driven.is_finished(),
+        "E1 unknown effect retains its observer"
+    );
+    driven.abort();
+    assert!(driven.await.unwrap_err().is_cancelled());
     assert_eq!(commit.commit_count(), 0, "E1");
     assert!(
         store.list_dispatches().await.unwrap()[0].physical_attempt_active,
@@ -1188,6 +1278,7 @@ async fn stalled_renewal_call_cancels_before_the_lease_can_be_recovered() {
     worker.install_attempt_executor(Arc::new(OwnershipCancellationAttemptExecutor {
         entered: entered.clone(),
         cancellation_observed: cancellation_observed.clone(),
+        cleanup_release: None,
     }));
     store
         .enqueue(RunDispatch::new(activation("stalled-renewal-call")))

@@ -7,8 +7,7 @@ use std::sync::Arc;
 
 use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
 use awaken_runtime_contract::tool::{
-    RawTool, ToolCall, ToolConcurrency, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput,
-    ToolRecoveryCapability,
+    RawTool, ToolCall, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput,
 };
 
 use awaken_runtime_contract::tool_export::{AcpToolExport, AcpToolExporter};
@@ -20,9 +19,7 @@ pub(crate) fn environment_executor_tools(
     executor: Arc<dyn ToolExecutor>,
 ) -> Vec<Arc<dyn RawTool>> {
     ids.into_iter()
-        .map(|id| {
-            Arc::new(EnvironmentAcpTool::new(id, executor.clone())) as Arc<dyn RawTool>
-        })
+        .map(|id| Arc::new(EnvironmentAcpTool::new(id, executor.clone())) as Arc<dyn RawTool>)
         .collect()
 }
 
@@ -341,6 +338,7 @@ impl AcpToolExporter for RecordingAcpToolExporter {
 mod tests {
     use super::*;
     use awaken_runtime_contract::permission::ToolPermissionVerdict;
+    use awaken_runtime_contract::tool::{ToolConcurrency, ToolRecoveryCapability};
 
     struct Echo(&'static str);
 
@@ -617,6 +615,8 @@ mod tests {
                 snapshot.id.0,
                 snapshot.fingerprint.0,
                 AwaitTarget::ToolCall {
+                    authority:
+                        awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
                     reason: ToolAwaitReason::Permission,
                     call_id: call.call_id.clone(),
                     tool: PendingTool {

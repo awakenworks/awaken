@@ -706,16 +706,25 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
         assert!(environment.spawn_agent(command).await.is_err(), "W3");
         // W4 retained Workdir + either cwd -> same physical owner and exact
         // ACP-written bytes; rebind must not adopt or replace the workspace.
-        let rebound = provider.rebind_retained(&environment.handle(), &environment)
-            .await.unwrap();
+        let rebound = provider
+            .rebind_retained(&environment.handle(), &environment)
+            .await
+            .unwrap();
         let (SessionEnvironment::Workdir(before), SessionEnvironment::Workdir(after)) =
-            (&environment, &rebound) else { unreachable!() };
+            (&environment, &rebound)
+        else {
+            unreachable!()
+        };
         assert!(Arc::ptr_eq(before, after), "W4 owner");
-        let retained = rebound.tool_executor().invoke(&ToolCall {
-            call_id: "native-after-rebind".into(),
-            tool_id: "read".into(),
-            arguments: serde_json::json!({"path": logical}),
-        }).await.unwrap();
+        let retained = rebound
+            .tool_executor()
+            .invoke(&ToolCall {
+                call_id: "native-after-rebind".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({"path": logical}),
+            })
+            .await
+            .unwrap();
         assert!(retained.text().contains("acp-bytes"), "W4 bytes");
         rebound.dispose().await.unwrap();
     }

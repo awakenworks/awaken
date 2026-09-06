@@ -99,6 +99,13 @@ stale owner/incarnation/epoch fails closed. Independent Sessions are scheduled
 earliest-expiry first with a fixed per-Worker concurrency bound. More cloud
 Workers multiply capacity, but never remove this local backpressure.
 
+Runtime also captures the existing Session slot identity before renewal I/O.
+The exact lease tuple alone cannot distinguish removal followed by recreation
+with equal fields. Success and failure responses must still name that same slot;
+revocation checks it before cancelling Resource preparation and again after the
+realization/lifecycle locks, before interrupting or retiring a projection.
+
+
 When MCP Stage or publication overlaps a heartbeat, expiry advances but the
 completed physical effect does not change identity. Activation validates a
 bijection of receipt generations against current claims, reconstructs each
@@ -110,7 +117,11 @@ remains mandatory; a receipt never extends authority by itself.
 
 Activation commits any exactly reported pending Resource generation and then
 returns Publish for the actual staged receipt, not an invented newer-expiry
-receipt. Runtime already authorizes this immutable request through its live
+receipt. Activation may supersede an older unacknowledged generation: filter
+validated Stage receipts through the post-activation publication set and drain
+the obsolete generation. Publishing every pre-activation receipt would make the
+subsequent acknowledgement disagree with durable truth.
+Runtime already authorizes this immutable request through its live
 same-generation root lease. Acknowledgement accepts that completed generation
 under the same monotonic relation; drains retain exact matching. Response-loss
 replay preserves Idle/Running and does not repeat a root write. A different

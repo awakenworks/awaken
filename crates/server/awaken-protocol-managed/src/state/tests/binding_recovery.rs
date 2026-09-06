@@ -11,7 +11,7 @@ impl awaken_session_contract::ExecutableProjectionRefresh for RecordingProjectio
     async fn refresh(&self) -> Result<(), String> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
-            Err("projection unavailable".into())
+            Err("secret-projection-canary".into())
         } else {
             Ok(())
         }
@@ -525,6 +525,23 @@ impl awaken_session_application::SessionCredentialSource for RolloutCredentialSo
     }
 }
 
+fn rollout_event(
+    id: &str,
+    version: u64,
+    operation: awaken_credential_vault::repo::ManagedCredentialOperation,
+) -> awaken_credential_vault::repo::ManagedCredentialRollout {
+    awaken_credential_vault::repo::ManagedCredentialRollout {
+        id: id.into(),
+        workspace_id: "workspace-a".into(),
+        vault_id: "vault-event".into(),
+        credential_id: "credential-a".into(),
+        source_id: awaken_credential_contract::CredentialSourceId("source-a".into()),
+        source_version: version,
+        credential_revision: version,
+        operation,
+    }
+}
+
 #[tokio::test]
 async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roots() {
     // Vault rollout cause/effect graph. C1 a committed Vault event proves
@@ -537,6 +554,10 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
     // source B and other-Workspace roots remain byte-for-byte unchanged.
     //
     // | Rule | Workspace | actual source | operation | Effect |
+    // V1 also carries an older Active but unacknowledged generation. Staging
+    // both versions then activating the replacement makes the old one Draining;
+    // Publish must use only the new generation's actual receipt. Publishing the
+    // complete pre-activation Stage set instead makes acknowledgement fail.
     // | V1 | A | A | update | E1 |
     // | V2 | A | B | any | E4 unrelated |
     // | V3 | B | A | any | E4 scope fence |
@@ -566,26 +587,11 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
     let state = ManagedState::new_with_mcp(RehydrateFake::default())
         .with_session_repo(repo.clone())
         .with_credential_source(Arc::new(RolloutCredentialSource));
-    let event =
-        |id: &str,
-         version: u64,
-         operation: awaken_credential_vault::repo::ManagedCredentialOperation| {
-            awaken_credential_vault::repo::ManagedCredentialRollout {
-                id: id.into(),
-                workspace_id: "workspace-a".into(),
-                vault_id: "vault-event".into(),
-                credential_id: "credential-a".into(),
-                source_id: awaken_credential_contract::CredentialSourceId("source-a".into()),
-                source_version: version,
-                credential_revision: version,
-                operation,
-            }
-        };
 
     // Publication regression rule: old active + replacement staged => publish
     // only the new pending generation and drain the old one. A receipt for the
     // old generation must not inflate the acknowledgement set from one to two.
-    let updated = event(
+    let updated = rollout_event(
         "rollout-source-update",
         2,
         awaken_credential_vault::repo::ManagedCredentialOperation::Update,
@@ -619,7 +625,7 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
         "V3/E4"
     );
 
-    let archived = event(
+    let archived = rollout_event(
         "rollout-source-archive",
         3,
         awaken_credential_vault::repo::ManagedCredentialOperation::Archive,
@@ -644,7 +650,7 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
     let after_archive = repo.get("source-affected").await.unwrap();
     assert!(after_archive.mcp.desired_attachments().is_empty(), "V4/E2");
 
-    let deleted = event(
+    let deleted = rollout_event(
         "rollout-source-delete",
         4,
         awaken_credential_vault::repo::ManagedCredentialOperation::Delete,
@@ -1807,4 +1813,108 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
         assert!(second_restart.list_resources(&id).unwrap().1.is_empty());
     })
     .await;
+}
+
+#[tokio::test]
+async fn vault_rollout_reports_busy_and_postcommit_failure_then_replays_exact_event() {
+    // Causes: C1 busy root, C2 idle root, C3 projection refresh unavailable,
+    // C4 publication fails after commit, C5 exact event redelivery after recovery. Rules: R1 C1+C2 -> Pending,
+    // idle sibling advances while busy root stays byte-identical; R2 C2+C3 ->
+    // Pending/precommit diagnostic, revision 1; R3 C2+C4 -> Pending/postcommit
+    // diagnostic, revision 2; R4 C5 ->
+    // Converged without a second credential transition. Untrusted errors must
+    // never enter diagnostics. Workspace/source discovery is covered by V1-V5.
+    use awaken_credential_vault::repo::{
+        ManagedCredentialAdoptionProgress, ManagedCredentialOperation,
+        ManagedCredentialRolloutTarget,
+    };
+    use tracing::instrument::WithSubscriber;
+    for case in ["busy", "precommit", "postcommit"] {
+        let failed_refresh = case == "precommit";
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        let mut busy = persisted_with_mcp_source("busy", "source-a", "vault-event");
+        busy.execution = SessionExecutionState::Running;
+        if case == "busy" {
+            create_session_fixture(repo.as_ref(), "workspace-a", busy).await;
+        }
+        create_session_fixture(
+            repo.as_ref(),
+            "workspace-a",
+            persisted_with_mcp_source("idle", "source-a", "vault-event"),
+        )
+        .await;
+        let busy_before = repo.get("busy").await.ok();
+        let refresh = Arc::new(RecordingProjectionRefresh {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            fail: std::sync::atomic::AtomicBool::new(failed_refresh),
+        });
+        let runtime = RehydrateFake::default();
+        runtime
+            .reject_mcp_publication
+            .store(case == "postcommit", std::sync::atomic::Ordering::SeqCst);
+        let state = ManagedState::new_with_mcp(runtime.clone())
+            .with_session_repo(repo.clone())
+            .with_credential_source(Arc::new(RolloutCredentialSource))
+            .with_executable_projection_refresh(refresh.clone());
+        let event = rollout_event("rollout-retry", 2, ManagedCredentialOperation::Update);
+        let captured = awaken_reliability_testkit::events::CapturedEvents::default();
+        assert_eq!(
+            state
+                .rollout(&event)
+                .with_subscriber(captured.clone())
+                .await
+                .unwrap(),
+            ManagedCredentialAdoptionProgress::Pending
+        );
+        let diagnostics = captured.snapshot();
+        let expected = if case == "postcommit" {
+            "projection_after_commit"
+        } else {
+            "session_adoption"
+        };
+        let diagnostic = diagnostics
+            .iter()
+            .find(|fields| fields.get("phase").is_some_and(|phase| phase == expected))
+            .unwrap_or_else(|| panic!("correlated failure ({failed_refresh}): {diagnostics:?}"));
+        assert_eq!(diagnostic["rollout_id"], event.id);
+        assert_eq!(
+            diagnostic["session_id"],
+            if case == "busy" { "busy" } else { "idle" }
+        );
+        assert!(!format!("{diagnostics:?}").contains("secret-"));
+        assert_eq!(
+            repo.get("idle").await.unwrap().mcp.desired_attachments()[0]
+                .credential
+                .as_ref()
+                .unwrap()
+                .credential
+                .revision,
+            if failed_refresh { 1 } else { 2 }
+        );
+        if let Some(before) = busy_before {
+            assert_eq!(repo.get("busy").await.unwrap(), before, "R1");
+        } else {
+            runtime
+                .reject_mcp_publication
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            refresh
+                .fail
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(
+                state.rollout(&event).await.unwrap(),
+                ManagedCredentialAdoptionProgress::Converged,
+                "R3"
+            );
+            let recovered = repo.get("idle").await.unwrap();
+            assert_eq!(
+                state.rollout(&event).await.unwrap(),
+                ManagedCredentialAdoptionProgress::Converged
+            );
+            assert_eq!(
+                repo.get("idle").await.unwrap(),
+                recovered,
+                "exact replay does not mutate"
+            );
+        }
+    }
 }

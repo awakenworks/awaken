@@ -596,7 +596,14 @@ pub(super) async fn drive(
             Some(token) => {
                 tokio::select! {
                     biased;
-                    _ = token.cancelled() => None,
+                    _ = token.cancelled() => {
+                        // Native inference only yields response data. Discarding
+                        // it cannot invoke its proposed tools: those cross the
+                        // separately governed tool boundary below. The local
+                        // attempt can end; this is not a claim that provider
+                        // computation/billing stopped on disconnect.
+                        None
+                    },
                     result = inference => Some(result),
                 }
             }
@@ -854,7 +861,13 @@ pub(super) async fn drive(
             Some(token) => {
                 tokio::select! {
                     biased;
-                    _ = token.cancelled() => None,
+                    _ = token.cancelled() => {
+                        // Drop cancels local polling, not an opaque remote effect.
+                        // Keep durable physical admission fenced after this
+                        // logical cancellation unless actual termination is known.
+                        context.physical_quiescence.mark_uncertain();
+                        None
+                    },
                     result = tool_execution => Some(result),
                 }
             }
