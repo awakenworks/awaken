@@ -1,4 +1,5 @@
 *
 !.awaken-management.bin
+!.awaken-verification.json
 !container.toml
 !entrypoint.sh

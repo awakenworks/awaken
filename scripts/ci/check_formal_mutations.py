@@ -158,6 +158,19 @@ def mutate_unchecked_model(case_root: Path) -> None:
               expected=f"formal evidence {model} is absent from strict CI")
 
 
+def mutate_commented_release_self_test(case_root: Path) -> None:
+    # P1: the Python authority and model still exist, but its only executable
+    # strict-CI selection is commented out. Static text presence earns no link.
+    gate = case_root / "scripts/ci/check_formal.sh"
+    source = gate.read_text()
+    anchor = "python3 scripts/release/verification_manifest.py self-test"
+    if source.count(anchor) != 1:
+        raise SystemExit("release self-test mutation anchor drifted")
+    gate.write_text(source.replace(anchor, "# " + anchor))
+    must_fail(case_root, "check_formal_coverage.py", "comment-only Python self-test",
+              expected="assembly_role.verified_admission_requires_exact_fresh_tcb_fingerprint is model-linked without executable production evidence")
+
+
 def mutate_missing_proof_grade(case_root: Path) -> None:
     path = case_root / "formal" / "coverage.json"
     ledger = json.loads(path.read_text())
@@ -357,7 +370,11 @@ def main() -> None:
     model_selection.add_argument("--audit-commit-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--effect-retirement-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--credential-removal-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--verified-admission-model-mutants", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
+    if arguments.verified_admission_model_mutants is not None:
+        check_verified_admission_model_mutants(arguments.verified_admission_model_mutants)
+        return
     if arguments.credential_removal_model_mutant is not None:
         check_credential_removal_model_mutant(arguments.credential_removal_model_mutant)
         return
@@ -397,6 +414,7 @@ def main() -> None:
     # mutant may introduce a second ledger or a test-only acceptance path.
     mutations = (
         mutate_removed_harness,
+        mutate_commented_release_self_test,
         mutate_commented_harness,
         mutate_wrong_harness_package,
         mutate_harness_name_prefix,
@@ -603,6 +621,33 @@ def check_credential_removal_model_mutant(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "ManagedCredentialCreation", source, config,
                              [(mutant, config, "AbortedCreationIsClean")])
     print("Credential removal mutation score: 1/1 killed (unobserved physical deletion)")
+
+
+def check_verified_admission_model_mutants(tlc_jar: Path) -> None:
+    # R2/R3/R8: omit one target binding, expiry or release guard. Only the named safety
+    # violation after a green baseline counts; tool errors never count as kills.
+    source = (ROOT / "formal/tla/VerifiedProfileAdmission.tla").read_text()
+    config = (ROOT / "formal/tla/VerifiedProfileAdmission.cfg").read_text()
+    mutations = []
+    for guard, invariant in (
+        (r"              /\ \A d \in Dependencies : snapshot.versions[d] = 0", "AcceptedHasExactFingerprint"),
+        (r"              /\ \A d \in Dependencies : snapshot.configurations[d] = 0", "AcceptedHasExactFingerprint"),
+        (r"                    /\ snapshot.now - snapshot.observed[d] <= 1", "AcceptedHasFreshEvidence"),
+        ("ReleaseAdmissible == /\\ release.artifactMatches", "ReleaseConsumptionHasExactExecutedEvidence"),
+        (r"                     /\ release.profileMatches", "ReleaseConsumptionHasExactExecutedEvidence"),
+        (r"                     /\ release.proofComplete", "ReleaseConsumptionHasExactExecutedEvidence"),
+        (r"                     /\ release.sourceMatches", "ReleaseConsumptionHasExactExecutedEvidence"),
+    ):
+        if source.count(guard) != 1:
+            raise SystemExit("Verified admission mutation anchor drifted; review the model")
+        replacement = "ReleaseAdmissible == /\\ TRUE" if guard.startswith("ReleaseAdmissible ==") else ""
+        mutations.append((source.replace(guard, replacement), config, invariant))
+    image_guard = r"IF ~release.imageRequired \/ release.imageMatches"
+    if source.count(image_guard) != 1:
+        raise SystemExit("Image payload mutation anchor drifted; review the model")
+    mutations.append((source.replace(image_guard, "IF TRUE"), config, "ImageConsumptionHasExactPayload"))
+    check_tlc_model_mutations(tlc_jar, "VerifiedProfileAdmission", source, config, mutations)
+    print("Verified admission mutation score: 8/8 killed (target freshness, exact executed release and image payload)")
 
 
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,

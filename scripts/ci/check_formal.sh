@@ -693,6 +693,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     formal/tla/ManagedCredentialCreation.tla
   python3 scripts/ci/check_formal_mutations.py --credential-removal-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/verified-profile-admission" \
+    -config formal/tla/VerifiedProfileAdmission.cfg formal/tla/VerifiedProfileAdmission.tla
+  python3 scripts/ci/check_formal_mutations.py --verified-admission-model-mutants "$tla_jar"
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/managed-credential-rollout" \
     -config formal/tla/ManagedCredentialRollout.cfg \
     formal/tla/ManagedCredentialRollout.tla

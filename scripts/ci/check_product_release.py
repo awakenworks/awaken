@@ -4,7 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shlex
+import subprocess
 import sys
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -25,6 +30,17 @@ TARGETS = (
     "x86_64-apple-darwin",
     "x86_64-pc-windows-msvc",
 )
+
+
+def shell_step(workflow: str, name: str) -> str:
+    """Read one literal Bash step in the canonical workflow's bounded layout."""
+    marker = "      - name: " + name + "\n"
+    if workflow.count(marker) != 1:
+        raise ValueError(f"expected exactly one release step {name!r}")
+    block = workflow.split(marker, 1)[1].split("      - name:", 1)[0]
+    if "        shell: bash\n" not in block or block.count("        run: |\n") != 1:
+        raise ValueError(f"release step {name!r} must be one literal Bash block")
+    return textwrap.dedent(block.split("        run: |\n", 1)[1])
 
 
 def validate(
@@ -89,6 +105,27 @@ def validate(
             "expected one canonical release workflow, got " + ", ".join(release_workflows)
         )
 
+    # R8: both consumers must execute the one validator with exact requested
+    # profile and completed proof execution. Comments, a command after extract,
+    # or a missing strict flag cannot satisfy this binding audit. Actual shell
+    # decision-table tests live beside the production manifest validator.
+    selection = ["python3", "../scripts/release/verification_manifest.py", "validate",
+                 "--artifact", "$archive", "--manifest", "$archive.verification.json",
+                 "--expected-profile", "$AWAKEN_RELEASE_PROFILE", "--require-proof-execution"]
+    for name in ("Stage the exact packaged binary", "Validate every packaged proof manifest"):
+        try:
+            script = shell_step(workflow, name)
+            commands = [shlex.split(line, comments=True) for line in script.replace("\\\n", " ").splitlines()]
+            if commands.count(selection) != 1 or ["set", "-euo", "pipefail"] not in commands:
+                raise ValueError(f"{name}: missing exact fail-closed manifest validation")
+            if name.startswith("Stage") and commands.index(selection) >= commands.index(["tar", "-xzf", "$archive"]):
+                raise ValueError("Management package extraction precedes proof validation")
+        except ValueError as error:
+            failures.append(str(error))
+    if "      - name: Validate every packaged proof manifest\n" in workflow and "      - name: Attest the release archives\n" in workflow:
+        if workflow.index("      - name: Validate every packaged proof manifest\n") >= workflow.index("      - name: Attest the release archives\n"):
+            failures.append("release attestation precedes proof validation")
+
     required_installer = (
         "usage: install.sh vMAJOR.MINOR.PATCH",
         "x86_64-unknown-linux-gnu",
@@ -127,6 +164,8 @@ def validate(
         "FROM ubuntu:24.04@sha256:",
         "ARG BIN=.awaken-management.bin",
         "COPY ${BIN} /usr/local/bin/awaken",
+        "COPY .awaken-verification.json /usr/share/awaken/verification.json",
+        "chmod 0444 /usr/share/awaken/verification.json",
         "COPY container.toml /etc/awaken/config.toml",
         "USER awaken",
         "COPY entrypoint.sh /usr/local/bin/awaken-container-entrypoint",
@@ -139,19 +178,34 @@ def validate(
     if dockerignore.splitlines() != [
         "*",
         "!.awaken-management.bin",
+        "!.awaken-verification.json",
         "!container.toml",
         "!entrypoint.sh",
     ]:
-        failures.append("Management Dockerfile must receive only its binary and typed preset")
+        failures.append("Management Dockerfile must receive only its binary, proof manifest and typed preset")
     for marker in (
         'SOURCE_REVISION="$(git rev-parse "$GITHUB_SHA^{commit}")"',
         'cosign verify \\',
         'cmp deploy/images/management/.awaken-management.bin',
+        'cmp deploy/images/management/.awaken-verification.json',
+        'cp "$archive.verification.json" ../deploy/images/management/.awaken-verification.json',
+        'docker cp "$container:/usr/share/awaken/verification.json"',
         'docker pull "$image"',
         "deploy/images/management\n",
     ):
         if marker not in workflow:
             failures.append(f"Management image reuse path missing {marker!r}")
+    try:
+        script = shell_step(workflow, "Build, verify, and publish the Management image")
+        commands = [shlex.split(line, comments=True) for line in script.replace("\\\n", " ").splitlines()]
+        for selection in (["verify_management_payload()", "{"], ["verify_management_payload", "$image"],
+                          ["verify_management_payload", "$STAGING_TAG"]):
+            if commands.count(selection) != 1:
+                failures.append(f"Management payload has no unique exact selection: {selection}")
+        if '--certificate-github-workflow-sha "$SOURCE_REVISION"' not in script:
+            failures.append("Management signature is not pinned to the source workflow commit")
+    except ValueError as error:
+        failures.append(str(error))
     if "role = \"all-in-one\"" not in container_config or "bind = \"0.0.0.0:8080\"" not in container_config:
         failures.append("Management container config must own the all-in-one container preset")
     for marker in (
@@ -197,6 +251,101 @@ def current_inputs() -> tuple[str, str, str, str, str, str, str, str, tuple[str,
 
 
 class ProductReleaseCheckerTests(unittest.TestCase):
+    def test_image_proof_carrier_and_both_consumers_are_mandatory(self) -> None:
+        # M1 removing carrier COPY/readonly mode/build-context allowlist or
+        # either branch's common validator call rejects. A comment mentioning
+        # the omitted call is not executable linkage to the same authority.
+        inputs = current_inputs()
+        self.assertEqual(validate(*inputs), [])
+        mutations = [
+            (inputs[0], inputs[1].replace("COPY .awaken-verification.json", "# omitted carrier"), *inputs[2:]),
+            (inputs[0], inputs[1].replace("chmod 0444", "chmod 0666"), *inputs[2:]),
+            (*inputs[:2], inputs[2].replace("!.awaken-verification.json\n", ""), *inputs[3:]),
+        ]
+        for target in ("$image", "$STAGING_TAG"):
+            command = 'verify_management_payload "' + target + '"'
+            mutations.append((inputs[0].replace(command, "# " + command), *inputs[1:]))
+        for index, mutation in enumerate(mutations):
+            with self.subTest(rule=index):
+                self.assertTrue(validate(*mutation))
+
+    def test_actual_management_payload_requires_exact_binary_manifest_and_labels(self) -> None:
+        # Cause/effect: all three labels + exact binary + exact original
+        # manifest => reuse/build may continue. Any missing/mismatched input
+        # rejects. Creation starts one temporary container; failure after create
+        # must still remove it. A stale copied output cannot mask a failed cp.
+        # Execute the actual shared shell function with a local Docker adapter;
+        # this is not a real registry, signature or container-runtime proof.
+        script = shell_step(WORKFLOW.read_text(), "Build, verify, and publish the Management image")
+        body = script.split("verify_management_payload() {\n", 1)[1].split("\n}", 1)[0]
+        function = "verify_management_payload() {\n" + body + "\n}\n"
+        shim_source = '''#!/usr/bin/env python3
+import os, pathlib, shutil, sys
+root = pathlib.Path(os.environ["FIXTURE_ROOT"])
+args = sys.argv[1:]
+if args[:2] == ["image", "inspect"]:
+    field = next(key for key in ("source", "revision", "version") if "image." + key in args[3])
+    print("wrong" if os.environ["FAULT"] == field else {"source": "source", "revision": "revision", "version": "v1"}[field])
+elif args[0] == "create":
+    print("fixture-container")
+elif args[0] == "cp":
+    name = "binary" if args[1].endswith("/awaken") else "manifest"
+    shutil.copyfile(root / ("image-" + name), args[2])
+elif args[0] == "rm":
+    assert "--volumes" in args, "anonymous image volumes must be reclaimed"
+    with (root / "removed").open("a") as output: output.write("removed\\n")
+else:
+    raise SystemExit("unexpected Docker adapter call: " + repr(args))
+'''
+        for fault in ("none", "source", "revision", "version", "binary", "manifest", "missing-manifest"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                context = root / "deploy/images/management"
+                context.mkdir(parents=True)
+                (context / ".awaken-management.bin").write_bytes(b"binary")
+                (context / ".awaken-verification.json").write_bytes(b"manifest")
+                (root / "image-binary").write_bytes(b"wrong" if fault == "binary" else b"binary")
+                if fault != "missing-manifest":
+                    (root / "image-manifest").write_bytes(b"wrong" if fault == "manifest" else b"manifest")
+                (root / "verification-from-management-image.json").write_bytes(b"manifest")
+                shim = root / "docker"
+                shim.write_text(shim_source)
+                shim.chmod(0o755)
+                result = subprocess.run(["bash", "-c", 'set -euo pipefail\n' + function + 'verify_management_payload "fixture-image"\n'],
+                                        cwd=root, capture_output=True, text=True, timeout=30,
+                                        env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
+                                                 FIXTURE_ROOT=str(root), FAULT=fault, RUNNER_TEMP=str(root),
+                                                 SOURCE_REPOSITORY="source", SOURCE_REVISION="revision", GITHUB_REF_NAME="v1"))
+                if fault == "none":
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                if fault in {"none", "binary", "manifest", "missing-manifest"}:
+                    self.assertTrue((root / "removed").exists(), result.stderr)
+                    self.assertEqual((root / "removed").read_text(), "removed\n", result.stderr)
+                else:
+                    self.assertFalse((root / "removed").exists())
+
+    def test_proof_consumer_binding_decision_table(self) -> None:
+        # R8: independently remove each consumer's required proof flag, turn its
+        # exact invocation into a comment, or move validation after extraction.
+        # A valid baseline is mandatory; checking a marker somewhere in another
+        # job must not hide the missing edge at this particular consumer.
+        inputs = current_inputs()
+        self.assertEqual(validate(*inputs), [])
+        for name in ("Stage the exact packaged binary", "Validate every packaged proof manifest"):
+            marker = "      - name: " + name + "\n"
+            start, rest = inputs[0].split(marker, 1)
+            block, end = rest.split("      - name:", 1)
+            for changed in (block.replace("--require-proof-execution", ""),
+                            block.replace("python3 ../scripts/release/verification_manifest.py validate", "# omitted validator")):
+                with self.subTest(step=name):
+                    self.assertTrue(validate(start + marker + changed + "      - name:" + end, *inputs[1:]))
+        workflow = inputs[0].replace('          tar -xzf "$archive"\n', "")
+        workflow = workflow.replace('          archive="${checksums[0]%.sha256}"\n',
+                                    '          archive="${checksums[0]%.sha256}"\n          tar -xzf "$archive"\n')
+        self.assertIn("Management package extraction precedes proof validation", validate(workflow, *inputs[1:]))
+
     def test_decision_table_rejects_each_release_authority_drift(self) -> None:
         # The validation comment above owns the cause/effect graph. These
         # mutations execute R1-R6: baseline, broken job edge, competing workflow,

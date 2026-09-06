@@ -13,24 +13,31 @@ import unittest
 from formal_run_evidence import ROOT, begin_record, finish_record, validate_record, write_record
 
 
+def prepare_source_fixture(root: Path, extra_sources: dict[str, str] | None = None) -> None:
+    """Shared synthetic Git/receipt fixture; it never attests a real proof run."""
+    root.mkdir()
+    for relative in ("scripts/ci/formal_run_evidence.py", "scripts/ci/check_formal.sh",
+                     "scripts/ci/bootstrap_kani.sh", "scripts/ci/_cargo_target.sh", "rust-toolchain.toml"):
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
+    for relative, source in {".gitignore": "target/\n", "transitive.rs": "// dependency\n",
+                             **(extra_sources or {})}.items():
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source)
+    for arguments in (("init", "--quiet"), ("config", "core.autocrlf", "false"), ("add", "."),
+                      ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                       "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "fixture")):
+        subprocess.run(["git", *arguments], cwd=root, check=True, capture_output=True)
+
+
 class EvidenceTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="awaken-proof-receipt-test-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name) / "repo"
-        self.root.mkdir()
-        for relative in ("scripts/ci/formal_run_evidence.py", "scripts/ci/check_formal.sh",
-                         "scripts/ci/bootstrap_kani.sh", "scripts/ci/_cargo_target.sh",
-                         "rust-toolchain.toml"):
-            target = self.root / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / relative, target)
-        (self.root / ".gitignore").write_text("target/\n")
-        (self.root / "transitive.rs").write_text("// dependency\n")
-        self.git("init", "--quiet")
-        self.git("add", ".")
-        self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                 "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "fixture")
+        prepare_source_fixture(self.root)
 
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.root, stderr=subprocess.STDOUT)

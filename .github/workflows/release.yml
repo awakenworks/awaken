@@ -388,9 +388,13 @@ jobs:
           test "${#checksums[@]}" -eq 1
           sha256sum -c "${checksums[0]}"
           archive="${checksums[0]%.sha256}"
+          python3 ../scripts/release/verification_manifest.py validate \
+            --artifact "$archive" --manifest "$archive.verification.json" \
+            --expected-profile "$AWAKEN_RELEASE_PROFILE" --require-proof-execution
           tar -xzf "$archive"
           package_root="${archive%.tar.gz}"
           cp "$package_root/awaken" ../deploy/images/management/.awaken-management.bin
+          cp "$archive.verification.json" ../deploy/images/management/.awaken-verification.json
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
@@ -413,6 +417,21 @@ jobs:
           STAGING_TAG="${MANAGEMENT_IMAGE_REPOSITORY}:staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           CERTIFICATE_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/${WORKFLOW_PATH}@${GITHUB_REF}"
 
+          verify_management_payload() {
+            local image=$1 container
+            test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' "$image")" = "$SOURCE_REPOSITORY"
+            test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" = "$SOURCE_REVISION"
+            test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image")" = "$GITHUB_REF_NAME"
+            container="$(docker create "$image")"
+            trap "$(printf 'docker rm -f --volumes -- %q >/dev/null 2>&1 || true' "$container")" EXIT
+            docker cp "$container:/usr/local/bin/awaken" "$RUNNER_TEMP/awaken-from-management-image"
+            docker cp "$container:/usr/share/awaken/verification.json" "$RUNNER_TEMP/verification-from-management-image.json"
+            cmp deploy/images/management/.awaken-management.bin "$RUNNER_TEMP/awaken-from-management-image"
+            cmp deploy/images/management/.awaken-verification.json "$RUNNER_TEMP/verification-from-management-image.json"
+            docker rm --volumes "$container"
+            trap - EXIT
+          }
+
           inspect_error="$RUNNER_TEMP/awaken-management-inspect.stderr"
           if inspect_output="$(docker buildx imagetools inspect "$RELEASE_TAG" 2>"$inspect_error")"; then
             digest="$(printf '%s\n' "$inspect_output" | sed -n 's/^Digest:[[:space:]]*//p' | head -n 1)"
@@ -421,17 +440,10 @@ jobs:
             cosign verify \
               --certificate-identity "$CERTIFICATE_IDENTITY" \
               --certificate-oidc-issuer "$SIGSTORE_OIDC_ISSUER" \
+              --certificate-github-workflow-sha "$SOURCE_REVISION" \
               "$image" > "$RUNNER_TEMP/awaken-management-signature.json"
             docker pull "$image"
-            test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' "$image")" = "$SOURCE_REPOSITORY"
-            test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" = "$SOURCE_REVISION"
-            test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image")" = "$GITHUB_REF_NAME"
-            container="$(docker create "$image")"
-            trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
-            docker cp "$container:/usr/local/bin/awaken" "$RUNNER_TEMP/awaken-from-management-image"
-            cmp deploy/images/management/.awaken-management.bin "$RUNNER_TEMP/awaken-from-management-image"
-            docker rm "$container"
-            trap - EXIT
+            verify_management_payload "$image"
             AWAKEN_MANAGEMENT_IMAGE="$image" scripts/e2e/management_image_e2e.sh
           else
             if ! grep -Eqi 'manifest unknown|name unknown|not found' "$inspect_error"; then
@@ -446,6 +458,7 @@ jobs:
               --tag "$STAGING_TAG" \
               --file deploy/images/management/Dockerfile \
               deploy/images/management
+            verify_management_payload "$STAGING_TAG"
             AWAKEN_MANAGEMENT_IMAGE="$STAGING_TAG" scripts/e2e/management_image_e2e.sh
             push_output="$(docker push "$STAGING_TAG")"
             printf '%s\n' "$push_output"
@@ -495,6 +508,21 @@ jobs:
           cd dist
           sha256sum install.sh > install.sh.sha256
           sha256sum install.ps1 > install.ps1.sha256
+      - name: Validate every packaged proof manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          shopt -s nullglob
+          archives=(awaken-v*.tar.gz awaken-v*.zip)
+          manifests=(awaken-v*.verification.json)
+          test "${#archives[@]}" -gt 0
+          test "${#archives[@]}" -eq "${#manifests[@]}"
+          for archive in "${archives[@]}"; do
+            python3 ../scripts/release/verification_manifest.py validate \
+              --artifact "$archive" --manifest "$archive.verification.json" \
+              --expected-profile "$AWAKEN_RELEASE_PROFILE" --require-proof-execution
+          done
       - name: Attest the release archives
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:

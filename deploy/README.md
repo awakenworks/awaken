@@ -30,6 +30,18 @@ standard `~/.awaken/config.toml`, followed by typed defaults. `AWAKEN_*`
 environment variables are not deployment, model, business, or credential
 configuration sources.
 
+## Release evidence
+
+The release-built Management image carries its original archive verification
+manifest at `/usr/share/awaken/verification.json`, read-only to the application
+user. The one release workflow validates that manifest before staging and
+compares both its bytes and the packaged executable against new and reused
+images before promotion. Image signing binds those included bytes; consumers
+must still authenticate the exact image digest and signing workflow identity.
+The file is evidence of the release profile and its declared proof boundaries,
+not a runtime Verified badge. Deployment TCB authentication, freshness/check-use
+enforcement and frozen Session evidence remain required for Verified operation.
+
 ## Local and shared storage
 
 All embedded databases and the generated `control-seal.key` live under the one
