@@ -181,6 +181,17 @@ impl crate::SharedHost {
         // | R2 | yes | explicit loss | any | E2 |
         // | R3 | yes | temporary failure | live | E3 |
         // | R4 | yes | temporary failure | expired | E4 |
+        // Capture the existing slot identity before Control I/O. Equal lease
+        // fields do not authorize an ABA replacement of the Session slot.
+        let Some(realization) = self
+            .session_slots
+            .read(&session_id, |slot| {
+                (slot.realization_lease.as_ref() == Some(&lease)).then(|| slot.realization.clone())
+            })
+            .flatten()
+        else {
+            return Ok(false);
+        };
         let renewal: Result<bool, (crate::HostError, bool)> = async {
             let control_failure = |error| {
                 let revoke = realization_renewal_failure_disposition(&error)
@@ -205,7 +216,8 @@ impl crate::SharedHost {
             let changed = self
                 .session_slots
                 .modify(&session_id, |slot| {
-                    if slot.realization_lease.as_ref() != Some(&lease)
+                    if !Arc::ptr_eq(&slot.realization, &realization)
+                        || slot.realization_lease.as_ref() != Some(&lease)
                         || !awaken_session_contract::realization_lease_generation_authorizes(
                             &renewed_lease,
                             &lease,
@@ -231,7 +243,8 @@ impl crate::SharedHost {
                 if !self
                     .session_slots
                     .read(&session_id, |slot| {
-                        slot.realization_lease.as_ref() == Some(&lease)
+                        Arc::ptr_eq(&slot.realization, &realization)
+                            && slot.realization_lease.as_ref() == Some(&lease)
                     })
                     .unwrap_or(false) =>
             {
@@ -248,7 +261,7 @@ impl crate::SharedHost {
             }
             Err((error, _)) => {
                 if self
-                    .revoke_session_realization(&session_id, Some(&lease))
+                    .revoke_session_realization(&session_id, Some((&lease, &realization)))
                     .await?
                 {
                     eprintln!(

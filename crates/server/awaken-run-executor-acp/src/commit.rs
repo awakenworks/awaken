@@ -64,14 +64,15 @@ pub(super) async fn commit(
             )],
         });
     }
-    // ACP permission waits use the same committed batch/ticket contract as
-    // Native. Admission must never invent an ACP-only bypass for a missing batch.
+    // Only Awaken-owned continuations execute through the Runtime ToolBatch.
+    // Opaque ACP permissions retain the explicit RunAttemptExecutor authority.
     let mut state = state;
     if let Some(ticket) = disposition.resume_ticket()
         && let AwaitTarget::ToolCall {
             reason: ToolAwaitReason::Permission,
             call_id,
             tool,
+            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
         } = ticket.target()
     {
         let mut batch = awaken_runtime_contract::ToolBatch::for_step(

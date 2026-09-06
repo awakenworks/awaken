@@ -33,9 +33,12 @@ pub(crate) fn normalize_container(container: &mut Container) {
     // Digest or non-latest tag => IfNotPresent; untagged/latest => Always.
     let image = container.image.as_deref().unwrap_or_default();
     let tail = image.rsplit('/').next().unwrap_or_default();
-    let default_pull = if image.contains('@') || (tail.contains(':') && !tail.ends_with(":latest")) {
+    let default_pull = if image.contains('@') || (tail.contains(':') && !tail.ends_with(":latest"))
+    {
         "IfNotPresent"
-    } else { "Always" };
+    } else {
+        "Always"
+    };
     if container.image_pull_policy.as_deref() == Some(default_pull) {
         container.image_pull_policy = None;
     }

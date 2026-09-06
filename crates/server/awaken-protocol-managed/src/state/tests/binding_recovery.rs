@@ -537,6 +537,10 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
     // source B and other-Workspace roots remain byte-for-byte unchanged.
     //
     // | Rule | Workspace | actual source | operation | Effect |
+    // V1 also carries an older Active but unacknowledged generation. Staging
+    // both versions then activating the replacement makes the old one Draining;
+    // Publish must use only the new generation's actual receipt. Publishing the
+    // complete pre-activation Stage set instead makes acknowledgement fail.
     // | V1 | A | A | update | E1 |
     // | V2 | A | B | any | E4 unrelated |
     // | V3 | B | A | any | E4 scope fence |

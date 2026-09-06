@@ -728,11 +728,6 @@ impl ToolExecutionWave {
     }
 
     #[must_use]
-    pub const fn is_empty(self) -> bool {
-        self.start == self.end
-    }
-
-    #[must_use]
     pub const fn range(self) -> std::ops::Range<usize> {
         self.start..self.end
     }

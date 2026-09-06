@@ -562,18 +562,24 @@ impl SessionApplication {
                     error => unavailable(error),
                 })?;
         }
-        // Stage also returns receipts for old active generations that activation
-        // moves to Draining. Publish only the canonical pending publication set,
-        // preserving each physical receipt and its originally observed lease.
-        let pending_publish = Self::publication_generations(&session)?;
+        // Activation can supersede a previously unacknowledged generation and
+        // move it to Draining. Publish only receipts still named by the durable
+        // publication set, keeping their actual (possibly older) lease expiry.
+        // Obsolete staged receipts belong exclusively to the drain below.
+        let expected_publish = Self::publication_generations(&session)?;
         let publish = receipt_generations
             .into_iter()
             .filter(|receipt| {
-                pending_publish.iter().any(|current| {
+                expected_publish.iter().any(|current| {
                     awaken_session_contract::realization_generation_authorizes(current, receipt)
                 })
             })
-            .collect();
+            .collect::<Vec<_>>();
+        if !generation_set_authorizes(&expected_publish, &publish) {
+            return Err(SessionRealizationControlFailure::Invalid(
+                "activated publication set has no exact staged receipt set".into(),
+            ));
+        }
         let drain = Self::draining_generations(&session)?;
         self.realization_directive(
             owner_scope,

@@ -1,5 +1,15 @@
 use super::*;
 
+// Exercise the shared normalization used by the complete Pod projection.
+// This helper adds no alternative defaulting or admission rules.
+fn verify_container_projection(expected: &Container, observed: &Container) -> bool {
+    let mut expected = expected.clone();
+    let mut observed = observed.clone();
+    api_defaults::normalize_container(&mut expected);
+    api_defaults::normalize_container(&mut observed);
+    expected == observed
+}
+
 #[test]
 fn claim_projection_preserves_policy_across_api_defaulting() {
     // Cause/effect table CP: C1 class is delegated or explicitly pinned;

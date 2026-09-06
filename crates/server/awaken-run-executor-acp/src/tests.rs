@@ -2562,6 +2562,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
 
     struct PermissionSource {
         changed: bool,
+        tool_name: &'static str,
         opens: AtomicUsize,
         permission_replies: Arc<Mutex<Vec<String>>>,
         resumed_prompts: Arc<Mutex<Vec<String>>>,
@@ -2575,6 +2576,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
             _activation: &RunActivation,
             _context: &RuntimeRunContext,
         ) -> std::result::Result<AgentSession, OpenError> {
+            let tool_name = self.tool_name;
             let attempt = self.opens.fetch_add(1, Ordering::SeqCst);
             let changed = self.changed && attempt > 0;
             let wire_id = if attempt == 0 {
@@ -2637,13 +2639,17 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                             // arguments. The Await commit must refine this same
                             // occurrence, with the exact policy input and ticket.
                             if attempt == 0 {
-                                output.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"permission-session\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"tool-1\",\"title\":\"bash\",\"rawInput\":{}}}}\n").await.unwrap();
+                                let initial = serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"permission-session","update":{"sessionUpdate":"tool_call","toolCallId":"tool-1","title":tool_name,"rawInput":{}}}});
+                                output
+                                    .write_all(format!("{initial}\n").as_bytes())
+                                    .await
+                                    .unwrap();
                             }
                             if attempt > 0 {
                                 // AR4 actual SDK emits a new placeholder and then
                                 // rawInput progress before the regenerated ask.
                                 for update in [
-                                    serde_json::json!({"sessionUpdate":"tool_call","toolCallId":wire_id,"title":"bash","rawInput":{}}),
+                                    serde_json::json!({"sessionUpdate":"tool_call","toolCallId":wire_id,"title":tool_name,"rawInput":{}}),
                                     serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":wire_id,"rawInput":arguments}),
                                 ] {
                                     let frame = serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"permission-session","update":update}});
@@ -2656,7 +2662,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                             // One wire request builder owns original/exact/changed
                             // cases; only call identity and input vary.
                             let permission = serde_json::json!({"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{
-                                "sessionId":"permission-session", "toolCall":{"toolCallId":wire_id,"title":"bash","rawInput":arguments},
+                                "sessionId":"permission-session", "toolCall":{"toolCallId":wire_id,"title":tool_name,"rawInput":arguments},
                                 "options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]
                             }});
                             output
@@ -2706,6 +2712,61 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
         }
     }
 
+    // AO decision table: installed continuation + canonical owned tool =>
+    // RuntimeToolBatch ticket and matching durable batch; unowned tool =>
+    // RunAttemptExecutor ticket and no batch. Cross the actual ACP request,
+    // policy, await commit and Native batch validator, not a fabricated ticket.
+    for tool_name in ["write", "bash"] {
+        let source = Arc::new(PermissionSource {
+            changed: false,
+            tool_name,
+            opens: AtomicUsize::new(0),
+            permission_replies: Default::default(),
+            resumed_prompts: Default::default(),
+            permission_events: Arc::new(tokio::sync::Notify::new()),
+        });
+        let committed = Arc::new(RecordingCoordinator::default());
+        let executor = AcpRunExecutor::new(source)
+            .with_permission_policy(Arc::new(AskPolicy))
+            .with_owned_tool_continuation(Some(Arc::new(OwnedContinuationProbe {
+                resumes: Default::default(),
+                recoveries: AtomicUsize::new(0),
+                fail: false,
+            })));
+        assert_eq!(
+            executor
+                .execute(
+                    activation(),
+                    RuntimeRunContext::new()
+                        .with_commit(committed.clone())
+                        .with_reader(committed.clone())
+                )
+                .await
+                .unwrap(),
+            RunState::Awaiting
+        );
+        let ticket = committed.resume_ticket_for(&RunId("run-1".into())).unwrap();
+        let batch = awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
+            &committed.committed_state(&ticket.thread_id),
+        ))
+        .unwrap();
+        assert_eq!(
+            batch.is_some(),
+            tool_name == "write",
+            "AO owner {tool_name}"
+        );
+        if let Some(batch) = batch {
+            batch
+                .validate_awaiting_ticket(&ticket.thread_id, &ticket)
+                .unwrap();
+        } else {
+            assert_eq!(
+                ticket.tool_call_authority(),
+                Some(awaken_agent_contract::agent::awaiting::ToolCallAuthority::RunAttemptExecutor)
+            );
+        }
+    }
+
     // AR5/AR6 allow/deny O -> changed request N: no transfer of permission;
     // close O as not executed in the same commit that publishes N's new ticket.
     // After approving N, only N's result may settle it, with no dangling O.
@@ -2715,6 +2776,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
         let events = Arc::new(tokio::sync::Notify::new());
         let source: Arc<dyn AgentChannelSource> = Arc::new(PermissionSource {
             changed,
+            tool_name: "bash",
             opens: AtomicUsize::new(0),
             permission_replies: replies.clone(),
             resumed_prompts: prompts.clone(),
@@ -2735,17 +2797,19 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
         let ticket = committed
             .resume_ticket_for(&RunId("run-1".into()))
             .expect("permission ticket");
-        // AR1/AR2: await atomically commits the shared batch and exact ticket;
-        // replacement admission validates the same contract as Native. Either
-        // terminal decision consumes both; no ACP-specific admission bypass.
-        let batch = awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
-            &committed.committed_state(&ticket.thread_id),
-        ))
-        .unwrap()
-        .expect("durable ACP permission batch");
-        batch
-            .validate_awaiting_ticket(&ticket.thread_id, &ticket)
-            .unwrap();
+        // AR1/AR2 external execution => explicit attempt authority, no local
+        // Runtime batch. Replacing the executor must retain that same owner.
+        assert_eq!(
+            ticket.tool_call_authority(),
+            Some(awaken_agent_contract::agent::awaiting::ToolCallAuthority::RunAttemptExecutor)
+        );
+        assert!(
+            awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
+                &committed.committed_state(&ticket.thread_id),
+            ))
+            .unwrap()
+            .is_none()
+        );
         assert_eq!(ticket.reason(), AwaitReason::ToolPermission);
         assert_eq!(ticket.correlation_id, "approval-1");
         assert_eq!(ticket.call_id(), Some("tool-1"));
@@ -2808,14 +2872,17 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                 replacement.pending_tool().unwrap().arguments,
                 serde_json::json!({"cmd":"echo changed"})
             );
-            let batch = awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
-                &committed.committed_state(&ticket.thread_id),
-            ))
-            .unwrap()
-            .unwrap();
-            batch
-                .validate_awaiting_ticket(&ticket.thread_id, &replacement)
-                .unwrap();
+            assert_eq!(
+                replacement.tool_call_authority(),
+                ticket.tool_call_authority()
+            );
+            assert!(
+                awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
+                    &committed.committed_state(&ticket.thread_id),
+                ))
+                .unwrap()
+                .is_none()
+            );
             {
                 let commits = committed.commits.lock().unwrap();
                 assert_eq!(commits.len(), 2, "AR5 atomic settlement and replacement");
@@ -4588,6 +4655,11 @@ async fn owned_permission_uses_the_host_port_before_opening_an_acp_process() {
                     activation.snapshot.id.0.clone(),
                     activation.snapshot.fingerprint.0.clone(),
                     AwaitTarget::ToolCall {
+                        authority: if owned {
+                            awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch
+                        } else {
+                            awaken_agent_contract::agent::awaiting::ToolCallAuthority::RunAttemptExecutor
+                        },
                         reason: ToolAwaitReason::Permission,
                         call_id: "owned-call".into(),
                         tool: PendingTool {
@@ -4614,6 +4686,18 @@ async fn owned_permission_uses_the_host_port_before_opening_an_acp_process() {
                 )
                 .await
                 .unwrap();
+                // P1/P2 owned => the exact batch validates the ticket; P3
+                // external => no competing Runtime batch is committed.
+                let batch = awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
+                    &committed.committed_state(&ticket.thread_id),
+                ))
+                .unwrap();
+                assert_eq!(batch.is_some(), owned);
+                if let Some(batch) = batch {
+                    batch
+                        .validate_awaiting_ticket(&ticket.thread_id, &ticket)
+                        .unwrap();
+                }
                 let decision = if allow {
                     ResumeResult::allow()
                 } else {

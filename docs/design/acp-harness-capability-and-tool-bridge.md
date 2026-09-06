@@ -278,10 +278,12 @@ Cowork is an API application built on these mechanisms. It owns task entry and
 delivery UX; Agent publication, Session truth, tools, resource admission,
 approvals, scheduling and Artifact remain Awaken authorities.
 
-The ACP await transaction also writes the existing `ActiveToolBatch` with the
-exact canonical ticket identity and arguments; terminal continuation clears the
-batch together with the ticket. Session admission keeps its shared strict
-batch/ticket validation. There is no ACP-specific approval bypass. Legacy wire
+The ACP await transaction selects the durable `ToolCallAuthority` from the
+existing Session-owned continuation membership. An Awaken-owned tool uses
+`RuntimeToolBatch` and atomically writes the exact `ActiveToolBatch`; an opaque
+third-party ACP tool uses `RunAttemptExecutor` without a competing local batch.
+Terminal continuation clears the batch together with the ticket. Session
+admission reuses the shared authority-aware ticket validation. Legacy wire
 names are normalized through the same function for decision matching and the
 committed transcript; changed arguments and consumed decisions still fail closed.
 

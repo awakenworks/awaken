@@ -270,7 +270,10 @@ impl AgentChannelSource for BoundLocalChannelSource {
         let filesystem = self
             .sandbox
             .filesystem_view(launch.session_working_directory.as_deref());
-        let spawned = self.sandbox.spawn_agent(launch_command(&launch, &filesystem.command_cwd)).await;
+        let spawned = self
+            .sandbox
+            .spawn_agent(launch_command(&launch, &filesystem.command_cwd))
+            .await;
         let (process, channel) = match spawned {
             Ok(spawned) => spawned,
             Err(error) => {
@@ -794,6 +797,7 @@ mod tests {
             codec: awaken_run_executor_acp::Codec::Acp,
             backend: awaken_runtime_contract::resolved::Backend::from_ref("acp:codex"),
             mcp_servers: Vec::new(),
+            attached_tools: None,
         };
         let session = source
             .open(
@@ -1113,6 +1117,7 @@ mod tests {
                 },
                 backend: awaken_runtime_contract::resolved::Backend::from_ref("acp:fixture"),
                 mcp_servers: mcp_servers.clone(),
+                attached_tools: None,
             };
             let session = source
                 .open(

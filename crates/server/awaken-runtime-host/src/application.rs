@@ -1155,16 +1155,20 @@ impl crate::SharedHost {
     async fn revoke_session_realization(
         &self,
         session_id: &str,
-        expected_lease: Option<&awaken_session_contract::SessionRealizationLease>,
+        expected_projection: Option<(
+            &awaken_session_contract::SessionRealizationLease,
+            &Arc<tokio::sync::Mutex<()>>,
+        )>,
     ) -> Result<bool, crate::HostError> {
         // Preparation owns the realization lock. Cancel only the matching
         // scoped read before waiting for it. All revocation callers (including
         // Worker-wide authority loss) share this edge; runtime interruption and
         // retirement still require the post-lock ownership check below.
         self.session_slots.modify(session_id, |slot| {
-            if expected_lease
-                .is_none_or(|expected| slot.realization_lease.as_ref() == Some(expected))
-                && let Some(preparation) = &slot.resource_preparation
+            if expected_projection.is_none_or(|(expected, realization)| {
+                Arc::ptr_eq(&slot.realization, realization)
+                    && slot.realization_lease.as_ref() == Some(expected)
+            }) && let Some(preparation) = &slot.resource_preparation
             {
                 preparation.cancel();
             }
@@ -1183,7 +1187,7 @@ impl crate::SharedHost {
             return Ok(false);
         };
         let _lifecycle = lifecycle.lock().await;
-        if let Some(expected) = expected_lease {
+        if let Some((expected, expected_realization)) = expected_projection {
             // Recheck after both existing owner locks: a claimed replacement
             // may have completed while this stale revocation waited. Interrupt
             // belongs after this fence too; otherwise it cancels the new Run
@@ -1191,7 +1195,10 @@ impl crate::SharedHost {
             if !self
                 .session_slots
                 .read(session_id, |slot| {
-                    slot.realization_lease.as_ref() == Some(expected)
+                    Arc::ptr_eq(&slot.realization, expected_realization)
+                        && Arc::ptr_eq(&slot.realization, &realization)
+                        && Arc::ptr_eq(&slot.lifecycle, &lifecycle)
+                        && slot.realization_lease.as_ref() == Some(expected)
                 })
                 .unwrap_or(false)
             {

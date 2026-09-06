@@ -109,6 +109,7 @@ impl ManagedState {
                 &tool_index.all,
                 tool_index.mcp,
                 &advisor_blocks,
+                &[pending],
             );
             self.qualify_tool_projection(
                 record,

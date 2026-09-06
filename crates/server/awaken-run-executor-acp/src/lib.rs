@@ -955,6 +955,16 @@ impl AcpRunExecutor {
                         first_staged_message,
                         &ask,
                     )?;
+                    let tool_id = canonical_permission_tool_id(&ask.tool);
+                    let authority = if self
+                        .owned_tool_continuation
+                        .as_ref()
+                        .is_some_and(|continuation| continuation.owns_tool(&tool_id))
+                    {
+                        awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch
+                    } else {
+                        awaken_agent_contract::agent::awaiting::ToolCallAuthority::RunAttemptExecutor
+                    };
                     let ticket = ResumeTicket::new(
                         correlation_id,
                         run_id.clone(),
@@ -965,10 +975,10 @@ impl AcpRunExecutor {
                             reason: ToolAwaitReason::Permission,
                             call_id: ask.call_id.clone(),
                             tool: PendingTool {
-                                tool_id: canonical_permission_tool_id(&ask.tool),
+                                tool_id,
                                 arguments: ask.arguments,
                             },
-                            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RunAttemptExecutor,
+                            authority,
                         },
                     )
                     .with_delegation_origin(activation.delegation_origin.clone())
