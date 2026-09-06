@@ -75,13 +75,192 @@ struct ExactTerminalMemoryControl {
     current_effect: awaken_session_contract::SessionTerminalCleanupEffect,
 }
 
-struct ExactResourceMemoryControl {
+// Keep File/Skill renewal wire coverage beside Memory to reuse the same exact
+// Control double. No transport-private Session or alternate expiry authority.
+#[tokio::test]
+async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
+    // Decision table: C1 registered Worker and exact target; C2 asserted lease
+    // already expired; C3 current root is same-generation renewed or expired;
+    // C4 endpoint is File or Skill. R1=C1+C2+renewed(C3)+C4 => exact bytes;
+    // R2=C1+C2+expired(C3)+C4 => 409 with no bytes. The real Session-root
+    // matrix separately covers owner/epoch/revision/target substitution; here
+    // the actual HTTP routers must reach Control instead of rejecting C2 first.
+    use awaken_file_store::FileStore as _;
+    use awaken_resource_contract::{FileCatalog as _, FileContentSource as _, FileReadPurpose};
+    use awaken_resource_worker_http::{
+        HttpFileContentSource, HttpSkillBundleSource, WorkerFileContentService,
+        WorkerSkillBundleService, worker_file_content_router, worker_skill_bundle_router,
+    };
+    use awaken_session_contract::SkillBundleSource as _;
+    use awaken_skill_store::SkillStore as _;
+    let (directory, identity) = support::ready_worker("worker-renewed-resources").await;
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: identity.worker_id.clone(),
+        runtime_incarnation: identity.lease_owner(),
+        epoch: 7,
+        expires_at_unix_ms: 1,
+    };
+    let file_store = Arc::new(awaken_file_store::InMemoryFileStore::new());
+    let digest = file_store.put(b"exact input").await.unwrap();
+    file_store
+        .create_file(awaken_resource_contract::FileRecord {
+            id: "renewed-file".into(),
+            workspace_id: "workspace-memory".into(),
+            blob_id: digest,
+            filename: "input.txt".into(),
+            mime_type: "text/plain".into(),
+            size_bytes: 11,
+            created_at: "2026-09-06T00:00:00Z".into(),
+            expires_at: None,
+            downloadable: false,
+            scope_id: None,
+            logical_path: None,
+            harvest_key: None,
+            artifact_idempotency_scope: None,
+            deleted: false,
+        })
+        .await
+        .unwrap();
+    let file_application = Arc::new(awaken_resource_application::FileApplication::new(
+        file_store.clone(),
+        file_store,
+        Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap()),
+    ));
+    let mut file_input = memory_input("file", "unused", ResourceAccess::ReadOnly);
+    file_input.source = awaken_session_contract::ResolvedInputSource::File {
+        file_id: "renewed-file".into(),
+    };
+    let file_intent = SessionResourceMaterializationIntent::try_new(
+        "renewed-session",
+        1,
+        file_input,
+        lease.clone(),
+    )
+    .unwrap();
+    let skill_store = Arc::new(awaken_skill_store::InMemorySkillStore::new());
+    let files = vec![awaken_skill_store::SkillBundleFile {
+        path: "SKILL.md".into(),
+        content: b"exact skill".to_vec(),
+        executable: false,
+    }];
+    let version = awaken_skill_store::SkillVersion {
+        id: "renewed-skill-v1".into(),
+        skill_id: "renewed-skill".into(),
+        version: 1,
+        name: "renewed-skill".into(),
+        description: "test".into(),
+        directory: "/skills/test".into(),
+        bundle_sha256: awaken_skill_store::bundle_sha256(&files),
+        files,
+        created_unix_nanos: 1,
+    };
+    skill_store
+        .create(
+            awaken_skill_store::SkillDefinition {
+                id: version.skill_id.clone(),
+                workspace_id: "workspace-memory".into(),
+                display_title: None,
+                latest_version: 1,
+                last_version: 1,
+                timestamps: Default::default(),
+            },
+            version.clone(),
+        )
+        .await
+        .unwrap();
+    let binding = awaken_session_contract::ResolvedSkillBinding {
+        kind: awaken_agent_contract::AgentSkillKind::Custom,
+        skill_id: version.skill_id.to_string(),
+        version: 1,
+        bundle_sha256: version.bundle_sha256.clone(),
+    };
+    let skill_intent = SessionResourceMaterializationIntent::try_new_skill(
+        "renewed-session",
+        1,
+        binding.clone(),
+        lease.clone(),
+    )
+    .unwrap();
+    for current_expiry in [u64::MAX, 1] {
+        let control = |intent| {
+            Arc::new(ExactResourceControl {
+                workspace_id: "workspace-memory".into(),
+                intent,
+                current_lease: awaken_session_contract::SessionRealizationLease {
+                    expires_at_unix_ms: current_expiry,
+                    ..lease.clone()
+                },
+            })
+        };
+        let dispatch = Arc::new(MemoryDispatchStore::new());
+        let file_service = WorkerFileContentService::new(
+            Arc::new(
+                awaken_resource_application::ApplicationFileContentSource::new(
+                    file_application.clone(),
+                ),
+            ),
+            dispatch.clone(),
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory.clone())
+        .with_session_control(control(file_intent.clone()));
+        let skill_service = WorkerSkillBundleService::new(
+            Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
+                skill_store.clone(),
+            )),
+            dispatch,
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory.clone())
+        .with_session_control(control(skill_intent.clone()));
+        let address = support::serve(
+            worker_file_content_router(Arc::new(file_service))
+                .merge(worker_skill_bundle_router(Arc::new(skill_service))),
+        )
+        .await;
+        let upstream =
+            WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone());
+        let file = HttpFileContentSource::new(upstream.clone())
+            .read(
+                "workspace-memory",
+                "renewed-file",
+                &FileReadPurpose::SessionResource,
+                Some(
+                    &awaken_dispatch::ResourceOperationFence::SessionMaterialization(
+                        file_intent.clone(),
+                    ),
+                ),
+            )
+            .await;
+        let skill = HttpSkillBundleSource::new(upstream)
+            .load(
+                "workspace-memory",
+                &binding,
+                Some(
+                    &awaken_dispatch::ResourceOperationFence::SessionMaterialization(
+                        skill_intent.clone(),
+                    ),
+                ),
+            )
+            .await;
+        if current_expiry == u64::MAX {
+            assert_eq!(file.expect("R1 File").unwrap().bytes, b"exact input");
+            assert_eq!(skill.expect("R1 Skill").unwrap(), version);
+        } else {
+            assert!(file.expect_err("R2 File").to_string().contains("409"));
+            assert!(skill.expect_err("R2 Skill").to_string().contains("409"));
+        }
+    }
+}
+
+struct ExactResourceControl {
     workspace_id: String,
     intent: SessionResourceMaterializationIntent,
+    current_lease: awaken_session_contract::SessionRealizationLease,
 }
 
 #[async_trait::async_trait]
-impl SessionRealizationControl for ExactResourceMemoryControl {
+impl SessionRealizationControl for ExactResourceControl {
     async fn begin_session_realization(
         &self,
         _command: BeginSessionRealization,
@@ -122,7 +301,15 @@ impl SessionRealizationControl for ExactResourceMemoryControl {
         &self,
         intent: &SessionResourceMaterializationIntent,
     ) -> Result<String, SessionRealizationControlFailure> {
-        if intent != &self.intent {
+        if intent.session_id() != self.intent.session_id()
+            || intent.resource_revision() != self.intent.resource_revision()
+            || intent.target() != self.intent.target()
+            || !awaken_session_contract::realization_lease_authorizes(
+                &self.current_lease,
+                intent.lease(),
+                support::unix_now_ms(),
+            )
+        {
             return Err(SessionRealizationControlFailure::StaleOwnership);
         }
         Ok(self.workspace_id.clone())
@@ -355,8 +542,11 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
 }
 
 /// Session-realization Memory cause/effect graph: C1 the authenticated Worker
-/// owns the asserted live realization lease; C2 Control matches the complete
-/// intent to the pending Session root; C3 the operation is snapshot or write.
+/// owns the asserted realization generation; C2 Control matches the complete
+/// intent to the pending Session root and its live renewed lease; C3 the
+/// operation is snapshot or write. The assertion's original expiry is already
+/// past: only Control can observe its same-generation renewal, so the HTTP
+/// identity boundary must not reject it before that authoritative check.
 /// Effects: E1 one read-only snapshot through the canonical Memory repository;
 /// E2 stale generation conflict; E3 foreign Worker denial; E4 all writes denied
 /// before repository mutation. Registry validation remains after root authority.
@@ -388,7 +578,7 @@ async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root()
         owner: identity.worker_id.clone(),
         runtime_incarnation: identity.lease_owner(),
         epoch: 13,
-        expires_at_unix_ms: support::unix_now_ms().saturating_add(60_000),
+        expires_at_unix_ms: 1,
     };
     let input = memory_input(
         "realization",
@@ -410,9 +600,13 @@ async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root()
             Arc::new(HeaderWorkerAuthenticator),
             directory,
         )
-        .with_session_control(Arc::new(ExactResourceMemoryControl {
+        .with_session_control(Arc::new(ExactResourceControl {
             workspace_id: "workspace-memory".into(),
             intent: intent.clone(),
+            current_lease: awaken_session_contract::SessionRealizationLease {
+                expires_at_unix_ms: u64::MAX,
+                ..lease.clone()
+            },
         })),
     );
     let address = support::serve(worker_memory_router(service)).await;

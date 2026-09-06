@@ -15,14 +15,15 @@ pub(crate) enum SessionWorkerEffectAdmission {
     Foreign,
 }
 
-/// Temporal rule for the shared Worker-identity admission. Ordinary effects
-/// are bounded by their asserted lease. A terminal generation may outlive that
-/// timestamp, but this mode grants no Session authority: its adapter must still
-/// obtain a current same-generation authorization from Control.
+/// Temporal rule for shared Worker-identity admission. Credential transports
+/// may explicitly cap effects to the asserted timestamp. Immutable Resource
+/// reads and terminal generations instead defer time to their existing Session
+/// root authorization, which can observe same-generation renewal. This mode
+/// grants no authority by itself: the adapter must still consult Control.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SessionWorkerEffectTemporalRule {
     AssertedLeaseMustBeLive,
-    TerminalGeneration,
+    SessionRoot,
 }
 
 impl SessionWorkerEffectAdmission {
@@ -107,17 +108,17 @@ mod tests {
     #[test]
     fn session_worker_effect_admission_has_one_closed_status_projection() {
         // Cause/effect graph: C1 current Worker identity, C2 lease owner and
-        // incarnation, C3 asserted lease time, C4 ordinary versus terminal
+        // incarnation, C3 asserted lease time, C4 capped versus root-authorized
         // generation rule. Effects: E1 Exact continues to the owning Session
-        // root; E2 Expired maps 409; E3 Foreign maps 403. TerminalGeneration
+        // root; E2 Expired maps 409; E3 Foreign maps 403. SessionRoot
         // never grants root authority: it only lets Control decide whether the
         // asserted generation has a current same-generation renewal.
         //
         // | Rule | Worker/owner/incarnation | live | temporal rule | Effect |
         // |---|---|---|---|---|
-        // | A1 | exact | yes | ordinary | E1 |
-        // | A2 | exact | no | ordinary | E2 |
-        // | A3 | exact | any | terminal generation | E1, then root auth |
+        // | A1 | exact | yes | asserted cap | E1 |
+        // | A2 | exact | no | asserted cap | E2 |
+        // | A3 | exact | any | root authorization | E1, then root auth |
         // | A4 | foreign in any identity fact | any | any | E3 |
         // Foreign classification precedes expiry so an unauthorised caller
         // cannot use the response to inspect the terminal lease clock.
@@ -127,7 +128,7 @@ mod tests {
                     for lease_is_live in [false, true] {
                         for temporal_rule in [
                             SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
-                            SessionWorkerEffectTemporalRule::TerminalGeneration,
+                            SessionWorkerEffectTemporalRule::SessionRoot,
                         ] {
                             let actual = session_worker_effect_admission_from_facts(
                                 worker_is_current,

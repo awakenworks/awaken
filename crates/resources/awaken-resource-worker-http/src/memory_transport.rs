@@ -554,7 +554,7 @@ async fn memory_operation(
                 identity,
                 &effect.lease,
                 now_unix_ms,
-                SessionWorkerEffectTemporalRule::TerminalGeneration,
+                SessionWorkerEffectTemporalRule::SessionRoot,
             )
             .await
             .rejection_status()
@@ -599,7 +599,7 @@ async fn memory_operation(
                 identity,
                 intent.lease(),
                 now_unix_ms,
-                SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
+                SessionWorkerEffectTemporalRule::SessionRoot,
             )
             .await
             .rejection_status()

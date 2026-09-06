@@ -210,6 +210,16 @@ Active/Released commits follow it. Startup reconciliation reads the separately
 persisted trusted owner envelope and never imports a principal, role, API key,
 PDP decision, or policy document into this state machine.
 
+Worker materialization authorizes the exact Resource revision and target against
+this root, using the canonical Session lease predicate rather than lease-value
+equality. A same-owner/incarnation/epoch renewal may extend expiry while a read
+is in flight; File, Skill and Memory read adapters validate Worker identity, then
+defer lease time to that current root. A missing or expired current lease, a
+replaced generation, or an assertion beyond the root's expiry is rejected before
+content is returned. This changes neither the Run claim fence nor credential
+transport expiry caps; it does not authorize writes, re-resolve Resource versions,
+or revive a terminal Session.
+
 Durable dispatch carries `SessionResourceManifest { workspace_id, revision, resources }`
 beside the executable Agent snapshot. This envelope is secret-free and is not a
 second Session model: `resources` is the exact persisted
