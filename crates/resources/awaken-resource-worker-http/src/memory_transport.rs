@@ -232,6 +232,9 @@ fn parse_reference(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum MemoryOperation {
+    PreserveCopyConflict {
+        candidate: awaken_resource_contract::MemoryCopyConflict,
+    },
     Snapshot,
     Create {
         path: String,
@@ -270,6 +273,7 @@ struct MemoryOperationRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum MemoryOperationResponse {
+    CopyConflictPreserved,
     Snapshot { heads: Vec<WireMemory> },
     Memory { memory: WireMemory },
     Deleted { deleted: bool },
@@ -468,6 +472,22 @@ fn terminal_operation_allowed(
 ) -> bool {
     let heads = &target.intent().materialization().heads;
     match operation {
+        MemoryOperation::PreserveCopyConflict { candidate } => match &candidate.base {
+            Some(base) => {
+                heads
+                    .iter()
+                    .filter(|head| {
+                        head.path == candidate.path
+                            && head.id == base.id
+                            && head.content_sha256 == base.content_sha256
+                    })
+                    .count()
+                    == 1
+            }
+            None => {
+                candidate.content.is_some() && !heads.iter().any(|head| head.path == candidate.path)
+            }
+        },
         MemoryOperation::Snapshot => true,
         MemoryOperation::Create { path, .. } => !heads.iter().any(|head| head.path == *path),
         MemoryOperation::UpdateHead {
@@ -521,6 +541,14 @@ async fn memory_operation(
     let mut run_guard = None;
     let (workspace_id, memory_store_id, config_version, terminal_target) = match &reference {
         MemoryMaterializationReference::RunV1(reference) => {
+            // Retention is a terminal-only disposition, not a Run-authorized
+            // append surface. Realization v3 already rejects every write.
+            if matches!(
+                request.operation,
+                MemoryOperation::PreserveCopyConflict { .. }
+            ) {
+                return StatusCode::FORBIDDEN.into_response();
+            }
             if awaken_worker_transport_security::verify_claim_owner(
                 Some(service.directory.as_ref()),
                 &worker,
@@ -668,6 +696,11 @@ async fn memory_operation(
 
     let _run_guard = run_guard;
     let result = match request.operation {
+        MemoryOperation::PreserveCopyConflict { candidate } => service
+            .repository
+            .preserve_copy_conflict(&memory_store_id, &candidate)
+            .await
+            .map(|()| MemoryOperationResponse::CopyConflictPreserved),
         MemoryOperation::Snapshot => service
             .repository
             .snapshot_heads(&memory_store_id)
@@ -855,6 +888,27 @@ impl HttpMemoryWritebackClient {
 
 #[async_trait::async_trait]
 impl MemoryRepository for HttpMemoryRepository {
+    async fn preserve_copy_conflict(
+        &self,
+        store: &str,
+        candidate: &awaken_resource_contract::MemoryCopyConflict,
+    ) -> Result<(), MemErr> {
+        match self
+            .writeback
+            .send(
+                store,
+                MemoryOperation::PreserveCopyConflict {
+                    candidate: candidate.clone(),
+                },
+            )
+            .await?
+        {
+            MemoryOperationResponse::CopyConflictPreserved => Ok(()),
+            _ => Err(MemErr::Storage(
+                "Memory copy retention response kind mismatch".into(),
+            )),
+        }
+    }
     async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
         self.snapshots.snapshot(store).await
     }
@@ -1170,6 +1224,36 @@ mod tests {
         let intent = terminal_intent();
         let target =
             SessionTerminalMemoryTarget::from_authorized_root("workspace", intent).unwrap();
+        // O5 retention authorization cross-product: path={original,new},
+        // base={original,absent}, content={write,delete}. An original path
+        // requires its original base for either operation; an absent path
+        // allows only a new write. Domain validation remains repository-owned.
+        for path in ["/note.md", "/new.md"] {
+            for has_base in [false, true] {
+                for write in [false, true] {
+                    let candidate = awaken_resource_contract::MemoryCopyConflict {
+                        path: path.into(),
+                        base: has_base.then(|| awaken_resource_contract::MemoryCopyBase {
+                            id: "memory-note".into(),
+                            content_sha256: "sha-a".into(),
+                        }),
+                        content: write.then(|| "edit".into()),
+                    };
+                    assert_eq!(
+                        terminal_operation_allowed(
+                            &target,
+                            &MemoryOperation::PreserveCopyConflict { candidate },
+                        ),
+                        if path == "/note.md" {
+                            has_base
+                        } else {
+                            !has_base && write
+                        },
+                        "O5 {path} base={has_base} write={write}",
+                    );
+                }
+            }
+        }
         assert!(
             terminal_operation_allowed(&target, &MemoryOperation::Snapshot),
             "O1"

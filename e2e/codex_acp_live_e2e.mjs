@@ -147,6 +147,7 @@ async function startHostLoginProfile() {
   const config = path.join(temp, 'config.toml');
   fs.writeFileSync(config, [
     `data_dir = ${JSON.stringify(path.join(temp, 'data'))}`,
+    `sandbox_dir = ${JSON.stringify(path.join(temp, 'sandboxes'))}`,
     `bind = ${JSON.stringify(`127.0.0.1:${port}`)}`,
     // This profile reads the local bootstrap admin token; Cloud login is a
     // separate live gate and must not become an implicit prerequisite.

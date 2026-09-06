@@ -107,6 +107,11 @@ pub enum AcquireResourceReclamationOutcome {
     Contended,
 }
 
+// Preserve historical receipt bytes when no proposal was purged.
+fn zero_count(value: &u64) -> bool {
+    *value == 0
+}
+
 /// Per-kind, immutable proof returned by the physical adapter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -117,6 +122,8 @@ pub enum ResourcePurgeEvidence {
     MemoryStore {
         heads_deleted: u64,
         versions_deleted: u64,
+        #[serde(default, skip_serializing_if = "zero_count")]
+        copy_conflicts_deleted: u64,
     },
     Repository {
         local_realizations_deleted: u64,
@@ -583,6 +590,22 @@ pub trait ResourcePhysicalReclaimer: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn memory_purge_evidence_adds_nonzero_candidates_without_rewriting_legacy_receipts() {
+        // RC-WIRE legacy/no-candidate => exact unchanged JSON; a nonzero count
+        // roundtrips so resource reclamation accounts for retained content.
+        let legacy =
+            serde_json::json!({"kind":"memory_store","heads_deleted":1,"versions_deleted":2});
+        for count in [0, 3] {
+            let mut wire = legacy.clone();
+            if count != 0 {
+                wire["copy_conflicts_deleted"] = serde_json::json!(count);
+            }
+            let evidence: super::ResourcePurgeEvidence =
+                serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(evidence).unwrap(), wire);
+        }
+    }
     use proptest::prelude::*;
     use serde_json::Value;
 

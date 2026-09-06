@@ -48,13 +48,14 @@ impl Drop for ReleaseSqlGate {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
-    // L1-L6: operation={create,update,delete} × retry={before,after late commit}.
+    // L1-L8: operation={create,update,delete,retain-conflict} ×
+    // retry={before,after late commit}. Retention changes only its candidate row.
     // Unlike the acknowledgement wrapper below, an AFTER SQL trigger pauses
     // INSIDE the actual production spawn_blocking transaction. Abort only the
     // awaiting teardown; SQL continues and must commit exactly once. An independent
     // reader observes the old committed heads while SQL is paused. Re-drive from
     // the same guard AND reopened original evidence preserves exact history/IDs.
-    for operation in ["INSERT", "UPDATE", "DELETE"] {
+    for operation in ["INSERT", "UPDATE", "DELETE", "CONFLICT"] {
         for retry_before_commit in [false, true] {
             let root = tempfile::tempdir().unwrap();
             let database = root.path().join("memory.sqlite");
@@ -85,17 +86,20 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
             if operation != "INSERT" {
                 repository.create("s", "/note.md", "base").await.unwrap();
             }
-            let initial_heads = repository.snapshot_heads("s").await.unwrap();
-            let initial_history = repository.list_versions("s").await.unwrap();
             let observer = SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap();
             let schema = rusqlite::Connection::open(&database).unwrap();
+            let (sql_operation, table) = if operation == "CONFLICT" {
+                ("INSERT", "memory_store_copy_conflicts")
+            } else {
+                (operation, "memory_store_memories")
+            };
             schema
                 .execute_batch(&format!(
-                    "CREATE TRIGGER pause_write AFTER {operation} ON memory_store_memories
+                    "CREATE TRIGGER pause_write AFTER {sql_operation} ON {table}
                  BEGIN SELECT pause_memory_commit(); END;"
                 ))
                 .unwrap();
-            let mounter = MemoryStoreMounter::copy_only(repository.clone());
+            let mounter = Arc::new(MemoryStoreMounter::copy_only(repository.clone()));
             let projection = root.path().join("projection");
             let mount: Arc<dyn MemoryMount> = Arc::from(
                 mounter
@@ -109,6 +113,15 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
                 mount.materialization_heads().unwrap(),
             )
             .unwrap();
+            if operation == "CONFLICT" {
+                let base = &evidence.heads[0];
+                repository
+                    .update("s", &base.id, "winner", &base.content_sha256)
+                    .await
+                    .unwrap();
+            }
+            let initial_heads = repository.snapshot_heads("s").await.unwrap();
+            let initial_history = repository.list_versions("s").await.unwrap();
             let files = if operation == "DELETE" {
                 std::fs::remove_file(projection.join("note.md")).unwrap();
                 vec![]
@@ -119,7 +132,23 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
             gate.armed.store(true, Ordering::SeqCst);
             let pending = tokio::spawn({
                 let mount = mount.clone();
-                async move { mount.teardown().await }
+                let mounter = mounter.clone();
+                let evidence = evidence.clone();
+                let files = files.clone();
+                async move {
+                    if operation == "CONFLICT" {
+                        mounter
+                            .reconcile_recovered_copy(
+                                "s",
+                                &evidence,
+                                &files,
+                                MountAccess::ReadWrite,
+                            )
+                            .await
+                    } else {
+                        mount.teardown().await
+                    }
+                }
             });
             tokio::time::timeout(std::time::Duration::from_secs(5), gate.reached.notified())
                 .await
@@ -128,7 +157,12 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
             assert!(pending.await.unwrap_err().is_cancelled());
             assert_eq!(observer.snapshot_heads("s").await.unwrap(), initial_heads);
             assert_eq!(observer.list_versions("s").await.unwrap(), initial_history);
-            let mut retry = mount.teardown();
+            assert!(observer.list_copy_conflicts("s").await.unwrap().is_empty());
+            let mut retry = if operation == "CONFLICT" {
+                mounter.reconcile_recovered_copy("s", &evidence, &files, MountAccess::ReadWrite)
+            } else {
+                mount.teardown()
+            };
             if retry_before_commit {
                 // Poll once to place the real retry behind the in-flight connection
                 // permit; no timing sleep or assumed task scheduling.
@@ -143,21 +177,30 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
                 // Same connection's serialized read is a late-commit completion barrier.
                 assert_eq!(
                     repository.list_versions("s").await.unwrap().len(),
-                    initial_history.len() + 1
+                    initial_history.len() + usize::from(operation != "CONFLICT")
                 );
             }
             tokio::time::timeout(std::time::Duration::from_secs(5), retry)
                 .await
                 .unwrap()
                 .unwrap();
-            mount.teardown().await.unwrap();
+            if operation != "CONFLICT" {
+                mount.teardown().await.unwrap();
+            }
             let heads = repository.snapshot_heads("s").await.unwrap();
             let history = repository.list_versions("s").await.unwrap();
-            assert_eq!(history.len(), initial_history.len() + 1);
+            assert_eq!(
+                history.len(),
+                initial_history.len() + usize::from(operation != "CONFLICT")
+            );
+            let retained = repository.list_copy_conflicts("s").await.unwrap();
+            assert_eq!(retained.len(), usize::from(operation == "CONFLICT"));
             assert_eq!(
                 heads.first().and_then(|h| h.content.as_deref()),
                 if operation == "DELETE" {
                     None
+                } else if operation == "CONFLICT" {
+                    Some("winner")
                 } else {
                     Some("edit")
                 }
@@ -174,6 +217,7 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
                 .unwrap();
             assert_eq!(reopened.snapshot_heads("s").await.unwrap(), heads);
             assert_eq!(reopened.list_versions("s").await.unwrap(), history);
+            assert_eq!(reopened.list_copy_conflicts("s").await.unwrap(), retained);
         }
     }
 }
@@ -313,6 +357,14 @@ impl FaultRepository {
 
 #[async_trait::async_trait]
 impl MemoryRepository for FaultRepository {
+    async fn preserve_copy_conflict(
+        &self,
+        s: &str,
+        candidate: &awaken_resource_contract::MemoryCopyConflict,
+    ) -> Result<(), MemErr> {
+        self.mutate(self.inner.preserve_copy_conflict(s, candidate))
+            .await
+    }
     async fn snapshot_heads(&self, s: &str) -> Result<Vec<Memory>, MemErr> {
         self.inner.snapshot_heads(s).await
     }
@@ -392,6 +444,144 @@ impl MemoryRepository for FaultRepository {
     }
     async fn purge_store(&self, s: &str) -> Result<MemoryPurgeSummary, MemErr> {
         self.inner.purge_store(s).await
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_conflict_retention_retries_without_losing_the_proposal() {
+    // RC-F: operation={create,update,delete} x fault={before/after durable save}
+    // x caller={error,cancel}. Before save => no receipt; after save => one
+    // durable proposal despite absent acknowledgement. Both keep source bytes
+    // and the winner's complete heads/history. Reopen + two concurrent terminal
+    // retries => exactly one candidate, unchanged original CAS base, no pending
+    // conflict. This wraps real SQLite, not a synthetic successful repository.
+    for operation in ["create", "update", "delete"] {
+        for after in [false, true] {
+            for error in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let database = root.path().join("memory.sqlite");
+                let repository =
+                    Arc::new(SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap());
+                if operation != "create" {
+                    repository.create("s", "/note.md", "base").await.unwrap();
+                }
+                let projection = root.path().join("projection");
+                let mount = MemoryStoreMounter::copy_only(repository.clone())
+                    .mount("s", &projection, MountAccess::ReadWrite)
+                    .await
+                    .unwrap();
+                let evidence = MemoryMaterializationEvidence::new(
+                    "s",
+                    "/memory",
+                    mount.materialization_heads().unwrap(),
+                )
+                .unwrap();
+                if operation == "create" {
+                    repository.create("s", "/note.md", "winner").await.unwrap();
+                } else {
+                    let base = &evidence.heads[0];
+                    repository
+                        .update("s", &base.id, "winner", &base.content_sha256)
+                        .await
+                        .unwrap();
+                }
+                let files = if operation == "delete" {
+                    std::fs::remove_file(projection.join("note.md")).unwrap();
+                    vec![]
+                } else {
+                    std::fs::write(projection.join("note.md"), b"loser").unwrap();
+                    vec![("note.md".into(), b"loser".to_vec())]
+                };
+                let heads = repository.snapshot_heads("s").await.unwrap();
+                let history = repository.list_versions("s").await.unwrap();
+                let gate = Arc::new(Gate {
+                    after,
+                    error,
+                    ordinal: 1,
+                    calls: AtomicUsize::new(0),
+                    reached: tokio::sync::Notify::new(),
+                    release: tokio::sync::Semaphore::new(0),
+                });
+                let mounter = MemoryStoreMounter::copy_only(Arc::new(FaultRepository {
+                    inner: repository.clone(),
+                    gate: gate.clone(),
+                }));
+                let pending = tokio::spawn({
+                    let evidence = evidence.clone();
+                    let files = files.clone();
+                    async move {
+                        mounter
+                            .reconcile_recovered_copy(
+                                "s",
+                                &evidence,
+                                &files,
+                                MountAccess::ReadWrite,
+                            )
+                            .await
+                    }
+                });
+                tokio::time::timeout(std::time::Duration::from_secs(5), gate.reached.notified())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    repository.list_copy_conflicts("s").await.unwrap().len(),
+                    usize::from(after)
+                );
+                if error {
+                    gate.release.add_permits(1);
+                    assert!(pending.await.unwrap().is_err());
+                } else {
+                    pending.abort();
+                    assert!(pending.await.unwrap_err().is_cancelled());
+                }
+                assert!(
+                    projection.is_dir(),
+                    "failure cannot authorize source deletion"
+                );
+                if operation != "delete" {
+                    assert_eq!(std::fs::read(projection.join("note.md")).unwrap(), b"loser");
+                }
+                assert_eq!(repository.snapshot_heads("s").await.unwrap(), heads);
+                assert_eq!(repository.list_versions("s").await.unwrap(), history);
+                drop(mount);
+                drop(repository);
+                let reopened =
+                    Arc::new(SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap());
+                let mounter = MemoryStoreMounter::copy_only(reopened.clone());
+                let (a, b) = tokio::join!(
+                    mounter.reconcile_recovered_copy(
+                        "s",
+                        &evidence,
+                        &files,
+                        MountAccess::ReadWrite
+                    ),
+                    mounter.reconcile_recovered_copy(
+                        "s",
+                        &evidence,
+                        &files,
+                        MountAccess::ReadWrite
+                    ),
+                );
+                a.unwrap();
+                b.unwrap();
+                let retained = reopened.list_copy_conflicts("s").await.unwrap();
+                assert_eq!(retained.len(), 1);
+                assert_eq!(
+                    retained[0].content.as_deref(),
+                    if operation == "delete" {
+                        None
+                    } else {
+                        Some("loser")
+                    }
+                );
+                assert_eq!(
+                    retained[0].base.as_ref().map(|b| b.id.as_str()),
+                    evidence.heads.first().map(|h| h.id.as_str())
+                );
+                assert_eq!(reopened.snapshot_heads("s").await.unwrap(), heads);
+                assert_eq!(reopened.list_versions("s").await.unwrap(), history);
+            }
+        }
     }
 }
 

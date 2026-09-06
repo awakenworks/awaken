@@ -54,6 +54,10 @@ cargo test -p awaken-sandbox-fs --lib
 cargo test -p awaken-sandbox-memoryd --lib
 cargo test -p awaken-sandbox-memoryd --test copy_lifecycle
 cargo test -p awaken-sandbox-memoryd --test writeback_faults
+cargo test -p awaken-memory-store --features sqlite,test-support
+cargo test -p awaken-resource-worker-http --lib
+cargo test -p awaken-resource-worker-http --test memory_transport
+cargo test -p awaken-protocol-managed --test memory_store_api_http
 
 # Composition rules: each installed fixture is a real native executable, and
 # each runtime must perform File/Memory/Repository I/O through the production

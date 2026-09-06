@@ -37,6 +37,7 @@ use crate::types::memory::{
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate, paginate_by};
 
 use super::managed_resource_error as err;
+mod copy_conflicts;
 
 fn timestamp(nanos: u128) -> String {
     awaken_session_contract::epoch_millis_to_rfc3339(awaken_session_contract::project_epoch_millis(
@@ -426,6 +427,9 @@ pub fn memory_stores_router(
                 .delete(delete_memory),
         )
         .route("/v1/memory_stores/{id}/memory_versions", get(list_versions))
+        .merge(awaken_protocol_awaken::memory_copy_conflicts_router(
+            copy_conflicts::list,
+        ))
         .route(
             "/v1/memory_stores/{id}/memory_versions/{vid}",
             get(get_version),

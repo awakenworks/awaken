@@ -285,6 +285,79 @@ async fn append_version(
 
 #[async_trait::async_trait]
 impl MemoryRepository for PostgresMemoryRepository {
+    async fn preserve_copy_conflict(
+        &self,
+        store: &str,
+        candidate: &awaken_resource_contract::MemoryCopyConflict,
+    ) -> Result<(), MemErr> {
+        crate::repository::validate_copy_conflict(candidate)?;
+        let id = candidate.id();
+        let encoded = serde_json::to_string(candidate).map_err(mem_err)?;
+        let mut tx = self.pool.begin().await.map_err(mem_err)?;
+        // Same store-scoped admission authority as create; no separate quota ledger.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(store)
+            .execute(&mut *tx)
+            .await
+            .map_err(mem_err)?;
+        let existing: Option<String> = sqlx::query_scalar(&format!(
+            "SELECT candidate_json FROM {NS}_copy_conflicts WHERE store_id = $1 AND id = $2"
+        ))
+        .bind(store)
+        .bind(&id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(mem_err)?;
+        if let Some(existing) = existing {
+            return if existing == encoded {
+                Ok(())
+            } else {
+                Err(mem_err("Memory copy proposal identity mismatch"))
+            };
+        }
+        let count: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {NS}_copy_conflicts WHERE store_id = $1"
+        ))
+        .bind(store)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(mem_err)?;
+        if count >= crate::MAX_MEMORIES_PER_STORE as i64 {
+            return Err(MemErr::AtCapacity);
+        }
+        sqlx::query(&format!(
+            "INSERT INTO {NS}_copy_conflicts (store_id, id, candidate_json) VALUES ($1, $2, $3)"
+        ))
+        .bind(store)
+        .bind(id)
+        .bind(encoded)
+        .execute(&mut *tx)
+        .await
+        .map_err(mem_err)?;
+        tx.commit().await.map_err(mem_err)
+    }
+
+    async fn list_copy_conflicts(
+        &self,
+        store: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
+        let rows = sqlx::query(&format!(
+            "SELECT id, candidate_json FROM {NS}_copy_conflicts WHERE store_id = $1 ORDER BY id"
+        ))
+        .bind(store)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(mem_err)?;
+        rows.into_iter()
+            .map(|row| {
+                crate::repository::decode_copy_conflict(
+                    &row.try_get::<String, _>("id").map_err(mem_err)?,
+                    &row.try_get::<String, _>("candidate_json")
+                        .map_err(mem_err)?,
+                )
+            })
+            .collect()
+    }
     async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
         let rows = sqlx::query(&format!(
             "SELECT id, path, content, sha, version, created, updated \
@@ -792,6 +865,19 @@ impl MemoryRepository for PostgresMemoryRepository {
 
     async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(store)
+            .execute(&mut *tx)
+            .await
+            .map_err(mem_err)?;
+        let copy_conflicts_deleted = sqlx::query(&format!(
+            "DELETE FROM {NS}_copy_conflicts WHERE store_id = $1"
+        ))
+        .bind(store)
+        .execute(&mut *tx)
+        .await
+        .map_err(mem_err)?
+        .rows_affected();
         let versions_deleted =
             sqlx::query(&format!("DELETE FROM {NS}_versions WHERE store_id = $1"))
                 .bind(store)
@@ -809,6 +895,7 @@ impl MemoryRepository for PostgresMemoryRepository {
         Ok(MemoryPurgeSummary {
             heads_deleted,
             versions_deleted,
+            copy_conflicts_deleted,
         })
     }
 }
