@@ -15,6 +15,7 @@ ARG SOURCE_REPOSITORY=""
 ARG SOURCE_REVISION=""
 ARG VERSION=""
 COPY ${BIN} /usr/local/bin/awaken
+COPY .awaken-verification.json /usr/share/awaken/verification.json
 COPY container.toml /etc/awaken/config.toml
 COPY entrypoint.sh /usr/local/bin/awaken-container-entrypoint
 
@@ -24,6 +25,7 @@ LABEL org.opencontainers.image.source="$SOURCE_REPOSITORY" \
 
 RUN chmod 0755 /usr/local/bin/awaken \
     && chmod 0755 /usr/local/bin/awaken-container-entrypoint \
+    && chmod 0444 /usr/share/awaken/verification.json \
     && chmod 0644 /etc/awaken/config.toml
 
 USER awaken

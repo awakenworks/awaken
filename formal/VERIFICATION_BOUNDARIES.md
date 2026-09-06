@@ -456,10 +456,29 @@ the actual strict invocation and its reports remain mandatory.
 
 The existing strict formal runner emits one invocation receipt into quality's
 existing artifact directory. Its start and completion bind the same source tree
-and proof toolchain contract. Release manifest schema 2 consumes that receipt
+and proof toolchain contract. Release manifest schema 3 consumes that receipt
 and rejects incomplete, dirty or mismatched runs. Authenticity relies on the
 trusted CI runner and the existing signed release provenance; the receipt does
 not replace proof reports or establish unbounded Rust refinement.
+Its source-input digests reuse the runner's committed Git-byte authority after
+clean-source validation, preventing platform newline conversion from changing
+the claimed proof inputs. Archive digests remain hashes of actual bytes. Both
+Management staging and final release attestation consume the exact requested
+profile and completed receipt through the same validator; no sidecar can qualify
+merely by being downloaded. The bounded admission model includes these release
+prerequisites, and tests execute the actual local consumer shell blocks before
+their extraction/publication boundaries. CI authenticity and immutable checkout
+ownership remain assumptions; this is not runtime admission or image execution
+evidence, and it does not close deployment check/use races.
+The Management image now carries the original validated archive manifest as a
+read-only file. New/reused image paths share one exact binary/manifest/OCI-label
+check instead of independently deciding payload equivalence, and the reused
+signature must name the source workflow commit. The signed image digest binds
+the included file; no second proof manifest or qualification policy is created.
+The model's optional image-path projection checks payload equivalence before
+TCB admission, while actual shell tests cover wrong/missing payload, stale copy
+output and inspection cleanup. These are bounded model/adapter checks, not
+signature verification proofs or a live runtime Verified identity.
 
 The generated release manifest extends the existing signed release provenance;
 it is not a second obligation or assumption ledger. A standard artifact records
@@ -468,6 +487,20 @@ after the P0 production-proof gate is empty, and deployment must additionally
 present one fresh, exact fingerprint for every TCB contract. Artifact, ledger,
 profile, proof-input, or TCB mismatch removes the Verified identity rather than
 weakening the safety claim.
+
+`verification_manifest.py` is the one release/TCB admission validator. Its
+`--runtime-fingerprint` input is a deployment snapshot, not a parallel TCB
+ledger: exact dependency IDs resolve back to the generated manifest contracts,
+and observations must match the independently supplied target versions and
+configuration digests. Both lists must be complete and unique; time is a
+nonnegative integer, observations cannot be future-dated, and maximum age is
+inclusive. `VerifiedProfileAdmission` abstracts this frozen decision with two
+dependencies and explicit finite time/match bounds. Its model mutants remove
+version, configuration and expiry guards; production tests own the corresponding
+cause/effect rules. This does not prove Python refinement or authenticate either
+JSON input. The deployment owner must authenticate and freeze the actual target,
+prevent check/use races, invalidate expired evidence, and bind Session execution
+to that identity before a runtime may advertise Verified.
 
 ### Durable inbox/outbox and event-sourced reducers
 

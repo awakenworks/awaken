@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import os
 import re
 import subprocess
 import sys
@@ -18,7 +20,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts/ci"))
 from formal_profile import profile_result
-from formal_run_evidence import canonical_bytes, digest_bytes, digest_file, proof_toolchain, validate_record
+from formal_run_evidence import canonical_bytes, committed_file_digest, digest_bytes, digest_file, proof_toolchain, validate_record
 
 HEX64 = re.compile(r"[0-9a-f]{64}")
 PROFILES = {"standard", "awaken-verified-v1"}
@@ -70,6 +72,12 @@ def build_manifest(
     elif profile == "awaken-verified-v1":
         raise ContractError("Verified packaging requires completed strict formal execution evidence")
 
+    def source_digest(relative: str) -> str:
+        # Executed release receipts already require this exact clean Git tree.
+        # Hash its blobs, not OS-dependent checkout EOLs. Unexecuted local
+        # diagnostics still describe their actual working files, never a release.
+        return committed_file_digest(repository, relative, source_commit) if proof_run is not None else digest_file(repository / relative)
+
     proof_paths = sorted(
         {
             relative
@@ -81,7 +89,7 @@ def build_manifest(
         }
     )
     proof_inputs = [
-        {"path": relative, "digest": digest_file(repository / relative)}
+        {"path": relative, "digest": source_digest(relative)}
         for relative in proof_paths
     ]
     tcb = [
@@ -97,7 +105,8 @@ def build_manifest(
         if item["id"] != "external.llm_semantics"
     ]
     return {
-        "schema_version": 2,
+        "schema_version": 3,
+        "source_digest_basis": "git-blob" if proof_run is not None else "working-tree",
         "profile": profile,
         "source_commit": source_commit,
         "artifact": {
@@ -105,12 +114,10 @@ def build_manifest(
             "digest": digest_file(artifact),
         },
         "ledger_digests": {
-            "coverage": digest_file(repository / "formal/coverage.json"),
-            "features": digest_file(repository / "formal/features.json"),
-            "assumptions": digest_file(repository / "formal/assumptions.json"),
-            "proof_boundaries": digest_file(
-                repository / "formal/proof-boundaries.json"
-            ),
+            "coverage": source_digest("formal/coverage.json"),
+            "features": source_digest("formal/features.json"),
+            "assumptions": source_digest("formal/assumptions.json"),
+            "proof_boundaries": source_digest("formal/proof-boundaries.json"),
         },
         "profile_result": result,
         "proof_toolchain": proof_toolchain(repository),
@@ -141,31 +148,67 @@ def write_manifest(manifest: dict, output: Path) -> None:
     output.write_bytes(canonical_bytes(manifest))
 
 
-def validate_tcb_evidence(manifest: dict, evidence: dict, now: int) -> None:
-    expected = {item["id"]: item for item in manifest["tcb_assumptions"]}
-    observations = evidence.get("observations")
-    if not isinstance(observations, list):
-        raise ContractError("TCB evidence observations must be a list")
-    actual = {item.get("id"): item for item in observations if isinstance(item, dict)}
-    if set(actual) != set(expected) or len(actual) != len(observations):
-        raise ContractError("TCB evidence must contain every assumption exactly once")
+def _tcb_index(items: object, label: str) -> dict[str, dict]:
+    """Index a deployment snapshot without silently collapsing duplicate IDs."""
+    if not isinstance(items, list) or not items:
+        raise ContractError(f"{label}: expected a nonempty list")
+    indexed = {}
+    for item in items:
+        if not isinstance(item, dict):
+            raise ContractError(f"{label}: expected an object")
+        identity = item.get("id")
+        if not isinstance(identity, str) or not identity or identity in indexed:
+            raise ContractError(f"{label}: missing or duplicate assumption id")
+        indexed[identity] = item
+    return indexed
+
+
+def _sha256(value: object) -> bool:
+    return isinstance(value, str) and value.startswith("sha256:") and HEX64.fullmatch(value[7:]) is not None
+
+
+def validate_tcb_evidence(
+    manifest: dict, evidence: dict, now: int, *, runtime_fingerprint: dict | None = None,
+) -> None:
+    # One point-in-time admission boundary, not authentication or a renewable
+    # runtime lease. The deployment caller must independently authenticate both
+    # the observation and target snapshot; copying one into the other is unsafe.
+    if type(now) is not int or now < 0:
+        raise ContractError("TCB admission requires a nonnegative integer clock")
+    if not isinstance(runtime_fingerprint, dict) or set(runtime_fingerprint) != {"dependencies"}:
+        raise ContractError("Verified admission requires an exact target runtime fingerprint")
+    if not isinstance(evidence, dict) or set(evidence) != {"observations"}:
+        raise ContractError("TCB evidence requires exactly the observations field")
+    expected = _tcb_index(manifest.get("tcb_assumptions"), "TCB contracts")
+    actual = _tcb_index(evidence["observations"], "TCB observations")
+    target = _tcb_index(runtime_fingerprint["dependencies"], "target runtime fingerprint")
+    if set(actual) != set(expected) or set(target) != set(expected):
+        raise ContractError("TCB evidence and target must contain every assumption exactly once")
     for assumption_id, contract in expected.items():
         item = actual[assumption_id]
-        if item.get("contract_digest") != contract["contract_digest"]:
+        dependency = target[assumption_id]
+        if set(dependency) != {"id", "version", "configuration_digest"} or set(item) != {
+            "id", "contract_digest", "version", "configuration_digest", "evidence_digest", "observed_at_unix",
+        }:
+            raise ContractError(f"{assumption_id}: unknown or missing fingerprint fields")
+        if not _sha256(contract.get("contract_digest")) or item["contract_digest"] != contract["contract_digest"]:
             raise ContractError(f"{assumption_id}: contract digest mismatch")
-        for field in ("version", "configuration_digest", "evidence_digest"):
-            value = item.get(field)
-            if not isinstance(value, str) or not value:
-                raise ContractError(f"{assumption_id}: missing {field}")
+        for fingerprint in (item, dependency):
+            version = fingerprint["version"]
+            if not isinstance(version, str) or not version or version.strip() != version:
+                raise ContractError(f"{assumption_id}: invalid version")
         for field in ("configuration_digest", "evidence_digest"):
-            if not item[field].startswith("sha256:") or HEX64.fullmatch(
-                item[field].removeprefix("sha256:")
-            ) is None:
+            if not _sha256(item[field]):
                 raise ContractError(f"{assumption_id}: invalid {field}")
-        observed = item.get("observed_at_unix")
-        if type(observed) is not int or observed > now:
+        if any(item[field] != dependency[field] for field in ("version", "configuration_digest")):
+            raise ContractError(f"{assumption_id}: target runtime fingerprint mismatch")
+        maximum_age = contract.get("maximum_age_seconds")
+        if type(maximum_age) is not int or maximum_age <= 0:
+            raise ContractError(f"{assumption_id}: invalid maximum evidence age")
+        observed = item["observed_at_unix"]
+        if type(observed) is not int or not 0 <= observed <= now:
             raise ContractError(f"{assumption_id}: invalid observation time")
-        if now - observed > contract["maximum_age_seconds"]:
+        if now - observed > maximum_age:
             raise ContractError(f"{assumption_id}: evidence expired")
 
 
@@ -175,13 +218,20 @@ def validate_manifest(
     *,
     repository: Path = ROOT,
     require_verified: bool = False,
+    expected_profile: str | None = None,
+    require_proof_execution: bool = False,
     tcb_evidence: dict | None = None,
+    runtime_fingerprint: dict | None = None,
     now: int | None = None,
 ) -> None:
-    if manifest.get("schema_version") != 2:
+    if manifest.get("schema_version") != 3:
         raise ContractError("unsupported manifest schema")
     if manifest.get("profile") not in PROFILES:
         raise ContractError("unknown manifest profile")
+    if expected_profile is not None and (expected_profile not in PROFILES or manifest["profile"] != expected_profile):
+        raise ContractError("manifest does not match the requested release profile")
+    if require_proof_execution and manifest.get("proof_execution") is None:
+        raise ContractError("release consumption requires completed strict formal execution evidence")
     if manifest["artifact"]["name"] != artifact.name:
         raise ContractError("artifact name mismatch")
     if manifest["artifact"]["digest"] != digest_file(artifact):
@@ -203,10 +253,149 @@ def validate_manifest(
             raise ContractError("artifact is not eligible for Awaken Verified Profile")
         if tcb_evidence is None:
             raise ContractError("Verified admission requires TCB evidence")
-        validate_tcb_evidence(manifest, tcb_evidence, int(time.time()) if now is None else now)
+        validate_tcb_evidence(
+            manifest, tcb_evidence, int(time.time()) if now is None else now,
+            runtime_fingerprint=runtime_fingerprint,
+        )
 
 
 class VerificationManifestTests(unittest.TestCase):
+    @staticmethod
+    def release_case(directory: Path) -> tuple[Path, Path, dict]:
+        # Reuse the receipt fixture and production archive builder. The bytes
+        # are deliberately synthetic; no real binary or proof tool is claimed.
+        from test_formal_run_evidence import prepare_source_fixture
+        from formal_run_evidence import begin_record, finish_record
+        from package import create_archive, write_checksum
+        row = dict(id="fixture.safe", formalizable=True, claim_scope="repository_safety",
+                   proof_grade="abstract_model_checked", bounds=["fixture only"], evidence=["formal/tla/Fixture.tla"])
+        feature = dict(id="fixture", criticality="P0", requirements=[dict(
+            kind="safety", repository_controlled=True, obligations=["fixture.safe"])])
+        root = directory / "source"
+        prepare_source_fixture(root, {
+            ".gitignore": "target/\ndist/\ndeploy/images/management/.awaken-management.bin\ndeploy/images/management/.awaken-verification.json\n",
+            "formal/coverage.json": json.dumps({"obligations": [row]}) + "\n",
+            "formal/features.json": json.dumps({"features": [feature]}) + "\n",
+            "formal/assumptions.json": '{"assumptions": []}\n',
+            "formal/proof-boundaries.json": '{"boundaries": []}\n',
+            "formal/tla/Fixture.tla": "---- MODULE Fixture ----\n====\n",
+            "scripts/ci/formal_profile.py": (ROOT / "scripts/ci/formal_profile.py").read_text(),
+            "scripts/release/verification_manifest.py": Path(__file__).read_text(),
+            "README.md": "fixture\n", "LICENSE": "fixture\n", "deploy/compose.yaml": "# fixture\n",
+        })
+        (root / "deploy/images/management").mkdir(parents=True)
+        binary = directory / "binary"
+        binary.write_bytes(b"synthetic binary")
+        artifact = create_archive(root, binary, binary, "x86_64-unknown-linux-gnu", "1.0.0", root / "dist", 100)
+        write_checksum(artifact)
+        receipt = finish_record(begin_record(root, True, 100), root, False, 110)
+        manifest = build_manifest(artifact, profile="standard", source_commit=source_commit(root),
+                                  repository=root, proof_run=receipt)
+        write_manifest(manifest, artifact.with_name(artifact.name + ".verification.json"))
+        return root, artifact, manifest
+
+    def test_release_source_hashes_are_git_normalized_but_real_changes_reject(self) -> None:
+        # E1 identical clean Git source + artifact + synthetic receipt across
+        # LF/CRLF checkouts => identical manifests. E2 a semantic source edit
+        # after conversion rejects, never normalized away. This is a packaging
+        # fixture, not evidence of any actual formal tool execution.
+        with tempfile.TemporaryDirectory() as temporary:
+            root, artifact, before = self.release_case(Path(temporary))
+            windows = Path(temporary) / "windows"
+            subprocess.run(["git", "clone", "--quiet", "--config", "core.autocrlf=true", str(root), str(windows)],
+                           check=True, capture_output=True)
+            model = windows / "formal/tla/Fixture.tla"
+            self.assertIn(b"\r\n", model.read_bytes())
+            after = build_manifest(artifact, profile="standard", source_commit=source_commit(windows),
+                                   repository=windows, proof_run=before["proof_execution"])
+            self.assertEqual(before, after)
+            validate_manifest(before, artifact, repository=windows)
+            model.write_bytes(model.read_bytes() + b"changed\r\n")
+            with self.assertRaisesRegex(ContractError, "clean release source"):
+                validate_manifest(before, artifact, repository=windows)
+
+    def test_release_consumption_requires_exact_profile_and_executed_proofs(self) -> None:
+        # R1 standard release with a valid receipt accepts without claiming a
+        # Verified runtime. R2 local diagnostic (null receipt), R3 other profile,
+        # R4 running/foreign receipt and R5 schema/digest/bounds tampering reject.
+        # Use real rebuild/receipt validation; no qualification mocks here.
+        with tempfile.TemporaryDirectory() as temporary:
+            root, artifact, manifest = self.release_case(Path(temporary))
+            validate_manifest(manifest, artifact, repository=root, expected_profile="standard", require_proof_execution=True)
+            diagnostic = build_manifest(artifact, profile="standard", source_commit=source_commit(root), repository=root)
+            validate_manifest(diagnostic, artifact, repository=root)
+            with self.assertRaisesRegex(ContractError, "execution evidence"):
+                validate_manifest(diagnostic, artifact, repository=root, require_proof_execution=True)
+            for profile in ("awaken-verified-v1", "unknown"):
+                with self.subTest(profile=profile), self.assertRaisesRegex(ContractError, "requested release profile"):
+                    validate_manifest(manifest, artifact, repository=root, expected_profile=profile, require_proof_execution=True)
+            mutations = [dict(manifest, schema_version=2), dict(manifest, source_digest_basis="working-tree"),
+                         dict(manifest, bounds=["invented"]), dict(manifest, proof_inputs_digest="sha256:" + "0" * 64),
+                         dict(manifest, proof_execution=dict(manifest["proof_execution"], status="running")),
+                         dict(manifest, proof_execution=dict(manifest["proof_execution"], runner={}))]
+            for index, changed in enumerate(mutations):
+                with self.subTest(rule=index), self.assertRaises(ContractError):
+                    validate_manifest(changed, artifact, repository=root, expected_profile="standard", require_proof_execution=True)
+
+    def test_actual_release_consumers_reject_before_extract_or_attest(self) -> None:
+        # C1 actual workflow shell, C2 matching profile/artifact/receipt, C3
+        # intact sidecar. R1 all true -> stage/validation succeeds; R2 missing
+        # or null/running evidence, R3 wrong profile, R4 changed archive,
+        # R5 orphan sidecar -> failure before extraction or final attestation.
+        # Execute only local validation/staging blocks, never registry writes.
+        from check_product_release import shell_step
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        for step in ("Stage the exact packaged binary", "Validate every packaged proof manifest"):
+            script = shell_step(workflow, step)
+            for fault in (None, "missing", "null", "running", "profile", "archive", "orphan"):
+                if step.startswith("Stage") and fault == "orphan":
+                    continue  # Final publication owns the entire sidecar set.
+                with self.subTest(step=step, fault=fault), tempfile.TemporaryDirectory() as temporary:
+                    root, artifact, manifest = self.release_case(Path(temporary))
+                    sidecar = artifact.with_name(artifact.name + ".verification.json")
+                    if fault == "missing":
+                        sidecar.unlink()
+                    elif fault in {"null", "running"}:
+                        manifest["proof_execution"] = None if fault == "null" else dict(manifest["proof_execution"], status="running")
+                        write_manifest(manifest, sidecar)
+                    elif fault == "archive":
+                        artifact.write_bytes(b"changed archive")
+                    elif fault == "orphan":
+                        write_manifest(manifest, artifact.parent / "awaken-v-orphan.verification.json")
+                    result = subprocess.run(["bash", "-c", script], cwd=root, capture_output=True, text=True, timeout=30,
+                                            env=dict(os.environ, AWAKEN_RELEASE_PROFILE="awaken-verified-v1" if fault == "profile" else "standard",
+                                                     PYTHONDONTWRITEBYTECODE="1"))
+                    staged = root / "deploy/images/management/.awaken-management.bin"
+                    if fault is None:
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        if step.startswith("Stage"):
+                            self.assertEqual(staged.read_bytes(), b"synthetic binary")
+                            self.assertEqual((staged.parent / ".awaken-verification.json").read_bytes(), sidecar.read_bytes())
+                    else:
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertFalse(staged.exists())
+                        self.assertFalse((staged.parent / ".awaken-verification.json").exists())
+
+    @staticmethod
+    def tcb_case() -> tuple[dict, dict, dict]:
+        contracts, observations, dependencies = [], [], []
+        for identity in ("database", "network"):
+            contract = {"id": identity, "contract_digest": "sha256:" + "1" * 64, "maximum_age_seconds": 60}
+            dependency = {"id": identity, "version": "17.1", "configuration_digest": "sha256:" + "2" * 64}
+            contracts.append(contract)
+            dependencies.append(dependency)
+            observations.append(dict(dependency, contract_digest=contract["contract_digest"],
+                                     evidence_digest="sha256:" + "3" * 64, observed_at_unix=100))
+        return {"tcb_assumptions": contracts}, {"observations": observations}, {"dependencies": dependencies}
+
+    def test_fresh_evidence_without_target_runtime_binding_is_rejected(self) -> None:
+        # Cause/effect: a fresh observation has syntactically valid hashes but
+        # no independently supplied target fingerprint. It must not qualify a
+        # deployment; a version/config from another environment is not proof.
+        manifest, evidence, _ = self.tcb_case()
+        with self.assertRaises(ContractError):
+            validate_tcb_evidence(manifest, evidence, 150)
+
     # Cause/effect decision table: C1 profile is standard/Verified; C2 all P0
     # repository obligations have direct grades. E1 standard always reports the
     # exact gap set without a false badge; E2 Verified emits only for C2=true;
@@ -259,37 +448,118 @@ class VerificationManifestTests(unittest.TestCase):
             with self.assertRaises(ContractError):
                 validate_manifest(manifest, artifact, require_verified=True)
 
-    # Cause/effect decision table: C1 every TCB id occurs exactly once; C2 its
-    # contract digest matches; C3 version/config/evidence fingerprints are
-    # complete; C4 observation age is within the contract window. E1 accepts
-    # only C1-C4. R1 is valid; R2 missing, R3 stale and R4 mismatched contract
-    # independently negate the non-structural causes and all fail closed.
+    # Cause/effect graph: complete unique identities AND exact contract AND
+    # valid evidence hash AND exact target (version AND configuration) AND
+    # nonnegative observation <= clock <= observation + positive max age =>
+    # accept. Otherwise reject without producing a Verified admission. Two
+    # dependencies expose accidental "any" instead of "all" acceptance.
+    # R1 accepts the inclusive age boundary and arbitrary list order. R2 checks
+    # all four version/config combinations for either dependency. R3 negates
+    # each structural, scalar and temporal cause independently, including bool
+    # masquerading as int. Other causes remain valid to isolate each guard.
     def test_tcb_evidence_decision_table(self) -> None:
-        manifest = {
-            "tcb_assumptions": [
-                {
-                    "id": "database",
-                    "contract_digest": f"sha256:{'1' * 64}",
-                    "maximum_age_seconds": 60,
-                }
-            ]
-        }
-        observation = {
-            "id": "database",
-            "contract_digest": f"sha256:{'1' * 64}",
-            "version": "17.1",
-            "configuration_digest": f"sha256:{'2' * 64}",
-            "evidence_digest": f"sha256:{'3' * 64}",
-            "observed_at_unix": 100,
-        }
-        validate_tcb_evidence(manifest, {"observations": [observation]}, 150)
-        with self.assertRaises(ContractError):
-            validate_tcb_evidence(manifest, {"observations": []}, 150)
-        with self.assertRaises(ContractError):
-            validate_tcb_evidence(manifest, {"observations": [observation]}, 161)
-        mismatched = dict(observation, contract_digest=f"sha256:{'4' * 64}")
-        with self.assertRaises(ContractError):
-            validate_tcb_evidence(manifest, {"observations": [mismatched]}, 150)
+        manifest, evidence, target = self.tcb_case()
+        target["dependencies"].reverse()
+        for now in (100, 150, 160):
+            validate_tcb_evidence(manifest, evidence, now, runtime_fingerprint=target)
+        for index in range(2):
+            for version_matches in (False, True):
+                for config_matches in (False, True):
+                    manifest, evidence, target = self.tcb_case()
+                    target["dependencies"][index].update(
+                        version="17.1" if version_matches else "18.0",
+                        configuration_digest="sha256:" + ("2" if config_matches else "4") * 64,
+                    )
+                    with self.subTest(index=index, version=version_matches, config=config_matches):
+                        if version_matches and config_matches:
+                            validate_tcb_evidence(manifest, evidence, 150, runtime_fingerprint=target)
+                        else:
+                            with self.assertRaisesRegex(ContractError, "fingerprint mismatch"):
+                                validate_tcb_evidence(manifest, evidence, 150, runtime_fingerprint=target)
+
+        cases = []
+        for label, root_key, list_key in (
+            ("contracts", "manifest", "tcb_assumptions"),
+            ("observations", "evidence", "observations"),
+            ("target", "target", "dependencies"),
+        ):
+            for replacement in ([], None, {}, [None], [{}], [{"id": []}]):
+                cases.append((label + " malformed list", (root_key, list_key), replacement))
+            for field, value in (("id", "database"), ("id", "unknown"), ("id", ""), ("id", None)):
+                cases.append((label + " identity", (root_key, list_key, 1, field), value))
+        for root_key, list_key in (("evidence", "observations"), ("target", "dependencies")):
+            for field, value in (("version", ""), ("version", "  "), ("version", 17),
+                                 ("configuration_digest", "sha256:abc"), ("unknown", True)):
+                cases.append(("fingerprint fields", (root_key, list_key, 1, field), value))
+        for field, values in {
+            "observed_at_unix": (-1, 151, True, 100.0, None),
+            "contract_digest": ("sha256:" + "4" * 64, None),
+            "evidence_digest": ("sha256:abc", "sha256:" + "A" * 64, None),
+        }.items():
+            for value in values:
+                cases.append((field, ("evidence", "observations", 1, field), value))
+        for value in (0, -1, True, 60.0, None):
+            cases.append(("max age", ("manifest", "tcb_assumptions", 1, "maximum_age_seconds"), value))
+        cases.append(("contract hash syntax", ("manifest", "tcb_assumptions", 1, "contract_digest"), "invalid"))
+        for value in (-1, True, 150.0, None, 99, 161):
+            cases.append(("clock or expiry", ("now",), value))
+        for root_key in ("evidence", "target"):
+            cases.append(("unknown envelope field", (root_key, "unknown"), True))
+        for label, path, value in cases:
+            manifest, evidence, target = self.tcb_case()
+            case = dict(manifest=manifest, evidence=evidence, target=target, now=150)
+            cursor = case
+            for key in path[:-1]:
+                cursor = cursor[key]
+            cursor[path[-1]] = value
+            with self.subTest(rule=label, path=path, value=value), self.assertRaises(ContractError):
+                validate_tcb_evidence(case["manifest"], case["evidence"], case["now"],
+                                      runtime_fingerprint=case["target"])
+
+    def test_verified_manifest_forwards_target_to_canonical_admission(self) -> None:
+        # R4: after exact release/eligibility validation, the target must reach
+        # the same validator. Mock only the earlier proof/ledger gate, not TCB
+        # admission: matching succeeds; absent/foreign target must still fail.
+        manifest, evidence, target = self.tcb_case()
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact = Path(temporary) / "awaken.tar.gz"
+            artifact.write_bytes(b"artifact")
+            manifest.update(schema_version=3, profile="awaken-verified-v1", profile_result={"eligible": True},
+                            artifact={"name": artifact.name, "digest": digest_file(artifact)})
+            with patch(f"{__name__}.build_manifest", return_value=manifest):
+                validate_manifest(manifest, artifact, require_verified=True, tcb_evidence=evidence,
+                                  runtime_fingerprint=target, now=150)
+                foreign = copy.deepcopy(target)
+                foreign["dependencies"][1]["version"] = "foreign"
+                for rejected in (None, foreign):
+                    with self.assertRaises(ContractError):
+                        validate_manifest(manifest, artifact, require_verified=True, tcb_evidence=evidence,
+                                          runtime_fingerprint=rejected, now=150)
+
+    def test_verified_cli_requires_independent_target_snapshot(self) -> None:
+        # R5: the public CLI must load and forward the separate snapshot, not
+        # derive it from observations or accept an omitted argument. The earlier
+        # artifact/proof gate is mocked only to reach admission on today's
+        # deliberately ineligible ledger; real JSON loading and TCB checks run.
+        manifest, evidence, target = self.tcb_case()
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            artifact = directory / "awaken.tar.gz"
+            artifact.write_bytes(b"artifact")
+            manifest.update(schema_version=3, profile="awaken-verified-v1", profile_result={"eligible": True},
+                            artifact={"name": artifact.name, "digest": digest_file(artifact)})
+            for name, value in (("manifest", manifest), ("evidence", evidence), ("target", target)):
+                (directory / (name + ".json")).write_bytes(canonical_bytes(value))
+            arguments = ["verification_manifest.py", "validate", "--artifact", str(artifact),
+                         "--manifest", str(directory / "manifest.json"), "--require-verified",
+                         "--tcb-evidence", str(directory / "evidence.json")]
+            with patch(f"{__name__}.build_manifest", return_value=manifest), patch("time.time", return_value=150):
+                with patch.object(sys, "argv", arguments):
+                    with self.assertRaisesRegex(ContractError, "target runtime fingerprint"):
+                        main()
+                with patch.object(sys, "argv", arguments + ["--runtime-fingerprint", str(directory / "target.json")]):
+                    with patch("builtins.print"):
+                        self.assertEqual(main(), 0)
 
 
 def source_commit(repository: Path) -> str:
@@ -310,7 +580,11 @@ def main() -> int:
     validate.add_argument("--artifact", type=Path, required=True)
     validate.add_argument("--manifest", type=Path, required=True)
     validate.add_argument("--require-verified", action="store_true")
+    validate.add_argument("--expected-profile", choices=sorted(PROFILES))
+    validate.add_argument("--require-proof-execution", action="store_true")
     validate.add_argument("--tcb-evidence", type=Path)
+    validate.add_argument("--runtime-fingerprint", type=Path,
+                          help="independently authenticated target dependency versions/configuration digests")
     subparsers.add_parser("self-test")
     args = parser.parse_args()
 
@@ -335,7 +609,10 @@ def main() -> int:
         manifest,
         args.artifact,
         require_verified=args.require_verified,
+        expected_profile=args.expected_profile,
+        require_proof_execution=args.require_proof_execution,
         tcb_evidence=evidence,
+        runtime_fingerprint=load_json(args.runtime_fingerprint) if args.runtime_fingerprint else None,
     )
     print(digest_bytes(canonical_bytes(manifest)))
     return 0

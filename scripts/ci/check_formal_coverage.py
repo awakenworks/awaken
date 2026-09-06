@@ -58,7 +58,13 @@ formal_gate = (ROOT / "scripts/ci/check_formal.sh").read_text(encoding="utf-8")
 # This checks its declared package/name bindings; execution is still witnessed
 # by the strict runner receipt, not by this static parser.
 gate_harnesses: dict[str, list[str]] = {}
+gate_python_self_tests: dict[str, int] = {}
 for line in formal_gate.replace("\\\n", " ").splitlines():
+    if line.lstrip().startswith("python3 "):
+        selection = shlex.split(line, comments=True)
+        if len(selection) == 3 and selection[2] == "self-test":
+            relative = selection[1]
+            gate_python_self_tests[relative] = gate_python_self_tests.get(relative, 0) + 1
     if not line.lstrip().startswith("run_kani "):
         continue
     tokens = shlex.split(line, comments=True)
@@ -170,9 +176,22 @@ for obligation in obligations:
         relative.startswith("formal/tla/") and relative.endswith(".tla")
         for relative in evidence
     )
-    has_executable_link = any(
+    has_rust_link = any(
         relative.startswith("crates/") and relative.endswith(".rs")
         for relative in evidence
+    )
+    # Model linkage may describe a real release-side Python authority. It must
+    # be an explicit production entrypoint with one literal strict-CI self-test
+    # selection; arbitrary scripts/comments are not executable linkage. This
+    # adds no direct-proof credit and does not relax Rust/Kani kernel evidence.
+    release_python = {
+        relative for relative in production_entrypoints
+        if re.fullmatch(r"scripts/release/[A-Za-z_][A-Za-z0-9_]*\.py", relative)
+        and not pathlib.PurePosixPath(relative).name.startswith("test_")
+    }
+    has_executable_link = has_rust_link or any(
+        relative in evidence and gate_python_self_tests.get(relative) == 1
+        for relative in release_python
     )
     for relative in evidence:
         if relative.startswith("formal/tla/") and relative not in formal_gate:
@@ -197,16 +216,16 @@ for obligation in obligations:
         if not has_formal_model:
             fail(f"{obligation_id} is model-linked without a formal model or proof")
         if not has_executable_link:
-            fail(f"{obligation_id} is model-linked without executable Rust evidence")
+            fail(f"{obligation_id} is model-linked without executable production evidence")
     elif status == "kernel_proved":
-        if not has_executable_link:
+        if not has_rust_link:
             fail(f"{obligation_id} is kernel-proved without production Rust evidence")
         if not harnesses:
             fail(f"{obligation_id} is kernel-proved without named Kani harnesses")
     elif status == "modeled_only" and not has_formal_model:
         fail(f"{obligation_id} is modeled-only without a formal model")
     elif status == "executable_only" and not has_executable_link:
-        fail(f"{obligation_id} is executable-only without executable Rust evidence")
+        fail(f"{obligation_id} is executable-only without executable production evidence")
 
     if proof_grade == "abstract_model_checked" and not has_formal_model:
         fail(f"{obligation_id} model-checked grade has no checked model")
@@ -217,8 +236,11 @@ for obligation in obligations:
     for relative in production_entrypoints:
         if relative not in evidence:
             fail(f"{obligation_id} production entrypoint is not evidence: {relative}")
-        if not relative.startswith("crates/") or not relative.endswith(".rs"):
-            fail(f"{obligation_id} production entrypoint is not Rust source: {relative}")
+        if relative in release_python:
+            if gate_python_self_tests.get(relative) != 1:
+                fail(f"{obligation_id} release entrypoint needs exactly one strict-CI self-test: {relative}")
+        elif not relative.startswith("crates/") or not relative.endswith(".rs"):
+            fail(f"{obligation_id} production entrypoint is not Rust or checked release Python source: {relative}")
         if (
             "/tests/" in relative
             or relative.endswith("/tests.rs")
