@@ -34,6 +34,25 @@ enum HandResultDisposition {
     Indeterminate,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OperationIdentityDecision {
+    RuntimeToken,
+    LegacyCallIdentity,
+    RejectMissingRuntimeToken,
+}
+
+#[must_use]
+const fn operation_identity_decision(
+    has_runtime_token: bool,
+    durable_recovery: bool,
+) -> OperationIdentityDecision {
+    match (has_runtime_token, durable_recovery) {
+        (true, _) => OperationIdentityDecision::RuntimeToken,
+        (false, false) => OperationIdentityDecision::LegacyCallIdentity,
+        (false, true) => OperationIdentityDecision::RejectMissingRuntimeToken,
+    }
+}
+
 #[must_use]
 const fn hand_result_disposition(
     explicit_success: bool,
@@ -154,18 +173,28 @@ where
     /// that the effect stayed behind the dispatch boundary.
     pub async fn call_hand(&self, call: &ToolCall) -> Result<HandResult, ToolError> {
         let correlation_id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let operation_id = match current_tool_operation_token() {
-            Some(token) => token.ledger_id(self.operation_scope.as_deref()),
-            None if self.recovery_capability == ToolRecoveryCapability::DurableRequest => {
+        let token = current_tool_operation_token();
+        let durable_recovery = self.recovery_capability == ToolRecoveryCapability::DurableRequest;
+        let operation_id = match (
+            operation_identity_decision(token.is_some(), durable_recovery),
+            token,
+        ) {
+            (OperationIdentityDecision::RuntimeToken, Some(token)) => {
+                token.ledger_id(self.operation_scope.as_deref())
+            }
+            (OperationIdentityDecision::RejectMissingRuntimeToken, None) => {
                 return Ok(HandResult::err(crate::wire::HandError::new(
                     HandErrorKind::Execution,
                     MISSING_DURABLE_OPERATION_TOKEN,
                 )));
             }
-            None => self.operation_scope.as_ref().map_or_else(
-                || call.call_id.clone(),
-                |scope| format!("{scope}:{}", call.call_id),
-            ),
+            (OperationIdentityDecision::LegacyCallIdentity, None) => {
+                self.operation_scope.as_ref().map_or_else(
+                    || call.call_id.clone(),
+                    |scope| format!("{scope}:{}", call.call_id),
+                )
+            }
+            _ => unreachable!("operation identity decision preserves token presence"),
         };
         let request = HandRequest {
             protocol_version: crate::wire::CURRENT_HAND_PROTOCOL_VERSION,
@@ -268,6 +297,37 @@ mod verification {
         assert_eq!(
             disposition == HandResultDisposition::Indeterminate,
             indeterminate
+        );
+    }
+
+    #[kani::proof]
+    fn durable_hand_identity_requires_the_runtime_operation_token() {
+        // Causes: C1 a Runtime-owned operation token is present; C2 durable
+        // request recovery is enabled. Effects: E1 use the canonical token;
+        // E2 allow the legacy call identity only for non-durable execution;
+        // E3 reject before dispatch. The four Boolean rows are exhaustive.
+        //
+        // | Rule | C1 token | C2 durable | Effect |
+        // |---|---|---|---|
+        // | R1 | yes | no  | E1 |
+        // | R2 | yes | yes | E1 |
+        // | R3 | no  | no  | E2 |
+        // | R4 | no  | yes | E3 |
+        let has_runtime_token: bool = kani::any();
+        let durable_recovery: bool = kani::any();
+        let decision = operation_identity_decision(has_runtime_token, durable_recovery);
+
+        assert_eq!(
+            decision == OperationIdentityDecision::RuntimeToken,
+            has_runtime_token
+        );
+        assert_eq!(
+            decision == OperationIdentityDecision::LegacyCallIdentity,
+            !has_runtime_token && !durable_recovery
+        );
+        assert_eq!(
+            decision == OperationIdentityDecision::RejectMissingRuntimeToken,
+            !has_runtime_token && durable_recovery
         );
     }
 }

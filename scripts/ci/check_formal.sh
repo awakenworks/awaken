@@ -263,7 +263,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-tool-relay \
     --harness hand_channel_only_exact_decoded_reply_restores_readiness \
     --harness hand_protocol_requires_supported_version_and_v2_operation_identity \
-    --harness hand_result_disposition_allows_only_explicit_success
+    --harness hand_result_disposition_allows_only_explicit_success \
+    --harness ledger_completion_requires_the_exact_executing_operation_entry \
+    --harness ledger_begin_allows_claim_only_from_absent_and_never_from_replay \
+    --harness durable_hand_identity_requires_the_runtime_operation_token
   run_kani awaken-mcp-server-core \
     --harness sessionless_http_lifecycle_routes_each_method_to_its_exact_action
   run_kani awaken-config-resolver \

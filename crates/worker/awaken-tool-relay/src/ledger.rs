@@ -56,6 +56,42 @@ enum Entry {
     Completed(HandResult),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LedgerEntryPhase {
+    Absent,
+    Executing,
+    Completed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LedgerBeginDisposition {
+    Claim,
+    Join,
+    Replay,
+}
+
+fn ledger_entry_phase(entry: Option<&Entry>) -> LedgerEntryPhase {
+    match entry {
+        None => LedgerEntryPhase::Absent,
+        Some(Entry::Executing(_)) => LedgerEntryPhase::Executing,
+        Some(Entry::Completed(_)) => LedgerEntryPhase::Completed,
+    }
+}
+
+#[must_use]
+const fn ledger_completion_admitted(phase: LedgerEntryPhase) -> bool {
+    matches!(phase, LedgerEntryPhase::Executing)
+}
+
+#[must_use]
+const fn ledger_begin_disposition(phase: LedgerEntryPhase) -> LedgerBeginDisposition {
+    match phase {
+        LedgerEntryPhase::Absent => LedgerBeginDisposition::Claim,
+        LedgerEntryPhase::Executing => LedgerBeginDisposition::Join,
+        LedgerEntryPhase::Completed => LedgerBeginDisposition::Replay,
+    }
+}
+
 /// Process-local ledger used by the zero-configuration in-process hand.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
@@ -68,17 +104,27 @@ pub struct InMemoryOperationLedger {
 impl HandOperationLedger for InMemoryOperationLedger {
     async fn begin(&self, operation_id: &str) -> Result<LedgerAdmission, String> {
         let mut entries = self.entries.lock().expect("hand ledger poisoned");
-        Ok(match entries.get(operation_id) {
-            Some(Entry::Completed(result)) => LedgerAdmission::Cached(result.clone()),
-            Some(Entry::Executing(_)) => LedgerAdmission::InFlight,
-            None => {
-                entries.insert(
-                    operation_id.to_string(),
-                    Entry::Executing(tokio::sync::watch::channel(None).0),
-                );
-                LedgerAdmission::Execute
-            }
-        })
+        Ok(
+            match (
+                ledger_begin_disposition(ledger_entry_phase(entries.get(operation_id))),
+                entries.get(operation_id),
+            ) {
+                (LedgerBeginDisposition::Replay, Some(Entry::Completed(result))) => {
+                    LedgerAdmission::Cached(result.clone())
+                }
+                (LedgerBeginDisposition::Join, Some(Entry::Executing(_))) => {
+                    LedgerAdmission::InFlight
+                }
+                (LedgerBeginDisposition::Claim, None) => {
+                    entries.insert(
+                        operation_id.to_string(),
+                        Entry::Executing(tokio::sync::watch::channel(None).0),
+                    );
+                    LedgerAdmission::Execute
+                }
+                _ => unreachable!("ledger phase disposition preserves the entry shape"),
+            },
+        )
     }
 
     async fn wait(&self, operation_id: &str) -> Result<Option<HandResult>, String> {
@@ -99,16 +145,19 @@ impl HandOperationLedger for InMemoryOperationLedger {
     async fn complete(&self, operation_id: &str, result: &HandResult) -> Result<(), String> {
         let result_watch = {
             let mut entries = self.entries.lock().expect("hand ledger poisoned");
+            if !ledger_completion_admitted(ledger_entry_phase(entries.get(operation_id))) {
+                return Err("hand operation completion has no matching live claim".to_string());
+            }
             let result_watch = match entries.get(operation_id) {
-                Some(Entry::Executing(result_watch)) => Some(result_watch.clone()),
-                Some(Entry::Completed(_)) | None => None,
+                Some(Entry::Executing(result_watch)) => result_watch.clone(),
+                Some(Entry::Completed(_)) | None => {
+                    unreachable!("completion admission requires the exact executing entry")
+                }
             };
             entries.insert(operation_id.to_string(), Entry::Completed(result.clone()));
             result_watch
         };
-        if let Some(result_watch) = result_watch {
-            let _ = result_watch.send(Some(result.clone()));
-        }
+        let _ = result_watch.send(Some(result.clone()));
         Ok(())
     }
 }
@@ -225,12 +274,18 @@ impl HandOperationLedger for FsOperationLedger {
                 .local_entries
                 .lock()
                 .map_err(|_| "hand local ledger poisoned".to_string())?;
-            match entries.get(operation_id) {
-                Some(Entry::Completed(result)) => {
+            match (
+                ledger_begin_disposition(ledger_entry_phase(entries.get(operation_id))),
+                entries.get(operation_id),
+            ) {
+                (LedgerBeginDisposition::Replay, Some(Entry::Completed(result))) => {
                     return Ok(LedgerAdmission::Cached(result.clone()));
                 }
-                Some(Entry::Executing(_)) => return Ok(LedgerAdmission::InFlight),
-                None => {}
+                (LedgerBeginDisposition::Join, Some(Entry::Executing(_))) => {
+                    return Ok(LedgerAdmission::InFlight);
+                }
+                (LedgerBeginDisposition::Claim, None) => {}
+                _ => unreachable!("ledger phase disposition preserves the entry shape"),
             }
         }
         if let Some(identity) = Self::read_claim_identity(&claim_path).await? {
@@ -254,12 +309,18 @@ impl HandOperationLedger for FsOperationLedger {
                 .local_entries
                 .lock()
                 .map_err(|_| "hand local ledger poisoned".to_string())?;
-            match entries.get(operation_id) {
-                Some(Entry::Completed(result)) => {
+            match (
+                ledger_begin_disposition(ledger_entry_phase(entries.get(operation_id))),
+                entries.get(operation_id),
+            ) {
+                (LedgerBeginDisposition::Replay, Some(Entry::Completed(result))) => {
                     return Ok(LedgerAdmission::Cached(result.clone()));
                 }
-                Some(Entry::Executing(_)) => return Ok(LedgerAdmission::InFlight),
-                None => {}
+                (LedgerBeginDisposition::Join, Some(Entry::Executing(_))) => {
+                    return Ok(LedgerAdmission::InFlight);
+                }
+                (LedgerBeginDisposition::Claim, None) => {}
+                _ => unreachable!("ledger phase disposition preserves the entry shape"),
             }
             entries.insert(
                 operation_id.to_string(),
@@ -328,6 +389,17 @@ impl HandOperationLedger for FsOperationLedger {
     }
 
     async fn complete(&self, operation_id: &str, result: &HandResult) -> Result<(), String> {
+        let _admission = self.admission.lock().await;
+        let phase = {
+            let entries = self
+                .local_entries
+                .lock()
+                .map_err(|_| "hand local ledger poisoned".to_string())?;
+            ledger_entry_phase(entries.get(operation_id))
+        };
+        if !ledger_completion_admitted(phase) {
+            return Err("hand operation completion has no matching live claim".to_string());
+        }
         let completion = self.write_result(operation_id, result).await;
         match completion {
             Ok(()) => self.finish_local(operation_id, result),
@@ -341,11 +413,11 @@ impl HandOperationLedger for FsOperationLedger {
 
 impl FsOperationLedger {
     async fn write_result(&self, operation_id: &str, _result: &HandResult) -> Result<(), String> {
+        let claim_path = self.claim_path(operation_id);
+        let identity = Self::read_claim_identity(&claim_path)
+            .await?
+            .ok_or_else(|| "hand operation claim is absent during completion".to_string())?;
         if operation_id.len() > LOSSLESS_STEM_ID_LIMIT {
-            let claim_path = self.claim_path(operation_id);
-            let identity = Self::read_claim_identity(&claim_path)
-                .await?
-                .ok_or_else(|| "hand operation claim is absent during completion".to_string())?;
             match Self::validate_hashed_claim(operation_id, &identity)? {
                 ClaimIdentity::Match => {}
                 ClaimIdentity::Interrupted => {
@@ -390,15 +462,17 @@ impl FsOperationLedger {
                 .lock()
                 .map_err(|_| "hand local ledger poisoned".to_string())?;
             let result_watch = match entries.get(operation_id) {
-                Some(Entry::Executing(result_watch)) => Some(result_watch.clone()),
-                Some(Entry::Completed(_)) | None => None,
+                Some(Entry::Executing(result_watch)) => result_watch.clone(),
+                Some(Entry::Completed(_)) | None => {
+                    return Err(
+                        "hand operation completion lost its matching live claim".to_string()
+                    );
+                }
             };
             entries.insert(operation_id.to_string(), Entry::Completed(result.clone()));
             result_watch
         };
-        if let Some(result_watch) = result_watch {
-            let _ = result_watch.send(Some(result.clone()));
-        }
+        let _ = result_watch.send(Some(result.clone()));
         Ok(())
     }
 
@@ -411,5 +485,55 @@ impl FsOperationLedger {
             entries.remove(operation_id);
         }
         Ok(())
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn ledger_completion_requires_the_exact_executing_operation_entry() {
+        // Cause C1: the same operation id has the live Executing entry.
+        // Effect E1: admit completion for that operation; E2: reject completion
+        // for an absent or already-completed operation. This is one binary
+        // admission boundary, so its two decision rows are exhaustive.
+        //
+        // | Rule | C1 exact Executing entry | Effect |
+        // |---|---|---|
+        // | R1 | yes | E1 |
+        // | R2 | no  | E2 |
+        let tag: u8 = kani::any();
+        kani::assume(tag < 3);
+        let phase = match tag {
+            0 => LedgerEntryPhase::Absent,
+            1 => LedgerEntryPhase::Executing,
+            _ => LedgerEntryPhase::Completed,
+        };
+        assert_eq!(ledger_completion_admitted(phase), tag == 1);
+    }
+
+    #[kani::proof]
+    fn ledger_begin_allows_claim_only_from_absent_and_never_from_replay() {
+        // Cause C1: operation entry absent; C2: executing; C3: completed.
+        // Effects: E1 attempt the single durable claim; E2 join the live owner;
+        // E3 replay the cached result. The entry phase is closed and exclusive.
+        //
+        // | Rule | Phase | Effect |
+        // |---|---|---|
+        // | R1 | Absent | E1 |
+        // | R2 | Executing | E2 |
+        // | R3 | Completed | E3 |
+        let tag: u8 = kani::any();
+        kani::assume(tag < 3);
+        let phase = match tag {
+            0 => LedgerEntryPhase::Absent,
+            1 => LedgerEntryPhase::Executing,
+            _ => LedgerEntryPhase::Completed,
+        };
+        let disposition = ledger_begin_disposition(phase);
+        assert_eq!(disposition == LedgerBeginDisposition::Claim, tag == 0);
+        assert_eq!(disposition == LedgerBeginDisposition::Join, tag == 1);
+        assert_eq!(disposition == LedgerBeginDisposition::Replay, tag == 2);
     }
 }

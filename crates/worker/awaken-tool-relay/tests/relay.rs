@@ -577,6 +577,40 @@ async fn failed_claim_persistence_never_leaves_a_phantom_in_flight_owner() {
 }
 
 #[tokio::test]
+async fn filesystem_completion_requires_one_matching_live_claim_and_preserves_first_result() {
+    // Causes: C1 operation A has no claim; C2 A has one live claim; C3 A is
+    // already completed; C4 a second result conflicts with the first. Effects:
+    // E1 reject without creating durable files; E2 accept the claimed result;
+    // E3 reject the duplicate; E4 replay returns the first result unchanged.
+    //
+    // | Rule | operation state | completion | Effects |
+    // |---|---|---|---|
+    // | R1 | absent | first | E1 |
+    // | R2 | executing | first | E2 |
+    // | R3 | completed | conflicting | E3+E4 |
+    let directory = TestDirectory::create();
+    let ledger = FsOperationLedger::open(directory.path()).expect("open ledger");
+    let first = HandResult::ok(ToolOutput::ok("call-a", "first"));
+    let conflicting = HandResult::ok(ToolOutput::ok("call-a", "conflicting"));
+
+    assert!(ledger.complete("a", &first).await.is_err(), "R1/E1");
+    assert_eq!(
+        std::fs::read_dir(directory.path()).unwrap().count(),
+        0,
+        "R1/E1"
+    );
+
+    assert_eq!(ledger.begin("a").await.unwrap(), LedgerAdmission::Execute);
+    ledger.complete("a", &first).await.expect("R2/E2");
+    assert!(ledger.complete("a", &conflicting).await.is_err(), "R3/E3");
+    assert_eq!(
+        ledger.begin("a").await.unwrap(),
+        LedgerAdmission::Cached(first),
+        "R3/E4"
+    );
+}
+
+#[tokio::test]
 async fn append_only_capacity_fails_new_operations_but_keeps_existing_results() {
     /*
      * Capacity rule H7. Causes: C1 append-only capacity is one; C2 operation A
