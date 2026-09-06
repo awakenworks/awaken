@@ -21,7 +21,7 @@ import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/claude_alias_mcp_fixture.mjs', import.meta.url));
 const executable = fileURLToPath(new URL('./node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js', import.meta.url));
-const argumentsFor = ordinal => ({ command: `AWAKEN_ALIAS_SENTINEL_${ordinal}` });
+const commandArgumentsFor = ordinal => ({ command: `AWAKEN_ALIAS_SENTINEL_${ordinal}` });
 function startClient(root, provider, decide) {
   const child = spawn(process.execPath, [executable], {
     cwd: root, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env: {
@@ -69,13 +69,34 @@ function startClient(root, provider, decide) {
     cancel: sessionId => send({jsonrpc:'2.0',method:'session/cancel',params:{sessionId}}) };
 }
 
-for (const [mode, boundaries, finalDecision, settle = false, primed = false] of [
+for (const [mode, boundaries, finalDecision, settle = false, primed = false, longWrite] of [
   ['immediate', 0, 'allow'], ['resume-allow', 1, 'allow'], ['resume-deny', 1, 'deny'],
   ['repeated-allow', 3, 'allow'], ['repeated-deny', 3, 'deny'],
   ['settled-allow', 3, 'allow', true], ['settled-deny', 3, 'deny', true],
   ['primed-settled', 1, 'allow', true, true],
+  // R9-R11: long Write containing quotes, backslashes, Unicode and newlines
+  // crosses cancel -> stop -> load -> permission. Exact re-emission + allow
+  // dispatches unchanged bytes once (R9); changed bytes + an independent deny
+  // dispatches nothing (R10); no re-emission produces no new ask/effect despite
+  // a complete approval prompt reaching inference (R11). R11 is a negative
+  // protocol capability check, NOT a passing Cowork delivery/recovery claim.
+  ['long-write-exact', 1, 'allow', true, false, 'exact'],
+  ['long-write-changed-deny', 1, 'deny', true, false, 'changed'],
+  ['long-write-no-reissue', 1, 'allow', true, false, 'omit'],
 ]) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'awaken-real-acp-alias-'));
+  const alias = longWrite ? 'Write' : 'Bash';
+  const target = `mcp__awaken_session__${alias.toLowerCase()}`;
+  const argumentsFor = longWrite ? ordinal => ({
+    file_path: path.join(root, `approval-${ordinal}.py`),
+    content: '# 精确文件字节：不执行本脚本\n'
+      + 'value = "引号 \\" 与反斜线 \\\\"\n'.repeat(900)
+      + `# AWAKEN_ALIAS_SENTINEL_${ordinal}\n`,
+  }) : commandArgumentsFor;
+  if (longWrite) assert.ok(argumentsFor(1).content.length > 16073);
+  const emittedArguments = ordinal => longWrite === 'changed' && phase > 0
+    ? {...argumentsFor(ordinal), content: argumentsFor(ordinal).content + '\n'}
+    : argumentsFor(ordinal);
   let phase = 0; let emissions = 0; let primerEmitted = false; let primerHistoryRetained = true; let expectedPrompt = ''; let promptObserved = false;
   const provider = await startFakeAnthropic('fixture-key', { behavior: (body, turn) => {
     promptObserved ||= body.messages.some(message => (typeof message.content === 'string' ? [message.content] : message.content.filter(block => block.type === 'text').map(block => block.text)).some(text => text.includes(expectedPrompt)));
@@ -95,13 +116,14 @@ for (const [mode, boundaries, finalDecision, settle = false, primed = false] of 
     // One pending request before the first restart. Each resumed prompt first
     // reissues its exact request; only after its result can it ask for the next.
     const ordinal = Math.max(phase, 1) + emissions++;
-    const invoke = emissions === 1 || (phase > 0 && phase < boundaries && emissions === 2);
-    return invoke ? { tool:{ id:`toolu_alias_${turn}`, name:'Bash', input:argumentsFor(ordinal) } }
+    const invoke = !(longWrite === 'omit' && phase > 0)
+      && (emissions === 1 || (phase > 0 && phase < boundaries && emissions === 2));
+    return invoke ? { tool:{ id:`toolu_alias_${turn}`, name:alias, input:emittedArguments(ordinal) } }
       : { text:'finished' };
   } });
   const record = path.join(root, 'calls.jsonl'); const clients = [];
   const settings = { cwd: root, mcpServers: [{ name: 'awaken_session', command: process.execPath, args: [fixture, record], env: [] }],
-    _meta: { claudeCode: { options: { toolAliases: { Bash: 'mcp__awaken_session__bash' }, tools: [], disallowedTools: ['Bash'], settingSources: [] } } } };
+    _meta: { claudeCode: { options: { toolAliases: { [alias]: target }, tools: [], disallowedTools: ['Bash', 'Write'], settingSources: [] } } } };
   const recorded = async () => (await fs.readFile(record, 'utf8').catch(error => {
     if (error.code === 'ENOENT') return ''; throw error;
   })).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
@@ -123,7 +145,8 @@ for (const [mode, boundaries, finalDecision, settle = false, primed = false] of 
       await active.rpc('initialize', { protocolVersion: 1, clientCapabilities: {} });
       if (phase === 0) sessionId = (await active.rpc('session/new', settings)).sessionId;
       else await active.rpc('session/load', { ...settings, sessionId });
-      const marker = phase === 0 ? 'Invoke Bash once.'
+      const loadedUpdateCount = active.updates.length;
+      const marker = phase === 0 ? `Invoke ${alias} once.`
         : `Resume exact pending request: ${JSON.stringify(argumentsFor(phase))}`;
       expectedPrompt = marker; promptObserved = false;
       const prompt = active.rpc('session/prompt', { sessionId, prompt: [{ type: 'text', text: marker }] });
@@ -142,16 +165,26 @@ for (const [mode, boundaries, finalDecision, settle = false, primed = false] of 
       }
       assert.ok(promptObserved, `${mode}/${phase}: actual model receives this prompt`);
       assert.ok(primerHistoryRetained, `${mode}: completed primer remains in actual provider history`);
-      const completed = boundaries === 0 ? 1 : phase - (phase === boundaries && finalDecision === 'deny' ? 1 : 0);
+      const noReissue = longWrite === 'omit' && phase > 0;
+      const completed = boundaries === 0 ? 1 : phase - (phase === boundaries && (finalDecision === 'deny' || noReissue) ? 1 : 0);
       assert.deepEqual(await recorded(), [...(primed ? [argumentsFor(0)] : []), ...Array.from({ length:completed }, (_, index) => argumentsFor(index + 1))], `${mode}/${phase}: exact cumulative effects, no replay`);
+      if (noReissue) {
+        assert.equal(active.permissions.length, 0, 'approval text does not resume a cancelled tool by itself');
+        // session/load legitimately replays historical tool cards. Only a new
+        // call after this prompt could claim resumed execution; MCP records
+        // independently check that no old or new invocation happened.
+        assert.ok(!active.updates.slice(loadedUpdateCount).some(update => update.sessionUpdate === 'tool_call'), 'no hidden SDK replay without model tool-use');
+        continue;
+      }
       assert.ok(active.permissions.length > 0, `${mode}/${phase}: real permission request`);
       // I1 alias streaming titles are presentation; the actual SDK permission
       // request must identify the resolved MCP target independently of them.
       for (const permission of active.permissions) {
-        assert.equal(permission.title, 'mcp__awaken_session__bash', JSON.stringify(permission));
+        assert.equal(permission.title, target, `${mode}: canonical permission identity`);
+        if (longWrite) assert.deepEqual(permission.rawInput, emittedArguments(1), `${mode}: full permission arguments`);
       }
 
-      assert.ok(active.updates.some(update => update.sessionUpdate === 'tool_call_update' && JSON.stringify(update.rawInput) === JSON.stringify(argumentsFor(Math.max(phase, 1)))), `${mode}/${phase}: SDK refines complete streamed input`);
+      assert.ok(active.updates.some(update => update.sessionUpdate === 'tool_call_update' && JSON.stringify(update.rawInput) === JSON.stringify(emittedArguments(Math.max(phase, 1)))), `${mode}/${phase}: SDK refines complete streamed input`);
     }
     console.log(`PASS actual Claude ACP/SDK ${mode}: ${boundaries} restarts, exact permission/input/effect history`);
   } finally {
