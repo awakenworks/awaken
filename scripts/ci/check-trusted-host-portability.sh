@@ -50,6 +50,9 @@ cargo test -p awaken-worker-contract --lib
 cargo test -p awaken-cli --lib acp_local_credentials
 cargo test -p awaken-sandbox-local --lib
 cargo test -p awaken-local-process --lib
+# Run the actual Hand binary with an explicit resource root and a nested cwd,
+# not just a renderer/unit fixture. Non-Linux builds exercise native path parsing.
+cargo test -p awaken-sandbox --features hand --lib --test hand_stdio_role
 cargo test -p awaken-sandbox-fs --lib
 cargo test -p awaken-sandbox-memoryd --lib
 cargo test -p awaken-sandbox-memoryd --test copy_lifecycle
@@ -75,4 +78,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
     namespace_owner_sigkill_terminates_descendants_in_separate_process_groups -- --exact
   CODEX_ACP_PROFILE=native-fixture AWAKEN_ACP_RUNTIME=native \
     node e2e/codex_acp_live_e2e.mjs
+elif [[ "$(uname -s)" == "Darwin" ]]; then
+  # The real Seatbelt row is required on macOS, not an unavailable-success skip.
+  cargo test -p awaken-sandbox --features hand --test seatbelt_hand_stdio
 fi

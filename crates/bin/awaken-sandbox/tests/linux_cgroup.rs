@@ -394,7 +394,7 @@ printf 'stderr-only' >&2
         &command,
         &cwd,
         Duration::from_secs(5),
-        || {
+        |_grant| {
             Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "revoked fixture",

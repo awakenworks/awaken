@@ -1624,9 +1624,11 @@ impl NamespaceSandbox {
     }
 
     fn translate_macos_path(&self, value: &str) -> Option<String> {
+        let mount_root = self.root.root().join("mnt");
         let mut mappings: Vec<(&str, &std::path::Path)> = vec![
             (pc::WorkspaceLayout::ROOT, &self.host_workspace),
             (&self.outputs_path, &self.host_outputs),
+            ("/mnt", &mount_root),
         ];
         let layout = self.layout.read().expect("namespace layout lock poisoned");
         mappings.extend(

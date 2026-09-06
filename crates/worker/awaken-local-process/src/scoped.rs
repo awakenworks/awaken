@@ -8,6 +8,7 @@
 //! briefly exiting trusted helper; it is not a durable subtree-empty receipt.
 //! External supervision and Session/realization fencing remain caller duties.
 
+use std::cell::Cell;
 use std::ffi::OsStr;
 use std::io;
 use std::os::linux::net::SocketAddrExt;
@@ -55,6 +56,31 @@ fn peer(stream: &UnixStream, expected: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// One-use GO operation supplied only after the trusted helper acknowledged
+/// membership and the socket became writable. The authorization adapter calls
+/// `commit` INSIDE its synchronous lease-read critical section; returning a
+/// boolean before that section is released would leave a revoke/grant race.
+pub struct ScopedLaunchGrant<'a> {
+    control: &'a UnixStream,
+    committed: &'a Cell<bool>,
+}
+
+impl ScopedLaunchGrant<'_> {
+    pub fn commit(self) -> io::Result<()> {
+        match self.control.try_write(&[GO]) {
+            Ok(1) => {
+                self.committed.set(true);
+                Ok(())
+            }
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "incomplete scoped grant",
+            )),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 impl LocalProcess {
     /// Launch a materialized command after joining this exact scope. `cwd` is
     /// the physical cwd already resolved by the provider's existing path view;
@@ -75,18 +101,23 @@ impl LocalProcess {
         cwd: &Path,
         timeout: Duration,
     ) -> io::Result<Self> {
-        Self::spawn_scoped_authorized(scope, helper, command, cwd, timeout, || Ok(())).await
+        Self::spawn_scoped_authorized(scope, helper, command, cwd, timeout, |grant| grant.commit())
+            .await
     }
 
-    /// Provider authority is checked at the final synchronous point before GO.
-    /// The caller retains its durable realization lock through this call.
+    /// The adapter must check current authority and commit the one-use grant
+    /// under the SAME synchronous authorization guard. No async I/O may occur
+    /// while that guard is held. The caller also retains the physical
+    /// realization lock through this call. Rejection before commit cannot issue
+    /// GO; after commit, success preserves the process handle even if the
+    /// adapter subsequently returns an error. Callbacks must not panic.
     pub async fn spawn_scoped_authorized(
         scope: &LinuxProcessScope,
         helper: &Path,
         command: &MaterializedCommand,
         cwd: &Path,
         timeout: Duration,
-        authorize_effect: impl FnMut() -> io::Result<()>,
+        authorize_effect: impl FnMut(ScopedLaunchGrant<'_>) -> io::Result<()>,
     ) -> io::Result<Self> {
         if !helper.is_absolute() || timeout.is_zero() || timeout > MAX_WAIT {
             return Err(invalid());
@@ -123,13 +154,13 @@ impl LocalProcess {
 
 #[cfg(test)]
 async fn authorize(control: &mut UnixStream, frame: &[u8]) -> io::Result<()> {
-    authorize_checked(control, frame, || Ok(())).await
+    authorize_checked(control, frame, |grant| grant.commit()).await
 }
 
 async fn authorize_checked(
     control: &mut UnixStream,
     frame: &[u8],
-    mut authorize_effect: impl FnMut() -> io::Result<()>,
+    mut authorize_effect: impl FnMut(ScopedLaunchGrant<'_>) -> io::Result<()>,
 ) -> io::Result<()> {
     control.write_u32(frame.len() as u32).await?;
     control.write_all(frame).await?;
@@ -138,19 +169,28 @@ async fn authorize_checked(
     }
     loop {
         control.writable().await?;
-        authorize_effect()?;
-        // No suspension between checking provider authority and issuing GO.
-        // A spurious writable notification retries authorization as well as IO;
-        // it cannot preserve an earlier check across a lease-expiry window.
-        match control.try_write(&[GO]) {
-            Ok(1) => return Ok(()),
-            Ok(_) => {
+        let committed = Cell::new(false);
+        let result = authorize_effect(ScopedLaunchGrant {
+            control,
+            committed: &committed,
+        });
+        // Once GO has been sent, a later adapter error cannot turn this into
+        // an unlaunched result and discard the only live process handle.
+        if committed.get() {
+            return Ok(());
+        }
+        match result {
+            Ok(()) => {
                 return Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "incomplete scoped grant",
+                    io::ErrorKind::PermissionDenied,
+                    "authorization omitted the scoped grant",
                 ));
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                // Release all callback guards before retrying; readiness can
+                // be spurious. Yield also keeps cancellation/timeout bounded.
+                tokio::task::yield_now().await;
+            }
             Err(error) => return Err(error),
         }
     }
@@ -479,10 +519,10 @@ mod tests {
                 let observed = called.clone();
                 let (mut parent, mut child) = UnixStream::pair().unwrap();
                 let task = tokio::spawn(async move {
-                    authorize_checked(&mut parent, b"", || {
+                    authorize_checked(&mut parent, b"", |grant| {
                         called.store(true, Ordering::SeqCst);
                         if authorized {
-                            Ok(())
+                            grant.commit()
                         } else {
                             Err(io::Error::new(
                                 io::ErrorKind::PermissionDenied,
@@ -509,6 +549,106 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn grant_result_tracks_the_irreversible_write_not_callback_status() {
+        // Decision table: G1 omitted commit + Ok => deny/no GO; G2 committed
+        // GO + adapter error => preserve the launched result (and its handle);
+        // G3 retry + renewed authorization => one GO; G4 retry + revocation
+        // => deny/no GO. WouldBlock never reuses an earlier authorization.
+        for rule in 1..=4 {
+            let (mut parent, mut child) = UnixStream::pair().unwrap();
+            let task = tokio::spawn(async move {
+                let mut calls = 0;
+                let result = authorize_checked(&mut parent, b"", |grant| {
+                    calls += 1;
+                    match (rule, calls) {
+                        (1, _) => Ok(()),
+                        (2, _) => {
+                            grant.commit()?;
+                            Err(io::Error::other("failure after irreversible GO"))
+                        }
+                        (3 | 4, 1) => Err(io::ErrorKind::WouldBlock.into()),
+                        (3, _) => grant.commit(),
+                        (4, _) => Err(io::ErrorKind::PermissionDenied.into()),
+                        _ => unreachable!(),
+                    }
+                })
+                .await;
+                (result, calls)
+            });
+            assert_eq!(child.read_u32().await.unwrap(), 0);
+            child.write_u8(JOINED).await.unwrap();
+            let (result, calls) = task.await.unwrap();
+            assert_eq!(calls, if rule >= 3 { 2 } else { 1 });
+            assert_eq!(result.is_ok(), matches!(rule, 2 | 3));
+            match result {
+                Ok(()) => assert_eq!(child.read_u8().await.unwrap(), GO),
+                Err(error) => assert_eq!(error.kind(), io::ErrorKind::PermissionDenied),
+            }
+            assert!(child.read_u8().await.is_err(), "no extra grant for G{rule}");
+        }
+    }
+
+    #[tokio::test]
+    async fn grant_can_be_committed_under_the_same_cross_thread_authority_guard() {
+        // G5 JOINED + live authority locked by callback + concurrent revoker:
+        // the revoker MUST observe contention until GO is committed. A mere
+        // check-then-return callback would release this guard before GO. This
+        // checks the production grant seam, not a Session lease simulation.
+        use std::sync::{Arc, Mutex, TryLockError, mpsc};
+        let authority = Arc::new(Mutex::new(true));
+        let revoker_authority = authority.clone();
+        let (start_tx, start_rx) = mpsc::sync_channel(1);
+        let (checked_tx, checked_rx) = mpsc::sync_channel(1);
+        let revoker = std::thread::spawn(move || {
+            start_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(matches!(
+                revoker_authority.try_lock(),
+                Err(TryLockError::WouldBlock)
+            ));
+            checked_tx.send(()).unwrap();
+            *revoker_authority.lock().unwrap() = false;
+        });
+        let (mut parent, mut child) = UnixStream::pair().unwrap();
+        let task = tokio::spawn(async move {
+            authorize_checked(&mut parent, b"", move |grant| {
+                let live = authority.lock().unwrap();
+                assert!(*live);
+                start_tx.send(()).unwrap();
+                checked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                let result = grant.commit();
+                assert!(*live, "revocation cannot interleave before GO");
+                result
+            })
+            .await
+        });
+        assert_eq!(child.read_u32().await.unwrap(), 0);
+        child.write_u8(JOINED).await.unwrap();
+        task.await.unwrap().unwrap();
+        assert_eq!(child.read_u8().await.unwrap(), GO);
+        revoker.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn repeated_grant_backpressure_remains_cancellable() {
+        // G6 repeated WouldBlock + deadline: no GO and timeout completes even
+        // with writable socket readiness. Guards are not retained over retry.
+        let (mut parent, mut child) = UnixStream::pair().unwrap();
+        let task = tokio::spawn(async move {
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                authorize_checked(&mut parent, b"", |_grant| {
+                    Err(io::ErrorKind::WouldBlock.into())
+                }),
+            )
+            .await
+        });
+        assert_eq!(child.read_u32().await.unwrap(), 0);
+        child.write_u8(JOINED).await.unwrap();
+        assert!(task.await.unwrap().is_err());
+        assert!(child.read_u8().await.is_err());
     }
 
     #[tokio::test]

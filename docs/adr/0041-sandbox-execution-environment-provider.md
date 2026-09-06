@@ -566,6 +566,16 @@ the existing executable Environment projection carries the policy body;
 Native and ACP reuse the resulting `SessionEnvironment`. No `LocalEnvironment`,
 credential store, mount registry, or alternate executor is introduced.
 
+Stdio Hand path projection is explicit: `hand --stdio --mount-root <absolute-path>`
+uses the provider's physical managed-resource root. Existing namespace callers
+may omit the option and retain `/mnt`; the RuntimeHost passes `/mnt` explicitly
+through the existing Namespace renderer, which translates it for Seatbelt.
+The Hand no longer guesses a sibling mount from cwd or infers a mount namespace
+from Linux. Network/resident Hand deployments retain their `/mnt` contract.
+This changes only the projection input, not the Hand protocol, resource ledger,
+or TrustedHost isolation guarantees. Native Workdir supervision remains the
+separate uninstalled integration described below.
+
 Dynamic behavior is fail-closed. Create validates policy existence, enabled
 state, cross-field rules, and Environment compatibility before persistence. At
 realization, `trusted_host` exact-selects the Workdir provider even when the

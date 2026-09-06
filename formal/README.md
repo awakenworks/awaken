@@ -616,11 +616,15 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   still preserves OS processes in the model. The same configuration now models
   bootstrap join, ACK, atomic GO/admission release, execution and cancellation;
   execution requires membership and GO, and cancellation cannot invent GO.
-  Final provider authorization is checked after ACK with no yield before the
-  nonblocking GO write. Revocation before GO prevents a grant; revocation after
-  GO does not undo a workload already authorized. Seven additional mutations
-  must violate the exact final-authority, admission, subtree-empty, accepted-stop,
-  premature-exec, premature-release and cancelled-GO invariants.
+  Final provider authorization is checked after ACK under the same synchronous
+  guard retained through the nonblocking GO write. Acquisition and GO are
+  separate model steps: a cross-thread revoker must contend on that guard.
+  Backpressure releases it and requires fresh authorization. Revocation after
+  GO does not undo a workload already authorized. Eight additional mutations
+  must violate the exact final-authority, revoke/grant-exclusion, admission,
+  subtree-empty, accepted-stop, premature-exec, premature-release and
+  cancelled-GO invariants. Wall-clock lease expiry and a concrete Session
+  authorization adapter are not proved by this model.
   The private socket/OS lifetime of a cancelled trusted helper is abstracted;
   this does not certify its immediate exit or permanent scope emptiness after
   cancellation. A single admitted owner, correct peer/identity checking and

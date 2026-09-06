@@ -614,8 +614,12 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
     scope_replacements = [
         # B27 revoke after admission/before GO: removing the final authority
         # check must violate the grant receipt, not an unrelated type property.
-        ("/\\ authorityLive\n  /\\ authorityAtGrant' = authorityLive",
-         "/\\ authorityAtGrant' = authorityLive", "ScopeGrantWasAuthorized"),
+        ("/\\ ~authorityHeld /\\ authorityLive\n  /\\ authorityHeld' = TRUE",
+         "/\\ ~authorityHeld\n  /\\ authorityHeld' = TRUE", "ScopeGrantWasAuthorized"),
+        # G5 a separate thread revokes between check and GO if it does not
+        # contend on the SAME guard. No-await alone cannot kill this mutant.
+        ("/\\ ~authorityHeld /\\ authorityLive /\\ authorityLive' = FALSE",
+         "/\\ authorityLive /\\ authorityLive' = FALSE", "ScopeGrantWasAuthorized"),
         ("/\\ ~scopePermit /\\ scopeClosed' = TRUE", "/\\ scopeClosed' = TRUE",
          "ScopeCloseExcludesLaunch"),
         ("/\\ scopeClosed /\\ scopeKillAccepted /\\ ~leaderAlive /\\ ~descendantAlive",
@@ -640,7 +644,7 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
         scope_mutations.append((source.replace(original, replacement), scope_config, property_name))
     check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, scope_config, scope_mutations,
                               action_properties={"CrashPreservesOSProcesses"})
-    print("Local scope mutation score: 7/7 killed (final authority, launch/close, descendants, accepted stop, early exec, early release, cancelled GO)")
+    print("Local scope mutation score: 8/8 killed (final authority, revoke/grant exclusion, launch/close, descendants, accepted stop, early exec, early release, cancelled GO)")
 
 
 def check_memory_copy_model_mutant(tlc_jar: Path) -> None:

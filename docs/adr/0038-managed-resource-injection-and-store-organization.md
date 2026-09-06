@@ -768,12 +768,19 @@ delegation, control-group KILL, final SIGKILL, non-resident running state, boot
 identity and service invocation. It neither installs a service nor treats a
 child merely sharing that service as its supervised main process. Fresh
 scope creation rechecks the same observed owner. The scoped launcher additionally
-accepts a final provider-authorization predicate after JOINED; it waits for socket
-writability first, then checks authority and writes GO without suspension.
+accepts a one-use `ScopedLaunchGrant` after JOINED and socket writability.
+The adapter must check current authority and commit GO inside the **same
+synchronous authorization guard** used by revocation; absence of an await is
+not cross-thread mutual exclusion. Omitted commit fails closed. Backpressure
+releases the guard and retries with fresh authorization; after a successful GO,
+a callback error cannot discard the only launched process handle.
 This is an integration seam, not an installed Session lease source: the
 production owner must supply the current renewed fence, rather than reuse a
 Sandbox's historical creation fence. The finite scope model explores revocation
-before/after grant and its seventh scope mutation removes this final check.
+before/after grant, authorization-lock acquisition and release on retry.
+Separate mutations remove the live check and let revocation bypass the retained
+guard; both must violate the grant-authority invariant. This does not prove
+wall-clock lease expiry or a concrete Session adapter that is not yet installed.
 The supported external-service subset is Type=exec/simple, ExitType=main,
 NotifyAccess=none, TimeoutStopFailureMode=terminate, FinalKillSignal=9, and a
 positive stop timeout no greater than 30 seconds. Infinite/extendable stop
@@ -805,6 +812,11 @@ the thin `awaken-sandbox --bin awaken-sandbox` on Windows GNU and Intel Darwin.
 The broader Windows sandbox `--tests` check is blocked on this Linux host by
 the missing MinGW C compiler required by its existing `ring` dev-dependency;
 the passing thin-binary check does not substitute for that test target.
+The Hand-enabled Seatbelt integration-test cross-check is likewise blocked on
+this Linux host: `ring`'s target C build needs a Darwin sysroot. The portability
+gate now requires the real Seatbelt test when run on macOS, and unavailable
+Seatbelt is a failure, not a passing skip. Neither Linux path-renderer tests
+nor the passing local-process cross-check qualify that macOS execution row.
 
 Memory/Repository live addition remains an explicit
 create-time-only contract, not a missing hot-plug implementation to emulate.

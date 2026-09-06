@@ -260,6 +260,10 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
             .iter()
             .any(|part| part == "bundle" || part.contains("bundle create"));
         if command.argv.iter().any(|part| part == "--stdio") {
+            // P7 Container already exposes /mnt: preserve its deployed Hand
+            // CLI rather than requiring the new local projection option. All
+            // cold/reacquired container Hand cases share this contract oracle.
+            assert_eq!(&command.argv[1..], &["hand", "--stdio"]);
             let spawn = self
                 .hand_spawns
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)

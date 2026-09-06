@@ -12,8 +12,8 @@ VARIABLES phase, privateGroup, dropPolicy, leaderAlive, descendantAlive,
           stopRequested, lock, waiter, observedExit, signalOutcome, signalAccepted
 VARIABLES scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt
 VARIABLES launchStage, joined, goIssued, workloadStarted
-VARIABLES authorityLive, authorityAtGrant
-authorityVars == <<authorityLive, authorityAtGrant>>
+VARIABLES authorityLive, authorityAtGrant, authorityHeld
+authorityVars == <<authorityLive, authorityAtGrant, authorityHeld>>
 launchVars == <<launchStage, joined, goIssued, workloadStarted>>
 scopeVars == <<scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt, launchVars, authorityVars>>
 signalVars == <<signalOutcome, signalAccepted>>
@@ -30,7 +30,7 @@ Init ==
   /\ scopeKillAccepted = FALSE /\ scopeReceipt = FALSE
   /\ launchStage = "idle" /\ joined = FALSE
   /\ goIssued = FALSE /\ workloadStarted = FALSE
-  /\ authorityLive = TRUE /\ authorityAtGrant = FALSE
+  /\ authorityLive = TRUE /\ authorityAtGrant = FALSE /\ authorityHeld = FALSE
 
 Spawn ==
   /\ phase = "new" /\ phase' = "owned"
@@ -164,9 +164,24 @@ ScopeAck ==
   /\ launchStage' = "acknowledged"
   /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt,
                   joined, goIssued, workloadStarted>>
+\* The adapter retains the same synchronous authorization guard through GO.
+\* Separate transitions expose the cross-thread check/grant interleaving:
+\* no-await alone is NOT mutual exclusion. Backpressure releases the guard
+\* and requires a fresh authorization on retry. Wall-clock lease semantics
+\* and the concrete Session adapter remain outside this bounded model.
+ScopeAuthorize ==
+  /\ phase = "owned" /\ launchStage = "acknowledged" /\ joined /\ scopePermit
+  /\ ~authorityHeld /\ authorityLive
+  /\ authorityHeld' = TRUE
+  /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt,
+                  launchVars, authorityLive, authorityAtGrant>>
+ScopeRetryAuthorization ==
+  /\ authorityHeld /\ authorityHeld' = FALSE
+  /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt,
+                  launchVars, authorityLive, authorityAtGrant>>
 ScopeGo ==
   /\ phase = "owned" /\ launchStage = "acknowledged" /\ joined /\ scopePermit
-  /\ authorityLive
+  /\ authorityHeld /\ authorityHeld' = FALSE
   /\ authorityAtGrant' = authorityLive
   /\ UNCHANGED authorityLive
   /\ goIssued' = TRUE /\ scopePermit' = FALSE /\ launchStage' = "granted"
@@ -178,6 +193,7 @@ ScopeExec ==
                   launchStage, joined, goIssued>>
 ScopeCancelLaunch ==
   /\ scopePermit /\ ~goIssued /\ scopePermit' = FALSE
+  /\ authorityHeld' = FALSE /\ UNCHANGED <<authorityLive, authorityAtGrant>>
   /\ launchStage' = "cancelled"
   /\ UNCHANGED <<vars, scopeClosed, scopeKillAccepted, scopeReceipt,
                   joined, goIssued, workloadStarted>>
@@ -196,18 +212,18 @@ ScopeObserveEmpty ==
   /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeKillAccepted, launchVars>>
 ScopeCrash ==
   /\ Crash /\ scopePermit' = FALSE
+  /\ authorityHeld' = FALSE /\ UNCHANGED <<authorityLive, authorityAtGrant>>
   /\ launchStage' = IF goIssued THEN launchStage ELSE "cancelled"
   /\ UNCHANGED <<scopeClosed, scopeKillAccepted, scopeReceipt, joined, goIssued, workloadStarted>>
-\* Final authorization and nonblocking one-byte GO have no yield between them.
-\* Revocation may precede ACK or follow GO; it cannot retroactively un-execute
-\* granted work. This models a supplied authority predicate, NOT Session leases.
+\* A revoker uses the same mutex, not merely the same authority value.
 ScopeRevokeAuthority ==
-  /\ authorityLive /\ authorityLive' = FALSE
+  /\ ~authorityHeld /\ authorityLive /\ authorityLive' = FALSE
   /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt,
-                  launchVars, authorityAtGrant>>
-ScopeNext == ScopeGo \/ ScopeRevokeAuthority
+                  launchVars, authorityAtGrant, authorityHeld>>
+ScopeNext == ScopeAuthorize \/ ScopeRetryAuthorization \/ ScopeGo \/ ScopeRevokeAuthority
+  \/ ScopeCancelLaunch \/ ScopeCrash
   \/ ((ScopeAcquire \/ ScopeSpawn \/ ScopeRelease \/ ScopeClose
-  \/ ScopeJoin \/ ScopeAck \/ ScopeExec \/ ScopeCancelLaunch \/ ScopeCrash
+  \/ ScopeJoin \/ ScopeAck \/ ScopeExec
   \/ (\E accepted \in BOOLEAN : ScopeKill(accepted)) \/ ScopeObserveEmpty
   \/ (((workloadStarted /\ Fork) \/ LeaderExit \/ DescendantExit) /\ UNCHANGED scopeVars))
       /\ UNCHANGED authorityVars)
@@ -215,7 +231,7 @@ ScopeTypeOK == TypeOK /\ scopeClosed \in BOOLEAN /\ scopePermit \in BOOLEAN
   /\ scopeKillAccepted \in BOOLEAN /\ scopeReceipt \in BOOLEAN
   /\ launchStage \in {"idle", "bootstrap", "joined", "acknowledged", "granted", "cancelled"}
   /\ joined \in BOOLEAN /\ goIssued \in BOOLEAN /\ workloadStarted \in BOOLEAN
-  /\ authorityLive \in BOOLEAN /\ authorityAtGrant \in BOOLEAN
+  /\ authorityLive \in BOOLEAN /\ authorityAtGrant \in BOOLEAN /\ authorityHeld \in BOOLEAN
 ScopeGrantWasAuthorized == goIssued => authorityAtGrant
 ScopeCloseExcludesLaunch == scopeClosed => ~scopePermit
 ScopeReceiptRequiresEmpty == scopeReceipt => ~leaderAlive /\ ~descendantAlive

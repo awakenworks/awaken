@@ -471,8 +471,14 @@ async fn launch_hand(
         });
     }
 
+    let mut argv = vec![hand_bin, "hand".into(), "--stdio".into()];
+    if matches!(launcher.as_ref(), SessionAgentLauncher::Namespace(_)) {
+        // The provider projects this root for Seatbelt. Container images keep
+        // their existing CLI contract and already expose the default /mnt.
+        argv.extend(["--mount-root".into(), "/mnt".into()]);
+    }
     let command = pc::Command {
-        argv: vec![hand_bin, "hand".into(), "--stdio".into()],
+        argv,
         cwd: pc::WorkspaceLayout::ROOT.into(),
         env: Vec::new(),
         stdio: pc::Stdio::Piped,
