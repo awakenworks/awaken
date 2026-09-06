@@ -43,6 +43,10 @@ SIGNAL_GROUPS: dict[str, tuple[tuple[re.Pattern[str], ...], ...]] = {
             re.compile(r"\bRole::(?:AllInOne|Coordinator|Worker)\b"),
         ),
         (re.compile(r"\bcheck_entitlement\b"),),
+        # Registered-Worker identity is an authorization decision even when its
+        # temporal-policy enum has no lifecycle/permission keyword. Imports alone
+        # are not calls; the shared production projection removes test-only code.
+        (re.compile(r"\bverify_current_worker_identity\s*\("),),
         (
             re.compile(r"\bhas_work_session_access\b"),
             re.compile(r"\bWorkSessionAccess\b"),
