@@ -13,7 +13,9 @@ use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationSour
 use awaken_runtime_contract::{
     CredentialMaterialError, CredentialObservation, WorkerLocalCredentialResolver,
 };
-use awaken_worker_contract::{WorkerAcpCapabilityObservation, WorkerCredentialObservation};
+use awaken_worker_contract::{
+    WorkerAcpCapabilityObservation, WorkerCredentialObservation, WorkerHeartbeat,
+};
 
 #[derive(Default)]
 pub(crate) struct WorkerObservationCache {
@@ -26,6 +28,28 @@ pub(crate) struct ObservationBatch {
     generation: u64,
     pub(crate) credentials: BTreeSet<WorkerCredentialObservation>,
     pub(crate) acp_capabilities: Vec<WorkerAcpCapabilityObservation>,
+}
+
+impl ObservationBatch {
+    /// Consume one frozen observation batch into the sole heartbeat wire
+    /// projection. Initial and periodic heartbeats share this path so neither
+    /// can read credential and capability evidence from different generations.
+    pub(crate) fn into_heartbeat(
+        self,
+        sequence: u64,
+        ready: bool,
+        in_flight: u32,
+        warm_environment_shapes: BTreeSet<awaken_provisioning_contract::SandboxCapacityShapeId>,
+    ) -> WorkerHeartbeat {
+        WorkerHeartbeat {
+            sequence,
+            ready,
+            in_flight,
+            warm_environment_shapes,
+            credential_observations: self.credentials,
+            acp_capability_observations: self.acp_capabilities,
+        }
+    }
 }
 
 impl WorkerObservationCache {
@@ -601,10 +625,13 @@ mod tests {
                 .unwrap();
         };
         publish(10);
-        let old = cache.snapshot();
+        let old = cache.snapshot().into_heartbeat(1, true, 0, BTreeSet::new());
         publish(20);
-        assert_eq!(old.credentials.first().unwrap().valid_until_ms, 10);
-        assert_eq!(old.acp_capabilities[0].valid_until_ms, 10);
+        assert_eq!(
+            old.credential_observations.first().unwrap().valid_until_ms,
+            10
+        );
+        assert_eq!(old.acp_capability_observations[0].valid_until_ms, 10);
         let start = std::sync::Barrier::new(4);
         std::thread::scope(|scope| {
             for writer in 0..2 {
@@ -627,9 +654,14 @@ mod tests {
                         let snapshot = cache.snapshot();
                         assert!(snapshot.generation >= last);
                         last = snapshot.generation;
+                        let heartbeat = snapshot.into_heartbeat(last, true, 0, BTreeSet::new());
                         assert_eq!(
-                            snapshot.credentials.first().unwrap().valid_until_ms,
-                            snapshot.acp_capabilities[0].valid_until_ms
+                            heartbeat
+                                .credential_observations
+                                .first()
+                                .unwrap()
+                                .valid_until_ms,
+                            heartbeat.acp_capability_observations[0].valid_until_ms
                         );
                     }
                 });

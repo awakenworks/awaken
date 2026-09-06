@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_session_executor::SharedHost;
-use awaken_worker_contract::{RegistryMutation, WorkerHeartbeat, WorkerIdentity};
+use awaken_worker_contract::{RegistryMutation, WorkerIdentity};
 use awaken_coordinator_client::WorkerControlClient;
 
 use crate::credential_liveness::WorkerObservationCache;
@@ -320,20 +320,15 @@ pub(crate) fn spawn_heartbeat(
             let heartbeat_timeout = timing
                 .request_timeout()
                 .min(proof_deadline.saturating_duration_since(Instant::now()));
-            let observations = lifecycle.observations.snapshot();
+            let heartbeat = lifecycle.observations.snapshot().into_heartbeat(
+                sequence,
+                ready,
+                lifecycle.host.pool_in_flight(),
+                lifecycle.warm_environment_shapes(),
+            );
             let mutation = tokio::time::timeout(
                 heartbeat_timeout,
-                lifecycle.control.heartbeat(
-                    &lifecycle.identity,
-                    WorkerHeartbeat {
-                        sequence,
-                        ready,
-                        in_flight: lifecycle.host.pool_in_flight(),
-                        warm_environment_shapes: lifecycle.warm_environment_shapes(),
-                        credential_observations: observations.credentials,
-                        acp_capability_observations: observations.acp_capabilities,
-                    },
-                ),
+                lifecycle.control.heartbeat(&lifecycle.identity, heartbeat),
             )
             .await;
             sequence = match sequence.checked_add(1) {
