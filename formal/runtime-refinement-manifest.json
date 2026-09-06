@@ -129,15 +129,15 @@
     }
   ],
   "session_observations": {
-    "projection_id": "session-observations-v2",
-    "schema_version": 2,
+    "projection_id": "session-observations-v3",
+    "schema_version": 3,
     "scope": "Executed production-call traces of durable observations, not universal implementation refinement. Models own the relations; this manifest owns field erasure and mandatory scenario coverage.",
     "erased_fields": [
       "Session payloads and repository engine internals; root traces retain revision, existence and times.",
-      "Each publication observation fixes its Session and retains attachment/generation set identities. Lease/holder/target axes are checked separately by production admission tests and Kani; they are not retained in this set projection.",
+      "Each independent publication-set observation fixes its Session and retains attachment/generation set identities. Lease/holder/target axes are checked separately by production admission tests and Kani; they are not retained in this set projection.",
       "Store traces retain committed sequence/time pairs. The same Rust test compares all recovered facts against the full committed snapshot; those content semantics are erased from this TLA projection.",
       "Time values use one injective increasing rank map per scenario because TLC integers cannot contain real millisecond clocks. This preserves and reflects the canonical relations using equality/order/max only, retains unknown values, and never rewrites the raw Rust trace.",
-      "Continuous HTTP traces retain execution sequence/Session, durable root revision/times/lease, attachment identity/active/ACK sets and completed stage/publish/drain calls. Target credentials, process scheduling between checkpoints and provider internals are erased; this checks only recorded paths through the canonical driver, not every implementation execution."
+      "Continuous HTTP traces retain execution sequence/Session, durable root revision/times/lease, attachment active/ACK sets, complete generation coordinates in root claims/directives/completed calls/reports, and stage/publish/drain ordering. Target credentials, process scheduling between checkpoints and provider internals are erased; this checks only recorded paths through the canonical driver, not every implementation execution."
     ],
     "families": {
       "root": {

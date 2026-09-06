@@ -191,9 +191,11 @@ EveryAcquiredSlotEventuallyReleases ==
    process loss. It does not assert an unbounded refinement theorem for Rust. *)
 EffectKeys(s) == {s.effects[i].key : i \in 1..Len(s.effects)}
 RootView(s) == <<s.revision, s.created, s.updated, s.owner, s.incarnation,
-                s.epoch, s.expiry, s.active, s.acked, s.known>>
+                s.epoch, s.expiry, s.active, s.acked, s.known, s.rootrefs, s.pending, s.retiring>>
 PhysicalView(s) == <<s.staged, s.published, s.drained>>
-ExpectedView(s) == <<s.action, s.expectstage, s.expectpub, s.expectdrain>>
+EffectRefs(s) == {s.effects[i] : i \in 1..Len(s.effects)}
+PhysicalRefs(s) == <<s.stagefacts, s.publishfacts, s.drainfacts>>
+ExpectedView(s) == <<s.action, s.expectstage, s.expectpub, s.expectdrain, s.planstage, s.planpub, s.plandrain>>
 CurrentEffects(s) ==
     \A i \in 1..Len(s.effects) :
       /\ s.effects[i].session = s.session
@@ -201,31 +203,52 @@ CurrentEffects(s) ==
       /\ s.effects[i].epoch = s.epoch
       /\ s.effects[i].expiry <= s.expiry
 
+RefAuthorized(asserted, current) ==
+    /\ <<asserted.key, asserted.session, asserted.incarnation, asserted.epoch>> =
+         <<current.key, current.session, current.incarnation, current.epoch>>
+    /\ asserted.expiry <= current.expiry
+RootAuthorizes(s, refs) ==
+    \A ref \in refs : \E current \in s.rootrefs : RefAuthorized(ref, current)
+
 ObservedSafety(s) ==
+    /\ s.event \in {"begin-after", "activate-before", "activate-after", "ack-before", "ack-after",
+                       "projection", "stage", "published", "complete"} => s.hasauthority
     /\ s.hasauthority =>
          /\ <<s.authorityowner, s.authorityincarnation, s.authorityepoch>> = <<s.owner, s.incarnation, s.epoch>>
          /\ s.authoritytime <= s.expiry
+    /\ s.event = "projection" =>
+         /\ CASE s.action = "stage" -> s.expectstage = s.pending \cup (s.active \ s.acked)
+              [] s.action = "publish" -> s.expectpub = s.active \ s.acked /\ s.expectdrain = s.retiring
+              [] OTHER -> s.pending = {} /\ s.retiring = {}
+         /\ RootAuthorizes(s, s.planstage \cup s.planpub \cup s.plandrain)
+         /\ \A ref \in s.planstage \cup s.planpub \cup s.plandrain : ref.session = s.session
     /\ s.event = "published" =>
-         /\ s.reportedpub = s.expectpub
-         /\ s.reporteddrain = s.expectdrain
+         /\ s.reportedpub = s.planpub
+         /\ s.reporteddrain = s.plandrain
     /\ s.acked \subseteq s.active
     /\ s.active \subseteq s.known
     /\ s.event = "stage" =>
          /\ CurrentEffects(s)
          /\ EffectKeys(s) = s.expectstage
+         /\ EffectRefs(s) = s.planstage
          /\ EffectKeys(s) \subseteq s.known
     /\ s.event = "publish-one" =>
          /\ CurrentEffects(s)
          /\ Cardinality(EffectKeys(s)) = 1
          /\ EffectKeys(s) \subseteq s.expectpub \cap s.active \cap s.staged
+         /\ EffectRefs(s) \subseteq s.planpub
+         /\ \A ref \in EffectRefs(s) : \E staged \in s.stagefacts : RefAuthorized(staged, ref)
     /\ s.event = "drain-one" =>
          /\ Cardinality(EffectKeys(s)) = 1
          /\ EffectKeys(s) \subseteq s.expectdrain
+         /\ EffectRefs(s) \subseteq s.plandrain
          /\ EffectKeys(s) \cap s.active = {}
          /\ \A i \in 1..Len(s.effects) : s.effects[i].session = s.session
     /\ s.event \in {"published", "ack-before", "ack-after"} =>
          /\ s.expectpub \subseteq s.published
          /\ s.expectdrain \subseteq s.drained
+         /\ s.planpub \subseteq s.publishfacts
+         /\ s.plandrain \subseteq s.drainfacts
          /\ PublicationObservation(s.staged, s.active, s.published, s.drained)
     /\ s.event \in {"ack-after", "complete"} =>
          /\ s.active \subseteq s.acked
@@ -267,6 +290,11 @@ ObservedNext(s, t) ==
          [] t.event = "publish-one" -> PhysicalView(t) = <<s.staged, s.published \cup EffectKeys(t), s.drained>>
          [] t.event = "drain-one" -> PhysicalView(t) = <<s.staged, s.published, s.drained \cup EffectKeys(t)>>
          [] OTHER -> PhysicalView(t) = PhysicalView(s)
+    /\ CASE t.event = "crash" -> PhysicalRefs(t) = <<{}, {}, {}>>
+         [] t.event = "stage" -> PhysicalRefs(t) = <<s.stagefacts \cup EffectRefs(t), s.publishfacts, s.drainfacts>>
+         [] t.event = "publish-one" -> PhysicalRefs(t) = <<s.stagefacts, s.publishfacts \cup EffectRefs(t), s.drainfacts>>
+         [] t.event = "drain-one" -> PhysicalRefs(t) = <<s.stagefacts, s.publishfacts, s.drainfacts \cup EffectRefs(t)>>
+         [] OTHER -> PhysicalRefs(t) = PhysicalRefs(s)
     /\ t.event = "publish-one" => EffectKeys(t) \cap s.published = {}
     /\ t.event = "drain-one" => EffectKeys(t) \cap s.drained = {}
     /\ t.event = "ack-after" =>

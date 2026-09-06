@@ -253,7 +253,7 @@ async function main(): Promise<void> {
     if (process.env.AWAKEN_OBSERVATION_TRACE_DIR) {
       fs.mkdirSync(process.env.AWAKEN_OBSERVATION_TRACE_DIR, { recursive: true });
       fs.writeFileSync(path.join(process.env.AWAKEN_OBSERVATION_TRACE_DIR, 'realization-http-crashes.json'), JSON.stringify({
-        schema_version: 2, projection_id: 'session-observations-v2', name: 'realization-http-crashes', family: 'realization', steps: chainTraces,
+        schema_version: 3, projection_id: 'session-observations-v3', name: 'realization-http-crashes', family: 'realization', steps: chainTraces,
       }, null, 2));
     }
 

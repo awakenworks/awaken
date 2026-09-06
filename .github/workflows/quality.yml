@@ -55,6 +55,13 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: scripts/ci/check-reliability.sh --session-observations
+      - name: Retain native Session validation evidence
+        if: always() && runner.os != 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: session-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.runner }}
+          path: target/test-timings/session-observations-*/
+          if-no-files-found: error
 
   full_quality:
     # The strict sandbox group requires Docker, unprivileged user namespaces,

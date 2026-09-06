@@ -82,6 +82,13 @@ jobs:
         run: |
           pnpm -C e2e install --frozen-lockfile
           scripts/ci/check-reliability.sh --session-observations
+      - name: Retain native Session validation evidence
+        if: always() && runner.os != 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: session-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.target }}
+          path: target/test-timings/session-observations-*/
+          if-no-files-found: error
       - name: Build the canonical archive
         shell: bash
         env:

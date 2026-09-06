@@ -11,11 +11,29 @@ awaken_unset_ambient_api_keys
 # One native Session observation composition, reused by PR, release and formal
 # qualification. The formal caller supplies a fresh output directory.
 if [ "${1:-}" = "--session-observations" ]; then
+  evidence_args=(--kind session-observations)
+  if [ -n "${AWAKEN_SESSION_EVIDENCE_DIR:-}" ]; then
+    evidence_args+=(--directory "$AWAKEN_SESSION_EVIDENCE_DIR")
+  fi
+  session_evidence_dir="$(python3 scripts/ci/formal_run_evidence.py artifacts-begin "${evidence_args[@]}")"
+  export AWAKEN_OBSERVATION_TRACE_DIR="$session_evidence_dir/raw"
+  finish_session_evidence() {
+    result=$?
+    trap - EXIT
+    python3 scripts/ci/formal_run_evidence.py artifacts-finish --directory "$session_evidence_dir" --exit-code "$result" || result=1
+    exit "$result"
+  }
+  trap finish_session_evidence EXIT
+  echo "Session evidence: $session_evidence_dir"
+  {
   cargo test --locked --features awaken-store-sqlite/test-support \
     -p awaken-session-contract -p awaken-session-application \
     -p awaken-store-inmem -p awaken-store-fs -p awaken-store-sqlite -p awaken-protocol-managed
   cargo test --locked -p awaken-coordinator --lib runtime_authority::tests
   pnpm -C e2e exec tsx managed_mcp_recovery_e2e.ts
+  python3 scripts/ci/render_runtime_refinement_traces.py --projection session-observations \
+    "$AWAKEN_OBSERVATION_TRACE_DIR" "$session_evidence_dir/rendered" --require-complete-transition-coverage
+  } 2>&1 | tee "$session_evidence_dir/suite.log"
   exit 0
 fi
 

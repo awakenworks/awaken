@@ -1107,12 +1107,23 @@ pub async fn drive_session_realization(
             return Err(error.into());
         }
         #[cfg(feature = "test-support")]
-        crate::realization_observation::checkpoint(
-            "projection",
-            session_id,
-            serde_json::json!({"lease": directive.lease, "action": directive.action}),
-        )
-        .await;
+        {
+            // Observe the existing directive's complete generation coordinates;
+            // policy/credential payloads are outside this trace contract.
+            let action = match &directive.action {
+                SessionRealizationAction::Stage { mcp_stages, .. } => serde_json::json!({
+                    "phase": "stage", "generations": mcp_stages.iter().map(|r| &r.generation).collect::<Vec<_>>() }),
+                SessionRealizationAction::Publish { publish, drain } => serde_json::json!({
+                    "phase": "publish", "publish": publish, "drain": drain }),
+                SessionRealizationAction::Complete => serde_json::json!({"phase": "complete"}),
+            };
+            crate::realization_observation::checkpoint(
+                "projection",
+                session_id,
+                serde_json::json!({"lease": directive.lease, "action": action}),
+            )
+            .await;
+        }
         match directive.action.clone() {
             SessionRealizationAction::Stage {
                 prepare_session,

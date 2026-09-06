@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import subprocess
@@ -143,13 +144,80 @@ def write_record(path: Path, record: dict) -> None:
             os.unlink(name)
 
 
+def begin_artifacts(repository: Path, parent: Path, kind: str, directory: Path | None = None) -> Path:
+    """One immutable diagnostic bundle per invocation; never a release proof."""
+    parent.mkdir(parents=True, exist_ok=True)
+    if directory is None:
+        directory = Path(tempfile.mkdtemp(prefix=kind + "-", dir=parent))
+    else:
+        directory.mkdir(parents=True, exist_ok=False)
+    directory = directory.resolve()
+    write_record(directory / "evidence.json", {
+        "schema_version": 1, "kind": kind, "status": "running", "run_id": str(uuid.uuid4()),
+        "source": source_snapshot(repository), "platform": {"system": platform.system(), "machine": platform.machine()},
+        "proof_toolchain": proof_toolchain(repository), "started_at_unix": int(time.time()),
+    })
+    return directory
+
+
+def artifact_files(directory: Path) -> dict[str, str]:
+    files = {}
+    for path in sorted(directory.rglob("*")):
+        if path.is_symlink(): raise ValueError("artifact bundle cannot contain symlinks")
+        if path.is_file() and path != directory / "evidence.json":
+            files[path.relative_to(directory).as_posix()] = digest_file(path)
+    return files
+
+
+def finish_artifacts(directory: Path, repository: Path, exit_code: int) -> dict:
+    record = json.loads((directory / "evidence.json").read_text())
+    if record["status"] != "running": raise ValueError("artifact invocation already finished")
+    unchanged = record["source"] == source_snapshot(repository)
+    record.update(status="passed" if exit_code == 0 and unchanged else "failed", exit_code=exit_code,
+        source_unchanged=unchanged, finished_at_unix=int(time.time()), files=artifact_files(directory))
+    write_record(directory / "evidence.json", record)
+    return record
+
+
+def verify_artifacts(directory: Path, repository: Path) -> dict:
+    record = json.loads((directory / "evidence.json").read_text())
+    if record.get("schema_version") != 1 or record.get("status") not in {"passed", "failed"}:
+        raise ValueError("artifact invocation is incomplete")
+    code, unchanged = record.get("exit_code"), record.get("source_unchanged")
+    if type(code) is not int or type(unchanged) is not bool:
+        raise ValueError("artifact result mismatch")
+    if (record["status"] == "passed") != (code == 0 and unchanged):
+        raise ValueError("artifact result mismatch")
+    if record.get("proof_toolchain") != proof_toolchain(repository): raise ValueError("artifact toolchain mismatch")
+    if record.get("source") != source_snapshot(repository): raise ValueError("artifact source mismatch")
+    if record.get("files") != artifact_files(directory): raise ValueError("artifact content mismatch")
+    return record  # Failed bundles remain inspectable, never promoted to Passed.
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("begin", "finish"))
-    parser.add_argument("--record", type=Path, required=True)
+    parser.add_argument("action", choices=("begin", "finish", "artifacts-begin", "artifacts-finish", "artifacts-verify"))
+    parser.add_argument("--record", type=Path)
+    parser.add_argument("--directory", type=Path)
+    parser.add_argument("--parent", type=Path, default=Path("target/test-timings"))
+    parser.add_argument("--kind", choices=("formal", "session-observations"), default="formal")
+    parser.add_argument("--exit-code", type=int, default=0)
     parser.add_argument("--strict", choices=("0", "1"), default="0")
     parser.add_argument("--missing-tools", choices=("0", "1"), default="0")
     args = parser.parse_args()
+    if args.action == "artifacts-begin":
+        print(begin_artifacts(ROOT, args.parent, args.kind, args.directory))
+        return
+    if args.action.startswith("artifacts-"):
+        if args.directory is None: parser.error("--directory is required")
+        if args.action == "artifacts-finish":
+            record = finish_artifacts(args.directory, ROOT, args.exit_code)
+            if not record["source_unchanged"]: raise SystemExit("artifact source changed during execution")
+        else:
+            record = verify_artifacts(args.directory, ROOT)
+            print(f"artifact integrity verified: {record['status']}")
+        return
+    if args.record is None: parser.error("--record is required")
     now = int(time.time())
     if args.action == "begin":
         record = begin_record(ROOT, args.strict == "1", now)

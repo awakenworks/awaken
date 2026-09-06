@@ -10,14 +10,14 @@ import sys
 import tempfile
 import unittest
 
-from formal_run_evidence import ROOT, begin_record, finish_record, validate_record, write_record
+from formal_run_evidence import ROOT, begin_record, finish_record, validate_record, write_record, begin_artifacts, finish_artifacts, verify_artifacts
 
 
 def prepare_source_fixture(root: Path, extra_sources: dict[str, str] | None = None) -> None:
     """Shared synthetic Git/receipt fixture; it never attests a real proof run."""
     root.mkdir()
     for relative in ("scripts/ci/formal_run_evidence.py", "scripts/ci/check_formal.sh",
-                     "scripts/ci/bootstrap_kani.sh", "scripts/ci/_cargo_target.sh", "rust-toolchain.toml"):
+                     "scripts/ci/bootstrap_kani.sh", "scripts/ci/_cargo_target.sh", "scripts/ci/_provider_environment.sh", "scripts/ci/check-reliability.sh", "rust-toolchain.toml"):
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, target)
@@ -41,6 +41,51 @@ class EvidenceTests(unittest.TestCase):
 
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.root, stderr=subprocess.STDOUT)
+
+    def test_artifact_success_failure_and_source_binding(self):
+        # A1 unchanged source + exit 0 -> Passed; A2 exit 23 -> Failed with
+        # identical raw/model/log bytes retained; A3 changed source -> Failed.
+        # Artifacts are diagnostic receipts, never independent release proofs.
+        for code in (0, 23):
+            directory = begin_artifacts(self.root, self.root / "target/evidence", "session-observations")
+            inputs = {"raw/trace.json": b'{"sequence":0}\n', "rendered/Trace.tla": b'fixture\n', "suite.log": b'failure or success\n'}
+            for relative, contents in inputs.items():
+                path = directory / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(contents)
+            record = finish_artifacts(directory, self.root, code)
+            self.assertEqual(record["status"], "passed" if code == 0 else "failed")
+            self.assertEqual(record["exit_code"], code)
+            self.assertEqual(verify_artifacts(directory, self.root), record)
+            for field, changed in [("status", "failed" if code == 0 else "passed"), ("exit_code", 23 if code == 0 else 0), ("proof_toolchain", {})]:
+                write_record(directory / "evidence.json", dict(record, **{field: changed}))
+                with self.assertRaises(ValueError): verify_artifacts(directory, self.root)
+                write_record(directory / "evidence.json", record)
+            for relative, contents in inputs.items(): self.assertEqual((directory / relative).read_bytes(), contents)
+            for relative in inputs:
+                path = directory / relative
+                contents = path.read_bytes()
+                path.write_bytes(contents + b'changed')
+                with self.assertRaisesRegex(ValueError, "content mismatch"): verify_artifacts(directory, self.root)
+                path.unlink()
+                with self.assertRaisesRegex(ValueError, "content mismatch"): verify_artifacts(directory, self.root)
+                path.write_bytes(contents)
+        directory = begin_artifacts(self.root, self.root / "target/evidence", "formal")
+        (self.root / "transitive.rs").write_text("changed")
+        self.assertEqual(finish_artifacts(directory, self.root, 0)["status"], "failed")
+        with self.assertRaisesRegex(ValueError, "source mismatch"): verify_artifacts(directory, self.root)
+
+    def test_artifact_invocations_cannot_reuse_success(self):
+        # A4 rerun creates a new identity/directory; A5 explicit existing output
+        # fails instead of mixing runs; A6 Running/incomplete never validates.
+        parent = self.root / "target/evidence"
+        first = begin_artifacts(self.root, parent, "formal")
+        finish_artifacts(first, self.root, 0)
+        second = begin_artifacts(self.root, parent, "formal")
+        self.assertNotEqual(first, second)
+        with self.assertRaisesRegex(ValueError, "incomplete"): verify_artifacts(second, self.root)
+        with self.assertRaises(FileExistsError): begin_artifacts(self.root, parent, "formal", first)
+        self.assertEqual(verify_artifacts(first, self.root)["status"], "passed")
 
     def test_completion_requires_strict_unchanged_inputs_and_all_tools(self):
         # R1 strict+unchanged+all tools succeeds; R2 optional/R3 missing tools/
@@ -110,6 +155,61 @@ class EvidenceTests(unittest.TestCase):
                                 cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 23, result.stderr)
         self.assertEqual(json.loads(path.read_text())["status"], "running")
+        bundles = list((self.root / "target/test-timings").glob("formal-*/evidence.json"))
+        self.assertEqual(len(bundles), 1)
+        failure = verify_artifacts(bundles[0].parent, self.root)
+        self.assertEqual((failure["status"], failure["exit_code"]), ("failed", 23))
+
+    def test_actual_completion_trap_seals_before_publishing_success(self):
+        # A8 body succeeds + sealing succeeds -> Passed; A9 body succeeds +
+        # sealing fails -> nonzero and Running. Execute the real script's
+        # initialization/EXIT trap, replacing only the expensive proof body.
+        # This tests publication ordering, not a successful formal proof run.
+        source = (self.root / "scripts/ci/check_formal.sh").read_text()
+        initialization, _ = source.split("\npython3 scripts/ci/check_feature_coverage.py", 1)
+        bindir = Path(self.temporary.name) / "completion-bin"
+        bindir.mkdir()
+        shim = bindir / "python3"
+        shim.write_text('#!/bin/sh\nif [ "$2" = artifacts-finish ] && [ "$FAIL_SEAL" = 1 ]; then exit 37; fi\nexec '
+                        + shlex.quote(sys.executable) + ' "$@"\n')
+        shim.chmod(0o755)
+        path = self.root / "target/test-timings/formal-run.json"
+        for fail_seal in (False, True):
+            with self.subTest(fail_seal=fail_seal):
+                env = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
+                           FAIL_SEAL=str(int(fail_seal)), AWAKEN_FORMAL_RUN_EVIDENCE=str(path))
+                result = subprocess.run(["bash", "-c", initialization + "\nexit 0\n",
+                                         "scripts/ci/check_formal.sh", "--require-tools"],
+                                        cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 1 if fail_seal else 0, result.stderr)
+                self.assertEqual(json.loads(path.read_text())["status"], "running" if fail_seal else "passed")
+
+    def test_actual_native_failure_retains_partial_trace_and_log(self):
+        # A7 the actual native composition runs, first Cargo writes partial
+        # diagnostic evidence then fails with 31. The pipeline/EXIT trap must
+        # retain bytes and exact status, and must not continue to PNPM. The shim
+        # tests runner wiring only; it is not a passing Rust or native OS result.
+        bindir = Path(self.temporary.name) / "native-bin"
+        bindir.mkdir()
+        cargo = bindir / "cargo"
+        cargo.write_text('#!/bin/sh\nmkdir -p "$AWAKEN_OBSERVATION_TRACE_DIR"\nprintf \'{"partial":true}\\n\' > "$AWAKEN_OBSERVATION_TRACE_DIR/partial.json"\necho native-failure-marker\nexit 31\n')
+        cargo.chmod(0o755)
+        pnpm = bindir / "pnpm"
+        pnpm.write_text('#!/bin/sh\ntouch "' + str(self.root / "unexpected-pnpm") + '"\nexit 0\n')
+        pnpm.chmod(0o755)
+        env = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"])
+        env.pop("AWAKEN_SESSION_EVIDENCE_DIR", None)
+        result = subprocess.run(["bash", "scripts/ci/check-reliability.sh", "--session-observations"],
+            cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 31, result.stderr)
+        self.assertFalse((self.root / "unexpected-pnpm").exists())
+        bundles = list((self.root / "target/test-timings").glob("session-observations-*/evidence.json"))
+        self.assertEqual(len(bundles), 1)
+        directory = bundles[0].parent
+        record = verify_artifacts(directory, self.root)
+        self.assertEqual((record["status"], record["exit_code"]), ("failed", 31))
+        self.assertEqual((directory / "raw/partial.json").read_text(), '{"partial":true}\n')
+        self.assertIn("native-failure-marker", (directory / "suite.log").read_text())
 
     def test_dirty_diagnostic_run_never_qualifies_release(self):
         # A stable dirty tree may complete for local diagnosis; it cannot
