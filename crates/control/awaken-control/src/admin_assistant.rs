@@ -480,29 +480,22 @@ async fn apply_pending_resource_effects(
     let effects = plane.pending_management_effects(scope).await?;
     let mut completed = 0;
     for effect in effects {
-        let ManagementEffect::UpsertAgentInputs { config } = effect;
+        let ManagementEffect::UpsertAgentInputs { config } = &effect;
         resources
             .put_agent_inputs(scope.as_str(), config.clone())
             .map_err(|error| error.to_string())?;
-        if resources
+        let observed = resources
             .get_agent_inputs(scope.as_str(), &config.agent_id)
-            .map_err(|error| error.to_string())?
-            .as_ref()
-            != Some(&config)
-        {
-            return Err(format!(
-                "resource store did not durably read back binding `{}`",
-                config.agent_id
-            ));
-        }
-        plane
-            .complete_management_effect(
-                scope,
-                ManagementEffect::AGENT_INPUTS_KIND,
-                &config.agent_id,
-            )
-            .await?;
-        completed += 1;
+            .map_err(|error| error.to_string())?;
+        let receipt = effect
+            .confirm_readback(scope, observed.as_ref())
+            .ok_or_else(|| {
+                format!(
+                    "resource store did not durably read back binding `{}`",
+                    config.agent_id
+                )
+            })?;
+        completed += usize::from(plane.complete_management_effect(&receipt).await?);
     }
     Ok(completed)
 }
@@ -785,6 +778,215 @@ mod tests {
             ),
             executable,
         )
+    }
+
+    enum ReadbackHook {
+        Pause(
+            tokio::sync::oneshot::Sender<()>,
+            std::sync::mpsc::Receiver<()>,
+        ),
+        Missing,
+        Changed,
+        Failed,
+    }
+
+    struct ObservedInputRepository {
+        inner: InMemoryAgentInputBindingRepository,
+        hook: std::sync::Mutex<Option<ReadbackHook>>,
+    }
+
+    impl AgentInputBindingRepository for ObservedInputRepository {
+        fn put_agent_inputs(
+            &self,
+            workspace: &str,
+            config: AgentInputConfig,
+        ) -> Result<(), awaken_config_resolver::AgentInputRepositoryError> {
+            self.inner.put_agent_inputs(workspace, config)
+        }
+
+        fn get_agent_inputs(
+            &self,
+            workspace: &str,
+            agent: &str,
+        ) -> Result<Option<AgentInputConfig>, awaken_config_resolver::AgentInputRepositoryError>
+        {
+            let mut observed = self.inner.get_agent_inputs(workspace, agent)?;
+            let hook = self.hook.lock().unwrap().take();
+            match hook {
+                Some(ReadbackHook::Pause(ready, resume)) => {
+                    ready.send(()).unwrap();
+                    resume
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .map_err(|e| {
+                            awaken_config_resolver::AgentInputRepositoryError::Storage(
+                                e.to_string(),
+                            )
+                        })?;
+                }
+                Some(ReadbackHook::Missing) => observed = None,
+                Some(ReadbackHook::Changed) => {
+                    if let Some(config) = &mut observed {
+                        config.agent_id.push('x');
+                    }
+                }
+                Some(ReadbackHook::Failed) => {
+                    return Err(awaken_config_resolver::AgentInputRepositoryError::Storage(
+                        "readback unavailable".into(),
+                    ));
+                }
+                None => {}
+            }
+            Ok(observed)
+        }
+
+        fn list_agent_inputs(
+            &self,
+            workspace: &str,
+        ) -> Result<Vec<AgentInputConfig>, awaken_config_resolver::AgentInputRepositoryError>
+        {
+            self.inner.list_agent_inputs(workspace)
+        }
+    }
+
+    async fn queue_test_effect(
+        plane: &ConfigPlane,
+        scope: &ScopeId,
+        revision: u64,
+    ) -> ManagementEffect {
+        let draft = AgentConfig {
+            id: "effect-agent".into(),
+            instructions: "effect receipt".into(),
+            model_binding: ModelSelection::Auto,
+            ..Default::default()
+        };
+        let audit = awaken_agent_config::ManagementAuditRecord {
+            tool: "admin_patch_agent".into(),
+            call_id: format!("effect-{revision}"),
+            summary: format!("revision={revision}"),
+        };
+        let effect = ManagementEffect::UpsertAgentInputs {
+            config: resource_config(&draft.id, Vec::new(), None, revision as i64).unwrap(),
+        };
+        plane.record_management_audit(scope, &audit).await.unwrap();
+        assert_eq!(
+            plane
+                .put_with_audit_effect(scope, &draft, revision - 1, &audit, Some(&effect))
+                .await
+                .unwrap(),
+            AuditedConfigWrite::Applied
+        );
+        effect
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn management_effect_late_readback_cannot_retire_the_next_intent() {
+        // C1 B applies/reads revision 1 but pauses before returning readback;
+        // C2 A retires that exact effect; C3 a new audited write queues revision 2;
+        // C4 B resumes with old evidence. Effects: E1 B retires zero rows, E2 the
+        // successor remains durable, E3 next reconciliation applies/reads/retires
+        // revision 2. Real SQLite + the existing input reducer own both stores.
+        let plane = ConfigPlane::new(
+            Arc::new(test_config_service()),
+            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(StaticToolCatalog(Vec::new())),
+        );
+        let scope = ScopeId::from("late-readback");
+        let old = queue_test_effect(&plane, &scope, 1).await;
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let resources = Arc::new(ObservedInputRepository {
+            inner: InMemoryAgentInputBindingRepository::new(),
+            hook: std::sync::Mutex::new(Some(ReadbackHook::Pause(ready_tx, resume_rx))),
+        });
+        let late = tokio::spawn({
+            let plane = plane.clone();
+            let scope = scope.clone();
+            let resources = resources.clone();
+            async move { apply_pending_resource_effects(&plane, &scope, resources.as_ref()).await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let observed = resources
+            .inner
+            .get_agent_inputs(scope.as_str(), old.key())
+            .unwrap();
+        let receipt = old.confirm_readback(&scope, observed.as_ref()).unwrap();
+        assert!(plane.complete_management_effect(&receipt).await.unwrap());
+        let next = queue_test_effect(&plane, &scope, 2).await;
+        resume_tx.send(()).unwrap();
+        assert_eq!(late.await.unwrap().unwrap(), 0, "E1");
+        assert_eq!(
+            plane.pending_management_effects(&scope).await.unwrap(),
+            vec![next.clone()],
+            "E2"
+        );
+        assert_eq!(
+            apply_pending_resource_effects(&plane, &scope, resources.as_ref())
+                .await
+                .unwrap(),
+            1,
+            "E3"
+        );
+        let actual = resources
+            .inner
+            .get_agent_inputs(scope.as_str(), next.key())
+            .unwrap();
+        assert!(next.confirm_readback(&scope, actual.as_ref()).is_some());
+        assert!(
+            plane
+                .pending_management_effects(&scope)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn management_effect_failed_readback_retains_the_durable_intent() {
+        // Decision table: physical put succeeded x readback missing/changed/error
+        // => no receipt and no retirement. An exact retry then converges through
+        // the same reconciler, rather than a separate compensation write path.
+        for hook in [
+            ReadbackHook::Missing,
+            ReadbackHook::Changed,
+            ReadbackHook::Failed,
+        ] {
+            let plane = ConfigPlane::new(
+                Arc::new(test_config_service()),
+                Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+                Arc::new(StaticToolCatalog(Vec::new())),
+            );
+            let scope = ScopeId::from("readback-failure");
+            let expected = queue_test_effect(&plane, &scope, 1).await;
+            let resources = ObservedInputRepository {
+                inner: InMemoryAgentInputBindingRepository::new(),
+                hook: std::sync::Mutex::new(Some(hook)),
+            };
+            assert!(
+                apply_pending_resource_effects(&plane, &scope, &resources)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                plane.pending_management_effects(&scope).await.unwrap(),
+                vec![expected]
+            );
+            assert_eq!(
+                apply_pending_resource_effects(&plane, &scope, &resources)
+                    .await
+                    .unwrap(),
+                1
+            );
+            assert!(
+                plane
+                    .pending_management_effects(&scope)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 
     #[test]

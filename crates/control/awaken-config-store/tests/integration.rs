@@ -31,6 +31,18 @@ mod revision_cas;
 #[path = "support/audit_identity.rs"]
 mod audit_identity;
 
+#[path = "support/effect_retirement.rs"]
+mod effect_retirement;
+
+#[tokio::test]
+async fn sqlite_management_effect_stale_completion_preserves_replacement() {
+    effect_retirement::stale_completion_preserves_replacement(
+        &SqliteConfigStore::open_in_memory().unwrap(),
+        &agent_config(),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn sqlite_audit_identity_decision_table() {
     audit_identity::decision_table(
@@ -256,8 +268,10 @@ async fn audited_config_and_external_effect_are_journaled_atomically_and_replay_
             .unwrap(),
         AuditedConfigWrite::Replayed
     );
+    let ManagementEffect::UpsertAgentInputs { config: applied } = &effect;
+    let receipt = effect.confirm_readback(&scope, Some(applied)).unwrap();
     store
-        .complete_management_effect_scoped(&scope, effect.kind(), effect.key())
+        .complete_management_effect_scoped(&receipt)
         .await
         .unwrap();
     assert!(

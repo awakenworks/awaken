@@ -305,6 +305,17 @@ record equality in both backends. Kani proves the scalar admission classes;
 backend tests and the AuditCommit model do not prove arbitrary SQL, network
 effects, or cross-store atomicity.
 
+Cross-store binding completion consumes `ManagementEffectReceipt`, minted only
+from an exact positive-revision resource readback and carrying its Workspace and
+complete effect. The SQL adapter compares the current journal payload and deletes
+it within one transaction fence. Completion returns whether that exact row was
+retired; missing or replaced work is a no-op, not a successful new completion.
+This prevents a delayed reconciler from deleting a later effect sharing the same
+Agent key. Enqueue cannot overwrite a different pending effect, and both adapters
+use the same typed content/index decisions. There is no key-only completion port
+or second resource queue. Database/target-repository durability remains explicit
+TCB; the receipt is not a cryptographic proof of external storage behavior.
+
 ## Consequences
 
 Positive:
