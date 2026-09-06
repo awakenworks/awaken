@@ -23,6 +23,42 @@ pub enum CommitEpochCompletion {
     FailRelease,
 }
 
+/// Storage-neutral decision for installing an exact claim's commit guard.
+///
+/// A backend supplies facts from one locked row snapshot. An absent or
+/// different claim is fenced; a row in the required leased state with a torn
+/// owner/expiry pair is corrupt; only the complete exact owner/epoch pair can
+/// guard committed-truth mutation. Expiry is retained as evidence but is not a
+/// wall-clock admission check: holding the row/aggregate lock prevents reclaim
+/// until the guarded commit finishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitEpochAdmission {
+    Fenced,
+    Corrupt,
+    Guarded,
+}
+
+#[must_use]
+pub const fn classify_commit_epoch_admission(
+    row_in_required_state: bool,
+    owner_present: bool,
+    expiry_present: bool,
+    owner_matches: bool,
+    epoch_matches: bool,
+) -> CommitEpochAdmission {
+    if !row_in_required_state {
+        return CommitEpochAdmission::Fenced;
+    }
+    if !owner_present || !expiry_present {
+        return CommitEpochAdmission::Corrupt;
+    }
+    if owner_matches && epoch_matches {
+        CommitEpochAdmission::Guarded
+    } else {
+        CommitEpochAdmission::Fenced
+    }
+}
+
 impl CommitEpochBoundary {
     #[must_use]
     pub const fn held() -> Self {
@@ -167,6 +203,31 @@ fn commit_epoch_completion_requires_observed_release() {
     );
 }
 
+#[cfg(kani)]
+#[kani::proof]
+fn commit_epoch_guard_admits_only_complete_exact_claim() {
+    let row_in_required_state: bool = kani::any();
+    let owner_present: bool = kani::any();
+    let expiry_present: bool = kani::any();
+    let owner_matches: bool = kani::any();
+    let epoch_matches: bool = kani::any();
+    let admission = classify_commit_epoch_admission(
+        row_in_required_state,
+        owner_present,
+        expiry_present,
+        owner_matches,
+        epoch_matches,
+    );
+    assert_eq!(
+        admission == CommitEpochAdmission::Guarded,
+        row_in_required_state && owner_present && expiry_present && owner_matches && epoch_matches
+    );
+    assert_eq!(
+        admission == CommitEpochAdmission::Corrupt,
+        row_in_required_state && (!owner_present || !expiry_present)
+    );
+}
+
 #[cfg(test)]
 mod commit_epoch_tests {
     use super::*;
@@ -187,6 +248,36 @@ mod commit_epoch_tests {
             settled.complete(false),
             CommitEpochCompletion::FailRelease,
             "R2"
+        );
+    }
+
+    #[test]
+    fn guard_admission_requires_one_complete_exact_claim_snapshot() {
+        // Cause/effect graph: C1 row is in the required leased state; C2 owner
+        // exists; C3 expiry exists; C4 owner matches; C5 epoch matches. Effects:
+        // E1 exact complete claim obtains a guard; E2 absent/different claim is
+        // fenced; E3 incomplete leased authority is corruption. Decision rules:
+        // G1=C1+C2+C3+C4+C5=>E1; G2=!C1 or C1+C2+C3+(!C4 or !C5)=>E2;
+        // G3=C1+(!C2 or !C3)=>E3. Backends own only snapshot locking/decoding.
+        assert_eq!(
+            classify_commit_epoch_admission(true, true, true, true, true),
+            CommitEpochAdmission::Guarded,
+            "G1/E1"
+        );
+        assert_eq!(
+            classify_commit_epoch_admission(false, true, true, true, true),
+            CommitEpochAdmission::Fenced,
+            "G2/E2 absent/wrong state"
+        );
+        assert_eq!(
+            classify_commit_epoch_admission(true, true, true, true, false),
+            CommitEpochAdmission::Fenced,
+            "G2/E2 stale epoch"
+        );
+        assert_eq!(
+            classify_commit_epoch_admission(true, true, false, true, true),
+            CommitEpochAdmission::Corrupt,
+            "G3/E3"
         );
     }
 }
