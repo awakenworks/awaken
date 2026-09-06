@@ -31,7 +31,8 @@ use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error, OperationCoordinator,
 };
 use awaken_agent_contract::thread::commit::operation::{
-    CommitOperation, CommitPayloadHash, CommitReceipt,
+    CommitOperation, CommitPayloadHash, CommitReceipt, admit_commit_operation_append,
+    replay_commit_operation_receipt, require_commit_operation_identity,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -771,11 +772,8 @@ fn write_operation(
     conn: &mut Connection,
     operation: &CommitOperation,
 ) -> Result<OperationWrite, Error> {
-    if operation.operation_id.run_id != *operation.commit.run_id() {
-        return Err(Error::Rejected(
-            "commit operation run_id does not match ThreadCommit run_id".to_string(),
-        ));
-    }
+    require_commit_operation_identity(operation)
+        .map_err(|error| Error::Rejected(error.to_string()))?;
     let operation_ordinal = i64::try_from(operation.operation_id.ordinal).map_err(|_| {
         Error::Rejected("commit operation ordinal exceeds backend range".to_string())
     })?;
@@ -800,20 +798,21 @@ fn write_operation(
         )
         .optional()
         .map_err(reject)?;
-    if let Some((payload_hash, commit_sequence, thread_version)) = existing {
-        if payload_hash != operation.payload_hash.0 {
-            return Err(Error::Rejected(format!(
-                "commit operation {}:{} was reused with another payload",
-                operation.operation_id.run_id.0, operation.operation_id.ordinal
-            )));
-        }
-        return Ok(OperationWrite::Duplicate(CommitReceipt {
-            operation_id: operation.operation_id.clone(),
-            commit_sequence: decode_authority(commit_sequence)?,
-            thread_version: decode_authority(thread_version)?,
-            payload_hash: CommitPayloadHash(payload_hash),
-            duplicate: true,
-        }));
+    let existing = existing
+        .map(|(payload_hash, commit_sequence, thread_version)| {
+            Ok(CommitReceipt {
+                operation_id: operation.operation_id.clone(),
+                commit_sequence: decode_authority(commit_sequence)?,
+                thread_version: decode_authority(thread_version)?,
+                payload_hash: CommitPayloadHash(payload_hash),
+                duplicate: false,
+            })
+        })
+        .transpose()?;
+    if let Some(receipt) = replay_commit_operation_receipt(operation, existing.as_ref())
+        .map_err(|error| Error::Rejected(error.to_string()))?
+    {
+        return Ok(OperationWrite::Duplicate(receipt));
     }
 
     ensure_thread_version(&tx, &operation.commit.thread_id)?;
@@ -825,12 +824,6 @@ fn write_operation(
         )
         .map_err(reject)?;
     let current_version = decode_authority(current_version)?;
-    if current_version != operation.expected_thread_version {
-        return Err(Error::Rejected(format!(
-            "thread version conflict: expected {}, current {}",
-            operation.expected_thread_version, current_version
-        )));
-    }
     let current_ordinal: i64 = tx
         .query_row(
             &format!("SELECT COUNT(*) FROM {NS}_commit WHERE run_id = ?1"),
@@ -839,12 +832,8 @@ fn write_operation(
         )
         .map_err(reject)?;
     let current_ordinal = decode_authority(current_ordinal)?;
-    if current_ordinal != operation.operation_id.ordinal {
-        return Err(Error::Rejected(format!(
-            "commit operation ordinal conflict: expected {}, current {}",
-            operation.operation_id.ordinal, current_ordinal
-        )));
-    }
+    let thread_version = admit_commit_operation_append(operation, current_version, current_ordinal)
+        .map_err(|error| Error::Rejected(error.to_string()))?;
     validate_transition_tx(&tx, &operation.commit)?;
     let current_sequence: i64 = tx
         .query_row(
@@ -855,7 +844,6 @@ fn write_operation(
         .map_err(reject)?;
     let next = increment_authority(decode_authority(current_sequence)?)?;
     write_commit_rows(&tx, next, &operation.commit)?;
-    let thread_version = increment_authority(current_version)?;
     tx.execute(
         &format!("UPDATE {NS}_thread_version SET version = ?2 WHERE thread_id = ?1"),
         params![&operation.commit.thread_id.0, thread_version],
