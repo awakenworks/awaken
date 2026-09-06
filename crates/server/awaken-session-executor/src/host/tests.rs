@@ -1478,7 +1478,9 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
     // Outcome owns active Worker and Judge Session projections; C2 its next
     // Worker inference is blocked; C3 worker authority is lost. Effects: E0
     // setup errors fail before the gate wait; E1 both active projections are
-    // interrupted before E2 both realizations are revoked.
+    // interrupted before E2 both realizations are revoked. E3 every current
+    // projection closes before the first asynchronous interruption/drain. This
+    // is the same split Host operation consumed by the Worker loss handler.
     let gate = Arc::new(tokio::sync::Notify::new());
     let reached = Arc::new(tokio::sync::Notify::new());
     let model = Arc::new(GatedModel {
@@ -1499,6 +1501,15 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
     await_interrupt_inference_gate(&reached, &mut task).await;
     // The outcome owns both its Worker Session and its Judge Session; authority
     // loss must fence every process-local projection, not only the caller thread.
+    let revocation = host.begin_session_realization_revocation();
+    assert!(
+        host.session_slots.session_ids().iter().all(|id| {
+            host.session_slots
+                .read(id, |slot| slot.realization_authority.is_closed())
+                .unwrap()
+        }),
+        "E3 before asynchronous interruption"
+    );
     assert_eq!(host.interrupt_all_session_runs().await, 2);
     gate.notify_one();
 
@@ -1507,7 +1518,12 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
         report.iterations.last().expect("a round").result,
         "interrupted"
     );
-    assert_eq!(host.revoke_all_session_realizations().await.unwrap(), 2);
+    assert_eq!(
+        host.finish_session_realization_revocation(revocation)
+            .await
+            .unwrap(),
+        2
+    );
 }
 
 #[tokio::test]
