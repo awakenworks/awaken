@@ -280,8 +280,9 @@ impl ContainerRuntime for K8sRuntime {
         plan: &ContainerPlan,
         plan_fingerprint: &str,
         evidence: &pc::SandboxRestorationEvidence,
+        authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), RuntimeError> {
-        restore::dispose(self, id, plan, plan_fingerprint, evidence).await
+        restore::dispose(self, id, plan, plan_fingerprint, evidence, authorization).await
     }
 
     async fn handle_extra(

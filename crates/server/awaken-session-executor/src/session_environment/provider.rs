@@ -856,10 +856,11 @@ impl SessionEnvironmentProvider {
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
+        authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir(provider) => {
-                pc::SandboxProvider::dispose_restored(provider, spec, request).await
+                pc::SandboxProvider::dispose_restored(provider, spec, request, authorization).await
             }
             Self::Namespace { .. } => Err(pc::SandboxError::new(
                 "namespace provider does not implement exact restored-target disposal",
@@ -870,7 +871,9 @@ impl SessionEnvironmentProvider {
                 ..
             } => {
                 let spec = container_spec(spec, extra_mounts)?;
-                provider.dispose_restored_environment(&spec, request).await
+                provider
+                    .dispose_restored_environment(&spec, request, authorization)
+                    .await
             }
         }
     }

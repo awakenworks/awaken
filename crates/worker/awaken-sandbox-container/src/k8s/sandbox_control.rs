@@ -137,12 +137,7 @@ fn normalized_forwarder_security_projection(container: &Container) -> Container 
     // executable or trust topology. All other fields remain exact, including
     // image digest, argv, loopback port, mounts, security context, and exec probe.
     projected.resources = None;
-    if projected.termination_message_path.as_deref() == Some("/dev/termination-log") {
-        projected.termination_message_path = None;
-    }
-    if projected.termination_message_policy.as_deref() == Some("File") {
-        projected.termination_message_policy = None;
-    }
+    super::api_defaults::normalize_container(&mut projected);
     projected
 }
 
@@ -571,9 +566,36 @@ mod tests {
         });
         sidecar.termination_message_path = None;
         sidecar.termination_message_policy = None;
+        // K3: the live apiserver omits writable=false and initialDelaySeconds=0.
+        // K4 below keeps a positive delay distinct, so normalization cannot
+        // silently change when the trusted marker probe begins checking.
+        sidecar.volume_mounts.as_mut().unwrap()[0].read_only = None;
+        sidecar
+            .readiness_probe
+            .as_mut()
+            .unwrap()
+            .initial_delay_seconds = None;
         assert!(
             pod_incarnation(&defaulted, &expected_name, Some("owner-a"), &forwarder).is_ok(),
             "K3/E3 LimitRange resources and known API message defaults"
+        );
+
+        let mut delayed = defaulted.clone();
+        delayed
+            .spec
+            .as_mut()
+            .unwrap()
+            .containers
+            .iter_mut()
+            .find(|container| container.name == SANDBOX_CONTROL_CONTAINER)
+            .unwrap()
+            .readiness_probe
+            .as_mut()
+            .unwrap()
+            .initial_delay_seconds = Some(1);
+        assert!(
+            pod_incarnation(&delayed, &expected_name, Some("owner-a"), &forwarder).is_err(),
+            "K4/E4 nonzero probe delay remains drift"
         );
 
         let namespace_mutations: [crate::k8s::PodSpecMutation; 5] = [

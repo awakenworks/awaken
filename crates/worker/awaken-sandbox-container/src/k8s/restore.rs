@@ -14,7 +14,11 @@ fn verify_plan(plan: &ContainerPlan, expected: &str) -> Result<(), RuntimeError>
     }
 }
 
-pub(super) fn verify_pod_projection(expected: &Pod, observed: &Pod) -> Result<(), RuntimeError> {
+pub(super) fn verify_pod_projection(
+    expected: &Pod,
+    observed: &Pod,
+    disposal: Option<&pc::SandboxDisposalAuthorization>,
+) -> Result<(), RuntimeError> {
     let mut expected_spec = expected
         .spec
         .clone()
@@ -23,8 +27,8 @@ pub(super) fn verify_pod_projection(expected: &Pod, observed: &Pod) -> Result<()
         .spec
         .clone()
         .ok_or_else(|| backend("observed Kubernetes restore Pod has no specification"))?;
-    realization::normalize_pod_spec(&mut expected_spec, false);
-    realization::normalize_pod_spec(&mut observed_spec, true);
+    api_defaults::normalize_pod_spec(&mut expected_spec, false);
+    api_defaults::normalize_pod_spec(&mut observed_spec, true);
     let expected_labels = expected.metadata.labels.as_ref();
     let observed_labels = observed.metadata.labels.as_ref();
     let exact_labels = expected_labels.is_some_and(|expected| {
@@ -36,17 +40,19 @@ pub(super) fn verify_pod_projection(expected: &Pod, observed: &Pod) -> Result<()
     if expected.metadata.name != observed.metadata.name
         || !exact_labels
         || expected_spec != observed_spec
+        || has_forbidden_sandbox_namespace_shape(&observed_spec)
     {
         return Err(backend(
             "Kubernetes restore Pod differs from the complete immutable security projection",
         ));
     }
-    realization::verify_realization(expected, observed)
+    realization::verify_realization(expected, observed, disposal)
 }
 
 pub(super) fn verify_claim_projection(
     expected: &PersistentVolumeClaim,
     observed: &PersistentVolumeClaim,
+    disposal: Option<&pc::SandboxDisposalAuthorization>,
 ) -> Result<(), RuntimeError> {
     let expected_spec = expected
         .spec
@@ -56,20 +62,26 @@ pub(super) fn verify_claim_projection(
         .spec
         .as_ref()
         .ok_or_else(|| backend("observed Kubernetes continuation PVC has no specification"))?;
-    if expected.metadata.name != observed.metadata.name
-        || expected_spec.access_modes != observed_spec.access_modes
-        || expected_spec.resources != observed_spec.resources
-        || !claim_storage_class_matches(
-            expected_spec.storage_class_name.as_deref(),
-            observed_spec.storage_class_name.as_deref(),
-        )
-        || expected_spec.volume_mode != observed_spec.volume_mode
+    // Omitted StorageClass delegates selection to Kubernetes. Admission may
+    // assign the cluster default before returning CREATE (or later), so it is
+    // not an explicitly pinned class. An explicit empty class instead disables
+    // defaulting and must not be substituted for this delegated policy.
+    // volumeName is the controller's binding output. Preserve every other spec
+    // field exactly, including selectors and clone/data sources; a copied
+    // realization annotation cannot authorize an extra storage input.
+    let mut projected = expected_spec.clone();
+    if projected.storage_class_name.is_none()
+        && claim_storage_class_matches(None, observed_spec.storage_class_name.as_deref())
     {
+        projected.storage_class_name = observed_spec.storage_class_name.clone();
+    }
+    projected.volume_name = observed_spec.volume_name.clone();
+    if expected.metadata.name != observed.metadata.name || projected != *observed_spec {
         return Err(backend(
             "Kubernetes continuation PVC differs from the exact immutable projection",
         ));
     }
-    realization::verify_realization(expected, observed)
+    realization::verify_realization(expected, observed, disposal)
 }
 
 /// An omitted desired storage class delegates exactly one choice to the
@@ -122,6 +134,7 @@ async fn observe(
     plan: &ContainerPlan,
     plan_fingerprint: &str,
     evidence: &pc::SandboxRestorationEvidence,
+    disposal: Option<&pc::SandboxDisposalAuthorization>,
 ) -> Result<Option<Observation>, RuntimeError> {
     verify_plan(plan, plan_fingerprint)?;
     let runtime_id = k8s_runtime_id(id)?;
@@ -178,7 +191,7 @@ async fn observe(
         realization::stamp_restoration(&mut desired, evidence);
         realization::stamp_restoration_plan(&mut desired, plan_fingerprint);
         realization::stamp_realization(&mut desired)?;
-        verify_claim_projection(&desired, &claim)?;
+        verify_claim_projection(&desired, &claim, disposal)?;
         Some(claim)
     } else {
         None
@@ -207,7 +220,7 @@ async fn observe(
     realization::stamp_restoration(&mut desired, evidence);
     realization::stamp_restoration_plan(&mut desired, plan_fingerprint);
     realization::stamp_pod_realization(&mut desired)?;
-    verify_pod_projection(&desired, &pod)?;
+    verify_pod_projection(&desired, &pod, disposal)?;
     Ok(Some(Observation { pod }))
 }
 
@@ -218,7 +231,8 @@ pub(super) async fn recover(
     plan_fingerprint: &str,
     evidence: &pc::SandboxRestorationEvidence,
 ) -> Result<Option<crate::RuntimeRestoreTarget>, RuntimeError> {
-    let Some(observation) = observe(runtime, id, plan, plan_fingerprint, evidence).await? else {
+    let Some(observation) = observe(runtime, id, plan, plan_fingerprint, evidence, None).await?
+    else {
         return Ok(None);
     };
     let name = observation.pod.name_any();
@@ -278,15 +292,24 @@ pub(super) async fn dispose(
     plan: &ContainerPlan,
     plan_fingerprint: &str,
     evidence: &pc::SandboxRestorationEvidence,
+    authorization: &pc::SandboxDisposalAuthorization,
 ) -> Result<(), RuntimeError> {
+    authorization.validate().map_err(backend)?;
     let runtime_id = k8s_runtime_id(id)?;
     let name = pod_name(&runtime_id);
-    if let Some(observation) = observe(runtime, id, plan, plan_fingerprint, evidence).await? {
+    if let Some(observation) = observe(
+        runtime,
+        id,
+        plan,
+        plan_fingerprint,
+        evidence,
+        Some(authorization),
+    )
+    .await?
+    {
         let handle = continuation::handle_extra(&observation.pod)?;
-        let (pod_uid, claim_uid) = super::runtime_contract::deletion_incarnation(handle.as_ref())?;
-        let authorization = continuation::PodCleanupAuthorization::Restoration(evidence.clone());
         return runtime
-            .remove_bound(&name, pod_uid, claim_uid, Some(&authorization))
+            .remove_exact_incarnation(&name, handle.as_ref(), authorization)
             .await;
     }
     if continuation::claim_required(plan, runtime.continuation_volume.is_some()) {
@@ -312,12 +335,19 @@ pub(super) async fn dispose(
         realization::stamp_restoration(&mut desired, evidence);
         realization::stamp_restoration_plan(&mut desired, plan_fingerprint);
         realization::stamp_realization(&mut desired)?;
-        verify_claim_projection(&desired, &claim)?;
+        verify_claim_projection(&desired, &claim, Some(authorization))?;
         let uid = continuation::claim_uid(&claim)?;
         let claims = runtime.persistent_volume_claims();
-        if let Some(pending) = continuation::initiate_claim_deletion(&claims, &name, &uid).await? {
+        // A restore tuple does not bypass the shared absent-Pod rule: without
+        // the Pod cleanup gate a live claim can race exact target acquisition.
+        // Only already-terminating/absent claims can finish this response-loss cut.
+        if let Some(pending) = continuation::absent_pod_claim_deletion(&claims, &name, &uid).await?
+        {
             continuation::await_claim_deletion(&claims, &pending).await?;
         }
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

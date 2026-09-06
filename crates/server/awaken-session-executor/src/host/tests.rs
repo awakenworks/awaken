@@ -17016,6 +17016,7 @@ enum TerminalRecoveryScenario {
 }
 
 struct TerminalRecoveryProvider {
+    restored_disposals: Mutex<Vec<pc::SandboxDisposalAuthorization>>,
     events: Arc<Mutex<Vec<&'static str>>>,
     scenario: TerminalRecoveryScenario,
     fence_refresh_probe: Option<Arc<TerminalFenceRefreshProbe>>,
@@ -17227,12 +17228,18 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         &self,
         _spec: &pc::SandboxSpec,
         _request: &pc::SandboxRestoreRequest,
+        authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), pc::SandboxError> {
         if !matches!(self.scenario, TerminalRecoveryScenario::Restoring) {
             return Err(pc::SandboxError::new(
                 "non-Restoring fixture cannot dispose a restore target",
             ));
         }
+        authorization.validate()?;
+        self.restored_disposals
+            .lock()
+            .unwrap()
+            .push(authorization.clone());
         self.events.lock().unwrap().push("dispose-restored");
         Ok(())
     }
@@ -17838,6 +17845,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
      * response-loss row and does not fabricate a cleanup Environment. */
     let events = Arc::new(Mutex::new(Vec::new()));
     let provider = Arc::new(TerminalRecoveryProvider {
+        restored_disposals: Mutex::new(Vec::new()),
         events: events.clone(),
         scenario: TerminalRecoveryScenario::OrphanClaim,
         fence_refresh_probe: None,
@@ -18382,6 +18390,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let probe = Arc::new(TerminalFenceRefreshProbe::default());
     let provider = Arc::new(TerminalRecoveryProvider {
+        restored_disposals: Mutex::new(Vec::new()),
         events: events.clone(),
         scenario: TerminalRecoveryScenario::LiveMemory,
         fence_refresh_probe: Some(probe.clone()),
@@ -18618,6 +18627,7 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
     let receipt = terminal_recovery_receipt(thread, &effect, "file_total_absence_receipt");
     let events = Arc::new(Mutex::new(Vec::new()));
     let provider = Arc::new(TerminalRecoveryProvider {
+        restored_disposals: Mutex::new(Vec::new()),
         events: events.clone(),
         scenario: TerminalRecoveryScenario::TotalAbsence,
         fence_refresh_probe: None,
@@ -18721,6 +18731,7 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
     let source_records = Arc::new(Mutex::new(vec![source_file.clone()]));
     let events = Arc::new(Mutex::new(Vec::new()));
     let provider = Arc::new(TerminalRecoveryProvider {
+        restored_disposals: Mutex::new(Vec::new()),
         events: events.clone(),
         scenario: TerminalRecoveryScenario::Disposing,
         fence_refresh_probe: None,
@@ -18850,6 +18861,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
     let source_records = Arc::new(Mutex::new(vec![source_file.clone()]));
     let events = Arc::new(Mutex::new(Vec::new()));
     let provider = Arc::new(TerminalRecoveryProvider {
+        restored_disposals: Mutex::new(Vec::new()),
         events: events.clone(),
         scenario: TerminalRecoveryScenario::TotalAbsence,
         fence_refresh_probe: None,
@@ -18969,6 +18981,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
     let thread = "unavailable-auxiliary-writable-memory";
     let events = Arc::new(Mutex::new(Vec::new()));
     let provider = Arc::new(TerminalRecoveryProvider {
+        restored_disposals: Mutex::new(Vec::new()),
         events: events.clone(),
         scenario: TerminalRecoveryScenario::UnavailableAuxiliaryMemory,
         fence_refresh_probe: None,
@@ -19141,6 +19154,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         let thread = format!("terminal-memory-{}", rule.name);
         let events = Arc::new(Mutex::new(Vec::new()));
         let provider = Arc::new(TerminalRecoveryProvider {
+            restored_disposals: Mutex::new(Vec::new()),
             events: events.clone(),
             scenario: TerminalRecoveryScenario::LiveMemory,
             fence_refresh_probe: None,
@@ -19615,6 +19629,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let provider = Arc::new(TerminalRecoveryProvider {
+        restored_disposals: Mutex::new(Vec::new()),
         events: events.clone(),
         scenario: TerminalRecoveryScenario::Restoring,
         fence_refresh_probe: None,
@@ -19622,7 +19637,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
             .with_session_container_provider(
-                provider,
+                provider.clone(),
                 Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             )
             .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
@@ -19657,6 +19672,10 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
     ));
 
     let disposal_effect = terminal_disposal_effect(preparation, lease, &projection);
+    let expected_authorization = host
+        .terminal_cleanup_disposal_authorization(&disposal_effect)
+        .unwrap();
+
     let first = managed
         .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
         .await
@@ -19666,6 +19685,13 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         .await
         .expect("TR2 replay after disposal receipt loss");
     assert_eq!(first, replay, "TR2/E2 deterministic receipt");
+    // TR2A: the exact root authorization reaches the restore-target port on
+    // both initial deletion and receipt-loss replay, with no provider synthesis.
+    assert_eq!(
+        *provider.restored_disposals.lock().unwrap(),
+        vec![expected_authorization.clone(), expected_authorization]
+    );
+
     assert_eq!(
         events.lock().unwrap().as_slice(),
         &["delete-checkpoint", "dispose-restored", "dispose-restored"],

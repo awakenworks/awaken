@@ -47,6 +47,7 @@ use crate::{
     sandbox_scope_identity,
 };
 use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory};
+pub(crate) mod api_defaults;
 mod channel;
 mod client;
 mod continuation;

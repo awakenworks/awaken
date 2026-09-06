@@ -578,8 +578,11 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
+        authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), pc::SandboxError> {
-        self.inner.dispose_restored_environment(spec, request).await
+        self.inner
+            .dispose_restored_environment(spec, request, authorization)
+            .await
     }
 }
 

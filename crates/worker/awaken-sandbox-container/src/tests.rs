@@ -11,7 +11,9 @@ use std::sync::{
 };
 use tokio::io::AsyncWriteExt;
 
-fn disposal_authorization(prepared: &pc::SandboxEffectFence) -> pc::SandboxDisposalAuthorization {
+pub(crate) fn disposal_authorization(
+    prepared: &pc::SandboxEffectFence,
+) -> pc::SandboxDisposalAuthorization {
     let preparation_fingerprint = format!("test-preparation:{}", prepared.operation_id);
     let preparation =
         pc::SandboxDisposalPreparation::new(prepared.clone(), preparation_fingerprint)
@@ -1715,6 +1717,7 @@ struct FakeState {
     restore_plan_fingerprints: HashMap<String, String>,
     restore_creates: usize,
     restore_disposals: usize,
+    restore_disposal_authorizations: Vec<pc::SandboxDisposalAuthorization>,
     observations: u32,
     retained_observation_attempts: Vec<Option<String>>,
     observation: Option<pc::SandboxObservation>,
@@ -2119,7 +2122,11 @@ impl ContainerRuntime for FakeRuntime {
         plan: &ContainerPlan,
         plan_fingerprint: &str,
         evidence: &pc::SandboxRestorationEvidence,
+        authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), RuntimeError> {
+        authorization
+            .validate()
+            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
         if restoration_plan_fingerprint(plan) != plan_fingerprint {
             return Err(RuntimeError::Backend(
                 "fake restore cleanup plan mismatch".into(),
@@ -2127,6 +2134,9 @@ impl ContainerRuntime for FakeRuntime {
         }
         let cid = format!("restore-{id}");
         let mut state = self.st.lock().unwrap();
+        state
+            .restore_disposal_authorizations
+            .push(authorization.clone());
         let Some(observed) = state.restore_targets.get(&cid) else {
             return Ok(());
         };
@@ -2669,16 +2679,32 @@ async fn exact_restore_target_is_shared_by_concurrent_and_fresh_container_provid
     drop(left);
     drop(right);
     drop(replay);
+    let authorization = disposal_authorization(
+        &pc::SandboxEffectFence::new(
+            "restore-terminal",
+            "terminal-owner",
+            "terminal-runtime",
+            2,
+            u64::MAX,
+        )
+        .unwrap(),
+    );
     fresh_provider
-        .dispose_restored_environment(&sandbox_spec, &request)
+        .dispose_restored_environment(&sandbox_spec, &request, &authorization)
         .await
         .expect("R8 exact terminal disposal");
     fresh_provider
-        .dispose_restored_environment(&sandbox_spec, &request)
+        .dispose_restored_environment(&sandbox_spec, &request, &authorization)
         .await
         .expect("R8 absent replay");
     let state = runtime.st.lock().unwrap();
     assert_eq!(state.restore_disposals, 1, "R8/E7");
+    // R8A: both the first physical effect and response-loss replay forward
+    // exactly the caller's typed preparation/successor authority.
+    assert_eq!(
+        state.restore_disposal_authorizations,
+        vec![authorization.clone(), authorization]
+    );
     assert!(state.restore_targets.is_empty(), "R8/E7");
 }
 
