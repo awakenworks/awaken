@@ -14,8 +14,10 @@ use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::record::Record as EventRecord;
 use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
-use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
-use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitReceipt, require_commit_operation_receipt,
+};
+use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::lifecycle::encode_run_lifecycle_cursor;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunResumeTicket};
@@ -32,6 +34,74 @@ pub enum RecoveryProjectionError {
 #[derive(Debug, Default)]
 pub struct RecoveryProjection {
     snapshot: RwLock<Option<RunRecoverySnapshot>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProjectionAdvance {
+    thread_version: u64,
+    next_commit_ordinal: u64,
+    store_cursor: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiptProjectionDisposition {
+    Replay,
+    Apply(ProjectionAdvance),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiptProjectionError {
+    ProjectionIdentity,
+    ThreadVersionOverflow,
+    CommitOrdinalOverflow,
+    Gap,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReceiptProjectionFacts {
+    projection_identity_matches: bool,
+    snapshot_thread_version: u64,
+    snapshot_next_ordinal: u64,
+    snapshot_store_cursor: u64,
+    operation_expected_version: u64,
+    operation_ordinal: u64,
+    receipt_thread_version: u64,
+    receipt_commit_sequence: u64,
+}
+
+fn classify_receipt_projection(
+    facts: ReceiptProjectionFacts,
+) -> Result<ReceiptProjectionDisposition, ReceiptProjectionError> {
+    if !facts.projection_identity_matches {
+        return Err(ReceiptProjectionError::ProjectionIdentity);
+    }
+    let next_ordinal = facts
+        .operation_ordinal
+        .checked_add(1)
+        .ok_or(ReceiptProjectionError::CommitOrdinalOverflow)?;
+    let next_version = facts
+        .operation_expected_version
+        .checked_add(1)
+        .ok_or(ReceiptProjectionError::ThreadVersionOverflow)?;
+    if facts.snapshot_thread_version == facts.receipt_thread_version
+        && facts.snapshot_next_ordinal == next_ordinal
+        && facts.snapshot_store_cursor >= facts.receipt_commit_sequence
+    {
+        return Ok(ReceiptProjectionDisposition::Replay);
+    }
+    if facts.snapshot_thread_version != facts.operation_expected_version
+        || facts.receipt_thread_version != next_version
+        || facts.snapshot_next_ordinal != facts.operation_ordinal
+    {
+        return Err(ReceiptProjectionError::Gap);
+    }
+    Ok(ReceiptProjectionDisposition::Apply(ProjectionAdvance {
+        thread_version: next_version,
+        next_commit_ordinal: next_ordinal,
+        store_cursor: facts
+            .snapshot_store_cursor
+            .max(facts.receipt_commit_sequence),
+    }))
 }
 
 impl RecoveryProjection {
@@ -59,28 +129,6 @@ impl RecoveryProjection {
         Ok(())
     }
 
-    /// Advance the cache only after the coordinator acknowledged this commit.
-    pub fn apply_committed(
-        &self,
-        commit: ThreadCommit,
-        record: &CommitRecord,
-    ) -> Result<(), CommitError> {
-        let mut guard = self
-            .snapshot
-            .write()
-            .map_err(|_| CommitError::Rejected("recovery projection poisoned".to_string()))?;
-        let snapshot = guard.as_mut().ok_or_else(|| {
-            CommitError::Rejected("remote commit has no installed recovery snapshot".to_string())
-        })?;
-        if snapshot.thread_id != commit.thread_id || snapshot.claimed_run_id != *commit.run_id() {
-            return Err(CommitError::Rejected(
-                "remote commit does not match the installed recovery projection".to_string(),
-            ));
-        }
-
-        apply_to_snapshot(snapshot, commit, record.sequence)
-    }
-
     /// Apply an authoritative operation receipt exactly once. A duplicate
     /// receipt after response loss advances an unadvanced cache, while a
     /// duplicate after a successful local projection is a verified no-op.
@@ -89,13 +137,8 @@ impl RecoveryProjection {
         operation: CommitOperation,
         receipt: &CommitReceipt,
     ) -> Result<(), CommitError> {
-        if receipt.operation_id != operation.operation_id
-            || receipt.payload_hash != operation.payload_hash
-        {
-            return Err(CommitError::Rejected(
-                "commit receipt does not match the submitted operation".to_string(),
-            ));
-        }
+        require_commit_operation_receipt(&operation, receipt)
+            .map_err(|error| CommitError::Rejected(error.to_string()))?;
         let mut guard = self
             .snapshot
             .write()
@@ -103,38 +146,38 @@ impl RecoveryProjection {
         let snapshot = guard.as_mut().ok_or_else(|| {
             CommitError::Rejected("remote commit has no installed recovery snapshot".to_string())
         })?;
-        if snapshot.thread_id != operation.commit.thread_id
-            || snapshot.claimed_run_id != *operation.commit.run_id()
-        {
-            return Err(CommitError::Rejected(
+        let disposition = classify_receipt_projection(ReceiptProjectionFacts {
+            projection_identity_matches: snapshot.thread_id == operation.commit.thread_id
+                && snapshot.claimed_run_id == *operation.commit.run_id(),
+            snapshot_thread_version: snapshot.thread_version,
+            snapshot_next_ordinal: snapshot.next_commit_ordinal,
+            snapshot_store_cursor: snapshot.store_cursor,
+            operation_expected_version: operation.expected_thread_version,
+            operation_ordinal: operation.operation_id.ordinal,
+            receipt_thread_version: receipt.thread_version,
+            receipt_commit_sequence: receipt.commit_sequence,
+        })
+        .map_err(|error| match error {
+            ReceiptProjectionError::ProjectionIdentity => CommitError::Rejected(
                 "remote commit does not match the installed recovery projection".to_string(),
-            ));
-        }
-        let next_ordinal = operation
-            .operation_id
-            .ordinal
-            .checked_add(1)
-            .ok_or_else(|| CommitError::Rejected("commit ordinal overflow".to_string()))?;
-        let next_version = operation
-            .expected_thread_version
-            .checked_add(1)
-            .ok_or_else(|| CommitError::Rejected("Thread version overflow".to_string()))?;
-        if snapshot.thread_version == receipt.thread_version
-            && snapshot.next_commit_ordinal == next_ordinal
-            && snapshot.store_cursor >= receipt.commit_sequence
-        {
-            return Ok(());
-        }
-        if snapshot.thread_version != operation.expected_thread_version
-            || receipt.thread_version != next_version
-            || snapshot.next_commit_ordinal != operation.operation_id.ordinal
-        {
-            return Err(CommitError::Rejected(format!(
+            ),
+            ReceiptProjectionError::ThreadVersionOverflow => {
+                CommitError::Rejected("Thread version overflow".to_string())
+            }
+            ReceiptProjectionError::CommitOrdinalOverflow => {
+                CommitError::Rejected("commit ordinal overflow".to_string())
+            }
+            ReceiptProjectionError::Gap => CommitError::Rejected(format!(
                 "commit receipt projection gap: cache version {}, expected {}, receipt {}",
                 snapshot.thread_version, operation.expected_thread_version, receipt.thread_version
-            )));
+            )),
+        })?;
+        match disposition {
+            ReceiptProjectionDisposition::Replay => Ok(()),
+            ReceiptProjectionDisposition::Apply(advance) => {
+                apply_to_snapshot(snapshot, operation.commit, receipt.commit_sequence, advance)
+            }
         }
-        apply_to_snapshot(snapshot, operation.commit, receipt.commit_sequence)
     }
 
     #[must_use]
@@ -156,18 +199,11 @@ fn apply_to_snapshot(
     snapshot: &mut RunRecoverySnapshot,
     commit: ThreadCommit,
     commit_sequence: u64,
+    advance: ProjectionAdvance,
 ) -> Result<(), CommitError> {
     // Validate every monotonic counter before mutating the projection. A failed
     // boundary check must not append messages/state and leave a partially advanced
     // cache that no longer matches committed Coordinator truth.
-    let next_thread_version = snapshot
-        .thread_version
-        .checked_add(1)
-        .ok_or_else(|| CommitError::Rejected("Thread version overflow".to_string()))?;
-    let next_commit_ordinal = snapshot
-        .next_commit_ordinal
-        .checked_add(1)
-        .ok_or_else(|| CommitError::Rejected("commit ordinal overflow".to_string()))?;
     let run_id = commit.run_id().clone();
     let run_state = commit.run_state();
     let resume_ticket = commit.resume_ticket().cloned();
@@ -210,10 +246,63 @@ fn apply_to_snapshot(
             .resume_tickets
             .push(RunResumeTicket { run_id, ticket });
     }
-    snapshot.thread_version = next_thread_version;
-    snapshot.store_cursor = snapshot.store_cursor.max(commit_sequence);
-    snapshot.next_commit_ordinal = next_commit_ordinal;
+    snapshot.thread_version = advance.thread_version;
+    snapshot.store_cursor = advance.store_cursor;
+    snapshot.next_commit_ordinal = advance.next_commit_ordinal;
     Ok(())
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn acknowledged_projection_is_exact_monotonic_or_a_noop() {
+        let identity_matches: bool = kani::any();
+        let snapshot_version: u64 = kani::any();
+        let snapshot_ordinal: u64 = kani::any();
+        let snapshot_cursor: u64 = kani::any();
+        let expected_version: u64 = kani::any();
+        let operation_ordinal: u64 = kani::any();
+        let receipt_version: u64 = kani::any();
+        let receipt_sequence: u64 = kani::any();
+        let result = classify_receipt_projection(ReceiptProjectionFacts {
+            projection_identity_matches: identity_matches,
+            snapshot_thread_version: snapshot_version,
+            snapshot_next_ordinal: snapshot_ordinal,
+            snapshot_store_cursor: snapshot_cursor,
+            operation_expected_version: expected_version,
+            operation_ordinal,
+            receipt_thread_version: receipt_version,
+            receipt_commit_sequence: receipt_sequence,
+        });
+        let next_version = expected_version.checked_add(1);
+        let next_ordinal = operation_ordinal.checked_add(1);
+        let is_replay = next_ordinal.is_some_and(|next| snapshot_ordinal == next)
+            && snapshot_version == receipt_version
+            && snapshot_cursor >= receipt_sequence;
+        let is_fresh = snapshot_version == expected_version
+            && snapshot_ordinal == operation_ordinal
+            && next_version == Some(receipt_version);
+        assert_eq!(
+            result.is_ok(),
+            identity_matches
+                && next_version.is_some()
+                && next_ordinal.is_some()
+                && (is_replay || is_fresh)
+        );
+        match result {
+            Ok(ReceiptProjectionDisposition::Replay) => assert!(is_replay),
+            Ok(ReceiptProjectionDisposition::Apply(advance)) => {
+                assert!(is_fresh);
+                assert_eq!(advance.thread_version, snapshot_version + 1);
+                assert_eq!(advance.next_commit_ordinal, snapshot_ordinal + 1);
+                assert!(advance.store_cursor >= snapshot_cursor);
+                assert!(advance.store_cursor >= receipt_sequence);
+            }
+            Err(_) => {}
+        }
+    }
 }
 
 impl CommittedThreadView for RecoveryProjection {
