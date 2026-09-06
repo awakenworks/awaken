@@ -18,6 +18,78 @@ pub(super) enum SessionCreationCompletion {
     AcceptDurableRoot,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionCreateReceiptKind {
+    Applied,
+    Replayed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionCreateEffectPlan {
+    ContinueAppliedRealization,
+    AcceptAppliedRoot,
+    ReturnDurableReplay,
+}
+
+/// Close the only post-create effect gate over the repository's typed receipt.
+/// A replay never enters realization, activation, or Work projection.
+#[must_use]
+const fn session_create_effect_plan(
+    receipt: SessionCreateReceiptKind,
+    completion: SessionCreationCompletion,
+) -> SessionCreateEffectPlan {
+    match (receipt, completion) {
+        (SessionCreateReceiptKind::Applied, SessionCreationCompletion::AwaitRealization) => {
+            SessionCreateEffectPlan::ContinueAppliedRealization
+        }
+        (SessionCreateReceiptKind::Applied, SessionCreationCompletion::AcceptDurableRoot) => {
+            SessionCreateEffectPlan::AcceptAppliedRoot
+        }
+        (SessionCreateReceiptKind::Replayed, _) => {
+            SessionCreateEffectPlan::ReturnDurableReplay
+        }
+    }
+}
+
+#[cfg(kani)]
+mod create_effect_gate_verification {
+    use super::*;
+
+    #[kani::proof]
+    fn only_an_applied_awaited_create_may_enter_post_create_effects() {
+        // Causes: C1 repository receipt is Applied/Replayed; C2 caller awaits
+        // realization or accepts the durable root. Effects: E1 continue physical
+        // effects, E2 accept and wake recovery, E3 return replayed truth. The
+        // closed 2x2 table proves E1 iff Applied+Await and no Replay can reach E1.
+        //
+        // | Rule | C1 | C2 | Effect |
+        // |---|---|---|---|
+        // | R1 | Applied | Await | E1 |
+        // | R2 | Applied | Accept | E2 |
+        // | R3 | Replayed | Await | E3 |
+        // | R4 | Replayed | Accept | E3 |
+        let receipt = if kani::any::<bool>() {
+            SessionCreateReceiptKind::Applied
+        } else {
+            SessionCreateReceiptKind::Replayed
+        };
+        let completion = if kani::any::<bool>() {
+            SessionCreationCompletion::AwaitRealization
+        } else {
+            SessionCreationCompletion::AcceptDurableRoot
+        };
+        let plan = session_create_effect_plan(receipt, completion);
+        assert_eq!(
+            plan == SessionCreateEffectPlan::ContinueAppliedRealization,
+            receipt == SessionCreateReceiptKind::Applied
+                && completion == SessionCreationCompletion::AwaitRealization
+        );
+        if receipt == SessionCreateReceiptKind::Replayed {
+            assert_eq!(plan, SessionCreateEffectPlan::ReturnDurableReplay);
+        }
+    }
+}
+
 /// Classify the repository-owned durable result at both create-replay entry
 /// points. Awaiting callers retain the historical terminal conflict, while an
 /// accepting caller receives the same failed asynchronous-operation root rather
@@ -332,24 +404,33 @@ impl SessionApplication {
                 return Err(first);
             }
         };
-        persisted = match create_result {
-            SessionCreateResult::Applied(session) => session,
-            // The repository receipt and aggregate are the sole replay truth.
-            // Returning here also prevents duplicate external installation,
-            // activation, WorkQueue dispatch, or cleanup from a newly lowered
-            // candidate that was never committed.
+        let receipt = match create_result {
+            SessionCreateResult::Applied(session) => {
+                persisted = session;
+                SessionCreateReceiptKind::Applied
+            }
             SessionCreateResult::Replayed(session) => {
-                return validated_create_replay(session, completion);
+                persisted = session;
+                SessionCreateReceiptKind::Replayed
             }
         };
-
-        if completion == SessionCreationCompletion::AcceptDurableRoot {
-            // The root contains the frozen baseline, initial Event plan, and
-            // idempotency receipt. Waking the sole recovery driver is only an
-            // optimization: startup scanning recovers the same Preparing root
-            // after process loss, without a Job row or a second lifecycle.
-            self.wake_lifecycle_supervisor();
-            return Ok(persisted);
+        match session_create_effect_plan(receipt, completion) {
+            SessionCreateEffectPlan::ReturnDurableReplay => {
+                // The repository receipt and aggregate are the sole replay
+                // truth. Returning here prevents duplicate installation,
+                // activation, Work dispatch, or cleanup from an uncommitted
+                // newly lowered candidate.
+                return validated_create_replay(persisted, completion);
+            }
+            SessionCreateEffectPlan::AcceptAppliedRoot => {
+                // The root contains the frozen baseline, initial Event plan,
+                // and idempotency receipt. Waking the sole recovery driver is
+                // only an optimization: startup scanning recovers the same
+                // root after process loss without a Job row or second lifecycle.
+                self.wake_lifecycle_supervisor();
+                return Ok(persisted);
+            }
+            SessionCreateEffectPlan::ContinueAppliedRealization => {}
         }
 
         let realized = if self.requires_external_realization(&persisted) {

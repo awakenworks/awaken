@@ -192,6 +192,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
   run_kani awaken-session-application \
     --harness environment_owner_topology_is_exact_and_frozen \
+    --harness only_an_applied_awaited_create_may_enter_post_create_effects \
     --harness session_recovery_backoff_is_bounded_monotonic_and_saturating \
     --harness dependency_wake_never_postpones_the_single_existing_deadline
   run_kani awaken-tenancy \
