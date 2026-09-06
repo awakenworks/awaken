@@ -107,6 +107,7 @@ struct WorkerFileConfig {
     sandbox_trusted_host_enabled: Option<bool>,
     sandbox_allow_local_fallback: Option<bool>,
     k8s_namespace: Option<String>,
+    k8s_continuation_volume: Option<awaken_sandbox_container::K8sContinuationVolume>,
     acp_clis: Option<Vec<String>>,
     container_image: Option<String>,
 }
@@ -175,6 +176,10 @@ impl WorkerDaemonConfig {
                 return Err("k8s_namespace must not be empty".into());
             }
             runtime.sandbox.k8s_namespace = namespace;
+        }
+        if let Some(policy) = file.k8s_continuation_volume {
+            policy.validate().map_err(|error| error.to_string())?;
+            runtime.sandbox.k8s_continuation_volume = Some(policy);
         }
         let acp_clis = file.acp_clis.unwrap_or_default();
         runtime.acp = (!acp_clis.is_empty())
@@ -394,6 +399,43 @@ mod tests {
             "S1"
         );
         assert!(!k8s.runtime.sandbox_support().0.network_isolation, "S1");
+
+        // KP1 omitted volume policy remains None. KP2 authored retained policy
+        // crosses the standalone Worker file boundary into the same Runtime
+        // setting; KP3 blank/missing size or unknown nested key rejects before
+        // any build/network call. Class omission delegates admission to Kubernetes.
+        assert!(k8s.runtime.sandbox.k8s_continuation_volume.is_none(), "KP1");
+        for (policy, accepts, class) in [
+            ("{ size = '1Gi' }", true, None),
+            (
+                "{ size = '1Gi', storage_class_name = 'retained' }",
+                true,
+                Some("retained"),
+            ),
+            ("{ size = '' }", false, None),
+            ("{ storage_class_name = 'retained' }", false, None),
+            ("{ size = '1Gi', unknown = true }", false, None),
+        ] {
+            write(&format!(
+                "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='k8s'\nk8s_continuation_volume={policy}\n"
+            ));
+            let result = WorkerDaemonConfig::load(&path, None);
+            assert_eq!(result.is_ok(), accepts, "KP {policy}: {result:?}");
+            if let Ok(config) = result {
+                assert_eq!(
+                    config.runtime.sandbox.k8s_continuation_volume,
+                    Some(awaken_sandbox_container::K8sContinuationVolume {
+                        size: "1Gi".into(),
+                        storage_class_name: class.map(str::to_owned),
+                    }),
+                    "KP2 exact policy"
+                );
+                assert!(
+                    !config.runtime.sandbox_support().0.network_isolation,
+                    "KP2 policy is not runtime attestation"
+                );
+            }
+        }
 
         write(
             "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='k8s'\nk8s_namespace='  '\n",

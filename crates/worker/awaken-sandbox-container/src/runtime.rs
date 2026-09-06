@@ -311,10 +311,24 @@ pub struct MemoryMount {
 }
 
 /// Deployment-owned policy for a Kubernetes Session's retained active volume.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct K8sContinuationVolume {
     pub storage_class_name: Option<String>,
     pub size: String,
+}
+
+impl K8sContinuationVolume {
+    /// Shared admission for configured and directly constructed PVC policy.
+    /// Kubernetes remains the authority for quantities and StorageClass existence.
+    pub fn validate(&self) -> Result<(), RuntimeError> {
+        if self.size.trim().is_empty() {
+            return Err(RuntimeError::Backend(
+                "k8s continuation volume size cannot be empty".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// A container/pod runtime failure.

@@ -30,6 +30,8 @@ path = "src/bin/awaken-coordinator.rs"
 # and thin Control/Coordinator executables. Every target calls the same role
 # service lifecycle; the authority-free Worker remains its own package and binary.
 [dependencies]
+# Deployment-file PVC policy is owned by the existing container substrate.
+awaken-sandbox-container.workspace = true
 awaken-protocol-mcp.workspace = true
 awaken-service-lifecycle.workspace = true
 awaken-api-contract = { workspace = true }
@@ -181,7 +183,6 @@ awaken-coordinator = { workspace = true, features = ["test-support"] }
 awaken-scenario-host = { workspace = true }
 awaken-runtime = { workspace = true }
 awaken-store-inmem.workspace = true
-awaken-sandbox-container.workspace = true
 # mcp_sessions drives the VaultRefresher refresh grant + the ext-mcp tool-id shape.
 awaken-ext-mcp = { workspace = true }
 # management_authz drives a legacy iam.sqlite import: the contract ids + the sqlite driver.

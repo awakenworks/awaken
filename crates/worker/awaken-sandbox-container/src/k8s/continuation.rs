@@ -899,10 +899,8 @@ pub(super) fn build_claim(
     id: &str,
     config: &crate::K8sContinuationVolume,
 ) -> Result<PersistentVolumeClaim, RuntimeError> {
+    config.validate()?;
     let size = config.size.trim();
-    if size.is_empty() {
-        return Err(backend("k8s continuation volume size cannot be empty"));
-    }
     let storage_class_name = config
         .storage_class_name
         .as_deref()
