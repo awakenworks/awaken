@@ -537,3 +537,21 @@ publication id, supplied/visible counts, and filtered count, never content.
 | C4 | explicit ordinary-id System event | retained durably and visible |
 | C5 | Resource generation R1 is replaced by R2 | a fresh attempt sees only R2; an already captured R1 attempt does not mix revisions |
 | C6 | invalid publication or Resource preparation fault | no partial new baseline/workspace/manifest/prompt/lease projection |
+
+## 2026-09-06 amendment: repository receipt is the post-create effect gate
+
+The existing `ManagedSessionRepository::create` result remains the only create
+authority. The Session application now routes that typed `Applied | Replayed`
+receipt and the existing synchronous/asynchronous completion choice through one
+closed `session_create_effect_plan` kernel. Only `Applied + AwaitRealization`
+may continue into realization, activation, and disposable Work projection.
+`Applied + AcceptDurableRoot` returns the complete root and wakes the existing
+recovery supervisor. Either replay returns repository truth and performs no new
+post-create effect; an awaited `ActivationFailed` replay retains its typed
+terminal conflict.
+
+This change extracts the existing policy from control flow for direct
+production use and bounded proof. It adds no create record, job store, phase,
+repository, scheduler, or compatibility path. Database atomicity, physical
+realization, and the wake delivery remain covered by their existing adapter and
+deployment boundaries rather than being claimed by the small receipt kernel.
