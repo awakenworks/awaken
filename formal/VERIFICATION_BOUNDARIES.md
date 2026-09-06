@@ -24,6 +24,15 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- WorkQueue ordinary/token-bearing claims and Session acquisition all consume
+  the existing `lease_epoch` transition, now backed by shared `StoredU64` rather
+  than parallel SQL increments. Kani checks its full signed input domain and
+  observe/advance decisions; SQL adapters validate before minting a token.
+  A live SQLite regression caught MAX-epoch claims succeeding through integer
+  promotion to REAL. SQLite/PostgreSQL tests now check rejection with unchanged
+  queued state/no token hash and the exact MAX-1 -> MAX boundary. Schema checks
+  already reject negative stored epochs. SQL locking and token entropy remain
+  outside the numeric proof; expiry rules are unchanged.
 - Config CAS uses one statement owner per SQL adapter for both ordinary and
   audited writes: expected zero inserts only, positive revisions update only,
   and the returned revision is the stored `RETURNING` value. Existing `StoredU64`
@@ -38,16 +47,23 @@ type checking are valuable executable evidence, but are not formal proofs.
   no separate encoded-Workspace parser remains. Storage remains presentation
   only, and the server remains the authorization authority. Component tests and
   type checking are product evidence, not Rust/WASM or browser-scheduler proof.
-- Agent input revisions use the existing config-resolver validator and one
+- Agent input revisions use the existing config-resolver owner and one
   private scalar decision kernel. Kani checks all signed revision values and
   aggregate-equality classes: invalid attempts reject, positive exact replays
   do not write, successors cannot wrap, and corrupt stored revisions are not
-  silently repaired. The PostgreSQL adapter reuses the existing transaction
+  silently repaired. The public boolean validator is replaced by a closed
+  Replay/Write admission with an opaque borrowed plan binding target, expected
+  revision and exact proposal. SQL writes consume its insert-only/update-only
+  predicate. One key codec rejects delimiter/NUL aliasing without changing valid
+  historical keys; get/list reject key/content disagreement. The PostgreSQL
+  adapter reuses the existing transaction
   advisory-lock implementation before reading, including absent-row creation;
   SQLite keeps its IMMEDIATE transaction. AgentInputRevision.tla now exposes
-  two writers' read/decide/commit/abort interleavings, and removing the lock must
-  violate the exact-successor invariant. Controlled real-PostgreSQL overlap and
-  SQLite exhaustion regressions cover adapters, not universal Rust/SQL refinement.
+  two writers' read/decide/commit/abort and lost-response/exact-retry interleavings.
+  Removing serialization from the abstract protocol must violate exact successor;
+  production additionally fences its SQL statements. Controlled PostgreSQL
+  overlap, SQLite/PostgreSQL write-failure triggers, zero-write replay, key
+  rejection and reopen regressions cover adapters, not universal Rust/SQL refinement.
 - Session authorization collapse directly proves all three IAM decision
   variants: only explicit Allow admits; Deny and RequireApproval both deny.
   Existing method property tests remain sampled tests, not a proof of arbitrary

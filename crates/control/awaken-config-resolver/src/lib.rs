@@ -47,10 +47,12 @@ pub use reference_stores::{
     InMemoryAgentInputBindingRepository, InMemoryProfileStore, InMemoryWebhookStore,
 };
 pub use stores::{
-    AgentInputBindingRepository, AgentInputRepositoryError, ConfigRepositoryError,
-    InferenceProfileStore, WebhookAuthoringPatch, WebhookAuthoringState, WebhookDeliveryOutcome,
-    WebhookDeliveryState, WebhookMutationIntent, WebhookStore, get_workspace_profile,
-    put_workspace_profile, validate_agent_input_revision, workspace_profile_key,
+    AgentInputAdmission, AgentInputBindingRepository, AgentInputRepositoryError,
+    AgentInputWritePlan, ConfigRepositoryError, InferenceProfileStore, WebhookAuthoringPatch,
+    WebhookAuthoringState, WebhookDeliveryOutcome, WebhookDeliveryState, WebhookMutationIntent,
+    WebhookStore, agent_input_storage_key, agent_input_workspace_prefix, get_workspace_profile,
+    plan_agent_input_write, put_workspace_profile, validate_stored_agent_inputs,
+    workspace_profile_key,
 };
 pub use telemetry::{RedactionMode, TelemetryCeiling};
 

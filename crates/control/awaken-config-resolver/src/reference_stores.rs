@@ -9,9 +9,10 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::stores::{
-    AgentInputBindingRepository, AgentInputRepositoryError, ConfigRepositoryError,
-    InferenceProfileStore, WebhookAuthoringPatch, WebhookAuthoringState, WebhookDeliveryOutcome,
-    WebhookDeliveryState, WebhookMutationIntent, WebhookStore, validate_agent_input_revision,
+    AgentInputAdmission, AgentInputBindingRepository, AgentInputRepositoryError,
+    ConfigRepositoryError, InferenceProfileStore, WebhookAuthoringPatch, WebhookAuthoringState,
+    WebhookDeliveryOutcome, WebhookDeliveryState, WebhookMutationIntent, WebhookStore,
+    agent_input_storage_key, agent_input_workspace_prefix, plan_agent_input_write,
 };
 use crate::{AgentInputConfig, InferenceProfile, WebhookEndpointDef};
 
@@ -259,14 +260,17 @@ impl AgentInputBindingRepository for InMemoryAgentInputBindingRepository {
         workspace_id: &str,
         config: AgentInputConfig,
     ) -> Result<(), AgentInputRepositoryError> {
+        agent_input_storage_key(workspace_id, &config.agent_id)?;
         let key = (workspace_id.to_string(), config.agent_id.clone());
         let mut rows = self.0.lock().map_err(|_| {
             AgentInputRepositoryError::Storage("agent input repository mutex poisoned".into())
         })?;
-        if !validate_agent_input_revision(rows.get(&key), &config)? {
+        let AgentInputAdmission::Write(plan) =
+            plan_agent_input_write(workspace_id, rows.get(&key), &config)?
+        else {
             return Ok(());
-        }
-        rows.insert(key, config);
+        };
+        rows.insert(key, plan.config().clone());
         Ok(())
     }
 
@@ -275,6 +279,7 @@ impl AgentInputBindingRepository for InMemoryAgentInputBindingRepository {
         workspace_id: &str,
         agent_id: &str,
     ) -> Result<Option<AgentInputConfig>, AgentInputRepositoryError> {
+        agent_input_storage_key(workspace_id, agent_id)?;
         Ok(self
             .0
             .lock()
@@ -289,6 +294,7 @@ impl AgentInputBindingRepository for InMemoryAgentInputBindingRepository {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<AgentInputConfig>, AgentInputRepositoryError> {
+        agent_input_workspace_prefix(workspace_id)?;
         let mut configs: Vec<_> = self
             .0
             .lock()

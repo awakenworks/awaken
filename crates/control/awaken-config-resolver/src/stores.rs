@@ -199,6 +199,8 @@ pub trait WebhookStore: Send + Sync {
 /// and policy remain outside this port.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AgentInputRepositoryError {
+    #[error("Agent input identity contains a reserved storage delimiter or NUL")]
+    InvalidIdentity,
     #[error("Agent input revision must be positive, got {0}")]
     InvalidRevision(i64),
     #[error("Agent input revision conflict: current {current}, attempted {attempted}")]
@@ -207,17 +209,112 @@ pub enum AgentInputRepositoryError {
     Storage(String),
 }
 
-/// Validate the aggregate revision transition. `Ok(false)` is an idempotent
-/// replay and therefore requires no write.
-pub fn validate_agent_input_revision(
+/// Canonical persisted Workspace prefix. Existing valid keys retain their exact
+/// bytes; delimiter/NUL-bearing coordinates fail closed instead of aliasing a
+/// different Workspace/Agent pair or relying on backend-specific TEXT behavior.
+pub fn agent_input_workspace_prefix(workspace: &str) -> Result<String, AgentInputRepositoryError> {
+    validate_agent_input_coordinate(workspace)?;
+    Ok(format!("{workspace}\u{1f}"))
+}
+
+pub fn agent_input_storage_key(
+    workspace: &str,
+    agent: &str,
+) -> Result<String, AgentInputRepositoryError> {
+    validate_agent_input_coordinate(agent)?;
+    Ok(format!(
+        "{}{agent}",
+        agent_input_workspace_prefix(workspace)?
+    ))
+}
+
+/// Reject corrupt/ambiguous historical rows instead of projecting them under
+/// the requested Workspace. All SQL get/list paths use this same identity check.
+pub fn validate_stored_agent_inputs(
+    workspace: &str,
+    key: &str,
+    config: AgentInputConfig,
+) -> Result<AgentInputConfig, AgentInputRepositoryError> {
+    if agent_input_storage_key(workspace, &config.agent_id)? != key {
+        return Err(AgentInputRepositoryError::InvalidIdentity);
+    }
+    Ok(config)
+}
+
+fn validate_agent_input_coordinate(value: &str) -> Result<(), AgentInputRepositoryError> {
+    if value.bytes().any(|byte| byte == 0 || byte == 0x1f) {
+        return Err(AgentInputRepositoryError::InvalidIdentity);
+    }
+    Ok(())
+}
+
+/// Closed admission outcome. Only the owner can construct a write plan; a
+/// replay produces no plan and adapters must not execute a write for it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AgentInputAdmission<'a> {
+    Replay,
+    Write(AgentInputWritePlan<'a>),
+}
+
+/// A frozen target and expected revision, borrowed from the admitted proposal.
+/// This is not a database lock: adapters must hold their transaction/lock from
+/// observation through commit and apply the plan's revision predicate.
+///
+/// ```compile_fail
+/// use awaken_config_resolver::AgentInputWritePlan;
+/// let forged = AgentInputWritePlan { key: String::new(), expected_revision: None, config: todo!() };
+/// ```
+///
+/// ```compile_fail
+/// use awaken_config_resolver::{AgentInputAdmission, AgentInputConfig, plan_agent_input_write};
+/// let mut next = AgentInputConfig { agent_id: "agent".into(), environment: None, inputs: vec![], revision: 1 };
+/// let AgentInputAdmission::Write(plan) = plan_agent_input_write("workspace", None, &next).unwrap() else { return; };
+/// next.revision = 9; // A checked proposal cannot change while its plan is live.
+/// assert_eq!(plan.config().revision, 1);
+/// ```
+#[derive(Debug, PartialEq, Eq)]
+pub struct AgentInputWritePlan<'a> {
+    key: String,
+    expected_revision: Option<i64>,
+    config: &'a AgentInputConfig,
+}
+
+impl<'a> AgentInputWritePlan<'a> {
+    pub fn storage_key(&self) -> &str {
+        &self.key
+    }
+    pub fn expected_revision(&self) -> Option<i64> {
+        self.expected_revision
+    }
+    pub fn config(&self) -> &'a AgentInputConfig {
+        self.config
+    }
+}
+
+/// Admit exactly one immutable proposal. No adapter-supplied equality flag and
+/// no public plan constructor can substitute different content after admission.
+pub fn plan_agent_input_write<'a>(
+    workspace: &str,
     current: Option<&AgentInputConfig>,
-    next: &AgentInputConfig,
-) -> Result<bool, AgentInputRepositoryError> {
-    agent_input_revision_decision(
+    next: &'a AgentInputConfig,
+) -> Result<AgentInputAdmission<'a>, AgentInputRepositoryError> {
+    let key = agent_input_storage_key(workspace, &next.agent_id)?;
+    if current.is_some_and(|current| current.agent_id != next.agent_id) {
+        return Err(AgentInputRepositoryError::InvalidIdentity);
+    }
+    if agent_input_revision_decision(
         current.map(|value| value.revision),
         next.revision,
         current.is_some_and(|value| value == next),
-    )
+    )? {
+        Ok(AgentInputAdmission::Write(AgentInputWritePlan {
+            key,
+            expected_revision: current.map(|value| value.revision),
+            config: next,
+        }))
+    } else {
+        Ok(AgentInputAdmission::Replay)
+    }
 }
 
 /// Scalar decision kernel of the existing aggregate validator. Content equality
@@ -279,7 +376,9 @@ fn agent_input_revision_decision_is_exact_non_wrapping_and_replay_first() {
             assert!(attempted > 0 && !replay && !successor);
             assert!(value == current.unwrap_or(0) && next == attempted);
         }
-        Err(AgentInputRepositoryError::Storage(_)) => assert!(false),
+        Err(AgentInputRepositoryError::Storage(_) | AgentInputRepositoryError::InvalidIdentity) => {
+            assert!(false)
+        }
     }
 }
 
@@ -382,8 +481,8 @@ mod tests {
         };
         let before = current.clone();
         assert_eq!(
-            validate_agent_input_revision(Some(&current), &current),
-            Ok(false)
+            plan_agent_input_write("workspace", Some(&current), &current),
+            Ok(AgentInputAdmission::Replay)
         );
         for revision in [1, i64::MAX - 1, i64::MAX, 0, i64::MIN] {
             let mut next = current.clone();
@@ -401,7 +500,7 @@ mod tests {
                 }
             };
             assert_eq!(
-                validate_agent_input_revision(Some(&current), &next),
+                plan_agent_input_write("workspace", Some(&current), &next),
                 Err(expected)
             );
             assert_eq!(current, before);
@@ -411,9 +510,10 @@ mod tests {
     #[test]
     fn agent_input_revision_decision_table_preserves_exact_content() {
         // Causes: absent/corrupt/valid/exhausted current x attempted revision x
-        // exact/changed aggregate. Invalid attempts take priority; corrupt
-        // current is not silently repaired. Same revision is replay only when
-        // EVERY field agrees. A valid successor may change any authored field.
+        // exact/changed aggregate. Identity mismatch rejects before revision
+        // admission; corrupt current is not silently repaired. Same revision is
+        // replay only when EVERY field agrees. Successors may change authored
+        // content, never retarget an already observed aggregate's Agent identity.
         let config = |revision| AgentInputConfig {
             agent_id: "agent".into(),
             environment: None,
@@ -449,7 +549,9 @@ mod tests {
                             instructions: None,
                         }),
                     }
-                    let expected = if revision <= 0 {
+                    let expected = if changed_field == 1 && current.is_some() {
+                        Err(AgentInputRepositoryError::InvalidIdentity)
+                    } else if revision <= 0 {
                         Err(AgentInputRepositoryError::InvalidRevision(revision))
                     } else if current_revision == Some(revision) && changed_field == 0 {
                         Ok(false)
@@ -464,7 +566,22 @@ mod tests {
                         })
                     };
                     assert_eq!(
-                        validate_agent_input_revision(current.as_ref(), &next),
+                        plan_agent_input_write("workspace", current.as_ref(), &next).map(
+                            |decision| {
+                                match decision {
+                                    AgentInputAdmission::Replay => false,
+                                    AgentInputAdmission::Write(plan) => {
+                                        assert_eq!(plan.expected_revision(), current_revision);
+                                        assert_eq!(plan.config(), &next);
+                                        assert_eq!(
+                                            plan.storage_key(),
+                                            format!("workspace\u{1f}{}", next.agent_id)
+                                        );
+                                        true
+                                    }
+                                }
+                            }
+                        ),
                         expected,
                         "current={current_revision:?}, next={revision}, changed field={changed_field}"
                     );

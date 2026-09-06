@@ -1027,7 +1027,13 @@ preserves every non-File input and exact Skill pin before it commits.
 - `AgentInputConfig { agent_id, inputs, revision }` replaces
   `AgentResourceConfig { resources, version }`;
 - `AgentInputBindingRepository` requires Workspace on every operation and applies
-  sequential, idempotent revision transitions;
+  sequential, idempotent revision transitions. The config-resolver owner creates
+  a closed replay/write admission with an opaque, immutable borrowed write plan;
+  adapters hold the existing aggregate lock through the plan's fenced commit.
+  Exact replay executes no write, including after a lost response; failed
+  transactions release the lock and preserve the previous durable revision.
+  Its canonical storage-key codec keeps valid historical keys and rejects NUL
+  or reserved-delimiter coordinates; reads reject key/content disagreement;
 - Agent defaults and Session attachments share typed `InputBinding` /
   `InputResourceId`; Outputs and Skills are no longer input variants;
 - `SessionInputResolver` composes and resolves once, preserves access, and emits

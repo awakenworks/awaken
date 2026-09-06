@@ -10,7 +10,11 @@ pub use awaken_config_resolver::ModelTarget
 pub use awaken_config_resolver::RepositoryId
 pub use awaken_config_resolver::ResourceAccess
 pub mod awaken_config_resolver::stores
+pub enum awaken_config_resolver::stores::AgentInputAdmission<'a>
+pub awaken_config_resolver::stores::AgentInputAdmission::Replay
+pub awaken_config_resolver::stores::AgentInputAdmission::Write(awaken_config_resolver::stores::AgentInputWritePlan<'a>)
 pub enum awaken_config_resolver::stores::AgentInputRepositoryError
+pub awaken_config_resolver::stores::AgentInputRepositoryError::InvalidIdentity
 pub awaken_config_resolver::stores::AgentInputRepositoryError::InvalidRevision(i64)
 pub awaken_config_resolver::stores::AgentInputRepositoryError::RevisionConflict
 pub awaken_config_resolver::stores::AgentInputRepositoryError::RevisionConflict::attempted: i64
@@ -33,6 +37,11 @@ pub awaken_config_resolver::stores::WebhookDeliveryState::Active::consecutive_fa
 pub awaken_config_resolver::stores::WebhookDeliveryState::Disabled
 pub awaken_config_resolver::stores::WebhookDeliveryState::Disabled::consecutive_failures: u32
 pub awaken_config_resolver::stores::WebhookDeliveryState::Missing
+pub struct awaken_config_resolver::stores::AgentInputWritePlan<'a>
+impl<'a> awaken_config_resolver::stores::AgentInputWritePlan<'a>
+pub fn awaken_config_resolver::stores::AgentInputWritePlan<'a>::config(&self) -> &'a awaken_agent_config::agent_inputs::AgentInputConfig
+pub fn awaken_config_resolver::stores::AgentInputWritePlan<'a>::expected_revision(&self) -> core::option::Option<i64>
+pub fn awaken_config_resolver::stores::AgentInputWritePlan<'a>::storage_key(&self) -> &str
 pub struct awaken_config_resolver::stores::WebhookAuthoringPatch
 pub awaken_config_resolver::stores::WebhookAuthoringPatch::disabled: core::option::Option<bool>
 pub awaken_config_resolver::stores::WebhookAuthoringPatch::event_types: alloc::vec::Vec<alloc::string::String>
@@ -64,9 +73,12 @@ pub fn awaken_config_resolver::stores::WebhookStore::material_refs(&self) -> cor
 pub fn awaken_config_resolver::stores::WebhookStore::pending_mutations(&self) -> core::result::Result<alloc::vec::Vec<awaken_config_resolver::stores::WebhookMutationIntent>, awaken_config_resolver::stores::ConfigRepositoryError>
 pub fn awaken_config_resolver::stores::WebhookStore::record_delivery(&self, &str, awaken_config_resolver::stores::WebhookDeliveryOutcome, u32) -> core::result::Result<awaken_config_resolver::stores::WebhookDeliveryState, awaken_config_resolver::stores::ConfigRepositoryError>
 pub fn awaken_config_resolver::stores::WebhookStore::update_authored(&self, awaken_config_resolver::stores::WebhookAuthoringPatch) -> core::result::Result<awaken_config_resolver::stores::WebhookAuthoringState, awaken_config_resolver::stores::ConfigRepositoryError>
+pub fn awaken_config_resolver::stores::agent_input_storage_key(&str, &str) -> core::result::Result<alloc::string::String, awaken_config_resolver::stores::AgentInputRepositoryError>
+pub fn awaken_config_resolver::stores::agent_input_workspace_prefix(&str) -> core::result::Result<alloc::string::String, awaken_config_resolver::stores::AgentInputRepositoryError>
 pub fn awaken_config_resolver::stores::get_workspace_profile(&dyn awaken_config_resolver::stores::InferenceProfileStore, &str, &str) -> core::result::Result<core::option::Option<awaken_config_resolver::InferenceProfile>, awaken_config_resolver::stores::ConfigRepositoryError>
+pub fn awaken_config_resolver::stores::plan_agent_input_write<'a>(&str, core::option::Option<&awaken_agent_config::agent_inputs::AgentInputConfig>, &'a awaken_agent_config::agent_inputs::AgentInputConfig) -> core::result::Result<awaken_config_resolver::stores::AgentInputAdmission<'a>, awaken_config_resolver::stores::AgentInputRepositoryError>
 pub fn awaken_config_resolver::stores::put_workspace_profile(&dyn awaken_config_resolver::stores::InferenceProfileStore, &str, &str, awaken_config_resolver::InferenceProfile) -> core::result::Result<(), awaken_config_resolver::stores::ConfigRepositoryError>
-pub fn awaken_config_resolver::stores::validate_agent_input_revision(core::option::Option<&awaken_agent_config::agent_inputs::AgentInputConfig>, &awaken_agent_config::agent_inputs::AgentInputConfig) -> core::result::Result<bool, awaken_config_resolver::stores::AgentInputRepositoryError>
+pub fn awaken_config_resolver::stores::validate_stored_agent_inputs(&str, &str, awaken_agent_config::agent_inputs::AgentInputConfig) -> core::result::Result<awaken_agent_config::agent_inputs::AgentInputConfig, awaken_config_resolver::stores::AgentInputRepositoryError>
 pub fn awaken_config_resolver::stores::workspace_profile_key(&str, &str) -> alloc::string::String
 pub mod awaken_config_resolver::telemetry
 pub enum awaken_config_resolver::telemetry::RedactionMode
@@ -81,7 +93,11 @@ pub awaken_config_resolver::telemetry::TelemetryCeiling::redaction: awaken_confi
 pub awaken_config_resolver::telemetry::TelemetryCeiling::retention_days: core::option::Option<u32>
 impl awaken_config_resolver::telemetry::TelemetryCeiling
 pub fn awaken_config_resolver::telemetry::TelemetryCeiling::tighten(self, Self) -> Self
+pub enum awaken_config_resolver::AgentInputAdmission<'a>
+pub awaken_config_resolver::AgentInputAdmission::Replay
+pub awaken_config_resolver::AgentInputAdmission::Write(awaken_config_resolver::stores::AgentInputWritePlan<'a>)
 pub enum awaken_config_resolver::AgentInputRepositoryError
+pub awaken_config_resolver::AgentInputRepositoryError::InvalidIdentity
 pub awaken_config_resolver::AgentInputRepositoryError::InvalidRevision(i64)
 pub awaken_config_resolver::AgentInputRepositoryError::RevisionConflict
 pub awaken_config_resolver::AgentInputRepositoryError::RevisionConflict::attempted: i64
@@ -156,6 +172,11 @@ pub awaken_config_resolver::WebhookDeliveryState::Active::consecutive_failures: 
 pub awaken_config_resolver::WebhookDeliveryState::Disabled
 pub awaken_config_resolver::WebhookDeliveryState::Disabled::consecutive_failures: u32
 pub awaken_config_resolver::WebhookDeliveryState::Missing
+pub struct awaken_config_resolver::AgentInputWritePlan<'a>
+impl<'a> awaken_config_resolver::stores::AgentInputWritePlan<'a>
+pub fn awaken_config_resolver::stores::AgentInputWritePlan<'a>::config(&self) -> &'a awaken_agent_config::agent_inputs::AgentInputConfig
+pub fn awaken_config_resolver::stores::AgentInputWritePlan<'a>::expected_revision(&self) -> core::option::Option<i64>
+pub fn awaken_config_resolver::stores::AgentInputWritePlan<'a>::storage_key(&self) -> &str
 pub struct awaken_config_resolver::CredentialSelectionContext<'a>
 pub awaken_config_resolver::CredentialSelectionContext::availability: core::option::Option<(&'a awaken_credential_vault::availability::AvailabilityLedger, u64)>
 pub awaken_config_resolver::CredentialSelectionContext::backend_ref: core::option::Option<&'a str>
@@ -252,6 +273,8 @@ pub fn awaken_config_resolver::WebhookStore::material_refs(&self) -> core::resul
 pub fn awaken_config_resolver::WebhookStore::pending_mutations(&self) -> core::result::Result<alloc::vec::Vec<awaken_config_resolver::stores::WebhookMutationIntent>, awaken_config_resolver::stores::ConfigRepositoryError>
 pub fn awaken_config_resolver::WebhookStore::record_delivery(&self, &str, awaken_config_resolver::stores::WebhookDeliveryOutcome, u32) -> core::result::Result<awaken_config_resolver::stores::WebhookDeliveryState, awaken_config_resolver::stores::ConfigRepositoryError>
 pub fn awaken_config_resolver::WebhookStore::update_authored(&self, awaken_config_resolver::stores::WebhookAuthoringPatch) -> core::result::Result<awaken_config_resolver::stores::WebhookAuthoringState, awaken_config_resolver::stores::ConfigRepositoryError>
+pub fn awaken_config_resolver::agent_input_storage_key(&str, &str) -> core::result::Result<alloc::string::String, awaken_config_resolver::stores::AgentInputRepositoryError>
+pub fn awaken_config_resolver::agent_input_workspace_prefix(&str) -> core::result::Result<alloc::string::String, awaken_config_resolver::stores::AgentInputRepositoryError>
 pub fn awaken_config_resolver::can_consume(&str, core::option::Option<&str>, &awaken_credential_vault::CredentialSource) -> bool
 pub fn awaken_config_resolver::cooldown_deadline(awaken_runtime_contract::resilience::Disposition, u64) -> core::option::Option<u64>
 pub fn awaken_config_resolver::credential_can_supply(&str, core::option::Option<&str>, &str, &awaken_credential_vault::CredentialSource) -> bool
@@ -259,6 +282,7 @@ pub fn awaken_config_resolver::credential_candidates<'a>(&awaken_credential_vaul
 pub fn awaken_config_resolver::credential_is_executable_supply(&str, core::option::Option<&str>, &str, &awaken_credential_vault::CredentialSource) -> bool
 pub fn awaken_config_resolver::derive_vendor_pool(&str, &str, core::option::Option<&str>, &str, &[awaken_credential_vault::CredentialSource]) -> awaken_credential_vault::CredentialPool
 pub fn awaken_config_resolver::get_workspace_profile(&dyn awaken_config_resolver::stores::InferenceProfileStore, &str, &str) -> core::result::Result<core::option::Option<awaken_config_resolver::InferenceProfile>, awaken_config_resolver::stores::ConfigRepositoryError>
+pub fn awaken_config_resolver::plan_agent_input_write<'a>(&str, core::option::Option<&awaken_agent_config::agent_inputs::AgentInputConfig>, &'a awaken_agent_config::agent_inputs::AgentInputConfig) -> core::result::Result<awaken_config_resolver::stores::AgentInputAdmission<'a>, awaken_config_resolver::stores::AgentInputRepositoryError>
 pub fn awaken_config_resolver::project_executable_models(&awaken_model_catalog::ProviderCatalog, &[awaken_credential_vault::CredentialSource], &[awaken_config_resolver::ExecutorModelCapability], bool) -> alloc::vec::Vec<awaken_config_resolver::ExecutableModelOption>
 pub fn awaken_config_resolver::put_workspace_profile(&dyn awaken_config_resolver::stores::InferenceProfileStore, &str, &str, awaken_config_resolver::InferenceProfile) -> core::result::Result<(), awaken_config_resolver::stores::ConfigRepositoryError>
 pub async fn awaken_config_resolver::resolve_inference(&awaken_model_catalog::ProviderCatalog, &str, &awaken_credential_vault::CredentialBinding, &dyn awaken_config_resolver::SourceLookup, &dyn awaken_credential_vault::SecretStore) -> core::result::Result<awaken_config_resolver::ResolvedInference, awaken_config_resolver::ResolveError>
@@ -266,6 +290,6 @@ pub async fn awaken_config_resolver::resolve_inference_target(&awaken_model_cata
 pub async fn awaken_config_resolver::resolve_profile(&awaken_model_catalog::ProviderCatalog, &awaken_config_resolver::InferenceProfile, &dyn awaken_config_resolver::SourceLookup, &dyn awaken_credential_vault::SecretStore) -> core::result::Result<awaken_config_resolver::ResolvedInference, awaken_config_resolver::ResolveError>
 pub async fn awaken_config_resolver::resolve_profile_candidates(&awaken_model_catalog::ProviderCatalog, &awaken_config_resolver::InferenceProfile, &dyn awaken_config_resolver::SourceLookup, &dyn awaken_credential_vault::SecretStore) -> core::result::Result<alloc::vec::Vec<awaken_config_resolver::ResolvedInference>, awaken_config_resolver::ResolveError>
 pub fn awaken_config_resolver::select_offering<'a>(&'a awaken_model_catalog::ProviderCatalog, &awaken_agent_contract::model_target::ModelTarget, &[alloc::string::String]) -> core::result::Result<&'a awaken_model_catalog::Offering, awaken_config_resolver::OfferingSelectionError>
-pub fn awaken_config_resolver::validate_agent_input_revision(core::option::Option<&awaken_agent_config::agent_inputs::AgentInputConfig>, &awaken_agent_config::agent_inputs::AgentInputConfig) -> core::result::Result<bool, awaken_config_resolver::stores::AgentInputRepositoryError>
 pub fn awaken_config_resolver::validate_executor_offering(&[awaken_config_resolver::ExecutorModelCapability], &str, &str) -> core::result::Result<(), awaken_config_resolver::ExecutableModelReadiness>
+pub fn awaken_config_resolver::validate_stored_agent_inputs(&str, &str, awaken_agent_config::agent_inputs::AgentInputConfig) -> core::result::Result<awaken_agent_config::agent_inputs::AgentInputConfig, awaken_config_resolver::stores::AgentInputRepositoryError>
 pub fn awaken_config_resolver::workspace_profile_key(&str, &str) -> alloc::string::String

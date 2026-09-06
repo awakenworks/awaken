@@ -2626,6 +2626,7 @@ dependencies = [
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
  "awaken-sqlite-runtime",
+ "awaken-store-runtime",
  "base64 0.22.1",
  "loom",
  "proptest",
