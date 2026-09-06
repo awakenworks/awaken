@@ -5951,9 +5951,32 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
 /// |---|---|---|---|
 /// | F1 | yes | yes | E1 + E2 + E3; one renewal Stage before Publish |
 /// | F2 | yes | no | E1 + E3; publish directly, no redundant Stage |
+/// Resource crossover causes: C3 MCP was already Active/unacknowledged when
+/// heartbeat renewed it; C4 Resource 2 is active and 3 is pending; C5 the Stage
+/// reports Some(3), None, or a mismatched prepared revision. E4 catch-up retains
+/// precisely prepared generation 3 instead of rolling Runtime back to 2;
+/// E5 an unprepared pending mutation remains pending; E6 reject a mismatched
+/// preparation without a root write, even when MCP needs expiry catch-up.
+/// | F3 | C2+C3+C4 + Some(3) | E4, then commit 3 with matching renewed receipt |
+/// | F4 | C2+C3+C4 + None | E5, use active 2; no new Resource authority |
+/// | F5 | C4 + mismatched Some | E6, with and without C2/C3 |
+/// | F6 | !C3+C4 + Some(3) | commit 3 before any MCP catch-up; never regress |
 #[tokio::test]
 async fn activation_catches_up_a_generation_renewed_while_its_stage_was_in_flight() {
-    for renewal in [false, true] {
+    for (renewal, already_active, pending_resources, prepared_resource_revision) in [
+        (false, false, false, None),
+        (true, false, false, None),
+        (true, true, true, Some(3)),
+        (false, true, true, Some(3)),
+        (true, false, true, Some(3)),
+        (false, false, true, Some(3)),
+        (true, true, true, None),
+        (true, false, true, None),
+        (true, true, true, Some(2)),
+        (true, true, true, Some(4)),
+        (false, true, true, Some(2)),
+        (true, false, true, Some(2)),
+    ] {
         let repo = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .expect("session repository"),
@@ -6015,6 +6038,41 @@ async fn activation_catches_up_a_generation_renewed_while_its_stage_was_in_fligh
             &session.mcp.attachments[0],
         )
         .unwrap();
+        if already_active {
+            session
+                .mcp
+                .activate(
+                    &attachment_id,
+                    awaken_session_contract::McpGeneration(1),
+                    "realization-1",
+                )
+                .unwrap();
+            session
+                .mcp
+                .extend_active_realization_leases(
+                    &current_lease.runtime_incarnation,
+                    current_lease.epoch,
+                    renewed_expiry,
+                )
+                .unwrap();
+        }
+        let active_resources = file_resources("resource-2");
+        let desired_resources = file_resources("resource-3");
+        if pending_resources {
+            session.resources = awaken_session_contract::SessionResourceState::from_active(
+                file_resources("resource-1"),
+            );
+            session
+                .resources
+                .prepare(&session.session_id, active_resources.clone())
+                .unwrap();
+            session.resources.commit().unwrap();
+            session
+                .resources
+                .prepare(&session.session_id, desired_resources.clone())
+                .unwrap();
+            session.resources.start_attempt().unwrap();
+        }
         create(repo.as_ref(), session).await;
         let app = application(
             repo.clone(),
@@ -6028,18 +6086,56 @@ async fn activation_catches_up_a_generation_renewed_while_its_stage_was_in_fligh
             actual_realization_kind: None,
         };
 
-        let mut directive =
+        let before = repo.get("in-flight-renewal").await.unwrap();
+        let result =
             awaken_session_contract::SessionRealizationControl::activate_session_realization(
                 &app,
                 awaken_session_contract::ActivateSessionRealization {
                     session_id: "in-flight-renewal".into(),
                     lease: asserted_lease.clone(),
-                    prepared_resource_revision: None,
+                    prepared_resource_revision,
                     mcp_receipts: vec![admitted_receipt],
                 },
             )
-            .await
-            .expect("F1/E1");
+            .await;
+        if pending_resources && prepared_resource_revision.is_some_and(|revision| revision != 3) {
+            assert!(
+                matches!(
+                    result,
+                    Err(awaken_session_contract::SessionRealizationControlFailure::Invalid(_))
+                ),
+                "F5/E6 reject mismatched preparation before catch-up"
+            );
+            assert_eq!(
+                repo.get("in-flight-renewal").await.unwrap(),
+                before,
+                "F5/E6 no root mutation"
+            );
+            continue;
+        }
+        let mut directive = result.expect("F1/E1");
+        if renewal && already_active {
+            assert_eq!(
+                repo.get("in-flight-renewal").await.unwrap(),
+                before,
+                "F3/F4 catch-up emits a directive without prematurely committing Resources"
+            );
+        }
+        if pending_resources {
+            let (expected_revision, expected_resources) = if prepared_resource_revision == Some(3) {
+                (3, &desired_resources)
+            } else {
+                (2, &active_resources)
+            };
+            assert_eq!(
+                directive.projection.resource_revision, expected_revision,
+                "F3/F4/F6 preserve the exact prepared or active pair"
+            );
+            assert_eq!(
+                &directive.projection.resources, expected_resources,
+                "F3/F4/F6 manifest and revision agree"
+            );
+        }
         if renewal {
             let awaken_session_contract::SessionRealizationAction::Stage {
                 prepare_session,
@@ -6048,7 +6144,11 @@ async fn activation_catches_up_a_generation_renewed_while_its_stage_was_in_fligh
             else {
                 panic!("F1/E2 must renew the exact MCP projection before publication")
             };
-            assert!(!prepare_session, "F1/E2 do not rematerialize Resources");
+            assert_eq!(
+                *prepare_session,
+                already_active && pending_resources && prepared_resource_revision == Some(3),
+                "F3 retain only this Stage's prepared Resource intent; F1/F4 no new preparation"
+            );
             assert_eq!(mcp_stages.len(), 1, "F1/E2 one canonical generation");
             let renewed = &mcp_stages[0];
             assert_eq!(
@@ -6060,7 +6160,8 @@ async fn activation_catches_up_a_generation_renewed_while_its_stage_was_in_fligh
             let command = awaken_session_contract::ActivateSessionRealization {
                 session_id: "in-flight-renewal".into(),
                 lease: current_lease.clone(),
-                prepared_resource_revision: None,
+                prepared_resource_revision: prepare_session
+                    .then_some(directive.projection.resource_revision),
                 mcp_receipts: vec![awaken_session_contract::McpRealizationReceipt {
                     receipt_fingerprint: renewed.fingerprint(),
                     generation: renewed.generation.clone(),
@@ -6069,7 +6170,6 @@ async fn activation_catches_up_a_generation_renewed_while_its_stage_was_in_fligh
                     actual_realization_kind: None,
                 }],
             };
-            let revision = repo.get("in-flight-renewal").await.unwrap().revision;
             directive =
                 awaken_session_contract::SessionRealizationControl::activate_session_realization(
                     &app,
@@ -6077,6 +6177,7 @@ async fn activation_catches_up_a_generation_renewed_while_its_stage_was_in_fligh
                 )
                 .await
                 .expect("F1/E3 renewed receipt");
+            let revision = repo.get("in-flight-renewal").await.unwrap().revision;
             assert_eq!(
                 awaken_session_contract::SessionRealizationControl::activate_session_realization(
                     &app, command
@@ -6120,6 +6221,31 @@ async fn activation_catches_up_a_generation_renewed_while_its_stage_was_in_fligh
             renewed_generation.lease_expires_at_unix_ms, renewed_expiry,
             "F1/E2 publishes the extended lease"
         );
+        if pending_resources {
+            let resources = repo.get("in-flight-renewal").await.unwrap().resources;
+            if prepared_resource_revision == Some(3) {
+                assert_eq!(
+                    resources.active_generation(),
+                    (3, &desired_resources),
+                    "F3/F6 exact generation committed"
+                );
+                assert!(
+                    resources.pending.is_none(),
+                    "F3/F6 no pending mutation remains"
+                );
+            } else {
+                assert_eq!(
+                    resources.active_generation(),
+                    (2, &active_resources),
+                    "F4 active generation unchanged"
+                );
+                assert_eq!(
+                    resources.pending.as_ref(),
+                    Some(&desired_resources),
+                    "F4 pending intent is not consumed by renewal"
+                );
+            }
+        }
     }
 }
 

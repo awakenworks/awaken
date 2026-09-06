@@ -83,8 +83,15 @@ returns the existing Stage directive only when the publication generation set
 is a renewed successor of the received set. Runtime renews the same staged
 projection through its existing immutable-binding check; the next matching
 receipt permits Publish. No renewal means direct Publish. This catch-up belongs
-to the initial phase driver, not the steady-state heartbeat, and never adds a
-credential resolver, connection, Resource preparation, or recovery authority.
+to the existing phase driver, not the steady-state heartbeat. When that Stage
+also prepared a pending Resource generation, activation validates the reported
+revision before expiry catch-up and retains that exact preparation in the retry
+directive. It must not project the older active manifest over the already-staged
+desired manifest. A matching renewed receipt then commits the prepared Resource
+generation; a mismatched revision is rejected without a root write. An MCP-only
+Stage does not acquire permission to consume a pending Resource mutation. This
+reuses idempotent preparation and adds no credential resolver, connection,
+Resource generation, or recovery authority; Runtime's no-rollback fence remains.
 
 After a completed MCP drain, the process-local Removed tombstone owns no
 remaining effects. A currently authorized retry may discard that tombstone for
