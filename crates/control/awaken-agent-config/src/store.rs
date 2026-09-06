@@ -152,6 +152,37 @@ pub enum ManagementEffect {
     UpsertAgentInputs { config: AgentInputConfig },
 }
 
+/// Exact workspace-scoped readback evidence, not a serialized success flag or
+/// proof of storage internals. Only `ManagementEffect::confirm_readback` creates
+/// it. Duplicate receipts are safe because retirement checks the current payload.
+#[derive(Debug, Clone)]
+pub struct ManagementEffectReceipt {
+    scope: ScopeId,
+    effect: ManagementEffect,
+}
+
+fn management_effect_confirmation(revision: i64, exact: bool) -> bool {
+    revision > 0 && exact
+}
+
+impl ManagementEffectReceipt {
+    #[must_use]
+    pub fn scope(&self) -> &ScopeId {
+        &self.scope
+    }
+
+    #[must_use]
+    pub fn effect(&self) -> &ManagementEffect {
+        &self.effect
+    }
+
+    /// The adapter must fence this observation through deletion.
+    #[must_use]
+    pub fn matches_pending(&self, pending: &ManagementEffect) -> bool {
+        management_effect_confirmation(pending.revision(), &self.effect == pending)
+    }
+}
+
 impl ManagementEffect {
     pub const AGENT_INPUTS_KIND: &'static str = "agent_inputs.upsert";
 
@@ -167,6 +198,56 @@ impl ManagementEffect {
         match self {
             Self::UpsertAgentInputs { config } => &config.agent_id,
         }
+    }
+
+    fn revision(&self) -> i64 {
+        match self {
+            Self::UpsertAgentInputs { config } => config.revision,
+        }
+    }
+
+    /// One typed index contract for both adapters; indices are projections only.
+    pub fn validate_index(&self, kind: &str, key: &str) -> Result<(), ConfigStoreError> {
+        if kind != self.kind() || key != self.key() {
+            return Err(ConfigStoreError(
+                "management effect index does not match its typed payload".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Return whether to insert. A pending logical key cannot be overwritten;
+    /// exact retry is semantic equality, not equality of JSON whitespace/order.
+    pub fn requires_enqueue(&self, pending: Option<&Self>) -> Result<bool, ConfigStoreError> {
+        if !management_effect_confirmation(self.revision(), true) {
+            return Err(ConfigStoreError(
+                "management effect requires a positive input revision".into(),
+            ));
+        }
+        match pending {
+            None => Ok(true),
+            Some(pending) if pending == self => Ok(false),
+            Some(_) => Err(ConfigStoreError(
+                "stable management effect key was reused with different content".into(),
+            )),
+        }
+    }
+
+    /// `observed` must come from the existing input repository in `scope`.
+    /// Missing, changed, or nonpositive state cannot mint a receipt.
+    #[must_use]
+    pub fn confirm_readback(
+        &self,
+        scope: &ScopeId,
+        observed: Option<&AgentInputConfig>,
+    ) -> Option<ManagementEffectReceipt> {
+        let Self::UpsertAgentInputs { config } = self;
+        management_effect_confirmation(config.revision, observed == Some(config)).then(|| {
+            ManagementEffectReceipt {
+                scope: scope.clone(),
+                effect: self.clone(),
+            }
+        })
     }
 }
 
@@ -399,10 +480,8 @@ pub trait ScopedConfigRegistry: Send + Sync {
 
     async fn complete_management_effect_scoped(
         &self,
-        _scope: &ScopeId,
-        _kind: &str,
-        _key: &str,
-    ) -> Result<(), ConfigStoreError> {
+        _receipt: &ManagementEffectReceipt,
+    ) -> Result<bool, ConfigStoreError> {
         Err(ConfigStoreError(
             "config registry does not support durable external effects".to_string(),
         ))
@@ -524,6 +603,102 @@ pub trait ScopedConfigRegistry: Send + Sync {
         &self,
         scope: &ScopeId,
     ) -> Result<Vec<StoredPublication>, ConfigStoreError>;
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn management_effect_confirmation_requires_positive_exact_readback() {
+    // R1 invalid signed revision => reject even exact readback. R2 positive
+    // but missing/mismatched observation => reject. R3 positive+exact => receipt
+    // or exact retirement. Scope is carried by the receipt; this scalar proof
+    // does not prove repository reads, heap equality or SQL transaction fences.
+    let revision: i64 = kani::any();
+    let exact: bool = kani::any();
+    assert_eq!(
+        management_effect_confirmation(revision, exact),
+        revision >= 1 && exact
+    );
+}
+
+#[cfg(test)]
+mod effect_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn complete_payload_and_positive_revision_own_receipt_and_retirement() {
+        // R0 absent readback rejects; R1 each signed boundary; R2 independently
+        // change Agent/revision/Environment/inputs (16 masks); R3 only exact
+        // positive payload confirms and retires. Index mismatch always rejects;
+        // enqueue permits absence/exact replay only and never replaces intent.
+        let scope = ScopeId::from("workspace");
+        for revision in [i64::MIN, -1, 0, 1, i64::MAX] {
+            let config = AgentInputConfig {
+                agent_id: "agent".into(),
+                environment: None,
+                inputs: Vec::new(),
+                revision,
+            };
+            let expected = ManagementEffect::UpsertAgentInputs {
+                config: config.clone(),
+            };
+            assert!(expected.confirm_readback(&scope, None).is_none(), "R0");
+            assert_eq!(
+                expected.requires_enqueue(None).is_ok(),
+                revision > 0,
+                "R1 enqueue"
+            );
+            assert_eq!(
+                expected.requires_enqueue(Some(&expected)).ok(),
+                (revision > 0).then_some(false)
+            );
+            assert!(
+                expected
+                    .validate_index(expected.kind(), expected.key())
+                    .is_ok()
+            );
+            assert!(expected.validate_index("wrong", expected.key()).is_err());
+            assert!(expected.validate_index(expected.kind(), "wrong").is_err());
+            let receipt = expected.confirm_readback(&scope, Some(&config));
+            assert_eq!(receipt.is_some(), revision > 0, "R1");
+            for mask in 0..16 {
+                let mut observed = config.clone();
+                if mask & 1 != 0 {
+                    observed.agent_id.push('x');
+                }
+                if mask & 2 != 0 {
+                    observed.revision = if revision == i64::MAX {
+                        1
+                    } else {
+                        revision + 1
+                    };
+                }
+                if mask & 4 != 0 {
+                    observed.environment = Some(crate::AgentEnvironmentBinding {
+                        environment_id: "env".into(),
+                        revision: 1,
+                    });
+                }
+                if mask & 8 != 0 {
+                    observed.inputs.push(serde_json::from_value(serde_json::json!({"binding_id":"input", "target":{"kind":"file","id":"file"},"mount_path":"/input", "access":"read_only"})).unwrap());
+                }
+                assert_eq!(
+                    expected.confirm_readback(&scope, Some(&observed)).is_some(),
+                    revision > 0 && mask == 0,
+                    "R2 mask={mask}"
+                );
+                let pending = ManagementEffect::UpsertAgentInputs { config: observed };
+                assert_eq!(
+                    expected.requires_enqueue(Some(&pending)).is_ok(),
+                    revision > 0 && mask == 0
+                );
+                if let Some(receipt) = &receipt {
+                    assert_eq!(receipt.scope(), &scope);
+                    assert_eq!(receipt.effect(), &expected);
+                    assert_eq!(receipt.matches_pending(&pending), mask == 0, "R3");
+                }
+            }
+        }
+    }
 }
 
 #[cfg(kani)]

@@ -31,7 +31,7 @@ impl awaken_config_service::ConfigPlane
 pub async fn awaken_config_service::ConfigPlane::archive_if_revision(&self, &awaken_tenancy::ScopeId, &awaken_agent_config::config::AgentConfig, u64) -> core::result::Result<awaken_agent_config::store::ConfigWrite, alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::authoring_scopes(&self) -> core::result::Result<alloc::vec::Vec<awaken_tenancy::ScopeId>, alloc::string::String>
 pub fn awaken_config_service::ConfigPlane::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
-pub async fn awaken_config_service::ConfigPlane::complete_management_effect(&self, &awaken_tenancy::ScopeId, &str, &str) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_config_service::ConfigPlane::complete_management_effect(&self, &awaken_agent_config::store::ManagementEffectReceipt) -> core::result::Result<bool, alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::get(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<core::option::Option<awaken_agent_config::config::AgentConfig>, alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::get_management_audit(&self, &awaken_tenancy::ScopeId, &str, &str) -> core::result::Result<core::option::Option<awaken_agent_config::store::ManagementAuditEntry>, alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::get_versioned(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<core::option::Option<awaken_agent_config::store::AgentConfigRevision>, alloc::string::String>

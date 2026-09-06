@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigWrite,
-    ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, ScopedConfig,
-    ScopedConfigRegistry, StoredPublication,
+    ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, ManagementEffectReceipt,
+    ScopedConfig, ScopedConfigRegistry, StoredPublication,
 };
 use awaken_config_resolver::AgentInputConfig;
 use awaken_executable_agent_contract::ExecutableAgentWithdrawal;
@@ -195,12 +195,10 @@ impl ConfigPlane {
 
     pub async fn complete_management_effect(
         &self,
-        scope: &ScopeId,
-        kind: &str,
-        key: &str,
-    ) -> Result<(), String> {
+        receipt: &ManagementEffectReceipt,
+    ) -> Result<bool, String> {
         self.store
-            .complete_management_effect_scoped(scope, kind, key)
+            .complete_management_effect_scoped(receipt)
             .await
             .map_err(|error| error.to_string())
     }

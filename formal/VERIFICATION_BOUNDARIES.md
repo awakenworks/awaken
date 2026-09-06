@@ -24,6 +24,20 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- Management effect retirement now requires a domain-owned readback receipt
+  carrying the exact Workspace and complete effect. The Control reconciler
+  obtains it only after reading the existing resource repository; missing,
+  different and failed observations leave the journal intact. SQL adapters
+  compare the current typed payload and delete under one transaction fence,
+  returning whether a row was actually retired. A late old receipt cannot
+  delete a successor at the same logical key. Enqueue and index decisions have
+  one config-domain owner; SQLite no longer compares serialized JSON text.
+  Shared backend tables and an actual paused-readback reconciler test exercise
+  the ABA schedule, and ResourceBindingEffect now models two workers and two
+  successive revisions with a guard-removal mutant. Kani checks the positive
+  signed revision/exact-equality confirmation kernel. Scope selection, heap
+  equality, actual storage durability, SQL fencing and whole-driver refinement
+  remain tested/assumed boundaries, not consequences of that scalar proof.
 - Management audit identity is the database tuple `(scope, tool, call_id)`, not
   delimiter concatenation. One V11 under the original config schema owner
   migrates both published histories from each record's coordinates; constraints
