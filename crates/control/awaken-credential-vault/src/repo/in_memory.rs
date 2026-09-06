@@ -225,21 +225,11 @@ impl CredentialRepo for InMemoryCredentialRepo {
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
         intent.validate()?;
-        let abort = intent.with_material_reclaiming_abort()?;
         let mut state = self.state.lock().expect("credential repo");
-        if state.intents.get(&intent.after.id.0) == Some(&abort) {
-            return Ok(abort);
-        }
-        let unpublished = if intent.is_distinct_replacement() {
-            !state.rows.contains_key(&intent.after.id.0)
-        } else {
-            state.rows.get(&intent.after.id.0) == intent.before.as_ref()
-        };
-        if !unpublished || state.intents.get(&intent.after.id.0) != Some(intent) {
-            return Err(CredentialError::MutationConflict(
-                "credential abort does not match exact unpublished truth".into(),
-            ));
-        }
+        let durable = state.intents.get(&intent.after.id.0).ok_or_else(|| {
+            CredentialError::MutationConflict("credential abort has no durable pending fact".into())
+        })?;
+        let abort = intent.admit_abort(durable, state.rows.get(&intent.after.id.0))?;
         state
             .intents
             .insert(intent.after.id.0.clone(), abort.clone());
@@ -255,26 +245,7 @@ impl CredentialRepo for InMemoryCredentialRepo {
         let Some(durable) = state.intents.get(&intent.after.id.0) else {
             return Ok(());
         };
-        let truth_matches_phase = match intent.material_fence.phase {
-            CredentialMaterialMutationPhase::Reclaiming => {
-                state.rows.get(&intent.after.id.0) == Some(&intent.after)
-            }
-            CredentialMaterialMutationPhase::ReclaimingAbort => {
-                if intent.is_distinct_replacement() {
-                    !state.rows.contains_key(&intent.after.id.0)
-                } else {
-                    state.rows.get(&intent.after.id.0) == intent.before.as_ref()
-                }
-            }
-            CredentialMaterialMutationPhase::Writing | CredentialMaterialMutationPhase::Ready => {
-                false
-            }
-        };
-        if durable != intent || !truth_matches_phase {
-            return Err(CredentialError::MutationConflict(
-                "credential completion does not match durable cleanup truth".into(),
-            ));
-        }
+        intent.admit_completion(durable, state.rows.get(&intent.after.id.0))?;
         state.intents.remove(&intent.after.id.0);
         Ok(())
     }
@@ -580,38 +551,23 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
     ) -> Result<PendingManagedCredentialMutation, CredentialError> {
         pending.validate().map_err(invalid_pending_mutation)?;
         let mut state = self.state.lock().expect("credential repo");
-        if state.rows.get(&pending.after_source.id.0) != pending.before_source.as_ref()
-            || state.vault_credentials.get(&pending.after_credential.id)
-                != pending.before_credential.as_ref()
-        {
-            return Err(CredentialError::MutationConflict(
-                "cannot abort a published or superseded Managed credential mutation".into(),
-            ));
-        }
         let durable = state
             .managed_mutations
-            .get_mut(&pending.after_source.id.0)
+            .get(&pending.after_source.id.0)
             .ok_or_else(|| {
                 CredentialError::MutationConflict(
                     "Managed credential abort has no durable pending fact".into(),
                 )
             })?;
-        if durable == pending
-            && pending.material_fence.phase == CredentialMaterialMutationPhase::ReclaimingAbort
-        {
-            return Ok(durable.clone());
-        }
-        if durable != pending
-            || !matches!(
-                pending.material_fence.phase,
-                CredentialMaterialMutationPhase::Writing | CredentialMaterialMutationPhase::Ready
-            )
-        {
-            return Err(CredentialError::MutationConflict(
-                "Managed credential abort does not match its durable pending fact".into(),
-            ));
-        }
-        let reclaiming = pending.with_material_reclaiming_abort()?;
+        let reclaiming = pending.admit_abort(
+            durable,
+            state.rows.get(&pending.after_source.id.0),
+            state.vault_credentials.get(&pending.after_credential.id),
+        )?;
+        let durable = state
+            .managed_mutations
+            .get_mut(&pending.after_source.id.0)
+            .expect("checked under the same lock");
         *durable = reclaiming.clone();
         Ok(reclaiming)
     }
@@ -622,30 +578,14 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
     ) -> Result<(), CredentialError> {
         pending.validate().map_err(invalid_pending_mutation)?;
         let mut state = self.state.lock().expect("credential repo");
-        let durable = state.managed_mutations.get(&pending.after_source.id.0);
-        if durable.is_none() {
+        let Some(durable) = state.managed_mutations.get(&pending.after_source.id.0) else {
             return Ok(());
-        }
-        let truth_matches_phase = match pending.material_fence.phase {
-            CredentialMaterialMutationPhase::Reclaiming => {
-                state.rows.get(&pending.after_source.id.0) == Some(&pending.after_source)
-                    && state.vault_credentials.get(&pending.after_credential.id)
-                        == Some(&pending.after_credential)
-            }
-            CredentialMaterialMutationPhase::ReclaimingAbort => {
-                state.rows.get(&pending.after_source.id.0) == pending.before_source.as_ref()
-                    && state.vault_credentials.get(&pending.after_credential.id)
-                        == pending.before_credential.as_ref()
-            }
-            CredentialMaterialMutationPhase::Writing | CredentialMaterialMutationPhase::Ready => {
-                false
-            }
         };
-        if durable != Some(pending) || !truth_matches_phase {
-            return Err(CredentialError::MutationConflict(
-                "Managed credential completion does not match its durable cleanup truth".into(),
-            ));
-        }
+        pending.admit_completion(
+            durable,
+            state.rows.get(&pending.after_source.id.0),
+            state.vault_credentials.get(&pending.after_credential.id),
+        )?;
         state.managed_mutations.remove(&pending.after_source.id.0);
         Ok(())
     }

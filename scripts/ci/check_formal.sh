@@ -66,6 +66,11 @@ cargo test -p awaken-ext-background-task --features loom --lib supervisor::loom_
 # Exercise its aggregate projection and real post-concurrency-admission check.
 cargo test -p awaken-ext-background-task --test state_machine execution_admission
 cargo test -p awaken-session-executor --lib background_task::ownership::tests
+# Credential cleanup depends on complete envelope/pair projections.
+# Exercise SQLite and the canonical in-memory fixture without
+# making this SQLite-only formal stage silently skip an optional PostgreSQL.
+cargo test -p awaken-credential-vault --lib repo::cleanup
+cargo test -p awaken-credential-store --features test-support,sqlite --test repo_conformance
 # The audit scalar proof assumes exact SQL tuple selection and record equality.
 # Keep the production projection and SQLite conformance/migration tests beside it;
 # live PostgreSQL parity belongs to the existing required database gate.
@@ -193,6 +198,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness erasure_withdrawal_is_absorbing_and_idempotent \
     --harness revision_advance_is_strict_or_explicitly_exhausted
   run_kani awaken-credential-vault \
+    --harness credential_cleanup_requires_exact_authority_and_phase_truth \
+    --harness credential_reclamation_never_deletes_shared_or_live_predecessor_material \
     --harness injection_location_represents_exactly_the_three_usable_states \
     --harness injection_location_partial_update_is_exact_and_never_allows_both_disabled \
     --harness provider_scope_never_widens_endpoint_scope \
@@ -684,6 +691,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/managed-credential-creation" \
     -config formal/tla/ManagedCredentialCreation.cfg \
     formal/tla/ManagedCredentialCreation.tla
+  python3 scripts/ci/check_formal_mutations.py --credential-removal-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/managed-credential-rollout" \
     -config formal/tla/ManagedCredentialRollout.cfg \

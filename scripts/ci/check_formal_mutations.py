@@ -356,7 +356,11 @@ def main() -> None:
     model_selection.add_argument("--background-completion-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--audit-commit-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--effect-retirement-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--credential-removal-model-mutant", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
+    if arguments.credential_removal_model_mutant is not None:
+        check_credential_removal_model_mutant(arguments.credential_removal_model_mutant)
+        return
     if arguments.memory_copy_model_mutant is not None:
         check_memory_copy_model_mutant(arguments.memory_copy_model_mutant)
         return
@@ -584,6 +588,21 @@ def check_effect_retirement_model_mutant(tlc_jar: Path) -> None:
         (source.replace(guard, "0"), config, "CommittedDraftHasAuditAndRecoverableBinding"),
     ])
     print("Effect retirement mutation score: 1/1 killed (stale receipt retires successor)")
+
+
+def check_credential_removal_model_mutant(tlc_jar: Path) -> None:
+    # R1: deleting the absence guard must expose Aborted with residual material,
+    # not magically perform the physical deletion inside the WAL transaction.
+    source = (ROOT / "formal/tla/ManagedCredentialCreation.tla").read_text()
+    config = (ROOT / "formal/tla/ManagedCredentialCreation.cfg").read_text()
+    config = config.replace("INVARIANT CreationSafety", "INVARIANTS AbortedCreationIsClean CreationSafety")
+    guard = 'CompleteAbortCleanup ==\n    /\\ processUp /\\ phase = "ReclaimingAbort"\n    /\\ material = "None"'
+    if source.count(guard) != 1:
+        raise SystemExit("Credential removal mutation anchor drifted; review the model")
+    mutant = source.replace(guard, guard.rsplit("\n", 1)[0])
+    check_tlc_model_mutations(tlc_jar, "ManagedCredentialCreation", source, config,
+                             [(mutant, config, "AbortedCreationIsClean")])
+    print("Credential removal mutation score: 1/1 killed (unobserved physical deletion)")
 
 
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,

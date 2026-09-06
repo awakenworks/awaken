@@ -24,6 +24,30 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- Credential material reclamation has one phase/membership kernel and one
+  SecretStore executor for both envelopes, replacing four repeated cleanup
+  implementations. Kani checks the closed phase and set-membership decision;
+  typed tests exercise reference sets, duplicated slots and live predecessor
+  preservation. Actual recovery now retains WAL after a no-op delete success,
+  unavailable readback or a missing result for another ref; only exact absence
+  allows subsequent completion. Source creation reuses the canonical Managed
+  attempt model, whose physical removal and WAL completion are separate crash
+  boundaries, with an absence-guard mutant. Neither readback nor this bounded
+  model proves cross-store atomicity or prevents arbitrary later legacy writes;
+  late unreachable orphans remain excluded from the tracked-material invariant.
+- Credential abort/retirement decisions now have one owner for both existing
+  Source and Managed pair envelopes. All three repository implementations call
+  it under their existing lock/transaction; their six parallel phase tables
+  are removed. The in-memory Source abort replay previously skipped the current
+  unpublished-state check, unlike SQL. Shared backend regression now rejects
+  that stale replay and retains a newer same-key intent on late completion.
+  Kani proves the closed phase/exact-authority decision, while exhaustive typed
+  projection tests cover creation, in-place update, distinct replacement and
+  independent Source/child mismatches. The PostgreSQL conformance fixture now
+  fails rather than silently skips when explicitly configured but unavailable.
+  Heap equality, database isolation, external SecretStore IO and universal
+  recovery-driver refinement remain outside the scalar proof; the encompassing
+  cleanup obligation retains its abstract-model grade.
 - Management effect retirement now requires a domain-owned readback receipt
   carrying the exact Workspace and complete effect. The Control reconciler
   obtains it only after reading the existing resource repository; missing,
