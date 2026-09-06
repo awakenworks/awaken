@@ -1015,11 +1015,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 ))
             })?;
             for required in &claimed.request.placement.required_credentials {
-                resolver
-                    .revalidate_worker_reference(&awaken_runtime_contract::CredentialRef {
-                        id: required.id.clone(),
-                        revision: required.revision,
-                    })
+                let expected = awaken_runtime_contract::CredentialRef {
+                    id: required.id.clone(),
+                    revision: required.revision,
+                };
+                let observation = resolver
+                    .revalidate_worker_reference(&expected)
                     .await
                     .map_err(|error| {
                         Error::Execution(
@@ -1029,6 +1030,18 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                             )),
                         )
                     })?;
+                awaken_runtime_contract::require_exact_available_worker_reference(
+                    &expected,
+                    observation,
+                )
+                .map_err(|error| {
+                    Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+                        format!(
+                            "worker-local credential {} revision {} returned invalid use-time evidence: {error}",
+                            required.id, required.revision
+                        ),
+                    ))
+                })?;
                 ownership.verify_current().await.map_err(|error| {
                     Error::Execution(awaken_runtime_contract::execution::Error::Execution(
                         format!(

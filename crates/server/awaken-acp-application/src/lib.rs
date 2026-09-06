@@ -629,19 +629,6 @@ fn classify_host_observation(
     }
 }
 
-fn require_available(
-    observation: CredentialObservation,
-) -> Result<CredentialObservation, CredentialMaterialError> {
-    match observation.state {
-        CredentialObservationState::Available => Ok(observation),
-        CredentialObservationState::LoginRequired => Err(CredentialMaterialError::LoginRequired),
-        CredentialObservationState::Expired => Err(CredentialMaterialError::Expired),
-        CredentialObservationState::Invalid => Err(CredentialMaterialError::Invalid),
-        CredentialObservationState::Disabled => Err(CredentialMaterialError::Disabled),
-        CredentialObservationState::ProbeFailed => Err(CredentialMaterialError::ProbeFailed),
-    }
-}
-
 #[async_trait]
 impl CredentialObservationSource for AcpLocalCredentialResolver {
     async fn credential_observations(
@@ -676,7 +663,10 @@ impl WorkerLocalReferenceRevalidator for AcpLocalCredentialResolver {
             .filter(|binding| binding.credential.revision == credential.revision)
             .cloned()
             .ok_or(CredentialMaterialError::Unavailable)?;
-        require_available(self.observe(&binding).await)
+        awaken_runtime_contract::require_exact_available_worker_reference(
+            credential,
+            self.observe(&binding).await,
+        )
     }
 }
 
