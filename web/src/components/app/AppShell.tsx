@@ -5,7 +5,8 @@ import {
   useCommandPaletteShortcut,
 } from "@awaken/ui";
 import { Outlet, useLocation, useNavigate } from "react-router";
-import { useApp } from "../../lib/app-state";
+import { DEFAULT_WS, useApp } from "../../lib/app-state";
+import { workspaceFromPath } from "../../lib/api/client";
 import { navPath, visibleNavigation } from "../../lib/navigation/paths";
 import { useConfigCapabilities } from "../../lib/useConfigCapabilities";
 import { ConfirmProvider } from "../ui/Confirm";
@@ -93,10 +94,10 @@ function CommandPalette() {
 
 /** The route is the UI scope authority. Synchronize the one API addressing seam;
  * never maintain a second client-side Workspace roster. */
-function RouteScope() {
+export function RouteScope() {
   const app = useApp();
   const location = useLocation();
-  const workspace = location.pathname.match(/^\/w\/([^/]+)/)?.[1] ?? "default";
+  const workspace = workspaceFromPath(location.pathname) || DEFAULT_WS;
   useEffect(() => {
     if (workspace !== app.workspaceId) app.setWorkspaceId(workspace);
   }, [app, workspace]);

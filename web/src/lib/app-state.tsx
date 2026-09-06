@@ -4,7 +4,7 @@
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { setWorkspace } from "./api/client";
+import { setWorkspace, workspaceFromPath } from "./api/client";
 
 export type Locale = "en" | "zh";
 
@@ -47,15 +47,15 @@ export function useApp(): AppState {
   return v;
 }
 
-/** Sync the client `ws()` seam to the active workspace: the default scope routes
- * flat (no prefix); any other workspace routes through `/v1/workspaces/{ws}/…`. */
+/** Store presentation only. Request addressing reads the route/server context
+ * directly; this preference is not an authority or a second route parser. */
 function syncScope(id: string): void {
   setWorkspace(id === DEFAULT_WS ? "" : id);
 }
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [workspaceId, setWorkspaceIdState] = useState(
-    () => globalThis.location?.pathname.match(/^\/w\/([^/]+)/)?.[1] ?? DEFAULT_WS,
+    () => workspaceFromPath(globalThis.location?.pathname ?? "") || DEFAULT_WS,
   );
   const [identityPresentation, setIdentityPresentation] = useState({
     workspaceName: "",
@@ -68,7 +68,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => (localStorage.getItem("awaken.console.locale") as Locale) || "en",
   );
 
-  // Bind the client scope seam to the active workspace on mount + on change.
+  // Keep the presentation preference current on mount + on change.
   useEffect(() => {
     syncScope(workspaceId);
   }, [workspaceId]);
