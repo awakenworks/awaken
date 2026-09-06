@@ -385,6 +385,94 @@ async fn provider_refresh_reobserves_exact_tree_exit_after_delivery_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_authority_wait_cannot_extend_launch_or_refresh_budget() {
+    // D13 launch / D14 refresh: fixed 50ms proof is sampled, then its authority
+    // callback stalls >50ms BEFORE converting the relative duration. Both deny
+    // without creating a new deadline. Refresh leaves the existing live tree
+    // and durable participants unchanged, not a false stop/cleanup receipt.
+    for refresh in [false, true] {
+        let base = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::trusted_host(base.path());
+        let sandbox = Arc::new(
+            provider
+                .create_sandbox_for_effect(&spec(), &fence("create"), None)
+                .await
+                .unwrap(),
+        );
+        let authority = Authority::live();
+        sandbox
+            .install_scoped_execution(
+                Path::new("/usr/bin/bwrap"),
+                Path::new(HELPER),
+                authority.clone(),
+            )
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live = if refresh {
+            let process = sandbox
+                .spawn(tree(listener.local_addr().unwrap().port()))
+                .await
+                .unwrap();
+            Some((process, observe_tree(&listener).await))
+        } else {
+            None
+        };
+        let before = marker(base.path());
+        let (reached, observed) = tokio::sync::oneshot::channel();
+        let (resume, waiting) = std::sync::mpsc::channel();
+        let call = {
+            let mut current = authority.0.lock().unwrap();
+            current.0 = Some(Duration::from_millis(50));
+            current.1 + 1
+        };
+        *authority.1.lock().unwrap() = Some(AuthorityPause {
+            call,
+            reached,
+            resume: waiting,
+            failure: None,
+        });
+        let work = sandbox.clone();
+        let operation = tokio::spawn(async move {
+            if refresh {
+                work.refresh_scoped_execution().await
+            } else {
+                work.spawn(pc::Command::new(["/bin/true"]))
+                    .await
+                    .map(|_| ())
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(3), observed)
+            .await
+            .unwrap()
+            .unwrap();
+        // This is deliberate elapsed-time fault injection AFTER the barrier,
+        // not a sleep used to guess whether the callback has been reached.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        resume.send(()).unwrap();
+        assert!(
+            operation.await.unwrap().is_err(),
+            "D13/D14 expired callback budget"
+        );
+        assert_eq!(
+            marker(base.path()),
+            before,
+            "no launch/retirement evidence invented"
+        );
+        assert_eq!(
+            std::fs::read(sandbox.workspace_path().join("mnt/session/file")).unwrap(),
+            b"exact\0file\xff"
+        );
+        if let Some((process, nodes)) = live {
+            assert_tree_live(&nodes);
+            sandbox.stop_scoped_execution().await.unwrap();
+            assert_tree_closed(nodes).await;
+            process.wait().await.unwrap();
+        }
+        dispose(&sandbox).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provider_close_racing_join_cannot_report_quiescence_or_allow_late_go() {
     // P11 pause after JOINED but before the current-authority callback commits
     // GO. Concurrent close must close admission, fail its marker try-lock and

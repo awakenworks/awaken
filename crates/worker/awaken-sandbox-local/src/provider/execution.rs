@@ -79,16 +79,16 @@ impl LocalSandbox {
                 let refresh = process
                     .refresh_deadline_authorized(CONTROL_TIMEOUT, |grant| {
                         let mut grant = Some(grant);
-                        execution.authority.with_current(&mut |remaining| {
-                            let live = execution.live.lock().map_err(|_| denied())?;
-                            if live.closed {
-                                return Err(denied());
-                            }
-                            grant
-                                .take()
-                                .ok_or_else(denied)?
-                                .commit(ExecutionDeadline::after(remaining)?)
-                        })
+                        ExecutionDeadline::with_current_authority(
+                            execution.authority.as_ref(),
+                            &mut |deadline| {
+                                let live = execution.live.lock().map_err(|_| denied())?;
+                                if live.closed {
+                                    return Err(denied());
+                                }
+                                grant.take().ok_or_else(denied)?.commit(deadline)
+                            },
+                        )
                     })
                     .await;
                 if let Err(error) = refresh {
@@ -166,15 +166,17 @@ impl ScopedExecution {
             .ok_or_else(|| err("scoped realization evidence missing"))?;
         let mut guard = crate::realization_marker::begin_execution(sandbox.root.root(), evidence)?;
         let mut deadline = None;
-        self.authority
-            .with_current(&mut |remaining| {
+        ExecutionDeadline::with_current_authority(
+            self.authority.as_ref(),
+            &mut |current_deadline| {
                 if self.live.lock().map_err(|_| denied())?.closed || deadline.is_some() {
                     return Err(denied());
                 }
-                deadline = Some(ExecutionDeadline::after(remaining)?);
+                deadline = Some(current_deadline);
                 Ok(())
-            })
-            .map_err(err)?;
+            },
+        )
+        .map_err(err)?;
         let deadline =
             deadline.ok_or_else(|| err("current authority omitted execution deadline"))?;
         let prepared = sandbox.build_command(command).await?;

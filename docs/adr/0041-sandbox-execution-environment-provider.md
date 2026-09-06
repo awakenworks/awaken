@@ -706,6 +706,22 @@ authority and broken-channel negative controls. `LocalProcessRefresh` composes
 the existing kernel boundary to check error classification under exit races;
 mutants reject unconditional success, unconditional failure and leader-only
 evidence, with both result branches required to be reachable.
+The same `ExecutionDeadline` conversion now samples BOOTTIME before entering
+current authority, then derives a fixed cutoff from that earlier anchor and
+the freshly returned remaining budget. Startup preflight and cutoff refresh
+share this operation and retain the original authority guard through their
+effect. Lock waits or thread suspension between budget sampling and conversion
+can shorten availability, but cannot extend authority. Expired conversion
+invokes no effect; it is not a tree-stop receipt. The ordinary `after` constructor
+reuses the same bounded arithmetic for non-authority transport/test deadlines.
+`LocalProcessDeadline` composes the existing OS clock/renewal model with this
+conversion window; two guard mutants and accepted/rejected reachability
+witnesses check both time-minting and stale-effect counterexamples. Adjacent
+Rust cases cover bounds, rounding, overflow, delay, denial and effect errors;
+real provider barriers cross launch and refresh with expired callback budgets
+while retaining exact participant and File evidence. This does not prove OS
+clock correctness, arbitrary business-lease callbacks or production Session
+scope installation.
 Provider integration tests cover two live trees and actual owner SIGKILL;
 `LocalProcessRecovery` composes the existing bounded launch model with marker
 ordering and unknown-evidence rules. The Session Environment's existing stop

@@ -780,6 +780,26 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "LocalProcessRefresh", refresh_source, refresh_config,
                               refresh_mutations, dependencies=("LocalProcessLifecycle",))
     print("Local refresh mutation score: 3/3 killed; both skip/error outcomes reachable")
+    # D9-D14: sampling the OS anchor AFTER the authority wait must mint time;
+    # removing expiry rejection must invoke a stale effect. Each oracle is exact.
+    source = (ROOT / "formal/tla/LocalProcessDeadline.tla").read_text()
+    config = (ROOT / "formal/tla/LocalProcessDeadline.cfg").read_text()
+    header = config.split("INVARIANTS\n", 1)[0]
+    mutations = []
+    for anchor, broken, invariant in [
+        ("candidate == budgetAnchor + budgetRemaining",
+         "candidate == cutoffClock + budgetRemaining", "ConversionNeverMintsAuthorityWaitTime"),
+        ('IF candidate > cutoffClock THEN "accepted" ELSE "rejected"',
+         '"accepted"', "ExpiredConversionHasNoEffect"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit("Local deadline mutation anchor drifted")
+        mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
+    for witness in ("NoAcceptedConversionReached", "NoExpiredConversionReached"):
+        mutations.append((source, header + "INVARIANTS " + witness, witness))
+    check_tlc_model_mutations(tlc_jar, "LocalProcessDeadline", source, config, mutations,
+                              dependencies=("LocalProcessLifecycle",))
+    print("Local deadline mutation score: 2/2 killed; accepted/expired conversion reachable")
 
 
 def check_memory_copy_model_mutant(tlc_jar: Path) -> None:

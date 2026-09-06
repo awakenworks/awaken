@@ -62,14 +62,34 @@ fn boot_millis() -> io::Result<u64> {
 pub struct ExecutionDeadline(u64);
 impl ExecutionDeadline {
     pub fn after(remaining: Duration) -> io::Result<Self> {
+        Self::from_start(boot_millis()?, remaining)
+    }
+
+    fn from_start(start: u64, remaining: Duration) -> io::Result<Self> {
         if remaining.is_zero() || remaining > MAX_WINDOW || remaining.as_millis() == 0 {
             return Err(invalid());
         }
         Ok(Self(
-            boot_millis()?
+            start
                 .checked_add(remaining.as_millis() as u64)
                 .ok_or_else(invalid)?,
         ))
+    }
+
+    /// Intersect a current relative proof with an EARLIER OS clock sample.
+    /// Sampling after authority/lock waits could add that latency to the proof.
+    /// This performs the effect under the original authority guard, with one
+    /// immutable cutoff; delay may shorten availability but never mint time.
+    pub fn with_current_authority(
+        authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+        effect: &mut dyn FnMut(Self) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let start = boot_millis()?;
+        authority.with_current(&mut |remaining| {
+            let deadline = Self::from_start(start, remaining)?;
+            deadline.remaining()?;
+            effect(deadline)
+        })
     }
     fn remaining(self) -> io::Result<Duration> {
         let millis = self
@@ -336,5 +356,110 @@ pub async fn bootstrap() -> io::Result<ExitStatus> {
                 deadline.0 = renewal::apply_deadline(deadline.0, incoming, boot_millis()?)?;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+    use awaken_provisioning_contract::CurrentExecutionAuthority;
+
+    struct Authority<F>(F);
+    impl<F: Fn(&mut dyn FnMut(Duration) -> io::Result<()>) -> io::Result<()> + Send + Sync>
+        CurrentExecutionAuthority for Authority<F>
+    {
+        fn with_current(
+            &self,
+            effect: &mut dyn FnMut(Duration) -> io::Result<()>,
+        ) -> io::Result<()> {
+            (self.0)(effect)
+        }
+    }
+
+    #[test]
+    fn cutoff_arithmetic_has_one_bounded_conservative_conversion() {
+        // C1 fixed earlier anchor; C2 positive bounded/sub-ms/zero/oversized
+        // budget; C3 addition overflow. E1 floor to milliseconds, never round
+        // upward; E2 reject invalid/overflow. D1 normal; D2 fractional; D3 exact
+        // maximum; D4-D7 each invalid input; D8 exact largest safe sum.
+        for (start, budget, expected) in [
+            (100, Duration::from_millis(20), Some(120)),
+            (100, Duration::from_micros(1_999), Some(101)),
+            (0, MAX_WINDOW, Some(MAX_WINDOW.as_millis() as u64)),
+            (100, Duration::ZERO, None),
+            (100, Duration::from_nanos(999_999), None),
+            (100, MAX_WINDOW + Duration::from_nanos(1), None),
+            (u64::MAX, Duration::from_millis(1), None),
+            (u64::MAX - 1, Duration::from_millis(1), Some(u64::MAX)),
+        ] {
+            assert_eq!(
+                ExecutionDeadline::from_start(start, budget)
+                    .ok()
+                    .map(|d| d.0),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn authority_wait_cannot_mint_cutoff_time_or_invoke_an_expired_effect() {
+        // D9 budget stays live across an authority wait -> fixed cutoff no
+        // later than authority-entry time + budget. D10 wait consumes budget
+        // -> TimedOut and zero effects. Unlike transport-delay tests, the wait
+        // occurs BEFORE conversion, reproducing the prior after(remaining) bug.
+        for expired in [false, true] {
+            let budget = if expired {
+                Duration::from_millis(20)
+            } else {
+                Duration::from_secs(5)
+            };
+            let entered = std::sync::Mutex::new(0);
+            let authority = Authority(|effect: &mut dyn FnMut(Duration) -> io::Result<()>| {
+                *entered.lock().unwrap() = boot_millis()?;
+                std::thread::sleep(Duration::from_millis(30));
+                effect(budget)
+            });
+            let mut delivered = None;
+            let result = ExecutionDeadline::with_current_authority(&authority, &mut |deadline| {
+                assert!(delivered.replace(deadline.0).is_none());
+                Ok(())
+            });
+            if expired {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut, "D10");
+                assert!(delivered.is_none(), "D10 no expired effect");
+            } else {
+                result.unwrap();
+                assert!(
+                    delivered.unwrap() <= *entered.lock().unwrap() + budget.as_millis() as u64,
+                    "D9 no authority-wait time minted"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cutoff_port_propagates_denial_and_effect_error_without_substitution() {
+        // D11 root denial -> same error, no callback. D12 live effect failure
+        // -> exactly one invocation and original error; no retry or new grant.
+        let denied = Authority(|_: &mut dyn FnMut(Duration) -> io::Result<()>| {
+            Err(io::ErrorKind::PermissionDenied.into())
+        });
+        assert_eq!(
+            ExecutionDeadline::with_current_authority(&denied, &mut |_| panic!("D11"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        let live = Authority(|effect: &mut dyn FnMut(Duration) -> io::Result<()>| {
+            effect(Duration::from_secs(5))
+        });
+        let mut calls = 0;
+        let error = ExecutionDeadline::with_current_authority(&live, &mut |_| {
+            calls += 1;
+            Err(io::ErrorKind::BrokenPipe.into())
+        })
+        .unwrap_err();
+        assert_eq!(calls, 1, "D12");
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     }
 }
