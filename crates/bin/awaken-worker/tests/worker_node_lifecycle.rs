@@ -70,6 +70,7 @@ fn poll_status(address: &str, method: &str, path: &str, expected: u16) -> bool {
 struct ExternalSessionProvider {
     ready: Option<Arc<AtomicBool>>,
     stall_after_first_probe: bool,
+    stall_once: bool,
     probe_calls: AtomicUsize,
 }
 
@@ -173,7 +174,8 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionP
     }
 
     async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
-        if self.stall_after_first_probe && self.probe_calls.fetch_add(1, Ordering::SeqCst) > 0 {
+        let probe = self.probe_calls.fetch_add(1, Ordering::SeqCst);
+        if (self.stall_after_first_probe && probe > 0) || (self.stall_once && probe == 1) {
             std::future::pending::<()>().await;
         }
         if self
@@ -670,10 +672,10 @@ async fn warmup_failure_retains_cold_path_and_still_closes_capacity() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn provider_evidence_drift_drains_before_the_next_heartbeat() {
+async fn provider_evidence_drift_drains_the_incarnation() {
     // Cause/effect graph: C1 provider evidence holds before initial Ready; C2
-    // the same evidence fails before a periodic heartbeat; C3 no user shutdown.
-    // Effects: E1 initial Ready; E2 no heartbeat from stale evidence; E3 the
+    // the independent evidence probe fails; C3 no user shutdown.
+    // Effects: E1 initial Ready; E2 no heartbeat after observed evidence loss; E3 the
     // existing authority-loss path drains and asks the supervisor to restart.
     // Rules P1 C1&&!C2=>normal (covered elsewhere); P2 !C1=>startup rejection;
     // P3 C1+C2+C3=>E1+E2+E3 (this test).
@@ -720,15 +722,9 @@ async fn provider_evidence_drift_drains_before_the_next_heartbeat() {
         result.to_string().contains("supervisor restart required"),
         "E3"
     );
-    assert_eq!(
-        upstream
-            .requests()
-            .iter()
-            .filter(|path| path.as_str() == "/v1/worker/heartbeat")
-            .count(),
-        1,
-        "E2 stale evidence is fenced before the next heartbeat"
-    );
+    let sequences = upstream.heartbeat_sequences();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(upstream.heartbeat_sequences(), sequences, "E2");
     assert!(
         upstream
             .requests()
@@ -739,11 +735,11 @@ async fn provider_evidence_drift_drains_before_the_next_heartbeat() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stalled_provider_probe_is_bounded_and_loses_authority() {
+async fn stalled_provider_probe_does_not_block_renewal_but_expires() {
     // Cause/effect rule P4: startup evidence succeeds, then the same provider
-    // probe never returns. The heartbeat scheduler bounds the probe by its
-    // authority-derived request timeout, drains, and requires replacement; it
-    // cannot hang forever and silently cross the registry expiry.
+    // probe never returns. Registry renewal progresses independently while the
+    // initial environment proof remains valid. Probe timeouts never refresh
+    // that proof: it expires and the same supervisor irreversibly drains.
     let upstream = FakeWorkerUpstream::start_with_short_registry_lease();
     let result = tokio::time::timeout(
         Duration::from_secs(5),
@@ -770,11 +766,83 @@ async fn stalled_provider_probe_is_bounded_and_loses_authority() {
         result.to_string().contains("supervisor restart required"),
         "P4"
     );
-    assert_eq!(
-        upstream.heartbeat_sequences(),
-        vec![1],
-        "P4 no stale-evidence heartbeat is emitted"
+    assert!(
+        upstream.heartbeat_sequences().len() >= 2,
+        "P4 renewal is not blocked by the probe"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transient_provider_timeout_recovers_without_incarnation_restart() {
+    // Rule P5: startup passes; one probe exceeds its request budget; retry
+    // succeeds before the old proof expires. Effects: concurrent registry
+    // renewals continue, subsequent probes recover, and only user shutdown
+    // terminates. This contrasts P4 (all retries stall) and P3 (explicit loss).
+    let upstream = FakeWorkerUpstream::start_with_short_registry_lease();
+    let provider = Arc::new(ExternalSessionProvider {
+        stall_once: true,
+        ..Default::default()
+    });
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        WorkerNodeBuilder::new(
+            WorkerUpstream::new(upstream.url()).with_worker_id("worker-provider-recovery-test"),
+        )
+        .with_deployment_config(local_coordinator_deployment())
+        .with_session_container_provider("external-secure", provider.clone())
+        .with_hand_executor_factory(Arc::new(NoHandFactory))
+        .with_manifest(manifest())
+        .with_graceful_drain(Duration::ZERO)
+        .without_admin_surface()
+        .build()
+        .unwrap()
+        .run_until(async {
+            loop {
+                if provider.probe_calls.load(Ordering::SeqCst) >= 4
+                    && upstream.heartbeat_sequences().len() >= 4
+                {
+                    return Ok(WorkerShutdown::Prompt);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }),
+    )
+    .await
+    .expect("P5 bounded recovery")
+    .expect("P5 no authority loss");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stalled_initial_provider_probe_never_publishes_ready() {
+    // Rule P2: unlike P4 no initial evidence exists. An unknown startup probe
+    // has no grace proof to reuse: bound it, reject startup, and emit no Ready.
+    let upstream = FakeWorkerUpstream::start_with_short_registry_lease();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        WorkerNodeBuilder::new(
+            WorkerUpstream::new(upstream.url()).with_worker_id("worker-provider-startup-stall"),
+        )
+        .with_deployment_config(local_coordinator_deployment())
+        .with_session_container_provider(
+            "external-secure",
+            Arc::new(ExternalSessionProvider {
+                stall_after_first_probe: true,
+                probe_calls: AtomicUsize::new(1),
+                ..Default::default()
+            }),
+        )
+        .with_hand_executor_factory(Arc::new(NoHandFactory))
+        .with_manifest(manifest())
+        .without_admin_surface()
+        .build()
+        .unwrap()
+        .run_until(std::future::pending()),
+    )
+    .await
+    .expect("P2 startup is bounded")
+    .expect_err("P2 absent evidence rejects startup");
+    assert!(result.to_string().contains("timed out before Ready"), "P2");
+    assert!(upstream.heartbeat_sequences().is_empty(), "P2 no Ready");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

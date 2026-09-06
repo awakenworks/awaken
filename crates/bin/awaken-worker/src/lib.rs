@@ -1103,6 +1103,10 @@ impl WorkerNode {
                 Err(error) => return Err(std::io::Error::other(error.to_string()).into()),
             }
         };
+        let startup_timing =
+            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                registration_receipt.lease_ttl_ms,
+            );
         let registration = registration_receipt.worker;
         let upstream = upstream.with_worker_identity(registration.snapshot.identity.clone());
         // The registry-assigned incarnation is the only execution identity. The
@@ -1281,14 +1285,27 @@ impl WorkerNode {
         // them off this boundary prevents an unavailable Sandbox backend from
         // making the Worker itself permanently Starting while claim admission
         // still fails closed for any Run that needs their evidence.
-        if let Some(provider) = &lifecycle.session_environment_provider
-            && let Err(error) = provider.probe_ready().await
-        {
-            let _ = control.deregister(&lifecycle.identity).await;
-            return Err(std::io::Error::other(format!(
-                "sandbox readiness evidence failed before Ready: {error}"
-            ))
-            .into());
+        let environment_proof_started = std::time::Instant::now();
+        if let Some(provider) = &lifecycle.session_environment_provider {
+            let evidence =
+                tokio::time::timeout(startup_timing.request_timeout(), provider.probe_ready())
+                    .await;
+            let error = match evidence {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error.to_string()),
+                Err(_) => Some("sandbox readiness evidence timed out before Ready".to_owned()),
+            };
+            if let Some(error) = error {
+                let _ = tokio::time::timeout(
+                    startup_timing.request_timeout(),
+                    control.deregister(&lifecycle.identity),
+                )
+                .await;
+                return Err(std::io::Error::other(format!(
+                    "sandbox readiness evidence failed before Ready: {error}"
+                ))
+                .into());
+            }
         }
         // A lease receipt proves no more time than remained when the request
         // started. Anchoring locally before I/O prevents response latency from
@@ -1302,13 +1319,21 @@ impl WorkerNode {
             0,
             lifecycle.warm_environment_shapes(),
         );
-        let initial = control
-            .heartbeat(&lifecycle.identity, initial_heartbeat)
-            .await;
+        let initial = tokio::time::timeout(
+            startup_timing.request_timeout(),
+            control.heartbeat(&lifecycle.identity, initial_heartbeat),
+        )
+        .await
+        .map_err(|_| "initial worker heartbeat timed out".to_owned())
+        .and_then(std::convert::identity);
         let initial = match initial {
             Ok(initial) => initial,
             Err(error) => {
-                let _ = control.deregister(&lifecycle.identity).await;
+                let _ = tokio::time::timeout(
+                    startup_timing.request_timeout(),
+                    control.deregister(&lifecycle.identity),
+                )
+                .await;
                 return Err(std::io::Error::other(error).into());
             }
         };
@@ -1326,6 +1351,18 @@ impl WorkerNode {
                     .lease_ttl_ms
                     .expect("WorkerControlClient validates applied heartbeat TTL"),
             );
+        if lifecycle.session_environment_provider.is_some()
+            && environment_proof_started.elapsed() >= heartbeat_timing.proof_window()
+        {
+            let _ = tokio::time::timeout(
+                startup_timing.request_timeout(),
+                control.deregister(&lifecycle.identity),
+            )
+            .await;
+            return Err(
+                std::io::Error::other("sandbox evidence expired before pool admission").into(),
+            );
+        }
         host.ensure_dispatch_pool();
         let credential_probe = credential_liveness::spawn_probe(
             lifecycle.observations.clone(),
@@ -1341,6 +1378,7 @@ impl WorkerNode {
             2,
             initial_heartbeat_started,
             heartbeat_timing,
+            environment_proof_started,
         );
         eprintln!("awaken-worker registered with {upstream_url}");
 

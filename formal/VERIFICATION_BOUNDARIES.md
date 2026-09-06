@@ -199,6 +199,12 @@ type checking are valuable executable evidence, but are not formal proofs.
   variants: only explicit Allow admits; Deny and RequireApproval both deny.
   Existing method property tests remain sampled tests, not a proof of arbitrary
   strings or the whole middleware/token/policy path.
+- `WorkerAuthorityEvidence.tla` checks independent registry/evidence lanes,
+  conservative request-start freshness, absorbing expiry and conditional
+  eventual closure when environment proofs stop. Its window is four ticks and
+  it assumes fair time advancement and atomic local fencing. Actual Tokio
+  timers, provider policy truth, startup I/O and physical cancellation remain
+  executable-test/TCB boundaries; no Rust-to-model refinement is claimed.
 - Worker credentials, ACP capabilities and their refresh generation now share
   one atomic observation snapshot. Initial and periodic heartbeats freeze that
   snapshot once before projecting wire fields; independent getters and the

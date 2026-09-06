@@ -45,6 +45,35 @@ The following invariants remain authoritative:
 
 ## 2026-08-31 amendment: registry proof and Run leases stay independent
 
+### 2026-09-07 clarification: environment evidence is not heartbeat I/O
+
+`WorkerSupervisor` runs registry renewal and sandbox evidence monitoring as two
+single-flight futures under one incarnation supervisor. Neither future waits for
+the other's remote request. Either terminal proof loss cancels the other future
+and enters the existing irreversible local drain; no second registry, admission
+state machine or recovery worker is introduced.
+
+Initial sandbox evidence is mandatory before Ready and is bounded by the
+registration-derived request budget. Its local validity window uses the same
+conservative `AuthorityLeaseTiming` policy, frozen from the initial applied
+heartbeat, independently of subsequent registry renewals. Evidence success is
+anchored at probe request start, not response time. A probe timeout leaves that
+deadline unchanged and retries only before expiry. Explicit provider errors
+remain fail-closed: `SandboxError` currently does not distinguish transport
+failure from a violated NetworkPolicy, so errors must not be guessed transient
+from their message text. Actual evidence expiry still stops execution even if
+registry renewal succeeds. This is bounded tolerance, not indefinite reuse of
+cached security evidence.
+
+The decision tables live beside Worker lifecycle and paused-time tests.
+`WorkerAuthorityEvidence.tla` checks independence, absorbing expiry, and eventual
+closure without successful probes under fair time advancement. The separate
+`WorkerDrain.tla` remains the owner of local-fence-before-registry-drain ordering.
+Neither model proves absence of OS scheduling pauses or instantaneous physical
+cancellation of an external model request.
+
+### Registry renewal protocol
+
 Control returns the positive Worker-registry TTL in registration and every
 applied heartbeat receipt. The Worker derives its cadence, request bound, retry
 delay, and conservative proof deadline from that value. It does not duplicate a
