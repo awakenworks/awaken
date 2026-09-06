@@ -78,6 +78,20 @@ export function providerDraftDefaults(descriptor: ProviderDriverDescriptor) {
   };
 }
 
+// A displayed template is not an operator override. Keep endpoint/discovery
+// ownership in Control; submit only a URL that differs from this dialect's default.
+export function providerConnectionBaseUrl(
+  draft: ProviderDraft,
+  descriptor: ProviderDriverDescriptor | undefined,
+): string | null {
+  const baseUrl = draft.baseUrl.trim();
+  if (!baseUrl) return null;
+  const endpoint = descriptor?.provider_kind === draft.provider
+    ? descriptor.default_endpoints.find((candidate) => candidate.dialect === draft.dialect)
+    : undefined;
+  return endpoint?.base_url.trim() === baseUrl ? null : baseUrl;
+}
+
 export function providerConfigurationDefaults(descriptor: ProviderDriverDescriptor) {
   return Object.fromEntries(
     descriptor.configuration_fields
@@ -174,7 +188,7 @@ export default function ProviderConnectionPanel({
           credential_name: credentialName.trim() || `${draft.provider} primary`,
           dialect: draft.dialect,
           ...(draft.endpointName ? { endpoint_name: draft.endpointName } : {}),
-          base_url: draft.baseUrl || null,
+          base_url: providerConnectionBaseUrl(draft, selectedDescriptor),
           configuration,
           timeout_secs: 60,
           ...(authMode === "api_key" ? { secret: apiKey } : {}),
