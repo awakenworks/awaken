@@ -155,43 +155,13 @@ fn recovery_projection_never_selects_a_historical_wait() {
 }
 
 #[test]
-fn acknowledged_commit_advances_projection_once() {
-    let projection = RecoveryProjection::new();
-    let run_id = RunId("run".to_string());
-    projection
-        .install(&run_id, snapshot())
-        .expect("install snapshot");
-    projection
-        .apply_committed(
-            ThreadCommit {
-                thread_id: ThreadId("thread".to_string()),
-                run: RunDisposition::running(run_id.clone()),
-                messages: vec![Message::text(
-                    MessageId("after".to_string()),
-                    Role::Assistant,
-                    "after",
-                )],
-                state: Vec::new(),
-                events: Vec::new(),
-            },
-            &CommitRecord { sequence: 8 },
-        )
-        .expect("apply receipt");
-
-    let current = projection.current().expect("projection");
-    assert_eq!(current.thread_version, 2);
-    assert_eq!(current.store_cursor, 8);
-    assert_eq!(current.next_commit_ordinal, 2);
-    assert_eq!(current.messages.len(), 2);
-    assert_eq!(projection.run_state(&run_id), Some(RunState::Running));
-    assert!(
-        projection.resume_ticket(&run_id).is_none(),
-        "non-awaiting commit clears the ticket"
-    );
-}
-
-#[test]
 fn projection_counter_overflow_is_rejected_without_partial_update() {
+    // Causes: C1 an installed committed prefix is at the maximum Thread
+    // version; C2 an otherwise matching durable receipt arrives. Effects: E1
+    // the receipt is rejected; E2 messages, state, events, counters, and tickets
+    // remain unchanged. Decision rule O1=C1+C2=>E1+E2. This is the overflow row
+    // of the same receipt classifier used by production; no unversioned cache
+    // advance path exists.
     let projection = RecoveryProjection::new();
     let run_id = RunId("run".to_string());
     let mut at_limit = snapshot();
@@ -200,8 +170,11 @@ fn projection_counter_overflow_is_rejected_without_partial_update() {
         .install(&run_id, at_limit.clone())
         .expect("install snapshot at boundary");
 
-    let result = projection.apply_committed(
-        ThreadCommit {
+    let operation = CommitOperation {
+        operation_id: CommitOperationId::new(run_id.clone(), at_limit.next_commit_ordinal),
+        expected_thread_version: u64::MAX,
+        payload_hash: CommitPayloadHash("sha256:overflow".to_string()),
+        commit: ThreadCommit {
             thread_id: ThreadId("thread".to_string()),
             run: RunDisposition::running(run_id),
             messages: vec![Message::text(
@@ -212,8 +185,15 @@ fn projection_counter_overflow_is_rejected_without_partial_update() {
             state: Vec::new(),
             events: Vec::new(),
         },
-        &CommitRecord { sequence: 8 },
-    );
+    };
+    let receipt = CommitReceipt {
+        operation_id: operation.operation_id.clone(),
+        commit_sequence: 8,
+        thread_version: u64::MAX,
+        payload_hash: operation.payload_hash.clone(),
+        duplicate: true,
+    };
+    let result = projection.apply_receipt(operation, &receipt);
 
     assert!(matches!(result, Err(CommitError::Rejected(message)) if message.contains("overflow")));
     assert_eq!(
@@ -237,10 +217,12 @@ fn wrong_claim_cannot_install_or_advance_projection() {
 #[test]
 fn duplicate_receipt_advances_after_response_loss_and_then_becomes_a_noop() {
     // Causes: C1 the Coordinator committed one model observation but its reply
-    // was lost; C2 the Worker applies the duplicate receipt twice. Effects: E1
-    // the first receipt advances the cold snapshot; E2 the replay appends
-    // neither messages nor audit again; E3 the audit cursor remains fenced by
-    // the acknowledged store cursor. Rule R1=C1+C2=>E1+E2+E3.
+    // was lost; C2 the Worker applies the duplicate receipt twice; C3 a receipt
+    // skips the required successor version. Effects: E1 the first receipt
+    // advances the cold snapshot; E2 the replay appends neither messages nor
+    // audit again; E3 the audit cursor remains fenced by the acknowledged store
+    // cursor; E4 the version gap is rejected without mutation. Rules:
+    // R1=C1+C2=>E1+E2+E3; R2=C3=>E4.
     // Constraint/Invariant: the committed operation receipt, not transport reply
     // delivery, owns idempotency. Decision rule: apply the same receipt twice and
     // require one projection advance followed by a no-op.
@@ -288,7 +270,7 @@ fn duplicate_receipt_advances_after_response_loss_and_then_becomes_a_noop() {
         .apply_receipt(operation.clone(), &receipt)
         .expect("duplicate receipt advances an unadvanced projection");
     projection
-        .apply_receipt(operation, &receipt)
+        .apply_receipt(operation.clone(), &receipt)
         .expect("same receipt is now an idempotent no-op");
     let current = projection.current().unwrap();
     assert_eq!(current.thread_version, 2);
@@ -309,6 +291,11 @@ fn duplicate_receipt_advances_after_response_loss_and_then_becomes_a_noop() {
         }),
         "R1/E1"
     );
+    let before_rejection = current;
+    let mut gap = receipt;
+    gap.thread_version = 3;
+    assert!(projection.apply_receipt(operation, &gap).is_err(), "R2/E4");
+    assert_eq!(projection.current().unwrap(), before_rejection, "R2/E4");
 }
 
 struct ReceiptService {
