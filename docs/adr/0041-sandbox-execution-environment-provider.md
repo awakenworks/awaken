@@ -699,8 +699,19 @@ receipt. Runtime-local weak process handles only deliver explicit stop/cutoff
 refresh requests; they are neither a durable registry nor a renewal scheduler.
 Provider integration tests cover two live trees and actual owner SIGKILL;
 `LocalProcessRecovery` composes the existing bounded launch model with marker
-ordering and unknown-evidence rules. Neither these tests nor the model establish
-the still-pending production Session binding, reboot recovery, macOS/Windows,
+ordering and unknown-evidence rules. The Session Environment's existing stop
+edge now joins Hand closure with the optional provider's exact execution-tree
+stop. Revocation, terminal harvest, checkpoint quiescence and filesystem disposal
+reuse that edge; Hand uncertainty cannot short-circuit the independent tree stop,
+and neither participant alone produces a successful receipt. An unconfigured
+provider does not report an execution-tree receipt. Linux lifecycle tests drive
+two real scopes through all three stop/quiesce/dispose entrances, retain resource
+bytes under Hand or observer uncertainty, and require exact retry plus typed
+terminal authorization before deletion. A poll barrier verifies that cancelling
+the Hand wait does not prevent tree-stop progress or consume the retained Hand;
+concurrent retries converge through the existing marker lock. The same recovery model checks the
+Hand/tree receipt conjunction and its mutation oracles. Neither these tests nor
+the model establish the still-pending production Session binding, reboot recovery, macOS/Windows,
 or real cloud/vendor-credential closure. Worker capability activation remains
 fail-closed until that complete composition is installed and verified.
 

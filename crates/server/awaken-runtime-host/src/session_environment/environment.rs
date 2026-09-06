@@ -15,6 +15,8 @@ use super::session_hand::{HandProjectionUpdate, HandStopProof, SessionHandExecut
 pub(crate) enum EnvironmentStopProof {
     NoBoundProcesses,
     Hand(HandStopProof),
+    #[cfg(target_os = "linux")]
+    ExecutionTreeQuiescent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,22 +288,6 @@ impl SessionEnvironment {
             Self::Workdir { hand: Some(_), .. }
             | Self::Namespace { .. }
             | Self::Container { .. } => awaken_ext_builtin_tools::all_hand_tools(),
-        }
-    }
-
-    /// Stop only the process bindings created while constructing this wrapper.
-    /// Used when an adoption races a resident environment with the same handle;
-    /// disposing here would incorrectly destroy the shared underlying container.
-    pub(crate) async fn stop_bound_processes(
-        &self,
-    ) -> Result<EnvironmentStopProof, pc::SandboxError> {
-        match self {
-            Self::Workdir {
-                hand: Some(hand), ..
-            }
-            | Self::Namespace { hand, .. }
-            | Self::Container { hand, .. } => hand.stop().await.map(EnvironmentStopProof::Hand),
-            Self::Workdir { hand: None, .. } => Ok(EnvironmentStopProof::NoBoundProcesses),
         }
     }
 

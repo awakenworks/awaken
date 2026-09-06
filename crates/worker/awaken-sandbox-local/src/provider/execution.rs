@@ -106,9 +106,11 @@ impl LocalSandbox {
     /// Irreversibly close admission, request exact-scope KILL, then require the
     /// existing marker to prove all participants absent. A launch still holding
     /// that lock yields a retryable error, never a premature quiescence receipt.
-    pub async fn stop_scoped_execution(&self) -> Result<(), pc::SandboxError> {
+    /// Returns whether this realization has an installed scoped boundary. An
+    /// unconfigured provider does not manufacture an OS tree-stop receipt.
+    pub async fn stop_scoped_execution(&self) -> Result<bool, pc::SandboxError> {
         let Some(ExecutionBinding::Scoped(execution)) = self.execution.get() else {
-            return Ok(());
+            return Ok(false);
         };
         execution.live.lock().map_err(err)?.closed = true;
         let processes = execution.live_processes()?;
@@ -129,9 +131,11 @@ impl LocalSandbox {
             .ok_or_else(|| err("scoped realization evidence missing"))?;
         let removal = self.terminal_removal.lock().map_err(err)?;
         if let Some(removal) = removal.as_ref() {
-            return removal.verify_execution_quiescence();
+            removal.verify_execution_quiescence()?;
+        } else {
+            crate::realization_marker::verify_execution_quiescence(self.root.root(), evidence)?;
         }
-        crate::realization_marker::verify_execution_quiescence(self.root.root(), evidence)
+        Ok(true)
     }
 }
 

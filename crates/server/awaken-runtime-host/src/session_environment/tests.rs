@@ -2609,7 +2609,7 @@ fn restart_memory_spec(scope: &str) -> (pc::SandboxSpec, pc::MountRequirement) {
     (spec, memory)
 }
 
-fn restart_disposal_authorization(
+pub(super) fn restart_disposal_authorization(
     prepared: pc::SandboxEffectFence,
     label: &str,
 ) -> pc::SandboxDisposalAuthorization {

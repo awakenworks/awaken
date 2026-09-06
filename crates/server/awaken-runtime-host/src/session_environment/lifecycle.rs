@@ -23,19 +23,44 @@ async fn dispose_container_after_closing_hand<S: pc::Sandbox + ?Sized>(
     pc::Sandbox::dispose(sandbox).await
 }
 
-/// Both host filesystem providers delete directories, not an OS execution
-/// scope. Their one strict rule is stop receipt BEFORE every resource effect.
-async fn dispose_filesystem_after_closing_hand<S: pc::Sandbox + ?Sized>(
-    hand: Option<&SessionHandExecutor>,
-    sandbox: &S,
-) -> Result<(), pc::SandboxError> {
-    if let Some(hand) = hand {
-        hand.stop().await?;
-    }
-    pc::Sandbox::dispose(sandbox).await
-}
-
 impl SessionEnvironment {
+    /// Stop only this wrapper's process bindings, never its filesystem. Every
+    /// revocation, terminal harvest and filesystem disposal shares this edge.
+    /// Hand failure must not short-circuit the independent exact-scope stop;
+    /// both receipts are required before returning any successful proof.
+    pub(crate) async fn stop_bound_processes(
+        &self,
+    ) -> Result<EnvironmentStopProof, pc::SandboxError> {
+        match self {
+            Self::Workdir { sandbox, hand } => {
+                let stop_hand = async {
+                    match hand {
+                        Some(hand) => hand.stop().await.map(EnvironmentStopProof::Hand),
+                        None => Ok(EnvironmentStopProof::NoBoundProcesses),
+                    }
+                };
+                #[cfg(target_os = "linux")]
+                {
+                    let (hand, tree) = tokio::join!(stop_hand, sandbox.stop_scoped_execution());
+                    let hand = hand?;
+                    if tree? {
+                        Ok(EnvironmentStopProof::ExecutionTreeQuiescent)
+                    } else {
+                        Ok(hand)
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = sandbox;
+                    stop_hand.await
+                }
+            }
+            Self::Namespace { hand, .. } | Self::Container { hand, .. } => {
+                hand.stop().await.map(EnvironmentStopProof::Hand)
+            }
+        }
+    }
+
     pub(super) fn sandbox(&self) -> &dyn pc::Sandbox {
         match self {
             Self::Workdir { sandbox, .. } => sandbox.as_ref(),
@@ -79,11 +104,9 @@ impl SessionEnvironment {
 
     pub(crate) async fn dispose(&self) -> Result<(), pc::SandboxError> {
         match self {
-            Self::Workdir { sandbox, hand } => {
-                dispose_filesystem_after_closing_hand(hand.as_deref(), sandbox.as_ref()).await
-            }
-            Self::Namespace { sandbox, hand } => {
-                dispose_filesystem_after_closing_hand(Some(hand), sandbox.as_ref()).await
+            Self::Workdir { .. } | Self::Namespace { .. } => {
+                self.stop_bound_processes().await?;
+                self.sandbox().dispose().await
             }
             Self::Container { sandbox, hand, .. } => {
                 // A resident Hand is terminated by disposal of its owning
@@ -96,14 +119,14 @@ impl SessionEnvironment {
 
     pub(crate) async fn quiesce(&self) -> Result<EnvironmentQuiescenceProof, pc::SandboxError> {
         let proof = match self {
-            Self::Workdir { hand: None, .. } => EnvironmentStopProof::NoBoundProcesses,
-            Self::Workdir {
-                hand: Some(hand), ..
+            Self::Workdir { .. } => self.stop_bound_processes().await?,
+            Self::Namespace { hand, .. } | Self::Container { hand, .. } => {
+                EnvironmentStopProof::Hand(hand.quiesce().await?)
             }
-            | Self::Namespace { hand, .. }
-            | Self::Container { hand, .. } => EnvironmentStopProof::Hand(hand.quiesce().await?),
         };
         match proof {
+            #[cfg(target_os = "linux")]
+            EnvironmentStopProof::ExecutionTreeQuiescent => Ok(EnvironmentQuiescenceProof),
             EnvironmentStopProof::NoBoundProcesses
             | EnvironmentStopProof::Hand(HandStopProof::NoBinding)
             | EnvironmentStopProof::Hand(HandStopProof::AttachedProcessReaped) => {
