@@ -52,8 +52,8 @@ use crate::{
     policy_selects_requester,
 };
 use awaken_dispatch_contract::{
-    PhysicalAttemptSlot, PhysicalAttemptTransition, RunDispatch, begin_physical_attempt,
-    handoff_physical_attempt,
+    CommitEpochAdmission, PhysicalAttemptSlot, PhysicalAttemptTransition, RunDispatch,
+    begin_physical_attempt, classify_commit_epoch_admission, handoff_physical_attempt,
 };
 
 pub use crate::postgres_checkpoint::PostgresStreamCheckpointStore;
@@ -409,18 +409,33 @@ impl PostgresDispatchStore {
         .await
         .map_err(store_error)?;
         let request = match current {
-            Some((epoch, owner, expires_ms, Json(request), cancellation_requested))
-                if durable_u64("dispatch lease epoch", epoch)? == claim.epoch
-                    && owner.as_deref() == Some(&claim.owner) =>
-            {
-                expires_ms
-                    .map(|expires_ms| {
-                        durable_u64("dispatch lease expiry", expires_ms)
-                            .map(|expires_ms| (request, expires_ms, cancellation_requested != 0))
-                    })
-                    .transpose()?
+            None => None,
+            Some((epoch, owner, expires_ms, Json(request), cancellation_requested)) => {
+                let epoch = durable_u64("dispatch lease epoch", epoch)?;
+                match classify_commit_epoch_admission(
+                    true,
+                    owner.is_some(),
+                    expires_ms.is_some(),
+                    owner.as_deref() == Some(&claim.owner),
+                    epoch == claim.epoch,
+                ) {
+                    CommitEpochAdmission::Fenced => None,
+                    CommitEpochAdmission::Corrupt => {
+                        return Err(DispatchError::Rejected(
+                            "current dispatch claim has incomplete lease authority".to_string(),
+                        ));
+                    }
+                    CommitEpochAdmission::Guarded => {
+                        let expires_ms =
+                            expires_ms.expect("guard admission requires a complete lease expiry");
+                        Some((
+                            request,
+                            durable_u64("dispatch lease expiry", expires_ms)?,
+                            cancellation_requested != 0,
+                        ))
+                    }
+                }
             }
-            Some(_) | None => None,
         };
         Ok(
             request.map(|(request, expires_ms, cancellation_requested)| {

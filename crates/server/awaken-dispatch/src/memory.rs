@@ -39,9 +39,10 @@ use crate::{
     DispatchPage, LeaseLossReason,
 };
 use awaken_dispatch_contract::{
-    CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition,
-    PhysicalAttemptSlot, PhysicalAttemptTransition, RelinquishTransition, RunDispatch,
-    begin_physical_attempt, finish_physical_attempt, handoff_physical_attempt,
+    CancelTransition, CommitEpochAdmission, DispatchTransition, DispatchTransitionError,
+    GuardedTransition, PhysicalAttemptSlot, PhysicalAttemptTransition, RelinquishTransition,
+    RunDispatch, begin_physical_attempt, classify_commit_epoch_admission, finish_physical_attempt,
+    handoff_physical_attempt,
 };
 
 mod outbox;
@@ -87,25 +88,31 @@ fn guarded_claim_row(
     state: &State,
     claim: &RunClaim,
     required_state: DispatchState,
-) -> Option<(RunDispatch, u64, bool)> {
-    state.rows.get(&claim.run_id).and_then(|row| {
-        (row.state == required_state
-            && row.lease_epoch == claim.epoch
-            && row
-                .lease
-                .as_ref()
-                .is_some_and(|lease| lease.owner == claim.owner))
-        .then(|| {
-            (
+) -> Result<Option<(RunDispatch, u64, bool)>, DispatchError> {
+    let Some(row) = state.rows.get(&claim.run_id) else {
+        return Ok(None);
+    };
+    let lease = row.lease.as_ref();
+    match classify_commit_epoch_admission(
+        row.state == required_state,
+        lease.is_some(),
+        lease.is_some(),
+        lease.is_some_and(|lease| lease.owner == claim.owner),
+        row.lease_epoch == claim.epoch,
+    ) {
+        CommitEpochAdmission::Fenced => Ok(None),
+        CommitEpochAdmission::Corrupt => Err(DispatchError::Rejected(
+            "current dispatch claim has incomplete lease authority".to_string(),
+        )),
+        CommitEpochAdmission::Guarded => {
+            let lease = lease.expect("guard admission requires a complete lease");
+            Ok(Some((
                 row.request.clone(),
-                row.lease
-                    .as_ref()
-                    .expect("matched claim has a lease")
-                    .expires_ms,
+                lease.expires_ms,
                 row.cancellation_requested,
-            )
-        })
-    })
+            )))
+        }
+    }
 }
 
 impl Row {
@@ -206,7 +213,7 @@ impl MemoryDispatchStore {
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
         let guard = self.authority.clone().lock_owned().await;
         let state = lock(&self.state)?;
-        let guarded = guarded_claim_row(&state, claim, required_state);
+        let guarded = guarded_claim_row(&state, claim, required_state)?;
         drop(state);
         Ok(
             guarded.map(|(request, expires_ms, cancellation_requested)| {

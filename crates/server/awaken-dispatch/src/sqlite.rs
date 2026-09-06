@@ -44,8 +44,8 @@ use crate::{
     policy_selects_requester,
 };
 use awaken_dispatch_contract::{
-    PhysicalAttemptSlot, PhysicalAttemptTransition, RunDispatch, begin_physical_attempt,
-    handoff_physical_attempt,
+    CommitEpochAdmission, PhysicalAttemptSlot, PhysicalAttemptTransition, RunDispatch,
+    begin_physical_attempt, classify_commit_epoch_admission, handoff_physical_attempt,
 };
 
 mod claim;
@@ -423,28 +423,35 @@ impl SqliteDispatchStore {
                 .map_err(store_error)
             })
             .await?;
-        let request = current
-            .map(
-                |(epoch, owner, expires_ms, request, cancellation_requested)| {
-                    let epoch = durable_u64("dispatch lease epoch", epoch)?;
-                    if epoch != claim.epoch || owner.as_deref() != Some(&claim.owner) {
-                        return Ok(None);
+        let request = match current {
+            None => None,
+            Some((epoch, owner, expires_ms, request, cancellation_requested)) => {
+                let epoch = durable_u64("dispatch lease epoch", epoch)?;
+                match classify_commit_epoch_admission(
+                    true,
+                    owner.is_some(),
+                    expires_ms.is_some(),
+                    owner.as_deref() == Some(&claim.owner),
+                    epoch == claim.epoch,
+                ) {
+                    CommitEpochAdmission::Fenced => None,
+                    CommitEpochAdmission::Corrupt => {
+                        return Err(DispatchError::Rejected(
+                            "current dispatch claim has incomplete lease authority".to_string(),
+                        ));
                     }
-                    let expires_ms = expires_ms.ok_or_else(|| {
-                        DispatchError::Rejected(
-                            "current dispatch claim has no lease expiry".to_string(),
-                        )
-                    })?;
-                    let request = serde_json::from_str(&request).map_err(json_err)?;
-                    Ok(Some((
-                        request,
-                        durable_u64("dispatch lease expiry", expires_ms)?,
-                        cancellation_requested != 0,
-                    )))
-                },
-            )
-            .transpose()?
-            .flatten();
+                    CommitEpochAdmission::Guarded => {
+                        let expires_ms =
+                            expires_ms.expect("guard admission requires a complete lease expiry");
+                        Some((
+                            serde_json::from_str(&request).map_err(json_err)?,
+                            durable_u64("dispatch lease expiry", expires_ms)?,
+                            cancellation_requested != 0,
+                        ))
+                    }
+                }
+            }
+        };
         Ok(
             request.map(|(request, expires_ms, cancellation_requested)| {
                 CommitEpochGuard::new(guard, request, expires_ms, cancellation_requested)
