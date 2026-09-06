@@ -62,9 +62,15 @@ permission authority, Git-control message type or tool catalog is introduced.
 The helper keeps one private socket for all clients in the attempt. Each local
 connection becomes an independent Yamux byte stream over the one attached
 channel, using ConnectionPlan's bounded multiplexer. SessionToolExporter serves
-one existing MCP JSON-RPC peer per stream with the same tool service; request IDs
+one existing MCP JSON-RPC peer per stream with the same tool host; request IDs
 and client EOF are isolated without rewriting IDs or replaying calls. This
 supports SDKs that open multiple connector processes during an ACP lifetime.
+The canonical MCP service creates connection-local request/cancellation state
+while retaining the same export source and gate. Stdio allocates it per peer;
+HTTP's existing session registry retains it under the negotiated session ID,
+including notifications and progress responses. Headerless HTTP calls are
+stateless and cannot cancel another client's invocation. No application call ID,
+permission ticket or Runtime ownership changes with this protocol scope.
 The helper's versioned `AWAKEN_SOCKET_STDIO_MUX_V1_READY` preamble replaces the
 old raw-stream contract: Host and image helpers must be upgraded together, and
 an old helper fails readiness before export or primary launch.

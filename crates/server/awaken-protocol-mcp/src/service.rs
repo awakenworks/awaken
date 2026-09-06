@@ -76,6 +76,17 @@ impl McpToolService {
         }
     }
 
+    /// Protocol state belongs to one client; tool membership and the gate stay
+    /// on the shared host. Both stdio and HTTP use this same connection boundary.
+    pub(crate) fn new_connection(&self) -> Self {
+        Self {
+            core: self.core.new_connection(),
+            host: self.host.clone(),
+            context: AwakenMcpContext::default(),
+            source: self.source.clone(),
+        }
+    }
+
     /// Gate every external `tools/call` (deny/ask outcomes become model-visible
     /// error results, never silent execution).
     #[must_use]

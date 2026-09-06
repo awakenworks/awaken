@@ -18,7 +18,7 @@
 //!
 //! Mount the router alongside the other protocol routers (A2A, AG-UI, …).
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::{Arc, RwLock};
 
@@ -63,7 +63,7 @@ struct HttpState {
     service: Arc<McpToolService>,
     bearer_token: Option<String>,
     /// Sessions opened by `initialize` and not yet DELETEd.
-    sessions: RwLock<HashSet<String>>,
+    sessions: RwLock<HashMap<String, Arc<McpToolService>>>,
     /// Server->client notifications fanned out to every standing GET stream.
     notifications: broadcast::Sender<Value>,
 }
@@ -73,7 +73,7 @@ struct HttpState {
 pub fn router(service: Arc<McpToolService>, config: McpHttpConfig) -> Router {
     let state = Arc::new(HttpState {
         bearer_token: config.bearer_token,
-        sessions: RwLock::new(HashSet::new()),
+        sessions: RwLock::new(HashMap::new()),
         notifications: broadcast::channel(64).0,
         service: Arc::clone(&service),
     });
@@ -134,33 +134,36 @@ async fn handle_post(
     let id = message.get("id").filter(|value| !value.is_null()).cloned();
     let params = message.get("params").cloned().unwrap_or(Value::Null);
 
+    let is_initialize = method == Some("initialize") && id.is_some();
+    // Existing HTTP session identity owns the same connection-scoped state as
+    // stdio. Notifications must resolve it too, including cancellation. A
+    // headerless request is stateless and cannot cancel another client's call.
+    let service = if !is_initialize && let Some(session) = header_value(&headers, SESSION_HEADER) {
+        let Some(service) = state
+            .sessions
+            .read()
+            .expect("session lock")
+            .get(&session)
+            .cloned()
+        else {
+            return (StatusCode::NOT_FOUND, "unknown session").into_response();
+        };
+        service
+    } else {
+        Arc::new(state.service.new_connection())
+    };
     if let (Some(method), Some(id)) = (method, id.as_ref()) {
-        if method != "initialize" {
-            // A stale session (server restarted, or DELETEd) is 404: the
-            // client reacts by re-initializing, per the Streamable HTTP spec.
-            if let Some(session) = header_value(&headers, SESSION_HEADER)
-                && !state
-                    .sessions
-                    .read()
-                    .expect("session lock")
-                    .contains(&session)
-            {
-                return (StatusCode::NOT_FOUND, "unknown session").into_response();
-            }
-        }
         let wants_progress = method == "tools/call"
             && params
                 .get("_meta")
                 .and_then(|meta| meta.get("progressToken"))
                 .is_some_and(|token| !token.is_null());
         if wants_progress {
-            return progress_call_response(&state, id.clone(), method.to_string(), params);
+            return progress_call_response(service, id.clone(), method.to_string(), params);
         }
     }
 
-    let is_initialize = method == Some("initialize") && id.is_some();
-    let reply = state
-        .service
+    let reply = service
         .handle_http(&headers, body.as_bytes(), &NullSink)
         .await;
     let successful_initialize = is_initialize
@@ -175,7 +178,7 @@ async fn handle_post(
             .sessions
             .write()
             .expect("session lock")
-            .insert(session.clone());
+            .insert(session.clone(), service);
         response.headers_mut().insert(
             SESSION_HEADER,
             session
@@ -189,13 +192,12 @@ async fn handle_post(
 /// Answer a progress-tracked `tools/call` with an SSE stream: each progress
 /// notification is one event, and the final JSON-RPC response ends the stream.
 fn progress_call_response(
-    state: &Arc<HttpState>,
+    service: Arc<McpToolService>,
     id: Value,
     method: String,
     params: Value,
 ) -> Response {
     let (events_tx, events_rx) = mpsc::channel::<Value>(64);
-    let service = Arc::clone(&state.service);
     tokio::spawn(async move {
         let sink = Arc::new(SseResponseSink {
             events: events_tx.clone(),

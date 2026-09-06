@@ -160,6 +160,17 @@ where
         }
     }
 
+    /// Give a transport connection its own request/cancellation namespace while
+    /// retaining the same host port and advertised server contract.
+    #[must_use]
+    pub fn new_connection(&self) -> Self
+    where
+        H: Clone,
+    {
+        Self::new(self.name.clone(), self.version.clone(), self.host.clone())
+            .with_tools_list_changed(self.tools_list_changed)
+    }
+
     /// Declare whether this server can emit `notifications/tools/list_changed`.
     ///
     /// The safe default is `false`: a fixed tool set must not advertise a
