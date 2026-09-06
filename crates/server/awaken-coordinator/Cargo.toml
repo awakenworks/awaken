@@ -125,6 +125,7 @@ url.workspace = true
 [features]
 # Volatile embedded/scenario assembly is excluded from product builds.
 test-support = [
+    "awaken-session-application/test-support",
     "awaken-webhook-managed/test-support",
     "dep:awaken-store-inmem",
     "dep:awaken-resource-persistence",

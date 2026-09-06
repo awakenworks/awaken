@@ -21,6 +21,106 @@ impl TerminalCleanupWorkerRevalidation {
 }
 
 impl SessionApplication {
+    #[cfg(feature = "test-support")]
+    async fn observe_realization_root(&self, point: &'static str, id: &str) {
+        use awaken_session_contract::realization_observation as observation;
+        if observation::enabled() {
+            let root = match self.sessions_repo.get(id).await {
+                Ok(root) => root,
+                Err(error) => {
+                    observation::checkpoint(
+                        point,
+                        id,
+                        serde_json::json!({"read_error": error.to_string()}),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            let attachments = root.mcp.attachments.iter().map(|a| serde_json::json!({
+                "key": serde_json::to_string(&(a.attachment_id.0.as_str(), a.generation.0)).unwrap(),
+                "state": a.state, "ack": a.publication_acknowledged,
+                "claim": a.realization,
+            })).collect::<Vec<_>>();
+            observation::checkpoint(
+                point,
+                id,
+                serde_json::json!({
+                    "revision": root.revision.0, "created": root.created_at_unix_ms,
+                    "updated": root.updated_at_unix_ms, "lease": root.realization,
+                    "attachments": attachments,
+                }),
+            )
+            .await;
+        }
+    }
+
+    pub(super) async fn begin_session_realization_after_refresh(
+        &self,
+        command: BeginSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        #[cfg(feature = "test-support")]
+        let id = command.session_id.clone();
+        #[cfg(feature = "test-support")]
+        self.observe_realization_root("begin-before", &id).await;
+        let result = self.begin_session_realization_inner(command).await;
+        #[cfg(feature = "test-support")]
+        self.observe_realization_root(
+            if result.is_ok() {
+                "begin-after"
+            } else {
+                "begin-error"
+            },
+            &id,
+        )
+        .await;
+        result
+    }
+
+    pub(super) async fn activate_session_realization_after_refresh(
+        &self,
+        command: ActivateSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        #[cfg(feature = "test-support")]
+        let id = command.session_id.clone();
+        #[cfg(feature = "test-support")]
+        self.observe_realization_root("activate-before", &id).await;
+        let result = self.activate_session_realization_inner(command).await;
+        #[cfg(feature = "test-support")]
+        self.observe_realization_root(
+            if result.is_ok() {
+                "activate-after"
+            } else {
+                "activate-error"
+            },
+            &id,
+        )
+        .await;
+        result
+    }
+
+    pub(super) async fn acknowledge_session_realization_after_refresh(
+        &self,
+        command: AcknowledgeSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        #[cfg(feature = "test-support")]
+        let id = command.session_id.clone();
+        #[cfg(feature = "test-support")]
+        self.observe_realization_root("ack-before", &id).await;
+        let result = self.acknowledge_session_realization_inner(command).await;
+        #[cfg(feature = "test-support")]
+        self.observe_realization_root(
+            if result.is_ok() {
+                "ack-after"
+            } else {
+                "ack-error"
+            },
+            &id,
+        )
+        .await;
+        result
+    }
+
     /// Extend only the existing root-owned realization fence. Renewal never
     /// resolves executable catalogs, pins credentials, materializes transcript
     /// context, or advances pending MCP/Resource desired state.
@@ -113,7 +213,7 @@ impl SessionApplication {
         Err(SessionRealizationControlFailure::Conflict)
     }
 
-    pub(super) async fn begin_session_realization_after_refresh(
+    pub(super) async fn begin_session_realization_inner(
         &self,
         command: BeginSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
@@ -309,7 +409,7 @@ impl SessionApplication {
         Err(SessionRealizationControlFailure::Conflict)
     }
 
-    async fn activate_session_realization_after_refresh(
+    async fn activate_session_realization_inner(
         &self,
         command: ActivateSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
@@ -484,7 +584,7 @@ impl SessionApplication {
         .await
     }
 
-    async fn acknowledge_session_realization_after_refresh(
+    async fn acknowledge_session_realization_inner(
         &self,
         command: AcknowledgeSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {

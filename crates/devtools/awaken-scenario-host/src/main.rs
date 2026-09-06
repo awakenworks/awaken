@@ -116,6 +116,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // typed policy production receives from config.toml. The observability adapter
     // itself has no ambient compatibility path. Split Control owns this lifecycle
     // inside `serve_prepared_control` and returned above before a second init.
+    awaken_scenario_host::realization_observation::install_from_environment();
     let observability = scenario_observability();
     awaken_observability::init(&observability);
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());

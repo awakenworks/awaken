@@ -129,14 +129,15 @@
     }
   ],
   "session_observations": {
-    "projection_id": "session-observations-v1",
-    "schema_version": 1,
+    "projection_id": "session-observations-v3",
+    "schema_version": 3,
     "scope": "Executed production-call traces of durable observations, not universal implementation refinement. Models own the relations; this manifest owns field erasure and mandatory scenario coverage.",
     "erased_fields": [
       "Session payloads and repository engine internals; root traces retain revision, existence and times.",
-      "Each publication observation fixes its Session and retains attachment/generation set identities. Lease/holder/target axes are checked separately by production admission tests and Kani; they are not retained in this set projection.",
+      "Each independent publication-set observation fixes its Session and retains attachment/generation set identities. Lease/holder/target axes are checked separately by production admission tests and Kani; they are not retained in this set projection.",
       "Store traces retain committed sequence/time pairs. The same Rust test compares all recovered facts against the full committed snapshot; those content semantics are erased from this TLA projection.",
-      "Time values use one injective increasing rank map per scenario because TLC integers cannot contain real millisecond clocks. This preserves and reflects the canonical relations using equality/order/max only, retains unknown values, and never rewrites the raw Rust trace."
+      "Time values use one injective increasing rank map per scenario because TLC integers cannot contain real millisecond clocks. This preserves and reflects the canonical relations using equality/order/max only, retains unknown values, and never rewrites the raw Rust trace.",
+      "Continuous HTTP traces retain execution sequence/Session, durable root revision/times/lease, attachment active/ACK sets, complete generation coordinates in root claims/directives/completed calls/reports, and stage/publish/drain ordering. Target credentials, process scheduling between checkpoints and provider internals are erased; this checks only recorded paths through the canonical driver, not every implementation execution."
     ],
     "families": {
       "root": {
@@ -188,52 +189,124 @@
           "committed"
         ],
         "dependencies": []
+      },
+      "realization": {
+        "model": "SessionRealizationMutex",
+        "config": "SessionRealizationRenewal",
+        "operator": "RealizationTraceIsRefinement",
+        "arguments": [
+          "trace",
+          "cut",
+          "count"
+        ],
+        "dependencies": []
       }
     },
     "required_scenarios": {
       "binding-apply": {
         "family": "root",
-        "source": "crates/server/awaken-session-application/src/tests/authority.rs"
+        "source": "crates/server/awaken-session-application/src/tests/authority.rs",
+        "rules": [
+          "binding-apply"
+        ]
       },
       "binding-replay": {
         "family": "root",
-        "source": "crates/server/awaken-session-application/src/tests/authority.rs"
+        "source": "crates/server/awaken-session-application/src/tests/authority.rs",
+        "rules": [
+          "binding-replay"
+        ]
       },
       "binding-reject": {
         "family": "root",
-        "source": "crates/server/awaken-session-application/src/tests/authority.rs"
+        "source": "crates/server/awaken-session-application/src/tests/authority.rs",
+        "rules": [
+          "binding-reject"
+        ]
       },
       "root-lost-ack": {
         "family": "root",
-        "source": "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs"
+        "source": "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs",
+        "rules": [
+          "root-lost-ack"
+        ]
       },
       "root-reject": {
         "family": "root",
-        "source": "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs"
+        "source": "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs",
+        "rules": [
+          "root-reject"
+        ]
       },
       "root-crash-recovery": {
         "family": "root",
-        "source": "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs"
+        "source": "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs",
+        "rules": [
+          "before",
+          "after"
+        ]
       },
       "processed-first-replay-terminal": {
         "family": "processed",
-        "source": "crates/contract/awaken-session-contract/src/event_batches.rs"
+        "source": "crates/contract/awaken-session-contract/src/event_batches.rs",
+        "rules": [
+          "first",
+          "replay",
+          "reject",
+          "terminal"
+        ]
       },
       "publication-cardinality-renewal": {
         "family": "publication",
-        "source": "crates/server/awaken-session-application/src/tests/realization.rs"
+        "source": "crates/server/awaken-session-application/src/tests/realization.rs",
+        "rules": [
+          "count-0-predecessor-false-renewed-false",
+          "count-0-predecessor-false-renewed-true",
+          "count-1-predecessor-false-renewed-false",
+          "count-1-predecessor-false-renewed-true",
+          "count-1-predecessor-true-renewed-false",
+          "count-1-predecessor-true-renewed-true",
+          "count-2-predecessor-false-renewed-false",
+          "count-2-predecessor-false-renewed-true",
+          "count-2-predecessor-true-renewed-false",
+          "count-2-predecessor-true-renewed-true"
+        ]
       },
       "store-torn-prefix": {
         "family": "store",
-        "source": "crates/stores/awaken-store-fs/tests/recovery.rs"
-      },
-      "publication-crash-recovery": {
-        "family": "publication",
-        "source": "crates/server/awaken-session-application/src/tests/observation_refinement.rs"
+        "source": "crates/stores/awaken-store-fs/tests/recovery.rs",
+        "rules": [
+          "partial",
+          "complete"
+        ]
       },
       "binding-clock-cases": {
         "family": "root",
-        "source": "crates/server/awaken-session-application/src/tests/authority.rs"
+        "source": "crates/server/awaken-session-application/src/tests/authority.rs",
+        "rules": [
+          "legacy",
+          "equal",
+          "backward"
+        ]
+      },
+      "realization-http-crashes": {
+        "family": "realization",
+        "source": "e2e/managed_mcp_recovery_e2e.ts",
+        "rules": [
+          "stage-1",
+          "publish-one-1",
+          "drain-one-1",
+          "published-1",
+          "ack-after-1",
+          "stage-2",
+          "publish-one-2",
+          "drain-one-2",
+          "published-2",
+          "ack-after-2",
+          "drain-one-0",
+          "published-0",
+          "ack-after-0"
+        ]
       }
     }
   }

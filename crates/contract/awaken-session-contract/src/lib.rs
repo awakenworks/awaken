@@ -10,6 +10,9 @@
 //! Protocol adapters consume these contracts directly; this crate remains the
 //! single definition site for neutral Session and cross-Session process semantics.
 
+#[cfg(feature = "test-support")]
+pub mod realization_observation;
+
 mod agent_config;
 mod baseline;
 mod budget;

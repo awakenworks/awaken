@@ -192,6 +192,9 @@ CHECK_DEADLOCK FALSE
     return module_path, config_path
 
 
+OBSERVATION_SET_FIELDS = {'active', 'acked', 'known', 'staged', 'published', 'drained', 'expectstage', 'expectpub', 'expectdrain', 'reportedpub', 'reporteddrain', 'planstage', 'planpub', 'plandrain', 'stagefacts', 'publishfacts', 'drainfacts', 'rootrefs', 'pending', 'retiring'}
+
+
 def observation_value(value: Any, *, as_set: bool = False) -> str:
     if value is None:
         return "UnknownTime"
@@ -205,7 +208,7 @@ def observation_value(value: Any, *, as_set: bool = False) -> str:
         body = ", ".join(observation_value(item) for item in value)
         return "{" + body + "}" if as_set else "<<" + body + ">>"
     if isinstance(value, dict) and value and all(re.fullmatch(r"[a-z][a-z_]*", key) for key in value):
-        return "[" + ", ".join(f"{key} |-> {observation_value(item)}" for key, item in value.items()) + "]"
+        return "[" + ", ".join(f"{key} |-> {observation_value(item, as_set=key in OBSERVATION_SET_FIELDS)}" for key, item in value.items()) + "]"
     raise ValueError(f"unsupported observation value: {value!r}")
 
 
@@ -217,7 +220,7 @@ def normalize_observation_times(steps: list[dict[str, Any]]) -> list[dict[str, A
     entire scenario therefore preserves AND reflects their truth, including
     deliberately corrupted timestamps. Revision/cursor fields are unchanged.
     """
-    time_keys = {"now", "created", "updated", "time"}
+    time_keys = {"now", "created", "updated", "time", "expiry", "authoritytime"}
     times: set[int] = set()
 
     def visit(value: Any, mapping: dict[int, int] | None = None, key: str = "") -> Any:
@@ -236,6 +239,156 @@ def normalize_observation_times(steps: list[dict[str, Any]]) -> list[dict[str, A
 
     visit(steps)
     return visit(steps, {time: rank for rank, time in enumerate(sorted(times), 1)})
+
+
+# The wire contract is emitted at the existing Rust driver/root boundaries.
+# These schemas validate its selected fields; they never authorize transitions.
+LEASE_SCHEMA = {"owner": "text", "runtime_incarnation": "text", "epoch": "uint", "expires_at_unix_ms": "uint"}
+GENERATION_SCHEMA = {"session_id": "text", "attachment_id": "text", "generation": "uint", "runtime_incarnation": "text", "lease_epoch": "uint", "lease_expires_at_unix_ms": "uint"}
+CLAIM_SCHEMA = {"realization_id": "text", "runtime_incarnation": "text", "lease_epoch": "uint", "lease_expires_at_unix_ms": "uint", "stage_idempotency_key": "text"}
+ATTACHMENT_SCHEMA = {"key": "text", "state": ("requested", "realizing", "active", "draining", "removed", "failed"), "ack": "bool", "claim": (None, CLAIM_SCHEMA)}
+ROOT_SCHEMA = {"revision": "uint", "created": (None, "uint"), "updated": (None, "uint"), "lease": (None, LEASE_SCHEMA), "attachments": [ATTACHMENT_SCHEMA]}
+ACTION_SCHEMAS = {"stage": {"phase": ("stage",), "generations": [GENERATION_SCHEMA]},
+    "publish": {"phase": ("publish",), "publish": [GENERATION_SCHEMA], "drain": [GENERATION_SCHEMA]},
+    "complete": {"phase": ("complete",)}}
+EVENT_SCHEMAS = {**{point: ROOT_SCHEMA for point in ("begin-before", "begin-after", "activate-before", "activate-after", "ack-before", "ack-after")},
+    "stage": {"lease": LEASE_SCHEMA, "generations": [GENERATION_SCHEMA]},
+    "publish-one": {"generation": GENERATION_SCHEMA}, "drain-one": {"generation": GENERATION_SCHEMA},
+    "published": {"lease": LEASE_SCHEMA, "published": [GENERATION_SCHEMA], "drained": [GENERATION_SCHEMA]},
+    "complete": {"lease": LEASE_SCHEMA}, "crash": {}}
+
+
+def validate_observation_schema(value: Any, schema: Any, path: str) -> None:
+    valid = True
+    if isinstance(schema, dict):
+        valid = isinstance(value, dict) and set(value) == set(schema)
+        if valid:
+            for key, child in schema.items(): validate_observation_schema(value[key], child, f"{path}.{key}")
+    elif isinstance(schema, list):
+        valid = isinstance(value, list)
+        if valid:
+            for index, child in enumerate(value): validate_observation_schema(child, schema[0], f"{path}[{index}]")
+            if schema[0] == GENERATION_SCHEMA:
+                identities = [(g["attachment_id"], g["generation"]) for g in value]
+                valid = len(identities) == len(set(identities))
+            elif schema[0] == ATTACHMENT_SCHEMA:
+                valid = len(value) == len({a["key"] for a in value})
+    elif isinstance(schema, tuple):
+        if schema[0] is None:
+            if value is not None: validate_observation_schema(value, schema[1], path)
+        else: valid = type(value) is str and value in schema
+    elif schema == "text": valid = type(value) is str and bool(value)
+    elif schema == "uint": valid = type(value) is int and 0 <= value <= 2**64 - 1
+    elif schema == "bool": valid = type(value) is bool
+    else: raise AssertionError(f"unknown observation schema: {schema}")
+    if not valid: raise ValueError(f"observation schema violation at {path}")
+
+
+def realization_event_schema(event: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(event, dict) or set(event) != {"sequence", "session", "point", "data"}:
+        raise ValueError("observation schema violation at event")
+    point = event["point"]
+    if type(point) is not str: raise ValueError("observation schema violation at event.point")
+    if point == "projection":
+        data = event["data"]
+        action = data.get("action") if isinstance(data, dict) else None
+        phase = action.get("phase") if isinstance(action, dict) else None
+        if type(phase) is not str or phase not in ACTION_SCHEMAS:
+            raise ValueError("observation schema violation at event.data.action.phase")
+        data_schema = {"lease": LEASE_SCHEMA, "action": ACTION_SCHEMAS[phase]}
+    elif point in EVENT_SCHEMAS: data_schema = EVENT_SCHEMAS[point]
+    else: raise ValueError("observation schema violation at event.point")
+    return {"sequence": "uint", "session": "text", "point": (point,), "data": data_schema}
+
+
+def project_generation(g: dict[str, Any]) -> dict[str, Any]:
+    return {"key": json.dumps([g["attachment_id"], g["generation"]], separators=(",", ":")),
+        "session": g["session_id"], "incarnation": g["runtime_incarnation"],
+        "epoch": g["lease_epoch"], "expiry": g["lease_expires_at_unix_ms"]}
+
+
+def project_realization_trace(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Retain complete generation coordinates at directive/call/report seams.
+
+    Shape errors fail before projection. No missing required observation is
+    synthesized. Root fields are explicitly last-observed durable facts; only
+    the TLA relation admits transitions or authorizes generations.
+    """
+    if not isinstance(events, list) or not events: raise ValueError("observation schema violation at trace")
+    state: dict[str, Any] = {}
+    trace = []
+    effect_fields = ("staged", "published", "drained", "stagefacts", "publishfacts", "drainfacts")
+    plan_fields = ("expectstage", "expectpub", "expectdrain", "planstage", "planpub", "plandrain")
+    for event in events:
+        validate_observation_schema(event, realization_event_schema(event), "event")
+        data, point = event["data"], event["point"]
+        if "attachments" in data:
+            lease = data["lease"]
+            state.update(revision=data["revision"], created=data["created"], updated=data["updated"],
+                owner=lease["owner"] if lease else "none", incarnation=lease["runtime_incarnation"] if lease else "none",
+                epoch=lease["epoch"] if lease else 0, expiry=lease["expires_at_unix_ms"] if lease else 0,
+                active=sorted(a["key"] for a in data["attachments"] if a["state"] == "active"),
+                acked=sorted(a["key"] for a in data["attachments"] if a["state"] == "active" and a["ack"]),
+                known=sorted(a["key"] for a in data["attachments"]),
+                pending=sorted(a["key"] for a in data["attachments"] if a["state"] in {"requested", "realizing"}),
+                retiring=sorted(a["key"] for a in data["attachments"] if a["state"] == "draining"),
+                rootrefs=[dict(key=a["key"], session=event["session"], incarnation=a["claim"]["runtime_incarnation"],
+                    epoch=a["claim"]["lease_epoch"], expiry=a["claim"]["lease_expires_at_unix_ms"])
+                    for a in data["attachments"] if a["claim"] is not None])
+        if not state: raise ValueError("realization trace must begin with an observed root")
+        for field in (*effect_fields, *plan_fields): state.setdefault(field, [])
+        state.setdefault("action", "none")
+        effects = data["generations"] if point == "stage" else [data["generation"]] if point in {"publish-one", "drain-one"} else []
+        projected_effects = [project_generation(g) for g in effects]
+        if point == "projection":
+            action = data["action"]
+            state["action"] = action["phase"]
+            for source, keys, facts in [("generations", "expectstage", "planstage"), ("publish", "expectpub", "planpub"), ("drain", "expectdrain", "plandrain")]:
+                state[facts] = [project_generation(g) for g in action.get(source, [])]
+                state[keys] = sorted(g["key"] for g in state[facts])
+        for event_point, keys, facts in [("stage", "staged", "stagefacts"), ("publish-one", "published", "publishfacts"), ("drain-one", "drained", "drainfacts")]:
+            if point == event_point:
+                state[keys] = sorted(set(state[keys]) | {g["key"] for g in projected_effects})
+                state[facts] = state[facts] + [g for g in projected_effects if g not in state[facts]]
+        if point == "crash":
+            for field in (*effect_fields, *plan_fields): state[field] = []
+            state["action"] = "none"
+        authority = data.get("lease")  # Optional only for roots and non-lease event kinds.
+        trace.append(dict(state, sequence=event["sequence"], session=event["session"], event=point, effects=projected_effects,
+            hasauthority=authority is not None,
+            authorityowner=authority["owner"] if authority else "none",
+            authorityincarnation=authority["runtime_incarnation"] if authority else "none",
+            authorityepoch=authority["epoch"] if authority else 0,
+            authoritytime=authority["expires_at_unix_ms"] if authority else 0,
+            reportedpub=[project_generation(g) for g in data.get("published", [])],
+            reporteddrain=[project_generation(g) for g in data.get("drained", [])]))
+    return trace
+
+
+def validate_observation_rule(name: str, step: dict[str, Any]) -> None:
+    """Bind partition labels to raw measured conditions; model owns outcomes."""
+    rule = step["rule"]
+    if name == "publication-cardinality-renewal":
+        match = re.fullmatch(r"count-(\d+)-predecessor-(true|false)-renewed-(true|false)", rule)
+        count, predecessor, renewed = match.groups()
+        cause = step["cause"]
+        if (len(step["active"]) != int(count)
+                or bool(set(step["staged"]) - set(step["active"])) != (predecessor == "true")
+                or (cause["expiry_after"] > cause["expiry_before"]) != (renewed == "true")
+                or cause["expiry_after"] < cause["expiry_before"]):
+            raise ValueError("observation rule conditions drift")
+    elif name == "realization-http-crashes":
+        if rule != f'{step["cut"]}-{step["count"]}':
+            raise ValueError("observation rule conditions drift")
+    elif name == "binding-clock-cases":
+        before, now = step["before"]["updated"], step["now"]
+        actual = "legacy" if before is None else "equal" if before == now else "backward" if before > now else "forward"
+        if actual != rule:
+            raise ValueError("observation rule conditions drift")
+    elif name == "store-torn-prefix":
+        actual = "partial" if len(step["recovered"]) < len(step["committed"]) else "complete"
+        if actual != rule:
+            raise ValueError("observation rule conditions drift")
 
 
 def render_observations(trace_dir: Path, output: Path, repository: Path, manifest: dict[str, Any], require_complete: bool) -> int:
@@ -262,9 +415,19 @@ def render_observations(trace_dir: Path, output: Path, repository: Path, manifes
         steps = document["steps"]
         if not steps:
             raise ValueError(f"empty observation scenario: {name}")
+        rules = [step.get("rule") for step in steps]
+        required = scenario["rules"]
+        if len(rules) != len(set(rules)) or set(rules) != set(required):
+            raise ValueError(f"observation rule coverage drift in {name}: expected={required}, actual={rules}")
+        for step in steps:
+            validate_observation_rule(name, step)
+        if family == "publication":
+            steps = [{key: value for key, value in step.items() if key != "cause"} for step in steps]
+        if family == "realization":
+            steps = [dict(step, trace=project_realization_trace(step["trace"])) for step in steps]
         expressions = []
         for step in normalize_observation_times(steps):
-            if set(step) != set(arguments):
+            if set(step) != set(arguments) | {"rule"}:
                 raise ValueError(f"observation fields drift in {name}")
             values = [observation_value(step[key], as_set=family == "publication") for key in arguments]
             expressions.append(definition["operator"] + "(" + ", ".join(values) + ")")
@@ -286,7 +449,7 @@ def render_observations(trace_dir: Path, output: Path, repository: Path, manifes
         families.add(family)
     missing = sorted(set(profile["required_scenarios"]) - seen)
     missing_families = sorted(set(profile["families"]) - families)
-    report = {"projection_id": profile["projection_id"], "scenarios": sorted(seen), "missing": missing, "missing_families": missing_families, "complete": not missing and not missing_families}
+    report = {"projection_id": profile["projection_id"], "scenarios": sorted(seen), "rules": {name: profile["required_scenarios"][name]["rules"] for name in sorted(seen)}, "missing": missing, "missing_families": missing_families, "complete": not missing and not missing_families}
     (output / "session-observation-coverage.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"session observation coverage: {len(seen)} scenarios, missing={missing}, missing_families={missing_families}")
     if not seen or require_complete and (missing or missing_families):
