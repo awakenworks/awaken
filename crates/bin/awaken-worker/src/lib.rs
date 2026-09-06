@@ -1271,7 +1271,8 @@ impl WorkerNode {
             .with_acp_from_deployment(self.credential_materializer, self.brokered_acp_model_access)
             .await;
 
-        let host = Arc::new(host);
+        let authority = Arc::new(lifecycle::WorkerAuthorityProof::default());
+        let host = Arc::new(host.with_execution_authority(authority.clone()));
         let acp_capability_observation_source = match self.acp_capability_observation_source {
             Some(source) => Some(source),
             None => configured_container_acp_capability_source(&deployment, host.clone())
@@ -1292,6 +1293,7 @@ impl WorkerNode {
         drop(managed);
         let observations = Arc::new(WorkerObservationCache::default());
         let lifecycle = Arc::new(WorkerSupervisor {
+            authority,
             host: host.clone(),
             control: control.clone(),
             identity: registration.snapshot.identity,
@@ -1333,7 +1335,7 @@ impl WorkerNode {
         // A lease receipt proves no more time than remained when the request
         // started. Anchoring locally before I/O prevents response latency from
         // extending the Coordinator-owned expiry in the Worker process.
-        let initial_heartbeat_started = std::time::Instant::now();
+        let initial_heartbeat_started = lifecycle::ProofStarted::now()?;
         let initial_heartbeat = lifecycle.observations.snapshot().into_heartbeat(
             1,
             awaken_worker_contract::process_ready_after_startup(
@@ -1389,6 +1391,13 @@ impl WorkerNode {
                 std::io::Error::other("sandbox evidence expired before pool admission").into(),
             );
         }
+        if let Err(error) = lifecycle
+            .authority
+            .apply(initial_heartbeat_started, heartbeat_timing)
+        {
+            let _ = control.deregister(&lifecycle.identity).await;
+            return Err(error.into());
+        }
         host.ensure_dispatch_pool();
         let credential_probe = credential_liveness::spawn_probe(
             lifecycle.observations.clone(),
@@ -1402,7 +1411,6 @@ impl WorkerNode {
         let mut heartbeat = spawn_heartbeat(
             lifecycle.clone(),
             2,
-            initial_heartbeat_started,
             heartbeat_timing,
             environment_proof_started,
         );
@@ -1477,6 +1485,7 @@ impl WorkerNode {
             );
             let _ = host.drain_runtime(grace).await;
         }
+        lifecycle.authority.close();
         heartbeat.abort();
         credential_probe.abort();
         environment_warmups.abort();

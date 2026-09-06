@@ -29,16 +29,18 @@ impl<'a> ResourcePreparation<'a> {
         asserted: awaken_session_contract::SessionRealizationLease,
     ) -> Result<Self, crate::HostError> {
         let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
-        let (introduced_lease, changed) = host.session_slots.update(session, |slot| {
-            if slot.resource_preparation.is_some() {
-                return Err(crate::HostError::internal(
-                    "Resource preparation already holds its projection lock",
-                ));
-            }
-            let introduced = slot.realization_authority.lease().is_none();
-            slot.install_realization_lease(asserted.clone());
-            slot.resource_preparation = Some(cancellation.clone());
-            Ok((introduced, slot.realization_changed.clone()))
+        let (introduced_lease, changed) = host.authorize_worker_effect(|| {
+            host.session_slots.update(session, |slot| {
+                if slot.resource_preparation.is_some() {
+                    return Err(crate::HostError::internal(
+                        "Resource preparation already holds its projection lock",
+                    ));
+                }
+                let introduced = slot.realization_authority.lease().is_none();
+                slot.install_realization_lease(asserted.clone());
+                slot.resource_preparation = Some(cancellation.clone());
+                Ok((introduced, slot.realization_changed.clone()))
+            })
         })?;
         changed.notify_waiters();
         let preparation = Self {
@@ -215,12 +217,16 @@ impl crate::SharedHost {
             // replaced, or removed that projection. A renewal is not authority
             // to recreate a slot or overwrite a later installed lease.
             let applied = self
-                .session_slots
-                .modify(&session_id, |slot| {
-                    Arc::ptr_eq(&slot.realization, &realization)
-                        && slot.renew_realization_lease(&lease, renewed_lease)
+                .authorize_worker_effect(|| {
+                    Ok(self
+                        .session_slots
+                        .modify(&session_id, |slot| {
+                            Arc::ptr_eq(&slot.realization, &realization)
+                                 && slot.renew_realization_lease(&lease, renewed_lease)
+                        })
+                        .unwrap_or(false))
                 })
-                .unwrap_or(false);
+                .map_err(|error| (error, true))?;
             Ok(applied)
         }
         .await;

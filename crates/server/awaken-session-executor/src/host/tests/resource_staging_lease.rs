@@ -338,7 +338,8 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 );
                 let mut extended = lease.clone();
                 extended.expires_at_unix_ms += 120_000;
-                host.install_session_realization_lease(SESSION, extended.clone());
+                host.install_session_realization_lease(SESSION, extended.clone())
+                    .unwrap();
                 assert!(
                     host.session_slots.realization_leases().is_empty(),
                     "E3 assertion cannot reopen"
@@ -360,7 +361,8 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     assert!(host.session_slots.realization_leases().is_empty(), "E4");
                 }
                 extended.epoch += 1;
-                host.install_session_realization_lease(SESSION, extended.clone());
+                host.install_session_realization_lease(SESSION, extended.clone())
+                    .unwrap();
                 let claim = awaken_dispatch::RunClaim {
                     run_id: RunId("replacement".into()),
                     owner: "worker".into(),
@@ -442,13 +444,21 @@ const SESSION: &str = "cold-resource-lease";
 
 impl StagingFixture {
     fn new() -> Self {
+        Self::with_authority(None)
+    }
+
+    fn with_authority(
+        authority: Option<Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>>,
+    ) -> Self {
         let source = Arc::new(GatedFileSource::default());
         let control = Arc::new(RemoteTerminalCleanupControl::default());
-        let host = Arc::new(
-            SharedHost::new(Arc::new(OkModel), "stub")
-                .with_file_content_source(source.clone())
-                .with_session_control(control.clone()),
-        );
+        let mut host = SharedHost::new(Arc::new(OkModel), "stub")
+            .with_file_content_source(source.clone())
+            .with_session_control(control.clone());
+        if let Some(authority) = authority {
+            host = host.with_execution_authority(authority);
+        }
+        let host = Arc::new(host);
         let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let mut projection = remote_terminal_cleanup_projection();
         projection.resource_revision = 1;
@@ -525,6 +535,142 @@ impl StagingFixture {
         );
         assert!(self.host.thread_resource_manifest(SESSION).is_none());
     }
+}
+
+struct WorkerProofGate(std::sync::Mutex<bool>);
+
+impl awaken_provisioning_contract::CurrentExecutionAuthority for WorkerProofGate {
+    fn with_current(
+        &self,
+        effect: &mut dyn FnMut(std::time::Duration) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        let open = self.0.lock().unwrap();
+        if !*open {
+            return Err(std::io::ErrorKind::PermissionDenied.into());
+        }
+        effect(std::time::Duration::from_secs(30))
+    }
+}
+
+#[tokio::test]
+async fn worker_root_denies_fresh_and_replaced_projection_before_resource_io() {
+    // Cause/effect table: root closed; absent/existing slot; File/no Resource.
+    // | A1 | absent | File | deny preparation; no read or installed lease |
+    // | A2 | absent | none | deny complete publication |
+    // | A3 | existing old generation | File | cannot install replacement |
+    // | A4 | existing old generation | none | cannot publish replacement |
+    // Every case invokes the production complete installer, not just the test
+    // lease helper. Control's late valid Session claim cannot reopen this Worker.
+    for existing in [false, true] {
+        for resource in [false, true] {
+            let gate = Arc::new(WorkerProofGate(std::sync::Mutex::new(true)));
+            let mut f = StagingFixture::with_authority(Some(gate.clone()));
+            if existing {
+                f.host
+                    .install_session_realization_lease(SESSION, f.lease.clone())
+                    .unwrap();
+                f.lease.epoch += 1;
+            }
+            if !resource {
+                f.projection = remote_terminal_cleanup_projection();
+            }
+            *gate.0.lock().unwrap() = false;
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                f.host.install_frozen_session_projection(
+                    SESSION,
+                    f.projection.clone(),
+                    None,
+                    true,
+                    Some(f.lease.clone()),
+                ),
+            )
+            .await;
+            assert!(
+                result.unwrap().is_err(),
+                "A1-A4 denied before gated File read"
+            );
+            f.assert_unpublished();
+            assert_eq!(
+                f.host.session_slots.realization_leases().len(),
+                usize::from(existing)
+            );
+            if existing {
+                assert_eq!(
+                    f.host.session_slots.realization_leases()[0].1.epoch,
+                    f.lease.epoch - 1
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn worker_root_close_during_preparation_prevents_completion_and_reentry() {
+    // A5 admission wins first: the SAME preparation appears in cohort selection.
+    // Root closes -> cohort closes/cancels -> File finishes late. Effects: no
+    // executable projection, no lease reentry; cleanup remains separately owned.
+    let gate = Arc::new(WorkerProofGate(std::sync::Mutex::new(true)));
+    let f = StagingFixture::with_authority(Some(gate.clone()));
+    let task = f.start().await;
+    *gate.0.lock().unwrap() = false;
+    let revocation = f.host.begin_session_realization_revocation();
+    f.source.release.notify_one();
+    assert!(task.await.unwrap().is_err());
+    f.assert_unpublished();
+    assert!(f.host.session_slots.realization_leases().is_empty());
+    let mut replacement = f.lease.clone();
+    replacement.epoch += 1;
+    assert!(
+        f.host
+            .install_session_realization_lease(SESSION, replacement)
+            .is_err()
+    );
+    f.host
+        .finish_session_realization_revocation(revocation)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn worker_root_denies_renewal_even_before_cohort_close() {
+    // A6 root proof is closed while the slot still has a live lease. A successful
+    // Control response is not sufficient to apply renewal; the canonical due
+    // scheduler rejects and revokes only this projection. No global close here,
+    // so this test detects a scheduler that consults ONLY the Session lease.
+    let gate = Arc::new(WorkerProofGate(std::sync::Mutex::new(true)));
+    let f = StagingFixture::with_authority(Some(gate.clone()));
+    f.host
+        .install_session_realization_lease(SESSION, f.lease.clone())
+        .unwrap();
+    *gate.0.lock().unwrap() = false;
+    // A7 the public SessionRuntime renewal delivery entrance has the same root
+    // guard. Unlike the scheduler it reports denial without owning revocation.
+    let managed = crate::ManagedHost::new(f.host.clone());
+    let mut renewed = f.lease.clone();
+    renewed.expires_at_unix_ms += 10_000;
+    assert!(
+        managed
+            .renew_session_realization_lease(SESSION, renewed)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        f.host.session_slots.realization_leases()[0].1,
+        f.lease,
+        "A7 no mutation"
+    );
+    assert_eq!(
+        f.host
+            .renew_due_session_realizations(
+                f.now,
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000)
+            )
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(f.host.session_slots.realization_leases().is_empty());
 }
 
 // Cause/effect graph: C1 a cold exact lease is assigned; C2 immutable File I/O
@@ -615,7 +761,8 @@ async fn renewal_rejection_cancels_resource_io_before_waiting_for_realization_lo
         let f = StagingFixture::new();
         if resident_lease {
             f.host
-                .install_session_realization_lease(SESSION, f.lease.clone());
+                .install_session_realization_lease(SESSION, f.lease.clone())
+                .unwrap();
         }
         let task = f.start().await;
         *f.control.renewal_failure.lock().unwrap() =
@@ -714,7 +861,8 @@ async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
         match mutation {
             "replace" => f
                 .host
-                .install_session_realization_lease(SESSION, successor.clone()),
+                .install_session_realization_lease(SESSION, successor.clone())
+                .unwrap(),
             "invalidate" => f
                 .host
                 .invalidate_session_realization_lease(SESSION, &f.lease),
@@ -779,7 +927,8 @@ async fn preflight_failure_has_no_lease_and_failed_replay_preserves_existing_ren
     let mut renewed = f.lease.clone();
     renewed.expires_at_unix_ms += 30_000;
     f.host
-        .install_session_realization_lease(SESSION, renewed.clone());
+        .install_session_realization_lease(SESSION, renewed.clone())
+        .unwrap();
     let task = f.start().await;
     assert_eq!(f.host.session_slots.realization_leases()[0].1, renewed);
     f.source.fail.store(true, Ordering::SeqCst);

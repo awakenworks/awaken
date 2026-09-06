@@ -1298,15 +1298,18 @@ async fn install_complete_test_session_for_realization(
         committed_environment: None,
     }));
     install_complete_test_session(managed, thread, init).await?;
-    managed.host.install_session_realization_lease(
-        thread,
-        awaken_session_contract::SessionRealizationLease {
-            owner: "runtime-host-test".into(),
-            runtime_incarnation: format!("runtime-host-test-{thread}"),
-            epoch: 1,
-            expires_at_unix_ms: u64::MAX,
-        },
-    );
+    managed
+        .host
+        .install_session_realization_lease(
+            thread,
+            awaken_session_contract::SessionRealizationLease {
+                owner: "runtime-host-test".into(),
+                runtime_incarnation: format!("runtime-host-test-{thread}"),
+                epoch: 1,
+                expires_at_unix_ms: u64::MAX,
+            },
+        )
+        .unwrap();
     Ok(())
 }
 
@@ -8128,7 +8131,8 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
             epoch: 2,
             expires_at_unix_ms: u64::MAX,
         },
-    );
+    )
+    .unwrap();
     host.ctx_for("binding-restart", None).await.expect("R2");
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 2, "R2");
     assert_eq!(sink.calls.load(Ordering::SeqCst), 1, "R2");
@@ -8163,7 +8167,8 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
                 epoch,
                 expires_at_unix_ms: u64::MAX,
             },
-        );
+        )
+        .unwrap();
         let result = host.ctx_for("binding-moving-fence", None).await;
         if epoch == 2 {
             let error = match result {
@@ -9269,7 +9274,8 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
     )
     .await
     .expect("P1/P3 install complete ordinary projection before realization");
-    host.install_session_realization_lease(session_id, lease.clone());
+    host.install_session_realization_lease(session_id, lease.clone())
+        .unwrap();
     let realization = run_prepared_session_messages(
         &managed,
         "agent",
@@ -10247,7 +10253,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             epoch: 1,
             expires_at_unix_ms: u64::MAX,
         },
-    );
+    )
+    .unwrap();
     let admitted_receipt = managed
         .stage_mcp_attachment(admitted_before_renewal)
         .await
@@ -10543,15 +10550,17 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // H20 performs an actual relay call, not just direct Stage admission.
     // Mirror the production Control-installed root; an opaque capability must
     // not turn a bare Stage assertion into ongoing execution authority.
-    secure_acp_host.install_session_realization_lease(
-        &secure_generation.session_id,
-        awaken_session_contract::SessionRealizationLease {
-            owner: "worker-a".into(),
-            runtime_incarnation: secure_generation.runtime_incarnation.clone(),
-            epoch: secure_generation.lease_epoch,
-            expires_at_unix_ms: secure_generation.lease_expires_at_unix_ms,
-        },
-    );
+    secure_acp_host
+        .install_session_realization_lease(
+            &secure_generation.session_id,
+            awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: secure_generation.runtime_incarnation.clone(),
+                epoch: secure_generation.lease_epoch,
+                expires_at_unix_ms: secure_generation.lease_expires_at_unix_ms,
+            },
+        )
+        .unwrap();
     let secure_receipt = secure_managed
         .stage_mcp_attachment(request("mcp-acp-secure", "workspace-a", 1))
         .await
@@ -11977,7 +11986,8 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
         let host = SharedHost::new(Arc::new(OkModel), "stub");
         let has_root = lease.is_some();
         if let Some(lease) = lease {
-            host.install_session_realization_lease(&expired.session_id, lease);
+            host.install_session_realization_lease(&expired.session_id, lease)
+                .unwrap();
         }
         assert_eq!(
             host.mcp_generation_is_authorized_at(&expired, 100),
@@ -12092,7 +12102,8 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
                 epoch: old_generation.lease_epoch,
                 expires_at_unix_ms: u64::MAX,
             },
-        );
+        )
+        .unwrap();
         assert!(
             host.publish_mcp_projection(&renewed.generation)
                 .await
@@ -18530,7 +18541,8 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         "Artifact capture",
     )
     .await;
-    host.install_session_realization_lease(thread, renewal_1.clone());
+    host.install_session_realization_lease(thread, renewal_1.clone())
+        .unwrap();
     probe.artifact_release.notify_one();
 
     await_terminal_fence_refresh_gate(
@@ -18539,7 +18551,8 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         "Memory acknowledgement",
     )
     .await;
-    host.install_session_realization_lease(thread, renewal_2.clone());
+    host.install_session_realization_lease(thread, renewal_2.clone())
+        .unwrap();
     probe.memory_release.notify_one();
 
     await_terminal_fence_refresh_gate(
@@ -18548,7 +18561,8 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         "checkpoint cleanup",
     )
     .await;
-    host.install_session_realization_lease(thread, renewal_3.clone());
+    host.install_session_realization_lease(thread, renewal_3.clone())
+        .unwrap();
     probe.checkpoint_release.notify_one();
     let receipt = tokio::time::timeout(std::time::Duration::from_secs(2), preparation)
         .await
@@ -20760,7 +20774,8 @@ fn install_test_renewal_authority(
     session_id: &str,
     lease: awaken_session_contract::SessionRealizationLease,
 ) {
-    host.install_session_realization_lease(session_id, lease.clone());
+    host.install_session_realization_lease(session_id, lease.clone())
+        .unwrap();
     control
         .renewals
         .lock()
@@ -21227,7 +21242,8 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
                 epoch: 1,
                 expires_at_unix_ms,
             },
-        );
+        )
+        .unwrap();
     }
 
     tokio::time::timeout(
@@ -21266,7 +21282,8 @@ async fn stale_ownership_revokes_even_when_the_old_deadline_is_still_live() {
             epoch: 1,
             expires_at_unix_ms: now.saturating_add(5_000),
         },
-    );
+    )
+    .unwrap();
 
     assert_eq!(
         tokio::time::timeout(
@@ -21314,7 +21331,8 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
                 epoch: 1,
                 expires_at_unix_ms: now.saturating_add(35),
             },
-        );
+        )
+        .unwrap();
     }
 
     tokio::time::timeout(
@@ -21453,7 +21471,8 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
         if replacement == "removed" {
             host.session_slots.remove(rule);
         } else {
-            host.install_session_realization_lease(rule, newer.clone());
+            host.install_session_realization_lease(rule, newer.clone())
+                .unwrap();
             host.session_slots
                 .update(rule, |slot| slot.dispatch_claim = Some(claim.clone()));
         }
@@ -21700,7 +21719,8 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         epoch: 8,
         expires_at_unix_ms: expiring_unix_ms,
     };
-    host.install_session_realization_lease(ordinary_id, ordinary_lease.clone());
+    host.install_session_realization_lease(ordinary_id, ordinary_lease.clone())
+        .unwrap();
     control
         .renewals
         .lock()

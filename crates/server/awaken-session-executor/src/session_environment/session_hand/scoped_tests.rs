@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 struct CurrentAuthority;
 
-impl awaken_sandbox_local::CurrentExecutionAuthority for CurrentAuthority {
+impl awaken_provisioning_contract::CurrentExecutionAuthority for CurrentAuthority {
     fn with_current(
         &self,
         effect: &mut dyn FnMut(Duration) -> std::io::Result<()>,

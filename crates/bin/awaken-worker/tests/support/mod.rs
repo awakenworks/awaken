@@ -24,11 +24,16 @@ enum HeartbeatFault {
     UnavailableOnce,
     UnavailableAfterInitial,
     DropResponseOnce,
+    DelayInitial,
 }
 
 impl FakeWorkerUpstream {
     pub fn start() -> Self {
         Self::start_with_options(None, None, HeartbeatFault::None, 30_000, None)
+    }
+
+    pub fn start_with_expired_initial_receipt() -> Self {
+        Self::start_with_options(None, None, HeartbeatFault::DelayInitial, 60, None)
     }
 
     pub fn start_rejecting_periodic_heartbeat() -> Self {
@@ -259,6 +264,9 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
             let ordinal = heartbeat_count.fetch_add(1, Ordering::AcqRel);
             let sequence = json_u64_field(body, "sequence");
             heartbeat_sequences.lock().unwrap().push(sequence);
+            if ordinal == 0 && heartbeat_fault == HeartbeatFault::DelayInitial {
+                std::thread::sleep(Duration::from_millis(registry_ttl_ms));
+            }
             if ordinal == 1 && heartbeat_fault == HeartbeatFault::DropResponseOnce {
                 applied_heartbeat_sequence.store(sequence, Ordering::Release);
                 return;

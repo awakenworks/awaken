@@ -25,8 +25,22 @@ fn manifest() -> WorkerManifest {
 fn local_coordinator_deployment() -> awaken_session_executor::DeploymentConfig {
     let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
     deployment.disable_local_pool = true;
-    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+    deployment.sandbox_tier = awaken_session_executor::SandboxTier::Namespace;
     deployment
+}
+
+fn lifecycle_worker(upstream: WorkerUpstream) -> WorkerNodeBuilder {
+    // These cases own registry/claim/heartbeat lifecycle, not Native execution.
+    // Bind the existing explicit provider fixture on every OS instead of
+    // accidentally opting into TrustedHost and requiring a local Hand binary.
+    // Fault/capacity cases replace this SAME provider via the ordinary builder.
+    // Real Native/TrustedHost execution remains in the portability gate.
+    WorkerNodeBuilder::new(upstream)
+        .with_session_container_provider(
+            "external-secure",
+            Arc::new(ExternalSessionProvider::default()),
+        )
+        .with_hand_executor_factory(Arc::new(NoHandFactory))
 }
 
 fn free_port() -> u16 {
@@ -69,9 +83,15 @@ fn poll_status(address: &str, method: &str, path: &str, expected: u16) -> bool {
 #[derive(Default)]
 struct ExternalSessionProvider {
     ready: Option<Arc<AtomicBool>>,
-    stall_after_first_probe: bool,
-    stall_once: bool,
+    fault_after_first_probe: Option<ProbeFault>,
     probe_calls: AtomicUsize,
+}
+
+#[derive(Clone, Copy)]
+enum ProbeFault {
+    Stall,
+    StallOnce,
+    Panic,
 }
 
 impl ExternalSessionProvider {
@@ -84,7 +104,7 @@ impl ExternalSessionProvider {
 
     fn stalling_after_startup() -> Self {
         Self {
-            stall_after_first_probe: true,
+            fault_after_first_probe: Some(ProbeFault::Stall),
             ..Self::default()
         }
     }
@@ -176,8 +196,13 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionP
 
     async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
         let probe = self.probe_calls.fetch_add(1, Ordering::SeqCst);
-        if (self.stall_after_first_probe && probe > 0) || (self.stall_once && probe == 1) {
-            std::future::pending::<()>().await;
+        if probe > 0 {
+            match self.fault_after_first_probe {
+                Some(ProbeFault::Stall) => std::future::pending::<()>().await,
+                Some(ProbeFault::StallOnce) if probe == 1 => std::future::pending::<()>().await,
+                Some(ProbeFault::Panic) => panic!("injected provider probe panic"),
+                _ => {}
+            }
         }
         if self
             .ready
@@ -362,7 +387,7 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
     let registered_identity = Arc::new(Mutex::new(None));
     let observed = registered_identity.clone();
     let coordinator_defaults = local_coordinator_deployment();
-    WorkerNodeBuilder::new(
+    lifecycle_worker(
         WorkerUpstream::new(upstream.url())
             .with_request_authorizer(request_authorizer)
             .with_worker_id("worker-node-test"),
@@ -450,7 +475,7 @@ async fn worker_publishes_ready_then_warms_and_drains_capacity_on_shutdown() {
     let mut deployment = local_coordinator_deployment();
     deployment.sandbox.warm_pool_size = 2;
 
-    WorkerNodeBuilder::new(
+    lifecycle_worker(
         WorkerUpstream::new(upstream.url()).with_worker_id("worker-warmup-lifecycle-test"),
     )
     .with_deployment_config(deployment)
@@ -459,7 +484,6 @@ async fn worker_publishes_ready_then_warms_and_drains_capacity_on_shutdown() {
         Arc::new(ExternalSessionProvider::default()),
         Some(capacity.clone()),
     )
-    .with_hand_executor_factory(Arc::new(NoHandFactory))
     .with_manifest(manifest())
     .without_admin_surface()
     .build()
@@ -558,7 +582,7 @@ async fn worker_reconciles_current_environment_shape_after_ready() {
     deployment.sandbox.warm_pool_size = 1;
     deployment.sandbox.warm_pool_total_size = 1;
 
-    WorkerNodeBuilder::new(
+    lifecycle_worker(
         WorkerUpstream::new(upstream.url()).with_worker_id("worker-current-environment-test"),
     )
     .with_deployment_config(deployment)
@@ -567,7 +591,6 @@ async fn worker_reconciles_current_environment_shape_after_ready() {
         Arc::new(ExternalSessionProvider::default()),
         Some(capacity.clone()),
     )
-    .with_hand_executor_factory(Arc::new(NoHandFactory))
     .with_manifest(manifest())
     .without_admin_surface()
     .build()
@@ -635,7 +658,7 @@ async fn warmup_failure_retains_cold_path_and_still_closes_capacity() {
     let mut deployment = local_coordinator_deployment();
     deployment.sandbox.warm_pool_size = 1;
 
-    WorkerNodeBuilder::new(
+    lifecycle_worker(
         WorkerUpstream::new(upstream.url()).with_worker_id("worker-warmup-failure-test"),
     )
     .with_deployment_config(deployment)
@@ -644,7 +667,6 @@ async fn warmup_failure_retains_cold_path_and_still_closes_capacity() {
         Arc::new(ExternalSessionProvider::default()),
         Some(capacity.clone()),
     )
-    .with_hand_executor_factory(Arc::new(NoHandFactory))
     .with_manifest(manifest())
     .without_admin_surface()
     .build()
@@ -684,7 +706,7 @@ async fn provider_evidence_drift_drains_the_incarnation() {
     let ready = Arc::new(AtomicBool::new(true));
     let result = tokio::time::timeout(
         Duration::from_secs(15),
-        WorkerNodeBuilder::new(
+        lifecycle_worker(
             WorkerUpstream::new(upstream.url()).with_worker_id("worker-provider-drift-test"),
         )
         .with_deployment_config(local_coordinator_deployment())
@@ -692,7 +714,6 @@ async fn provider_evidence_drift_drains_the_incarnation() {
             "external-secure",
             Arc::new(ExternalSessionProvider::with_readiness(ready.clone())),
         )
-        .with_hand_executor_factory(Arc::new(NoHandFactory))
         .with_manifest(manifest())
         .with_graceful_drain(Duration::ZERO)
         .without_admin_surface()
@@ -736,6 +757,51 @@ async fn provider_evidence_drift_drains_the_incarnation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expired_initial_heartbeat_cannot_start_dispatch() {
+    // W15 real HTTP startup: registry applies sequence 1, but delays its response
+    // beyond the request-anchored proof window. E1 reject before enabling claim
+    // polling; E2 deregister exactly once; E3 no periodic heartbeat or warmup.
+    let upstream = FakeWorkerUpstream::start_with_expired_initial_receipt();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        lifecycle_worker(
+            WorkerUpstream::new(upstream.url()).with_worker_id("expired-initial-receipt"),
+        )
+        .with_deployment_config(local_coordinator_deployment())
+        .with_manifest(manifest())
+        .without_admin_surface()
+        .build()
+        .unwrap()
+        .run_until(std::future::pending()),
+    )
+    .await
+    .unwrap();
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("authority is not current"),
+        "E1"
+    );
+    assert_eq!(upstream.heartbeat_sequences(), vec![1], "E3");
+    let requests = upstream.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|path| path.as_str() == "/v1/worker/deregister")
+            .count(),
+        1,
+        "E2"
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|path| path.contains("/dispatch/") || path.contains("/warmups")),
+        "E1/E3"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stalled_provider_probe_does_not_block_renewal_but_expires() {
     // Cause/effect rule P4: startup evidence succeeds, then the same provider
     // probe never returns. Registry renewal progresses independently while the
@@ -744,7 +810,7 @@ async fn stalled_provider_probe_does_not_block_renewal_but_expires() {
     let upstream = FakeWorkerUpstream::start_with_short_registry_lease();
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        WorkerNodeBuilder::new(
+        lifecycle_worker(
             WorkerUpstream::new(upstream.url()).with_worker_id("worker-provider-stall-test"),
         )
         .with_deployment_config(local_coordinator_deployment())
@@ -752,7 +818,6 @@ async fn stalled_provider_probe_does_not_block_renewal_but_expires() {
             "external-secure",
             Arc::new(ExternalSessionProvider::stalling_after_startup()),
         )
-        .with_hand_executor_factory(Arc::new(NoHandFactory))
         .with_manifest(manifest())
         .with_graceful_drain(Duration::ZERO)
         .without_admin_surface()
@@ -781,7 +846,7 @@ async fn transient_provider_timeout_recovers_without_incarnation_restart() {
     // terminates. This contrasts P4 (all retries stall) and P3 (explicit loss).
     let upstream = FakeWorkerUpstream::start_with_short_registry_lease();
     let provider = Arc::new(ExternalSessionProvider {
-        stall_once: true,
+        fault_after_first_probe: Some(ProbeFault::StallOnce),
         ..Default::default()
     });
     tokio::time::timeout(
@@ -827,7 +892,7 @@ async fn stalled_initial_provider_probe_never_publishes_ready() {
         .with_session_container_provider(
             "external-secure",
             Arc::new(ExternalSessionProvider {
-                stall_after_first_probe: true,
+                fault_after_first_probe: Some(ProbeFault::Stall),
                 probe_calls: AtomicUsize::new(1),
                 ..Default::default()
             }),
@@ -847,6 +912,53 @@ async fn stalled_initial_provider_probe_never_publishes_ready() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn panicking_heartbeat_probe_uses_authority_loss_and_requires_replacement() {
+    // P5: startup Ready succeeds, then a real periodic probe unwinds while
+    // there is no user shutdown. E1 no subsequent heartbeat/loop restart;
+    // E2 normal drain+deregister lifecycle; E3 caller requires a new incarnation.
+    // This drives actual Worker bootstrap and HTTP transport. The supervisor's
+    // barrier test proves exact-once revocation before task completion; Host
+    // revocation tests own active Session/physical cleanup evidence separately.
+    let upstream = FakeWorkerUpstream::start_with_short_registry_lease();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id("worker-probe-panic"))
+            .with_deployment_config(local_coordinator_deployment())
+            .with_session_container_provider(
+                "external-secure",
+                Arc::new(ExternalSessionProvider {
+                    fault_after_first_probe: Some(ProbeFault::Panic),
+                    ..ExternalSessionProvider::default()
+                }),
+            )
+            .with_manifest(manifest())
+            .with_graceful_drain(Duration::ZERO)
+            .without_admin_surface()
+            .build()
+            .unwrap()
+            .run_until(std::future::pending()),
+    )
+    .await
+    .expect("P5 worker exits after panic")
+    .unwrap_err();
+    assert!(
+        result.to_string().contains("supervisor restart required"),
+        "E3"
+    );
+    assert_eq!(upstream.heartbeat_sequences(), vec![1], "E1");
+    let requests = upstream.requests();
+    let drain = requests
+        .iter()
+        .position(|path| path == "/v1/worker/drain")
+        .unwrap();
+    let deregister = requests
+        .iter()
+        .position(|path| path == "/v1/worker/deregister")
+        .unwrap();
+    assert!(drain < deregister, "E2");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn authority_loss_terminates_the_incarnation_for_supervisor_restart() {
     // Cause/effect decision table:
     // A1 initial heartbeat applied + periodic heartbeat applied -> Worker remains
@@ -862,7 +974,7 @@ async fn authority_loss_terminates_the_incarnation_for_supervisor_restart() {
     let coordinator_defaults = local_coordinator_deployment();
     let result = tokio::time::timeout(
         Duration::from_secs(15),
-        WorkerNodeBuilder::new(
+        lifecycle_worker(
             WorkerUpstream::new(upstream.url()).with_worker_id("worker-authority-loss-test"),
         )
         .with_deployment_config(coordinator_defaults)
@@ -907,7 +1019,7 @@ async fn transient_heartbeat_failure_pauses_then_resumes_claim_admission() {
     let (upstream, recovery_release) =
         FakeWorkerUpstream::start_transient_heartbeat_with_blocked_recovery();
     let admin_addr = format!("127.0.0.1:{}", free_port());
-    WorkerNodeBuilder::new(
+    lifecycle_worker(
         WorkerUpstream::new(upstream.url()).with_worker_id("worker-transient-heartbeat-test"),
     )
     .with_deployment_config(local_coordinator_deployment())
@@ -944,7 +1056,7 @@ async fn lost_applied_heartbeat_response_retries_with_a_higher_sequence() {
     // | S1 | yes | connection closes | suspend admission and retry |
     // | S2 | yes | later Applied | strictly higher sequence converges; resume |
     let upstream = FakeWorkerUpstream::start_dropping_one_heartbeat_response();
-    WorkerNodeBuilder::new(
+    lifecycle_worker(
         WorkerUpstream::new(upstream.url()).with_worker_id("worker-lost-heartbeat-response-test"),
     )
     .with_deployment_config(local_coordinator_deployment())
@@ -980,7 +1092,7 @@ async fn repeated_transport_failure_drains_only_after_the_proof_deadline() {
     let upstream = FakeWorkerUpstream::start_unavailable_after_initial_heartbeat();
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        WorkerNodeBuilder::new(
+        lifecycle_worker(
             WorkerUpstream::new(upstream.url()).with_worker_id("worker-proof-deadline-test"),
         )
         .with_deployment_config(local_coordinator_deployment())
@@ -1009,52 +1121,50 @@ async fn drain_closes_local_admission_before_control_acknowledges() {
     let admin_addr = format!("127.0.0.1:{}", free_port());
     let coordinator_defaults = local_coordinator_deployment();
 
-    WorkerNodeBuilder::new(
-        WorkerUpstream::new(upstream.url()).with_worker_id("worker-drain-order-test"),
-    )
-    .with_deployment_config(coordinator_defaults)
-    .with_manifest(manifest())
-    .with_admin_listen(&admin_addr)
-    .build()
-    .expect("valid explicit Worker topology")
-    .run_until(async {
-        assert!(
-            poll_status(&admin_addr, "GET", "/readyz", 200),
-            "worker reaches accepting before drain"
-        );
+    lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id("worker-drain-order-test"))
+        .with_deployment_config(coordinator_defaults)
+        .with_manifest(manifest())
+        .with_admin_listen(&admin_addr)
+        .build()
+        .expect("valid explicit Worker topology")
+        .run_until(async {
+            assert!(
+                poll_status(&admin_addr, "GET", "/readyz", 200),
+                "worker reaches accepting before drain"
+            );
 
-        let drain_addr = admin_addr.clone();
-        let drain_request = std::thread::spawn(move || {
-            http_status(&drain_addr, "POST", "/admin/drain")
-                .expect("admin drain returns an HTTP response")
-        });
-        for _ in 0..300 {
-            if upstream
-                .requests()
-                .iter()
-                .any(|path| path == "/v1/worker/drain")
-            {
-                break;
+            let drain_addr = admin_addr.clone();
+            let drain_request = std::thread::spawn(move || {
+                http_status(&drain_addr, "POST", "/admin/drain")
+                    .expect("admin drain returns an HTTP response")
+            });
+            for _ in 0..300 {
+                if upstream
+                    .requests()
+                    .iter()
+                    .any(|path| path == "/v1/worker/drain")
+                {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
             }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            upstream
-                .requests()
-                .iter()
-                .any(|path| path == "/v1/worker/drain"),
-            "Control receives the drain mutation"
-        );
-        assert_eq!(
-            http_status(&admin_addr, "GET", "/readyz"),
-            Some(503),
-            "local claim admission closes before the blocked Control response returns"
-        );
+            assert!(
+                upstream
+                    .requests()
+                    .iter()
+                    .any(|path| path == "/v1/worker/drain"),
+                "Control receives the drain mutation"
+            );
+            assert_eq!(
+                http_status(&admin_addr, "GET", "/readyz"),
+                Some(503),
+                "local claim admission closes before the blocked Control response returns"
+            );
 
-        drain_release.store(true, Ordering::Release);
-        assert_eq!(drain_request.join().expect("drain request joins"), 200);
-        Ok(WorkerShutdown::Prompt)
-    })
-    .await
-    .expect("Worker lifecycle completes");
+            drain_release.store(true, Ordering::Release);
+            assert_eq!(drain_request.join().expect("drain request joins"), 200);
+            Ok(WorkerShutdown::Prompt)
+        })
+        .await
+        .expect("Worker lifecycle completes");
 }

@@ -2543,7 +2543,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         epoch: 1,
         expires_at_unix_ms: u64::MAX,
     };
-    host.install_session_realization_lease(thread, lease.clone());
+    host.install_session_realization_lease(thread, lease.clone())
+        .unwrap();
     host.session_slots.update(thread, |slot| {
         slot.published_snapshot = Some(snapshot.clone());
     });
@@ -2597,7 +2598,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         )),
         "E4"
     );
-    host.install_session_realization_lease(thread, lease);
+    host.install_session_realization_lease(thread, lease)
+        .unwrap();
     assert!(
         host.session_slots.realization_leases().is_empty(),
         "E4 replay stays closed"
