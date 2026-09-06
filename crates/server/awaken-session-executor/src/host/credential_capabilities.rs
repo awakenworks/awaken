@@ -88,6 +88,26 @@ pub(crate) fn acp_mcp_client_injection_capabilities(
 }
 
 impl SharedHost {
+    /// Root delegation and cold child recovery carry the same installed adapter
+    /// set. Custody evidence is composed here, never narrowed by transport or
+    /// inferred from the child's requested backend.
+    pub(crate) fn child_execution_adapters(
+        &self,
+        thread: &str,
+        environment: Arc<crate::session_environment::SessionEnvironment>,
+    ) -> crate::agent_runner::ChildExecutionAdapters {
+        crate::agent_runner::ChildExecutionAdapters {
+            acp: self
+                .acp
+                .as_ref()
+                .map(|acp| acp.child_executor_factory(environment)),
+            remote: self.remote_attempt_executor.clone(),
+            credential_capabilities: self.local_credential_realization_capabilities(),
+            web_search: Some(self.web_search_plugin(thread, None)),
+            web_fetch: Some(self.web_fetch_plugin(thread, None)),
+        }
+    }
+
     /// Exact independent credential-adapter profiles installed in this process.
     /// Both the process dispatch pool and per-Session durable ingress consume this
     /// one declaration; neither may infer custody from only the Native adapter.
@@ -209,6 +229,80 @@ mod tests {
                         .contains(&CredentialRealizationKind::ProcessProtocolField)
                     && profile.extension_consumers.contains_key(&consumer)
             })
+    }
+
+    #[tokio::test]
+    async fn child_adapters_preserve_installed_profiles_across_transport_topologies() {
+        // Causes: C1 local/remote Control transport; C2 materializer installed;
+        // C3 ACP adapter installed. Effects: E1 exact Host profile preserved in
+        // both fresh delegation and cold recovery (one constructor); E2 only
+        // installed WorkerRelay / ACP process-field profiles are admitted.
+        // Table: C1 is independent; !C2 -> neither; C2&&!C3 -> relay only;
+        // C2&&C3 -> both. A remote-only subset loses C2/C3 and must fail.
+        // Root Worker execution is covered by credential_materialization_worker
+        // P1/P6 and the Native/Claude real-service journeys, not a fake getter.
+        use awaken_sandbox_local::LocalProvider;
+        let temporary = tempfile::tempdir().unwrap();
+        let sandbox = LocalProvider::new(temporary.path().join("child"))
+            .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("profiles"))
+            .await
+            .unwrap();
+        let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
+            sandbox,
+        ));
+        for upstream in [false, true] {
+            for material_access in [false, true] {
+                for acp_installed in [false, true] {
+                    let mut host = SharedHost::new(
+                        Arc::new(crate::host::tests::MemoryHostModel),
+                        "test-model",
+                    );
+                    if upstream {
+                        host = host.with_worker_upstream(
+                            awaken_worker_transport_security::WorkerUpstream::new(
+                                "http://127.0.0.1:1",
+                            ),
+                        );
+                    }
+                    if material_access {
+                        host = host.with_credential_materializer(
+                            awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
+                                Arc::new(ControlReferenceResolver),
+                            ),
+                        );
+                    }
+                    if acp_installed {
+                        let source =
+                            Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
+                                awaken_run_executor_acp::AcpLaunch::custom(
+                                    vec!["true".into()],
+                                    vec![],
+                                ),
+                            ));
+                        host = host.with_acp(Arc::new(
+                            awaken_run_executor_acp::AcpRunExecutor::new(source),
+                        ));
+                    }
+                    let adapters = host.child_execution_adapters("profiles", environment.clone());
+                    assert_eq!(
+                        adapters.credential_capabilities,
+                        host.local_credential_realization_capabilities()
+                    );
+                    assert_eq!(
+                        has_worker_relay(&adapters.credential_capabilities),
+                        material_access
+                    );
+                    assert_eq!(
+                        has_acp_mcp_client_injection(
+                            &adapters.credential_capabilities,
+                            "acp:claude"
+                        ),
+                        material_access && acp_installed
+                    );
+                    assert_eq!(adapters.acp.is_some(), acp_installed);
+                }
+            }
+        }
     }
 
     #[test]

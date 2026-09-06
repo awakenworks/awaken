@@ -370,7 +370,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
             scheduler.owner,
         )
         .with_context(context.clone())
-        .with_local_credential_capabilities(adapters.remote_credentials.clone());
+        .with_local_credential_capabilities(adapters.credential_capabilities.clone());
         worker.install_attempt_executor(attempt_executor);
         if let Some(claimed_commit) = scheduler.claimed_commit {
             worker = worker.with_claimed_commit(claimed_commit);
@@ -505,7 +505,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
 pub(crate) struct ChildExecutionAdapters {
     pub(crate) acp: Option<ChildAcpExecutorFactory>,
     pub(crate) remote: Option<Arc<dyn RunAttemptExecutor>>,
-    pub(crate) remote_credentials: awaken_runtime_contract::CredentialRealizationCapabilities,
+    pub(crate) credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
     /// The same host-configured plugin instance shape used by a root Native Run.
     /// The child snapshot still decides whether the plugin is selected.
     pub(crate) web_search: Option<Arc<awaken_ext_builtin_tools::WebSearchPlugin>>,
@@ -646,7 +646,7 @@ pub(super) fn bind_direct_child_credentials(
     let bindings = awaken_runtime_contract::compile_candidate_credential_bindings(
         &candidates,
         holder.as_ref(),
-        &adapters.remote_credentials,
+        &adapters.credential_capabilities,
         epoch,
         now_unix_ms,
     )
