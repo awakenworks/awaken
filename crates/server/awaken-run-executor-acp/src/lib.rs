@@ -66,8 +66,10 @@ fn preserve_terminal_outcome<T>(
     outcome: std::result::Result<T, AcpError>,
     cleanup: std::result::Result<bool, AcpError>,
     process_id: &str,
+    quiescence: &awaken_runtime_contract::runtime_context::AttemptQuiescence,
 ) -> std::result::Result<T, AcpError> {
     if let Err(cleanup_error) = cleanup {
+        quiescence.mark_uncertain();
         tracing::warn!(
             process_id,
             error = %cleanup_error,
@@ -797,11 +799,12 @@ impl AcpRunExecutor {
 
         loop {
             if let Err(error) = verify_attempt_ownership(context.ownership.as_deref()).await {
-                let _ = Supervisor::reap_after_terminal(
-                    session.process.as_ref(),
-                    self.policy.reap_grace,
-                )
-                .await;
+                if Supervisor::reap_after_terminal(session.process.as_ref(), self.policy.reap_grace)
+                    .await
+                    .is_err()
+                {
+                    context.physical_quiescence.mark_uncertain();
+                }
                 return Err(error);
             }
             let step_namespace = format!("{activation_namespace}:{step_ordinal}");
@@ -886,6 +889,7 @@ impl AcpRunExecutor {
                     outcome,
                     Supervisor::reap_after_terminal(process.as_ref(), self.policy.reap_grace).await,
                     process.id(),
+                    &context.physical_quiescence,
                 )
             };
             // The Step is over — stop the cancellation→interrupt forwarder so it does
@@ -907,6 +911,7 @@ impl AcpRunExecutor {
                 Ok(reason) => reason,
                 Err(err)
                     if !handshake_retry_used
+                        && context.physical_quiescence.can_acknowledge_return()
                         && retryable_handshake_failure(
                             session.codec,
                             config.session_id.as_deref(),
@@ -1128,7 +1133,15 @@ impl AcpRunExecutor {
 
             // The safe boundary, shared with the native engine: fold queued live
             // steer into the next Step, or end.
-            match evaluate_boundary(context, &run_id, &committed) {
+            // A failed reap must not overlap another per-Step process inside
+            // this same physical attempt. Preserve the fixed terminal outcome
+            // and leave queued input untouched for its durable owner.
+            let boundary = if context.physical_quiescence.can_acknowledge_return() {
+                evaluate_boundary(context, &run_id, &committed)
+            } else {
+                BoundaryOutcome::Idle
+            };
+            match boundary {
                 BoundaryOutcome::Continue { fold } => {
                     prompt = prompt_of(&fold);
                     committed.extend(fold);

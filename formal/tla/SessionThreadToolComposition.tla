@@ -16,9 +16,9 @@ Runs == {RootRun, ChildRunA, ChildRunB}
 Calls == {CallA, CallB}
 RunThread(run) == IF run = RootRun THEN RootThread ELSE ChildThread
 
-VARIABLES toolState, physicalRuns, invokedAttempt, crashedRuns
+VARIABLES toolState, physicalRuns, invokedAttempt, crashedRuns, unacknowledgedCrashes
 
-vars == <<toolState, physicalRuns, invokedAttempt, crashedRuns>>
+vars == <<toolState, physicalRuns, invokedAttempt, crashedRuns, unacknowledgedCrashes>>
 
 ToolKernel == INSTANCE ThreadCommitProjection WITH
     Calls <- Calls,
@@ -32,13 +32,14 @@ ReplaceState(run, next) ==
     toolState' = [toolState EXCEPT ![run] = next]
 
 KeepExecutionHistory ==
-    UNCHANGED <<physicalRuns, invokedAttempt, crashedRuns>>
+    UNCHANGED <<physicalRuns, invokedAttempt, crashedRuns, unacknowledgedCrashes>>
 
 Init ==
     /\ toolState = [run \in Runs |-> ToolKernel!InitialState]
     /\ physicalRuns = {}
     /\ invokedAttempt = [run \in Runs |-> [call \in Calls |-> 0]]
     /\ crashedRuns = {}
+    /\ unacknowledgedCrashes = {}
 
 StartPhysical(run) ==
     /\ run \in Runs
@@ -46,7 +47,7 @@ StartPhysical(run) ==
     /\ toolState[run].runState = "Running"
     /\ \A active \in physicalRuns: RunThread(active) # RunThread(run)
     /\ physicalRuns' = physicalRuns \cup {run}
-    /\ UNCHANGED <<toolState, invokedAttempt, crashedRuns>>
+    /\ UNCHANGED <<toolState, invokedAttempt, crashedRuns, unacknowledgedCrashes>>
 
 PersistBatch(run) ==
     LET s == toolState[run] IN
@@ -54,6 +55,7 @@ PersistBatch(run) ==
         s.runState, s.ticketKind, s.ticketCall, s.callState, s.attempts,
         "Open", s.linkState, s.version + 1)
     IN  /\ run \in physicalRuns
+        /\ run \notin unacknowledgedCrashes
         /\ ToolKernel!PersistBatch(s, next)
         /\ ReplaceState(run, next)
         /\ KeepExecutionHistory
@@ -66,18 +68,20 @@ StartBothCalls(run) ==
         [call \in Calls |-> 1],
         s.batchState, s.linkState, s.version + 1)
     IN  /\ run \in physicalRuns
+        /\ run \notin unacknowledgedCrashes
         /\ ToolKernel!StartParallelCalls(s, next, Calls)
         /\ ReplaceState(run, next)
         /\ KeepExecutionHistory
 
 Invoke(run, call) ==
     /\ run \in physicalRuns
+        /\ run \notin unacknowledgedCrashes
     /\ call \in Calls
     /\ toolState[run].callState[call] = "Executing"
     /\ invokedAttempt[run][call] < toolState[run].attempts[call]
     /\ invokedAttempt' =
           [invokedAttempt EXCEPT ![run][call] = toolState[run].attempts[call]]
-    /\ UNCHANGED <<toolState, physicalRuns, crashedRuns>>
+    /\ UNCHANGED <<toolState, physicalRuns, crashedRuns, unacknowledgedCrashes>>
 
 CompleteFirstCall(run) ==
     LET s == toolState[run] IN
@@ -86,6 +90,7 @@ CompleteFirstCall(run) ==
         [s.callState EXCEPT ![CallA] = "Completed"],
         s.attempts, s.batchState, s.linkState, s.version + 1)
     IN  /\ run \in physicalRuns
+        /\ run \notin unacknowledgedCrashes
         /\ invokedAttempt[run][CallA] = s.attempts[CallA]
         /\ ToolKernel!CompleteCall(s, next, CallA)
         /\ ReplaceState(run, next)
@@ -113,9 +118,19 @@ CrashChild(run) ==
     /\ toolState[run].callState[CallA] = "Completed"
     /\ toolState[run].callState[CallB] = "Executing"
     /\ invokedAttempt[run][CallB] = toolState[run].attempts[CallB]
-    /\ physicalRuns' = physicalRuns \ {run}
     /\ crashedRuns' = crashedRuns \cup {run}
-    /\ UNCHANGED <<toolState, invokedAttempt>>
+    /\ unacknowledgedCrashes' = unacknowledgedCrashes \cup {run}
+    /\ UNCHANGED <<toolState, physicalRuns, invokedAttempt>>
+
+\* This action represents an observed process-bound terminal receipt, not
+\* worker death, lease expiry, or a timeout. It is unavailable for an opaque
+\* remote effect without a provider receipt. FairSpec assumes receipt progress
+\* only for this process-bound scenario; Spec permits indefinite fencing.
+ObserveProcessQuiescence(run) ==
+    /\ run \in unacknowledgedCrashes
+    /\ physicalRuns' = physicalRuns \ {run}
+    /\ unacknowledgedCrashes' = unacknowledgedCrashes \ {run}
+    /\ UNCHANGED <<toolState, invokedAttempt, crashedRuns>>
 
 MarkNeverReplayIndeterminate ==
     LET s == toolState[ChildRunA] IN
@@ -124,6 +139,7 @@ MarkNeverReplayIndeterminate ==
         [s.callState EXCEPT ![CallB] = "Indeterminate"],
         s.attempts, s.batchState, s.linkState, s.version + 1)
     IN  /\ ChildRunA \in physicalRuns
+        /\ ChildRunA \notin unacknowledgedCrashes
         /\ ChildRunA \in crashedRuns
         /\ ToolKernel!MarkIndeterminate(s, next, CallB)
         /\ ReplaceState(ChildRunA, next)
@@ -136,6 +152,7 @@ RetryReplaySafe ==
         [s.attempts EXCEPT ![CallB] = @ + 1],
         s.batchState, s.linkState, s.version + 1)
     IN  /\ ChildRunB \in physicalRuns
+        /\ ChildRunB \notin unacknowledgedCrashes
         /\ ChildRunB \in crashedRuns
         /\ s.attempts[CallB] = 1
         /\ ToolKernel!StartOrRetry(s, next, CallB)
@@ -149,6 +166,7 @@ CompleteReplaySafeAndFinalize ==
         [s.callState EXCEPT ![CallB] = "Completed"],
         s.attempts, "Finalized", s.linkState, s.version + 1)
     IN  /\ ChildRunB \in physicalRuns
+        /\ ChildRunB \notin unacknowledgedCrashes
         /\ ChildRunB \in crashedRuns
         /\ s.attempts[CallB] = 2
         /\ invokedAttempt[ChildRunB][CallB] = s.attempts[CallB]
@@ -162,6 +180,7 @@ FinalizeNeverReplay ==
         s.runState, s.ticketKind, s.ticketCall, s.callState, s.attempts,
         "Finalized", s.linkState, s.version + 1)
     IN  /\ ChildRunA \in physicalRuns
+        /\ ChildRunA \notin unacknowledgedCrashes
         /\ ToolKernel!FinalizeBatch(s, next)
         /\ ReplaceState(ChildRunA, next)
         /\ KeepExecutionHistory
@@ -173,6 +192,7 @@ EndChild(run) ==
         s.batchState, s.linkState, s.version + 1)
     IN  /\ run \in {ChildRunA, ChildRunB}
         /\ run \in physicalRuns
+        /\ run \notin unacknowledgedCrashes
         /\ s.batchState = "Finalized"
         /\ ToolKernel!EndRun(s, next)
         /\ ReplaceState(run, next)
@@ -180,9 +200,10 @@ EndChild(run) ==
 
 ReleaseCheckpoint(run) ==
     /\ run \in physicalRuns
+        /\ run \notin unacknowledgedCrashes
     /\ toolState[run].runState \in {"Awaiting", "Ended"}
     /\ physicalRuns' = physicalRuns \ {run}
-    /\ UNCHANGED <<toolState, invokedAttempt, crashedRuns>>
+    /\ UNCHANGED <<toolState, invokedAttempt, crashedRuns, unacknowledgedCrashes>>
 
 Next ==
     \/ \E run \in Runs: StartPhysical(run)
@@ -192,6 +213,7 @@ Next ==
     \/ \E run \in Runs: CompleteFirstCall(run)
     \/ AwaitRootSecondCall
     \/ \E run \in {ChildRunA, ChildRunB}: CrashChild(run)
+    \/ \E run \in Runs: ObserveProcessQuiescence(run)
     \/ MarkNeverReplayIndeterminate
     \/ RetryReplaySafe
     \/ CompleteReplaySafeAndFinalize
@@ -199,7 +221,8 @@ Next ==
     \/ \E run \in {ChildRunA, ChildRunB}: EndChild(run)
     \/ \E run \in Runs: ReleaseCheckpoint(run)
 
-Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
+Spec == Init /\ [][Next]_vars
+FairSpec == Spec /\ WF_vars(Next)
 
 TypeOK ==
     /\ toolState \in [Runs -> [
@@ -214,6 +237,7 @@ TypeOK ==
     /\ physicalRuns \subseteq Runs
     /\ invokedAttempt \in [Runs -> [Calls -> 0..MaxAttempts]]
     /\ crashedRuns \subseteq {ChildRunA, ChildRunB}
+    /\ unacknowledgedCrashes \subseteq crashedRuns
 
 EveryToolAggregateIsSafe ==
     \A run \in Runs: ToolKernel!Safety(toolState[run])
@@ -237,7 +261,10 @@ NeverReplayDoesNotRetry ==
 ReplayRequiresPriorCrash ==
     toolState[ChildRunB].attempts[CallB] > 1 => ChildRunB \in crashedRuns
 
+CrashDoesNotProveQuiescence == unacknowledgedCrashes \subseteq physicalRuns
+
 Safety ==
+    /\ CrashDoesNotProveQuiescence
     /\ TypeOK
     /\ EveryToolAggregateIsSafe
     /\ OneAwaitingCallPerRun

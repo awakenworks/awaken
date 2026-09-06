@@ -99,3 +99,6 @@ pub fn write_observation_trace(name: &str, family: &str, steps: serde_json::Valu
     )
     .expect("observation trace");
 }
+
+#[cfg(feature = "tracing")]
+pub mod events;

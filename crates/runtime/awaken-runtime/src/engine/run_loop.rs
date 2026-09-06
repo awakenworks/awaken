@@ -596,7 +596,13 @@ pub(super) async fn drive(
             Some(token) => {
                 tokio::select! {
                     biased;
-                    _ = token.cancelled() => None,
+                    _ = token.cancelled() => {
+                        // Drop cancels local polling, not an opaque remote effect.
+                        // Keep durable physical admission fenced after this
+                        // logical cancellation unless actual termination is known.
+                        context.physical_quiescence.mark_uncertain();
+                        None
+                    },
                     result = inference => Some(result),
                 }
             }
@@ -854,7 +860,13 @@ pub(super) async fn drive(
             Some(token) => {
                 tokio::select! {
                     biased;
-                    _ = token.cancelled() => None,
+                    _ = token.cancelled() => {
+                        // Drop cancels local polling, not an opaque remote effect.
+                        // Keep durable physical admission fenced after this
+                        // logical cancellation unless actual termination is known.
+                        context.physical_quiescence.mark_uncertain();
+                        None
+                    },
                     result = tool_execution => Some(result),
                 }
             }

@@ -164,12 +164,17 @@ async fn acp_mcp_server_name_drift_uses_only_conservative_session_alias_consensu
 
 #[test]
 fn terminal_business_outcome_is_not_rewritten_by_cleanup_failure() {
+    // C1 logical terminal; C2 cleanup failed. E1 retain NaturalEnd; E2 veto
+    // physical ACK. A terminal frame and a process receipt are independent.
+    let quiescence = awaken_runtime_contract::runtime_context::AttemptQuiescence::default();
     let outcome = preserve_terminal_outcome(
         Ok(TerminationReason::NaturalEnd),
         Err(AcpError::Io("cleanup failed".into())),
         "test-process",
+        &quiescence,
     );
     assert_eq!(outcome.unwrap(), TerminationReason::NaturalEnd);
+    assert!(!quiescence.can_acknowledge_return());
 }
 
 #[tokio::test]
@@ -357,6 +362,7 @@ impl AttemptOwnershipVerifier for ScriptedOwnership {
 
 struct CountingProcess {
     polls: Arc<AtomicUsize>,
+    fail_cleanup: bool,
 }
 
 #[async_trait]
@@ -374,6 +380,9 @@ impl ProcessHandle for CountingProcess {
 
     async fn poll(&self) -> std::result::Result<Option<ExitStatus>, SandboxError> {
         self.polls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_cleanup {
+            return Err(SandboxError::new("cleanup observation unavailable"));
+        }
         Ok(Some(ExitStatus {
             code: Some(0),
             signaled: false,
@@ -389,6 +398,7 @@ struct CountingSource {
     opens: Arc<AtomicUsize>,
     prompts: Arc<AtomicUsize>,
     process_polls: Arc<AtomicUsize>,
+    fail_cleanup: bool,
 }
 
 #[async_trait]
@@ -419,6 +429,7 @@ impl AgentChannelSource for CountingSource {
             channel: Box::new(ours),
             process: Arc::new(CountingProcess {
                 polls: self.process_polls.clone(),
+                fail_cleanup: self.fail_cleanup,
             }),
             codec: Codec::Newline,
             workspace_cwd: None,
@@ -446,6 +457,7 @@ fn counting_executor() -> (
             opens: opens.clone(),
             prompts: prompts.clone(),
             process_polls: process_polls.clone(),
+            fail_cleanup: false,
         })),
         opens,
         prompts,
@@ -1847,6 +1859,53 @@ async fn live_inbox_steer_folds_into_a_relaunched_run() {
     // The caller-supplied id never reaches the transcript; the inbox was consumed.
     assert!(commits[0].messages.iter().all(|m| m.id.0 != "client-id"));
     assert!(inbox.list().is_empty());
+}
+
+#[tokio::test]
+async fn terminal_business_outcome_cleanup_gates_relaunch_without_consuming_steer() {
+    // Causes C1 cleanup fails; C2 steer is queued. Effects E1 fixed NaturalEnd
+    // commits once; E2 no overlapping process; E3 queued steer remains intact;
+    // E4 physical ACK is vetoed. Rules: !C1+C2 -> two opens, consume steer;
+    // !C1+!C2 -> one open; C1+* -> one open + E4; C1+C2 -> E3. All four
+    // combinations assert E1. The fake fails the actual supervisor poll seam.
+    use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
+
+    for fail_cleanup in [false, true] {
+        for queued in [false, true] {
+            let opens = Arc::new(AtomicUsize::new(0));
+            let prompts = Arc::new(AtomicUsize::new(0));
+            let executor = AcpRunExecutor::new(Arc::new(CountingSource {
+                opens: opens.clone(),
+                prompts: prompts.clone(),
+                process_polls: Arc::new(AtomicUsize::new(0)),
+                fail_cleanup,
+            }));
+            let inbox = LiveInbox::new();
+            if queued {
+                let _ = inbox.offer_as(
+                    MessageOrigin::External,
+                    Message::text(MessageId("retained-steer".into()), Role::User, "next"),
+                );
+            }
+            let coordinator = Arc::new(RecordingCoordinator::default());
+            let context = RuntimeRunContext::new()
+                .with_commit(coordinator.clone())
+                .with_live_inbox(inbox.clone());
+            let quiescence = context.physical_quiescence.clone();
+            let state = executor.execute(activation(), context).await.unwrap();
+            assert_eq!(state, RunState::Ended(EndCause::NaturalEnd), "E1");
+            assert_eq!(coordinator.commits.lock().unwrap().len(), 1, "E1");
+            let expected_opens = if queued && !fail_cleanup { 2 } else { 1 };
+            assert_eq!(opens.load(Ordering::SeqCst), expected_opens, "E2");
+            assert_eq!(prompts.load(Ordering::SeqCst), expected_opens, "E2");
+            assert_eq!(
+                inbox.list().len(),
+                usize::from(queued && fail_cleanup),
+                "E3"
+            );
+            assert_eq!(quiescence.can_acknowledge_return(), !fail_cleanup, "E4");
+        }
+    }
 }
 
 #[tokio::test]

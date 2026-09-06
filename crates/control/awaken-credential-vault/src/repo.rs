@@ -934,8 +934,24 @@ pub async fn reconcile_managed_credential_rollout(
     repo: &dyn ManagedCredentialRepository,
     target: &dyn ManagedCredentialRolloutTarget,
 ) -> Result<ManagedCredentialAdoptionProgress, CredentialError> {
-    let Ok(progress) = target.rollout(event).await else {
-        return Ok(ManagedCredentialAdoptionProgress::Pending);
+    let progress = match target.rollout(event).await {
+        Ok(progress) => progress,
+        Err(error) => {
+            // Error payloads belong to external participants and may contain
+            // credentials. Only the closed port variant is diagnostic data.
+            let failure = match error {
+                ManagedCredentialAdoptionError::InvalidEvent(_) => "invalid_event",
+                ManagedCredentialAdoptionError::IdentityCollision => "identity_collision",
+                ManagedCredentialAdoptionError::Unauthorized => "unauthorized",
+                ManagedCredentialAdoptionError::Unavailable(_) => "unavailable",
+            };
+            tracing::warn!(
+                rollout_id = %event.id, workspace_id = %event.workspace_id,
+                source_id = %event.source_id.0, source_version = event.source_version,
+                phase = "delivery", failure, "Managed credential rollout remains pending"
+            );
+            return Ok(ManagedCredentialAdoptionProgress::Pending);
+        }
     };
     if progress.is_converged() {
         repo.complete_managed_rollout(event).await?;

@@ -6,6 +6,7 @@ use awaken_credential_vault::repo::{
 };
 use awaken_session_application::{
     McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionMcpUpdate, SessionUpdateCommand,
+    SessionUpdateError,
 };
 use awaken_session_contract::{SessionExecutionState, stable_fingerprint};
 
@@ -38,10 +39,13 @@ impl ManagedState {
             .sessions_referencing_credential_source(&event.workspace_id, &event.source_id)
             .await
             .map_err(|error| ManagedCredentialAdoptionError::Unavailable(error.to_string()))?;
-        let mut pending = Vec::new();
+        let mut pending = false;
         for session in sessions {
             if session.execution != SessionExecutionState::Idle {
-                pending.push(session.session_id);
+                tracing::info!(rollout_id = %event.id, session_id = %session.session_id,
+                    phase = "session_adoption", failure = "not_idle",
+                    "Managed credential rollout remains pending");
+                pending = true;
                 continue;
             }
             let desired = session.mcp.desired_attachments();
@@ -139,15 +143,36 @@ impl ManagedState {
                 .await;
             match result {
                 Ok(outcome) => {
-                    self.publish_persisted_session(&outcome.session)
-                        .map_err(|error| {
-                            ManagedCredentialAdoptionError::Unavailable(error.to_string())
-                        })?;
+                    if self.publish_persisted_session(&outcome.session).is_err() {
+                        tracing::warn!(rollout_id = %event.id, session_id = %session.session_id,
+                            phase = "projection_after_commit", failure = "publication",
+                            "Managed credential rollout remains pending");
+                        pending = true;
+                    }
                 }
-                Err(error) => pending.push(format!("{} ({error})", session.session_id)),
+                Err(error) => {
+                    let (phase, failure) = match error {
+                        SessionUpdateError::ProjectionAfterCommit { .. } => {
+                            ("projection_after_commit", "projection")
+                        }
+                        SessionUpdateError::NotFound => ("session_adoption", "not_found"),
+                        SessionUpdateError::NotIdle => ("session_adoption", "not_idle"),
+                        SessionUpdateError::NotFrozen => ("session_adoption", "not_frozen"),
+                        SessionUpdateError::Conflict => ("session_adoption", "conflict"),
+                        SessionUpdateError::IdempotencyMismatch => {
+                            ("session_adoption", "idempotency_mismatch")
+                        }
+                        SessionUpdateError::Rejected(_) => ("session_adoption", "rejected"),
+                        SessionUpdateError::Realization(_) => ("session_adoption", "realization"),
+                        SessionUpdateError::Unavailable(_) => ("session_adoption", "unavailable"),
+                    };
+                    tracing::warn!(rollout_id = %event.id, session_id = %session.session_id,
+                        phase, failure, "Managed credential rollout remains pending");
+                    pending = true;
+                }
             }
         }
-        if pending.is_empty() {
+        if !pending {
             Ok(ManagedCredentialAdoptionProgress::Converged)
         } else {
             Ok(ManagedCredentialAdoptionProgress::Pending)

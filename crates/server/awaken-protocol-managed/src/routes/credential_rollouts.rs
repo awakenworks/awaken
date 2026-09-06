@@ -213,4 +213,44 @@ mod tests {
             .unwrap();
         assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
     }
+    #[tokio::test]
+    async fn http_rollout_acknowledges_only_exact_convergence_status() {
+        // Causes: C1 authenticated delivery; C2 HTTP status; C3 transport dies.
+        // Rules: 204 -> Converged; 202 -> Pending; 200/401/403/409/503 -> error;
+        // closed listener -> error. No response body (possibly secret) becomes
+        // a diagnostic. The Control reconciler separately proves error retains
+        // the durable event, including for nominally successful non-204 codes.
+        for status in [204, 202, 200, 401, 403, 409, 503] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let router = Router::new().route(PATH, post(move |headers: HeaderMap, Json(received): Json<ManagedCredentialRollout>| async move {
+                assert_eq!(headers[header::AUTHORIZATION], "Bearer rollout-test");
+                assert_eq!(received, event());
+                (StatusCode::from_u16(status).unwrap(), "secret-response-canary")
+            }));
+            let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            let target = HttpManagedCredentialRolloutTarget::with_token_source(
+                format!("http://{address}"),
+                awaken_service_auth_contract::static_token_source("rollout-test").unwrap(),
+            )
+            .unwrap();
+            let result = target.rollout(&event()).await;
+            match status {
+                204 => assert_eq!(
+                    result.unwrap(),
+                    ManagedCredentialAdoptionProgress::Converged
+                ),
+                202 => assert_eq!(result.unwrap(), ManagedCredentialAdoptionProgress::Pending),
+                _ => assert!(
+                    !result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("secret-response-canary")
+                ),
+            }
+            server.abort();
+            let _ = server.await;
+            assert!(target.rollout(&event()).await.is_err(), "C3/{status}");
+        }
+    }
 }

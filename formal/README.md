@@ -353,7 +353,10 @@ obligation when the development host is Linux.
   child Thread. Each Run owns two calls; TLC checks all interleavings of the
   per-Thread physical-attempt fence, an external wait, crash recovery through
   `NeverReplay -> Indeterminate`, and replay-safe retry to completion. It adds
-  no second tool transition model.
+  no second tool transition model. Worker crash retains its physical slot;
+  `ObserveProcessQuiescence` is an independent evidence boundary. `Spec` allows
+  indefinite fencing, while `FairSpec` assumes eventual process-bound evidence
+  and fair recovery. Neither implies termination of an opaque provider request.
 - `RuntimeSystem.tla` composes dispatch, tool batch, approval, delegation,
   messages, cancellation, and terminal commit under shared variables.
 - `RuntimeImplementation.tla` splits every durable abstract transition into a
@@ -494,6 +497,12 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   response or times out and is eventually released. Its explicit finite
   completion bound is only for TLC; the concurrency invariants are independent
   of the chosen bound.
+  `AcpBoundary` additionally checks two independent waiters, cancellation of an
+  observer, TERM/KILL requests, lease cleanup timeout, actual process exit and
+  ACK. Only observed exit permits ACK; eventual ACK assumes fair acknowledgement
+  after exit, never eventual provider termination. Four strict-gate behavioral
+  mutants restore timeout-as-drop, signal-as-ACK, crash-as-ACK and partial-target
+  rollout adoption; only the named semantic counterexamples count as kills.
 - `CredentialRotationWorkflow.tla`, `DeploymentExecutionWorkflow.tla`,
   `ResourceLifecycleWorkflow.tla`, and `SessionRunProtocol.tla` compose the
   corresponding already-modeled kernels at product boundaries. The Session
@@ -1030,7 +1039,7 @@ flag and do not prove arbitrary SecretStore behavior or cross-store atomicity.
 Create enters `Writing` and produces no rollout. An update enters `Writing`
 only when it writes new material; metadata-only update, archive, and delete
 enter `Ready`. `ManagedCredentialRollout` begins after a non-create pair commit
-and abstracts one configured consumer, extending that boundary across
+and abstracts two independently busy consumers, extending that boundary across
 update/archive/delete:
 the Source/child pair and exact rollout event appear atomically, stale writer
 CAS is rejected, and Archived may progress to Deleted. Attempt, adoption, and
@@ -1040,8 +1049,9 @@ current durable truth. Acknowledgement requires an equal-or-newer adopted fence.
 `RolloutEventIdentity` separately checks that an exact replay is harmless, a
 different payload with the same event id cannot replace the durable row, and a
 colliding acknowledgement cannot delete it. Eventual acknowledgement in the
-rollout model is conditional on restart, the one abstract target becoming
-available, and commit/delivery/adoption/ack fairness. The production adapter's
+rollout model requires eventual stable process and target availability plus
+commit/delivery/adoption/ack fairness. Intermittent availability alone can miss
+every delivery window and does not establish progress. The production adapter's
 Session query, idle transition, repeated supervisor scheduling, concurrent
 Session discovery, and fleet-wide fan-out are not established by that property.
 
@@ -1059,7 +1069,7 @@ requested root eventually reaches its absorbing tombstone.
 
 These are bounded protocol models: creation checks one live owner and bounded
 recovery-owner epochs after an abstract durable lease expiry, rollout checks
-one consumer and revisions through three, and root deletion checks two child
+two consumers and revisions through three, and root deletion checks two child
 slots and revisions through four. They do not prove
 that the Rust adapters refine the abstract atomic commits. Storage engines,
 SecretStore durability, lease-clock truth/renewal, Session-idle fairness,

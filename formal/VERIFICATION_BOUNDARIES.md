@@ -24,6 +24,25 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- Cowork cancellation and credential rollout extend the existing Dispatch,
+  Runtime context, ACP supervisor and Vault outbox owners. Lease-request timeout
+  retains the owned cleanup observer; Native abandonment and ACP reap failure
+  veto physical ACK without rewriting the business outcome. Tests distinguish
+  cancellation admission, executor return, physical termination and settlement.
+  Native cancellation without a provider terminal receipt can still block
+  same-Thread resumption indefinitely; no recovery API or receipt is invented.
+  See ADR-0024 D5. Docker, Podman and Kubernetes share a real process oracle for
+  Pending-wait cancellation, concurrent wait/poll/signal, TERM and KILL; these
+  tests do not establish termination of an opaque remote provider operation.
+  AcpBoundary and SessionThreadToolComposition explore bounded observer/crash
+  schedules, and ManagedCredentialRollout explores independent busy/failing
+  targets with exact all-target ACK. Its progress property assumes eventual
+  stable process/target availability, not merely intermittent availability.
+  Four semantic mutants reject timeout-as-drop, signal-as-receipt,
+  crash-as-quiescence and first-target-as-convergence. Scalar Kani fences remain
+  direct kernel proofs; whole async lifecycle obligations retain abstract-model
+  grades. Test comments own cause/effect decision rules, without another case
+  ledger or a claim of universal Rust-to-model refinement.
 - Credential material reclamation has one phase/membership kernel and one
   SecretStore executor for both envelopes, replacing four repeated cleanup
   implementations. Kani checks the closed phase and set-membership decision;

@@ -133,6 +133,7 @@ pub(crate) struct RehydrateFake {
         Arc<std::sync::Mutex<Option<ChildCommitAfterHistorySnapshot>>>,
     pub(super) pending: Arc<std::sync::Mutex<Option<awaken_session_contract::Pending>>>,
     pub(super) ended: Arc<std::sync::Mutex<Vec<String>>>,
+    pub(super) reject_mcp_publication: Arc<std::sync::atomic::AtomicBool>,
     pub(super) reject_environment_adoption: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -917,6 +918,12 @@ impl awaken_session_contract::McpAttachmentRealizer for RehydrateFake {
         &self,
         _generation: awaken_session_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
+        if self
+            .reject_mcp_publication
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(RunError::unavailable("secret-publication-canary"));
+        }
         Ok(())
     }
 
