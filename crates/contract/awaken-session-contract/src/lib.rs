@@ -21,6 +21,7 @@ mod lifecycle;
 mod mcp_attachment;
 mod mcp_probe;
 mod model_resolution;
+mod network_policy;
 mod resource;
 mod resource_activation;
 mod run_admission;
@@ -58,7 +59,7 @@ pub use baseline::{
     EnvironmentFingerprint, EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy,
     EnvironmentSnapshot, SandboxProvisioning, SessionBaseline, SessionBaselineFingerprint,
     SessionBaselineInputs, SessionBaselineState, SessionCreationFinalizeError,
-    SessionCreationIntent, SessionMcpAuthoringContext, SessionMutationPolicy, SessionNetworkPolicy,
+    SessionCreationIntent, SessionMcpAuthoringContext, SessionMutationPolicy,
     SessionRuntimePlacement, SessionSystemPromptSelection, resolved_environment_snapshot_is_exact,
 };
 pub use budget::{
@@ -76,6 +77,7 @@ pub use coordination::{
     coordinated_thread_id, session_agent_report_messages, session_agent_report_text,
     session_run_activity_operation_id,
 };
+pub use network_policy::SessionNetworkPolicy;
 
 /// Rebuildable desired Environment capacity exported by Coordinator. The
 /// executable Environment catalog remains the sole source of desired state;

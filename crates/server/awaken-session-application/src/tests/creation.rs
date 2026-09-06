@@ -327,6 +327,11 @@ impl SessionEnvironmentSource for AdmissionEnvironment {
         } else {
             environment_id.to_owned()
         };
+        if environment_id == "blank-network" {
+            snapshot.network = awaken_session_contract::SessionNetworkPolicy::Allowlist {
+                hosts: vec![" ".into(), "\t".into()],
+            };
+        }
         Ok(Some(ResolvedSessionEnvironment { snapshot }))
     }
 
@@ -1168,6 +1173,31 @@ async fn assert_profiled_realization_and_environment_rules(
         baseline.environment.network,
         awaken_session_contract::SessionNetworkPolicy::None,
         "P1/E1"
+    );
+    // N7: blank-only Environment and request restrictions previously froze an
+    // Allowlist([""]) instead of canonical None. SQLite must persist
+    // the exact deny fact; replay/projection must not reconstruct another form.
+    let mut blank = profiled_session_command("profiled-blank-network", None);
+    blank.environment_id = Some("blank-network".into());
+    blank.network_restriction = Some(awaken_session_contract::SessionNetworkPolicy::Allowlist {
+        hosts: vec!["\n".into(), " ".into()],
+    });
+    let denied = available
+        .create_profiled_session(blank)
+        .await
+        .expect("N7 created");
+    let reloaded = repository
+        .get(&denied.session_id)
+        .await
+        .expect("N7 durable Session");
+    assert_eq!(
+        reloaded
+            .frozen_baseline()
+            .expect("N7 frozen")
+            .environment
+            .network,
+        awaken_session_contract::SessionNetworkPolicy::None,
+        "N7 must remain canonical after persistence"
     );
     let mcp = realized
         .mcp
