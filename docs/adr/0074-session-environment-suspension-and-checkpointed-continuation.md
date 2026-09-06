@@ -152,6 +152,21 @@ suspension or terminal release.
 | Resource and MCP owners | exact pins, write-back/flush, generation staging and publication | filesystem checkpoint lifecycle |
 | Lifecycle delivery composition | ordered delivery to every configured consumer through the one transactional outbox fact id | Session state, pricing, or a second outbox |
 
+Realization revocation closes the process-level Hand but can retain the exact
+live Sandbox owner. On a later authorized Run, Host borrows that owner's original
+create-attempt evidence for provider observation. Only `Ready` permits a fresh
+Hand wrapper around the same physical Sandbox; provider adoption must not replace
+its process-local creation or cleanup participants. The retained owner stays
+`Retiring` until the wrapper exists, then enters the existing Candidate and
+binding-publication path before Resource reconciliation. Observation or wrapper
+failure preserves the owner for retry. This is warm process rebinding, not
+checkpoint restoration: cold adoption after process loss still obeys the
+provider's `CurrentAttemptOnly` restriction, and no durable proof is fabricated.
+The shared Session Environment path applies to Native and ACP execution and
+keeps Workdir/Namespace roots unchanged. The inline decision table in
+`revoked_durable_container_rebinds_hand_without_reconstructing_its_owner` owns
+its attached/resident, repeated revocation and failure coverage.
+
 The provisioning contract extends the canonical `SandboxProvider` port with
 `checkpoint_formats`, while the existing `WorkerManifest.checkpoint_formats`
 and `PlacementRequirements.checkpoint_format` remain the scheduling source of

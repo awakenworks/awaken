@@ -18,6 +18,7 @@ use tokio::io::AsyncReadExt;
 
 #[derive(Default)]
 struct FakeContainerProvider {
+    adopts: std::sync::atomic::AtomicUsize,
     creates: std::sync::atomic::AtomicUsize,
     disposals: Arc<std::sync::atomic::AtomicUsize>,
     specs: std::sync::Mutex<Vec<pc::SandboxSpec>>,
@@ -154,6 +155,40 @@ impl pc::ProcessHandle for SlowReapProcess {
 
 #[async_trait]
 impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerProvider {
+    fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
+        // Synthetic provider admission for lifecycle tests. Actual containment
+        // is validated by the separate Namespace/Docker/Podman service journeys.
+        pc::SandboxCapabilities {
+            isolation: pc::IsolationClass::Container,
+            tool_transparent: true,
+            path_fidelity: true,
+            enforced_readonly: true,
+            network_isolation: false,
+            enforced_network_allowlist: false,
+            secret_egress_substitution: false,
+            resource_limits: false,
+            custom_rootfs: false,
+            package_provisioning: false,
+            control_services: Default::default(),
+        }
+    }
+
+    async fn observe_environment(
+        &self,
+        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        if self
+            .shared
+            .lock()
+            .unwrap()
+            .contains_key("__ready_observation")
+        {
+            Ok(pc::SandboxObservation::Ready)
+        } else {
+            Err(pc::SandboxError::new("fixture observation unavailable"))
+        }
+    }
+
     async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
         Ok(())
     }
@@ -180,6 +215,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
         &self,
         adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
+        self.adopts.fetch_add(1, Ordering::SeqCst);
         Ok(Arc::new(FakeContainer {
             handle: adoption.handle.clone(),
             disposals: self.disposals.clone(),
@@ -668,7 +704,20 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
         assert!(read.text().contains("acp-bytes"), "E3");
         command.cwd = logical.into();
         assert!(environment.spawn_agent(command).await.is_err(), "W3");
-        environment.dispose().await.unwrap();
+        // W4 retained Workdir + either cwd -> same physical owner and exact
+        // ACP-written bytes; rebind must not adopt or replace the workspace.
+        let rebound = provider.rebind_retained(&environment.handle(), &environment)
+            .await.unwrap();
+        let (SessionEnvironment::Workdir(before), SessionEnvironment::Workdir(after)) =
+            (&environment, &rebound) else { unreachable!() };
+        assert!(Arc::ptr_eq(before, after), "W4 owner");
+        let retained = rebound.tool_executor().invoke(&ToolCall {
+            call_id: "native-after-rebind".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({"path": logical}),
+        }).await.unwrap();
+        assert!(retained.text().contains("acp-bytes"), "W4 bytes");
+        rebound.dispose().await.unwrap();
     }
 }
 
@@ -804,7 +853,49 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
     assert_eq!(agent.wait().await.unwrap().code, Some(0));
     assert_eq!(output, "namespace-state|typed-state", "N2/E2");
 
-    environment.dispose().await.unwrap();
+    // N3 a revoked Namespace wrapper -> same physical Sandbox Arc and root,
+    // fresh Hand, and successful agent I/O. The closed prior Hand stays closed.
+    environment.stop_bound_processes().await.unwrap();
+    let selected = SessionEnvironmentProvider::Namespace {
+        provider,
+        hand_factory: Arc::new(FakeHandExecutorFactory),
+        hand_bin: "/bin/sh".into(),
+        hand_idle_after: std::time::Duration::ZERO,
+    };
+    let rebound = selected
+        .rebind_retained(&environment.handle(), &environment)
+        .await
+        .unwrap();
+    let (
+        SessionEnvironment::Namespace {
+            sandbox: before, ..
+        },
+        SessionEnvironment::Namespace { sandbox: after, .. },
+    ) = (&environment, &rebound)
+    else {
+        unreachable!()
+    };
+    assert!(Arc::ptr_eq(before, after), "N3 physical owner");
+    assert!(
+        !Arc::ptr_eq(&environment.tool_executor(), &rebound.tool_executor()),
+        "N3 fresh Hand"
+    );
+    let (agent, mut channel) = rebound
+        .spawn_agent(pc::Command::new([
+            "/bin/sh",
+            "-c",
+            "cat /workspace/typed-marker",
+        ]))
+        .await
+        .unwrap();
+    let mut bytes = String::new();
+    channel.read_to_string(&mut bytes).await.unwrap();
+    assert_eq!(agent.wait().await.unwrap().code, Some(0));
+    assert_eq!(
+        bytes, "typed-state",
+        "N3 new Hand still owns the original root"
+    );
+    rebound.dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -3218,4 +3309,207 @@ async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_t
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "2");
+}
+
+#[tokio::test]
+async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner() {
+    use crate::host::{
+        eager_environment, empty_frozen_projection_for_snapshot, managed_test_host, test_activation,
+    };
+    use awaken_session_contract::SessionRuntime as _;
+
+    // Causes: C1 exact durable Retiring owner after revocation; C2 typed provider
+    // observation unavailable/Ready; C3 attached/resident Hand; C4 repeated
+    // revocation; C5 foreign handle/provider. Effects: E1 retain the original
+    // owner on failure; E2 same physical Arc, fresh wrapper and usable Hand;
+    // E3 no provider adopt/create/dispose, preserving original cleanup/attempt
+    // participants; E4 reject mismatched rebinding without a process launch.
+    // Rules: W1 C1+unavailable=>E1; W2 C1+Ready+(each C3)+C4=>E2/E3;
+    // W3 C5=>E4. Real Docker probe additionally tests CurrentAttemptOnly proof,
+    // authenticated Control retirement, new Run admission and physical cleanup.
+    for residency in [
+        crate::ContainerHandResidency::AttachedExec,
+        crate::ContainerHandResidency::Resident,
+    ] {
+        let fake = Arc::new(FakeContainerProvider::default());
+        let provider = SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+            fake.clone(),
+            None,
+            Vec::new(),
+            Arc::new(FakeHandExecutorFactory),
+            "awaken-sandbox",
+            std::time::Duration::ZERO,
+            residency,
+        );
+        let thread = "session-container";
+        let host = Arc::new(crate::SharedHost::new(
+            Arc::new(crate::no_model::NoModelConfiguredExecutor),
+            "stub",
+        ));
+        let managed = managed_test_host(host.clone());
+        let activation = test_activation(thread, "rebind-run");
+        let mut projection = empty_frozen_projection_for_snapshot(
+            "workspace",
+            eager_environment(),
+            &activation.snapshot,
+        );
+        projection.agent_publication = Some(activation.snapshot.clone());
+        managed
+            .install_session_projection(
+                thread,
+                projection.clone(),
+                awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+            )
+            .await
+            .unwrap();
+        let spec = host.sandbox_spec_for_provider(thread, &provider);
+        let original = Arc::new(provider.create(&spec).await.unwrap());
+        let handle = original.handle();
+        let binding = serde_json::to_string(&handle).unwrap();
+        let generation = awaken_session_contract::SandboxGeneration::new(
+            thread,
+            1,
+            u64::MAX,
+            "environment",
+            "image",
+        );
+        let identity = crate::session_slot::BoundSessionEnvironmentIdentity::Durable {
+            effect_id: "create-effect".into(),
+            generation: generation.clone(),
+        };
+        projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+            binding: binding.clone(),
+            effect_id: Some("create-effect".into()),
+            generation: Some(generation),
+            idle_since_unix_ms: None,
+        };
+        host.install_session_environment_owner_projection(
+            thread,
+            "workspace",
+            &projection.environment,
+        )
+        .unwrap();
+        let candidate = host
+            .begin_session_environment_adoption(thread, original.clone())
+            .unwrap();
+        host.publish_prepared_session_environment(thread, &candidate, identity)
+            .unwrap();
+        let SessionEnvironment::Container {
+            sandbox: physical, ..
+        } = original.as_ref()
+        else {
+            unreachable!()
+        };
+        let mut previous = original.clone();
+        for turn in 0..2 {
+            let call = ToolCall {
+                call_id: format!("before-revoke-{turn}"),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({}),
+            };
+            previous.tool_executor().invoke(&call).await.unwrap();
+            {
+                let lifecycle = host
+                    .session_slots
+                    .read(thread, |slot| slot.lifecycle.clone())
+                    .unwrap();
+                let _lifecycle = lifecycle.lock().await;
+                host.retire_session_environment_for_revocation(thread)
+                    .await
+                    .unwrap();
+            }
+            assert!(
+                previous.tool_executor().invoke(&call).await.is_err(),
+                "W2 old Hand stays closed"
+            );
+            // W1/W2 new admitted work reinstalls the aggregate-owned Resource
+            // transition through the production projection port. Publication
+            // must execute its ordinary reconciliation, never a test-only ACK.
+            managed
+                .install_session_projection(
+                    thread,
+                    projection.clone(),
+                    awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+                )
+                .await
+                .unwrap();
+            fake.shared.lock().unwrap().remove("__ready_observation");
+            assert!(
+                host.adopt_bound_session_environment(
+                    thread,
+                    Some(&binding),
+                    &provider,
+                    None,
+                    false
+                )
+                .await
+                .is_err(),
+                "W1"
+            );
+            let retained = host
+                .session_slots
+                .read(thread, |slot| {
+                    slot.environment_owner.terminal_bound_environment()
+                })
+                .flatten()
+                .unwrap();
+            assert!(
+                Arc::ptr_eq(&retained.environment, &previous),
+                "W1 exact owner retained"
+            );
+            fake.shared
+                .lock()
+                .unwrap()
+                .insert("__ready_observation".into(), Vec::new());
+            host.adopt_bound_session_environment(thread, Some(&binding), &provider, None, false)
+                .await
+                .unwrap();
+            let rebound = host
+                .session_slots
+                .read(thread, |slot| {
+                    slot.environment_owner.terminal_bound_environment()
+                })
+                .flatten()
+                .unwrap()
+                .environment;
+            assert!(!Arc::ptr_eq(&previous, &rebound), "W2 fresh wrapper");
+            assert!(
+                !Arc::ptr_eq(&previous.tool_executor(), &rebound.tool_executor()),
+                "W2 fresh Hand"
+            );
+            let SessionEnvironment::Container { sandbox, .. } = rebound.as_ref() else {
+                unreachable!()
+            };
+            assert!(Arc::ptr_eq(physical, sandbox), "W2 same physical owner");
+            assert_eq!(rebound.handle(), handle, "W2 exact durable binding");
+            assert_eq!(fake.creates.load(Ordering::SeqCst), 1, "W2 no recreate");
+            assert_eq!(
+                fake.adopts.load(Ordering::SeqCst),
+                0,
+                "W2 no reconstructed participants"
+            );
+            assert_eq!(fake.disposals.load(Ordering::SeqCst), 0, "W2 no disposal");
+            rebound
+                .tool_executor()
+                .invoke(&call)
+                .await
+                .expect("W2 fresh Hand is usable");
+            previous = rebound;
+        }
+        let mut foreign = handle.clone();
+        foreign.sandbox_id.push_str("-foreign");
+        assert!(
+            provider.rebind_retained(&foreign, &previous).await.is_err(),
+            "W3 foreign handle"
+        );
+        let directory = tempfile::tempdir().unwrap();
+        assert!(
+            SessionEnvironmentProvider::workdir(directory.path())
+                .rebind_retained(&handle, &previous)
+                .await
+                .is_err(),
+            "W3 foreign provider"
+        );
+        previous.stop_bound_processes().await.unwrap();
+    }
 }
