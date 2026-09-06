@@ -3,11 +3,24 @@ use awaken_provisioning_contract::Sandbox as _;
 use awaken_sandbox_local::{CurrentExecutionAuthority, LocalProvider};
 use std::sync::{Arc, Mutex};
 
-struct Authority(Mutex<(Option<Duration>, usize, bool)>);
+struct Authority(
+    Mutex<(Option<Duration>, usize, bool)>,
+    Mutex<Option<AuthorityPause>>,
+);
+
+struct AuthorityPause {
+    call: usize,
+    reached: tokio::sync::oneshot::Sender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
+    failure: Option<std::io::ErrorKind>,
+}
 
 impl Authority {
     fn live() -> Arc<Self> {
-        Arc::new(Self(Mutex::new((Some(Duration::from_secs(20)), 0, false))))
+        Arc::new(Self(
+            Mutex::new((Some(Duration::from_secs(20)), 0, false)),
+            Mutex::new(None),
+        ))
     }
 }
 
@@ -18,6 +31,21 @@ impl CurrentExecutionAuthority for Authority {
     ) -> std::io::Result<()> {
         let mut current = self.0.lock().unwrap();
         current.1 += 1;
+        let pause = {
+            let mut pause = self.1.lock().unwrap();
+            if pause.as_ref().is_some_and(|pause| pause.call == current.1) {
+                pause.take()
+            } else {
+                None
+            }
+        };
+        if let Some(pause) = pause {
+            pause.reached.send(()).unwrap();
+            pause.resume.recv_timeout(Duration::from_secs(4)).unwrap();
+            if let Some(error) = pause.failure {
+                return Err(error.into());
+            }
+        }
         if current.2 && current.1 >= 2 {
             current.0 = None;
         }
@@ -255,38 +283,113 @@ async fn provider_scope_denies_late_upgrade_and_rechecks_authority_at_go() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_refresh_reobserves_exact_tree_exit_after_delivery_failure() {
+    // Cause/effect graph: C1 preflight poll sees a live exact tree; C2 that
+    // tree remains live or exits while the authority callback is paused;
+    // C3 callback commits, denies, or reports a broken channel. E1 a live
+    // failed delivery remains an error; E2 exact tree exit makes renewal
+    // unnecessary; E3 normal delivery succeeds without stopping the tree.
+    // Decision table (C1 throughout, actual 3-node Linux trees):
+    // | rule | C2 at delivery | C3 | result |
+    // | R1 | live | commit | E3 |
+    // | R2-R3 | live | deny/broken | E1 (no failure-kind shortcut) |
+    // | R4 | exited | commit (real broken socket) | E2 |
+    // | R5-R6 | exited | deny/broken | E2 (fresh exact receipt) |
+    // R7: repeating after exit skips the callback entirely, preserving marker
+    // and File bytes. A barrier, not sleep, forces the preflight/delivery race.
+    // BrokenPipe injection with a LIVE tree is the unknown-evidence negative
+    // control; it is not a claim that production Session authority is wired.
+    for exited in [false, true] {
+        for failure in [
+            None,
+            Some(std::io::ErrorKind::PermissionDenied),
+            Some(std::io::ErrorKind::BrokenPipe),
+        ] {
+            let base = tempfile::tempdir().unwrap();
+            let provider = LocalProvider::trusted_host(base.path());
+            let sandbox = Arc::new(
+                provider
+                    .create_sandbox_for_effect(&spec(), &fence("create"), None)
+                    .await
+                    .unwrap(),
+            );
+            let authority = Authority::live();
+            sandbox
+                .install_scoped_execution(
+                    Path::new("/usr/bin/bwrap"),
+                    Path::new(HELPER),
+                    authority.clone(),
+                )
+                .unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let process = sandbox
+                .spawn(tree(listener.local_addr().unwrap().port()))
+                .await
+                .unwrap();
+            let nodes = observe_tree(&listener).await;
+            let original_marker = marker(base.path());
+            let (reached, observed) = tokio::sync::oneshot::channel();
+            let (resume, waiting) = std::sync::mpsc::channel();
+            *authority.1.lock().unwrap() = Some(AuthorityPause {
+                call: authority.0.lock().unwrap().1 + 1,
+                reached,
+                resume: waiting,
+                failure,
+            });
+            let refreshing = sandbox.clone();
+            let refresh = tokio::spawn(async move { refreshing.refresh_scoped_execution().await });
+            tokio::time::timeout(Duration::from_secs(3), observed)
+                .await
+                .unwrap()
+                .unwrap();
+            if exited {
+                process.signal(pc::Signal::Kill).await.unwrap();
+                tokio::time::timeout(Duration::from_secs(3), process.wait())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            } else {
+                assert_tree_live(&nodes);
+            }
+            resume.send(()).unwrap();
+            let result = refresh.await.unwrap();
+            assert_eq!(
+                result.is_ok(),
+                exited || failure.is_none(),
+                "{exited}/{failure:?}"
+            );
+            if !exited {
+                assert_tree_live(&nodes);
+            }
+            assert_eq!(
+                marker(base.path()),
+                original_marker,
+                "renewal never retires WAL"
+            );
+            assert_eq!(
+                std::fs::read(sandbox.workspace_path().join("mnt/session/file")).unwrap(),
+                b"exact\0file\xff"
+            );
+            sandbox.stop_scoped_execution().await.unwrap();
+            assert_tree_closed(nodes).await;
+            let calls = authority.0.lock().unwrap().1;
+            sandbox.refresh_scoped_execution().await.unwrap();
+            assert_eq!(
+                authority.0.lock().unwrap().1,
+                calls,
+                "R7 skips exited handles"
+            );
+            dispose(&sandbox).await;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provider_close_racing_join_cannot_report_quiescence_or_allow_late_go() {
     // P11 pause after JOINED but before the current-authority callback commits
     // GO. Concurrent close must close admission, fail its marker try-lock and
     // retain bytes (no stop receipt). Resume => no GO; retry => quiescent. This
     // exercises the actual provider guard/OnceLock/launch path, not a toy lock.
-    struct PausedAuthority {
-        calls: std::sync::atomic::AtomicUsize,
-        joined: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-        resume: Mutex<std::sync::mpsc::Receiver<()>>,
-    }
-    impl CurrentExecutionAuthority for PausedAuthority {
-        fn with_current(
-            &self,
-            effect: &mut dyn FnMut(Duration) -> std::io::Result<()>,
-        ) -> std::io::Result<()> {
-            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
-                self.joined
-                    .lock()
-                    .unwrap()
-                    .take()
-                    .unwrap()
-                    .send(())
-                    .unwrap();
-                self.resume
-                    .lock()
-                    .unwrap()
-                    .recv_timeout(Duration::from_secs(4))
-                    .unwrap();
-            }
-            effect(Duration::from_secs(20))
-        }
-    }
     let base = tempfile::tempdir().unwrap();
     let provider = LocalProvider::trusted_host(base.path());
     let sandbox = Arc::new(
@@ -297,16 +400,15 @@ async fn provider_close_racing_join_cannot_report_quiescence_or_allow_late_go() 
     );
     let (joined, observed) = tokio::sync::oneshot::channel();
     let (resume, waiting) = std::sync::mpsc::channel();
+    let authority = Authority::live();
+    *authority.1.lock().unwrap() = Some(AuthorityPause {
+        call: 2,
+        reached: joined,
+        resume: waiting,
+        failure: None,
+    });
     sandbox
-        .install_scoped_execution(
-            Path::new("/usr/bin/bwrap"),
-            Path::new(HELPER),
-            Arc::new(PausedAuthority {
-                calls: Default::default(),
-                joined: Mutex::new(Some(joined)),
-                resume: Mutex::new(waiting),
-            }),
-        )
+        .install_scoped_execution(Path::new("/usr/bin/bwrap"), Path::new(HELPER), authority)
         .unwrap();
     let spawned = sandbox.clone();
     let launch = tokio::spawn(async move {
