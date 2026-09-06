@@ -478,6 +478,7 @@ def main() -> None:
     parser.add_argument("--observation-trace-dir", type=Path)
 
     model_selection.add_argument("--cowork-lifecycle-model-mutants", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--local-process-model-mutant", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
     if arguments.session_observation_trace_mutants is not None:
         if arguments.observation_trace_dir is None:
@@ -526,6 +527,9 @@ def main() -> None:
     if arguments.effect_retirement_model_mutant is not None:
         check_effect_retirement_model_mutant(arguments.effect_retirement_model_mutant)
         return
+    if arguments.local_process_model_mutant is not None:
+        check_local_process_model_mutants(arguments.local_process_model_mutant)
+        return
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(MutationOracleTests)
     if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
         raise SystemExit(1)
@@ -571,6 +575,39 @@ def main() -> None:
                 path.write_bytes(content)
             require_green_baseline(case_root)
     print(f"formal gate mutation score: {len(mutations)}/{len(mutations)} killed")
+
+
+def check_local_process_model_mutants(tlc_jar: Path) -> None:
+    # Cause/effect rules LP1 missing atomic spawn policy -> unconfigured handle;
+    # LP2 backoff retains mutex -> peer-poll exclusion; LP3 cancelled waiter
+    # retains mutex -> abandoned owner; LP4 crash erases descendants -> a false
+    # OS guarantee has been smuggled into the model; LP5 a denied group signal
+    # succeeds after leader exit -> false cleanup acknowledgement. Each violates
+    # its named property; the shared TLC runner rejects parse/tool failures as kills.
+    source = (ROOT / "formal/tla/LocalProcessLifecycle.tla").read_text(encoding="utf-8")
+    config = (ROOT / "formal/tla/LocalProcessLifecycle.cfg").read_text(encoding="utf-8")
+    replacements = [
+        ("privateGroup' = TRUE /\\ dropPolicy' = TRUE",
+         "privateGroup' = FALSE /\\ dropPolicy' = TRUE", "ConfiguredBeforeSpawn"),
+        ("/\\ lock' = NoLock\n  /\\ waiter' = [waiter EXCEPT ![w] = IF leaderAlive",
+         "/\\ lock' = IF leaderAlive THEN w ELSE NoLock\n  /\\ waiter' = [waiter EXCEPT ![w] = IF leaderAlive",
+         "NoParkedWaiterOwnsLock"),
+        ("lock' = IF lock = w THEN NoLock ELSE lock", "lock' = lock", "NoParkedWaiterOwnsLock"),
+        ("/\\ UNCHANGED <<privateGroup, dropPolicy, leaderAlive, descendantAlive,\n                  stopRequested, observedExit, signalVars>>",
+         "/\\ descendantAlive' = FALSE\n  /\\ UNCHANGED <<privateGroup, dropPolicy, leaderAlive,\n                  stopRequested, observedExit, signalVars>>",
+         "CrashPreservesOSProcesses"),
+        ('signalAccepted\' = (outcome \\in {"accepted", "absent"})',
+         'signalAccepted\' = (outcome \\in {"accepted", "absent"} \\/ ~leaderAlive)',
+         "SignalDenialIsNotAcknowledged"),
+    ]
+    mutations = []
+    for original, replacement, property_name in replacements:
+        if source.count(original) != 1:
+            raise SystemExit(f"Local process mutation anchor drifted: {property_name}")
+        mutations.append((source.replace(original, replacement), config, property_name))
+    check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, config, mutations,
+                              action_properties={"CrashPreservesOSProcesses"})
+    print("Local process mutation score: 5/5 killed (spawn, backoff, cancellation, crash, denied signal)")
 
 
 def check_memory_copy_model_mutant(tlc_jar: Path) -> None:

@@ -261,12 +261,7 @@ pub async fn harvest(
     let files = tree
         .files
         .into_iter()
-        .map(|file| {
-            Ok((
-                memory_path(&file.relative_path)?,
-                String::from_utf8(file.bytes).ok(),
-            ))
-        })
+        .map(|file| Ok((memory_path(&file.relative_path)?, file.bytes)))
         .collect::<Result<Vec<_>, FuseError>>()?;
     reconcile_files(fs, store, files, snapshot).await
 }
@@ -296,12 +291,7 @@ pub(crate) async fn harvest_recovered_files(
     )?;
     let mut contents = files
         .iter()
-        .map(|(path, bytes)| {
-            (
-                format!("/{path}"),
-                std::str::from_utf8(bytes).ok().map(str::to_owned),
-            )
-        })
+        .map(|(path, bytes)| (format!("/{path}"), bytes.clone()))
         .collect::<Vec<_>>();
     contents.sort_by(|a, b| a.0.cmp(&b.0));
     reconcile_files(fs, store, contents, snapshot).await
@@ -310,15 +300,25 @@ pub(crate) async fn harvest_recovered_files(
 async fn reconcile_files(
     fs: &dyn MemoryRepository,
     store: &str,
-    files: Vec<(String, Option<String>)>,
+    files: Vec<(String, Vec<u8>)>,
     snapshot: &mut CopySnapshot,
 ) -> Result<HarvestReport, FuseError> {
+    // Memory stores text. A physically complete scan is not sufficient if any
+    // candidate cannot be represented durably. Admit the WHOLE captured batch
+    // before the first CAS or deletion; skipping a binary entry would let the
+    // caller acknowledge reconciliation and dispose its only remaining bytes.
+    // Live and recovered copies share this admission and mutation boundary.
+    let files = files
+        .into_iter()
+        .map(|(path, bytes)| {
+            String::from_utf8(bytes)
+                .map(|content| (path, content))
+                .map_err(|_| scan_error("non-UTF-8 Memory content cannot be reconciled"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let present: HashSet<&str> = files.iter().map(|(path, _)| path.as_str()).collect();
     let mut report = HarvestReport::default();
     for (path, content) in &files {
-        let Some(content) = content else {
-            continue; // non-UTF-8 memory bytes are not our model — skip
-        };
         match snapshot.heads.get(path).cloned() {
             Some(base) => {
                 if sha256_hex(content) == base.content_sha256 {
@@ -732,7 +732,10 @@ mod tests {
     }
 
     #[test]
-    fn harvest_skips_a_non_utf8_file_rather_than_failing() {
+    fn harvest_rejects_non_utf8_before_any_mutation() {
+        // U1 valid create + non-UTF-8 create => error, no changed heads or
+        // snapshot, exact binary source retained. The integration matrix covers
+        // edits, deletions, recovery, ordering, read-only and durable retry.
         let rt = rt();
         let fs = Arc::new(VolatileMemoryRepository::new());
         let dir = temp("harv-bin");
@@ -740,17 +743,15 @@ mod tests {
         std::fs::write(dir.join("ok.md"), "text").unwrap();
         std::fs::write(dir.join("blob.bin"), [0xFF, 0xFE, 0x00]).unwrap();
 
-        // The UTF-8 file is folded in; the binary one is skipped, not fatal.
+        let error = rt
+            .block_on(harvest(&*fs, "s", &dir, &mut snapshot))
+            .unwrap_err();
+        assert!(error.to_string().contains("non-UTF-8 Memory content"));
+        assert!(rt.block_on(fs.snapshot_heads("s")).unwrap().is_empty());
+        assert!(snapshot.is_empty());
         assert_eq!(
-            rt.block_on(harvest(&*fs, "s", &dir, &mut snapshot))
-                .unwrap()
-                .changed,
-            1
-        );
-        assert!(
-            rt.block_on(fs.get_by_path("s", "/blob.bin"))
-                .unwrap()
-                .is_none()
+            std::fs::read(dir.join("blob.bin")).unwrap(),
+            [0xFF, 0xFE, 0x00]
         );
         std::fs::remove_dir_all(&dir).ok();
     }

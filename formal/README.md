@@ -581,6 +581,20 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   receipt generation fencing. A receipt proves that one purge occurred while
   fenced and unreferenced; it does not assert permanent absence of a shared
   content-addressed File blob that a later owner may recreate.
+- `LocalProcessLifecycle.tla` models the sole `awaken-local-process` spawn
+  boundary, two concurrent waiters, mutex acquisition/backoff, cancellation,
+  signal requests, asynchronous OS exit, normal Drop and abrupt Worker death.
+  It checks configured-before-spawn, no parked/cancelled waiter retaining the
+  lock, stable exit observation, failed spawn without a handle and Drop's
+  termination request. The crash action deliberately preserves surviving OS
+  processes; a fourth mutation rejects introducing a false crash-cleanup
+  assumption. A fifth mutation acknowledges a denied signal after leader exit;
+  the signal-outcome invariant rejects it even when poll/wait already observed
+  that exit. Unix signalling does not acquire the child mutex. The other three
+  mutations remove spawn configuration, retain a lock across backoff, or retain
+  it after cancellation. This finite Unix lifecycle model is
+  linked to the real process tests, not a Rust refinement, unbounded liveness
+  proof, process-tree quiescence certificate or Windows Job Object guarantee.
 - `WorkerReplacement.tla` composes authored route resolution, dispatch-time
   candidate pinning, worker claims, credential materialization, execution and
   settlement with concurrent route change, rotation, revocation, worker crash,

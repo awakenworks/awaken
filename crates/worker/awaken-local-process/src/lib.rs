@@ -8,7 +8,7 @@
 
 use async_trait::async_trait;
 use awaken_provisioning_contract::{ExitStatus, ProcessHandle, SandboxError, Signal};
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 /// Await a process through its provider-owned, nonblocking status port.
@@ -27,7 +27,7 @@ pub async fn wait_for_process_exit(
 }
 
 /// Configure a command so the child becomes leader of a private process group.
-pub fn configure_process_group(command: &mut Command) {
+fn configure_process_group(command: &mut Command) {
     #[cfg(not(unix))]
     let _ = command;
     #[cfg(unix)]
@@ -49,19 +49,35 @@ pub struct LocalProcess {
 }
 
 impl LocalProcess {
-    /// Wrap a child spawned from a command prepared by
-    /// [`configure_process_group`].
-    #[must_use]
-    pub fn spawned(child: Child) -> Self {
+    /// Launch through the sole local ProcessHandle construction boundary.
+    /// Callers configure argv, cwd, environment and pipes, but cannot bypass or
+    /// subsequently overwrite the private process-group and drop policy.
+    ///
+    /// Drop requests direct-child termination; it is NOT an owner-crash or
+    /// whole-tree quiescence guarantee. In particular SIGKILL does not run Drop.
+    pub fn spawn(command: &mut Command) -> std::io::Result<Self> {
+        configure_process_group(command);
+        command.kill_on_drop(true);
+        let child = command.spawn()?;
         let pid = child.id();
-        Self {
+        Ok(Self {
             id: pid.map(|value| value.to_string()).unwrap_or_default(),
             #[cfg(unix)]
             process_group: pid.map(|value| nix::unistd::Pid::from_raw(value as i32)),
             #[cfg(unix)]
             graceful_group: None,
             child: Mutex::new(child),
-        }
+        })
+    }
+
+    /// Detach a configured pipe before sharing the lifecycle handle. There is
+    /// deliberately no raw Child accessor or constructor: ownership stays here.
+    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
+        self.child.get_mut().stdin.take()
+    }
+
+    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.child.get_mut().stdout.take()
     }
     /// Bind the private session group reported by an owned isolating launcher.
     /// The caller must obtain this identity from that launcher's private control
@@ -106,6 +122,19 @@ fn exit(status: std::process::ExitStatus) -> ExitStatus {
     }
 }
 
+#[cfg(unix)]
+fn group_signal_result(result: Result<(), nix::errno::Errno>) -> Result<(), SandboxError> {
+    match result {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
+        // EPERM (including an ambiguous macOS response after natural exit) is
+        // not proof that the group is absent. A reaped leader says nothing
+        // about surviving descendants. Preserve every error except exact ESRCH.
+        Err(error) => Err(SandboxError::new(format!(
+            "process-group signal failed: {error}"
+        ))),
+    }
+}
+
 #[async_trait]
 impl ProcessHandle for LocalProcess {
     fn id(&self) -> &str {
@@ -141,26 +170,7 @@ impl ProcessHandle for LocalProcess {
                 Signal::Kill => nix::sys::signal::Signal::SIGKILL,
                 Signal::Int => nix::sys::signal::Signal::SIGINT,
             };
-            return match nix::sys::signal::killpg(group, signal) {
-                Ok(()) => Ok(()),
-                Err(signal_error) => {
-                    // `poll(None) -> natural exit -> signal` is an unavoidable OS
-                    // race. macOS may report EPERM for the vanished process group
-                    // (other Unix targets commonly report ESRCH). Only suppress the
-                    // signal error after the owned child confirms it has exited; a
-                    // still-live or unobservable child continues to fail closed.
-                    match self.child.lock().await.try_wait() {
-                        Ok(Some(_)) => Ok(()),
-                        Ok(None) => Err(SandboxError::new(format!(
-                            "{signal_error}; child {} is still running",
-                            self.id
-                        ))),
-                        Err(poll_error) => Err(SandboxError::new(format!(
-                            "{signal_error}; child exit check failed: {poll_error}"
-                        ))),
-                    }
-                }
-            };
+            return group_signal_result(nix::sys::signal::killpg(group, signal));
         }
         #[cfg(not(unix))]
         {
@@ -222,8 +232,7 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        configure_process_group(&mut command);
-        let process = LocalProcess::spawned(command.spawn().expect("spawn process group"));
+        let process = LocalProcess::spawn(&mut command).expect("spawn process group");
 
         wait_for_marker(&ready, "ready").await;
         process.signal(Signal::Term).await.expect("signal group");
@@ -248,10 +257,8 @@ mod tests {
             .args(["-c", "read input"])
             .stdin(Stdio::piped())
             .kill_on_drop(true);
-        configure_process_group(&mut command);
-        let mut child = command.spawn().unwrap();
-        let _input = child.stdin.take().unwrap();
-        let process = LocalProcess::spawned(child);
+        let mut process = LocalProcess::spawn(&mut command).unwrap();
+        let _input = process.take_stdin().unwrap();
         let mut waiting = Box::pin(process.wait());
         std::future::poll_fn(|cx| {
             assert!(waiting.as_mut().poll(cx).is_pending(), "L2 wait entered");
@@ -282,10 +289,10 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn signal_accepts_a_process_group_that_already_exited() {
-        // The supervisor can observe a running child, receive its terminal protocol
-        // frame, and then race its natural exit while beginning cleanup. Once the
-        // owned Child confirms the exit, a stale process-group signal is successful
-        // cleanup rather than a new business failure.
+        // G1 natural exit before signal => exact ESRCH is an idempotent success.
+        // G2 macOS may report ambiguous EPERM instead: retain that error even
+        // though the leader exited. The exhaustive errno table below pins G2
+        // on Linux as well; this integration row observes the executing kernel.
         let mut command = Command::new("sh");
         command
             .arg("-c")
@@ -293,8 +300,7 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        configure_process_group(&mut command);
-        let process = LocalProcess::spawned(command.spawn().expect("spawn short-lived process"));
+        let process = LocalProcess::spawn(&mut command).expect("spawn short-lived process");
 
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
@@ -307,20 +313,203 @@ mod tests {
         .await
         .expect("child exits");
 
-        process
-            .signal(Signal::Term)
+        let result = process.signal(Signal::Term).await;
+        #[cfg(target_os = "macos")]
+        if let Err(error) = &result {
+            assert!(error.to_string().contains("EPERM"), "G2: {error}");
+            return;
+        }
+        result.expect("G1 an absent group is an idempotent signal outcome");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn group_signal_errors_require_exact_absence_evidence() {
+        // Decision table G3: delivery accepted => Ok; G4 ESRCH => Ok;
+        // G5 EPERM/EACCES/EINVAL/other failure => Err. Enumerate errno codes
+        // 0..4095, including nix's unknown-error class. Leader exit is NOT an
+        // input: poll/wait before or after the OS result cannot waive G5.
+        // Success is signal acceptance/absence only, never tree quiescence.
+        assert!(group_signal_result(Ok(())).is_ok());
+        for code in 0..=4095 {
+            let errno = nix::errno::Errno::from_raw(code);
+            let result = group_signal_result(Err(errno));
+            assert_eq!(
+                result.is_ok(),
+                errno == nix::errno::Errno::ESRCH,
+                "G4/G5 {errno}"
+            );
+            if let Err(error) = result {
+                assert!(error.to_string().contains(&errno.to_string()));
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn reaped_leader_does_not_prevent_signalling_a_live_descendant() {
+        // Timing rule G6: private group -> fork -> child-ready barrier ->
+        // reaped leader -> group KILL => descendant-held stdout reaches EOF.
+        // The pipe and live group probe establish survival before signalling;
+        // the 10s backstop exceeds the 2s oracle and bounds leaks on assertion
+        // failure. No PID scan or leader-exit-as-tree-exit assumption is used.
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "sh -c 'printf \"AWAKEN_DESCENDANT_READY\\n\"; exec sleep 10' & exit 0",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut process = LocalProcess::spawn(&mut command).unwrap();
+        let mut output = BufReader::new(process.take_stdout().unwrap());
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(2), output.read_line(&mut line))
             .await
-            .expect("an already-exited owned process is settled");
+            .unwrap()
+            .unwrap();
+        assert_eq!(line, "AWAKEN_DESCENDANT_READY\n");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), process.wait())
+                .await
+                .unwrap()
+                .unwrap()
+                .code,
+            Some(0)
+        );
+        nix::sys::signal::killpg(process.process_group.unwrap(), None)
+            .expect("G6 group still live");
+        process.signal(Signal::Kill).await.unwrap();
+        let mut remaining = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), output.read_to_end(&mut remaining))
+            .await
+            .expect("G6 descendant exits before its voluntary backstop")
+            .unwrap();
+        assert!(remaining.is_empty());
     }
 
     #[test]
     #[ignore = "child participant, invoked by the cross-platform lifecycle matrix"]
     fn lifecycle_child() {
+        if std::env::var("AWAKEN_LIFECYCLE_CHILD").as_deref() == Ok("io") {
+            use std::io::{Read, Write};
+            assert_eq!(
+                std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
+                std::fs::canonicalize(std::env::var_os("AWAKEN_EXPECTED_CWD").unwrap()).unwrap()
+            );
+            assert_eq!(
+                std::env::var("AWAKEN_PROJECTED_VALUE").unwrap(),
+                "空 格 $ literal"
+            );
+            let mut input = [0_u8; 1];
+            std::io::stdin().read_exact(&mut input).unwrap();
+            assert_eq!(input, [42]);
+            println!("AWAKEN_CHILD_READY");
+            std::io::stdout().flush().unwrap();
+            // Parent deliberately keeps this pipe open during the Drop oracle.
+            // If that oracle fails, unwinding closes stdin and releases the
+            // participant instead of leaking an immortal test process.
+            std::io::copy(&mut std::io::stdin(), &mut std::io::sink()).unwrap();
+        }
         if std::env::var("AWAKEN_LIFECYCLE_CHILD").as_deref() == Ok("wait") {
             loop {
                 std::thread::sleep(Duration::from_secs(1));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn sole_spawn_preserves_projection_and_drop_terminates_the_owned_child() {
+        // Cause/effect decision table:
+        // S1 valid executable + cwd with spaces/Unicode + literal projected env
+        //    + piped IO => exact child observations and two one-shot pipe takes.
+        // S2 caller explicitly disables kill_on_drop + S1 + owner Drop while
+        //    the detached stdin is STILL open => child stdout reaches EOF.
+        // S3 missing executable => spawn error, no lifecycle handle fabricated.
+        // The child acknowledges projection before S2; it cannot voluntarily
+        // exit while stdin is held open. EOF detects an orphan regression without
+        // a PID scan, shell, credentials, or timing-based survival assertion.
+        // This proves graceful owner Drop only, NOT Worker SIGKILL or descendants.
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("work 空 格");
+        std::fs::create_dir(&cwd).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "tests::lifecycle_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .current_dir(&cwd)
+            .env("AWAKEN_LIFECYCLE_CHILD", "io")
+            .env("AWAKEN_EXPECTED_CWD", &cwd)
+            .env("AWAKEN_PROJECTED_VALUE", "空 格 $ literal")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(false);
+        let mut process = LocalProcess::spawn(&mut command).unwrap();
+        let mut stdin = process.take_stdin().unwrap();
+        let mut stdout = BufReader::new(process.take_stdout().unwrap());
+        assert!(process.take_stdin().is_none());
+        assert!(process.take_stdout().is_none());
+        stdin.write_all(&[42]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let mut line = String::new();
+                assert_ne!(
+                    stdout.read_line(&mut line).await.unwrap(),
+                    0,
+                    "child acknowledges projection"
+                );
+                if line.trim() == "AWAKEN_CHILD_READY" {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("child startup barrier");
+        drop(process);
+        let mut tail = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), stdout.read_to_end(&mut tail))
+            .await
+            .expect("Drop terminates child even with its stdin held open")
+            .unwrap();
+        drop(stdin);
+        assert!(
+            LocalProcess::spawn(&mut Command::new(root.path().join("missing-executable"))).is_err()
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sole_spawn_overrides_a_callers_shared_process_group() {
+        // S4 caller asks to join the parent's process group => spawn replaces it
+        // atomically with the child's private group. A forgotten or overwritten
+        // configure step must never signal the Worker/test runner's own group.
+        use std::os::unix::process::CommandExt;
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "tests::lifecycle_child", "--ignored"])
+            .env("AWAKEN_LIFECYCLE_CHILD", "wait")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+            .as_std_mut()
+            .process_group(nix::unistd::getpgrp().as_raw());
+        let process = LocalProcess::spawn(&mut command).unwrap();
+        let pid = nix::unistd::Pid::from_raw(process.id().parse().unwrap());
+        assert_eq!(nix::unistd::getpgid(Some(pid)).unwrap(), pid);
+        assert_ne!(pid, nix::unistd::getpgrp());
+        process.signal(Signal::Kill).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), process.wait())
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
@@ -340,10 +529,8 @@ mod tests {
                 )
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .kill_on_drop(true);
-            configure_process_group(&mut command);
-            let process = LocalProcess::spawned(command.spawn().unwrap());
+                .stderr(Stdio::null());
+            let process = LocalProcess::spawn(&mut command).unwrap();
             let campaign = async {
                 if order == 0 || order == 3 {
                     let waiting = process.wait();

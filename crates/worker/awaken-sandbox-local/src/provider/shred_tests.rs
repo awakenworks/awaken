@@ -380,8 +380,7 @@ async fn build_command_honors_cwd_and_inline_env_and_rejects_empty_argv() {
 async fn a_spawned_local_process_reports_its_pid_and_reaps() {
     use awaken_provisioning_contract::ProcessHandle;
     let mut command = successful_command();
-    let child = command.spawn().unwrap();
-    let proc = LocalProcess::spawned(child);
+    let proc = LocalProcess::spawn(&mut command).unwrap();
     assert!(!proc.id().is_empty());
     let status = proc.wait().await.unwrap();
     assert_eq!(status.code, Some(0));

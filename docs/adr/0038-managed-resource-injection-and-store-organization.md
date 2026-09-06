@@ -605,6 +605,19 @@ feeds captured bytes into the same reconciliation function without an
 intermediate plaintext directory; unusable-temp-location subprocess tests cover
 success and cancellation. Physical projection admission also tests parent
 aliases, Unicode normalization and exact no-edit path/ID/history preservation.
+Both live and recovered copy writeback now admit all captured content as UTF-8
+before any Repository mutation. Silently skipping binary bytes could otherwise
+let terminal cleanup dispose their only copy while claiming reconciliation
+success. The existing copy lifecycle suite owns a 16-row decision matrix:
+live/recovered, new/replaced head, first/last invalid entry, read-write/read-only.
+It asserts exact source and durable history preservation on repeated rejection,
+followed by repair, idempotent replay and SQLite reopen. Read-only mounts still
+do not publish local edits. The existing Host terminal Memory table adds resident
+and cold rejection/retry rows: no acknowledgement, provider preparation or
+physical disposal may follow rejected reconciliation; the exact binding survives
+and the same terminal effect resumes after participant recovery. This is
+fail-closed retention, not a new permanent conflict disposition or authorization
+to move local Memory into cloud Files.
 The existing `MemoryCAS` model adds the copy-recovery configuration, with
 automatically rejected rebase, incomplete-scan-delete and replaced-root mutants.
 It separates request admission, caller cancellation, late durable commit and
@@ -613,6 +626,52 @@ on caller cancellation. Worker login heartbeat reordering runs
 against the production registry under Loom; the existing Kani lease kernel and
 TLA+ activation/projection/reclamation models retain their own boundaries. See
 [formal verification](../../formal/README.md) for the exact model scope.
+
+The local `ProcessHandle` construction boundary is now `LocalProcess::spawn` in
+`awaken-local-process`. Existing ACP, Workdir and Namespace launchers keep their
+argv, cwd, environment/credential projection and channel ownership unchanged;
+they no longer separately configure, spawn, and wrap a raw child. Spawn enforces
+the private Unix process group and direct-child `kill_on_drop` policy before
+returning any handle. Mutable one-shot stdin/stdout extraction cannot expose or
+replace the owned child. This also closes the normal-drop direct-child orphan window in the
+Local/Namespace launchers that previously omitted `kill_on_drop`.
+
+The lifecycle sequence is `project command -> spawn -> detach configured pipes
+-> share handle -> poll/wait/signal`. Waiting releases the child mutex before
+backoff; cancelling a waiter does not relinquish process ownership. A final
+handle Drop requests direct-child termination, whereas abrupt Worker death does
+not run Drop. Neither successful signal delivery nor a cached leader exit is a
+whole-tree termination receipt. `ProcessHandle` explicitly documents that limit;
+no process exit ledger, credential store or parallel cleanup machine is added.
+Unix group signalling treats only accepted delivery or exact `ESRCH` as success.
+`EPERM` and all other errors remain errors even after the leader exits; the old
+leader-exit fallback could conceal a surviving group's failed termination. A
+real process test reaps the leader while a descendant holds stdout, then requires
+group KILL to close that pipe before the descendant's voluntary backstop. The
+errno decision table includes ambiguous macOS denial; Windows keeps its existing
+direct-child implementation. Numeric process-group identity reuse and detached
+descendants remain limitations; this change does not provide a quiescence receipt.
+
+The cause/effect rows next to the Rust tests cover executable failure, overridden
+caller group/drop settings, cwd with spaces/Unicode, literal environment values,
+one-shot pipes and stdout EOF after Drop while detached stdin remains open.
+`LocalProcessLifecycle.tla` independently explores two waiters, cancellation,
+signals, OS exit, normal Drop and Worker crash. Its five negative mutations must
+fail the exact spawn, parked-lock, cancelled-lock, false-crash-cleanup and
+denied-signal-after-leader-exit checks. Unix signals do not take the child mutex;
+the model admits them concurrently with polling and cancellation.
+This is bounded model checking, not Rust refinement or an OS containment proof.
+
+The Linux portability gate also exercises the existing Namespace PID isolation
+and `--die-with-parent` boundary without changing either mechanism. A separate
+provider-owner process launches a three-node Bash tree; both descendants use
+`setsid`, report their distinct process-group/session identities, verify the
+managed File mount, and hold live sockets. The test SIGKILLs the owner (no Rust
+Drop or graceful disposal), then requires all sockets to close before the fixture
+backstop. Removing `--unshare-pid` must make that exact termination oracle time
+out; restoring it restores the passing result. This is real Linux Namespace
+substrate evidence, not a TrustedHost guarantee, full Worker/Coordinator failover
+test, or authorization to reclaim a directory based only on leader exit.
 
 These gates do not yet establish a complete release matrix: in-flight ACP
 process fencing, a production-feature HTTPS resource composition, actual mixed
@@ -623,5 +682,21 @@ groups; neither proves ownership recovery after abrupt Worker death while a
 host Agent or descendant is still performing effects. Actual
 vendor logins, macOS/Windows execution, and OS credential-manager/SSH integration
 must be verified on their corresponding hosts; fixture or model success does
-not substitute for them. Memory/Repository live addition remains an explicit
+not substitute for them.
+
+Cross-compilation of `awaken-local-process --tests` and
+`awaken-sandbox-memoryd --lib` passes for `x86_64-pc-windows-gnu` and
+`x86_64-apple-darwin` (the latter selects Clang for its target C compiler).
+These are type/build checks, not executed platform tests. In particular, the
+shared `awaken-sandbox-fs` still returns `Unsupported` on Windows for nofollow
+directory identity and descriptor-relative atomic materialization. Workdir File
+mounts call that materialization primitive in `awaken-sandbox-local/provider.rs`;
+compiling its dependencies cannot qualify that runtime path. The separate
+quiescent Memory copy's `ProjectionRoot` already uses retained same-file handles
+on Windows and must not be replaced with a duplicate identity mechanism.
+Apple Silicon cross-checking also needs a Darwin C sysroot for BLAKE3's NEON
+build; this Linux host's Clang header search fails before checking Awaken code.
+These implementation and toolchain gaps remain explicit release blockers.
+
+Memory/Repository live addition remains an explicit
 create-time-only contract, not a missing hot-plug implementation to emulate.

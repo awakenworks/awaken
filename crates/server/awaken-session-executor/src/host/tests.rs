@@ -17808,6 +17808,7 @@ async fn remote_memory_staging_uses_the_session_realization_lease_without_a_run_
 
 struct RecordingTerminalMemoryMounter {
     events: Arc<Mutex<Vec<&'static str>>>,
+    reject: Arc<AtomicBool>,
 }
 
 #[async_trait::async_trait]
@@ -17841,6 +17842,9 @@ impl pc::MemoryMounter for RecordingTerminalMemoryMounter {
             ));
         }
         self.events.lock().unwrap().push("reconcile-terminal-v2");
+        if self.reject.load(Ordering::SeqCst) {
+            return Err(pc::SandboxError::new("Memory reconciliation rejected"));
+        }
         Ok(())
     }
 }
@@ -18424,6 +18428,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         }));
     raw_host.install_memory_mounter(Arc::new(RecordingTerminalMemoryMounter {
         events: events.clone(),
+        reject: Arc::new(AtomicBool::new(false)),
     }));
     let host = Arc::new(raw_host);
     let managed = managed_with_resource_source(host.clone());
@@ -19147,20 +19152,38 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
      * | H2 | exact RW | cold | terminal-v2 only | prepare->E1->E2->E3->E4->E5 |
      * | H3 | missing/foreign | any | none | fail closed (contract tests) |
      * | H4 | Disposing | cleanup-only | none | HS3 | */
+    // H5/H6 resident/cold + rejected Memory writeback (including copy UTF-8
+    // admission failure) => repeated error, no acknowledgement, preparation or
+    // disposal receipt, exact durable binding retained. After the participant
+    // succeeds, the SAME terminal effect resumes through E3->E4->E5. The port
+    // fixture controls failure; Memory's SQLite U2-U5 table owns byte admission.
     #[derive(Clone, Copy)]
     struct Rule {
         name: &'static str,
         resident: bool,
+        rejection: bool,
     }
 
     for rule in [
         Rule {
             name: "resident",
             resident: true,
+            rejection: false,
         },
         Rule {
             name: "cold",
             resident: false,
+            rejection: false,
+        },
+        Rule {
+            name: "resident-rejected",
+            resident: true,
+            rejection: true,
+        },
+        Rule {
+            name: "cold-rejected",
+            resident: false,
+            rejection: true,
         },
     ] {
         let thread = format!("terminal-memory-{}", rule.name);
@@ -19182,8 +19205,10 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 provider,
                 Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             );
+        let reject = Arc::new(AtomicBool::new(rule.rejection));
         raw_host.install_memory_mounter(Arc::new(RecordingTerminalMemoryMounter {
             events: events.clone(),
+            reject: reject.clone(),
         }));
         let host = Arc::new(raw_host);
         let managed = managed_with_resource_source(host.clone());
@@ -19258,13 +19283,48 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         }
         events.lock().unwrap().clear();
 
+        if rule.rejection {
+            for _ in 0..2 {
+                let authorization = terminal_preparation_authorization(&effect, &projection);
+                let error = managed
+                    .prepare_terminal_cleanup_for_effect(effect.clone(), authorization)
+                    .await
+                    .expect_err("H5/H6 rejected Memory cannot prepare disposal");
+                assert!(error.message.contains("Memory reconciliation rejected"));
+                assert_eq!(
+                    events.lock().unwrap().last(),
+                    Some(&"reconcile-terminal-v2")
+                );
+                for forbidden in ["ack-memory", "prepare-source", "dispose-physical"] {
+                    assert!(
+                        !events.lock().unwrap().contains(&forbidden),
+                        "H5/H6 {forbidden}"
+                    );
+                }
+                assert_eq!(
+                    host.session_slots
+                        .read(&thread, |slot| {
+                            slot.environment_owner.durable_binding().map(str::to_owned)
+                        })
+                        .flatten()
+                        .as_deref(),
+                    Some(binding.as_str()),
+                    "H5/H6 exact binding retained"
+                );
+                events.lock().unwrap().clear();
+            }
+            reject.store(false, Ordering::SeqCst);
+        }
+
         let preparation_authorization = terminal_preparation_authorization(&effect, &projection);
         let preparation = managed
             .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
             .await
             .unwrap_or_else(|error| panic!("{} terminal Memory cleanup: {error}", rule.name));
         assert!(preparation.artifact_receipts.is_empty(), "HM1/E1");
-        let preparation_events = if rule.resident {
+        // A rejected cold attempt retains its exact reconstructed Environment;
+        // retry must reuse it, not materialize a fresh projection over the source.
+        let preparation_events = if rule.resident || rule.rejection {
             vec![
                 "observe-live-memory",
                 "capture-artifacts",

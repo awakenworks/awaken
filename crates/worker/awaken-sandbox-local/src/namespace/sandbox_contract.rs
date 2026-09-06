@@ -61,9 +61,9 @@ impl pc::Sandbox for NamespaceSandbox {
             pc::Stdio::Null => (ProcStdio::null(), ProcStdio::null()),
         };
         cmd.stdout(out).stderr(e);
-        let child = cmd.spawn().map_err(err)?;
+        let process = LocalProcess::spawn(&mut cmd).map_err(err)?;
         drop(cmd);
-        Ok(Box::new(launch_info.bind(child).await?))
+        Ok(Box::new(launch_info.bind(process).await?))
     }
 
     async fn attach(
