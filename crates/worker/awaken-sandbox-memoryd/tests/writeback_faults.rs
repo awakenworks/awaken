@@ -350,6 +350,17 @@ impl MemoryRepository for FaultRepository {
         })
         .await
     }
+    async fn update_materialized(
+        &self,
+        s: &str,
+        path: &str,
+        id: &str,
+        content: &str,
+        base: &str,
+    ) -> Result<Memory, MemErr> {
+        self.mutate(self.inner.update_materialized(s, path, id, content, base))
+            .await
+    }
     async fn rename(&self, s: &str, a: &str, b: &str) -> Result<Memory, MemErr> {
         self.inner.rename(s, a, b).await
     }

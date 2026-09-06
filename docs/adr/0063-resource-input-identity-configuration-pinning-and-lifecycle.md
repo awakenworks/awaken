@@ -236,6 +236,17 @@ until the next transition records the pair; already-lossy historical rows with
 neither an active record nor a committed revision cannot reconstruct an earlier
 revision from the watermark alone and require separate historical evidence.
 
+Copy-backed Memory writeback pins the original logical path as well as the
+materialized id and content hash. `MemoryRepository::update_materialized`
+checks location inside the existing update transaction, before same-content
+idempotence; a concurrent content-preserving rename therefore rejects the old
+copy without following or moving the durable head. API/open-FUSE-fd updates
+remain ID-following through the same mutation/history implementation. Terminal
+HTTP derives the path from the frozen Session target even for older callers
+that omit an explicit expected path. An unsupported adapter fails closed.
+This preserves the candidate directory on conflict; it does not yet provide a
+durable rejected-candidate receipt or authorize terminal disposal.
+
 Durable dispatch carries `SessionResourceManifest { workspace_id, revision, resources }`
 beside the executable Agent snapshot. This envelope is secret-free and is not a
 second Session model: `resources` is the exact persisted

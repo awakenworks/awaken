@@ -884,6 +884,26 @@ pub trait MemoryRepository: Send + Sync {
     ) -> Result<Memory, MemErr> {
         self.update_head(store, id, content, base_sha, None).await
     }
+    /// Update a materialized head only at its original logical path. The path,
+    /// id and content CAS must be checked in the SAME repository transaction;
+    /// a preliminary `get_by_path` followed by `update` is not equivalent.
+    /// A concurrent rename must conflict even if it preserves the content hash
+    /// or has already installed the candidate bytes at the new path. This is
+    /// distinct from an open FUSE fd, which intentionally follows its memory id.
+    /// An adapter without atomic location checking must fail closed.
+    async fn update_materialized(
+        &self,
+        store: &str,
+        path: &str,
+        id: &str,
+        content: &str,
+        base_sha: &str,
+    ) -> Result<Memory, MemErr> {
+        let _ = (store, path, id, content, base_sha);
+        Err(MemErr::Storage(
+            "atomic materialized Memory update is unsupported".into(),
+        ))
+    }
     /// Move `from` → `to` atomically, **replacing** `to` if it exists (POSIX rename
     /// semantics). The memory keeps its id (so an open FUSE fd stays valid) and bumps
     /// its version.

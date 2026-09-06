@@ -116,6 +116,22 @@ impl MemoryRepository for InvalidatingMemoryRepository {
         Ok(memory)
     }
 
+    async fn update_materialized(
+        &self,
+        store: &str,
+        path: &str,
+        id: &str,
+        content: &str,
+        base_sha: &str,
+    ) -> Result<Memory, MemErr> {
+        let memory = self
+            .inner
+            .update_materialized(store, path, id, content, base_sha)
+            .await?;
+        self.invalidator.publish(store, path);
+        Ok(memory)
+    }
+
     async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
         let memory = self.inner.rename(store, from, to).await?;
         self.invalidator.publish(store, from);
@@ -184,6 +200,32 @@ impl MemoryRepository for InvalidatingMemoryRepository {
 mod tests {
     use super::*;
     use awaken_memory_store::VolatileMemoryRepository;
+
+    #[tokio::test]
+    async fn materialized_update_invalidates_only_after_exact_location_admission() {
+        // MP-I: exact path => commit plus one path notification; renamed path
+        // with identical bytes => conflict plus zero notifications. No timeout
+        // stands in for absence: try_recv must return Empty on the live bus.
+        let inner = Arc::new(VolatileMemoryRepository::new());
+        let base = inner.create("s", "/a", "base").await.unwrap();
+        let bus = Arc::new(LocalInvalidator::new(16));
+        let mut rx = bus.subscribe();
+        let fs = InvalidatingMemoryRepository::new(inner.clone(), bus);
+        fs.update_materialized("s", "/a", &base.id, "edit", &base.content_sha256)
+            .await
+            .unwrap();
+        assert_eq!(rx.try_recv().unwrap(), ("s".into(), "/a".into()));
+        inner.rename("s", "/a", "/b").await.unwrap();
+        assert!(matches!(
+            fs.update_materialized("s", "/a", &base.id, "edit", &base.content_sha256)
+                .await,
+            Err(MemErr::Conflict { .. })
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
 
     #[tokio::test]
     async fn a_mutation_publishes_an_invalidation_others_receive() {

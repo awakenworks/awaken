@@ -4,388 +4,39 @@
 
 #[cfg(feature = "test-support")]
 use awaken_memory_store::VolatileMemoryRepository;
-use awaken_memory_store::repository::MAX_PATH_BYTES;
-use awaken_memory_store::{MAX_MEMORY_BYTES, MemErr, MemoryRepository, sha256_hex};
+use awaken_memory_store::{MemErr, MemoryRepository};
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use std::sync::Arc;
 
-// ---------------------------------------------------------------------------
-// Path-addressed MemoryRepository conformance (ADR-0053), backend-generic. The in-memory,
-// filesystem, and sqlite backends already run these bodies in the crate's unit
-// tests; the suites are duplicated here (mirroring the blob-store shape above) so
-// the public `PostgresMemoryRepository` — whose cross-node CAS raison d'être had zero coverage —
-// runs the SAME conformance / extended / not-found suites under skip-on-unreachable.
-// ---------------------------------------------------------------------------
+#[path = "common/memory_repository.rs"]
+mod shared;
 
-/// The core lifecycle: create/version/sha, PathConflict, get, CAS update (right +
-/// stale + idempotent base), list under a prefix, rename-replace, idempotent delete,
-/// path validation, and the size cap. (Ported from `repository::tests::conformance`.)
-#[allow(dead_code)] // the MemoryRepository conformance suite is wired only to the postgres-feature backend
-async fn memory_repository_conformance(fs: &dyn MemoryRepository) {
-    let store = "memstore_1";
-
-    let m = fs.create(store, "/notes/today.md", "alpha").await.unwrap();
-    assert_eq!(m.path, "/notes/today.md");
-    assert_eq!(m.version, 1);
-    assert_eq!(m.content_sha256, sha256_hex("alpha"));
-    assert_eq!(m.content.as_deref(), Some("alpha"));
-    assert!(m.created_unix_nanos > 0 && m.updated_unix_nanos >= m.created_unix_nanos);
-
-    // duplicate path → PathConflict.
-    assert!(matches!(
-        fs.create(store, "/notes/today.md", "x").await,
-        Err(MemErr::PathConflict(_))
-    ));
-
-    // get_by_path.
-    let got = fs
-        .get_by_path(store, "/notes/today.md")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(got.content.as_deref(), Some("alpha"));
-    assert!(fs.get_by_path(store, "/nope.md").await.unwrap().is_none());
-
-    // update with the right base sha → version bumps.
-    let up = fs
-        .update(store, &m.id, "beta", &m.content_sha256)
-        .await
-        .unwrap();
-    assert_eq!(up.version, 2);
-    assert_eq!(up.content.as_deref(), Some("beta"));
-
-    // update with a STALE base sha → Conflict carrying live "beta", no clobber.
-    match fs.update(store, &m.id, "gamma", &m.content_sha256).await {
-        Err(MemErr::Conflict { current }) => {
-            assert_eq!(current.content.as_deref(), Some("beta"));
-            assert_eq!(current.content_sha256, sha256_hex("beta"));
-        }
-        other => panic!("expected Conflict, got {other:?}"),
-    }
-    assert_eq!(
-        fs.get_by_path(store, "/notes/today.md")
-            .await
-            .unwrap()
-            .unwrap()
-            .content
-            .as_deref(),
-        Some("beta")
-    );
-
-    // idempotent update: stale base sha but content already current → Ok.
-    let idem = fs.update(store, &m.id, "beta", "deadbeef").await.unwrap();
-    assert_eq!(idem.content.as_deref(), Some("beta"));
-
-    // list under a prefix.
-    fs.create(store, "/notes/other.md", "o").await.unwrap();
-    fs.create(store, "/root.md", "r").await.unwrap();
-    let mut notes: Vec<_> = fs
-        .list(store, "/notes")
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|e| e.path)
-        .collect();
-    notes.sort();
-    assert_eq!(notes, vec!["/notes/other.md", "/notes/today.md"]);
-    assert_eq!(fs.list(store, "/").await.unwrap().len(), 3);
-
-    // rename-replace: move over an existing target atomically, id preserved.
-    let before = fs
-        .get_by_path(store, "/notes/today.md")
-        .await
-        .unwrap()
-        .unwrap();
-    let moved = fs
-        .rename(store, "/notes/today.md", "/notes/other.md")
-        .await
-        .unwrap();
-    assert_eq!(moved.id, before.id, "rename preserves the memory id");
-    assert_eq!(moved.path, "/notes/other.md");
-    assert_eq!(moved.content.as_deref(), Some("beta"));
-    assert!(
-        fs.get_by_path(store, "/notes/today.md")
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(
-        fs.get_by_path(store, "/notes/other.md")
-            .await
-            .unwrap()
-            .unwrap()
-            .content
-            .as_deref(),
-        Some("beta"),
-        "the destination was atomically replaced with the source content"
-    );
-
-    // delete (idempotent).
-    fs.delete_by_path(store, "/notes/other.md").await.unwrap();
-    assert!(
-        fs.get_by_path(store, "/notes/other.md")
-            .await
-            .unwrap()
-            .is_none()
-    );
-    fs.delete_by_path(store, "/notes/other.md").await.unwrap(); // absent → Ok
-
-    // path validation.
-    for bad in ["relative.md", "/a/../b.md", "/a//b.md"] {
-        assert!(
-            matches!(
-                fs.create(store, bad, "x").await,
-                Err(MemErr::InvalidPath(_))
-            ),
-            "expected InvalidPath for {bad:?}"
-        );
-    }
-
-    // size cap.
-    let big = "x".repeat(MAX_MEMORY_BYTES + 1);
-    assert!(matches!(
-        fs.create(store, "/big.md", &big).await,
-        Err(MemErr::TooLarge)
-    ));
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn volatile_materialized_path_cas() {
+    let fs = VolatileMemoryRepository::new();
+    shared::materialized_path_cas(&fs).await;
+    shared::materialized_update_races_rename(&fs).await;
 }
 
-/// Cause-effect-graph edges beyond the core suite: remaining validation branches,
-/// CAS/rename precedence (validate-before-lookup, from==to), and prefix-boundary
-/// correctness. (Ported from `repository::tests::extended_conformance`.)
-#[allow(dead_code)] // postgres-feature only (see memory_repository_conformance)
-async fn memory_repository_extended(fs: &dyn MemoryRepository) {
-    let store = "ext";
-
-    let over_cap = format!("/{}", "a".repeat(MAX_PATH_BYTES)); // len == cap + 1
-    for bad in ["/", "/ctrl\nseg.md", "/a/./b.md", over_cap.as_str()] {
-        assert!(
-            matches!(
-                fs.create(store, bad, "x").await,
-                Err(MemErr::InvalidPath(_))
-            ),
-            "expected InvalidPath for {bad:?}"
-        );
-    }
-
-    // content exactly at the cap is accepted.
-    let at_cap = "x".repeat(MAX_MEMORY_BYTES);
-    let m_cap = fs.create(store, "/at-cap.md", &at_cap).await.unwrap();
-    assert_eq!(m_cap.content_size, MAX_MEMORY_BYTES as u64);
-
-    // validate_size runs BEFORE the id lookup → TooLarge, not NotFound.
-    let big = "x".repeat(MAX_MEMORY_BYTES + 1);
-    assert!(matches!(
-        fs.update(store, "mem_does_not_exist", &big, "sha").await,
-        Err(MemErr::TooLarge)
-    ));
-
-    // an idempotent update must NOT bump the version.
-    let m = fs.create(store, "/idem.md", "v0").await.unwrap();
-    let up = fs
-        .update(store, &m.id, "v1", &m.content_sha256)
-        .await
-        .unwrap();
-    assert_eq!(up.version, 2);
-    let idem = fs
-        .update(store, &m.id, "v1", "stale-base-sha")
-        .await
-        .unwrap();
-    assert_eq!(
-        idem.version, 2,
-        "idempotent write leaves the version unchanged"
-    );
-
-    // rename to an invalid path fails before touching the source.
-    fs.create(store, "/src.md", "s").await.unwrap();
-    assert!(matches!(
-        fs.rename(store, "/src.md", "relative").await,
-        Err(MemErr::InvalidPath(_))
-    ));
-    assert!(fs.get_by_path(store, "/src.md").await.unwrap().is_some());
-
-    // from == to returns current, no version bump.
-    let src = fs.get_by_path(store, "/src.md").await.unwrap().unwrap();
-    let same = fs.rename(store, "/src.md", "/src.md").await.unwrap();
-    assert_eq!(same.id, src.id);
-    assert_eq!(same.version, src.version);
-
-    // a pure move preserves the id and bumps the version.
-    let moved = fs.rename(store, "/src.md", "/moved.md").await.unwrap();
-    assert_eq!(moved.id, src.id);
-    assert_eq!(moved.version, src.version + 1);
-    assert!(fs.get_by_path(store, "/src.md").await.unwrap().is_none());
-
-    // prefix boundary + empty prefix lists everything.
-    let pstore = "prefix";
-    fs.create(pstore, "/notes", "a").await.unwrap();
-    fs.create(pstore, "/notes/x.md", "b").await.unwrap();
-    fs.create(pstore, "/notesbar", "c").await.unwrap();
-    let mut under: Vec<_> = fs
-        .list(pstore, "/notes")
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|e| e.path)
-        .collect();
-    under.sort();
-    assert_eq!(under, vec!["/notes", "/notes/x.md"]);
-    assert_eq!(fs.list(pstore, "").await.unwrap().len(), 3);
-
-    // delete on a store that was never created is a no-op Ok.
-    fs.delete_by_path("never_created_store", "/x.md")
-        .await
-        .unwrap();
+#[cfg(all(feature = "sqlite", feature = "test-support"))]
+#[tokio::test]
+async fn sqlite_materialized_path_cas() {
+    let fs = awaken_memory_store::SqliteMemoryRepository::open_in_memory().unwrap();
+    shared::materialized_path_cas(&fs).await;
+    shared::materialized_update_races_rename(&fs).await;
 }
-
-/// The `NotFound` paths of `update`/`rename`. (Ported from
-/// `repository::tests::not_found_paths`.)
-#[allow(dead_code)] // postgres-feature only (see memory_repository_conformance)
-async fn memory_repository_not_found(fs: &dyn MemoryRepository) {
-    let store = "s";
-    assert!(matches!(
-        fs.update(store, "no_id", "x", "sha").await,
-        Err(MemErr::NotFound(_))
-    ));
-    fs.create(store, "/seed.md", "s").await.unwrap();
-    assert!(matches!(
-        fs.update(store, "no_such_id", "x", "sha").await,
-        Err(MemErr::NotFound(_))
-    ));
-    assert!(matches!(
-        fs.rename(store, "/gone.md", "/x.md").await,
-        Err(MemErr::NotFound(_))
-    ));
-    assert!(matches!(
-        fs.rename(store, "/gone.md", "/gone.md").await,
-        Err(MemErr::NotFound(_))
-    ));
-}
-
-#[allow(dead_code)] // postgres-feature only
-async fn atomic_head_update_conformance(fs: &dyn MemoryRepository) {
-    let store = "atomic-head";
-    let source = fs.create(store, "/source.md", "v1").await.unwrap();
-    let destination = fs.create(store, "/destination.md", "old").await.unwrap();
-    let before = fs.list_versions(store).await.unwrap().len();
-
-    assert!(matches!(
-        fs.update_head(
-            store,
-            &source.id,
-            "not-committed",
-            &source.content_sha256,
-            Some("relative.md"),
-        )
-        .await,
-        Err(MemErr::InvalidPath(_))
-    ));
-    assert_eq!(
-        fs.get_by_path(store, "/source.md")
-            .await
-            .unwrap()
-            .unwrap()
-            .content
-            .as_deref(),
-        Some("v1")
-    );
-    assert_eq!(fs.list_versions(store).await.unwrap().len(), before);
-
-    assert!(matches!(
-        fs.update_head(store, &source.id, "v1", "stale", Some("/moved.md"))
-            .await,
-        Err(MemErr::Conflict { .. })
-    ));
-    assert!(fs.get_by_path(store, "/source.md").await.unwrap().is_some());
-    assert!(fs.get_by_path(store, "/moved.md").await.unwrap().is_none());
-
-    let updated = fs
-        .update_head(
-            store,
-            &source.id,
-            "v2",
-            &source.content_sha256,
-            Some("/destination.md"),
-        )
-        .await
-        .unwrap();
-    assert_eq!(updated.id, source.id);
-    assert_eq!(updated.path, "/destination.md");
-    assert_eq!(updated.content.as_deref(), Some("v2"));
-    assert!(fs.get_by_path(store, "/source.md").await.unwrap().is_none());
-    let versions = fs.list_versions(store).await.unwrap();
-    assert_eq!(versions.len(), before + 2);
-    assert_eq!(versions[before].memory_id, destination.id);
-    assert_eq!(versions[before + 1].memory_id, source.id);
-
-    let idempotent = fs
-        .update_head(
-            store,
-            &source.id,
-            "v2",
-            "stale-after-success",
-            Some("/destination.md"),
-        )
-        .await
-        .unwrap();
-    assert_eq!(idempotent.version, updated.version);
-    assert_eq!(fs.list_versions(store).await.unwrap().len(), versions.len());
-}
+#[allow(unused_imports)]
+use shared::{
+    atomic_head_update_conformance, concurrent_cas_one_winner, concurrent_create_one_winner,
+    conformance as memory_repository_conformance,
+    extended_conformance as memory_repository_extended,
+    not_found_paths as memory_repository_not_found,
+};
 
 // --- Concurrency (ADR-0053 P2.5), extended from the in-memory-only unit tests to the
 //     durable backends so the real write_lock (fs) / connection-mutex (sqlite)
 //     serialize concurrent writers exactly one winner deep. ---
-
-/// 8 concurrent creates of one path → exactly one winner, the rest `PathConflict`.
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-async fn concurrent_create_one_winner<F>(fs: Arc<F>)
-where
-    F: MemoryRepository + Send + Sync + 'static,
-{
-    let mut handles = Vec::new();
-    for i in 0..8u32 {
-        let fs = fs.clone();
-        handles.push(tokio::spawn(async move {
-            fs.create("s", "/race.md", &format!("v{i}")).await
-        }));
-    }
-    let (mut oks, mut conflicts) = (0, 0);
-    for h in handles {
-        match h.await.unwrap() {
-            Ok(_) => oks += 1,
-            Err(MemErr::PathConflict(_)) => conflicts += 1,
-            other => panic!("unexpected: {other:?}"),
-        }
-    }
-    assert_eq!(oks, 1, "exactly one create wins the path");
-    assert_eq!(conflicts, 7);
-}
-
-/// 8 concurrent CAS updates on one base sha → exactly one winner, the rest `Conflict`
-/// (none clobbers).
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-async fn concurrent_cas_one_winner<F>(fs: Arc<F>)
-where
-    F: MemoryRepository + Send + Sync + 'static,
-{
-    let m = fs.create("s", "/c.md", "v0").await.unwrap();
-    let mut handles = Vec::new();
-    for i in 0..8u32 {
-        let (fs, id, base) = (fs.clone(), m.id.clone(), m.content_sha256.clone());
-        handles.push(tokio::spawn(async move {
-            fs.update("s", &id, &format!("w{i}"), &base).await
-        }));
-    }
-    let (mut oks, mut conflicts) = (0, 0);
-    for h in handles {
-        match h.await.unwrap() {
-            Ok(_) => oks += 1,
-            Err(MemErr::Conflict { .. }) => conflicts += 1,
-            other => panic!("unexpected: {other:?}"),
-        }
-    }
-    assert_eq!(oks, 1, "exactly one CAS write wins; none clobbers");
-    assert_eq!(conflicts, 7);
-}
 
 async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn MemoryRepository) {
     let first = fs.create("guarded", "/note.md", "v1").await.unwrap();
@@ -459,8 +110,9 @@ async fn sqlite_concurrent_cas_has_exactly_one_winner() {
     concurrent_cas_one_winner(Arc::new(SqliteMemoryRepository::open_in_memory().unwrap())).await;
 }
 
-/// Live Postgres conformance on a fresh schema. Skips when no Postgres is reachable
-/// (`AWAKEN_TEST_DATABASE_URL`), proving the same portable bundle renders there too.
+/// Live Postgres conformance on a fresh schema. An explicitly configured
+/// `AWAKEN_TEST_DATABASE_URL` is a required gate; only an absent configuration
+/// may skip an unavailable default development database.
 #[cfg(feature = "postgres")]
 mod postgres {
     use super::*;
@@ -475,16 +127,29 @@ mod postgres {
     }
 
     async fn schema_pool(schema: &'static str) -> Option<PgPool> {
-        let admin = match PgPool::connect(&database_url()).await {
+        let admin = match PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect(&database_url())
+            .await
+        {
             Ok(pool) => pool,
             Err(err) => {
+                assert!(
+                    std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_none(),
+                    "explicit Postgres test endpoint must be reachable: {err}"
+                );
                 println!("[skip] no Postgres reachable: {err}");
                 return None;
             }
         };
-        let _ = admin
-            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
-            .await;
+        // Harness rule PG-H: parallel/repeated runs must never drop another
+        // test's schema. Allocate a fresh namespace; an explicit endpoint that
+        // fails connection/setup is a failed gate, never a successful skip.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let schema = format!("{schema}_{}_{nonce:x}", std::process::id());
         admin
             .execute(format!("CREATE SCHEMA {schema}").as_str())
             .await
@@ -492,6 +157,7 @@ mod postgres {
         admin.close().await;
         PgPoolOptions::new()
             .after_connect(move |conn, _meta| {
+                let schema = schema.clone();
                 Box::pin(async move {
                     conn.execute(format!("SET search_path = {schema}").as_str())
                         .await?;
@@ -500,7 +166,8 @@ mod postgres {
             })
             .connect(&database_url())
             .await
-            .ok()
+            .map(Some)
+            .expect("connect to the newly created Postgres test schema")
     }
 
     /// The FULL path-addressed `MemoryRepository` conformance + extended + not-found suites
@@ -538,6 +205,8 @@ mod postgres {
         memory_repository_not_found(&fs).await;
         atomic_head_update_conformance(&fs).await;
         conditional_delete_never_removes_a_changed_or_recreated_head(&fs).await;
+        shared::materialized_path_cas(&fs).await;
+        shared::materialized_update_races_rename(&fs).await;
     }
 
     /// Shared concurrency cause/effect table for the real Postgres adapter:
@@ -569,14 +238,7 @@ mod postgres {
         };
         let fs = PostgresMemoryRepository::with_pool(pool);
         fs.ensure_schema().await.unwrap();
-        fs.create("s", "/a.md", "a").await.unwrap();
-        fs.create("s", "/b.md", "b").await.unwrap(); // mem_2 (top ordinal)
-        fs.delete_by_path("s", "/b.md").await.unwrap();
-        let c = fs.create("s", "/c.md", "c").await.unwrap();
-        assert_eq!(
-            c.id, "mem_3",
-            "postgres must not reuse an identity observed by an earlier run"
-        );
+        shared::ids_stay_monotonic_across_delete(&fs).await;
     }
 
     #[tokio::test]
