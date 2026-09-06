@@ -1211,6 +1211,10 @@ mod tests {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "session_hand/scoped_tests.rs"]
+mod scoped_tests;
+
 #[cfg(kani)]
 mod verification {
     use super::*;

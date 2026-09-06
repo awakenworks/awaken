@@ -6,6 +6,32 @@ use std::{
 };
 use tokio::net::unix::pipe::{self, Receiver, Sender};
 
+/// Business stream selection is explicit; AgentChannel overrides stdout/stdin
+/// while preserving the provider's stderr policy without a forwarding task.
+#[derive(Clone, Copy)]
+pub struct ScopedStdio {
+    mode: Stdio,
+    agent_stderr: Option<bool>,
+}
+
+impl From<Stdio> for ScopedStdio {
+    fn from(mode: Stdio) -> Self {
+        Self {
+            mode,
+            agent_stderr: None,
+        }
+    }
+}
+
+impl ScopedStdio {
+    pub fn agent(inherit_stderr: bool) -> Self {
+        Self {
+            mode: Stdio::Piped,
+            agent_stderr: Some(inherit_stderr),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ProcessIo {
     pub stdin: Option<Sender>,
@@ -14,7 +40,23 @@ pub(super) struct ProcessIo {
 }
 
 impl ProcessIo {
-    pub fn new(mode: Stdio) -> io::Result<(Self, Vec<OwnedFd>)> {
+    pub fn new(selection: ScopedStdio) -> io::Result<(Self, Vec<OwnedFd>)> {
+        let (mut io, mut handles) = Self::for_mode(selection.mode)?;
+        if let Some(inherit) = selection.agent_stderr {
+            handles[2] = if inherit {
+                std::io::stderr().as_fd().try_clone_to_owned()?
+            } else {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open("/dev/null")?
+                    .into()
+            };
+            io.stderr = None;
+        }
+        Ok((io, handles))
+    }
+
+    fn for_mode(mode: Stdio) -> io::Result<(Self, Vec<OwnedFd>)> {
         match mode {
             Stdio::Inherit => Ok((
                 Self::default(),
@@ -62,6 +104,29 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn agent_stdio_preserves_exact_stderr_without_a_forwarder() {
+        // IO4 AgentChannel requires independent stdin/stdout pipes in both
+        // policies. stderr inherits the exact caller descriptor OR /dev/null;
+        // it never leaves an unread business pipe that could deadlock or SIGPIPE.
+        for inherit in [false, true] {
+            let (io, handles) = ProcessIo::new(ScopedStdio::agent(inherit)).unwrap();
+            assert!(io.stdin.is_some() && io.stdout.is_some() && io.stderr.is_none());
+            let expected: OwnedFd = if inherit {
+                std::io::stderr().as_fd().try_clone_to_owned().unwrap()
+            } else {
+                std::fs::File::open("/dev/null").unwrap().into()
+            };
+            let expected = rustix::fs::fstat(&expected).unwrap();
+            let actual = rustix::fs::fstat(&handles[2]).unwrap();
+            assert_eq!(
+                (actual.st_dev, actual.st_ino),
+                (expected.st_dev, expected.st_ino)
+            );
+            assert_eq!(handles.len(), 3);
+        }
+    }
+
+    #[tokio::test]
     async fn each_stdio_mode_has_exact_ownership_and_kernel_endpoints() {
         // IO1 Inherit => clones the actual three stdio handles, no parent pipes;
         // IO2 Null => three /dev/null endpoints, no parent pipes;
@@ -69,7 +134,7 @@ mod tests {
         // All modes return exactly three independently owned CLOEXEC descriptors.
         // Real scoped binary tests cover end-to-end bytes and socket exclusion.
         for mode in [Stdio::Inherit, Stdio::Null, Stdio::Piped] {
-            let (io, handles) = ProcessIo::new(mode).unwrap();
+            let (io, handles) = ProcessIo::new(mode.into()).unwrap();
             assert_eq!(handles.len(), 3);
             let piped = matches!(mode, Stdio::Piped);
             assert_eq!(io.stdin.is_some(), piped);

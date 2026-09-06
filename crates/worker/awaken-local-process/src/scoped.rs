@@ -4,7 +4,7 @@
 //! channel, not business stdio; workload output remains the caller's concern.
 //! Session admission, durable identity and recovery remain caller duties.
 
-use crate::LocalProcess;
+use crate::{LocalProcess, ProcessExecutionIdentity, ProcessNamespaceIdentity};
 use async_trait::async_trait;
 use awaken_provisioning_contract::{
     ExitStatus, MaterializedCommand, ProcessHandle, SandboxError, Signal,
@@ -25,6 +25,7 @@ mod process_io;
 mod renewal;
 mod wire;
 pub use grant::ScopedLaunchGrant;
+pub use process_io::ScopedStdio;
 pub use renewal::ScopedDeadlineGrant;
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
@@ -78,12 +79,13 @@ impl ExecutionDeadline {
     }
 }
 
-/// Physical evidence, NOT authority to adopt or stop an arbitrary host process.
-/// Durable recovery additionally needs the existing realization fence and boot.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProcessNamespaceIdentity {
-    pub device: u64,
-    pub inode: u64,
+/// Borrowed, already-materialized physical launch input. The provider resolves
+/// paths/credentials once and explicitly selects business stdio; the helper
+/// must not reinterpret the logical cwd retained in `materialized`.
+pub struct ScopedCommand<'a> {
+    pub materialized: &'a MaterializedCommand,
+    pub cwd: &'a Path,
+    pub stdio: ScopedStdio,
 }
 
 pub struct ScopedProcess {
@@ -93,7 +95,7 @@ pub struct ScopedProcess {
     control: UnixStream,
     control_writer: std::sync::Mutex<()>,
     io: process_io::ProcessIo,
-    identity: ProcessNamespaceIdentity,
+    identity: ProcessExecutionIdentity,
 }
 
 impl ScopedProcess {
@@ -104,11 +106,10 @@ impl ScopedProcess {
     pub async fn spawn_authorized(
         launcher: &Path,
         helper: &Path,
-        command: &MaterializedCommand,
-        cwd: &Path,
+        command: ScopedCommand<'_>,
         deadline: ExecutionDeadline,
         timeout: Duration,
-        mut authorize: impl FnMut(ProcessNamespaceIdentity, ScopedLaunchGrant<'_>) -> io::Result<()>,
+        mut authorize: impl FnMut(&ProcessExecutionIdentity, ScopedLaunchGrant<'_>) -> io::Result<()>,
     ) -> io::Result<Self> {
         if !launcher.is_absolute()
             || !helper.is_absolute()
@@ -118,7 +119,7 @@ impl ScopedProcess {
             return Err(invalid());
         }
         deadline.remaining()?;
-        let frame = wire::encode(command, cwd, deadline.0)?;
+        let frame = wire::encode(command.materialized, command.cwd, deadline.0)?;
         tokio::time::timeout(timeout, async {
             let (mut control, inherited) = UnixStream::pair()?;
             let inherited: OwnedFd = inherited.into_std()?.into();
@@ -143,13 +144,14 @@ impl ScopedProcess {
                 return Err(invalid());
             }
             let stat = rustix::fs::fstat(&namespace)?;
-            let identity = ProcessNamespaceIdentity {
+            let namespace_identity = ProcessNamespaceIdentity {
                 device: stat.st_dev,
                 inode: stat.st_ino,
             };
+            let identity = ProcessExecutionIdentity::capture(namespace_identity, &init)?;
             descriptor::send(&control, &handles).await?;
             drop(handles);
-            grant::authorize_checked(&mut control, &frame, |grant| authorize(identity, grant))
+            grant::authorize_checked(&mut control, &frame, |grant| authorize(&identity, grant))
                 .await?;
             // No await after GO: preserve the handle even if the callback
             // reported an error after its irreversible commit.
@@ -166,8 +168,8 @@ impl ScopedProcess {
         .await
         .map_err(|_| timed_out())?
     }
-    pub fn identity(&self) -> ProcessNamespaceIdentity {
-        self.identity
+    pub fn identity(&self) -> &ProcessExecutionIdentity {
+        &self.identity
     }
 
     /// Request a conservative cutoff extension under CURRENT Session authority.
@@ -212,20 +214,7 @@ impl ScopedProcess {
     /// init exit, not leader exit, is the namespace termination observation.
     /// Uninterruptible I/O may delay it: timeout must not become a stop receipt.
     fn tree_exited(&self) -> io::Result<bool> {
-        use rustix::event::{PollFd, PollFlags, Timespec, poll};
-        let mut fds = [PollFd::new(&self.init, PollFlags::IN)];
-        poll(
-            &mut fds,
-            Some(&Timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            }),
-        )?;
-        let observed = fds[0].revents();
-        if observed.intersects(PollFlags::NVAL | PollFlags::ERR) {
-            return Err(invalid());
-        }
-        Ok(observed.intersects(PollFlags::IN | PollFlags::HUP))
+        crate::execution_identity::pidfd_exited(&self.init)
     }
 }
 

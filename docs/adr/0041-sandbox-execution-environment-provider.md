@@ -680,6 +680,41 @@ the existing realization marker before adoption, checkpoint and resource
 cleanup. No process database, second lifecycle or manual per-Session cgroup/PID
 configuration is introduced.
 
+The optional Linux TrustedHost provider binding now routes its existing
+`spawn` and `spawn_agent` through the same `ScopedProcess`, including Native
+Hand and sandbox-stdio consumers. It must be selected before the first launch;
+a weaker launch permanently forbids upgrading that live object. Current Session
+authorization is supplied through one synchronous callback, not retained as a
+provider lease. The callback records boot, observer PID namespace and exact init
+evidence in the existing realization marker before GO. The marker's one lock
+serializes launch against adoption, replay, checkpoint and terminal effects.
+Multiple live participants share that marker; only positively absent entries
+may be reclaimed. Rebuild source evidence retains the same participants.
+
+Cold observation never signals a persisted numeric PID. A live participant
+blocks effects, and missing, masked, foreign-boot or foreign-observer evidence
+remains unknown. Destructive preparation, Memory guard retirement/unmount,
+secret shredding and deletion cannot turn that uncertainty into a terminal
+receipt. Runtime-local weak process handles only deliver explicit stop/cutoff
+refresh requests; they are neither a durable registry nor a renewal scheduler.
+Provider integration tests cover two live trees and actual owner SIGKILL;
+`LocalProcessRecovery` composes the existing bounded launch model with marker
+ordering and unknown-evidence rules. The Session Environment's existing stop
+edge now joins Hand closure with the optional provider's exact execution-tree
+stop. Revocation, terminal harvest, checkpoint quiescence and filesystem disposal
+reuse that edge; Hand uncertainty cannot short-circuit the independent tree stop,
+and neither participant alone produces a successful receipt. An unconfigured
+provider does not report an execution-tree receipt. Linux lifecycle tests drive
+two real scopes through all three stop/quiesce/dispose entrances, retain resource
+bytes under Hand or observer uncertainty, and require exact retry plus typed
+terminal authorization before deletion. A poll barrier verifies that cancelling
+the Hand wait does not prevent tree-stop progress or consume the retained Hand;
+concurrent retries converge through the existing marker lock. The same recovery model checks the
+Hand/tree receipt conjunction and its mutation oracles. Neither these tests nor
+the model establish the still-pending production Session binding, reboot recovery, macOS/Windows,
+or real cloud/vendor-credential closure. Worker capability activation remains
+fail-closed until that complete composition is installed and verified.
+
 Native Linux readiness now executes the same `bubblewrap_argv` profile as a
 real Namespace launch, including PID/IPC/UTS/network namespaces and parent-death
 linkage. A user-namespace-only probe is insufficient. Each observation is fresh,

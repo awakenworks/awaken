@@ -60,6 +60,77 @@ fn empty_receipt() -> RealizationCompletionReceipt {
 }
 
 #[test]
+fn execution_marker_decode_has_one_bounded_phase_and_identity_contract() {
+    // E1 schema-2 without executions remains readable, no invented guarantee.
+    // E2 Ready/Removing/Removed accept a bounded exact unique participant list;
+    // Creating/Recreating reject top-level process participants. E3 malformed
+    // identity, unknown keys, duplicates or capacity overflow reject on decode.
+    // This table checks codec/phase constraints only, NOT live OS observation.
+    let root = Path::new("/marker-codec-test");
+    let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("codec"));
+    let marker = marker_for_new_attempt(
+        root,
+        &fingerprint,
+        &fence("create", 1),
+        RealizationPhase::Ready,
+        None,
+        None,
+    )
+    .unwrap();
+    let original = serde_json::to_value(&marker).unwrap();
+    assert!(decode_marker(&serde_json::to_vec(&original).unwrap(), root).is_ok());
+    let identity = serde_json::json!({"boot_id": [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+        "observer": {"device": 5, "inode": 100}, "init_pid": 42,
+        "namespace": {"device": 5, "inode": 101}});
+    for (phase, accepted) in [
+        ("creating", false),
+        ("recreating", false),
+        ("ready", true),
+        ("removing", true),
+        ("removed", true),
+    ] {
+        let mut candidate = original.clone();
+        candidate["phase"] = phase.into();
+        candidate["executions"] = serde_json::json!([identity.clone()]);
+        assert_eq!(
+            decode_marker(&serde_json::to_vec(&candidate).unwrap(), root).is_ok(),
+            accepted,
+            "{phase}"
+        );
+    }
+    for pointer in ["/init_pid", "/namespace/inode", "/observer/inode"] {
+        let mut invalid = identity.clone();
+        *invalid.pointer_mut(pointer).unwrap() = 0.into();
+        let mut candidate = original.clone();
+        candidate["executions"] = serde_json::json!([invalid]);
+        assert!(decode_marker(&serde_json::to_vec(&candidate).unwrap(), root).is_err());
+    }
+    let mut duplicate = original.clone();
+    duplicate["executions"] = serde_json::json!([identity.clone(), identity.clone()]);
+    assert!(decode_marker(&serde_json::to_vec(&duplicate).unwrap(), root).is_err());
+    let mut unknown = identity.clone();
+    unknown["kill_pid"] = 42.into();
+    duplicate["executions"] = serde_json::json!([unknown]);
+    assert!(decode_marker(&serde_json::to_vec(&duplicate).unwrap(), root).is_err());
+    for count in [128, 129] {
+        let mut bounded = original.clone();
+        bounded["executions"] = serde_json::json!(
+            (0..count)
+                .map(|i| {
+                    let mut unique = identity.clone();
+                    unique["init_pid"] = (42 + i).into();
+                    unique
+                })
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            decode_marker(&serde_json::to_vec(&bounded).unwrap(), root).is_ok(),
+            count == 128
+        );
+    }
+}
+
+#[test]
 fn physical_attempt_incarnation_is_random_and_not_effect_derived() {
     // Incarnation cause/effect table: C1 immutable spec/effect inputs are
     // equal/different; C2 physical attempt is same/restarted. I1 the same
