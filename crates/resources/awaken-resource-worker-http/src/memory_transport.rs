@@ -242,6 +242,8 @@ enum MemoryOperation {
         content: String,
         base_sha: String,
         target_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_path: Option<String>,
     },
     DeleteIfMatch {
         path: String,
@@ -472,12 +474,17 @@ fn terminal_operation_allowed(
             id,
             base_sha,
             target_path,
+            expected_path,
             ..
         } => {
             target_path.is_none()
                 && heads
                     .iter()
-                    .filter(|head| head.id == *id && head.content_sha256 == *base_sha)
+                    .filter(|head| {
+                        head.id == *id
+                            && head.content_sha256 == *base_sha
+                            && expected_path.as_ref().is_none_or(|path| *path == head.path)
+                    })
                     .count()
                     == 1
         }
@@ -660,7 +667,6 @@ async fn memory_operation(
     }
 
     let _run_guard = run_guard;
-    let _terminal_target = terminal_target;
     let result = match request.operation {
         MemoryOperation::Snapshot => service
             .repository
@@ -681,19 +687,42 @@ async fn memory_operation(
             content,
             base_sha,
             target_path,
-        } => service
-            .repository
-            .update_head(
-                &memory_store_id,
-                &id,
-                &content,
-                &base_sha,
-                target_path.as_deref(),
-            )
-            .await
-            .map(|memory| MemoryOperationResponse::Memory {
+            expected_path,
+        } => {
+            // Terminal v2 already froze the original path. Derive it even for
+            // older clients that omit expected_path; ID-only CAS cannot waive
+            // the terminal path fence after a content-preserving rename.
+            let frozen_path = terminal_target.as_ref().and_then(|target| {
+                target
+                    .intent()
+                    .materialization()
+                    .heads
+                    .iter()
+                    .find(|head| head.id == id)
+                    .map(|head| head.path.as_str())
+            });
+            let path = frozen_path.or(expected_path.as_deref());
+            let updated = match (path, target_path.as_deref()) {
+                (Some(path), None) => {
+                    service
+                        .repository
+                        .update_materialized(&memory_store_id, path, &id, &content, &base_sha)
+                        .await
+                }
+                (Some(_), Some(_)) => Err(MemErr::Storage(
+                    "materialized Memory update cannot rename".into(),
+                )),
+                (None, target) => {
+                    service
+                        .repository
+                        .update_head(&memory_store_id, &id, &content, &base_sha, target)
+                        .await
+                }
+            };
+            updated.map(|memory| MemoryOperationResponse::Memory {
                 memory: memory.into(),
-            }),
+            })
+        }
         MemoryOperation::DeleteIfMatch {
             path,
             base_id,
@@ -802,6 +831,19 @@ impl HttpMemorySnapshotSource {
 }
 
 impl HttpMemoryWritebackClient {
+    async fn send_memory(
+        &self,
+        reference: &str,
+        operation: MemoryOperation,
+    ) -> Result<Memory, MemErr> {
+        match self.send(reference, operation).await? {
+            MemoryOperationResponse::Memory { memory } => memory.try_into(),
+            _ => Err(MemErr::Storage(
+                "Memory write response kind mismatch".into(),
+            )),
+        }
+    }
+
     async fn send(
         &self,
         reference: &str,
@@ -849,22 +891,15 @@ impl MemoryRepository for HttpMemoryRepository {
     }
 
     async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
-        match self
-            .writeback
-            .send(
+        self.writeback
+            .send_memory(
                 store,
                 MemoryOperation::Create {
                     path: path.into(),
                     content: content.into(),
                 },
             )
-            .await?
-        {
-            MemoryOperationResponse::Memory { memory } => memory.try_into(),
-            _ => Err(MemErr::Storage(
-                "Memory create response kind mismatch".into(),
-            )),
-        }
+            .await
     }
 
     async fn update_head(
@@ -875,24 +910,40 @@ impl MemoryRepository for HttpMemoryRepository {
         base_sha: &str,
         target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
-        match self
-            .writeback
-            .send(
+        self.writeback
+            .send_memory(
                 store,
                 MemoryOperation::UpdateHead {
                     id: id.into(),
                     content: content.into(),
                     base_sha: base_sha.into(),
                     target_path: target_path.map(str::to_owned),
+                    expected_path: None,
                 },
             )
-            .await?
-        {
-            MemoryOperationResponse::Memory { memory } => memory.try_into(),
-            _ => Err(MemErr::Storage(
-                "Memory update response kind mismatch".into(),
-            )),
-        }
+            .await
+    }
+
+    async fn update_materialized(
+        &self,
+        store: &str,
+        path: &str,
+        id: &str,
+        content: &str,
+        base_sha: &str,
+    ) -> Result<Memory, MemErr> {
+        self.writeback
+            .send_memory(
+                store,
+                MemoryOperation::UpdateHead {
+                    id: id.into(),
+                    content: content.into(),
+                    base_sha: base_sha.into(),
+                    target_path: None,
+                    expected_path: Some(path.into()),
+                },
+            )
+            .await
     }
 
     async fn rename(&self, _store: &str, _from: &str, _to: &str) -> Result<Memory, MemErr> {
@@ -975,6 +1026,55 @@ impl MemoryRepository for HttpMemoryRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_update_wire_preserves_optional_location_without_weakening_strictness() {
+        // MP-W decision table: absent expected_path => legacy ID update and
+        // omitted serialized field; string => lossless Copy location; null =>
+        // absent; non-string or an unknown authority field => reject parsing.
+        let legacy = serde_json::json!({
+            "kind": "update_head", "id": "head", "content": "edit",
+            "base_sha": "base", "target_path": null
+        });
+        for expected in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!("/note.md")),
+        ] {
+            let mut wire = legacy.clone();
+            if let Some(expected) = expected {
+                wire["expected_path"] = expected;
+            }
+            let operation: MemoryOperation = serde_json::from_value(wire.clone()).unwrap();
+            let MemoryOperation::UpdateHead { expected_path, .. } = &operation else {
+                panic!("MP-W update kind must be preserved");
+            };
+            assert_eq!(
+                expected_path.as_deref(),
+                wire.get("expected_path").and_then(|v| v.as_str())
+            );
+            let encoded = serde_json::to_value(operation).unwrap();
+            if wire
+                .get("expected_path")
+                .is_none_or(serde_json::Value::is_null)
+            {
+                assert_eq!(encoded, legacy, "MP-W legacy output stays unchanged");
+            } else {
+                assert_eq!(encoded, wire, "MP-W exact location roundtrip");
+            }
+        }
+        for (field, value) in [
+            ("expected_path", serde_json::json!(42)),
+            ("bypass", serde_json::json!(true)),
+        ] {
+            let mut wire = legacy.clone();
+            wire[field] = value;
+            assert!(
+                serde_json::from_value::<MemoryOperation>(wire).is_err(),
+                "MP-W reject"
+            );
+        }
+    }
 
     fn terminal_intent() -> SessionTerminalMemoryIntent {
         let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
@@ -1102,6 +1202,7 @@ mod tests {
                     content: "B".into(),
                     base_sha: "sha-a".into(),
                     target_path: None,
+                    expected_path: None,
                 },
             ),
             "O3 exact"
@@ -1112,12 +1213,21 @@ mod tests {
                 content: "B".into(),
                 base_sha: "sha-c".into(),
                 target_path: None,
+                expected_path: None,
             },
             MemoryOperation::UpdateHead {
                 id: "memory-note".into(),
                 content: "B".into(),
                 base_sha: "sha-a".into(),
                 target_path: Some("/renamed.md".into()),
+                expected_path: None,
+            },
+            MemoryOperation::UpdateHead {
+                id: "memory-note".into(),
+                content: "B".into(),
+                base_sha: "sha-a".into(),
+                target_path: None,
+                expected_path: Some("/foreign.md".into()),
             },
         ] {
             assert!(!terminal_operation_allowed(&target, &operation), "O3 deny");

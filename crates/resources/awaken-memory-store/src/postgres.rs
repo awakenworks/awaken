@@ -494,150 +494,20 @@ impl MemoryRepository for PostgresMemoryRepository {
         target_path: Option<&str>,
         actor: Option<&MemoryActor>,
     ) -> Result<Memory, MemErr> {
-        validate_size(content)?;
-        if let Some(path) = target_path {
-            validate_path(path)?;
-        }
-        let mut tx = self.pool.begin().await.map_err(mem_err)?;
-        let row = sqlx::query(&format!(
-            "SELECT path, sha, content, version, created, updated FROM {NS}_memories \
-             WHERE store_id = $1 AND id = $2 FOR UPDATE"
-        ))
-        .bind(store)
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(mem_err)?
-        .ok_or_else(|| MemErr::NotFound(id.to_string()))?;
-        let (path, cur_sha, cur_content, version, created, updated): (
-            String,
-            String,
-            Vec<u8>,
-            i64,
-            i64,
-            i64,
-        ) = (
-            row.get("path"),
-            row.get("sha"),
-            row.get("content"),
-            row.get("version"),
-            row.get("created"),
-            row.get("updated"),
-        );
-        let requested_path = target_path.unwrap_or(&path);
-        let new_sha = sha256_hex(content);
-        let already_current = cur_sha == new_sha && path == requested_path;
-        if cur_sha != base_sha {
-            if already_current {
-                return to_memory(
-                    id.into(),
-                    path,
-                    cur_content,
-                    cur_sha,
-                    version,
-                    created,
-                    updated,
-                );
-            }
-            let current = to_memory(
-                id.into(),
-                path,
-                cur_content,
-                cur_sha,
-                version,
-                created,
-                updated,
-            )?;
-            return Err(MemErr::Conflict {
-                current: Box::new(current),
-            });
-        }
-        if already_current {
-            return to_memory(
-                id.into(),
-                path,
-                cur_content,
-                cur_sha,
-                version,
-                created,
-                updated,
-            );
-        }
-        let now = now_nanos() as i64;
-        let displaced_id = if requested_path == path {
-            None
-        } else {
-            sqlx::query_scalar::<_, String>(&format!(
-                "SELECT id FROM {NS}_memories WHERE store_id = $1 AND path = $2 FOR UPDATE"
-            ))
-            .bind(store)
-            .bind(requested_path)
-            .fetch_optional(&mut *tx)
+        self.update_head_checked(store, id, content, base_sha, target_path, actor, None)
             .await
-            .map_err(mem_err)?
-        };
-        if displaced_id.is_some() {
-            sqlx::query(&format!(
-                "DELETE FROM {NS}_memories WHERE store_id = $1 AND path = $2"
-            ))
-            .bind(store)
-            .bind(requested_path)
-            .execute(&mut *tx)
+    }
+
+    async fn update_materialized(
+        &self,
+        store: &str,
+        path: &str,
+        id: &str,
+        content: &str,
+        base_sha: &str,
+    ) -> Result<Memory, MemErr> {
+        self.update_head_checked(store, id, content, base_sha, None, None, Some(path))
             .await
-            .map_err(mem_err)?;
-        }
-        sqlx::query(&format!(
-            "UPDATE {NS}_memories SET path = $1, content = $2, sha = $3, \
-             version = version + 1, updated = $4 WHERE store_id = $5 AND id = $6"
-        ))
-        .bind(requested_path)
-        .bind(content.as_bytes())
-        .bind(&new_sha)
-        .bind(now)
-        .bind(store)
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(mem_err)?;
-        if let Some(displaced_id) = displaced_id {
-            append_version(
-                &mut tx,
-                VersionAppend {
-                    store,
-                    memory_id: &displaced_id,
-                    operation: MemoryVersionOperation::Deleted,
-                    path: requested_path,
-                    content: None,
-                    created: now,
-                    actor,
-                },
-            )
-            .await?;
-        }
-        append_version(
-            &mut tx,
-            VersionAppend {
-                store,
-                memory_id: id,
-                operation: MemoryVersionOperation::Modified,
-                path: requested_path,
-                content: Some(content),
-                created: now,
-                actor,
-            },
-        )
-        .await?;
-        tx.commit().await.map_err(mem_err)?;
-        Ok(Memory {
-            content_size: content.len() as u64,
-            content: Some(content.to_string()),
-            id: id.to_string(),
-            path: requested_path.to_string(),
-            content_sha256: new_sha,
-            version: next_domain_version(version)?,
-            created_unix_nanos: created as u128,
-            updated_unix_nanos: now as u128,
-        })
     }
 
     async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
@@ -939,6 +809,182 @@ impl MemoryRepository for PostgresMemoryRepository {
         Ok(MemoryPurgeSummary {
             heads_deleted,
             versions_deleted,
+        })
+    }
+}
+
+impl PostgresMemoryRepository {
+    // One mutation/history implementation for ID-following and path-pinned updates.
+    #[allow(clippy::too_many_arguments)]
+    async fn update_head_checked(
+        &self,
+        store: &str,
+        id: &str,
+        content: &str,
+        base_sha: &str,
+        target_path: Option<&str>,
+        actor: Option<&MemoryActor>,
+        expected_path: Option<&str>,
+    ) -> Result<Memory, MemErr> {
+        validate_size(content)?;
+        if let Some(path) = expected_path {
+            validate_path(path)?;
+        }
+        if let Some(path) = target_path {
+            validate_path(path)?;
+        }
+        let mut tx = self.pool.begin().await.map_err(mem_err)?;
+        let row = sqlx::query(&format!(
+            "SELECT path, sha, content, version, created, updated FROM {NS}_memories \
+             WHERE store_id = $1 AND id = $2 FOR UPDATE"
+        ))
+        .bind(store)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(mem_err)?
+        .ok_or_else(|| MemErr::NotFound(id.to_string()))?;
+        let (path, cur_sha, cur_content, version, created, updated): (
+            String,
+            String,
+            Vec<u8>,
+            i64,
+            i64,
+            i64,
+        ) = (
+            row.get("path"),
+            row.get("sha"),
+            row.get("content"),
+            row.get("version"),
+            row.get("created"),
+            row.get("updated"),
+        );
+        let requested_path = target_path.unwrap_or(&path);
+        let new_sha = sha256_hex(content);
+        let already_current = cur_sha == new_sha && path == requested_path;
+        if expected_path.is_some_and(|expected| expected != path) {
+            return Err(MemErr::Conflict {
+                current: Box::new(to_memory(
+                    id.into(),
+                    path,
+                    cur_content,
+                    cur_sha,
+                    version,
+                    created,
+                    updated,
+                )?),
+            });
+        }
+        if cur_sha != base_sha {
+            if already_current {
+                return to_memory(
+                    id.into(),
+                    path,
+                    cur_content,
+                    cur_sha,
+                    version,
+                    created,
+                    updated,
+                );
+            }
+            let current = to_memory(
+                id.into(),
+                path,
+                cur_content,
+                cur_sha,
+                version,
+                created,
+                updated,
+            )?;
+            return Err(MemErr::Conflict {
+                current: Box::new(current),
+            });
+        }
+        if already_current {
+            return to_memory(
+                id.into(),
+                path,
+                cur_content,
+                cur_sha,
+                version,
+                created,
+                updated,
+            );
+        }
+        let now = now_nanos() as i64;
+        let displaced_id = if requested_path == path {
+            None
+        } else {
+            sqlx::query_scalar::<_, String>(&format!(
+                "SELECT id FROM {NS}_memories WHERE store_id = $1 AND path = $2 FOR UPDATE"
+            ))
+            .bind(store)
+            .bind(requested_path)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(mem_err)?
+        };
+        if displaced_id.is_some() {
+            sqlx::query(&format!(
+                "DELETE FROM {NS}_memories WHERE store_id = $1 AND path = $2"
+            ))
+            .bind(store)
+            .bind(requested_path)
+            .execute(&mut *tx)
+            .await
+            .map_err(mem_err)?;
+        }
+        sqlx::query(&format!(
+            "UPDATE {NS}_memories SET path = $1, content = $2, sha = $3, \
+             version = version + 1, updated = $4 WHERE store_id = $5 AND id = $6"
+        ))
+        .bind(requested_path)
+        .bind(content.as_bytes())
+        .bind(&new_sha)
+        .bind(now)
+        .bind(store)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(mem_err)?;
+        if let Some(displaced_id) = displaced_id {
+            append_version(
+                &mut tx,
+                VersionAppend {
+                    store,
+                    memory_id: &displaced_id,
+                    operation: MemoryVersionOperation::Deleted,
+                    path: requested_path,
+                    content: None,
+                    created: now,
+                    actor,
+                },
+            )
+            .await?;
+        }
+        append_version(
+            &mut tx,
+            VersionAppend {
+                store,
+                memory_id: id,
+                operation: MemoryVersionOperation::Modified,
+                path: requested_path,
+                content: Some(content),
+                created: now,
+                actor,
+            },
+        )
+        .await?;
+        tx.commit().await.map_err(mem_err)?;
+        Ok(Memory {
+            content_size: content.len() as u64,
+            content: Some(content.to_string()),
+            id: id.to_string(),
+            path: requested_path.to_string(),
+            content_sha256: new_sha,
+            version: next_domain_version(version)?,
+            created_unix_nanos: created as u128,
+            updated_unix_nanos: now as u128,
         })
     }
 }

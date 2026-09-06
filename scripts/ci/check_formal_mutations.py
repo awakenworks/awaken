@@ -658,11 +658,19 @@ def check_memory_copy_model_mutant(tlc_jar: Path) -> None:
          "CopyMutationRequiresOriginalRoot"),
     ]
     config = (ROOT / "formal/tla/MemoryCASCopy.cfg").read_text(encoding="utf-8")
+    # MP: removing the commit-time path precondition reintroduces a write after
+    # rename even when id/hash are unchanged. The named action property must
+    # fail; a parsing error or unrelated failure is never a mutation kill.
+    location_guard = "IF ~sourcePresent THEN CopyLocationConflict\n                   ELSE IF"
+    if source.count(location_guard) != 1:
+        raise SystemExit("Memory copy location mutation anchor drifted; review the model")
     check_tlc_model_mutations(tlc_jar, "MemoryCAS", source, config,
                               [(mutated, config, invariant) for mutated, invariant in mutations]
                               + [(source.replace(crash_original, crash_mutant), config,
-                                  "action:CopyCrashKeepsInFlight")])
-    print("Memory copy mutation score: 4/4 killed (frozen base, complete scan, original root, in-flight cancellation)")
+                                  "action:CopyCrashKeepsInFlight"),
+                                  (source.replace(location_guard, "IF"), config,
+                                  "action:CopyUpdateRequiresOriginalLocation")])
+    print("Memory copy mutation score: 5/5 killed (frozen base, complete scan, original root, in-flight cancellation, original location)")
 
 
 def check_agent_input_model_mutant(tlc_jar: Path) -> None:

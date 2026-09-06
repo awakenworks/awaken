@@ -19,6 +19,70 @@ fn temporary_root() -> PathBuf {
 }
 
 #[tokio::test]
+async fn live_and_recovered_copy_do_not_follow_a_renamed_head() {
+    // MP-COPY: live/recovered x unchanged/identical-candidate destination.
+    // Rename preserves id; both hash-match and idempotence shortcuts must fail.
+    // Effects: no durable mutation/history, original candidate stays on disk,
+    // repeated cleanup fails instead of acknowledging or rebasing onto the move.
+    for recovered in [false, true] {
+        for same_candidate in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let repository = Arc::new(
+                SqliteMemoryRepository::open(root.path().join("memory.sqlite").to_str().unwrap())
+                    .unwrap(),
+            );
+            let base = repository.create("s", "/note.md", "base").await.unwrap();
+            let mounter = MemoryStoreMounter::copy_only(repository.clone());
+            let projection = root.path().join("projection");
+            let mount = mounter
+                .mount("s", &projection, MountAccess::ReadWrite)
+                .await
+                .unwrap();
+            let evidence = MemoryMaterializationEvidence::new(
+                "s",
+                "/memory",
+                mount.materialization_heads().unwrap(),
+            )
+            .unwrap();
+            std::fs::write(projection.join("note.md"), b"candidate").unwrap();
+            if same_candidate {
+                repository
+                    .update("s", &base.id, "candidate", &base.content_sha256)
+                    .await
+                    .unwrap();
+            }
+            repository
+                .rename("s", "/note.md", "/moved.md")
+                .await
+                .unwrap();
+            let heads = repository.snapshot_heads("s").await.unwrap();
+            let history = repository.list_versions("s").await.unwrap();
+            for _ in 0..2 {
+                let result = if recovered {
+                    mounter
+                        .reconcile_recovered_copy(
+                            "s",
+                            &evidence,
+                            &[("note.md".into(), b"candidate".to_vec())],
+                            MountAccess::ReadWrite,
+                        )
+                        .await
+                } else {
+                    mount.teardown().await
+                };
+                assert!(result.is_err());
+                assert_eq!(repository.snapshot_heads("s").await.unwrap(), heads);
+                assert_eq!(repository.list_versions("s").await.unwrap(), history);
+                assert_eq!(
+                    std::fs::read(projection.join("note.md")).unwrap(),
+                    b"candidate"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn ingress_and_recovery_reject_a_tree_that_cannot_be_harvested() {
     // B11 a logically valid head exceeds physical depth. Initial projection and
     // recovered-file admission must BOTH reject, with no partial initial files or

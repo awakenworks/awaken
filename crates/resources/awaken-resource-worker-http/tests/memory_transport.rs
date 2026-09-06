@@ -485,6 +485,32 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
         "M3"
     );
 
+    // MP-RUN: unlike terminal requests, a Run reference has no captured heads.
+    // The Copy client must transmit its expected path; a rename between client
+    // snapshot and server transaction must not turn this into ID-following IO.
+    let copied = client.create(&rw, "/copy.md", "base").await.unwrap();
+    client
+        .update_materialized(&rw, "/copy.md", &copied.id, "edit", &copied.content_sha256)
+        .await
+        .unwrap();
+    repository
+        .rename("memory-rw", "/copy.md", "/copy-moved.md")
+        .await
+        .unwrap();
+    let heads = repository.snapshot_heads("memory-rw").await.unwrap();
+    let history = repository.list_versions("memory-rw").await.unwrap();
+    assert!(matches!(
+        client
+            .update_materialized(&rw, "/copy.md", &copied.id, "edit", &copied.content_sha256)
+            .await,
+        Err(MemErr::Conflict { .. })
+    ));
+    assert_eq!(repository.snapshot_heads("memory-rw").await.unwrap(), heads);
+    assert_eq!(
+        repository.list_versions("memory-rw").await.unwrap(),
+        history
+    );
+
     let ro = memory_materialization_reference(
         "workspace-memory",
         "memory-ro",
@@ -837,6 +863,45 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
             .len(),
         history_after_first,
         "T2 no duplicate history"
+    );
+
+    // MP-HTTP: exact terminal A fence + content-preserving rename after B =>
+    // both the old wire client (no expected_path) and Copy client reject. Even
+    // equal candidate bytes at the new path cannot authorize an acknowledgement.
+    repository
+        .rename("memory-terminal", "/note.md", "/moved.md")
+        .await
+        .unwrap();
+    let moved_heads = repository.snapshot_heads("memory-terminal").await.unwrap();
+    let moved_history = repository.list_versions("memory-terminal").await.unwrap();
+    for pinned in [false, true] {
+        let result = if pinned {
+            client
+                .update_materialized(
+                    &reference,
+                    "/note.md",
+                    &note_a.id,
+                    "B",
+                    &note_a.content_sha256,
+                )
+                .await
+        } else {
+            client
+                .update(&reference, &note_a.id, "B", &note_a.content_sha256)
+                .await
+        };
+        assert!(
+            matches!(result, Err(MemErr::Conflict { .. })),
+            "MP-HTTP pinned={pinned}"
+        );
+    }
+    assert_eq!(
+        repository.snapshot_heads("memory-terminal").await.unwrap(),
+        moved_heads
+    );
+    assert_eq!(
+        repository.list_versions("memory-terminal").await.unwrap(),
+        moved_history
     );
 
     let conflict_c = repository

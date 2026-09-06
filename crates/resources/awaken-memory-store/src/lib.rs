@@ -12,6 +12,10 @@
 /// FUSE mount projects.
 pub mod repository;
 
+#[cfg(test)]
+#[path = "../tests/common/memory_repository.rs"]
+mod conformance;
+
 pub use awaken_resource_contract::memory_store_stem as sanitize_stem;
 #[cfg(any(test, feature = "test-support"))]
 pub use repository::VolatileMemoryRepository;

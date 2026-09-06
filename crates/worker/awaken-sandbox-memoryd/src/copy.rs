@@ -325,7 +325,7 @@ async fn reconcile_files(
                     continue;
                 }
                 match fs
-                    .update(store, &base.id, content, &base.content_sha256)
+                    .update_materialized(store, path, &base.id, content, &base.content_sha256)
                     .await
                 {
                     Ok(updated) => {
@@ -652,6 +652,18 @@ mod tests {
                 .expect("S2");
         assert_eq!(recovered.len(), 2, "S2");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn unsupported_path_cas_never_falls_back_to_id_only_write() {
+        // MP-U: adapter has no atomic location operation => error before any
+        // get/update call. The existing snapshot-only double panics on either,
+        // detecting a racy read-then-update fallback in the contract default.
+        let fs = SnapshotOnlyRepository { heads: vec![] };
+        assert!(
+            matches!(fs.update_materialized("s", "/a", "id", "edit", "sha").await,
+            Err(MemErr::Storage(message)) if message.contains("unsupported"))
+        );
     }
 
     #[test]

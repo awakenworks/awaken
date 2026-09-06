@@ -491,10 +491,15 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   invalid trees before write-back. Completeness of a quiescent OS scan is an
   external assumption, not proved filesystem atomicity. The strict gate mutates
   recovery to refresh the base, admission to ignore an incomplete scan or a
-  substituted root, and cancellation to erase an in-flight request; all four
+  substituted root, cancellation to erase an in-flight request, and commit to
+  follow an ID after its materialized path was renamed; all five
   must produce their exact invariant/action-property counterexamples, not a
   tool error. The model bounds each writer to one in-flight request and does
   not model SQLite internals, power loss, multi-file atomicity or OS process death.
+  Copy location is checked inside the same repository transaction, before the
+  same-content retry shortcut. Ordinary API/open-FUSE-fd updates still follow
+  their ID. The shared Memory conformance suite covers SQLite/Postgres/volatile
+  adapters; real HTTP and live/recovered Copy tests exercise both callers.
 - `AuditCommit.tla` and `ConfigActivation.tla` cover transactional durable audit,
   replay fencing, and generation-fenced publication installation.
 - `AcpBoundary.tla`, `CredentialEffectBoundary.tla`, and

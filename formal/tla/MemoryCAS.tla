@@ -135,7 +135,7 @@ CopyInit == /\ Init
             /\ requestScan = [w \in Writers |-> TRUE]
             /\ requestRoot = [w \in Writers |-> TRUE]
 
-CopyCapture(w) == /\ ~mounted[w] /\ headPresent
+CopyCapture(w) == /\ ~mounted[w] /\ headPresent /\ sourcePresent
                   /\ Read(w)
                   /\ mounted' = [mounted EXCEPT ![w] = TRUE]
                   /\ materializationBase' = [materializationBase EXCEPT ![w] = generation]
@@ -154,12 +154,24 @@ CopyStart(w, operation) ==
     /\ UNCHANGED <<vars, mounted, crashed, materializationBase, scanComplete,
                     lastMutationScan, rootMatches, lastMutationRoot, pendingAck>>
 
+\* MP: a materialized path is a location precondition, unlike an open FUSE fd.
+\* Rename can preserve id/hash (and even candidate bytes); check location at
+\* commit, BEFORE idempotence. CopyCapture freezes the original source path.
+CopyLocationConflict ==
+    /\ ~sourcePresent
+    /\ lastAction' = "stale_cas"
+    /\ lastBefore' = generation /\ lastAfter' = generation
+    /\ lastPresentBefore' = headPresent /\ lastPresentAfter' = headPresent
+    /\ UNCHANGED <<generation, value, expected, writes, sourcePresent,
+                    targetPresent, targetIdentity, renameCommitted, headPresent>>
+
 CopyFlush(w) == /\ inFlight[w] = "write"
                 /\ inFlight' = [inFlight EXCEPT ![w] = "none"]
                 /\ lastMutationRoot' = requestRoot[w]
                 /\ pendingAck' = [pendingAck EXCEPT ![w] = ~crashed[w]]
                 /\ lastMutationScan' = requestScan[w]
-                /\ IF headPresent /\ value = w
+                /\ IF ~sourcePresent THEN CopyLocationConflict
+                   ELSE IF headPresent /\ value = w
                       THEN IdempotentWrite
                       ELSE CAS(w) \/ StaleCAS(w)
                 /\ UNCHANGED <<mounted, crashed, materializationBase, scanComplete, rootMatches, requestScan, requestRoot>>
@@ -202,12 +214,17 @@ CopyAcknowledge(w) ==
     /\ pendingAck' = [pendingAck EXCEPT ![w] = FALSE]
     /\ UNCHANGED <<vars, mounted, crashed, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, requestVars>>
 
-CopyNext == \E w \in Writers:
+CopyRename == /\ \E w \in Writers: mounted[w]
+    /\ RenameReplace
+    /\ UNCHANGED <<mounted, crashed, materializationBase, scanComplete,
+                    lastMutationScan, rootMatches, lastMutationRoot, pendingAck, requestVars>>
+
+CopyNext == CopyRename \/ (\E w \in Writers:
               CopyCapture(w) \/ CopyFlush(w) \/ CopyDelete(w)
               \/ CopyStart(w, "write") \/ CopyStart(w, "delete")
               \/ CopyCrash(w) \/ CopyRecover(w)
               \/ CopyScan(w, TRUE) \/ CopyScan(w, FALSE)
-              \/ CopyRoot(w, TRUE) \/ CopyRoot(w, FALSE) \/ CopyAcknowledge(w)
+              \/ CopyRoot(w, TRUE) \/ CopyRoot(w, FALSE) \/ CopyAcknowledge(w))
 CopyTypeOK == /\ TypeOK
               /\ mounted \in [Writers -> BOOLEAN]
               /\ crashed \in [Writers -> BOOLEAN]
@@ -226,6 +243,8 @@ CopyMutationRequiresCompleteScan == lastAction \in {"cas", "delete"} => lastMuta
 CopyMutationRequiresOriginalRoot == lastAction \in {"cas", "delete"} => lastMutationRoot
 CopyCrashKeepsInFlight ==
     [][\A w \in Writers: (~crashed[w] /\ crashed'[w]) => inFlight' = inFlight]_copyVars
+CopyUpdateRequiresOriginalLocation ==
+    [][(~sourcePresent /\ lastAction' \in {"cas", "idempotent_write"}) => FALSE]_copyVars
 CopySpec == CopyInit /\ [][CopyNext]_copyVars
 \* The original Repository configuration keeps projection history inert.
 Spec == CopyInit /\ [][Next /\ UNCHANGED <<mounted, crashed, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck, requestVars>>]_copyVars
