@@ -721,6 +721,40 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, renewal_config,
                               renewal_mutations, action_properties=actions)
     print("Local renewal mutation score: 5/5 killed (current grant, stale cutoff, resurrection, transit time, partial stall)")
+    # REC1 omit WAL before GO; REC2 foreign observer becomes empty; REC3 leader
+    # exit substitutes for init exit; REC4-6 bypass the Session Hand/tree
+    # conjunction. Each mutant must violate its EXACT oracle,
+    # with the unchanged LocalProcessLifecycle dependency and a green baseline.
+    recovery_source = (ROOT / "formal/tla/LocalProcessRecovery.tla").read_text(encoding="utf-8")
+    recovery_config = (ROOT / "formal/tla/LocalProcessRecovery.cfg").read_text(encoding="utf-8")
+    recovery_header = recovery_config.split("INVARIANTS\n", 1)[0]
+    recovery_mutations = []
+    for original, replacement, property_name, action in [
+        ('=> markerRecorded /\\ markerLock = "launch"', '=> markerLock = "launch"',
+         "GoRequiresDurableParticipant", False),
+        ('ELSE IF ~observerKnown THEN "unknown"', 'ELSE IF ~observerKnown THEN "empty"',
+         "EffectsRequireKnownQuiescence", True),
+        ('ELSE IF initState \\in {"absent", "exited"} THEN "empty" ELSE "live"',
+         'ELSE IF ~leaderAlive THEN "empty" ELSE "live"',
+         "EffectsRequireKnownQuiescence", True),
+        ('recoveryObservation = "empty"\n  /\\ handQuiescent',
+         'recoveryObservation = "empty"', "EffectsRequireHandQuiescence", True),
+        ('/\\ ~sessionReceipt\n  /\\ handQuiescent',
+         '/\\ ~sessionReceipt', "SessionReceiptRequiresAllParticipants", True),
+        ('/\\ (~markerRecorded \\/ (observerKnown /\\ initState \\in {"absent", "exited"}))\n  /\\ sessionReceipt\' = TRUE',
+         '/\\ sessionReceipt\' = TRUE', "SessionReceiptRequiresAllParticipants", True),
+    ]:
+        if recovery_source.count(original) != 1:
+            raise SystemExit(f"Local recovery mutation anchor drifted: {property_name}")
+        keyword = "PROPERTIES" if action else "INVARIANTS"
+        recovery_mutations.append((recovery_source.replace(original, replacement),
+                                   recovery_header + f"{keyword} {property_name}\n", property_name))
+    check_tlc_model_mutations(tlc_jar, "LocalProcessRecovery", recovery_source, recovery_config,
+                              recovery_mutations, dependencies=("LocalProcessLifecycle",),
+                              action_properties={"EffectsRequireKnownQuiescence",
+                                                 "EffectsRequireHandQuiescence",
+                                                 "SessionReceiptRequiresAllParticipants"})
+    print("Local recovery mutation score: 6/6 killed (pre-GO WAL, unknown observer, leader-only receipt, Hand effect, Hand receipt, tree receipt)")
 
 
 def check_memory_copy_model_mutant(tlc_jar: Path) -> None:

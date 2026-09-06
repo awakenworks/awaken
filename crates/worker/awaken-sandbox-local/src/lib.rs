@@ -875,17 +875,24 @@ impl RuntimePathEnv {
     }
 
     pub(crate) fn apply(&self, command: &mut tokio::process::Command) {
-        command
-            .env("AWAKEN_PROJECT_DIR", &self.project_dir)
-            .env("AWAKEN_OUTPUTS_DIR", &self.outputs_dir);
+        command.envs(self.entries());
+    }
+
+    fn entries(&self) -> [(&str, &str); 2] {
+        [
+            ("AWAKEN_PROJECT_DIR", &self.project_dir),
+            ("AWAKEN_OUTPUTS_DIR", &self.outputs_dir),
+        ]
     }
 
     fn bash_env(&self) -> std::collections::BTreeMap<String, String> {
         let mut env = std::env::vars()
             .filter(|(key, _)| !key.starts_with("ANTHROPIC_"))
             .collect::<std::collections::BTreeMap<_, _>>();
-        env.insert("AWAKEN_PROJECT_DIR".into(), self.project_dir.clone());
-        env.insert("AWAKEN_OUTPUTS_DIR".into(), self.outputs_dir.clone());
+        env.extend(
+            self.entries()
+                .map(|(name, value)| (name.into(), value.into())),
+        );
         env
     }
 }
@@ -927,6 +934,8 @@ pub use awaken_local_process::LocalProcess;
 pub use blob_cache::{BlobLru, WorkspaceBlobCache};
 pub(crate) use git_transport::{git_bytes, provision_repo_at, push_repo_to_at, run_git};
 pub use namespace::{NamespaceProvider, NamespaceSandbox, bubblewrap_argv, sandbox_exec_argv};
+#[cfg(target_os = "linux")]
+pub use provider::execution::CurrentExecutionAuthority;
 pub use provider::{LocalProvider, LocalSandbox};
 pub use repo_bundle::{clone_repo_bundle, push_repo_bundle};
 

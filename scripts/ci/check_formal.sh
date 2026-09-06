@@ -772,6 +772,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/local-process-renewal" \
     -config formal/tla/LocalProcessRenewal.cfg formal/tla/LocalProcessLifecycle.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/local-process-recovery" \
+    -config formal/tla/LocalProcessRecovery.cfg formal/tla/LocalProcessRecovery.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/skill-version-pin" \
     -config formal/tla/SkillVersionPin.cfg formal/tla/SkillVersionPin.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \

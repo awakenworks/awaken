@@ -1517,6 +1517,7 @@ dependencies = [
  "awaken-provisioning-contract",
  "nix 0.29.0",
  "rustix 1.1.4",
+ "serde",
  "tempfile",
  "tokio",
  "zeroize",
