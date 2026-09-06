@@ -649,3 +649,18 @@ under that same boundary, and process identity/stop evidence integrated into
 the existing realization marker before adoption, checkpoint and resource
 cleanup. No process database, second lifecycle or manual per-Session cgroup/PID
 configuration is introduced.
+
+Native Linux readiness now executes the same `bubblewrap_argv` profile as a
+real Namespace launch, including PID/IPC/UTS/network namespaces and parent-death
+linkage. A user-namespace-only probe is insufficient. Each observation is fresh,
+bounded, and starts without ambient environment values; a previously successful
+probe cannot mask policy revocation, and a failed probe cannot permanently mask
+subsequent installation. Probe failure is unavailable, not a fallback launch or
+a quiescence receipt. This improves the existing Namespace readiness path; it
+does not yet install TrustedHost process-tree supervision.
+
+The systemd-free integration must reuse this launch authority. Its TrustedHost
+host-view qualification must separately check host identity and access: an
+unprivileged user/PID namespace can retain absolute filesystem paths while
+changing supplementary-group visibility and host PID semantics. A successful
+Namespace readiness probe is therefore not a TrustedHost compatibility result.
