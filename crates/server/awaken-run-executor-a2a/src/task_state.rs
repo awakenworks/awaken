@@ -23,6 +23,30 @@ pub(super) struct TaskReference {
     pub(super) context_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum TaskReferenceRoute {
+    Fresh,
+    Reattach(TaskReference),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TaskReferenceDecision {
+    Fresh,
+    Reattach,
+    RejectEndpointMismatch,
+}
+
+pub(super) fn task_reference_decision(
+    has_reference: bool,
+    endpoint_matches: bool,
+) -> TaskReferenceDecision {
+    match (has_reference, endpoint_matches) {
+        (false, _) => TaskReferenceDecision::Fresh,
+        (true, true) => TaskReferenceDecision::Reattach,
+        (true, false) => TaskReferenceDecision::RejectEndpointMismatch,
+    }
+}
+
 impl TaskReference {
     pub(super) fn from_task(endpoint: &str, task: &Task) -> Self {
         Self {
@@ -97,6 +121,33 @@ pub(super) fn restored_task_reference(
     Ok(None)
 }
 
+pub(super) fn restored_task_route(
+    context: &RuntimeRunContext,
+    activation: &RunActivation,
+    endpoint: &str,
+) -> Result<TaskReferenceRoute> {
+    let reference = restored_task_reference(context, activation)?;
+    let decision = task_reference_decision(
+        reference.is_some(),
+        reference
+            .as_ref()
+            .is_some_and(|reference| reference.endpoint == endpoint),
+    );
+    match (decision, reference) {
+        (TaskReferenceDecision::Fresh, None) => Ok(TaskReferenceRoute::Fresh),
+        (TaskReferenceDecision::Reattach, Some(reference)) => {
+            Ok(TaskReferenceRoute::Reattach(reference))
+        }
+        (TaskReferenceDecision::RejectEndpointMismatch, Some(reference)) => {
+            Err(Error::Execution(format!(
+                "durable A2A task belongs to endpoint {:?}, not {:?}",
+                reference.endpoint, endpoint
+            )))
+        }
+        _ => unreachable!("the total task-reference decision preserves its input shape"),
+    }
+}
+
 pub(super) fn remote_candidate_of(activation: &RunActivation) -> Result<&ResolvedModelCandidate> {
     let backend = Backend::from_ref(
         &activation
@@ -121,13 +172,50 @@ pub(super) fn endpoint_of(candidate: &ResolvedModelCandidate) -> Result<String> 
         .ok_or_else(|| Error::Execution("A2A executor received a non-remote backend".to_string()))
 }
 
-pub(super) fn ensure_endpoint(reference: &TaskReference, endpoint: &str) -> Result<()> {
-    if reference.endpoint == endpoint {
-        Ok(())
-    } else {
-        Err(Error::Execution(format!(
-            "durable A2A task belongs to endpoint {:?}, not {:?}",
-            reference.endpoint, endpoint
-        )))
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn remote_task_reference_route_is_total_and_fail_closed() {
+        // Cause graph: C1 a committed reference is present; C2 its endpoint
+        // matches the publication-frozen endpoint. Effects: E1 fresh send is
+        // admitted; E2 reattachment is admitted; E3 outbound use is rejected.
+        // Constraint: C2 has no authority when C1 is false.
+        //
+        // | Rule | C1 | C2 | Effect |
+        // |---|---|---|---|
+        // | R1 | no  | *   | E1 |
+        // | R2 | yes | yes | E2 |
+        // | R3 | yes | no  | E3 |
+        let has_reference: bool = kani::any();
+        let endpoint_matches: bool = kani::any();
+        let decision = task_reference_decision(has_reference, endpoint_matches);
+
+        assert_eq!(decision == TaskReferenceDecision::Fresh, !has_reference);
+        assert_eq!(
+            decision == TaskReferenceDecision::Reattach,
+            has_reference && endpoint_matches
+        );
+        assert_eq!(
+            decision == TaskReferenceDecision::RejectEndpointMismatch,
+            has_reference && !endpoint_matches
+        );
+    }
+
+    #[kani::proof]
+    fn terminal_task_reference_command_is_exact_run_scoped_removal() {
+        // Cause graph: C1 a Run reaches a committed terminal boundary.
+        // Effect E1 the sole A2A task-reference key is removed in Run scope
+        // under its declared Disjoint merge policy; no Set or second key is
+        // admitted. There is one unconditional rule C1 -> E1, so a multi-row
+        // decision table would add no information.
+        let command = clear_task_reference_state();
+
+        assert_eq!(command.scope, Scope::Run);
+        assert_eq!(command.merge, MergePolicy::Disjoint);
+        assert_eq!(command.key.0, A2A_TASK_STATE_KEY);
+        assert!(command.run_id.is_none());
+        assert!(matches!(command.action, StateAction::Remove));
     }
 }
