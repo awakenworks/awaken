@@ -78,12 +78,6 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                     }
                     crate::session_slot::McpProjectionState::Removed => {}
                 }
-                if !self.host.forget_exact_removed_mcp_projection(&request) {
-                    return Err(RunError::classified(
-                        "mcp_stale_generation",
-                        "MCP generation changed while its removed projection was being recovered",
-                    ));
-                }
             } else {
                 return Err(RunError::classified(
                     "mcp_stale_generation",
@@ -91,6 +85,10 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                 ));
             }
         }
+        // A completed drain has no effect left to renew. Both exact retry and
+        // same-binding lease catch-up re-enter ordinary staging through this
+        // single tombstone owner; live/Staging/Draining projections stay fenced.
+        self.host.forget_replayable_removed_mcp_projection(&request);
         match self.host.renew_mcp_projection(&request) {
             Ok(Some(receipt)) => return Ok(receipt),
             Ok(None) => {}

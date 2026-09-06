@@ -9911,6 +9911,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H25 | exact Staging owner | exact replay | stage | - | retryable unavailable/no false staged receipt |
     // | H26 | default weak / frozen BackendOwned strong | exact | stage | - | admit from selected strong provider |
     // | H27 | default strong / frozen BackendOwned weak | exact | stage | - | reject from selected weak provider |
+    // | H28 | removed immutable binding | renewed same-owner lease | stage | - | rebuild exactly one projection, never renew absent effects |
     let exact_request = request("mcp-exact", "workspace-a", 1);
     let receipt = managed
         .stage_mcp_attachment(exact_request.clone())
@@ -10087,6 +10088,91 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H22 no duplicate tombstone"
     );
     let staging_request = recovered_projection.request.clone();
+    // H28: cleanup and a heartbeat can occur between failed activation and
+    // retry. A Removed slot owns no effect. A later expiry with the same
+    // immutable binding must use ordinary staging, not fail the active-renewal
+    // gate or fabricate an already-staged receipt. H15/H16/H25 retain changed
+    // binding, equal-expiry/new-key and in-flight Stage rejection coverage.
+    let old_removed = request("mcp-removed-renewal", "workspace-a", 1);
+    managed
+        .stage_mcp_attachment(old_removed.clone())
+        .await
+        .unwrap();
+    managed
+        .drain_mcp_generation(old_removed.generation.clone())
+        .await
+        .unwrap();
+    let mut renewed_removed = old_removed.clone();
+    renewed_removed.generation.lease_expires_at_unix_ms = u64::MAX;
+    renewed_removed.stage_idempotency_key = "retry-after-heartbeat".into();
+    // H29: any changed immutable coordinate OR a non-increasing expiry with
+    // changed attempt key => retain the removed owner. Only H28's strictly
+    // renewed binding may remove it. Every rejected row leaves the same slot.
+    for changed in [
+        "workspace",
+        "attachment",
+        "generation",
+        "incarnation",
+        "epoch",
+        "realization",
+        "name",
+        "target",
+        "credential",
+        "holder",
+        "same-expiry",
+        "older-expiry",
+    ] {
+        let mut rejected = renewed_removed.clone();
+        match changed {
+            "workspace" => rejected.workspace_id.push_str("-other"),
+            "attachment" => rejected.generation.attachment_id.0.push_str("-other"),
+            "generation" => rejected.generation.generation.0 += 1,
+            "incarnation" => rejected.generation.runtime_incarnation.push_str("-other"),
+            "epoch" => rejected.generation.lease_epoch += 1,
+            "realization" => rejected.realization_id.push_str("-other"),
+            "name" => rejected.name.push_str("-other"),
+            "target" => {
+                rejected.target =
+                    awaken_session_contract::McpTarget::parse_http("https://other.example.test/mcp")
+                        .unwrap()
+            }
+            "credential" => rejected.credential = None,
+            "holder" => rejected.selected_plaintext_holder = None,
+            "same-expiry" => rejected.generation.lease_expires_at_unix_ms -= 1,
+            "older-expiry" => rejected.generation.lease_expires_at_unix_ms -= 2,
+            _ => unreachable!(),
+        }
+        assert!(
+            !host.forget_replayable_removed_mcp_projection(&rejected),
+            "H29 {changed}"
+        );
+        assert!(
+            host.mcp_projection(&old_removed.generation).is_some(),
+            "H29 retained {changed}"
+        );
+    }
+    let rebuilt = managed
+        .stage_mcp_attachment(renewed_removed.clone())
+        .await
+        .expect("H28");
+    rebuilt
+        .verify(&renewed_removed)
+        .expect("H28 exact fresh receipt");
+    assert!(
+        host.mcp_projection(&old_removed.generation).is_none(),
+        "H28 old tombstone removed"
+    );
+    assert_eq!(
+        host.session_slots
+            .read("mcp-removed-renewal", |slot| slot.mcp.len()),
+        Some(1),
+        "H28 one projection"
+    );
+    assert_eq!(
+        host.mcp_projection(&rebuilt.generation).unwrap().state,
+        crate::session_slot::McpProjectionState::Staged,
+        "H28 staged, not published"
+    );
     host.session_slots.modify("mcp-exact", |slot| {
         slot.mcp[0].state = crate::session_slot::McpProjectionState::Staging;
         slot.mcp[0].staging = Some(crate::session_slot::McpStagingActivity::default());
@@ -11728,6 +11814,23 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         "S4"
     );
     assert!(reaped.load(Ordering::SeqCst), "S4 process reaped");
+    // S6: completed cleanup alone does not reopen realization admission. Both
+    // exact replay and lease-only retry retain the tombstone until S5's owner
+    // transition clears the same quiescence fence.
+    let removed_request = host.mcp_projection(&generation).unwrap().request;
+    assert!(
+        !host.forget_replayable_removed_mcp_projection(&removed_request),
+        "S6 exact replay fenced"
+    );
+    let mut renewed_removed_request = removed_request.clone();
+    renewed_removed_request.generation.lease_expires_at_unix_ms = u64::MAX;
+    renewed_removed_request
+        .stage_idempotency_key
+        .push_str("-renewed");
+    assert!(
+        !host.forget_replayable_removed_mcp_projection(&renewed_removed_request),
+        "S6 renewed retry fenced"
+    );
     host.install_session_environment_owner_projection(
         "mcp-staging-quiescence",
         "workspace-a",
@@ -11739,9 +11842,8 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
             .mcp_realization_admitted("mcp-staging-quiescence"),
         "S5 exact source-free projection reopens only after residual cleanup"
     );
-    let removed_request = host.mcp_projection(&generation).unwrap().request;
     assert!(
-        host.forget_exact_removed_mcp_projection(&removed_request),
+        host.forget_replayable_removed_mcp_projection(&removed_request),
         "S5 old Removed owner can be forgotten after reopen"
     );
     host.insert_mcp_projection(projection)
@@ -11901,6 +12003,30 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
         let mut renewed = request;
         renewed.generation.lease_expires_at_unix_ms = u64::MAX;
         renewed.stage_idempotency_key = "renew-max".into();
+        // R6: an otherwise valid renewed request must never forget an effect
+        // that is still Staging, Staged, Active or Draining. Only Removed has
+        // cleanup proof; restore the fixture state for ordinary renewal below.
+        for live_state in [
+            McpProjectionState::Staging,
+            McpProjectionState::Staged,
+            McpProjectionState::Active,
+            McpProjectionState::Draining,
+        ] {
+            host.session_slots
+                .modify(&old_generation.session_id, |slot| {
+                    slot.mcp[0].state = live_state
+                });
+            assert!(
+                !host.forget_replayable_removed_mcp_projection(&renewed),
+                "R6 {live_state:?}"
+            );
+            assert!(
+                host.mcp_projection(&old_generation).is_some(),
+                "R6 retains owner"
+            );
+        }
+        host.session_slots
+            .modify(&old_generation.session_id, |slot| slot.mcp[0].state = state);
         host.install_session_realization_lease(
             &old_generation.session_id,
             awaken_session_contract::SessionRealizationLease {
