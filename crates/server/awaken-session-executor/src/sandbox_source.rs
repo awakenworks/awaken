@@ -1019,41 +1019,59 @@ mod tests {
 
     #[tokio::test]
     async fn bound_fixed_launch_admits_host_path_only_outside_a_container() {
-        for (container, expect_path) in [(false, true), (true, false)] {
-            let sandbox = Arc::new(if container {
-                CapturingAgentSandbox::default()
-            } else {
-                CapturingAgentSandbox::local()
-            });
-            let source = BoundLocalChannelSource {
-                sandbox: sandbox.clone(),
-                launch: LaunchSource::Fixed(Box::new(AcpLaunch::custom(
-                    vec!["fixture".into()],
-                    vec![],
-                ))),
-                codec: awaken_run_executor_acp::Codec::Newline,
-                backend: awaken_runtime_contract::resolved::Backend::from_ref("acp:fixture"),
-                mcp_servers: Vec::new(),
-                attached_tools: None,
-            };
-            source
-                .open(
-                    &acp_activation("acp:fixture"),
-                    &awaken_runtime_contract::RuntimeRunContext::new(),
-                )
-                .await
-                .expect("capture the fixed launch");
-            let command = sandbox.command.lock().unwrap();
-            assert_eq!(
-                command
-                    .as_ref()
-                    .unwrap()
-                    .env
-                    .iter()
-                    .any(|entry| entry.name == "PATH"),
-                expect_path,
-                "L1/L3: host lookup belongs only to a local launch"
-            );
+        // Fixed-launch cause/effect table: C1 newline/official ACP fixture;
+        // C2 local/container Sandbox. F1/F2 either C1 + local => exact argv
+        // and host PATH; F3/F4 either C1 + container => exact argv without
+        // host PATH. Both fixtures share launch resolution; their wire codecs
+        // remain different. No credentials or catalog route are synthesized.
+        for official_acp in [false, true] {
+            for (container, expect_path) in [(false, true), (true, false)] {
+                let sandbox = Arc::new(if container {
+                    CapturingAgentSandbox::default()
+                } else {
+                    CapturingAgentSandbox::local()
+                });
+                let launch = Box::new(AcpLaunch::custom(vec!["fixture".into()], vec![]));
+                let source = BoundLocalChannelSource {
+                    sandbox: sandbox.clone(),
+                    launch: if official_acp {
+                        LaunchSource::FixedAcp(launch)
+                    } else {
+                        LaunchSource::Fixed(launch)
+                    },
+                    codec: if official_acp {
+                        awaken_run_executor_acp::Codec::Acp
+                    } else {
+                        awaken_run_executor_acp::Codec::Newline
+                    },
+                    backend: awaken_runtime_contract::resolved::Backend::from_ref("acp:fixture"),
+                    mcp_servers: Vec::new(),
+                    attached_tools: None,
+                };
+                source
+                    .open(
+                        &acp_activation("acp:fixture"),
+                        &awaken_runtime_contract::RuntimeRunContext::new(),
+                    )
+                    .await
+                    .expect("capture the fixed launch");
+                let command = sandbox.command.lock().unwrap();
+                assert_eq!(
+                    command.as_ref().unwrap().argv,
+                    vec!["fixture"],
+                    "F1-F4 exact launch"
+                );
+                assert_eq!(
+                    command
+                        .as_ref()
+                        .unwrap()
+                        .env
+                        .iter()
+                        .any(|entry| entry.name == "PATH"),
+                    expect_path,
+                    "L1/L3: host lookup belongs only to a local launch"
+                );
+            }
         }
     }
 
