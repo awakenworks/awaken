@@ -19,6 +19,8 @@
 //!       Atomically publish one owned staged directory without replacing a name.
 //!   awaken-sandbox read-tree-nofollow <ROOT>
 //!       Snapshot regular files below one exact directory without following links.
+//!   awaken-sandbox scoped-exec <ABSTRACT_SOCKET> <PARENT_PID>
+//!       Linux-only trusted cgroup bootstrap; workload input uses a private socket.
 
 mod control_forwarder;
 mod git_credential;
@@ -72,19 +74,41 @@ async fn main() -> ExitCode {
         Some("control-forwarder-ready") => run_control_forwarder_ready(&args[1..]),
         Some("repository-publish-noreplace") => run_repository_publish_noreplace(&args[1..]),
         Some("read-tree-nofollow") => run_read_tree_nofollow(&args[1..]),
+        Some("scoped-exec") => run_scoped_exec(&args[1..]).await,
         Some(role) => {
             eprintln!(
-                "awaken-sandbox: unknown role `{role}` (expected: acp | hand | git-credential | control-forwarder | control-forwarder-ready | repository-publish-noreplace | read-tree-nofollow | channel-listen | channel-connect)"
+                "awaken-sandbox: unknown role `{role}` (expected: acp | hand | git-credential | control-forwarder | control-forwarder-ready | repository-publish-noreplace | read-tree-nofollow | channel-listen | channel-connect | scoped-exec)"
             );
             ExitCode::FAILURE
         }
         None => {
             eprintln!(
-                "usage: awaken-sandbox <acp|hand|git-credential|control-forwarder|control-forwarder-ready|repository-publish-noreplace|read-tree-nofollow|channel-listen|channel-connect> [args...]"
+                "usage: awaken-sandbox <acp|hand|git-credential|control-forwarder|control-forwarder-ready|repository-publish-noreplace|read-tree-nofollow|channel-listen|channel-connect|scoped-exec> [args...]"
             );
             ExitCode::FAILURE
         }
     }
+}
+
+async fn run_scoped_exec(args: &[String]) -> ExitCode {
+    #[cfg(target_os = "linux")]
+    {
+        if let [socket, parent] = args
+            && let Ok(parent) = parent.parse::<u32>()
+        {
+            // Never print workload bytes, credentials, or argv on a failed exec.
+            let error = awaken_local_process::scoped::bootstrap(socket, parent).await;
+            eprintln!("awaken-sandbox scoped-exec failed: {:?}", error.kind());
+            return ExitCode::FAILURE;
+        }
+        eprintln!("usage: awaken-sandbox scoped-exec <ABSTRACT_SOCKET> <PARENT_PID>");
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = args;
+        eprintln!("awaken-sandbox scoped-exec requires Linux cgroup v2");
+    }
+    ExitCode::FAILURE
 }
 
 fn run_control_forwarder_ready(args: &[String]) -> ExitCode {

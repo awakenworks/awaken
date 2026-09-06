@@ -79,6 +79,27 @@ fn socket_roles_reject_unavailable_or_invalid_configuration() {
 }
 
 #[test]
+fn scoped_exec_role_fails_closed_on_invalid_or_unsupported_requests() {
+    // B20 Linux malformed args => usage failure without a workload or socket;
+    // B21 non-Linux => explicit unsupported role, never an unscoped fallback.
+    // Valid Linux role execution belongs to the mandatory systemd qualification.
+    for args in [
+        vec!["scoped-exec"],
+        vec!["scoped-exec", "socket", "invalid-pid"],
+    ] {
+        let (ok, text) = run(&args);
+        assert!(!ok);
+        #[cfg(target_os = "linux")]
+        assert!(
+            text.contains("usage: awaken-sandbox scoped-exec"),
+            "B20: {text}"
+        );
+        #[cfg(not(target_os = "linux"))]
+        assert!(text.contains("requires Linux cgroup v2"), "B21: {text}");
+    }
+}
+
+#[test]
 fn no_role_prints_usage_and_fails() {
     /* Role-dispatch rule D2: an absent role (cause) returns failure plus the
      * same complete closed-role vocabulary in usage (effects).

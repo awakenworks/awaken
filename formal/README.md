@@ -613,10 +613,16 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   The `LocalProcessScope.cfg` configuration reuses this model for one Linux
   cgroup owner: launch admission excludes close; accepted KILL is not observed
   emptiness; leader exit cannot substitute for descendant exit; owner crash
-  still preserves OS processes in the model. Three additional mutations must
-  violate the exact admission, subtree-empty and accepted-stop invariants.
-  Membership-before-workload, a single admitted owner and absence of external
-  cgroup migration are explicit assumptions. The real delegated-systemd test
+  still preserves OS processes in the model. The same configuration now models
+  bootstrap join, ACK, atomic GO/admission release, execution and cancellation;
+  execution requires membership and GO, and cancellation cannot invent GO.
+  Six additional mutations must violate the exact admission, subtree-empty,
+  accepted-stop, premature-exec, premature-release and cancelled-GO invariants.
+  The private socket/OS lifetime of a cancelled trusted helper is abstracted;
+  this does not certify its immediate exit or permanent scope emptiness after
+  cancellation. A single admitted owner, correct peer/identity checking and
+  absence of external cgroup migration remain assumptions. The real
+  `awaken-sandbox` delegated-systemd test invokes the production bootstrap and
   exercises descriptor identity/ABA and owner SIGKILL independently; neither
   model nor test proves production Worker/Session wiring or unbounded liveness.
 - `WorkerReplacement.tla` composes authored route resolution, dispatch-time

@@ -11,7 +11,9 @@ ASSUME /\ Waiters # {} /\ NoLock \notin Waiters
 VARIABLES phase, privateGroup, dropPolicy, leaderAlive, descendantAlive,
           stopRequested, lock, waiter, observedExit, signalOutcome, signalAccepted
 VARIABLES scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt
-scopeVars == <<scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt>>
+VARIABLES launchStage, joined, goIssued, workloadStarted
+launchVars == <<launchStage, joined, goIssued, workloadStarted>>
+scopeVars == <<scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt, launchVars>>
 signalVars == <<signalOutcome, signalAccepted>>
 vars == <<phase, privateGroup, dropPolicy, leaderAlive, descendantAlive,
           stopRequested, lock, waiter, observedExit, signalVars>>
@@ -24,6 +26,8 @@ Init ==
   /\ signalOutcome = "none" /\ signalAccepted = FALSE
   /\ scopeClosed = FALSE /\ scopePermit = FALSE
   /\ scopeKillAccepted = FALSE /\ scopeReceipt = FALSE
+  /\ launchStage = "idle" /\ joined = FALSE
+  /\ goIssued = FALSE /\ workloadStarted = FALSE
 
 Spawn ==
   /\ phase = "new" /\ phase' = "owned"
@@ -134,36 +138,74 @@ CrashPreservesOSProcesses == [][(phase = "owned" /\ phase' = "crashed")
 Spec == Init /\ [][Next /\ UNCHANGED scopeVars]_<<vars, scopeVars>>
 
 \* Descriptor-pinned cgroup adapter: ONE owner, one launch admission and one
-\* bounded process tree. Membership-before-workload and no out-of-band migration
-\* are explicit launcher/kernel assumptions, not proved by this mutex model.
+\* bounded workload tree. The trusted helper's pre-GO transport/OS lifetime is
+\* abstracted; joining and acknowledgement precede the atomic GO/permit release.
+\* Cancellation cannot authorize exec; no out-of-band migration is assumed.
 \* There is no Session adoption, durable receipt or production Worker proof here.
 ScopeAcquire ==
   /\ ~scopeClosed /\ ~scopePermit /\ phase = "new"
   /\ scopePermit' = TRUE
-  /\ UNCHANGED <<vars, scopeClosed, scopeKillAccepted, scopeReceipt>>
+  /\ UNCHANGED <<vars, scopeClosed, scopeKillAccepted, scopeReceipt, launchVars>>
 ScopeSpawn ==
   /\ scopePermit /\ ~scopeClosed /\ Spawn
-  /\ UNCHANGED scopeVars
+  /\ launchStage' = "bootstrap"
+  /\ UNCHANGED <<scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt,
+                  joined, goIssued, workloadStarted>>
+ScopeJoin ==
+  /\ phase = "owned" /\ leaderAlive /\ launchStage = "bootstrap"
+  /\ joined' = TRUE /\ launchStage' = "joined"
+  /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt,
+                  goIssued, workloadStarted>>
+ScopeAck ==
+  /\ phase = "owned" /\ launchStage = "joined" /\ joined
+  /\ launchStage' = "acknowledged"
+  /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt,
+                  joined, goIssued, workloadStarted>>
+ScopeGo ==
+  /\ phase = "owned" /\ launchStage = "acknowledged" /\ joined /\ scopePermit
+  /\ goIssued' = TRUE /\ scopePermit' = FALSE /\ launchStage' = "granted"
+  /\ UNCHANGED <<vars, scopeClosed, scopeKillAccepted, scopeReceipt, joined, workloadStarted>>
+ScopeExec ==
+  /\ leaderAlive /\ goIssued /\ joined /\ ~workloadStarted
+  /\ workloadStarted' = TRUE
+  /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt,
+                  launchStage, joined, goIssued>>
+ScopeCancelLaunch ==
+  /\ scopePermit /\ ~goIssued /\ scopePermit' = FALSE
+  /\ launchStage' = "cancelled"
+  /\ UNCHANGED <<vars, scopeClosed, scopeKillAccepted, scopeReceipt,
+                  joined, goIssued, workloadStarted>>
 ScopeRelease ==
-  /\ scopePermit /\ scopePermit' = FALSE
-  /\ UNCHANGED <<vars, scopeClosed, scopeKillAccepted, scopeReceipt>>
+  /\ phase = "new" /\ scopePermit /\ scopePermit' = FALSE
+  /\ UNCHANGED <<vars, scopeClosed, scopeKillAccepted, scopeReceipt, launchVars>>
 ScopeClose ==
   /\ ~scopePermit /\ scopeClosed' = TRUE
-  /\ UNCHANGED <<vars, scopePermit, scopeKillAccepted, scopeReceipt>>
+  /\ UNCHANGED <<vars, scopePermit, scopeKillAccepted, scopeReceipt, launchVars>>
 ScopeKill(accepted) ==
   /\ scopeClosed /\ scopeKillAccepted' = (scopeKillAccepted \/ accepted)
-  /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeReceipt>>
+  /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeReceipt, launchVars>>
 ScopeObserveEmpty ==
   /\ scopeClosed /\ scopeKillAccepted /\ ~leaderAlive /\ ~descendantAlive
   /\ scopeReceipt' = TRUE
-  /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeKillAccepted>>
+  /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeKillAccepted, launchVars>>
+ScopeCrash ==
+  /\ Crash /\ scopePermit' = FALSE
+  /\ launchStage' = IF goIssued THEN launchStage ELSE "cancelled"
+  /\ UNCHANGED <<scopeClosed, scopeKillAccepted, scopeReceipt, joined, goIssued, workloadStarted>>
 ScopeNext == ScopeAcquire \/ ScopeSpawn \/ ScopeRelease \/ ScopeClose
+  \/ ScopeJoin \/ ScopeAck \/ ScopeGo \/ ScopeExec \/ ScopeCancelLaunch \/ ScopeCrash
   \/ (\E accepted \in BOOLEAN : ScopeKill(accepted)) \/ ScopeObserveEmpty
-  \/ ((Fork \/ LeaderExit \/ DescendantExit \/ Crash) /\ UNCHANGED scopeVars)
+  \/ (((workloadStarted /\ Fork) \/ LeaderExit \/ DescendantExit) /\ UNCHANGED scopeVars)
 ScopeTypeOK == TypeOK /\ scopeClosed \in BOOLEAN /\ scopePermit \in BOOLEAN
   /\ scopeKillAccepted \in BOOLEAN /\ scopeReceipt \in BOOLEAN
+  /\ launchStage \in {"idle", "bootstrap", "joined", "acknowledged", "granted", "cancelled"}
+  /\ joined \in BOOLEAN /\ goIssued \in BOOLEAN /\ workloadStarted \in BOOLEAN
 ScopeCloseExcludesLaunch == scopeClosed => ~scopePermit
 ScopeReceiptRequiresEmpty == scopeReceipt => ~leaderAlive /\ ~descendantAlive
 ScopeReceiptRequiresAcceptedStop == scopeReceipt => scopeClosed /\ scopeKillAccepted
+ScopeWorkloadRequiresGrant == workloadStarted => joined /\ goIssued
+ScopeCancelNeverGrants == launchStage = "cancelled" => ~goIssued /\ ~workloadStarted
+ScopePendingJoinExcludesClose == launchStage \in {"bootstrap", "joined", "acknowledged"}
+  => scopePermit /\ ~scopeClosed
 ScopeSpec == Init /\ [][ScopeNext]_<<vars, scopeVars>>
 =============================================================================

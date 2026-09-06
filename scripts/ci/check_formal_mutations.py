@@ -618,6 +618,16 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
          "/\\ scopeClosed /\\ scopeKillAccepted /\\ ~leaderAlive", "ScopeReceiptRequiresEmpty"),
         ("/\\ scopeClosed /\\ scopeKillAccepted /\\ ~leaderAlive /\\ ~descendantAlive",
          "/\\ scopeClosed /\\ ~leaderAlive /\\ ~descendantAlive", "ScopeReceiptRequiresAcceptedStop"),
+        # B14 execute before join/GO; B15 release admission before ACK; B16
+        # cancellation fabricates GO. Each must fail the named handshake rule,
+        # not a parser/tool error or an unrelated invariant.
+        ("/\\ leaderAlive /\\ goIssued /\\ joined /\\ ~workloadStarted",
+         "/\\ leaderAlive /\\ ~workloadStarted", "ScopeWorkloadRequiresGrant"),
+        ('/\\ phase = "new" /\\ scopePermit /\\ scopePermit\' = FALSE',
+         "/\\ scopePermit /\\ scopePermit' = FALSE", "ScopePendingJoinExcludesClose"),
+        ('/\\ launchStage\' = "cancelled"\n  /\\ UNCHANGED <<vars, scopeClosed, scopeKillAccepted, scopeReceipt,\n                  joined, goIssued, workloadStarted>>',
+         '/\\ launchStage\' = "cancelled" /\\ goIssued\' = TRUE\n  /\\ UNCHANGED <<vars, scopeClosed, scopeKillAccepted, scopeReceipt,\n                  joined, workloadStarted>>',
+         "ScopeCancelNeverGrants"),
     ]
     scope_mutations = []
     for original, replacement, property_name in scope_replacements:
@@ -626,7 +636,7 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
         scope_mutations.append((source.replace(original, replacement), scope_config, property_name))
     check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, scope_config, scope_mutations,
                               action_properties={"CrashPreservesOSProcesses"})
-    print("Local scope mutation score: 3/3 killed (launch/close, descendants, accepted stop)")
+    print("Local scope mutation score: 6/6 killed (launch/close, descendants, accepted stop, early exec, early release, cancelled GO)")
 
 
 def check_memory_copy_model_mutant(tlc_jar: Path) -> None:
