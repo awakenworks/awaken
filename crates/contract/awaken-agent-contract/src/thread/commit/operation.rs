@@ -193,9 +193,34 @@ pub fn admit_commit_operation_append(
             current: current_run_ordinal,
         });
     }
+    next_commit_thread_version(current_thread_version)
+}
+
+/// Return the only admissible successor of a committed Thread version.
+pub fn next_commit_thread_version(
+    current_thread_version: u64,
+) -> Result<u64, CommitOperationAdmissionError> {
     current_thread_version
         .checked_add(1)
         .ok_or(CommitOperationAdmissionError::ThreadVersionOverflow)
+}
+
+/// Construct the only successful receipt shape from the values an adapter
+/// persisted for the exact operation. No backend owns another receipt mapping.
+#[must_use]
+pub fn applied_commit_receipt(
+    operation_id: CommitOperationId,
+    payload_hash: CommitPayloadHash,
+    commit_sequence: u64,
+    thread_version: u64,
+) -> CommitReceipt {
+    CommitReceipt {
+        operation_id,
+        commit_sequence,
+        thread_version,
+        payload_hash,
+        duplicate: false,
+    }
 }
 
 impl CommitReceipt {
@@ -321,6 +346,30 @@ mod tests {
             "A4/E4 overflow"
         );
     }
+
+    #[test]
+    fn applied_receipt_maps_the_exact_operation_and_successor_version() {
+        // Causes: C1 the current Thread version has a successor; C2 the adapter
+        // has one durable sequence. Effects: E1 one nonduplicate receipt
+        // preserves the operation id, payload hash, durable sequence, and
+        // admitted successor; E2 overflow is rejected before an append.
+        // Rules P1=C1+C2=>E1 and P2=!C1=>E2. The contract owns successor
+        // admission, so adapters cannot introduce another version calculation.
+        let operation_id = CommitOperationId::new(RunId("run".into()), 3);
+        let payload_hash = CommitPayloadHash("hash".into());
+        let receipt = applied_commit_receipt(
+            operation_id.clone(),
+            payload_hash.clone(),
+            9,
+            next_commit_thread_version(4).expect("P1 admitted successor"),
+        );
+        assert_eq!(receipt.operation_id, operation_id, "P1/E1");
+        assert_eq!(receipt.payload_hash, payload_hash, "P1/E1");
+        assert_eq!(receipt.commit_sequence, 9, "P1/E1");
+        assert_eq!(receipt.thread_version, 5, "P1/E1");
+        assert!(!receipt.duplicate, "P1/E1");
+        assert!(next_commit_thread_version(u64::MAX).is_err(), "P2/E2");
+    }
 }
 
 #[cfg(kani)]
@@ -374,5 +423,31 @@ mod verification {
         if let Ok(next) = result {
             assert_eq!(Some(next), current_version.checked_add(1));
         }
+    }
+
+    #[kani::proof]
+    fn applied_receipt_is_exact_and_names_one_successor_record() {
+        let ordinal: u64 = kani::any();
+        let expected_version: u64 = kani::any();
+        kani::assume(expected_version < u64::MAX);
+        let thread_version = next_commit_thread_version(expected_version)
+            .expect("assumption provides one successor");
+        let commit_sequence: u64 = kani::any();
+        let operation_id = CommitOperationId::new(RunId(String::new()), ordinal);
+        let payload_hash = CommitPayloadHash(String::new());
+        let receipt = applied_commit_receipt(
+            operation_id.clone(),
+            payload_hash.clone(),
+            commit_sequence,
+            thread_version,
+        );
+        assert_eq!(receipt.operation_id, operation_id);
+        assert_eq!(receipt.payload_hash, payload_hash);
+        assert_eq!(receipt.commit_sequence, commit_sequence);
+        assert_eq!(
+            Some(receipt.thread_version),
+            expected_version.checked_add(1)
+        );
+        assert!(!receipt.duplicate);
     }
 }

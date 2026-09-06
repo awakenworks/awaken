@@ -32,7 +32,7 @@ use awaken_agent_contract::thread::commit::coordinator::{
 };
 use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitPayloadHash, CommitReceipt, admit_commit_operation_append,
-    replay_commit_operation_receipt, require_commit_operation_identity,
+    applied_commit_receipt, replay_commit_operation_receipt, require_commit_operation_identity,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -866,13 +866,12 @@ fn write_operation(
     )
     .map_err(reject)?;
     tx.commit().map_err(reject)?;
-    Ok(OperationWrite::Applied(CommitReceipt {
-        operation_id: operation.operation_id.clone(),
-        commit_sequence: next,
+    Ok(OperationWrite::Applied(applied_commit_receipt(
+        operation.operation_id.clone(),
+        operation.payload_hash.clone(),
+        next,
         thread_version,
-        payload_hash: operation.payload_hash.clone(),
-        duplicate: false,
-    }))
+    )))
 }
 
 fn ensure_thread_version(
@@ -902,11 +901,17 @@ fn validate_transition_tx(
         )
         .optional()
         .map_err(reject)?;
-    if phase
+    let existing = phase
         .as_deref()
-        .and_then(|phase| serde_json::from_str::<RunState>(phase).ok())
-        .is_some_and(|state| !state.permits(&commit.run_state()))
-    {
+        .map(serde_json::from_str::<RunState>)
+        .transpose()
+        .map_err(|error| {
+            Error::Rejected(format!(
+                "decode committed run {} state before transition: {error}",
+                commit.run_id().0
+            ))
+        })?;
+    if existing.is_some_and(|state| !state.permits(&commit.run_state())) {
         return Err(Error::Rejected(format!(
             "run {} is already terminal; refusing post-terminal commit",
             commit.run_id().0
@@ -1231,6 +1236,54 @@ mod scheduler_isolation_tests {
     use super::*;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn corrupt_committed_run_state_fails_closed_before_append() {
+        // Cause/effect graph: C1 a committed Running row has a decodable state;
+        // C2 durable storage is corrupted to an unknown state; C3 another
+        // commit targets that Run. Effects: E1 C1 allows the initial append; E2
+        // C2+C3 rejects before sequence allocation or fact writes; E3 the
+        // original one-record history remains unchanged. Rules S1=C1=>E1 and
+        // S2=C2+C3=>E2+E3. A decode failure must never be normalized to an
+        // absent/nonterminal state that widens the transition relation.
+        let store = SqliteCommitCoordinator::open_in_memory().expect("store");
+        let thread_id = ThreadId("corrupt-state-thread".into());
+        let run_id = RunId("corrupt-state-run".into());
+        store
+            .commit(ThreadCommit {
+                thread_id: thread_id.clone(),
+                run: awaken_agent_contract::thread::commit::staged::RunDisposition::running(
+                    run_id.clone(),
+                ),
+                messages: Vec::new(),
+                state: Vec::new(),
+                events: Vec::new(),
+            })
+            .await
+            .expect("S1/E1");
+        store
+            .conn
+            .lock()
+            .expect("connection")
+            .execute(
+                &format!("UPDATE {NS}_run_record SET phase = ?1 WHERE run_id = ?2"),
+                params!["not-json", &run_id.0],
+            )
+            .expect("inject corrupt durable state");
+
+        let error = store
+            .commit(ThreadCommit {
+                thread_id,
+                run: awaken_agent_contract::thread::commit::staged::RunDisposition::running(run_id),
+                messages: Vec::new(),
+                state: Vec::new(),
+                events: Vec::new(),
+            })
+            .await
+            .expect_err("S2/E2 corrupt authority must fail closed");
+        assert!(error.to_string().contains("decode committed run"), "S2/E2");
+        assert_eq!(store.commit_count(), 1, "S2/E3");
+    }
 
     /// Commit-read scheduler-isolation cause/effect graph: C1 a synchronous
     /// owner holds the SQLite commit connection; C2 lifecycle delivery and

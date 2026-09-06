@@ -29,7 +29,7 @@ use awaken_agent_contract::thread::commit::coordinator::{
 };
 use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitPayloadHash, CommitReceipt, admit_commit_operation_append,
-    replay_commit_operation_receipt, require_commit_operation_identity,
+    applied_commit_receipt, replay_commit_operation_receipt, require_commit_operation_identity,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -551,13 +551,12 @@ impl OperationCoordinator for PostgresCommitCoordinator {
         .await
         .map_err(reject)?;
         tx.commit().await.map_err(reject)?;
-        let receipt = CommitReceipt {
-            operation_id: operation.operation_id,
-            commit_sequence: next,
+        let receipt = applied_commit_receipt(
+            operation.operation_id,
+            operation.payload_hash,
+            next,
             thread_version,
-            payload_hash: operation.payload_hash,
-            duplicate: false,
-        };
+        );
         let mut projection = lock(&self.projection)?;
         advance_projection(&mut projection, operation.commit, next, committed_events);
         Ok(receipt)
