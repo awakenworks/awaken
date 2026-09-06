@@ -300,6 +300,25 @@ impl SessionApplication {
                 ));
             }
         }
+        // The Resource receipt remains part of this Stage even when an MCP
+        // heartbeat forces expiry catch-up. Validate it before that early
+        // return; otherwise the next directive would project active R2 over
+        // already-prepared R3, or consume a different pending generation.
+        let prepared_pending_resources = match command.prepared_resource_revision {
+            Some(revision)
+                if session.resources.pending.is_some()
+                    && revision == session.resources.revision =>
+            {
+                true
+            }
+            Some(_) if session.resources.pending.is_some() => {
+                return Err(SessionRealizationControlFailure::Invalid(
+                    "prepared Resource generation does not match the pending Session generation"
+                        .into(),
+                ));
+            }
+            Some(_) | None => false,
+        };
         let expected_generations = expected
             .iter()
             .map(|request| request.generation.clone())
@@ -323,7 +342,11 @@ impl SessionApplication {
             // A heartbeat advanced only the exact lease expiry while this Stage
             // was in flight. The predecessor receipt commits nothing; return the
             // latest Stage so the one driver catches up under current authority.
-            return self.next_action(owner_scope, &session, false, false).await;
+            // Preserve only the exact Resource preparation already reported by
+            // this Stage; an MCP-only retry cannot admit a new pending mutation.
+            return self
+                .next_action(owner_scope, &session, false, prepared_pending_resources)
+                .await;
         }
         for receipt in &command.mcp_receipts {
             let request = expected
@@ -338,21 +361,6 @@ impl SessionApplication {
                 .verify(request)
                 .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
         }
-        let prepared_pending_resources = match command.prepared_resource_revision {
-            Some(revision)
-                if session.resources.pending.is_some()
-                    && revision == session.resources.revision =>
-            {
-                true
-            }
-            Some(_) if session.resources.pending.is_some() => {
-                return Err(SessionRealizationControlFailure::Invalid(
-                    "prepared Resource generation does not match the pending Session generation"
-                        .into(),
-                ));
-            }
-            Some(_) | None => false,
-        };
         let prepared_legacy_resources = if session.resources.pending.is_none()
             && session.resources.activations.is_empty()
             && !session.resources.active.inputs().is_empty()
