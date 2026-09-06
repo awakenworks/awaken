@@ -737,6 +737,29 @@ impl Runtime {
         crate::engine::run_commands::resume_run(self, command, reader, context).await
     }
 
+    /// Apply a validated tool-permission decision through the same durable batch
+    /// execution/recovery path as `resume`, then return control without invoking
+    /// the native model. `Running` means ordered tool results are committed and
+    /// the caller must continue its existing model loop; it is not a Run ending.
+    /// A later call may await or end the Run under the normal batch rules.
+    ///
+    /// Requires a commit coordinator and the ticket's registered snapshot. The
+    /// caller owns backend routing and must select only tools owned by this
+    /// runtime; this entry does not attach third-party MCP servers or replace an
+    /// external agent's session transcript. Reclaim reads committed batch truth
+    /// instead of replaying the already-consumed permission command.
+    pub async fn resume_tool_batch(
+        &self,
+        command: awaken_runtime_contract::resume::ResumeCommand,
+        reader: &dyn CommittedThreadView,
+        context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> Result<
+        awaken_agent_contract::agent::run::RunState,
+        awaken_runtime_contract::execution::Error,
+    > {
+        crate::engine::run_commands::resume_tool_batch(self, command, reader, context).await
+    }
+
     /// Commit the authoritative terminal `Cancelled` fact and clear any awaiting
     /// ticket. Durable ingress invokes this after claiming a cancellation intent;
     /// live control is only the best-effort signal that stops an old in-flight

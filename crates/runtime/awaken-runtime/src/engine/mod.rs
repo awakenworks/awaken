@@ -99,7 +99,7 @@ use delegation::{
 use finalize::{finalize, finish};
 use inference::*;
 use progress::*;
-use resume::{drive_resumed, fresh_resume_context};
+use resume::{ResumeContinuation, drive_resumed, fresh_resume_context};
 use run_loop::*;
 pub(crate) use tool_execution::RuntimeToolOperation;
 use tool_execution::*;

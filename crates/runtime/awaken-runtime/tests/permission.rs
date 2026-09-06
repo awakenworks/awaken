@@ -40,10 +40,21 @@ const FP: &str = "catalog-a";
 const SNAP: &str = "snapshot-1";
 const TICKET: &str = "perm-call-1";
 
-/// Calls `echo` once, then ends with text.
+fn echo_calls(arguments: serde_json::Value, count: usize) -> Vec<ToolCall> {
+    (1..=count)
+        .map(|index| ToolCall {
+            call_id: format!("call-{index}"),
+            tool_id: "echo".into(),
+            arguments: arguments.clone(),
+        })
+        .collect()
+}
+
+/// Requests the configured tool batch once, then ends with text.
 struct ToolThenText {
     calls: AtomicUsize,
     requests: Arc<Mutex<Vec<ChatRequest>>>,
+    tool_calls: Vec<ToolCall>,
 }
 #[async_trait::async_trait]
 impl LlmExecutor for ToolThenText {
@@ -54,11 +65,7 @@ impl LlmExecutor for ToolThenText {
         self.requests.lock().unwrap().push(request);
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let output = if n == 0 {
-            AssistantOutput::from_tool_calls(vec![ToolCall {
-                call_id: "call-1".to_string(),
-                tool_id: "echo".to_string(),
-                arguments: serde_json::json!({"text": "ping"}),
-            }])
+            AssistantOutput::from_tool_calls(self.tool_calls.clone())
         } else {
             AssistantOutput::text("all done".to_string())
         };
@@ -162,6 +169,7 @@ fn runtime(ran: Arc<AtomicUsize>, decision: ToolPermissionVerdict) -> Runtime {
         .with_llm(Arc::new(ToolThenText {
             calls: AtomicUsize::new(0),
             requests: Arc::new(Mutex::new(Vec::new())),
+            tool_calls: echo_calls(serde_json::json!({"text": "ping"}), 1),
         }))
         .with_tool(Arc::new(EchoTool { ran }))
         .with_gate(Arc::new(PermissionGate::new(Arc::new(FixedPolicy(
@@ -364,6 +372,7 @@ async fn compact_context_survives_permission_await_and_resume_without_refolding(
         .with_llm(Arc::new(ToolThenText {
             calls: AtomicUsize::new(0),
             requests: requests.clone(),
+            tool_calls: echo_calls(serde_json::json!({"text": "ping"}), 1),
         }))
         .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
         .with_gate(Arc::new(PermissionGate::new(Arc::new(FixedPolicy(
@@ -542,4 +551,483 @@ async fn a_tool_alias_reverse_maps_to_canonical_before_the_permission_gate() {
         "the canonical deny rule blocked the aliased call"
     );
     assert_eq!(audited_decisions(&commit), vec!["deny"]);
+}
+
+/// Observe the actual effect boundary, including the truth visible to a tool.
+/// The same probe is bound in the initial Native attempt and the model-free
+/// continuation, so the test cannot confuse a generated prompt with invocation.
+struct PermissionEffectProbe {
+    commit: Arc<MemoryCommitCoordinator>,
+    calls: Arc<Mutex<Vec<ToolCall>>>,
+    fail: bool,
+}
+
+#[async_trait::async_trait]
+impl RawTool for PermissionEffectProbe {
+    fn id(&self) -> &str {
+        "echo"
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        use awaken_agent_contract::agent::state::{StateKey, Store};
+        use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolCallPhase};
+        assert_eq!(
+            self.commit.run_state(&RunId("run-1".into())),
+            Some(RunState::Running)
+        );
+        assert!(
+            self.commit
+                .resume_ticket_for(&RunId("run-1".into()))
+                .is_none()
+        );
+        let batch = ActiveToolBatch::load(&Store::rebuild(
+            &self.commit.committed_state(&ThreadId("thread-1".into())),
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            batch
+                .calls()
+                .iter()
+                .find(|entry| entry.call.call_id == call.call_id)
+                .unwrap()
+                .phase,
+            ToolCallPhase::Executing { .. }
+        ));
+        assert_eq!(audited_decisions(&self.commit).last().unwrap(), "approved");
+        assert!(
+            self.commit
+                .committed()
+                .events
+                .iter()
+                .any(|event| event.kind == EventKind::ResumeApplied
+                    && event.payload["operation_id"]
+                        == format!("tool-handoff-operation-{}", call.call_id))
+        );
+        self.calls.lock().unwrap().push(call.clone());
+        Ok(if self.fail {
+            ToolOutput::error(call.call_id, "effect rejected by tool")
+        } else {
+            ToolOutput::ok(call.call_id, "exact request executed")
+        })
+    }
+}
+
+struct AskByCall;
+
+#[async_trait::async_trait]
+impl ToolPermissionPolicy for AskByCall {
+    async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
+        ToolPermissionVerdict::RequireConfirmation {
+            correlation_id: format!("permission-{}", call.call_id),
+        }
+    }
+}
+
+struct PermissionHandoffFixture {
+    runtime: Runtime,
+    commit: Arc<MemoryCommitCoordinator>,
+    calls: Arc<Mutex<Vec<ToolCall>>>,
+    command: ResumeCommand,
+    arguments: serde_json::Value,
+}
+
+impl PermissionHandoffFixture {
+    async fn awaiting(fail_tool: bool) -> Self {
+        Self::awaiting_calls(fail_tool, 1).await
+    }
+
+    async fn awaiting_calls(fail_tool: bool, count: usize) -> Self {
+        // Deliberately contains quotes, backslashes, line breaks and 2/3/4-byte
+        // UTF-8 characters, at a size above the real 16k Write failure. This is
+        // committed data; no model in the resumed Runtime can regenerate it.
+        let arguments = serde_json::json!({"text": "é中文🙂\\\"\n".repeat(3000)});
+        assert!(arguments["text"].as_str().unwrap().chars().count() > 16_073);
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let tool = Arc::new(PermissionEffectProbe {
+            commit: commit.clone(),
+            calls: calls.clone(),
+            fail: fail_tool,
+        });
+        let initial = Runtime::new()
+            .with_llm(Arc::new(ToolThenText {
+                calls: AtomicUsize::new(0),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                tool_calls: echo_calls(arguments.clone(), count),
+            }))
+            .with_tool(tool.clone())
+            .with_gate(Arc::new(PermissionGate::new(Arc::new(AskByCall))));
+        assert_eq!(
+            initial
+                .execute(activation(), context(&commit))
+                .await
+                .unwrap(),
+            RunState::Awaiting
+        );
+        assert!(calls.lock().unwrap().is_empty());
+        let ticket = commit.resume_ticket_for(&RunId("run-1".into())).unwrap();
+        let command = ResumeCommand::from_ticket(&ticket, ResumeResult::allow(), 0)
+            .with_operation_id("tool-handoff-operation-call-1");
+        // A rebuilt host has no Native inference provider. It registers the
+        // publication and binds the same owned tool, not an external MCP client.
+        let runtime = Runtime::new()
+            .with_tool(tool)
+            .with_gate(Arc::new(PermissionGate::new(Arc::new(AskByCall))));
+        runtime.register_snapshot(snapshot());
+        Self {
+            runtime,
+            commit,
+            calls,
+            command,
+            arguments,
+        }
+    }
+
+    fn results(&self) -> Vec<(String, bool)> {
+        self.commit
+            .committed()
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    is_error,
+                    ..
+                } => Some((tool_use_id.clone(), *is_error)),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+#[tokio::test]
+async fn tool_batch_handoff_commits_exact_results_without_native_inference() {
+    // Cause/effect graph: C1 exact allow/deny; C2 tool success/error; C3 no
+    // Native model. Constraints: only allow enters the effect; approval +
+    // ResumeApplied + Executing must already be durable at entry. Results and
+    // context commit before returning Running, never a synthetic terminal fact.
+    // | Rule | decision | tool outcome | calls | result | state |
+    // | H1   | allow    | success      | 1     | ok     | Running |
+    // | H2   | deny     | irrelevant   | 0     | error  | Running |
+    // | H3   | allow    | error        | 1     | error  | Running |
+    // H4: after any row, replaying the consumed command fails with no changes;
+    // a reclaimed Native attempt sees the receipt and never re-enters the tool.
+    for (allow, fail_tool) in [(true, false), (false, false), (true, true)] {
+        let mut fixture = PermissionHandoffFixture::awaiting(fail_tool).await;
+        if !allow {
+            fixture.command.result = ResumeResult::deny(Some("operator denied".into()));
+        }
+        fixture.command.context_messages = vec![Message::text(
+            MessageId("accepted-handoff-context".into()),
+            Role::System,
+            "accepted context",
+        )];
+        let state = fixture
+            .runtime
+            .resume_tool_batch(
+                fixture.command.clone(),
+                fixture.commit.as_ref(),
+                context(&fixture.commit),
+            )
+            .await
+            .unwrap();
+        assert_eq!(state, RunState::Running);
+        let calls = fixture.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), usize::from(allow));
+        if allow {
+            assert_eq!(calls[0].call_id, "call-1");
+            assert_eq!(calls[0].tool_id, "echo");
+            assert_eq!(calls[0].arguments, fixture.arguments);
+        }
+        assert_eq!(
+            fixture.results(),
+            vec![("call-1".into(), !allow || fail_tool)]
+        );
+        assert_eq!(
+            fixture
+                .commit
+                .committed()
+                .messages
+                .iter()
+                .filter(|message| message.id.0 == "accepted-handoff-context")
+                .count(),
+            1
+        );
+        assert!(
+            fixture
+                .commit
+                .resume_ticket_for(&fixture.command.run_id)
+                .is_none()
+        );
+        let commits = fixture.commit.commit_count();
+        assert!(
+            fixture
+                .runtime
+                .resume_tool_batch(
+                    fixture.command.clone(),
+                    fixture.commit.as_ref(),
+                    context(&fixture.commit),
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(fixture.commit.commit_count(), commits);
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let next = fixture.runtime.with_llm(Arc::new(ToolThenText {
+            calls: AtomicUsize::new(1),
+            requests: requests.clone(),
+            tool_calls: echo_calls(fixture.arguments.clone(), 1),
+        }));
+        let mut reclaim = activation();
+        reclaim.input.clear();
+        assert_eq!(
+            next.execute(
+                reclaim,
+                context(&fixture.commit).with_reader(fixture.commit.clone())
+            )
+            .await
+            .unwrap(),
+            RunState::Ended(EndCause::NaturalEnd)
+        );
+        assert_eq!(fixture.calls.lock().unwrap().len(), usize::from(allow));
+        {
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            let model_results: Vec<_> = requests[0]
+                .messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter(|block| matches!(block, ContentBlock::ToolResult { .. }))
+                .collect();
+            assert_eq!(
+                model_results.len(),
+                1,
+                "the next model sees committed tool truth"
+            );
+            assert!(
+                matches!(model_results[0], ContentBlock::ToolResult { tool_use_id, is_error, .. }
+                if tool_use_id == "call-1" && *is_error == (!allow || fail_tool))
+            );
+        }
+        let results: Vec<_> = fixture
+            .commit
+            .committed()
+            .messages
+            .into_iter()
+            .flat_map(|message| message.content)
+            .filter(|block| matches!(block, ContentBlock::ToolResult { .. }))
+            .collect();
+        assert_eq!(
+            results.len(),
+            1,
+            "reclaim must not republish the tool result"
+        );
+    }
+}
+
+#[tokio::test]
+async fn tool_batch_handoff_rejects_missing_durability_and_invalid_identity() {
+    // H5 missing coordinator; H6 changed correlation. Both are preconditions:
+    // reject before any mutation/effect and keep the original ticket resumable.
+    for missing_commit in [true, false] {
+        let mut fixture = PermissionHandoffFixture::awaiting(false).await;
+        let count = fixture.commit.commit_count();
+        let context = if missing_commit {
+            RuntimeRunContext::new()
+        } else {
+            fixture.command.correlation_id.push_str("-changed");
+            context(&fixture.commit)
+        };
+        assert!(
+            fixture
+                .runtime
+                .resume_tool_batch(fixture.command.clone(), fixture.commit.as_ref(), context)
+                .await
+                .is_err()
+        );
+        assert_eq!(fixture.commit.commit_count(), count);
+        assert!(fixture.calls.lock().unwrap().is_empty());
+        assert_eq!(
+            fixture.commit.run_state(&RunId("run-1".into())),
+            Some(RunState::Awaiting)
+        );
+        assert!(fixture.results().is_empty());
+    }
+}
+
+struct RejectHandoffCommit {
+    inner: Arc<MemoryCommitCoordinator>,
+    calls: AtomicUsize,
+    reject_at: usize,
+}
+
+#[async_trait::async_trait]
+impl awaken_agent_contract::thread::commit::coordinator::Coordinator for RejectHandoffCommit {
+    async fn commit(
+        &self,
+        commit: awaken_agent_contract::thread::commit::staged::ThreadCommit,
+    ) -> Result<
+        awaken_agent_contract::thread::commit::staged::CommitRecord,
+        awaken_agent_contract::thread::commit::coordinator::Error,
+    > {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == self.reject_at {
+            return Err(
+                awaken_agent_contract::thread::commit::coordinator::Error::Rejected(
+                    "injected handoff commit failure".into(),
+                ),
+            );
+        }
+        self.inner.commit(commit).await
+    }
+}
+
+#[tokio::test]
+async fn tool_batch_handoff_commit_failure_preserves_the_execution_boundary() {
+    // H7 reject the approval commit => Awaiting, zero effects/results, ticket
+    // retained. H8 reject the result commit => Running/Executing, one effect,
+    // no invented result. On reclaim the pinned NeverReplay policy produces an
+    // indeterminate error receipt without repeating an unknowable side effect.
+    for reject_at in [0, 1] {
+        let fixture = PermissionHandoffFixture::awaiting(false).await;
+        let rejecting = Arc::new(RejectHandoffCommit {
+            inner: fixture.commit.clone(),
+            calls: AtomicUsize::new(0),
+            reject_at,
+        });
+        assert!(
+            fixture
+                .runtime
+                .resume_tool_batch(
+                    fixture.command.clone(),
+                    fixture.commit.as_ref(),
+                    RuntimeRunContext::new().with_commit(rejecting),
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(fixture.calls.lock().unwrap().len(), reject_at);
+        assert!(fixture.results().is_empty());
+        assert_eq!(
+            fixture
+                .commit
+                .resume_ticket_for(&fixture.command.run_id)
+                .is_some(),
+            reject_at == 0
+        );
+        assert_eq!(
+            fixture.commit.run_state(&fixture.command.run_id),
+            Some(if reject_at == 0 {
+                RunState::Awaiting
+            } else {
+                RunState::Running
+            })
+        );
+        if reject_at == 1 {
+            let next = fixture.runtime.with_llm(Arc::new(ToolThenText {
+                calls: AtomicUsize::new(1),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                tool_calls: echo_calls(fixture.arguments.clone(), 1),
+            }));
+            let mut reclaim = activation();
+            reclaim.input.clear();
+            assert_eq!(
+                next.execute(
+                    reclaim,
+                    context(&fixture.commit).with_reader(fixture.commit.clone())
+                )
+                .await
+                .unwrap(),
+                RunState::Ended(EndCause::NaturalEnd)
+            );
+            assert_eq!(fixture.calls.lock().unwrap().len(), 1);
+            let results: Vec<_> = fixture
+                .commit
+                .committed()
+                .messages
+                .into_iter()
+                .flat_map(|message| message.content)
+                .filter(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. }))
+                .collect();
+            assert_eq!(results.len(), 1);
+            assert!(
+                serde_json::to_string(&results)
+                    .unwrap()
+                    .contains("indeterminate")
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn tool_batch_handoff_preserves_the_remaining_calls_and_publication_barrier() {
+    // H9: two ordered calls, both Ask. Approve first => execute only first,
+    // commit its private batch result and a ticket for second, return Awaiting
+    // without publishing a partial result set or invoking a Native model.
+    // H10/H11: allow/deny second => execute once/zero, publish both results in
+    // original order and return Running. First result is never re-executed.
+    // A stale first approval cannot consume the second call's distinct ticket.
+    for allow_second in [true, false] {
+        let fixture = PermissionHandoffFixture::awaiting_calls(false, 2).await;
+        assert_eq!(
+            fixture
+                .runtime
+                .resume_tool_batch(
+                    fixture.command.clone(),
+                    fixture.commit.as_ref(),
+                    context(&fixture.commit),
+                )
+                .await
+                .unwrap(),
+            RunState::Awaiting
+        );
+        assert_eq!(fixture.calls.lock().unwrap().len(), 1);
+        assert!(
+            fixture.results().is_empty(),
+            "partial batch stays behind publication barrier"
+        );
+        let ticket = fixture
+            .commit
+            .resume_ticket_for(&fixture.command.run_id)
+            .unwrap();
+        assert_eq!(ticket.call_id(), Some("call-2"));
+        assert!(
+            fixture
+                .runtime
+                .resume_tool_batch(
+                    fixture.command.clone(),
+                    fixture.commit.as_ref(),
+                    context(&fixture.commit),
+                )
+                .await
+                .is_err()
+        );
+        let decision = if allow_second {
+            ResumeResult::allow()
+        } else {
+            ResumeResult::deny(Some("second request denied".into()))
+        };
+        let command = ResumeCommand::from_ticket(&ticket, decision, 0)
+            .with_operation_id("tool-handoff-operation-call-2");
+        assert_eq!(
+            fixture
+                .runtime
+                .resume_tool_batch(command, fixture.commit.as_ref(), context(&fixture.commit),)
+                .await
+                .unwrap(),
+            RunState::Running
+        );
+        let calls = fixture.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1 + usize::from(allow_second));
+        for (index, call) in calls.iter().enumerate() {
+            assert_eq!(call.call_id, format!("call-{}", index + 1));
+            assert_eq!(call.arguments, fixture.arguments);
+        }
+        assert_eq!(
+            fixture.results(),
+            vec![("call-1".into(), false), ("call-2".into(), !allow_second)]
+        );
+    }
 }

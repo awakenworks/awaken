@@ -372,25 +372,33 @@ async fn resume_rejects_a_ticket_batch_payload_conflict_before_tool_execution() 
         .expect("RB2 commit conflicting durable projection");
     let commits_before = commit.commit_count();
 
-    let error = runtime
-        .resume(
-            resume_command(ResumeResult::allow()),
-            commit.as_ref(),
-            RuntimeRunContext::new().with_commit(commit.clone()),
-        )
-        .await
-        .expect_err("RB2 ticket/batch conflict must fail closed");
-    assert!(
-        error.to_string().contains("incoherent tool resume"),
-        "RB2/E2"
-    );
-    assert_eq!(ran.load(Ordering::SeqCst), 0, "RB2/E2 no tool effect");
-    assert_eq!(
-        commit.commit_count(),
-        commits_before,
-        "RB2/E2 no resume commit"
-    );
-    assert_eq!(commit.run_state(&run_id), Some(RunState::Awaiting));
+    // RB3: the tool-only handoff shares RB2's validator; it must not turn a
+    // payload conflict into approval or execution just because inference is skipped.
+    for tool_only in [false, true] {
+        let context = RuntimeRunContext::new().with_commit(commit.clone());
+        let result = if tool_only {
+            runtime
+                .resume_tool_batch(
+                    resume_command(ResumeResult::allow()),
+                    commit.as_ref(),
+                    context,
+                )
+                .await
+        } else {
+            runtime
+                .resume(
+                    resume_command(ResumeResult::allow()),
+                    commit.as_ref(),
+                    context,
+                )
+                .await
+        };
+        let error = result.expect_err("RB2/RB3 ticket/batch conflict must fail closed");
+        assert!(error.to_string().contains("incoherent tool resume"));
+        assert_eq!(ran.load(Ordering::SeqCst), 0, "no tool effect");
+        assert_eq!(commit.commit_count(), commits_before, "no resume commit");
+        assert_eq!(commit.run_state(&run_id), Some(RunState::Awaiting));
+    }
 }
 
 #[tokio::test]
@@ -491,6 +499,29 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
         .expect("external result ticket is durable");
     assert_eq!(ticket.reason(), AwaitReason::ExternalEvent);
     assert_eq!(ticket.call_id(), Some("call-1"));
+    // C4: a valid client-result ticket is not an owned permission continuation.
+    // The tool-only entry must reject it before mutations; the ordinary resume
+    // below remains its authority and must still succeed afterward.
+    let before_handoff = commit.commit_count();
+    let error = runtime
+        .resume_tool_batch(
+            ResumeCommand::from_ticket(
+                &ticket,
+                ResumeResult::ToolResult(ToolOutput::ok("call-1", "client-computed")),
+                0,
+            ),
+            commit.as_ref(),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .expect_err("C4 keeps the client-result route distinct");
+    assert!(
+        error
+            .to_string()
+            .contains("requires an awaiting tool permission")
+    );
+    assert_eq!(commit.commit_count(), before_handoff);
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
     let ticket_correlation_id = ticket.correlation_id.clone();
     let system = Message::text(
         MessageId("session-system-tool-reply".into()),

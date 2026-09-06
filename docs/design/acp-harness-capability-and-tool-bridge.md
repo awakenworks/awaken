@@ -320,6 +320,40 @@ also distinguishes cancellation from rejection. A future reliable continuation
 must retain Awaken's committed ticket, execution ownership and exact effect
 receipt; these SDK options alone are not evidence that this is implemented.
 
+The Runtime now exposes `Runtime::resume_tool_batch` as the shared durable
+permission phase without a Native parent inference. It uses the same ticket
+validator, `drive_resumed`, exact pending call, execution admission/ownership
+boundary and `dispatch` batch recovery as Native `resume`. It requires a commit
+coordinator and an owned tool-permission ticket. The caller must bind the exact
+publication and tool executor; this is not an attachment path for third-party
+MCP tools owned by an external CLI.
+
+The phase commits approval/ResumeApplied/Executing before entering the tool,
+then commits the ordered result batch before returning `Running`. If another
+call requires approval it instead returns `Awaiting` with the next ticket and
+keeps completed per-call results behind the same batch publication barrier.
+A failed approval commit prevents execution; a failed result commit preserves
+Executing, so reclaim follows the pinned recovery policy rather than replaying
+the consumed approval. Native's model loop and this handoff share one pending
+batch recovery function. No new runner, permission store or result journal is
+introduced.
+
+The inline decision tables in `awaken-runtime/tests/permission.rs` cover exact
+long UTF-8 input with no model provider, allow/deny/tool errors, missing durable
+wiring, stale identity, failed approval/result commits, ordered multi-call
+await/resume and reclaim without duplicate invocation or publication. Existing
+`awaiting.rs` tests also exercise ticket/batch disagreement and reject client
+result tickets at this owned-permission entry. Run these with
+`cargo test -p awaken-runtime --test permission --test awaiting`.
+
+This kernel entry is not yet wired to ACP. The current ACP path above still
+requires re-emission, and the failed real Cowork long-write task remains failed.
+Remaining integration must select Awaken-owned bridge tools at the existing Host
+boundary, recover their committed batch before external inference, and project
+a truthful executed-tool receipt into the external continuation without editing
+the SDK's historical transcript. Successful kernel tests do not certify that
+integration, a Claude Cowork app comparison, or any deployment topology.
+
 Physical Hand exports are created only after Environment binding, never during
 deferred reservation. The MCP `RawTool` port delegates to
 `Environment::tool_executor()`, preserving Workdir rooting and Namespace/Container
