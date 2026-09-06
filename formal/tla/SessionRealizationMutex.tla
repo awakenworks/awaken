@@ -12,8 +12,8 @@ ASSUME /\ DriverA # DriverB
        /\ MaxRenewals \in Nat
 
 Drivers == {DriverA, DriverB}
-VARIABLES owner, phase, completed, remainingRenewals, leaseVisible, receiptCurrent
-vars == <<owner, phase, completed, remainingRenewals, leaseVisible, receiptCurrent>>
+VARIABLES owner, phase, completed, remainingRenewals, leaseVisible, receiptCurrent, publishSet, drainSet
+vars == <<owner, phase, completed, remainingRenewals, leaseVisible, receiptCurrent, publishSet, drainSet>>
 
 ActiveSessions == {session \in Sessions : owner[session] # NoDriver}
 
@@ -23,6 +23,8 @@ Init == /\ owner = [session \in Sessions |-> NoDriver]
         /\ remainingRenewals = [session \in Sessions |-> 0]
         /\ leaseVisible = [session \in Sessions |-> FALSE]
         /\ receiptCurrent = [session \in Sessions |-> FALSE]
+        /\ publishSet = [session \in Sessions |-> {}]
+        /\ drainSet = [session \in Sessions |-> {}]
 
 Acquire(session, d) ==
   /\ session \in Sessions
@@ -33,7 +35,7 @@ Acquire(session, d) ==
   /\ owner' = [owner EXCEPT ![session] = d]
   /\ phase' = [phase EXCEPT ![session] = "WaitingForControl"]
   /\ remainingRenewals' = [remainingRenewals EXCEPT ![session] = MaxRenewals]
-  /\ UNCHANGED <<completed, leaseVisible, receiptCurrent>>
+  /\ UNCHANGED <<completed, leaseVisible, receiptCurrent, publishSet, drainSet>>
 
 ControlRespond(session, d) ==
   /\ session \in Sessions
@@ -41,7 +43,7 @@ ControlRespond(session, d) ==
   /\ phase[session] = "WaitingForControl"
   /\ phase' = [phase EXCEPT ![session] = "PreparingResources"]
   /\ leaseVisible' = [leaseVisible EXCEPT ![session] = TRUE]
-  /\ UNCHANGED <<owner, completed, remainingRenewals, receiptCurrent>>
+  /\ UNCHANGED <<owner, completed, remainingRenewals, receiptCurrent, publishSet, drainSet>>
 
 ControlTimeout(session, d) ==
   /\ session \in Sessions
@@ -50,7 +52,7 @@ ControlTimeout(session, d) ==
   /\ owner' = [owner EXCEPT ![session] = NoDriver]
   /\ phase' = [phase EXCEPT ![session] = "Idle"]
   /\ remainingRenewals' = [remainingRenewals EXCEPT ![session] = 0]
-  /\ UNCHANGED <<completed, leaseVisible, receiptCurrent>>
+  /\ UNCHANGED <<completed, leaseVisible, receiptCurrent, publishSet, drainSet>>
 
 (* Reads hold the existing driver lock but not renewal capacity. A temporary
    failure is stuttering; explicit loss/expiry cancels before lock-wait cleanup.
@@ -61,14 +63,14 @@ PrepareResources(session, d) ==
   /\ phase[session] = "PreparingResources"
   /\ leaseVisible[session]
   /\ phase' = [phase EXCEPT ![session] = "Driving"]
-  /\ UNCHANGED <<owner, completed, remainingRenewals, leaseVisible, receiptCurrent>>
+  /\ UNCHANGED <<owner, completed, remainingRenewals, leaseVisible, receiptCurrent, publishSet, drainSet>>
 
 LosePreparationAuthority(session, d) ==
   /\ owner[session] = d
   /\ phase[session] = "PreparingResources"
   /\ phase' = [phase EXCEPT ![session] = "CancellingResources"]
   /\ leaseVisible' = [leaseVisible EXCEPT ![session] = FALSE]
-  /\ UNCHANGED <<owner, completed, remainingRenewals, receiptCurrent>>
+  /\ UNCHANGED <<owner, completed, remainingRenewals, receiptCurrent, publishSet, drainSet>>
 
 AbortPreparation(session, d) ==
   /\ owner[session] = d
@@ -77,7 +79,7 @@ AbortPreparation(session, d) ==
   /\ phase' = [phase EXCEPT ![session] = "Idle"]
   /\ remainingRenewals' = [remainingRenewals EXCEPT ![session] = 0]
   /\ leaseVisible' = [leaseVisible EXCEPT ![session] = FALSE]
-  /\ UNCHANGED <<completed, receiptCurrent>>
+  /\ UNCHANGED <<completed, receiptCurrent, publishSet, drainSet>>
 
 Renew(session, d) ==
   /\ session \in Sessions
@@ -90,7 +92,13 @@ Renew(session, d) ==
      only equality versus an authorized older expiry, not epoch arithmetic. *)
   /\ remainingRenewals' = [remainingRenewals EXCEPT ![session] = IF @ = 0 THEN MaxRenewals ELSE @ - 1]
   /\ receiptCurrent' = [receiptCurrent EXCEPT ![session] = FALSE]
-  /\ UNCHANGED <<owner, phase, completed, leaseVisible>>
+  /\ UNCHANGED <<owner, phase, completed, leaseVisible, publishSet, drainSet>>
+
+PublicationCandidates(staged, active) == staged \cap active
+
+PublicationObservation(staged, active, published, drained) ==
+    /\ published = PublicationCandidates(staged, active)
+    /\ published \cap drained = {}
 
 Advance(session, d) ==
   /\ session \in Sessions
@@ -98,6 +106,10 @@ Advance(session, d) ==
   /\ phase[session] = "Driving"
   /\ phase' = [phase EXCEPT ![session] = "Publishing"]
   /\ receiptCurrent' = [receiptCurrent EXCEPT ![session] = TRUE]
+  \* The regression witness: Stage returned both old and new generations.
+  \* Activate durably retires old; Publish partitions those exact receipts.
+  /\ publishSet' = [publishSet EXCEPT ![session] = PublicationCandidates({"old", "new"}, {"new"})]
+  /\ drainSet' = [drainSet EXCEPT ![session] = {"old"}]
   /\ UNCHANGED <<owner, completed, remainingRenewals, leaseVisible>>
 
 (* Completed physical evidence remains valid under live same-generation
@@ -107,7 +119,7 @@ Acknowledge(session, d) ==
   /\ owner[session] = d
   /\ phase[session] = "Publishing"
   /\ phase' = [phase EXCEPT ![session] = "Committing"]
-  /\ UNCHANGED <<owner, completed, remainingRenewals, leaseVisible, receiptCurrent>>
+  /\ UNCHANGED <<owner, completed, remainingRenewals, leaseVisible, receiptCurrent, publishSet, drainSet>>
 
 Release(session, d) ==
   /\ session \in Sessions
@@ -119,7 +131,7 @@ Release(session, d) ==
   /\ completed' = [completed EXCEPT ![session] = @ + 1]
   /\ remainingRenewals' = [remainingRenewals EXCEPT ![session] = 0]
   /\ leaseVisible' = [leaseVisible EXCEPT ![session] = FALSE]
-  /\ UNCHANGED receiptCurrent
+  /\ UNCHANGED <<receiptCurrent, publishSet, drainSet>>
 
 ControlSettles(session, d) ==
   ControlRespond(session, d) \/ ControlTimeout(session, d)
@@ -156,7 +168,13 @@ OneDriverPerSession ==
     phase[session] = "Idle" <=> owner[session] = NoDriver
 BoundedCrossSessionConcurrency ==
   Cardinality(ActiveSessions) <= MaxConcurrent
+PublicationExcludesRetiredGenerations ==
+  \A session \in Sessions :
+    /\ publishSet[session] \subseteq {"new"}
+    /\ publishSet[session] \cap drainSet[session] = {}
+    /\ (phase[session] \in {"Publishing", "Committing"} => publishSet[session] = {"new"})
 Safety == TypeOK /\ OneDriverPerSession /\ BoundedCrossSessionConcurrency
+          /\ PublicationExcludesRetiredGenerations
 
 ResourcesHaveRenewableAuthority ==
   \A session \in Sessions :

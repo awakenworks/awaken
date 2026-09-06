@@ -932,6 +932,8 @@ mod completion_tests {
             "workspace-a",
             ResolvedSessionResources::try_new(
                 vec![ResolvedInput {
+                    created_at_unix_ms: None,
+                    updated_at_unix_ms: None,
                     binding_id: BindingId::new("repo-binding"),
                     source: ResolvedInputSource::Repository {
                         repository_id: RepositoryId::from("repo-a"),

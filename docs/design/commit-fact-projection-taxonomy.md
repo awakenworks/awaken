@@ -67,6 +67,39 @@ commit is visible.
    roll back an already committed runtime fact unless the store transaction has
    not committed.
 
+## Time observations
+
+Wall time is display evidence attached to the existing durable owner, never a
+commit identity, sequence, or recovery trigger. Session application commands use
+the shared `awaken-agent-contract::clock::Clock` port; ingress reexports that port.
+Create compiles its idempotency receipt before observing root creation time.
+Root CAS persists update time, inbound processing persists its first observation,
+and realization failure retains its own time so later cleanup cannot rewrite it.
+Resource binding times belong to each existing resolved input: manifest replacement
+preserves creation time, updates only changed bindings, and does not stamp a no-op.
+
+Thread SQL stores expose their existing `committed_at` column in the same recovery
+transaction as messages, state, and lifecycle facts. The filesystem log records the
+observation beside the existing commit/operation payload; replay passes that value
+to its in-memory read model. It never observes restart time. Duplicate operations
+return the original receipt and do not append a second timestamp. No schema,
+parallel event store, or timestamp-based ordering is introduced.
+
+Managed canonicalization attaches the owning commit observation to the existing
+public event after resolving its immutable order. Millisecond precision survives
+formatting; backwards clocks cannot reorder events. The shared UTC codec accepts
+1970 through year 9999; display projection saturates at the last representable
+millisecond. Persisted values and lease/deadline arithmetic retain their wider
+SQL domain. Malformed UTC strings, including an empty fractional part, are
+rejected rather than normalized into a valid observation. Legacy records without time
+remain unknown. Required string DTOs and the historical inbound `processed_at`
+completion marker retain the legacy `2026-01-01T00:00:00Z` compatibility sentinel;
+that sentinel is not a measured time. Optional historical runtime times stay null.
+New root, binding, processed inbound, and commit facts record actual observations.
+Compatibility is reader-first: new readers accept historical rows, but older
+`PersistedSession` readers reject unknown root fields. Upgrade all root readers
+before enabling these writers; no historical timestamp backfill is inferred.
+
 ## Ordering
 
 Ordering is by commit visibility first, then adapter projection order. A live

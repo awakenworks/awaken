@@ -480,6 +480,8 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
     let resolved = awaken_session_contract::ResolvedSessionResources::try_new(
         vec![
             awaken_session_contract::ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::from("file-binding"),
                 source: awaken_session_contract::ResolvedInputSource::File {
                     file_id: awaken_resource_contract::FileId::from("file-a"),
@@ -489,6 +491,8 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
                 instructions: None,
             },
             awaken_session_contract::ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::from("memory-binding"),
                 source: awaken_session_contract::ResolvedInputSource::MemoryStore {
                     memory_store_id: awaken_resource_contract::MemoryStoreId::from("memory-store"),

@@ -4,9 +4,15 @@
 /// so a single-tenant deployment never 404s itself.
 pub(crate) const DEFAULT_SCOPE: &str = "default";
 
-/// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
-/// clock port; the wire only needs a valid RFC 3339 value here.
-pub(crate) const PROCESSED_AT: &str = "2026-01-01T00:00:00Z";
+/// Wire compatibility sentinel for historical roots without a recorded time.
+/// New facts never use this value; optional Event timestamps remain absent.
+pub(crate) const LEGACY_UNRECORDED_AT: &str = "2026-01-01T00:00:00Z";
+
+pub(crate) fn persisted_time(epoch_ms: Option<u64>) -> String {
+    epoch_ms
+        .map(awaken_session_contract::epoch_millis_to_rfc3339)
+        .unwrap_or_else(|| LEGACY_UNRECORDED_AT.to_string())
+}
 
 /// The Managed Agents contract error for a `memory_store` add/remove on a running
 /// session — memory stores bind at session creation only.

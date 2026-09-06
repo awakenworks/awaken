@@ -36,7 +36,8 @@ import {
 import ProviderConnectionPanel from "./provider-connection-panel";
 
 /** Compact a token count for the catalog list: 200000 → "200k", 1_000_000 → "1M". */
-function fmtTokens(n: number): string {
+export function fmtTokens(n: number | null | undefined, unknown = "Not reported"): string {
+  if (n == null) return unknown;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
   return String(n);
@@ -508,9 +509,7 @@ export default function ModelsSurface() {
                   )}
                 </td>
                 <td data-label={app.t("Context", "上下文")} className="mut">
-                  {c?.model_attributes?.[o.model_id]?.context_window
-                    ? `${fmtTokens(c.model_attributes[o.model_id].context_window!)}`
-                    : "—"}
+                  {fmtTokens(c?.model_attributes?.[o.model_id]?.context_window, app.t("Not reported", "未提供"))}
                   {c?.model_attributes?.[o.model_id]?.provenance?.context_window?.source && (
                     <div style={{ fontSize: 11 }}>
                       {c.model_attributes[o.model_id].provenance!.context_window.source}
@@ -518,9 +517,7 @@ export default function ModelsSurface() {
                   )}
                 </td>
                 <td data-label={app.t("Max output", "最大输出")} className="mut">
-                  {c?.model_attributes?.[o.model_id]?.max_output_tokens
-                    ? `${fmtTokens(c.model_attributes[o.model_id].max_output_tokens!)}`
-                    : "—"}
+                  {fmtTokens(c?.model_attributes?.[o.model_id]?.max_output_tokens, app.t("Not reported", "未提供"))}
                   {c?.model_attributes?.[o.model_id]?.provenance?.max_output_tokens?.source && (
                     <div style={{ fontSize: 11 }}>
                       {c.model_attributes[o.model_id].provenance!.max_output_tokens.source}

@@ -72,7 +72,7 @@ impl ManagedState {
                 RunLifecycleEventKind::Running | RunLifecycleEventKind::Resumed => {
                     if record.child_threads[index].status != SessionThreadStatus::Running {
                         record.child_threads[index].status = SessionThreadStatus::Running;
-                        record.child_threads[index].updated_at = PROCESSED_AT.to_string();
+                        record.child_threads[index].updated_at = LEGACY_UNRECORDED_AT.to_string();
                         record.events.push(Event {
                             id: managed_multiagent_event_id(
                                 &record.session.id,
@@ -86,7 +86,7 @@ impl ManagedState {
                                 session_thread_id: thread_id.to_string(),
                                 agent_name,
                             },
-                            processed_at: Some(PROCESSED_AT.to_string()),
+                            processed_at: None,
                         });
                     }
                 }
@@ -97,7 +97,7 @@ impl ManagedState {
                     // same lifecycle cursor makes warm replay and cold rebuild
                     // converge without a protocol-owned retry registry.
                     record.child_threads[index].status = SessionThreadStatus::Rescheduling;
-                    record.child_threads[index].updated_at = PROCESSED_AT.to_string();
+                    record.child_threads[index].updated_at = LEGACY_UNRECORDED_AT.to_string();
                     record.events.push(Event {
                         id: managed_multiagent_event_id(
                             &record.session.id,
@@ -111,7 +111,7 @@ impl ManagedState {
                             session_thread_id: thread_id.to_string(),
                             agent_name: agent_name.clone(),
                         },
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     });
                     record.child_threads[index].status = SessionThreadStatus::Running;
                     record.events.push(Event {
@@ -127,7 +127,7 @@ impl ManagedState {
                             session_thread_id: thread_id.to_string(),
                             agent_name,
                         },
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     });
                 }
                 RunLifecycleEventKind::Awaiting
@@ -188,7 +188,7 @@ impl ManagedState {
                                     SessionError::classify(failure.code(), failure.message())
                                 },
                             },
-                            processed_at: Some(PROCESSED_AT.to_string()),
+                            processed_at: None,
                         });
                     }
                     record
@@ -202,7 +202,7 @@ impl ManagedState {
                         // error first and terminate directly: publishing Idle
                         // would promise follow-up input that Runtime must reject.
                         record.child_threads[index].status = SessionThreadStatus::Terminated;
-                        record.child_threads[index].updated_at = PROCESSED_AT.to_string();
+                        record.child_threads[index].updated_at = LEGACY_UNRECORDED_AT.to_string();
                         record.events.push(Event {
                             id: managed_multiagent_event_id(
                                 &record.session.id,
@@ -216,12 +216,12 @@ impl ManagedState {
                                 session_thread_id: thread_id.to_string(),
                                 agent_name,
                             },
-                            processed_at: Some(PROCESSED_AT.to_string()),
+                            processed_at: None,
                         });
                         continue;
                     }
                     record.child_threads[index].status = SessionThreadStatus::Idle;
-                    record.child_threads[index].updated_at = PROCESSED_AT.to_string();
+                    record.child_threads[index].updated_at = LEGACY_UNRECORDED_AT.to_string();
                     record.events.push(Event {
                         id: managed_multiagent_event_id(
                             &record.session.id,
@@ -236,7 +236,7 @@ impl ManagedState {
                             agent_name: agent_name.clone(),
                             stop_reason,
                         },
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     });
                     if run_terminates_thread {
                         // Each consultation owns one Thread and self-terminates
@@ -244,7 +244,8 @@ impl ManagedState {
                         // from the durable advisor target + Run boundary, not a
                         // generic child archive cache.
                         record.child_threads[index].status = SessionThreadStatus::Terminated;
-                        record.child_threads[index].archived_at = Some(PROCESSED_AT.to_string());
+                        record.child_threads[index].archived_at =
+                            Some(LEGACY_UNRECORDED_AT.to_string());
                         record.events.push(Event {
                             id: managed_multiagent_event_id(
                                 &record.session.id,
@@ -258,7 +259,7 @@ impl ManagedState {
                                 session_thread_id: thread_id.to_string(),
                                 agent_name,
                             },
-                            processed_at: Some(PROCESSED_AT.to_string()),
+                            processed_at: None,
                         });
                     }
                 }
@@ -281,8 +282,8 @@ impl ManagedState {
             }
             let agent_name = child.agent.display_name().to_string();
             child.status = SessionThreadStatus::Terminated;
-            child.archived_at = Some(PROCESSED_AT.to_string());
-            child.updated_at = PROCESSED_AT.to_string();
+            child.archived_at = Some(LEGACY_UNRECORDED_AT.to_string());
+            child.updated_at = LEGACY_UNRECORDED_AT.to_string();
             record.events.push(Event {
                 id: managed_multiagent_event_id(
                     &record.session.id,
@@ -294,7 +295,7 @@ impl ManagedState {
                     session_thread_id: child.id.clone(),
                     agent_name,
                 },
-                processed_at: Some(PROCESSED_AT.to_string()),
+                processed_at: None,
             });
         }
     }
@@ -319,7 +320,7 @@ impl ManagedState {
                 .session
                 .archived_at
                 .clone()
-                .unwrap_or_else(|| PROCESSED_AT.to_string());
+                .unwrap_or_else(|| LEGACY_UNRECORDED_AT.to_string());
             record.events.push(Event {
                 id: managed_multiagent_event_id(
                     &record.session.id,
@@ -331,7 +332,7 @@ impl ManagedState {
                     session_thread_id: child.id.clone(),
                     agent_name: child.agent.display_name().to_string(),
                 },
-                processed_at: Some(PROCESSED_AT.to_string()),
+                processed_at: None,
             });
         }
         let primary_terminated_id = managed_multiagent_event_id(
@@ -367,7 +368,7 @@ impl ManagedState {
                 ManagedMultiagentEventProvenance::ParentTerminal,
             ),
             kind: OutboundKind::SessionStatusTerminated {},
-            processed_at: Some(PROCESSED_AT.to_string()),
+            processed_at: None,
         });
     }
 
@@ -495,7 +496,7 @@ impl ManagedState {
                             session_thread_id: thread_id.clone(),
                             agent_name: name.clone(),
                         },
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     },
                     Event {
                         id: managed_multiagent_event_id(
@@ -510,7 +511,7 @@ impl ManagedState {
                             session_thread_id: thread_id.clone(),
                             agent_name: name.clone(),
                         },
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     },
                 ]);
             }

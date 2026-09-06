@@ -75,18 +75,166 @@
     }
   ],
   "transition_families": [
-    { "id": "PersistBatch", "operator": "PersistBatch" },
-    { "id": "CommitNoop", "operator": "CommitNoop" },
-    { "id": "StartOrRetry", "operator": "StartOrRetry" },
-    { "id": "StartParallelCalls", "operator": "StartParallelCalls" },
-    { "id": "AwaitCall", "operator": "AwaitCall" },
-    { "id": "ResumeExecuting", "operator": "ResumeExecuting" },
-    { "id": "CompleteCall", "operator": "CompleteCall" },
-    { "id": "CompleteAndFinalize", "operator": "CompleteAndFinalize" },
-    { "id": "CompleteImmediate", "operator": "CompleteImmediate" },
-    { "id": "CompleteImmediateAndFinalize", "operator": "CompleteImmediateAndFinalize" },
-    { "id": "MarkIndeterminate", "operator": "MarkIndeterminate" },
-    { "id": "FinalizeBatch", "operator": "FinalizeBatch" },
-    { "id": "EndRun", "operator": "EndRun" }
-  ]
+    {
+      "id": "PersistBatch",
+      "operator": "PersistBatch"
+    },
+    {
+      "id": "CommitNoop",
+      "operator": "CommitNoop"
+    },
+    {
+      "id": "StartOrRetry",
+      "operator": "StartOrRetry"
+    },
+    {
+      "id": "StartParallelCalls",
+      "operator": "StartParallelCalls"
+    },
+    {
+      "id": "AwaitCall",
+      "operator": "AwaitCall"
+    },
+    {
+      "id": "ResumeExecuting",
+      "operator": "ResumeExecuting"
+    },
+    {
+      "id": "CompleteCall",
+      "operator": "CompleteCall"
+    },
+    {
+      "id": "CompleteAndFinalize",
+      "operator": "CompleteAndFinalize"
+    },
+    {
+      "id": "CompleteImmediate",
+      "operator": "CompleteImmediate"
+    },
+    {
+      "id": "CompleteImmediateAndFinalize",
+      "operator": "CompleteImmediateAndFinalize"
+    },
+    {
+      "id": "MarkIndeterminate",
+      "operator": "MarkIndeterminate"
+    },
+    {
+      "id": "FinalizeBatch",
+      "operator": "FinalizeBatch"
+    },
+    {
+      "id": "EndRun",
+      "operator": "EndRun"
+    }
+  ],
+  "session_observations": {
+    "projection_id": "session-observations-v1",
+    "schema_version": 1,
+    "scope": "Executed production-call traces of durable observations, not universal implementation refinement. Models own the relations; this manifest owns field erasure and mandatory scenario coverage.",
+    "erased_fields": [
+      "Session payloads and repository engine internals; root traces retain revision, existence and times.",
+      "Each publication observation fixes its Session and retains attachment/generation set identities. Lease/holder/target axes are checked separately by production admission tests and Kani; they are not retained in this set projection.",
+      "Store traces retain committed sequence/time pairs. The same Rust test compares all recovered facts against the full committed snapshot; those content semantics are erased from this TLA projection.",
+      "Time values use one injective increasing rank map per scenario because TLC integers cannot contain real millisecond clocks. This preserves and reflects the canonical relations using equality/order/max only, retains unknown values, and never rewrites the raw Rust trace."
+    ],
+    "families": {
+      "root": {
+        "model": "SessionRoot",
+        "config": "SessionRoot",
+        "operator": "RootObservationStep",
+        "arguments": [
+          "before",
+          "after",
+          "now"
+        ],
+        "dependencies": [
+          "SessionRootKernel"
+        ]
+      },
+      "processed": {
+        "model": "SessionEventProtocol",
+        "config": "SessionEventProtocol",
+        "operator": "ProcessedObservationStep",
+        "arguments": [
+          "before",
+          "after",
+          "now"
+        ],
+        "dependencies": [
+          "SessionEventKernel",
+          "SessionActivityKernel",
+          "RunIngressKernel"
+        ]
+      },
+      "publication": {
+        "model": "SessionRealizationMutex",
+        "config": "SessionRealizationRenewal",
+        "operator": "PublicationObservation",
+        "arguments": [
+          "staged",
+          "active",
+          "published",
+          "drained"
+        ],
+        "dependencies": []
+      },
+      "store": {
+        "model": "StoreHistory",
+        "config": "StoreHistory",
+        "operator": "CommittedMetadataPrefix",
+        "arguments": [
+          "recovered",
+          "committed"
+        ],
+        "dependencies": []
+      }
+    },
+    "required_scenarios": {
+      "binding-apply": {
+        "family": "root",
+        "source": "crates/server/awaken-session-application/src/tests/authority.rs"
+      },
+      "binding-replay": {
+        "family": "root",
+        "source": "crates/server/awaken-session-application/src/tests/authority.rs"
+      },
+      "binding-reject": {
+        "family": "root",
+        "source": "crates/server/awaken-session-application/src/tests/authority.rs"
+      },
+      "root-lost-ack": {
+        "family": "root",
+        "source": "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs"
+      },
+      "root-reject": {
+        "family": "root",
+        "source": "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs"
+      },
+      "root-crash-recovery": {
+        "family": "root",
+        "source": "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs"
+      },
+      "processed-first-replay-terminal": {
+        "family": "processed",
+        "source": "crates/contract/awaken-session-contract/src/event_batches.rs"
+      },
+      "publication-cardinality-renewal": {
+        "family": "publication",
+        "source": "crates/server/awaken-session-application/src/tests/realization.rs"
+      },
+      "store-torn-prefix": {
+        "family": "store",
+        "source": "crates/stores/awaken-store-fs/tests/recovery.rs"
+      },
+      "publication-crash-recovery": {
+        "family": "publication",
+        "source": "crates/server/awaken-session-application/src/tests/observation_refinement.rs"
+      },
+      "binding-clock-cases": {
+        "family": "root",
+        "source": "crates/server/awaken-session-application/src/tests/authority.rs"
+      }
+    }
+  }
 }

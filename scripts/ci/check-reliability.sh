@@ -21,6 +21,7 @@ esac
 cleanup_mutation_artifacts() {
   cargo clean -p awaken-mcp-wire >/dev/null 2>&1 || true
   cargo clean -p awaken-runtime-contract >/dev/null 2>&1 || true
+  cargo clean -p awaken-session-contract >/dev/null 2>&1 || true
 }
 cleanup_mutation_artifacts
 python3 scripts/ci/check_reliability.py
@@ -36,6 +37,8 @@ fi
 
 cargo test -p awaken-store-sqlite --features test-support --test failure_atomicity
 cargo test -p awaken-session-store --test process_crash_outbox
+cargo test -p awaken-session-application --lib tests::creation::time_assurance
+cargo test -p awaken-session-application --lib publication_ack_process_crashes_recover_through_the_shared_driver
 cargo test -p awaken-credential-store --features sqlite,sealed-aead,test-support \
   --test process_crash_creation --test process_crash_managed_creation
 cargo test -p awaken-config-store --test process_crash_audit
@@ -88,6 +91,16 @@ cargo mutants --package awaken-runtime-contract \
   --file crates/contract/awaken-runtime-contract/src/tool_batch.rs \
   --re 'permits_call_transition|next_execution_attempt' \
   --timeout 30 --no-times -- tool_batch::tests
+# Shared production metadata/authorization reducers: every selected mutation
+# must be caught by the domain decision tables; baseline/build failures do not
+# qualify as kills. cargo-mutants owns isolation and the outcome artifact.
+cargo mutants --package awaken-session-contract \
+  --output "$mutation_evidence/session-observations" \
+  --file crates/contract/awaken-session-contract/src/event_batches.rs \
+  --file crates/contract/awaken-session-contract/src/session_realization.rs \
+  --file crates/contract/awaken-session-contract/src/work_queue.rs \
+  --re 'mark_processed_observation|realization_generation_authorizes|bounded_rfc3339_nanos' \
+  --timeout 60 --no-times -- --lib
 cleanup_mutation_artifacts
 trap - EXIT
 

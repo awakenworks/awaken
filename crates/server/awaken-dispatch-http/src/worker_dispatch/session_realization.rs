@@ -284,6 +284,14 @@ pub(super) async fn session_resume(
                 "Session resume target does not match the claimed Run",
             )));
         }
+        let expected_resources = dispatch
+            .session_resources
+            .as_ref()
+            .map(awaken_dispatch::SessionResourceEnvelope::decode_manifest)
+            .transpose()
+            .map_err(|error| {
+                RealizationHttpError::from(HostError::bad_request(error.to_string()))
+            })?;
         acquire_session_work_owner(
             &service,
             &request.session_id,
@@ -307,6 +315,7 @@ pub(super) async fn session_resume(
         let realization = match control
             .begin_session_realization(awaken_session_contract::BeginSessionRealization {
                 session_id: request.session_id,
+                expected_resources,
                 target: awaken_session_contract::SessionRealizationTarget {
                     owner: request.identity.worker_id.clone(),
                     runtime_incarnation: request.identity.lease_owner(),

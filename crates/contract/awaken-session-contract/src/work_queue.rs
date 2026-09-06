@@ -18,6 +18,14 @@ use awaken_agent_contract::RedactedString;
 /// unchanged while leases can expire and pollers can be counted.
 pub const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
+// The existing UTC wire vocabulary has four-digit years. Raw durable clocks
+// retain their wider SQL domain; only calendar projection saturates here.
+pub(crate) const MAX_RFC3339_NANOS: i128 = 253_402_300_799_999_999_999;
+
+pub(crate) fn bounded_rfc3339_nanos(value: i128) -> i128 {
+    value.clamp(0, MAX_RFC3339_NANOS)
+}
+
 /// Produce the opaque RFC-3339 receipt returned by a successful heartbeat.
 ///
 /// Repeated writes in the same millisecond still receive distinct tokens, and a
@@ -27,7 +35,6 @@ pub const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 #[must_use]
 pub fn next_heartbeat_receipt(now_ms: u64, previous: Option<&str>) -> String {
     const NANOS_PER_MILLI: i128 = 1_000_000;
-    const MAX_RFC3339_NANOS: i128 = 253_402_300_799_999_999_999;
 
     let requested = i128::from(now_ms)
         .saturating_mul(NANOS_PER_MILLI)
@@ -41,9 +48,13 @@ pub fn next_heartbeat_receipt(now_ms: u64, previous: Option<&str>) -> String {
     format_rfc3339_utc_nanos(next)
 }
 
-fn parse_rfc3339_utc_nanos(value: &str) -> Option<i128> {
+pub(crate) fn parse_rfc3339_utc_nanos(value: &str) -> Option<i128> {
     let body = value.strip_suffix('Z')?;
-    let (whole, fraction) = body.split_once('.').map_or((body, ""), |parts| parts);
+    let (whole, fraction) = match body.split_once('.') {
+        Some((_, "")) => return None,
+        Some(parts) => parts,
+        None => (body, ""),
+    };
     let bytes = whole.as_bytes();
     if bytes.len() != 19
         || bytes[4] != b'-'
@@ -114,7 +125,8 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-fn format_rfc3339_utc_nanos(total_nanos: i128) -> String {
+pub(crate) fn format_rfc3339_utc_nanos(total_nanos: i128) -> String {
+    let total_nanos = bounded_rfc3339_nanos(total_nanos);
     let seconds = total_nanos / 1_000_000_000;
     let subsecond = total_nanos % 1_000_000_000;
     let days = i64::try_from(seconds / 86_400).unwrap_or(i64::MAX);
@@ -723,6 +735,22 @@ mod tests {
     };
 
     #[test]
+    fn utc_calendar_codec_covers_every_representable_day() {
+        // D6 exhaustive 1970..9999 day-domain coverage. Check both calendar
+        // directions, real month lengths, and dense successive dates. Golden
+        // Unix date anchors live in run_application::tests to avoid a solely
+        // self-consistent round-trip oracle.
+        for day in 0..=2_932_896 {
+            let (year, month, date) = super::civil_from_days(day);
+            assert!((1970..=9999).contains(&year));
+            assert!((1..=12).contains(&month));
+            assert!((1..=super::days_in_month(year, month)).contains(&date));
+            assert_eq!(super::days_from_civil(year, month, date), day);
+        }
+        assert_eq!(super::civil_from_days(2_932_896), (9999, 12, 31));
+    }
+
+    #[test]
     fn heartbeat_receipts_are_rfc3339_and_advance_within_one_millisecond() {
         let first = next_heartbeat_receipt(0, None);
         let second = next_heartbeat_receipt(0, Some(&first));
@@ -833,5 +861,24 @@ mod verification {
         assert!(matching.permits(Some("expected")));
         assert!(!matching.permits(None));
         assert!(!matching.permits(Some("stale")));
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn session_utc_projection_domain_is_total_exact_and_idempotent() {
+    // D1 negative -> epoch; D2 legal -> exact; D3 overflow -> last UTC instant.
+    // Arbitrary i128 exhausts both boundaries. This proves the production
+    // projection clamp, not the OS clock, calendar codec, or database adapter.
+    let input: i128 = kani::any();
+    let value = bounded_rfc3339_nanos(input);
+    assert!((0..=MAX_RFC3339_NANOS).contains(&value));
+    assert_eq!(bounded_rfc3339_nanos(value), value);
+    if input < 0 {
+        assert_eq!(value, 0);
+    } else if input > MAX_RFC3339_NANOS {
+        assert_eq!(value, MAX_RFC3339_NANOS);
+    } else {
+        assert_eq!(value, input);
     }
 }

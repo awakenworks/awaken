@@ -245,7 +245,10 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
     let app = application(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
-    );
+    )
+    .with_clock(Arc::new(awaken_agent_contract::clock::ManualClock::new(
+        100,
+    )));
     let desired = file_resources("safe-boundary");
     let outcome = app
         .replace_session_resource_manifest(
@@ -259,6 +262,9 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
         )
         .await
         .expect("M1 intent accepted");
+    // M3 new binding intent records its time before deferred physical effects.
+    let mut desired = desired;
+    desired.observe_input_times(&Default::default(), 100);
     assert!(
         outcome.session.resources.active.inputs().is_empty(),
         "M1/E1"
@@ -295,8 +301,8 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
 /// owner/incarnation/epoch and monotonic expiry; C3 revision, target kind, and full resolved input/Skill equal
 /// the authoritative generation; C4 a replacement is pending. Effects: E1
 /// return the root-owned Workspace; E2 stale ownership; E3 invalid frozen
-/// input; E4 terminal denial. Pending is exclusive when present; otherwise the
-/// active generation supports cold Worker reconstruction. No Run claim or
+/// input; E4 terminal denial. Active and pending are independently exact
+/// retained pairs (their crossover table lives in resource_resume). No Run claim or
 /// parallel staging state is synthesized.
 ///
 /// | Rule | C1 | C2 | C3 | C4 | Effect |
@@ -320,6 +326,8 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
         expires_at_unix_ms: u64::MAX - 1,
     };
     let input = awaken_session_contract::ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from("pending-memory"),
         source: awaken_session_contract::ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from("memory-pending"),
@@ -763,6 +771,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
     assert!(
         matches!(
             app.begin_session_realization(awaken_session_contract::BeginSessionRealization {
+                expected_resources: None,
                 session_id: "retry-budget".into(),
                 target: target("worker/refresh-failure"),
             })
@@ -780,6 +789,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
 
     let first = app
         .begin_session_realization(awaken_session_contract::BeginSessionRealization {
+            expected_resources: None,
             session_id: "retry-budget".into(),
             target: target("worker/1"),
         })
@@ -810,6 +820,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
 
     let second = app
         .begin_session_realization(awaken_session_contract::BeginSessionRealization {
+            expected_resources: None,
             session_id: "retry-budget".into(),
             target: target("worker/2"),
         })
@@ -1005,6 +1016,7 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
     let reassigned = awaken_session_contract::SessionRealizationControl::begin_session_realization(
         &other,
         awaken_session_contract::BeginSessionRealization {
+            expected_resources: None,
             session_id: "local-restart".into(),
             target: awaken_session_contract::SessionRealizationTarget {
                 owner: "other-worker".into(),
@@ -2518,6 +2530,8 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         ..asserted.clone()
     };
     let memory_input = awaken_session_contract::ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from("terminal-memory"),
         source: awaken_session_contract::ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from(
@@ -4191,6 +4205,61 @@ fn realization_owner_follows_the_frozen_placement_decision_table() {
     );
 }
 
+pub(super) fn publication_fixture(
+    id: &str,
+) -> (
+    PersistedSession,
+    awaken_session_contract::SessionRealizationLease,
+    awaken_session_contract::McpGenerationRef,
+) {
+    let mut session = persisted(id, false, "activating");
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "worker-a".into(),
+        runtime_incarnation: "worker-a/boot-1".into(),
+        epoch: 7,
+        expires_at_unix_ms: (u64::MAX - 1_024),
+    };
+    let attachment_id = awaken_session_contract::McpAttachmentId("browser".into());
+    let generation = awaken_session_contract::McpGeneration(1);
+    session.realization = Some(lease.clone());
+    session
+        .mcp
+        .attachments
+        .push(awaken_session_contract::SessionMcpAttachment {
+            attachment_id: attachment_id.clone(),
+            name: "browser".into(),
+            generation,
+            target: awaken_session_contract::McpTarget::parse_http(
+                "https://browser.example.test/mcp",
+            )
+            .expect("MCP target"),
+            prompts_as_skills: false,
+            origin: awaken_session_contract::McpAttachmentOrigin::Agent,
+            credential: None,
+            selected_plaintext_holder: None,
+            state: awaken_session_contract::McpAttachmentState::Active,
+            publication_acknowledged: false,
+            realization: Some(awaken_session_contract::McpRealizationClaim {
+                realization_id: "realize-browser-1".into(),
+                runtime_incarnation: lease.runtime_incarnation.clone(),
+                lease_epoch: lease.epoch,
+                lease_expires_at_unix_ms: (u64::MAX - 1_024),
+                stage_idempotency_key: "renew-browser-1".into(),
+            }),
+            attempts: 1,
+            last_error: None,
+        });
+    let generation_ref = awaken_session_contract::McpGenerationRef {
+        session_id: id.into(),
+        attachment_id,
+        generation,
+        runtime_incarnation: lease.runtime_incarnation.clone(),
+        lease_epoch: lease.epoch,
+        lease_expires_at_unix_ms: (u64::MAX - 1_024),
+    };
+    (session, lease, generation_ref)
+}
+
 #[tokio::test]
 async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     // Cause/effect graph: C1 acknowledgement names the exact active
@@ -4213,54 +4282,134 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     let application = application(repo.clone(), environments);
     let current_expiry = u64::MAX - 1_024;
 
-    let fixture = |id: &str| {
-        let mut session = persisted(id, false, "activating");
-        let lease = awaken_session_contract::SessionRealizationLease {
-            owner: "worker-a".into(),
-            runtime_incarnation: "worker-a/boot-1".into(),
-            epoch: 7,
-            expires_at_unix_ms: current_expiry,
-        };
-        let attachment_id = awaken_session_contract::McpAttachmentId("browser".into());
-        let generation = awaken_session_contract::McpGeneration(1);
-        session.realization = Some(lease.clone());
-        session
-            .mcp
-            .attachments
-            .push(awaken_session_contract::SessionMcpAttachment {
-                attachment_id: attachment_id.clone(),
-                name: "browser".into(),
-                generation,
-                target: awaken_session_contract::McpTarget::parse_http(
-                    "https://browser.example.test/mcp",
-                )
-                .expect("MCP target"),
-                prompts_as_skills: false,
-                origin: awaken_session_contract::McpAttachmentOrigin::Agent,
-                credential: None,
-                selected_plaintext_holder: None,
-                state: awaken_session_contract::McpAttachmentState::Active,
-                publication_acknowledged: false,
-                realization: Some(awaken_session_contract::McpRealizationClaim {
-                    realization_id: "realize-browser-1".into(),
-                    runtime_incarnation: lease.runtime_incarnation.clone(),
-                    lease_epoch: lease.epoch,
-                    lease_expires_at_unix_ms: current_expiry,
-                    stage_idempotency_key: "renew-browser-1".into(),
-                }),
-                attempts: 1,
-                last_error: None,
-            });
-        let generation_ref = awaken_session_contract::McpGenerationRef {
-            session_id: id.into(),
-            attachment_id,
-            generation,
-            runtime_incarnation: lease.runtime_incarnation.clone(),
-            lease_epoch: lease.epoch,
-            lease_expires_at_unix_ms: current_expiry,
-        };
-        (session, lease, generation_ref)
-    };
+    let fixture = publication_fixture;
+
+    // A7: cardinality 0/1/many x no predecessor/old unacknowledged Active x
+    // exact/renewed lease. Stage returns both generations; activation retires
+    // old authority, so only new generations may appear in Publish. Recreate
+    // the application between activation and ACK, then replay the ACK: the
+    // durable publication/drain sets and receipt times must remain unchanged.
+    let mut publication_traces = Vec::new();
+    for count in 0..=2 {
+        for predecessor in [false, true] {
+            for renewed in [false, true] {
+                let id = format!("publish-set-{count}-{predecessor}-{renewed}");
+                let (mut session, lease, _) = fixture(&id);
+                let template = session.mcp.attachments[0].clone();
+                session.mcp.attachments.clear();
+                session.mcp.desired_names = Some((0..count).map(|i| format!("tool-{i}")).collect());
+                for index in 0..count {
+                    let mut next = template.clone();
+                    next.attachment_id =
+                        awaken_session_contract::McpAttachmentId(format!("tool-{index}"));
+                    next.name = format!("tool-{index}");
+                    if predecessor {
+                        session.mcp.attachments.push(next.clone());
+                    }
+                    next.generation = awaken_session_contract::McpGeneration(2);
+                    next.state = awaken_session_contract::McpAttachmentState::Realizing;
+                    next.realization.as_mut().unwrap().realization_id =
+                        format!("realize-{index}-2");
+                    next.realization.as_mut().unwrap().stage_idempotency_key =
+                        format!("stage-{index}-2");
+                    session.mcp.attachments.push(next);
+                }
+                let requests = session
+                    .mcp
+                    .attachments
+                    .iter()
+                    .map(|attachment| {
+                        crate::projection::stage_mcp_request("workspace", &id, attachment).unwrap()
+                    })
+                    .collect::<Vec<_>>();
+                create(repo.as_ref(), session).await;
+                let mut receipts = Vec::new();
+                for request in requests {
+                    receipts.push(NoopMcpRealizer.stage_mcp_attachment(request).await.unwrap());
+                }
+                let key = |g: &awaken_session_contract::McpGenerationRef| {
+                    format!("{}:{}", g.attachment_id.0, g.generation.0)
+                };
+                let staged = receipts
+                    .iter()
+                    .map(|r| key(&r.generation))
+                    .collect::<Vec<_>>();
+                if renewed {
+                    application
+                        .renew_session_realization(
+                            awaken_session_contract::RenewSessionRealization {
+                                session_id: id.clone(),
+                                asserted_lease: lease.clone(),
+                                requested_expires_at_unix_ms: lease.expires_at_unix_ms + 1,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                }
+                let directive = application
+                    .activate_session_realization(
+                        awaken_session_contract::ActivateSessionRealization {
+                            session_id: id.clone(),
+                            lease,
+                            prepared_resource_revision: None,
+                            mcp_receipts: receipts,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let awaken_session_contract::SessionRealizationAction::Publish { publish, drain } =
+                    directive.action
+                else {
+                    panic!("A7 expected Publish");
+                };
+                let durable = repo.get(&id).await.unwrap();
+                let active = durable
+                    .mcp
+                    .attachments
+                    .iter()
+                    .filter(|a| a.state == awaken_session_contract::McpAttachmentState::Active)
+                    .map(|a| format!("{}:{}", a.attachment_id.0, a.generation.0))
+                    .collect::<Vec<_>>();
+                publication_traces.push(serde_json::json!({"staged": staged, "active": active, "published": publish.iter().map(key).collect::<Vec<_>>(), "drained": drain.iter().map(key).collect::<Vec<_>>() }));
+                assert_eq!(publish.len(), count, "A7 {id}");
+                assert!(
+                    publish.iter().all(|g| g.generation.0 == 2),
+                    "A7 no retired publication"
+                );
+                assert_eq!(drain.len(), if predecessor { count } else { 0 }, "A7 {id}");
+                let recovered = super::application(
+                    repo.clone(),
+                    Arc::new(RecordingEnvironmentSource::default()),
+                );
+                let ack = awaken_session_contract::AcknowledgeSessionRealization {
+                    session_id: id.clone(),
+                    lease: directive.lease,
+                    published: publish,
+                    drained: drain,
+                };
+                recovered
+                    .acknowledge_session_realization(ack.clone())
+                    .await
+                    .unwrap();
+                let first = repo.get(&id).await.unwrap();
+                recovered
+                    .acknowledge_session_realization(ack)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    repo.get(&id).await.unwrap(),
+                    first,
+                    "A7 duplicate ACK is inert"
+                );
+            }
+        }
+    }
+
+    awaken_reliability_testkit::write_observation_trace(
+        "publication-cardinality-renewal",
+        "publication",
+        serde_json::json!(publication_traces),
+    );
 
     // A4: a successful same-incarnation/epoch heartbeat occurs after EVERY
     // directive is frozen and before its phase response. All effects and root CAS writes
@@ -4711,10 +4860,12 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
+    let clock = Arc::new(awaken_agent_contract::clock::ManualClock::new(500));
     let application = application(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
-    );
+    )
+    .with_clock(clock.clone());
     let lease = awaken_session_contract::SessionRealizationLease {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a/boot-2".into(),
@@ -4820,6 +4971,40 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
         .await
         .expect("R4 terminal realization failure");
     let failed_truth = repo.get("running-realization-failed").await.unwrap();
+    assert_eq!(
+        failed_truth.realization_progress.failed_at_unix_ms,
+        Some(500),
+        "R5 failure observes application clock"
+    );
+    // R5 later housekeeping commits cannot rewrite the failure-owned time;
+    // terminal failure redelivery is inert under a different recovery clock.
+    clock.set(900);
+    let owner = application
+        .owner("running-realization-failed")
+        .await
+        .unwrap();
+    let later = application
+        .commit_session_snapshot(&owner, failed_truth.clone(), "later-housekeeping", vec![])
+        .await
+        .unwrap();
+    assert_eq!(later.updated_at_unix_ms, Some(900));
+    assert_eq!(later.realization_progress.failed_at_unix_ms, Some(500));
+    application
+        .fail_session_realization(awaken_session_contract::FailSessionRealization {
+            session_id: "running-realization-failed".into(),
+            lease: later.realization.clone().unwrap(),
+            prepared_resource_revision: None,
+            retryable: false,
+            source_run_id: None,
+            reason: "permanent realization failure".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get("running-realization-failed").await.unwrap(),
+        later,
+        "R5 terminal redelivery"
+    );
     assert_eq!(
         failed_truth.execution,
         SessionExecutionState::ActivationFailed,

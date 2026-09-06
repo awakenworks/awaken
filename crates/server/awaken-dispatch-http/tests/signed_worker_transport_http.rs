@@ -966,8 +966,19 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         &upstream,
         registered.snapshot.identity.clone(),
     );
+    // T31: the signed resume body has no resource selector. Only the guarded
+    // durable dispatch supplies the exact pin, including explicit empty input.
+    let carried_resources = awaken_session_contract::SessionResourceManifest::at_revision(
+        "signed-workspace",
+        7,
+        Default::default(),
+    );
+    let mut dispatch = standard_worker_dispatch(activation());
+    dispatch.session_resources = Some(
+        awaken_dispatch::SessionResourceEnvelope::from_manifest(&carried_resources).unwrap(),
+    );
     queue
-        .enqueue(standard_worker_dispatch(activation()))
+        .enqueue(dispatch)
         .await
         .expect("signed dispatch enqueue");
     let claimed = queue
@@ -1123,6 +1134,13 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("T1 exact signed claim resumes")
         .expect("T1 frozen Session has a realization directive");
     assert_eq!(resumed.projection, frozen_projection(), "T1");
+    assert_eq!(
+        session_control.begins.lock().unwrap()[0]
+            .expected_resources
+            .as_ref(),
+        Some(&carried_resources),
+        "T31 exact guarded dispatch, not latest projection or client hint"
+    );
     assert!(
         session_control.begins.lock().unwrap()[0]
             .target

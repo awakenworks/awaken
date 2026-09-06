@@ -604,7 +604,7 @@ impl ManagedState {
             &[],
         )
         .await?;
-        Ok(resolved_resource_dto(id, &input))
+        self.get_resource(id, &format!("{id}:resource:{}", input.binding_id.as_str()))
     }
 
     pub fn get_resource(

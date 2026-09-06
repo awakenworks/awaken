@@ -1487,6 +1487,8 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         "workspace-a",
         awaken_session_contract::ResolvedSessionResources::try_new(
             vec![awaken_session_contract::ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::new("file-binding"),
                 source: awaken_session_contract::ResolvedInputSource::File {
                     file_id: awaken_resource_contract::FileId::from(file_id.as_str()),
@@ -1974,6 +1976,8 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         .expect("P2 create exact Skill");
     let missing_resources = awaken_session_contract::ResolvedSessionResources::try_new(
         vec![awaken_session_contract::ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::new("missing-file-binding"),
             source: awaken_session_contract::ResolvedInputSource::File {
                 file_id: awaken_resource_contract::FileId::from("missing-file"),
@@ -2125,6 +2129,8 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         "workspace-remote",
         awaken_session_contract::ResolvedSessionResources::try_new(
             vec![awaken_session_contract::ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::new("remote-file-binding"),
                 source: awaken_session_contract::ResolvedInputSource::File {
                     file_id: awaken_resource_contract::FileId::from("file-remote"),

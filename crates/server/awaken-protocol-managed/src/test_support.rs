@@ -970,6 +970,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
             .unwrap_or_default();
         Ok(Some(
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                commit_timestamps: Default::default(),
                 thread_id: awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
                 claimed_run_id: run_id.clone(),
                 runs,

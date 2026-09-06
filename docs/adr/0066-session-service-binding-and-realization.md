@@ -63,6 +63,15 @@ The scoped persistence envelope carries Workspace ownership beside the
 aggregate. Protocol DTOs derive from durable state and do not become another
 authority.
 
+Environment binding receipts reuse the application's observed snapshot commit
+boundary. Receipt identity is compiled first; the admitted replacement samples
+one injected Clock value and preserves the maximum prior root update time.
+Exact replay and rejected authority leave the durable root unchanged. Runtime
+and coordinator composition obtain the binding sink from SessionApplication,
+so replacing its Clock or repository also updates the installed sink. There is
+no independent Environment wall-clock implementation or timestamp store.
+
+
 ## 2026-09-01 amendment: lease-only renewal
 
 Initial assignment and desired-state progression continue to use the one

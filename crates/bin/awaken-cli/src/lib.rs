@@ -1229,6 +1229,8 @@ mod runtime_session_store_tests {
 
     fn session(id: &str) -> PersistedSession {
         PersistedSession {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             session_id: id.to_string(),
             revision: Default::default(),
             baseline: SessionBaselineState::Preparing(creation_intent()),

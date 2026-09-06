@@ -480,10 +480,10 @@ pub(crate) fn resolved_resource_dto(
     match &input.source {
         ResolvedInputSource::File { file_id } => SessionResource::File {
             id: id(),
-            created_at: PROCESSED_AT,
+            created_at: super::constants::persisted_time(input.created_at_unix_ms),
             file_id: file_id.as_str().to_string(),
             mount_path: input.mount_path.clone(),
-            updated_at: PROCESSED_AT,
+            updated_at: super::constants::persisted_time(input.updated_at_unix_ms),
         },
         ResolvedInputSource::MemoryStore {
             memory_store_id, ..
@@ -498,9 +498,9 @@ pub(crate) fn resolved_resource_dto(
         },
         ResolvedInputSource::Repository { config, .. } => SessionResource::GithubRepository {
             id: id(),
-            created_at: PROCESSED_AT,
+            created_at: super::constants::persisted_time(input.created_at_unix_ms),
             mount_path: input.mount_path.clone(),
-            updated_at: PROCESSED_AT,
+            updated_at: super::constants::persisted_time(input.updated_at_unix_ms),
             url: config.remote_url.clone(),
             checkout: config
                 .initial_branch

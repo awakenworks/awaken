@@ -582,6 +582,9 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
             }
         };
 
+    // Publication regression rule: old active + replacement staged => publish
+    // only the new pending generation and drain the old one. A receipt for the
+    // old generation must not inflate the acknowledgement set from one to two.
     let updated = event(
         "rollout-source-update",
         2,
@@ -719,6 +722,8 @@ async fn immediate_binding_cas_retries_once_then_fails_closed_at_the_bound() {
 pub(in crate::state) fn sample_inputs() -> awaken_session_contract::ResolvedSessionResources {
     awaken_session_contract::ResolvedSessionResources::try_new(
         vec![awaken_session_contract::ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from("input-file"),
             source: awaken_session_contract::ResolvedInputSource::File {
                 file_id: awaken_resource_contract::FileId::from("file-hash"),

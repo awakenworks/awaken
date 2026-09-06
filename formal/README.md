@@ -203,6 +203,58 @@ The relationship and tool-call harnesses verify the same transition kernels
 used by `DelegationRegistry` and `ToolBatch`; they are not copies of the
 production logic.
 
+## Durable observation assurance
+
+Wall time is evidence attached to the existing Session root or Thread commit,
+not transition authority or event order. The Session UTC codec owns the
+four-digit calendar display domain; raw durable clocks retain the signed SQL
+millisecond domain. Out-of-calendar values saturate in presentation only.
+
+The direct Kani harnesses cover the production UTC clamp, all generation
+identity/expiry axes, the first processed-event observation/rejection boundary,
+and event ordering independent of time. Collection/string bounds are recorded
+in `coverage.json`; these are not proofs of database engines or arbitrary I/O.
+`SessionRoot` and `SessionEventProtocol` retain their existing shared kernels and
+add nonmonotonic observation values. `StoreHistory` adds commit-time receipts,
+legacy unknown metadata, crash-discarded caches and exact recovered prefixes.
+`SessionRealizationMutex` retains the same phase driver and adds the old+new
+Stage receipt partition. Existing TLAPS root-kernel proofs do not automatically
+prove these new TLC observer axes.
+
+The existing Rust-to-TLA runner also consumes `session-observations-v1` from
+`runtime-refinement-manifest.json`. Binding receipt application/replay/rejection,
+root crash/lost-ACK recovery, processed Events, MCP publication, and filesystem
+prefix recovery emit actual durable observations. The renderer calls the same
+relations used by the four existing models; it does not generate another model
+of their behavior. The manifest binds each required scenario to its producer
+and model family; a fresh-run check rejects missing or misclassified traces.
+An injective increasing map makes real millisecond observations representable
+by TLC without conflating values: equality, ordering and max are preserved and
+reflected. Raw Rust observations remain unchanged.
+Four corrupted production traces must fail the exact TLC relation, independently
+of the existing model mutations. This establishes correspondence for those
+executed paths and fields, not universal Rust implementation refinement.
+
+The shared realization driver is additionally killed after physical publication,
+both before and after the ACK root CAS. Its file-backed external-port fixture
+checks ordering and idempotent generation identity. The separate Managed MCP
+HTTP E2E now uses SIGKILL and the real MCP adapter to check cold republishing,
+HTTP idempotency and non-resurrection of removed generations. Neither fixture
+asserts exactly-once execution by arbitrary external providers. The existing
+release matrix runs the same Rust suite and HTTP scenario on Linux and both
+native macOS runners before packaging. A configured gate is not a macOS execution
+receipt; current-source native run evidence must still be obtained.
+
+
+Executable decision tables remain beside their tests: application-root crashes,
+CAS and ambiguous acknowledgements; shared backend conformance; every byte cut
+of a filesystem log envelope; warm/cold/peer projection; generation-set renewal
+and duplicate publication acknowledgements; and real browser layout. The
+reliability gate owns production mutation execution, and the formal gate owns
+model mutations. Neither a classified surface nor a compiled native artifact is
+an executed proof/platform result. macOS native execution remains a release-CI
+obligation when the development host is Linux.
+
 ## TLA+ specifications
 
 - `RunIngressKernel.tla` is the single parameterized Dispatch transition
@@ -449,6 +501,14 @@ downstream idempotency; they are not claimed exactly once by these proofs.
 - `SessionResourceActivation.tla` covers durable prepare-before-IO activation,
   exact revision issuance, commit/rollback, terminal release, and the rule that
   a terminated Session can never reactivate a pending resource generation.
+  Stage now carries an active or pending revision across root changes:
+  retained-active reconstruction cannot consume pending replacement, commit
+  uses the prepared revision, and a rejected stale Stage has no root effect.
+  The bounded model does not prove manifest byte equality, lease identity, or
+  physical IO. The production crossover/rollback/failure decision tables are
+  in `awaken-session-application/src/tests/resource_resume.rs`; signed dispatch
+  transport and contract serialization are separately exercised tests, not a
+  Rust-to-TLA refinement proof.
 - `ResourceDispatch.tla` covers one-time configuration pinning, mutable content,
   worker capability admission, Workspace equality, explicit-empty revocation,
   and the live lifecycle deny evaluated at each activation attempt.

@@ -33,6 +33,7 @@ fn snapshot() -> RunRecoverySnapshot {
     let historical_run_id = RunId("historical-run".to_string());
     let resume = ticket(&run_id, &thread_id);
     RunRecoverySnapshot {
+        commit_timestamps: Default::default(),
         thread_id: thread_id.clone(),
         claimed_run_id: run_id.clone(),
         runs: vec![

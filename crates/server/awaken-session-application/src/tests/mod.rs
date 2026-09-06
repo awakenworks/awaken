@@ -1,3 +1,4 @@
+mod observation_refinement;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{
     Arc, Mutex,
@@ -8,7 +9,7 @@ use awaken_environment_realization_contract::EnvironmentImageBuildError;
 use awaken_service_lifecycle::run_composed_async_test;
 use awaken_session_contract::{
     ManagedSessionRepository, McpAttachmentRealizer, PersistedSession, RunError,
-    SandboxProvisioning, SessionEnvironmentBindingSink, SessionRuntime, SessionRuntimePlacement,
+    SandboxProvisioning, SessionRuntime, SessionRuntimePlacement,
 };
 
 use super::*;
@@ -162,6 +163,7 @@ impl RecordingBoundaries {
             session_id,
             thread_id,
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                commit_timestamps: Default::default(),
                 thread_id: thread_id.clone(),
                 claimed_run_id: run_id.clone(),
                 runs: vec![awaken_agent_contract::agent::run::Record {
@@ -490,6 +492,7 @@ impl RecordingReplyRuntime {
 
 #[derive(Default)]
 struct RecordingCleanupRuntime {
+    binding_sink: Mutex<Option<Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>>>,
     fail_quiesce_once: AtomicBool,
     fail_before_effect_once: AtomicBool,
     fail_once: AtomicBool,
@@ -1271,6 +1274,12 @@ impl SessionRuntime for RecordingBoundaryBudgetRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingCleanupRuntime {
+    fn install_environment_binding_sink(
+        &self,
+        sink: Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+    ) {
+        *self.binding_sink.lock().unwrap() = Some(sink);
+    }
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -1495,6 +1504,7 @@ impl SessionRuntime for RecordingCleanupRuntime {
 }
 
 struct FaultingSessionRepository {
+    create_crash_boundary: Mutex<Option<(bool, std::path::PathBuf)>>,
     inner: Arc<dyn ManagedSessionRepository>,
     applied_create_roots: Mutex<Vec<PersistedSession>>,
     get_override_once: Mutex<Option<PersistedSession>>,
@@ -1532,9 +1542,18 @@ fn report_committed_mutation_as_conflict(
 }
 
 impl FaultingSessionRepository {
+    async fn pause_at_create_boundary(&self, after_commit: bool) {
+        let marker = self.create_crash_boundary.lock().unwrap().clone();
+        if let Some((after, marker)) = marker.filter(|(after, _)| *after == after_commit) {
+            std::fs::write(marker, if after { "after" } else { "before" }).unwrap();
+            std::future::pending::<()>().await;
+        }
+    }
+
     fn new(inner: Arc<dyn ManagedSessionRepository>) -> Self {
         Self {
             inner,
+            create_crash_boundary: Mutex::new(None),
             applied_create_roots: Mutex::new(Vec::new()),
             get_override_once: Mutex::new(None),
             fail_operation_once: Mutex::new(None),
@@ -1657,10 +1676,12 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         awaken_session_contract::SessionCreateResult,
         awaken_session_contract::SessionRepositoryError,
     > {
+        self.pause_at_create_boundary(false).await;
         let result = self
             .inner
             .create(owner_scope, session, idempotency, lifecycle_facts)
             .await?;
+        self.pause_at_create_boundary(true).await;
         if let awaken_session_contract::SessionCreateResult::Applied(session) = &result {
             self.applied_create_roots
                 .lock()
@@ -2219,6 +2240,8 @@ fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {
             awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
     };
     PersistedSession {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         session_id: id.into(),
         revision: Default::default(),
         baseline: awaken_session_contract::SessionBaselineState::Frozen(
@@ -2331,6 +2354,8 @@ fn skill_resources(id: &str) -> awaken_session_contract::ResolvedSessionResource
 fn file_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources {
     awaken_session_contract::ResolvedSessionResources::try_new(
         vec![awaken_session_contract::ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from("input"),
             source: awaken_session_contract::ResolvedInputSource::File {
                 file_id: awaken_resource_contract::FileId::from(id),
@@ -2350,6 +2375,8 @@ fn repository_resources(
 ) -> awaken_session_contract::ResolvedSessionResources {
     awaken_session_contract::ResolvedSessionResources::try_new(
         vec![awaken_session_contract::ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from(binding_id),
             source: awaken_session_contract::ResolvedInputSource::Repository {
                 repository_id: repository_id.into(),
@@ -2423,4 +2450,5 @@ mod creation;
 mod event_batch_cutover_validation;
 mod event_batches;
 mod realization;
+mod resource_resume;
 mod run_admission;

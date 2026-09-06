@@ -56,7 +56,7 @@ impl ManagedState {
                 kind: OutboundKind::SessionError {
                     error: SessionError::classify(persisted.execution.as_str(), message),
                 },
-                processed_at: Some(PROCESSED_AT.to_string()),
+                processed_at: None,
             });
         }
         Ok(())

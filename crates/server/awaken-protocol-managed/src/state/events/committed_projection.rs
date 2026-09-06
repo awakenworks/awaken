@@ -10,10 +10,12 @@ mod publication;
 mod refresh_entrypoint;
 mod run_observation_projection;
 mod usage_projection;
-pub(super) use canonical_order::message_projection_ordinal_bound;
 use canonical_order::*;
 #[cfg(test)]
-pub(super) use canonical_order::{budget_reach_close_cursor, budget_reach_projection_close_cursor};
+pub(super) use canonical_order::{
+    budget_reach_close_cursor, budget_reach_projection_close_cursor,
+    message_projection_ordinal_bound,
+};
 use historical_pending::historical_pending_by_lifecycle;
 
 struct CanonicalizationEvidence<'a> {
@@ -27,784 +29,6 @@ struct CanonicalizationEvidence<'a> {
 }
 
 impl ManagedState {
-    fn canonicalize_committed_events(
-        record: &mut SessionRecord,
-        evidence: CanonicalizationEvidence<'_>,
-    ) -> Result<(), StateError> {
-        let CanonicalizationEvidence {
-            persisted,
-            lifecycle_events,
-            root_snapshot,
-            outcome_projections,
-            delegation: delegation_evidence,
-            root_pending,
-            child_pending,
-        } = evidence;
-        let DelegationProjectionEvidence {
-            links,
-            snapshots: child_snapshots,
-            historical_pending,
-            ..
-        } = delegation_evidence;
-        let mut orders = std::collections::HashMap::<String, CanonicalEventOrder>::new();
-        let batch_stride = persisted
-            .event_batches
-            .iter()
-            .map(|batch| batch.events.len())
-            .max()
-            .unwrap_or_default()
-            .saturating_add(1);
-        for (batch_index, batch) in persisted.event_batches.iter().enumerate() {
-            for (ordinal, entry) in batch.events.iter().enumerate() {
-                let source_commit_cursor = if let Some(anchor) = entry.projection_anchor {
-                    anchor.source_commit_cursor
-                } else if entry.processed {
-                    // Isolated legacy lineage: rows written before projection
-                    // anchors remain visible as one fixed prefix, but are not
-                    // included in the new cross-replica ordering guarantee.
-                    0
-                } else {
-                    continue;
-                };
-                let phase = match &entry.event {
-                    SessionEventCommand::ToolReply { reply, .. }
-                        if reply.answered_pending_commit_cursor.is_some() =>
-                    {
-                        110
-                    }
-                    _ => 0,
-                };
-                retain_earliest_order(
-                    &mut orders,
-                    durable_inbound_event_id(&record.session.id, entry.event.operation_id()),
-                    CanonicalEventOrder {
-                        source_commit_cursor,
-                        phase,
-                        ordinal: batch_index
-                            .saturating_mul(batch_stride)
-                            .saturating_add(ordinal),
-                    },
-                );
-            }
-        }
-
-        index_lifecycle_orders(&mut orders, &record.session.id, lifecycle_events);
-
-        // Synthetic pending-tool cause/effect table: C1 the Runtime has one
-        // committed ResumeTicket; C2 its owning Awaiting lifecycle fact is
-        // committed; C3 the ToolUse transcript block has not arrived yet.
-        // C1+C2+C3 projects one client-answerable tool event whose immutable
-        // order is the Awaiting fact; C1+!C2 remains unindexed and therefore
-        // fails the canonicalization guard below. A later transcript-owned
-        // occurrence has a message-qualified id and keeps its own message cursor.
-        for (cursor, pending) in historical_pending {
-            if let Some(awaiting) = lifecycle_events.iter().find(|event| {
-                event.cursor == *cursor && event.kind == RunLifecycleEventKind::Awaiting
-            }) {
-                let public_owner_thread_id =
-                    public_thread_id(&record.session.id, &awaiting.thread_id.0);
-                retain_earliest_order(
-                    &mut orders,
-                    managed_tool_event_id(
-                        &public_owner_thread_id,
-                        &awaiting.run_id.0,
-                        &pending.tool_use_id,
-                    ),
-                    CanonicalEventOrder {
-                        source_commit_cursor: awaiting.source_commit_cursor,
-                        phase: 50,
-                        ordinal: 0,
-                    },
-                );
-            }
-        }
-        for (thread_id, pending) in std::iter::once((record.session.id.as_str(), root_pending))
-            .chain(
-                child_pending
-                    .iter()
-                    .map(|(thread_id, pending)| (thread_id.as_str(), Some(pending))),
-            )
-            .filter_map(|(thread_id, pending)| pending.map(|pending| (thread_id, pending)))
-        {
-            if let Some(awaiting) = lifecycle_events.iter().rev().find(|event| {
-                event.thread_id.0 == thread_id
-                    && event.kind == RunLifecycleEventKind::Awaiting
-                    && historical_pending.get(&event.cursor) != Some(pending)
-            }) {
-                let public_owner_thread_id =
-                    public_thread_id(&record.session.id, &awaiting.thread_id.0);
-                retain_earliest_order(
-                    &mut orders,
-                    managed_tool_event_id(
-                        &public_owner_thread_id,
-                        &awaiting.run_id.0,
-                        &pending.tool_use_id,
-                    ),
-                    CanonicalEventOrder {
-                        source_commit_cursor: awaiting.source_commit_cursor,
-                        phase: 50,
-                        ordinal: 0,
-                    },
-                );
-            }
-        }
-
-        for interval in &persisted.closed_runtime_intervals {
-            let Some(close) = interval_close_cursor(interval) else {
-                continue;
-            };
-            for (role, phase) in [("aggregate-usage", 90), ("aggregate-status-idle", 100)] {
-                retain_earliest_order(
-                    &mut orders,
-                    managed_multiagent_event_id(
-                        &record.session.id,
-                        &record.session.id,
-                        role,
-                        ManagedMultiagentEventProvenance::RuntimeInterval {
-                            interval_id: &interval.interval_id,
-                        },
-                    ),
-                    CanonicalEventOrder {
-                        source_commit_cursor: close,
-                        phase,
-                        ordinal: 0,
-                    },
-                );
-            }
-        }
-
-        let mut index_messages = |thread_id: &str,
-                                  snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot| {
-            if snapshot.message_commit_cursors.len() != snapshot.messages.len() {
-                return;
-            }
-            let run_ids = snapshot.runs.iter().map(|run| run.id.clone()).collect::<Vec<_>>();
-            let response_coordinates = Self::assistant_response_coordinates(&snapshot.messages, &run_ids);
-            let public_owner_thread_id = public_thread_id(&record.session.id, thread_id);
-            let event_count = record.events.len();
-            let event_roles = record
-                .events
-                .iter()
-                .map(|event| event.kind.type_str())
-                .collect::<std::collections::HashSet<_>>();
-            for (message_index, (message, source_commit_cursor)) in snapshot
-                .messages
-                .iter()
-                .zip(snapshot.message_commit_cursors.iter().copied())
-                .enumerate()
-            {
-                // Generic ids are opaque hashes, but their source ordinal is
-                // bounded by this one Message's encoder output, not by the
-                // Session-wide event count. Build the small reverse index once
-                // and use O(1) lookups below. The former event-by-event
-                // `0..=event_count` search was cubic across a growing transcript
-                // and held the shared Session projection lock long enough to
-                // starve unrelated Worker heartbeats.
-                let ordinal_bound = message_projection_ordinal_bound(message);
-                let mut generic_source_ordinals =
-                    std::collections::HashMap::with_capacity(
-                        ordinal_bound.saturating_mul(event_roles.len()),
-                    );
-                for role in &event_roles {
-                    for ordinal in 0..ordinal_bound {
-                        generic_source_ordinals.insert(
-                            managed_multiagent_event_id(
-                                &record.session.id,
-                                thread_id,
-                                role,
-                                ManagedMultiagentEventProvenance::Message {
-                                    message_id: &message.id.0,
-                                    ordinal,
-                                },
-                            ),
-                            ordinal,
-                        );
-                    }
-                }
-                for event in &record.events {
-                    let tool_source_ordinal = decode_managed_tool_event_id(&event.id)
-                        .filter(|identity| {
-                            identity.thread_id == public_owner_thread_id.as_str()
-                                && identity.source_id == message.id.0
-                        })
-                        .and_then(|identity| {
-                            message.content.iter().position(|block| {
-                                matches!(block, ContentBlock::ToolUse { id, .. } if id == identity.call_id)
-                                    || matches!(block, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == identity.call_id)
-                            })
-                        });
-                    let generic_source_ordinal =
-                        generic_source_ordinals.get(&event.id).copied();
-                    let assistant_source_ordinal = response_coordinates
-                        .get(&message.id.0)
-                        .and_then(|(run_id, step, response)| {
-                            (event.id
-                                == managed_assistant_event_id(
-                                    &record.session.id,
-                                    thread_id,
-                                    run_id,
-                                    *step,
-                                    *response,
-                                    event.kind.type_str(),
-                                ))
-                            .then(|| match &event.kind {
-                                OutboundKind::AgentThinking {} => 0,
-                                OutboundKind::AgentMessage { .. } => usize::from(
-                                    message
-                                        .content
-                                        .iter()
-                                        .any(|block| matches!(block, ContentBlock::Thinking { .. })),
-                                ),
-                                _ => 0,
-                            })
-                        });
-                    if tool_source_ordinal.is_some()
-                        || generic_source_ordinal.is_some()
-                        || assistant_source_ordinal.is_some()
-                    {
-                        retain_earliest_order(
-                            &mut orders,
-                            event.id.clone(),
-                            CanonicalEventOrder {
-                                source_commit_cursor,
-                                phase: 50,
-                                ordinal: message_index
-                                    .saturating_mul(event_count.saturating_add(1))
-                                    .saturating_add(
-                                        tool_source_ordinal
-                                            .or(generic_source_ordinal)
-                                            .or(assistant_source_ordinal)
-                                            .unwrap_or_default(),
-                                    ),
-                            },
-                        );
-                    }
-                }
-            }
-        };
-        if let Some(snapshot) = root_snapshot {
-            index_messages(&record.session.id, snapshot);
-        }
-        for (thread_id, snapshot) in child_snapshots {
-            index_messages(thread_id, snapshot);
-        }
-
-        let mut index_snapshot_facts = |thread_id: &str,
-                                        snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot| {
-            for audit in &snapshot.events {
-                let source_commit_cursor = awaken_agent_contract::decode_run_lifecycle_cursor(
-                    awaken_agent_contract::RunLifecycleCursor(audit.sequence),
-                )
-                .0;
-                for (role, phase) in [
-                    ("model-request-start", 40),
-                    ("model-request-end", 41),
-                ] {
-                    retain_earliest_order(
-                        &mut orders,
-                        managed_multiagent_event_id(
-                            &record.session.id,
-                            thread_id,
-                            role,
-                            ManagedMultiagentEventProvenance::Audit {
-                                run_id: &audit.run_id.0,
-                                sequence: audit.sequence,
-                            },
-                        ),
-                        CanonicalEventOrder {
-                            source_commit_cursor,
-                            phase,
-                            ordinal: usize::try_from(audit.sequence).unwrap_or(usize::MAX),
-                        },
-                    );
-                }
-            }
-            for run in &snapshot.runs {
-                if let Some(source_commit_cursor) =
-                    awaken_runtime_contract::compaction::RunCompactionMarker::recorded_commit_cursor(
-                        &snapshot.state,
-                        &snapshot.state_commit_cursors,
-                        &run.id.0,
-                    )
-                {
-                    retain_earliest_order(
-                        &mut orders,
-                        managed_multiagent_event_id(
-                            &record.session.id,
-                            thread_id,
-                            "run-context-compacted",
-                            ManagedMultiagentEventProvenance::RunState {
-                                run_id: &run.id.0,
-                            },
-                        ),
-                        CanonicalEventOrder {
-                            source_commit_cursor,
-                            phase: 42,
-                            ordinal: 0,
-                        },
-                    );
-                }
-            }
-            if let Some(source_commit_cursor) =
-                awaken_agent_contract::archived_thread_commit_cursor(
-                    &snapshot.state,
-                    &snapshot.state_commit_cursors,
-                )
-            {
-                retain_earliest_order(
-                    &mut orders,
-                    managed_multiagent_event_id(
-                        &record.session.id,
-                        thread_id,
-                        "archived-status-terminated",
-                        ManagedMultiagentEventProvenance::ArchivedDisposition,
-                    ),
-                    CanonicalEventOrder {
-                        source_commit_cursor,
-                        phase: 81,
-                        ordinal: 0,
-                    },
-                );
-            }
-        };
-        if let Some(snapshot) = root_snapshot {
-            index_snapshot_facts(&record.session.id, snapshot);
-        }
-        for (thread_id, snapshot) in child_snapshots {
-            index_snapshot_facts(thread_id, snapshot);
-        }
-
-        let mut tool_operation_by_event_id = std::collections::HashMap::<String, String>::new();
-        let mut advisor_operation_orders =
-            std::collections::HashMap::<String, CanonicalEventOrder>::new();
-        let mut index_tool_operations =
-            |snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot| {
-                if snapshot.messages.len() != snapshot.message_commit_cursors.len() {
-                    return;
-                }
-                let run_ids = snapshot
-                    .runs
-                    .iter()
-                    .map(|run| run.id.clone())
-                    .collect::<Vec<_>>();
-                let coordinates =
-                    Self::assistant_response_coordinates(&snapshot.messages, &run_ids);
-                for (message_index, (message, source_commit_cursor)) in snapshot
-                    .messages
-                    .iter()
-                    .zip(snapshot.message_commit_cursors.iter().copied())
-                    .enumerate()
-                {
-                    let Some((run_id, step, _)) = coordinates.get(&message.id.0) else {
-                        continue;
-                    };
-                    for (block_ordinal, block) in message.content.iter().enumerate() {
-                        let ContentBlock::ToolUse {
-                            id: call_id, name, ..
-                        } = block
-                        else {
-                            continue;
-                        };
-                        if name != awaken_runtime_contract::resolved::ADVISOR_TOOL_ID {
-                            continue;
-                        }
-                        let operation_id =
-                            awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
-                                &awaken_agent_contract::agent::run::Id(run_id.clone()),
-                                *step,
-                                call_id,
-                            );
-                        let order = CanonicalEventOrder {
-                            source_commit_cursor,
-                            phase: 50,
-                            ordinal: message_index
-                                .saturating_mul(message.content.len().saturating_add(1))
-                                .saturating_add(block_ordinal),
-                        };
-                        advisor_operation_orders
-                            .entry(operation_id)
-                            .and_modify(|current| *current = (*current).min(order))
-                            .or_insert(order);
-                    }
-                }
-                for event in &record.events {
-                    let Some(identity) = decode_managed_tool_event_id(&event.id) else {
-                        continue;
-                    };
-                    let Some((run_id, step, _)) = coordinates.get(identity.source_id) else {
-                        continue;
-                    };
-                    tool_operation_by_event_id.insert(
-                        event.id.clone(),
-                        awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
-                            &awaken_agent_contract::agent::run::Id(run_id.clone()),
-                            *step,
-                            identity.call_id,
-                        ),
-                    );
-                }
-            };
-        if let Some(snapshot) = root_snapshot {
-            index_tool_operations(snapshot);
-        }
-        for snapshot in child_snapshots.values() {
-            index_tool_operations(snapshot);
-        }
-
-        for link in links {
-            let source = record.events.iter().find(|event| {
-                matches!(event.kind, OutboundKind::AgentToolUse { .. })
-                    && tool_operation_by_event_id.get(&event.id)
-                        == Some(&link.created_by_operation_id)
-            });
-            let source_order = match &link.target {
-                CoordinatedThreadTarget::Agent { .. } => source.and_then(|source| {
-                    accepted_coordination_order(record, &orders, source, &link.thread_id.0)
-                }),
-                CoordinatedThreadTarget::Advisor { .. } => advisor_operation_orders
-                    .get(&link.created_by_operation_id)
-                    .copied(),
-            };
-            if let Some(source_order) = source_order {
-                for (role, phase) in [("link-thread-created", 51), ("link-status-running", 52)] {
-                    retain_earliest_order(
-                        &mut orders,
-                        managed_multiagent_event_id(
-                            &record.session.id,
-                            &link.thread_id.0,
-                            role,
-                            ManagedMultiagentEventProvenance::LinkOperation {
-                                operation_id: &link.created_by_operation_id,
-                            },
-                        ),
-                        CanonicalEventOrder {
-                            source_commit_cursor: source_order.source_commit_cursor,
-                            phase,
-                            ordinal: source_order.ordinal,
-                        },
-                    );
-                }
-            }
-            for source in record.events.iter().filter(|event| {
-                matches!(
-                    &event.kind,
-                    OutboundKind::AgentToolUse { name, .. } if name == SEND_MESSAGE
-                )
-            }) {
-                let Some(source_order) =
-                    accepted_coordination_order(record, &orders, source, &link.thread_id.0)
-                else {
-                    continue;
-                };
-                for (role, phase) in [
-                    ("coordination-status-running", 54),
-                    ("coordination-message-sent", 55),
-                ] {
-                    retain_earliest_order(
-                        &mut orders,
-                        managed_multiagent_event_id(
-                            &record.session.id,
-                            &link.thread_id.0,
-                            role,
-                            ManagedMultiagentEventProvenance::CoordinationCall {
-                                event_id: &source.id,
-                            },
-                        ),
-                        CanonicalEventOrder {
-                            source_commit_cursor: source_order.source_commit_cursor,
-                            phase,
-                            ordinal: source_order.ordinal,
-                        },
-                    );
-                }
-            }
-            for terminal in lifecycle_events.iter().filter(|event| {
-                event.thread_id == link.thread_id
-                    && matches!(
-                        event.kind,
-                        RunLifecycleEventKind::Completed
-                            | RunLifecycleEventKind::Failed
-                            | RunLifecycleEventKind::Cancelled
-                    )
-            }) {
-                let report_source = child_snapshots
-                    .get(&link.thread_id.0)
-                    .and_then(|snapshot| report_commit_cursor(snapshot, &terminal.run_id));
-                let Some(source_commit_cursor) = report_source else {
-                    continue;
-                };
-                for role in ["child-message-received", "advisor-message-received"] {
-                    retain_earliest_order(
-                        &mut orders,
-                        managed_multiagent_event_id(
-                            &record.session.id,
-                            &link.thread_id.0,
-                            role,
-                            ManagedMultiagentEventProvenance::AgentReport {
-                                run_id: &terminal.run_id.0,
-                            },
-                        ),
-                        CanonicalEventOrder {
-                            source_commit_cursor: source_commit_cursor
-                                .max(terminal.source_commit_cursor),
-                            phase: 55,
-                            ordinal: 0,
-                        },
-                    );
-                }
-            }
-        }
-
-        for (batch_index, projection) in outcome_projections.iter().enumerate() {
-            match &projection.terminal {
-                CommittedOutcomeProjection::Completed(report) => {
-                    for iteration in &report.iterations {
-                        let Some(source_commit_cursor) = projection
-                            .evaluation_commit_cursors
-                            .get(&iteration.iteration)
-                            .copied()
-                        else {
-                            continue;
-                        };
-                        for (role, phase) in [
-                            ("outcome-evaluation-start", 60),
-                            ("outcome-evaluation-ongoing", 61),
-                            ("outcome-evaluation-end", 62),
-                        ] {
-                            retain_earliest_order(
-                                &mut orders,
-                                managed_multiagent_event_id(
-                                    &record.session.id,
-                                    &record.session.id,
-                                    role,
-                                    ManagedMultiagentEventProvenance::OutcomeEvaluation {
-                                        outcome_id: &projection.outcome_id,
-                                        iteration: iteration.iteration,
-                                    },
-                                ),
-                                CanonicalEventOrder {
-                                    source_commit_cursor,
-                                    phase,
-                                    ordinal: batch_index
-                                        .saturating_mul(batch_stride)
-                                        .saturating_add(
-                                            usize::try_from(iteration.iteration)
-                                                .unwrap_or(usize::MAX),
-                                        ),
-                                },
-                            );
-                        }
-                    }
-                }
-                CommittedOutcomeProjection::Errored(_) => {
-                    retain_earliest_order(
-                        &mut orders,
-                        managed_multiagent_event_id(
-                            &record.session.id,
-                            &record.session.id,
-                            "outcome-error",
-                            ManagedMultiagentEventProvenance::Outcome {
-                                outcome_id: &projection.outcome_id,
-                            },
-                        ),
-                        CanonicalEventOrder {
-                            source_commit_cursor: projection.terminal_commit_cursor,
-                            phase: 63,
-                            ordinal: batch_index.saturating_mul(batch_stride),
-                        },
-                    );
-                }
-            }
-        }
-
-        for (index, transition) in persisted.budget.reach_transitions().iter().enumerate() {
-            let Some(source_commit_cursor) =
-                budget_reach_projection_close_cursor(persisted, transition, lifecycle_events)
-            else {
-                continue;
-            };
-            for (role, phase) in [
-                ("budget-reach-usage", 90),
-                ("budget-reach-status-idle", 100),
-            ] {
-                retain_earliest_order(
-                    &mut orders,
-                    managed_multiagent_event_id(
-                        &record.session.id,
-                        &record.session.id,
-                        role,
-                        ManagedMultiagentEventProvenance::BudgetReach {
-                            generation: transition.generation,
-                        },
-                    ),
-                    CanonicalEventOrder {
-                        source_commit_cursor,
-                        phase,
-                        ordinal: index,
-                    },
-                );
-            }
-        }
-
-        let cleanup_terminal_source = persisted.terminal_cleanup.runtime_commit_cursor();
-        // Initial activation can fail before Runtime owns a cleanup cursor. In
-        // that case terminality follows the complete immutable prefix already
-        // indexed above. The derived maximum is disposable ordering, never a
-        // second persisted cursor or Session state.
-        let parent_terminal_source = cleanup_terminal_source.or_else(|| {
-            (persisted.execution
-                == awaken_session_contract::SessionExecutionState::ActivationFailed)
-                .then(|| {
-                    orders
-                        .values()
-                        .map(|order| order.source_commit_cursor)
-                        .max()
-                        .unwrap_or_default()
-                })
-        });
-        if persisted.execution == awaken_session_contract::SessionExecutionState::ActivationFailed
-            && let Some(source_commit_cursor) = parent_terminal_source
-        {
-            retain_earliest_order(
-                &mut orders,
-                managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    "activation-failed-error",
-                    ManagedMultiagentEventProvenance::ParentTerminal,
-                ),
-                CanonicalEventOrder {
-                    source_commit_cursor,
-                    phase: 109,
-                    ordinal: 0,
-                },
-            );
-        }
-        for (terminal_source, thread_id, role, phase) in parent_terminal_source
-            .into_iter()
-            .flat_map(|terminal_source| {
-                links
-                    .iter()
-                    .map(|link| {
-                        (
-                            link.thread_id.0.as_str(),
-                            "parent-terminal-child-status-terminated",
-                            110,
-                        )
-                    })
-                    .chain([
-                        (
-                            record.session.id.as_str(),
-                            "parent-terminal-primary-status-terminated",
-                            111,
-                        ),
-                        (
-                            record.session.id.as_str(),
-                            "parent-terminal-session-status-terminated",
-                            112,
-                        ),
-                    ])
-                    .map(move |(thread_id, role, phase)| (terminal_source, thread_id, role, phase))
-            })
-        {
-            retain_earliest_order(
-                &mut orders,
-                managed_multiagent_event_id(
-                    &record.session.id,
-                    thread_id,
-                    role,
-                    ManagedMultiagentEventProvenance::ParentTerminal,
-                ),
-                CanonicalEventOrder {
-                    source_commit_cursor: terminal_source,
-                    phase,
-                    ordinal: 0,
-                },
-            );
-        }
-
-        let visible_durable_ids = record
-            .events
-            .iter()
-            .filter(|event| !is_transient_event_id(&event.id))
-            .map(|event| event.id.clone())
-            .collect::<std::collections::HashSet<_>>();
-        let mut still_pending = Vec::new();
-        for (event, predecessor) in std::mem::take(&mut record.overlay.pending_events) {
-            if visible_durable_ids.contains(&predecessor) {
-                record.events.push(event);
-            } else {
-                still_pending.push((event, predecessor));
-            }
-        }
-        record.overlay.pending_events = still_pending;
-
-        // Canonicalization is a disposable projection transaction: validate
-        // every immutable anchor against a snapshot of the issued prefix, then
-        // replace the cache once. A late/malformed fact must fail closed without
-        // erasing receipts and cursors that callers already observed.
-        let original_events = record.events.clone();
-        let mut durable = Vec::new();
-        for event in original_events.iter().cloned() {
-            if is_transient_event_id(&event.id) {
-                continue;
-            } else {
-                let order = orders.get(&event.id).copied().ok_or_else(|| {
-                    StateError::Run(RunError::internal(format!(
-                        "committed Managed event {} ({}) has no immutable projection anchor",
-                        event.id,
-                        event.type_str(),
-                    )))
-                })?;
-                durable.push((order, event));
-            }
-        }
-        durable.sort_by(|(left_order, left), (right_order, right)| {
-            left_order
-                .cmp(right_order)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        let durable_ids = durable
-            .iter()
-            .map(|(_, event)| event.id.as_str())
-            .collect::<std::collections::HashSet<_>>();
-        let mut overlays = std::collections::HashMap::<Option<String>, Vec<Event>>::new();
-        for (index, event) in original_events
-            .iter()
-            .enumerate()
-            .filter(|(_, event)| is_transient_event_id(&event.id))
-        {
-            let anchor = record
-                .overlay
-                .anchors
-                .get(&event.id)
-                .filter(|candidate| durable_ids.contains(candidate.as_str()))
-                .cloned()
-                .or_else(|| {
-                    original_events[..index]
-                        .iter()
-                        .rev()
-                        .find(|candidate| durable_ids.contains(candidate.id.as_str()))
-                        .map(|candidate| candidate.id.clone())
-                });
-            overlays.entry(anchor).or_default().push(event.clone());
-        }
-        let mut canonical = overlays.remove(&None).unwrap_or_default();
-        for (_, event) in durable {
-            let id = event.id.clone();
-            canonical.push(event);
-            if let Some(mut anchored) = overlays.remove(&Some(id)) {
-                canonical.append(&mut anchored);
-            }
-        }
-        debug_assert!(
-            overlays.is_empty(),
-            "every transient overlay has a durable anchor"
-        );
-        record.events = canonical;
-        Ok(())
-    }
-
     async fn refresh_committed_projection_once(
         &self,
         session_id: &str,
@@ -1291,7 +515,7 @@ impl ManagedState {
             record.events.push(Event {
                 id,
                 kind: OutboundKind::SessionStatusRunning {},
-                processed_at: Some(PROCESSED_AT.to_string()),
+                processed_at: None,
             });
         }
         // A warm reader or a restarted replica may first observe a Run only
@@ -1312,7 +536,7 @@ impl ManagedState {
             record.events.push(Event {
                 id,
                 kind: OutboundKind::SessionStatusRunning {},
-                processed_at: Some(PROCESSED_AT.to_string()),
+                processed_at: None,
             });
         }
         // Root Thread lifecycle is projected from the same accepted lifecycle
@@ -1361,7 +585,7 @@ impl ManagedState {
                                 },
                             ),
                             kind: OutboundKind::SessionStatusRescheduled {},
-                            processed_at: Some(PROCESSED_AT.to_string()),
+                            processed_at: None,
                         };
                         let thread_rescheduled = primary_thread_status_event(
                             record,
@@ -1509,7 +733,7 @@ impl ManagedState {
                 record.events.push(Event {
                     id,
                     kind,
-                    processed_at: Some(PROCESSED_AT.to_string()),
+                    processed_at: None,
                 });
             }
             if selected.fully_classified {
@@ -1545,7 +769,7 @@ impl ManagedState {
                     record.events.push(Event {
                         id,
                         kind: projected.kind,
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     });
                 }
             }
@@ -1675,7 +899,7 @@ impl ManagedState {
                     kind: OutboundKind::SessionError {
                         error: SessionError::classify(failure.code(), failure.message()),
                     },
-                    processed_at: Some(PROCESSED_AT.to_string()),
+                    processed_at: None,
                 });
             }
             let stop_reason = Self::public_run_stop_reason(
@@ -1753,7 +977,7 @@ impl ManagedState {
                                 usage,
                                 budget: Some(budget),
                             },
-                            processed_at: Some(PROCESSED_AT.to_string()),
+                            processed_at: None,
                         },
                         Event {
                             id: managed_multiagent_event_id(
@@ -1765,7 +989,7 @@ impl ManagedState {
                             kind: OutboundKind::SessionStatusIdle {
                                 stop_reason: StopReason::BudgetReached,
                             },
-                            processed_at: Some(PROCESSED_AT.to_string()),
+                            processed_at: None,
                         },
                     ]);
                     record.checkpoint.source.budget_reach_generation = generation;
@@ -1831,12 +1055,12 @@ impl ManagedState {
                                 usage: projected_usage,
                                 budget: record.session.budget.clone(),
                             },
-                            processed_at: Some(PROCESSED_AT.to_string()),
+                            processed_at: None,
                         },
                         Event {
                             id: aggregate_idle_id,
                             kind: OutboundKind::SessionStatusIdle { stop_reason },
-                            processed_at: Some(PROCESSED_AT.to_string()),
+                            processed_at: None,
                         },
                     ]);
                 }
@@ -1902,7 +1126,7 @@ impl ManagedState {
                         kind: OutboundKind::SessionError {
                             error: SessionError::classify(failure.code(), failure.message()),
                         },
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     });
                 }
             }

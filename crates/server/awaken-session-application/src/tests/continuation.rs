@@ -429,6 +429,8 @@ fn memory_input(
     access: awaken_resource_contract::ResourceAccess,
 ) -> awaken_session_contract::ResolvedInput {
     awaken_session_contract::ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from(binding_id),
         source: awaken_session_contract::ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from("continuation-memory"),
@@ -708,6 +710,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
             awaken_session_contract::SessionRealizationControl::begin_session_realization(
                 &app,
                 awaken_session_contract::BeginSessionRealization {
+                    expected_resources: None,
                     session_id: "suspend-with-mcp".into(),
                     target: target.clone(),
                 },
@@ -731,6 +734,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
     let staged = awaken_session_contract::SessionRealizationControl::begin_session_realization(
         &app,
         awaken_session_contract::BeginSessionRealization {
+            expected_resources: None,
             session_id: "suspend-with-mcp".into(),
             target,
         },
@@ -874,6 +878,7 @@ async fn continuation_phases_gate_direct_and_recovery_realization_effects() {
                 awaken_session_contract::SessionRealizationControl::begin_session_realization(
                     &app,
                     awaken_session_contract::BeginSessionRealization {
+                        expected_resources: None,
                         session_id: session_id.into(),
                         target: target.clone(),
                     },

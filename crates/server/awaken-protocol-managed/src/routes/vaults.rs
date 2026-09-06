@@ -82,7 +82,7 @@ use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 mod credential_material_ingress;
 
 /// Deterministic timestamp stamped on every vault/credential object, matching the
-/// session surface's `PROCESSED_AT` convention (no wall-clock/uuid dependency, so
+/// session surface's `LEGACY_UNRECORDED_AT` convention (no wall-clock/uuid dependency, so
 /// the wire is reproducible under test).
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 

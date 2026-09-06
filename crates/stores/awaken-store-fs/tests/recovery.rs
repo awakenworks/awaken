@@ -18,6 +18,7 @@ use awaken_agent_contract::thread::commit::operation::{
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_store_fs::FsCommitCoordinator;
 
 fn checkpoint(thread: &ThreadId, run: &RunId, text: &str) -> ThreadCommit {
@@ -234,4 +235,68 @@ async fn operation_receipt_survives_reopen() {
         1
     );
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn every_torn_envelope_prefix_preserves_committed_time_and_facts() {
+    // T6 enumerate every byte cut of the actual modern log envelope, including
+    // a complete JSON object before its newline. Incomplete JSON is discarded;
+    // parseable final JSON may recover fully. No cut may recover a timestamp
+    // without its facts or replace A's original time. This models partial write,
+    // not power-loss guarantees of the OS/filesystem.
+    let source = tempfile::tempdir().unwrap();
+    let thread = ThreadId("cut-thread".into());
+    let first = RunId("first".into());
+    let second = RunId("second".into());
+    let store = FsCommitCoordinator::open(source.path()).await.unwrap();
+    store
+        .commit(checkpoint(&thread, &first, "A"))
+        .await
+        .unwrap();
+    let prefix = std::fs::read(source.path().join("commits.ndjson")).unwrap();
+    let before = store.recovery_snapshot(&thread, &second).await.unwrap();
+    store
+        .commit(checkpoint(&thread, &second, "B"))
+        .await
+        .unwrap();
+    let all = std::fs::read(source.path().join("commits.ndjson")).unwrap();
+    let after = store.recovery_snapshot(&thread, &second).await.unwrap();
+    drop(store);
+    let observations =
+        |snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot| {
+            snapshot
+                .commit_timestamps
+                .iter()
+                .map(|(sequence, time)| serde_json::json!({"sequence": sequence, "time": time}))
+                .collect::<Vec<_>>()
+        };
+    let committed = observations(&after);
+    let mut observed = Vec::new();
+    for end in prefix.len()..=all.len() {
+        let target = tempfile::tempdir().unwrap();
+        std::fs::write(target.path().join("commits.ndjson"), &all[..end]).unwrap();
+        let recovered = FsCommitCoordinator::open(target.path()).await.unwrap();
+        let snapshot = recovered.recovery_snapshot(&thread, &second).await.unwrap();
+        let step =
+            serde_json::json!({"recovered": observations(&snapshot), "committed": committed});
+        // Coalesce identical observed prefixes; every byte-cut still executes
+        // the full Rust snapshot oracle below.
+        if !observed.contains(&step) {
+            observed.push(step);
+        }
+        assert!(
+            snapshot == before || snapshot == after,
+            "T6 torn byte {end}: atomic old/new snapshot"
+        );
+        assert_eq!(
+            snapshot.commit_timestamps.get(&1),
+            before.commit_timestamps.get(&1),
+            "T6 immutable prefix"
+        );
+    }
+    awaken_reliability_testkit::write_observation_trace(
+        "store-torn-prefix",
+        "store",
+        serde_json::json!(observed),
+    );
 }
