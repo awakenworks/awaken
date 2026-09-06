@@ -172,40 +172,6 @@ async fn commit_step_delta(
     Ok(())
 }
 
-/// Seed the run's read-only state from committed thread truth. Thread/Shared/
-/// Profile-scoped commands re-hydrate for every Run; Run-scoped commands only
-/// re-hydrate for their committed owner. Within a Run, later commands are folded
-/// into this store so gates and hooks read its accumulated state (G1/G13).
-pub(super) fn store_from_commands(commands: Vec<StateCommand>, run_id: &RunId) -> Store {
-    let kept: Vec<StateCommand> = commands
-        .into_iter()
-        .filter(|command| {
-            if command.scope != Scope::Run {
-                return true;
-            }
-            if let Some(owner) = &command.run_id {
-                return owner == run_id;
-            }
-            // Legacy commands predate commit-time Run binding. Only the old
-            // ToolBatch cell has an embedded Run id that can be migrated safely;
-            // every new Run-scoped key is explicitly owned above.
-            if command.key.0 != ActiveToolBatch::KEY {
-                return false;
-            }
-            match &command.action {
-                StateAction::Set(value) => {
-                    serde_json::from_value::<Option<ToolBatch>>(value.clone())
-                        .ok()
-                        .flatten()
-                        .is_some_and(|batch| batch.run_id() == run_id)
-                }
-                StateAction::Remove => false,
-            }
-        })
-        .collect();
-    Store::rebuild(&kept)
-}
-
 /// Fold a delegate's accumulated [`ThreadUsage`] into the parent thread's committed
 /// tally under [`THREAD_USAGE_STATE_KEY`]. Load-merge-store on the live `store` plus
 /// the staged batch, exactly like the per-step inference recording — so the parent

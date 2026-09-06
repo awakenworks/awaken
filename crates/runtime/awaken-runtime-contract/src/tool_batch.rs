@@ -8,7 +8,9 @@ use awaken_agent_contract::agent::awaiting::{
     AwaitTarget, ResumeTicket, ToolAwaitReason, ToolCallAuthority,
 };
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey};
+use awaken_agent_contract::agent::state::{
+    Action as StateAction, Command as StateCommand, MergePolicy, Scope, StateKey, Store,
+};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::num::NonZeroU16;
@@ -717,6 +719,39 @@ impl StateKey for ActiveToolBatch {
     const SCOPE: Scope = Scope::Run;
     const MERGE: MergePolicy = MergePolicy::Disjoint;
     type Value = Option<ToolBatch>;
+}
+
+/// Rebuild one Run's execution view from committed Thread state. Native and
+/// external tool continuation share this filter, including the exact legacy
+/// ToolBatch migration; other Runs cannot erase or replace this Run's batch.
+pub fn store_from_run_commands(commands: Vec<StateCommand>, run_id: &RunId) -> Store {
+    let kept: Vec<StateCommand> = commands
+        .into_iter()
+        .filter(|command| {
+            if command.scope != Scope::Run {
+                return true;
+            }
+            if let Some(owner) = &command.run_id {
+                return owner == run_id;
+            }
+            // Legacy commands predate commit-time Run binding. Only the old
+            // ToolBatch cell has an embedded Run id that can be migrated safely;
+            // every new Run-scoped key is explicitly owned above.
+            if command.key.0 != ActiveToolBatch::KEY {
+                return false;
+            }
+            match &command.action {
+                StateAction::Set(value) => {
+                    serde_json::from_value::<Option<ToolBatch>>(value.clone())
+                        .ok()
+                        .flatten()
+                        .is_some_and(|batch| batch.run_id() == run_id)
+                }
+                StateAction::Remove => false,
+            }
+        })
+        .collect();
+    Store::rebuild(&kept)
 }
 
 #[cfg(test)]

@@ -121,10 +121,17 @@ impl AcpBackend {
     ) -> crate::agent_runner::ChildAcpExecutorFactory {
         let acp = self.clone();
         Arc::new(move |backend, permission| {
-            Ok(
-                acp.executor_for(sandbox.clone(), permission, backend, Vec::new(), None, None)?
-                    as Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
-            )
+            Ok(Arc::new(acp.executor_for(
+                sandbox.clone(),
+                permission,
+                backend,
+                Vec::new(),
+                None,
+                None,
+            )?)
+                as Arc<
+                    dyn awaken_runtime_contract::execution::RunAttemptExecutor,
+                >)
         })
     }
 
@@ -139,7 +146,7 @@ impl AcpBackend {
         mcp_servers: Vec<awaken_run_executor_acp::SessionMcpServer>,
         attached_tools: Option<Arc<crate::acp_tool_export::AttachedToolSet>>,
         grant_observer: Option<Arc<dyn awaken_run_executor_acp::PermissionGrantObserver>>,
-    ) -> Result<Arc<AcpRunExecutor>, String> {
+    ) -> Result<AcpRunExecutor, String> {
         match &self.source {
             AcpExecutorSource::Static(executor) => {
                 if attached_tools.is_some() {
@@ -147,11 +154,11 @@ impl AcpBackend {
                         "attached MCP tools require the bound Environment ACP source".into(),
                     );
                 }
-                Ok(Arc::new(executor.for_session_servers_with_grant_observer(
+                Ok(executor.for_session_servers_with_grant_observer(
                     permission,
                     &mcp_servers,
                     grant_observer,
-                )))
+                ))
             }
             AcpExecutorSource::Bound {
                 launch,
@@ -177,7 +184,7 @@ impl AcpBackend {
                 if let Some(observer) = grant_observer {
                     executor = executor.with_permission_grant_observer(observer);
                 }
-                Ok(Arc::new(executor.with_permission_policy(permission)))
+                Ok(executor.with_permission_policy(permission))
             }
         }
     }

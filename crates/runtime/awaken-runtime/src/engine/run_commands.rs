@@ -20,7 +20,7 @@ impl RunExecutor for Runtime {
         // claimed Worker before entering this executor. Keeping the registration
         // outside the native loop prevents nested generations and gives ACP/A2A
         // the same lifecycle boundary.
-        run_agent_loop(self, activation, context).await
+        run_agent_loop(self, activation, context, ResumeContinuation::NativeLoop).await
     }
 }
 
@@ -102,7 +102,7 @@ pub(crate) async fn interrupt_awaiting_tools(
             ));
         }
     }
-    let store = store_from_commands(reader.committed_state(&thread_id), &run_id);
+    let store = store_from_run_commands(reader.committed_state(&thread_id), &run_id);
     let ticket = reader.resume_ticket(&run_id);
     let batch = ActiveToolBatch::load(&store);
     let coherence = match (&batch, ticket.as_ref()) {
@@ -274,6 +274,25 @@ pub(crate) async fn resume_tool_batch(
         ResumeContinuation::ToolBatch,
     )
     .await
+}
+
+pub(crate) async fn recover_tool_batch(
+    runtime: &Runtime,
+    activation: RunActivation,
+    context: RuntimeRunContext,
+) -> Result<RunState> {
+    let context = activation.narrow_context(context);
+    let reader = context
+        .reader
+        .as_ref()
+        .ok_or_else(|| Error::Execution("tool-batch recovery requires committed history".into()))?;
+    if context.commit.is_none() || reader.run_state(&activation.run_id) != Some(RunState::Running) {
+        return Err(Error::Execution(
+            "tool-batch recovery requires a durably Running Run and commit coordinator".into(),
+        ));
+    }
+    runtime.register_snapshot(activation.snapshot.clone());
+    run_agent_loop(runtime, activation, context, ResumeContinuation::ToolBatch).await
 }
 
 async fn resume_with_continuation(

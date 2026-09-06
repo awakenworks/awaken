@@ -4520,3 +4520,360 @@ async fn canonical_mcp_ticket_and_transcript_survive_wire_name_changes() {
         }
     }
 }
+
+struct OwnedContinuationProbe {
+    resumes: Mutex<Vec<ResumeCommand>>,
+    recoveries: AtomicUsize,
+    fail: bool,
+}
+
+#[async_trait]
+impl awaken_runtime_contract::resume::OwnedToolContinuation for OwnedContinuationProbe {
+    fn owns_tool(&self, tool_id: &str) -> bool {
+        tool_id == "write"
+    }
+
+    async fn resume(
+        &self,
+        _activation: RunActivation,
+        command: ResumeCommand,
+        _context: RuntimeRunContext,
+    ) -> Result<RunState> {
+        self.resumes.lock().unwrap().push(command);
+        if self.fail {
+            Err(Error::Execution("owned-continuation-probe".into()))
+        } else {
+            Ok(RunState::Awaiting)
+        }
+    }
+
+    async fn recover(
+        &self,
+        _activation: RunActivation,
+        _context: RuntimeRunContext,
+    ) -> Result<RunState> {
+        self.recoveries.fetch_add(1, Ordering::SeqCst);
+        Err(Error::Execution("owned-recovery-probe".into()))
+    }
+}
+
+#[tokio::test]
+async fn owned_permission_uses_the_host_port_before_opening_an_acp_process() {
+    // Causes: O1 exact owned/unowned tool, O2 port returns Awaiting/error,
+    // O3 allow/deny. Effects: owned decisions reach the port unchanged and no
+    // CLI is opened; errors propagate without a synthetic terminal receipt.
+    // Unowned tools retain the original ACP path and never enter the port.
+    // | Rule | owned | port outcome | decision | port calls | CLI opens |
+    // | P1   | yes   | Awaiting     | allow/deny | 1        | 0 |
+    // | P2   | yes   | error        | allow/deny | 1        | 0 |
+    // | P3   | no    | unused       | allow/deny | 0        | 1 |
+    // Kernel effect/precommit/reclaim semantics belong to Runtime/Host tests;
+    // this probe deliberately implements no second tool execution algorithm.
+    for owned in [true, false] {
+        for fail in [true, false] {
+            for allow in [true, false] {
+                let committed = Arc::new(RecordingCoordinator::default());
+                let activation = activation_without_session_home();
+                let tool_id = if owned {
+                    "write"
+                } else {
+                    "mcp__external__write"
+                };
+                let arguments = serde_json::json!({"file_path":"/workspace/output.txt",
+                    "content":"é中文🙂\\\"\n".repeat(3000)});
+                let ticket = ResumeTicket::new(
+                    "owned-decision",
+                    activation.run_id.clone(),
+                    activation.thread_id.clone(),
+                    activation.snapshot.id.0.clone(),
+                    activation.snapshot.fingerprint.0.clone(),
+                    AwaitTarget::ToolCall {
+                        reason: ToolAwaitReason::Permission,
+                        call_id: "owned-call".into(),
+                        tool: PendingTool {
+                            tool_id: tool_id.into(),
+                            arguments,
+                        },
+                    },
+                );
+                super::commit::commit(
+                    &RuntimeRunContext::new().with_commit(committed.clone()),
+                    None,
+                    &activation.thread_id,
+                    RunDisposition::awaiting(ticket.clone()),
+                    vec![Message::new(
+                        MessageId::assistant(&activation.run_id, 0),
+                        Role::Assistant,
+                        vec![ContentBlock::tool_use(
+                            "owned-call",
+                            tool_id,
+                            ticket.pending_tool().unwrap().arguments.clone(),
+                        )],
+                    )],
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+                let decision = if allow {
+                    ResumeResult::allow()
+                } else {
+                    ResumeResult::deny(Some("denied by user".into()))
+                };
+                let command = ResumeCommand::from_ticket(&ticket, decision, 0)
+                    .with_operation_id("owned-operation");
+                let probe = Arc::new(OwnedContinuationProbe {
+                    resumes: Mutex::new(Vec::new()),
+                    recoveries: AtomicUsize::new(0),
+                    fail,
+                });
+                let (executor, opens, _, _) = counting_executor();
+                let result = executor
+                    .with_owned_tool_continuation(Some(probe.clone()))
+                    .resume(
+                        activation,
+                        command.clone(),
+                        RuntimeRunContext::new()
+                            .with_commit(committed.clone())
+                            .with_reader(committed.clone()),
+                    )
+                    .await;
+                if owned {
+                    assert_eq!(*probe.resumes.lock().unwrap(), vec![command]);
+                    assert_eq!(opens.load(Ordering::SeqCst), 0);
+                    assert!(committed.resume_ticket_for(&ticket.run_id).is_some());
+                    if fail {
+                        assert!(
+                            result
+                                .unwrap_err()
+                                .to_string()
+                                .contains("owned-continuation-probe")
+                        );
+                    } else {
+                        assert_eq!(result.unwrap(), RunState::Awaiting);
+                    }
+                } else {
+                    assert!(probe.resumes.lock().unwrap().is_empty());
+                    assert_eq!(opens.load(Ordering::SeqCst), 1);
+                    assert_eq!(result.unwrap(), RunState::Ended(EndCause::NaturalEnd));
+                }
+                assert_eq!(probe.recoveries.load(Ordering::SeqCst), 0);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk_acknowledgements()
+{
+    // R1 Runtime-minted result + Assistant ToolUse + owned tool => include exact
+    // success/error and data. R2 SDK-minted result => exclude (already SDK history).
+    // R3 unowned tool, unpaired result or User-authored ToolUse => exclude.
+    // R4 later Run / repeated projection => same ordered receipts, zero commits;
+    // loss before external delivery cannot erase a previously committed result.
+    // Context is a read-only projection, never a fabricated SDK ToolResult or
+    // durable prompt copy. No tool-result text is interpreted as instructions.
+    let committed = Arc::new(RecordingCoordinator::default());
+    let probe = OwnedContinuationProbe {
+        resumes: Mutex::new(Vec::new()),
+        recoveries: AtomicUsize::new(0),
+        fail: false,
+    };
+    let mut activation = activation_without_session_home();
+    let mut messages = Vec::new();
+    for (call, tool, role, sdk, is_error) in [
+        ("ok", "write", Role::Assistant, false, false),
+        ("failed", "write", Role::Assistant, false, true),
+        ("sdk", "write", Role::Assistant, true, false),
+        (
+            "external",
+            "mcp__external__write",
+            Role::Assistant,
+            false,
+            false,
+        ),
+        ("user", "write", Role::User, false, false),
+    ] {
+        messages.push(Message::new(
+            MessageId(format!("use-{call}")),
+            role,
+            vec![ContentBlock::tool_use(call, tool, serde_json::json!({}))],
+        ));
+        messages.push(Message::new(
+            if sdk {
+                MessageId(format!("sdk-result-{call}"))
+            } else {
+                MessageId::tool_result(call)
+            },
+            Role::Tool,
+            vec![ContentBlock::tool_result_with_error(
+                call,
+                vec![ContentBlock::text(format!(
+                    "receipt {call}: é中文🙂\nquoted tool data"
+                ))],
+                is_error,
+            )],
+        ));
+    }
+    messages.push(Message::new(
+        MessageId::tool_result("unpaired"),
+        Role::Tool,
+        vec![ContentBlock::tool_result(
+            "unpaired",
+            vec![ContentBlock::text("unpaired data")],
+        )],
+    ));
+    committed
+        .commit(ThreadCommit::assemble(
+            activation.thread_id.clone(),
+            RunDisposition::running(activation.run_id.clone()),
+            true,
+            messages,
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    let context = RuntimeRunContext::new()
+        .with_reader(committed.clone())
+        .with_commit(committed.clone());
+    let count = committed.commits.lock().unwrap().len();
+    let original =
+        crate::tool_continuation::owned_tool_result_context(&probe, &activation, &context)
+            .unwrap()
+            .unwrap()
+            .text_content();
+    let (_, json) = original.split_once('\n').unwrap();
+    let receipts: Vec<serde_json::Value> = serde_json::from_str(json).unwrap();
+    assert_eq!(receipts.len(), 2);
+    assert_eq!(receipts[0]["call_id"], "ok");
+    assert_eq!(receipts[0]["is_error"], false);
+    assert_eq!(receipts[1]["call_id"], "failed");
+    assert_eq!(receipts[1]["is_error"], true);
+    assert_eq!(
+        receipts[1]["content"][0]["text"],
+        "receipt failed: é中文🙂\nquoted tool data"
+    );
+    activation.run_id = RunId("later-run".into());
+    for _ in 0..2 {
+        let projected =
+            crate::tool_continuation::owned_tool_result_context(&probe, &activation, &context)
+                .unwrap()
+                .unwrap();
+        assert_eq!(projected.text_content(), original);
+        assert_eq!(projected.role, Role::System);
+    }
+    assert_eq!(committed.commits.lock().unwrap().len(), count);
+    assert!(probe.resumes.lock().unwrap().is_empty());
+    assert_eq!(probe.recoveries.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn owned_recovery_selects_only_the_current_runs_exact_execution_owner() {
+    // C1 current/other Run; C2 owned/external/mixed batch; C3 open/finalized;
+    // C4 durable reader+committer. Effects: R5 current+owned+open -> one recovery
+    // before ACP; R6 finalized, R7 other Run, R8 external -> no recovery;
+    // R9 mixed -> fail closed with no partial dispatch; R10 missing either
+    // durable port -> reject before opening ACP. Recovery errors propagate and
+    // do not forge a receipt. Runtime tests own actual NeverReplay execution.
+    for case in [
+        "owned",
+        "finalized",
+        "other-run",
+        "external",
+        "mixed",
+        "no-reader",
+        "no-commit",
+    ] {
+        let committed = Arc::new(RecordingCoordinator::default());
+        let activation = activation_without_session_home();
+        let owner = if case == "other-run" {
+            RunId("other-run".into())
+        } else {
+            activation.run_id.clone()
+        };
+        let mut calls = vec![ToolCall {
+            call_id: "recover-call".into(),
+            tool_id: if case == "external" {
+                "mcp__external__write".into()
+            } else {
+                "write".into()
+            },
+            arguments: serde_json::json!({}),
+        }];
+        if case == "mixed" {
+            calls.push(ToolCall {
+                call_id: "external-call".into(),
+                tool_id: "mcp__external__write".into(),
+                arguments: serde_json::json!({}),
+            });
+        }
+        let mut batch = awaken_runtime_contract::ToolBatch::for_step(
+            owner.clone(),
+            0,
+            calls.into_iter().map(|call| (call, Default::default())),
+        )
+        .unwrap();
+        if case == "finalized" {
+            batch.mark_executing("recover-call").unwrap();
+            batch
+                .complete(awaken_runtime_contract::tool::ToolOutput::ok(
+                    "recover-call",
+                    "done",
+                ))
+                .unwrap();
+            batch.finalize().unwrap();
+        }
+        committed
+            .commit(ThreadCommit::assemble(
+                activation.thread_id.clone(),
+                RunDisposition::running(owner),
+                true,
+                Vec::new(),
+                vec![awaken_runtime_contract::ActiveToolBatch::write(&Some(
+                    batch,
+                ))],
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        let probe = Arc::new(OwnedContinuationProbe {
+            resumes: Mutex::new(Vec::new()),
+            recoveries: AtomicUsize::new(0),
+            fail: true,
+        });
+        let (executor, opens, _, _) = counting_executor();
+        let executor = executor.with_owned_tool_continuation(Some(probe.clone()));
+        let mut context = RuntimeRunContext::new();
+        if case != "no-reader" {
+            context = context.with_reader(committed.clone());
+        }
+        if case != "no-commit" {
+            context = context.with_commit(committed.clone());
+        }
+        let result = executor
+            .prepare_owned_tools(&activation, &mut context)
+            .await;
+        match case {
+            "owned" => {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("owned-recovery-probe")
+                );
+                assert_eq!(probe.recoveries.load(Ordering::SeqCst), 1);
+            }
+            "mixed" | "no-reader" | "no-commit" => {
+                assert!(result.is_err());
+                assert_eq!(probe.recoveries.load(Ordering::SeqCst), 0);
+            }
+            _ => {
+                assert_eq!(result.unwrap(), None);
+                assert_eq!(probe.recoveries.load(Ordering::SeqCst), 0);
+            }
+        }
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
+        assert!(probe.resumes.lock().unwrap().is_empty());
+        assert_eq!(committed.commits.lock().unwrap().len(), 1);
+    }
+}

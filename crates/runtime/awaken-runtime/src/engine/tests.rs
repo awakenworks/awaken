@@ -1,4 +1,5 @@
 use super::*;
+use awaken_agent_contract::agent::state::Scope;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointError;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,

@@ -17,7 +17,7 @@ use awaken_agent_contract::agent::delegation::{
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{
-    Action as StateAction, Command as StateCommand, Scope, StateKey, Store, validate_batch,
+    Command as StateCommand, StateKey, Store, validate_batch,
 };
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft as EventDraft;
@@ -71,6 +71,7 @@ use awaken_runtime_contract::tool::{
 };
 use awaken_runtime_contract::tool_batch::{
     ActiveToolBatch, ToolBatch, ToolBatchPhase, ToolCallPhase, ToolWaitKind,
+    store_from_run_commands,
 };
 use awaken_runtime_contract::tool_discovery::ToolSearchInput;
 
@@ -99,7 +100,7 @@ use delegation::{
 use finalize::{finalize, finish};
 use inference::*;
 use progress::*;
-use resume::{ResumeContinuation, drive_resumed, fresh_resume_context};
+use resume::{ResumeContinuation, drive_resumed, drive_tool_batch, fresh_resume_context};
 use run_loop::*;
 pub(crate) use tool_execution::RuntimeToolOperation;
 use tool_execution::*;

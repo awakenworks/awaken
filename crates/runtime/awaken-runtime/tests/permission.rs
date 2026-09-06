@@ -775,6 +775,24 @@ async fn tool_batch_handoff_commits_exact_results_without_native_inference() {
         );
         assert_eq!(fixture.commit.commit_count(), commits);
 
+        // H4a: a finalized batch may be handed back after a lost response;
+        // the model-free reclaim reads committed truth and adds no commit/effect.
+        let mut recovery = activation();
+        recovery.input.clear();
+        assert_eq!(
+            fixture
+                .runtime
+                .recover_tool_batch(
+                    recovery,
+                    context(&fixture.commit).with_reader(fixture.commit.clone()),
+                )
+                .await
+                .unwrap(),
+            RunState::Running
+        );
+        assert_eq!(fixture.commit.commit_count(), commits);
+        assert_eq!(fixture.calls.lock().unwrap().len(), usize::from(allow));
+
         let requests = Arc::new(Mutex::new(Vec::new()));
         let next = fixture.runtime.with_llm(Arc::new(ToolThenText {
             calls: AtomicUsize::new(1),
@@ -926,6 +944,23 @@ async fn tool_batch_handoff_commit_failure_preserves_the_execution_boundary() {
             })
         );
         if reject_at == 1 {
+            // H8a: external-loop reclaim has no Native model. It must publish
+            // the NeverReplay indeterminate receipt before returning Running.
+            let mut recovery = activation();
+            recovery.input.clear();
+            assert_eq!(
+                fixture
+                    .runtime
+                    .recover_tool_batch(
+                        recovery,
+                        context(&fixture.commit).with_reader(fixture.commit.clone()),
+                    )
+                    .await
+                    .unwrap(),
+                RunState::Running
+            );
+            assert_eq!(fixture.calls.lock().unwrap().len(), 1);
+            assert_eq!(fixture.results(), vec![("call-1".into(), true)]);
             let next = fixture.runtime.with_llm(Arc::new(ToolThenText {
                 calls: AtomicUsize::new(1),
                 requests: Arc::new(Mutex::new(Vec::new())),

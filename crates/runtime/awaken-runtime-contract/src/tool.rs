@@ -720,6 +720,13 @@ impl ToolExecutionWave {
         self.end - self.start
     }
 
+    /// The canonical scheduler emits only nonempty waves. Exposing the range's
+    /// emptiness beside its length also lets consumers check that invariant.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.start == self.end
+    }
+
     #[must_use]
     pub const fn is_empty(self) -> bool {
         self.start == self.end
@@ -1387,6 +1394,25 @@ mod recovery_tests {
             ToolConcurrency::Parallel,
             ToolConcurrency::Resources(vec![ToolResourceAccess::Read(resource)]),
         ];
+        // R7: across zero/single/multiple admission limits, public range,
+        // length and emptiness observations agree and every input occurs once.
+        // This detects empty or skipped intervals in real scheduler output,
+        // rather than asserting only the implementation of an accessor.
+        for limit in [0, 1, 3, usize::MAX] {
+            let waves = tool_execution_waves(&claims, limit);
+            for wave in &waves {
+                assert!(!wave.is_empty());
+                assert_eq!(wave.is_empty(), wave.range().is_empty());
+                assert_eq!(wave.len(), wave.range().count());
+            }
+            assert_eq!(
+                waves
+                    .into_iter()
+                    .flat_map(ToolExecutionWave::range)
+                    .collect::<Vec<_>>(),
+                (0..claims.len()).collect::<Vec<_>>()
+            );
+        }
         assert_eq!(
             tool_execution_waves(&claims, 3),
             vec![
