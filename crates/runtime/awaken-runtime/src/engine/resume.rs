@@ -86,7 +86,7 @@ pub(super) async fn drive_resumed(
         &resolved.spec.instructions,
     );
     transcript.extend(fresh_context.iter().cloned());
-    let mut store = store_from_commands(reader.committed_state(thread_id), run_id);
+    let mut store = store_from_run_commands(reader.committed_state(thread_id), run_id);
     // A tool resume has exactly one durable execution authority. Validate every
     // ticket/batch axis before permission pre-commit or any tool/delegation
     // effect; non-tool pauses keep the direct resume path.
@@ -365,39 +365,18 @@ pub(super) async fn drive_resumed(
     let mut new_messages = fresh_context;
     new_messages.extend(resumed_new_messages);
     if continuation == ResumeContinuation::ToolBatch {
-        let mut ledger = StepLedger::new(transcript, new_messages, seed_state, seed_audit);
-        let mut discovery = ToolDiscoveryStateKey::load(&store)
-            .map_err(|error| Error::Execution(error.to_string()))?;
-        if let Some(disposition) = dispatch::recover_pending_tool_batch(
+        return drive_tool_batch(
             runtime,
-            context,
-            ticket.delegation_origin.as_ref(),
             resolved,
             env,
             run_id,
             thread_id,
-            &mut ledger,
-            &mut store,
-            &mut discovery,
+            ticket.delegation_origin.as_ref(),
+            context,
+            StepLedger::new(transcript, new_messages, seed_state, seed_audit),
+            store,
         )
-        .await?
-        {
-            return finalize(
-                runtime,
-                context,
-                thread_id,
-                run_id.clone(),
-                ledger.into_step_result(disposition),
-            )
-            .await;
-        }
-        // The batch recovery commits ordered results and their state before
-        // returning control. Any remaining context/audit shares that same ledger;
-        // never finalize the Run merely because the tool phase has completed.
-        if ledger.has_uncommitted() {
-            ledger.commit_delta(context, thread_id, run_id).await?;
-        }
-        return Ok(RunState::Running);
+        .await;
     }
     let step_result = drive(
         runtime,
@@ -417,6 +396,52 @@ pub(super) async fn drive_resumed(
     )
     .await?;
     finalize(runtime, context, thread_id, run_id.clone(), step_result).await
+}
+
+/// Shared permission-resume/reclaim handoff. The ledger and batch remain the
+/// only result authority; no Native inference or terminal fact is invented for
+/// a completed tool phase.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn drive_tool_batch(
+    runtime: &Runtime,
+    resolved: &ResolvedRun,
+    env: &ResolvedExecutionEnv,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+    delegation_origin: Option<&DelegationOrigin>,
+    context: &RuntimeRunContext,
+    mut ledger: StepLedger,
+    mut store: Store,
+) -> Result<RunState> {
+    let mut discovery =
+        ToolDiscoveryStateKey::load(&store).map_err(|error| Error::Execution(error.to_string()))?;
+    if let Some(disposition) = dispatch::recover_pending_tool_batch(
+        runtime,
+        context,
+        delegation_origin,
+        resolved,
+        env,
+        run_id,
+        thread_id,
+        &mut ledger,
+        &mut store,
+        &mut discovery,
+    )
+    .await?
+    {
+        return finalize(
+            runtime,
+            context,
+            thread_id,
+            run_id.clone(),
+            ledger.into_step_result(disposition),
+        )
+        .await;
+    }
+    if ledger.has_uncommitted() {
+        ledger.commit_delta(context, thread_id, run_id).await?;
+    }
+    Ok(RunState::Running)
 }
 
 #[cfg(test)]

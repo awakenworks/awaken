@@ -67,6 +67,49 @@ impl awaken_run_executor_acp::PermissionGrantObserver for AcpToolExecutionGrants
     }
 }
 
+/// Uses the same frozen export membership as one-shot MCP grants. A durable
+/// permission continuation enters Runtime directly; it never mints an extra MCP
+/// grant or creates another tool catalog/connection.
+pub(crate) struct AcpToolContinuation {
+    pub(crate) runtime: Arc<awaken_runtime::Runtime>,
+    pub(crate) exports: Arc<AcpToolExecutionGrants>,
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::resume::OwnedToolContinuation for AcpToolContinuation {
+    fn owns_tool(&self, tool_id: &str) -> bool {
+        self.exports.exported.contains(tool_id)
+    }
+
+    async fn resume(
+        &self,
+        activation: awaken_runtime_contract::activation::RunActivation,
+        command: awaken_runtime_contract::resume::ResumeCommand,
+        context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>
+    {
+        let context = activation.narrow_context(context);
+        let reader = context.reader.clone().ok_or_else(|| {
+            awaken_runtime_contract::execution::Error::Execution(
+                "owned tool resume requires committed history".into(),
+            )
+        })?;
+        self.runtime.register_snapshot(activation.snapshot);
+        self.runtime
+            .resume_tool_batch(command, reader.as_ref(), context)
+            .await
+    }
+
+    async fn recover(
+        &self,
+        activation: awaken_runtime_contract::activation::RunActivation,
+        context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>
+    {
+        self.runtime.recover_tool_batch(activation, context).await
+    }
+}
+
 /// Defense-in-depth guard around every Awaken tool exported to ACP. A normal
 /// ACP client first calls `session/request_permission`; that Allow mints the
 /// one-shot grant consumed here. Always-allow policy remains executable even if
@@ -472,6 +515,200 @@ mod tests {
             "R2"
         );
         assert!(missing.0.lock().unwrap().is_empty(), "R2 no side effect");
+    }
+    #[tokio::test]
+    async fn owned_continuation_uses_the_runtime_and_does_not_leave_an_mcp_grant() {
+        // Cause/effect table: H1 exact owned Write + Allow => Runtime invokes the
+        // frozen arguments once, commits its result, returns Running; H2 Deny
+        // => no invocation and a committed error result. Both rows: no Native
+        // model is configured; finalized reclaim never re-enters the tool; the
+        // Session MCP guard still requires a fresh approval for any new call.
+        // Membership is the same export set used by grants (canonical write yes,
+        // external MCP/lookalike no), not a second inferred tool catalog.
+        use awaken_agent_contract::agent::awaiting::{
+            AwaitTarget, PendingTool, ResumeTicket, ToolAwaitReason,
+        };
+        use awaken_agent_contract::agent::content::ContentBlock;
+        use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+        use awaken_agent_contract::agent::run::{Id as RunId, RunState};
+        use awaken_agent_contract::agent::state::StateKey;
+        use awaken_agent_contract::agent::thread::Id as ThreadId;
+        use awaken_agent_contract::thread::commit::coordinator::Coordinator;
+        use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
+        use awaken_runtime_contract::resolved::{
+            CatalogFingerprint, ModelBinding, ResolvedModelCandidate, ResolvedSpec,
+        };
+        use awaken_runtime_contract::resume::{OwnedToolContinuation, ResumeCommand, ResumeResult};
+        use awaken_runtime_contract::snapshot::{
+            AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+        };
+        use awaken_runtime_contract::{
+            ActiveToolBatch, CommittedThreadView, RuntimeRunContext, ToolBatch, ToolWaitKind,
+        };
+
+        struct RecordingTool(Arc<std::sync::Mutex<Vec<ToolCall>>>);
+        #[async_trait::async_trait]
+        impl RawTool for RecordingTool {
+            fn id(&self) -> &str {
+                "write"
+            }
+            async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+                self.0.lock().unwrap().push(call.clone());
+                Ok(ToolOutput::ok(call.call_id, "owned-write-complete"))
+            }
+        }
+        for allow in [true, false] {
+            let commit = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new());
+            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let tool: Arc<dyn RawTool> = Arc::new(RecordingTool(calls.clone()));
+            let runtime = Arc::new(awaken_runtime::Runtime::new().with_tool(tool.clone()));
+            let exports = Arc::new(AcpToolExecutionGrants::new(["write".into()]));
+            let continuation = AcpToolContinuation {
+                runtime,
+                exports: exports.clone(),
+            };
+            assert!(continuation.owns_tool("write"));
+            assert!(!continuation.owns_tool("mcp__external__write"));
+            assert!(!continuation.owns_tool("Write"));
+            let run_id = RunId("owned-run".into());
+            let thread_id = ThreadId("owned-thread".into());
+            let snapshot = ExecutableAgentSnapshot {
+                id: ExecutableAgentSnapshotId("owned-snapshot".into()),
+                metadata: Default::default(),
+                root_agent_id: AgentId("owned-agent".into()),
+                fingerprint: CatalogFingerprint("owned-fp".into()),
+                resolved_spec: ResolvedSpec {
+                    model_candidates: Vec::new(),
+                    catalog_fingerprint: CatalogFingerprint("owned-fp".into()),
+                    instructions: String::new(),
+                    max_steps: 4,
+                    delegation_limits: Default::default(),
+                    model_binding: ResolvedModelCandidate::host(ModelBinding::new(
+                        "test",
+                        "test",
+                        "acp:claude",
+                    )),
+                    tool_descriptors: vec![descriptor("write")],
+                    plugin_ids: Vec::new(),
+                    plugin_config: Default::default(),
+                    context_policy: Default::default(),
+                    tool_presentation: Default::default(),
+                },
+            };
+            let activation = awaken_runtime_contract::activation::RunActivation {
+                run_id: run_id.clone(),
+                thread_id: thread_id.clone(),
+                snapshot: snapshot.clone(),
+                input: Vec::new(),
+                delegation_origin: None,
+                model_ref_override: None,
+                data_subject_id: None,
+                tool_capability_narrowing: Default::default(),
+            };
+            let call = ToolCall {
+                call_id: "owned-call".into(),
+                tool_id: "write".into(),
+                arguments: serde_json::json!({"file_path":"/workspace/output.txt", "content":"é中文🙂\\\"\n".repeat(3000)}),
+            };
+            let ticket = ResumeTicket::new(
+                "owned-permission",
+                run_id.clone(),
+                thread_id.clone(),
+                snapshot.id.0,
+                snapshot.fingerprint.0,
+                AwaitTarget::ToolCall {
+                    reason: ToolAwaitReason::Permission,
+                    call_id: call.call_id.clone(),
+                    tool: PendingTool {
+                        tool_id: call.tool_id.clone(),
+                        arguments: call.arguments.clone(),
+                    },
+                },
+            );
+            let mut batch =
+                ToolBatch::for_step(run_id.clone(), 0, [(call.clone(), Default::default())])
+                    .unwrap();
+            batch
+                .mark_awaiting(
+                    &call.call_id,
+                    ToolWaitKind::ToolPermission,
+                    &ticket.correlation_id,
+                )
+                .unwrap();
+            commit
+                .commit(ThreadCommit::assemble(
+                    thread_id.clone(),
+                    RunDisposition::awaiting(ticket.clone()),
+                    true,
+                    vec![Message::new(
+                        MessageId::assistant(&run_id, 0),
+                        Role::Assistant,
+                        vec![ContentBlock::tool_use(
+                            &call.call_id,
+                            &call.tool_id,
+                            call.arguments.clone(),
+                        )],
+                    )],
+                    vec![ActiveToolBatch::write(&Some(batch))],
+                    Vec::new(),
+                ))
+                .await
+                .unwrap();
+            let context = RuntimeRunContext::new()
+                .with_reader(commit.clone())
+                .with_commit(commit.clone());
+            let decision = if allow {
+                ResumeResult::allow()
+            } else {
+                ResumeResult::deny(Some("user denied".into()))
+            };
+            assert_eq!(
+                continuation
+                    .resume(
+                        activation.clone(),
+                        ResumeCommand::from_ticket(&ticket, decision, 0),
+                        context.clone()
+                    )
+                    .await
+                    .unwrap(),
+                RunState::Running
+            );
+            assert_eq!(
+                *calls.lock().unwrap(),
+                if allow {
+                    vec![call.clone()]
+                } else {
+                    Vec::new()
+                }
+            );
+            assert!(commit.resume_ticket(&run_id).is_none());
+            let results = commit.committed_messages(&thread_id);
+            let result = results
+                .iter()
+                .find(|message| message.id == MessageId::tool_result(&call.call_id))
+                .unwrap();
+            assert!(
+                matches!(&result.content[0], ContentBlock::ToolResult { tool_use_id, is_error, .. }
+                if tool_use_id == &call.call_id && *is_error != allow)
+            );
+            let count = commit.commit_count();
+            assert_eq!(
+                continuation.recover(activation, context).await.unwrap(),
+                RunState::Running
+            );
+            assert_eq!(commit.commit_count(), count);
+            let guarded = PermissionGuardedAcpTool::new(tool, Arc::new(AskPolicy), exports.clone());
+            assert!(
+                guarded
+                    .invoke(call)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("TOOL_APPROVAL_REQUIRED")
+            );
+            assert!(exports.pending.lock().unwrap().is_empty());
+            assert_eq!(calls.lock().unwrap().len(), usize::from(allow));
+        }
     }
 }
 

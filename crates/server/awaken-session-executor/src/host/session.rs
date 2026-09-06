@@ -1687,6 +1687,18 @@ impl SharedHost {
                             observer as Arc<dyn awaken_run_executor_acp::PermissionGrantObserver>
                         }),
                     )
+                    .map(|executor| {
+                        let continuation = acp_tool_grants.clone().map(|exports| {
+                            let port: Arc<
+                                dyn awaken_runtime_contract::resume::OwnedToolContinuation,
+                            > = Arc::new(crate::acp_tool_export::AcpToolContinuation {
+                                runtime: runtime.clone(),
+                                exports,
+                            });
+                            port
+                        });
+                        Arc::new(executor.with_owned_tool_continuation(continuation))
+                    })
                 })
                 .transpose()
                 .map_err(HostError::internal)?;

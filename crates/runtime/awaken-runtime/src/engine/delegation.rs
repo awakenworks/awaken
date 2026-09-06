@@ -422,7 +422,7 @@ pub(super) async fn resume_delegation(
         )
         .await;
     }
-    let mut store = store_from_commands(reader.committed_state(thread_id), run_id);
+    let mut store = store_from_run_commands(reader.committed_state(thread_id), run_id);
     let step = match derive_delegation_origin(
         ticket.delegation_origin.as_ref(),
         &resolved.agent_id.0,
@@ -634,7 +634,7 @@ pub(crate) async fn reconcile_delegation_cancellations(
     let mut delivered = 0usize;
     let mut first_error = None;
     for run_id in run_ids {
-        let store = store_from_commands(commands.clone(), &run_id);
+        let store = store_from_run_commands(commands.clone(), &run_id);
         let Some(registry) =
             RunDelegations::load(&store).map_err(|error| Error::Execution(error.to_string()))?
         else {

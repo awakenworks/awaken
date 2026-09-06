@@ -760,6 +760,22 @@ impl Runtime {
         crate::engine::run_commands::resume_tool_batch(self, command, reader, context).await
     }
 
+    /// Recover committed tool progress for a Running activation without invoking
+    /// the Native model. Shares activation validation, cancellation, plugin
+    /// resolution and batch recovery with ordinary execution. The external-loop
+    /// owner must supply the original activation and continue after `Running`;
+    /// consumed permission commands are never replayed to recover an effect.
+    pub async fn recover_tool_batch(
+        &self,
+        activation: awaken_runtime_contract::activation::RunActivation,
+        context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> Result<
+        awaken_agent_contract::agent::run::RunState,
+        awaken_runtime_contract::execution::Error,
+    > {
+        crate::engine::run_commands::recover_tool_batch(self, activation, context).await
+    }
+
     /// Commit the authoritative terminal `Cancelled` fact and clear any awaiting
     /// ticket. Durable ingress invokes this after claiming a cancellation intent;
     /// live control is only the best-effort signal that stops an old in-flight
