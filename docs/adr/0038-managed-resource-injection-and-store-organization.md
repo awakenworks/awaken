@@ -440,11 +440,34 @@ even when its bytes are unchanged. A missing Environment is not an observed
 empty directory. Terminal receipt-only recovery remains read-only and does not
 invent a capture from historical File metadata.
 
+**Public read projection.** `awaken-protocol-awaken` owns the read-only
+`GET /v1/awaken/files/output-capture?scope_id=...` path and its strong wire types.
+The existing Resources router injects a method adapter over the same
+`FileApplicationService` and required edge-selected Workspace as standard Files.
+The authorization route registry classifies this extension under `file.read`;
+its existing Hosted profile and Workspace path wrapper project the same family.
+A scope id is a File filter, not a Session existence query: an unknown or foreign
+Session filter returns no capture in this Workspace and creates no Session state.
+Missing Workspace fails 404, invalid query fails 400, and unavailable/corrupt
+capture evidence fails 503 instead of being represented as unknown. There is no
+public replacement endpoint. Revisions are decimal strings so JavaScript clients
+retain the full portable catalog range without integer rounding.
+
+Cowork reads this observation before fetching standard Files metadata, partitions
+current versus historical files by the exact returned ids, and downloads by id
+through the existing authenticated Files API. Unknown, explicit empty, deleted
+selected File, and failed observation reads have distinct presentations. A missing
+selected File stays unavailable; neither a historical version nor successful bytes
+from another id can replace it. A failed refresh removes the current presentation
+until authoritative reread succeeds; transient read errors clear after recovery.
+Historical Files and immutable bytes keep their original lifecycle. An observation
+is still not a Run success or user acceptance declaration.
+
 **Implementation boundary (2026-09-06).** Catalog/application ports, three storage
-adapters, Harvester and local/HTTP publication adapters are wired. The public API
-projection and Cowork's multi-turn final-delivery journey are not yet integrated;
-public Files listing and Cowork retain their historical-version behavior. These
-mechanism tests are not evidence of completed multi-turn business E2E support.
+adapters, Harvester, local/HTTP publication adapters and public read projection
+are wired. Cowork consumes exact output selection and preserves historical Files.
+Mechanism and API/UI tests are not completed Native/Claude multi-turn business E2E
+or evidence of equivalent behavior in the Claude Cowork application.
 Cause/effect rules live beside catalog/application, Worker HTTP transport,
 Coordinator fencing and Runtime Host tests. They cover database migration and
 reconnect, first-write races, A→B→A, authority and response validation, failures

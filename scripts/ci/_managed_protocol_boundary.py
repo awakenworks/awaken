@@ -11,6 +11,7 @@ import _execution_ownership_fitness
 AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
     {
         ("GET", "/v1/awaken/memory-stores/{}/dream-policy"),
+        ("GET", "/v1/awaken/files/output-capture"),
         ("PUT", "/v1/awaken/memory-stores/{}/dream-policy"),
         ("GET", "/v1/awaken/sessions/{}/live-inbox"),
         ("POST", "/v1/awaken/sessions"),
