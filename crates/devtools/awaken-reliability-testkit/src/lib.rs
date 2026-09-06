@@ -92,7 +92,7 @@ pub fn write_observation_trace(name: &str, family: &str, steps: serde_json::Valu
     assert!(name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-'));
     let directory = PathBuf::from(directory);
     std::fs::create_dir_all(&directory).expect("observation trace directory");
-    let value = serde_json::json!({"schema_version": 1, "projection_id": "session-observations-v1", "name": name, "family": family, "steps": steps});
+    let value = serde_json::json!({"schema_version": 3, "projection_id": "session-observations-v3", "name": name, "family": family, "steps": steps});
     std::fs::write(
         directory.join(format!("{name}.json")),
         serde_json::to_vec_pretty(&value).unwrap(),

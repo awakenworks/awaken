@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 // @ts-ignore -- shared JS harness deliberately serves TS restart scenarios.
-import { availablePort, pass, hardKillServer, realServerEnv, spawnServer, startUpstream, stopServer, waitForPort } from './harness.mjs';
+import { availablePort, pass, hardKillServer, waitForValue, realServerEnv, spawnServer, startUpstream, stopServer, waitForPort } from './harness.mjs';
 // @ts-ignore -- shared JS fixture deliberately serves TS scenarios.
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import {
@@ -54,10 +54,14 @@ async function main(): Promise<void> {
   const fixtureA = await startCalcFixture(TOKEN_A);
   const fixtureB = await startCalcFixture(TOKEN_B);
   const upstream = await startUpstream('mcp');
+  const observationDir = path.join(root, 'realization-observations');
+  fs.mkdirSync(observationDir);
   const env = {
+    AWAKEN_REALIZATION_OBSERVATION_DIR: observationDir,
     SESSION_DEPLOYMENT_STORAGE_DIR: path.join(root, 'runtime'),
     ...realServerEnv('mcp', upstream, { mode: 'management' }),
   };
+  const caseFixtures: any[] = [];
   let server: any = null;
   try {
     let started = spawnServer('management', port, env);
@@ -136,11 +140,134 @@ async function main(): Promise<void> {
     assert.equal(fixtureB.calls.filter((call: any) => call.method === 'tools/call').length, 2);
     pass('R3 restart never republishes a removed generation');
 
+    // Cause/effect graph: desired count -> reachable fault points;
+    // fault point -> durable active/ACK state at death;
+    // SIGKILL -> loss of process-local projections -> new-process handshake;
+    // durable desired generations + restart -> exact recovered active/ACK set;
+    // persisted update identity + HTTP replay -> unchanged adapter I/O.
+    // The constrained decision table below selects every reachable count/point
+    // rule and checks both pre-crash and recovered effects for that same Session.
+    // Extended cause/effect design: F1 stage complete before activation; F2
+    // one of many publications applied; F3 an old generation drained; F4 all
+    // publication effects applied before ACK; F5 ACK committed before response.
+    // Cross F1..F5 with one/many attachments. Empty publication is reachable
+    // only through retirement, so F3..F5 also run with zero desired attachments.
+    // Each rule requires the real HTTP adapter and production driver, exact
+    // crash marker, durable generation/ACK readback, restart and a terminal
+    // observation. A dropped rule must fail the formal coverage manifest.
+    const rules: Array<{ boundary: string; count: number }> = [];
+    for (const count of [1, 2]) {
+      for (const boundary of ['stage', 'publish-one', 'drain-one', 'published', 'ack-after']) rules.push({ boundary, count });
+    }
+    for (const boundary of ['drain-one', 'published', 'ack-after']) rules.push({ boundary, count: 0 });
+    const chainTraces: any[] = [];
+    const tracePath = path.join(observationDir, 'trace.ndjson');
+    const markerPath = path.join(observationDir, 'boundary.json');
+    const configPath = path.join(observationDir, 'armed.json');
+    // J1 every incomplete final-record prefix contributes no observation;
+    // J2 newline commits exactly one record; J3 malformed committed JSON fails.
+    // This append protocol permits concurrent reads without hiding corruption.
+    const parseCommittedTrace = (bytes: string): any[] =>
+      bytes.slice(0, bytes.lastIndexOf('\n') + 1).split('\n').filter(Boolean).map(line => JSON.parse(line));
+    const firstRecord = JSON.stringify({ sequence: 0, value: '中文' }) + '\n';
+    const nextRecord = JSON.stringify({ sequence: 1, value: 'next' }) + '\n';
+    for (let cut = 0; cut < nextRecord.length; cut++) {
+      assert.deepEqual(parseCommittedTrace(firstRecord + nextRecord.slice(0, cut)), [JSON.parse(firstRecord)], `J1 prefix ${cut}`);
+    }
+    assert.equal(parseCommittedTrace(firstRecord + nextRecord).length, 2, 'J2 committed record');
+    assert.throws(() => parseCommittedTrace(firstRecord + '{invalid}\n'), SyntaxError, 'J3 corruption');
+    const readTrace = (): any[] => fs.existsSync(tracePath)
+      ? parseCommittedTrace(fs.readFileSync(tracePath, 'utf8')) : [];
+    const arm = (sessionId: string, boundary: string) => {
+      fs.writeFileSync(`${configPath}.tmp`, JSON.stringify({ session_id: sessionId, boundary }));
+      fs.renameSync(`${configPath}.tmp`, configPath);
+    };
+    for (const { boundary, count } of rules) {
+      const rule = `${boundary}-${count}`;
+      client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, maxRetries: 0 });
+      // Isolate each rule's I/O oracle: recovery of earlier Sessions may run
+      // concurrently, so shared global fixture counters cannot identify replay.
+      const caseVault = await client.beta.vaults.create({ display_name: rule, betas: BETAS });
+      const names = Array.from({ length: Math.max(count, 1) }, (_, index) => index === 0 ? 'calc' : `calc${index}`);
+      const oldFixtures = await Promise.all(names.map(() => startCalcFixture(TOKEN_A)));
+      const newFixtures = await Promise.all(names.map(() => startCalcFixture(TOKEN_B)));
+      caseFixtures.push(...oldFixtures, ...newFixtures);
+      for (const [fixtures, token] of [[oldFixtures, TOKEN_A], [newFixtures, TOKEN_B]] as const) {
+        for (const fixture of fixtures) await client.beta.vaults.credentials.create(caseVault.id, { auth: { type: 'static_bearer', mcp_server_url: fixture.url, token }, betas: BETAS });
+      }
+      const originalServers: McpServer[] = names.map((name, index) => ({ name, type: 'url', url: oldFixtures[index].url }));
+      const desired: McpServer[] = names.slice(0, count).map((name, index) => ({ name, type: 'url', url: newFixtures[index].url }));
+      const candidate = await client.beta.sessions.create({
+        agent: alwaysAllowMcpAgent('assistant', originalServers), environment_id: 'env_local', vault_ids: [caseVault.id], betas: BETAS,
+      });
+      fs.rmSync(tracePath, { force: true });
+      fs.rmSync(markerPath, { force: true });
+      arm(candidate.id, boundary);
+      const pending = update(client, candidate.id, desired, `crash-${rule}`).then(() => 'response', () => 'interrupted');
+      await waitForValue(() => fs.existsSync(markerPath), Boolean, `${rule}: exact production boundary`, { timeoutMs: 30_000 });
+      const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+      assert.equal(marker.point, boundary);
+      const initializationsBeforeCrash = newFixtures.map(fixture => fixture.calls.filter((call: any) => call.method === 'initialize').length);
+      await hardKillServer(server, `MCP exact boundary ${rule}`);
+      server = null;
+      assert.equal(await pending, 'interrupted', `${rule}: no response before crash`);
+      const interrupted = readTrace();
+      const lastRoot = interrupted.filter(event => event.data.attachments).at(-1).data;
+      const active = lastRoot.attachments.filter((a: any) => a.state === 'active');
+      if (boundary === 'ack-after') assert.ok(active.every((a: any) => a.ack), `${rule}: durable ACK`);
+      else if (count > 0 && boundary !== 'stage') assert.ok(active.some((a: any) => !a.ack), `${rule}: ACK not yet committed`);
+      fs.appendFileSync(tracePath, `${JSON.stringify({ sequence: interrupted.length, session: candidate.id, point: 'crash', data: {} })}\n`);
+      arm(candidate.id, '');
+      started = spawnServer('management', port, env);
+      server = started.server;
+      baseUrl = started.baseUrl;
+      await waitForPort(port, 180_000, server);
+      client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, maxRetries: 0 });
+      const restored = await client.beta.sessions.retrieve(candidate.id, { betas: BETAS });
+      assert.deepEqual(restored.agent.mcp_servers, desired, `${rule}: exact desired generation`);
+      await waitForValue(readTrace, events => events.slice(interrupted.length + 1).some((event: any) => event.point === 'complete'), `${rule}: recovered terminal driver`, { timeoutMs: 30_000 });
+      // Every desired endpoint must perform a real authenticated handshake in
+      // the new process, including the second attachment; zero desired means
+      // no handshake. Driver observations alone cannot establish actual HTTP I/O.
+      for (let index = 0; index < newFixtures.length; index++) {
+        const actual = newFixtures[index].calls.filter((call: any) => call.method === 'initialize').length;
+        assert.equal(actual, initializationsBeforeCrash[index] + (index < count ? 1 : 0), `${rule}: endpoint ${index} cold handshake`);
+      }
+      // Replay the persisted update identity: no new generation or adapter I/O.
+      const callsBeforeReplay = newFixtures.reduce((total, fixture) => total + fixture.calls.length, 0);
+      await update(client, candidate.id, desired, `crash-${rule}`);
+      assert.equal(newFixtures.reduce((total, fixture) => total + fixture.calls.length, 0), callsBeforeReplay, `${rule}: exact HTTP replay`);
+      const observed = readTrace();
+      const terminalIndex = observed.findIndex((event, index) => index > interrupted.length && event.point === 'complete');
+      const events = observed.slice(0, terminalIndex + 1);
+      const finalRoot = events.filter(event => event.data.attachments).at(-1).data;
+      const finalActive = finalRoot.attachments.filter((a: any) => a.state === 'active');
+      assert.equal(finalRoot.created, lastRoot.created, `${rule}: creation observation retained`);
+      assert.equal(finalActive.length, count, `${rule}: active cardinality`);
+      assert.ok(finalActive.every((a: any) => a.ack), `${rule}: recovery ACK is durable`);
+      if (count > 0) await sendManagedMessage(client, candidate.id, 'add 2 5', BETAS);
+      chainTraces.push({ rule, cut: boundary, count, trace: events });
+      fs.rmSync(configPath);
+      pass(`exact MCP crash/recovery ${rule}`);
+    }
+    if (process.env.AWAKEN_OBSERVATION_TRACE_DIR) {
+      fs.mkdirSync(process.env.AWAKEN_OBSERVATION_TRACE_DIR, { recursive: true });
+      fs.writeFileSync(path.join(process.env.AWAKEN_OBSERVATION_TRACE_DIR, 'realization-http-crashes.json'), JSON.stringify({
+        schema_version: 3, projection_id: 'session-observations-v3', name: 'realization-http-crashes', family: 'realization', steps: chainTraces,
+      }, null, 2));
+    }
+
     const serialized = JSON.stringify(afterRemovalRestart);
     assert.ok(!serialized.includes(TOKEN_A) && !serialized.includes(TOKEN_B));
     console.log('E2E PASS: ADR-0066 MCP recovery decision table.');
   } finally {
+    const failedTrace = path.join(observationDir, 'trace.ndjson');
+    if (process.env.AWAKEN_OBSERVATION_TRACE_DIR && fs.existsSync(failedTrace)) {
+      fs.mkdirSync(process.env.AWAKEN_OBSERVATION_TRACE_DIR, { recursive: true });
+      fs.copyFileSync(failedTrace, path.join(process.env.AWAKEN_OBSERVATION_TRACE_DIR, 'last-realization.ndjson'));
+    }
     if (server) await stopServer(server);
+    for (const fixture of caseFixtures) await fixture.close();
     await fixtureA.close();
     await fixtureB.close();
     upstream.close();

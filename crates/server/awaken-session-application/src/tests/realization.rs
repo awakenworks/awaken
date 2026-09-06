@@ -4285,13 +4285,19 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     let fixture = publication_fixture;
 
     // A7: cardinality 0/1/many x no predecessor/old unacknowledged Active x
-    // exact/renewed lease. Stage returns both generations; activation retires
+    // exact/renewed lease. With zero attachments, predecessor=true is
+    // unreachable and is omitted instead of counting duplicate coverage.
+    // Actual lease expiries accompany the rule ID so relabeling cannot fake renewal.
+    // Stage returns both generations; activation retires
     // old authority, so only new generations may appear in Publish. Recreate
     // the application between activation and ACK, then replay the ACK: the
     // durable publication/drain sets and receipt times must remain unchanged.
     let mut publication_traces = Vec::new();
     for count in 0..=2 {
         for predecessor in [false, true] {
+            if count == 0 && predecessor {
+                continue;
+            }
             for renewed in [false, true] {
                 let id = format!("publish-set-{count}-{predecessor}-{renewed}");
                 let (mut session, lease, _) = fixture(&id);
@@ -4334,6 +4340,13 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     .iter()
                     .map(|r| key(&r.generation))
                     .collect::<Vec<_>>();
+                let expiry_before = repo
+                    .get(&id)
+                    .await
+                    .unwrap()
+                    .realization
+                    .unwrap()
+                    .expires_at_unix_ms;
                 if renewed {
                     application
                         .renew_session_realization(
@@ -4370,7 +4383,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     .filter(|a| a.state == awaken_session_contract::McpAttachmentState::Active)
                     .map(|a| format!("{}:{}", a.attachment_id.0, a.generation.0))
                     .collect::<Vec<_>>();
-                publication_traces.push(serde_json::json!({"staged": staged, "active": active, "published": publish.iter().map(key).collect::<Vec<_>>(), "drained": drain.iter().map(key).collect::<Vec<_>>() }));
+                publication_traces.push(serde_json::json!({"rule": format!("count-{count}-predecessor-{predecessor}-renewed-{renewed}"), "cause": {"expiry_before": expiry_before, "expiry_after": durable.realization.as_ref().unwrap().expires_at_unix_ms}, "staged": staged, "active": active, "published": publish.iter().map(key).collect::<Vec<_>>(), "drained": drain.iter().map(key).collect::<Vec<_>>() }));
                 assert_eq!(publish.len(), count, "A7 {id}");
                 assert!(
                     publish.iter().all(|g| g.generation.0 == 2),

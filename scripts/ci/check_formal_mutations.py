@@ -355,12 +355,12 @@ class MutationOracleTests(unittest.TestCase):
             # Q5 a present name with another family's relation cannot count as
             # the required producer. Q6 a valid partial run must still fail the
             # complete gate, even when the output directory already exists.
-            document = {"schema_version": 1, "projection_id": "session-observations-v1", "name": "binding-apply", "family": "processed", "steps": [{}]}
+            document = {"schema_version": 3, "projection_id": "session-observations-v3", "name": "binding-apply", "family": "processed", "steps": [{}]}
             write_json(raw / "binding-apply.json", document)
             with self.assertRaisesRegex(ValueError, "scenario/family drift"):
                 render_observations(raw, output, ROOT, manifest, False)
             document["family"] = "root"
-            document["steps"] = [{"before": {"exists": True, "revision": 1, "created": 100, "updated": 100}, "after": {"exists": True, "revision": 2, "created": 100, "updated": 200}, "now": 200}]
+            document["steps"] = [{"rule": "binding-apply", "before": {"exists": True, "revision": 1, "created": 100, "updated": 100}, "after": {"exists": True, "revision": 2, "created": 100, "updated": 200}, "now": 200}]
             write_json(raw / "binding-apply.json", document)
             with self.assertRaisesRegex(ValueError, "coverage is incomplete"):
                 render_observations(raw, output, ROOT, manifest, True)
@@ -883,12 +883,225 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
             definition = manifest["session_observations"]["families"][family]
             check_tlc_model_mutations(tlc_jar, module, baseline, config,
                 [(mutant, config, "constant:TraceRefines")], dependencies=(definition["model"], *definition["dependencies"]))
+    check_observation_rule_mutants(trace_dir, manifest)
+    check_realization_trace_mutants(tlc_jar, trace_dir, manifest)
     print("Production observation trace mutation score: 4/4 killed")
+
+
+def check_observation_rule_mutants(trace_dir: Path, manifest: dict) -> None:
+    from copy import deepcopy
+    from render_runtime_refinement_traces import render_observations
+    killed = 0
+    # Q7 causes: every emitted decision rule independently absent, duplicated,
+    # renamed, or replaced with another partition while retaining its label.
+    # Effect: coverage rejects before TLC. All originals first render green.
+    for name in manifest["session_observations"]["required_scenarios"]:
+        original = json.loads((trace_dir / f"{name}.json").read_text())
+        with tempfile.TemporaryDirectory() as temp:
+            raw, output = Path(temp) / "raw", Path(temp) / "out"
+            raw.mkdir()
+            path = raw / f"{name}.json"
+            write_json(path, original)
+            render_observations(raw, output, ROOT, manifest, False)
+            for index in range(len(original["steps"])):
+                for fault in ["delete", "duplicate", "rename"]:
+                    doc = deepcopy(original)
+                    if fault == "delete": del doc["steps"][index]
+                    elif fault == "duplicate": doc["steps"].append(doc["steps"][index])
+                    else: doc["steps"][index]["rule"] = "unknown-rule"
+                    write_json(path, doc)
+                    try:
+                        render_observations(raw, output, ROOT, manifest, False)
+                    except ValueError as error:
+                        if not any(text in str(error) for text in ["empty observation", "rule coverage drift"]): raise
+                        killed += 1
+                    else: raise SystemExit(f"coverage mutant survived: {name}/{index}/{fault}")
+            if name in {"publication-cardinality-renewal", "binding-clock-cases", "store-torn-prefix", "realization-http-crashes"}:
+                for index in range(len(original["steps"])):
+                    doc = deepcopy(original)
+                    doc["steps"][index] = deepcopy(original["steps"][(index + 1) % len(original["steps"])])
+                    doc["steps"][index]["rule"] = original["steps"][index]["rule"]
+                    write_json(path, doc)
+                    try: render_observations(raw, output, ROOT, manifest, False)
+                    except ValueError as error:
+                        if "rule conditions drift" not in str(error): raise
+                        killed += 1
+                    else: raise SystemExit(f"relabeled partition survived: {name}/{index}")
+    print(f"Observation rule coverage mutations: {killed}/{killed} killed")
+
+
+def observation_field_paths(value, schema, path=()):
+    """Walk every present wire field, including every array element/phase."""
+    yield path, schema, value
+    if isinstance(schema, tuple) and schema[0] is None:
+        if value is None: return
+        schema = schema[1]
+    if isinstance(schema, dict):
+        for key, child in schema.items(): yield from observation_field_paths(value[key], child, (*path, key))
+    elif isinstance(schema, list):
+        for index, child in enumerate(value): yield from observation_field_paths(child, schema[0], (*path, index))
+
+
+def replace_observation_field(value, path, replacement=None, *, delete=False):
+    from copy import deepcopy
+    result = deepcopy(value)
+    parent = result
+    for key in path[:-1]: parent = parent[key]
+    if delete: del parent[path[-1]]
+    else: parent[path[-1]] = replacement
+    return result
+
+
+def check_realization_trace_mutants(tlc_jar: Path, trace_dir: Path, manifest: dict) -> None:
+    from copy import deepcopy
+    from render_runtime_refinement_traces import (render_observations, module_name, project_realization_trace,
+        normalize_observation_times, observation_value, realization_event_schema, validate_observation_schema,
+        GENERATION_SCHEMA, LEASE_SCHEMA, OBSERVATION_SET_FIELDS)
+    name = "realization-http-crashes"
+    original = json.loads((trace_dir / f"{name}.json").read_text())
+    # Q8 cause/effect graph: phase -> required wire fields -> shape rejection;
+    # complete reference + exact root/plan -> admitted call/report; any changed
+    # immutable coordinate or widened expiry -> rejection. Crossing every rule,
+    # event occurrence, array element and recovery side prevents one witness
+    # (formerly published-2) from substituting for the entire decision table.
+    # Q9 null is a fault only for NON-nullable fields. Root legacy optionals
+    # retain their wire meaning. Unknown fields/types never become default facts.
+    # Q10 deletion/duplication/swapping applies to each reachable phase boundary;
+    # swapping two same-phase independent calls is a positive permutation case.
+    # Q11 same-generation root renewal is positive: shorter existing evidence
+    # remains admissible. Reject-all and equality-only "fixes" must fail here.
+    schema_killed, semantic_cases, positives, report = 0, [], [], []
+    bases = {}
+    def projected(events):
+        return normalize_observation_times([{"trace": project_realization_trace(events)}])[0]["trace"]
+    def expression(step, events):
+        before, after = bases[step["rule"]][1], projected(events)
+        changes = []
+        if len(before) == len(after):
+            for i, (left, right) in enumerate(zip(before, after), 1):
+                for key in right:
+                    if left[key] != right[key]:
+                        changes.append(f'![{i}].{key} = {observation_value(right[key], as_set=key in OBSERVATION_SET_FIELDS)}')
+            value = bases[step["rule"]][0]
+            if changes: value = "[" + value + " EXCEPT " + ", ".join(changes) + "]"
+        else: value = observation_value(after)
+        return f'RealizationTraceIsRefinement({value}, {observation_value(step["cut"])}, {step["count"]})'
+    for index, step in enumerate(original["steps"]):
+        events = step["trace"]
+        bases[step["rule"]] = (f"Base{index}", projected(events))
+        positives.append(expression(step, events))
+        for event_index, event in enumerate(events):
+            schema = realization_event_schema(event)
+            for path, field_schema, value in observation_field_paths(event, schema):
+                if not path: continue
+                nullable = isinstance(field_schema, tuple) and field_schema[0] is None
+                underlying = field_schema[1] if nullable else field_schema
+                invalid = [] if isinstance(underlying, dict) else {} if isinstance(underlying, list) else True if underlying == "uint" else 0 if underlying == "bool" else False
+                faults = [("type", invalid)] + ([] if nullable else [("null", None)])
+                if underlying == "text": faults.append(("empty", ""))
+                elif underlying == "uint": faults.extend([("negative", -1), ("overflow", 2**64), ("fraction", 1.5)])
+                elif isinstance(underlying, tuple): faults.append(("unknown-enum", "unknown-observation"))
+                elif isinstance(underlying, list) and value: faults.append(("duplicate-element", value + [value[0]]))
+                if isinstance(path[-1], str): faults.append(("missing", None))
+                for fault, replacement in faults:
+                    mutant = replace_observation_field(event, path, replacement, delete=fault == "missing")
+                    try: validate_observation_schema(mutant, realization_event_schema(mutant), "event")
+                    except ValueError as error:
+                        if "observation schema violation" not in str(error): raise
+                        schema_killed += 1
+                    else: raise SystemExit(f"schema mutant survived: {step['rule']}/{event_index}/{path}/{fault}")
+                if isinstance(underlying, dict):
+                    mutant = replace_observation_field(event, path, dict(value or {}, unexpected_observation=True))
+                    try: validate_observation_schema(mutant, realization_event_schema(mutant), "event")
+                    except ValueError as error:
+                        if "observation schema violation" not in str(error): raise
+                        schema_killed += 1
+                    else: raise SystemExit(f"unknown-field mutant survived: {step['rule']}/{event_index}/{path}")
+                if field_schema == [GENERATION_SCHEMA]:
+                    # Q13 collection completeness is checked even when a crash
+                    # prevents the omitted second effect from executing.
+                    for item in range(len(value)):
+                        mutated = deepcopy(events)
+                        mutated[event_index] = replace_observation_field(event, (*path, item), delete=True)
+                        semantic_cases.append((step, mutated, f"{step['rule']}/{event_index}/{path}/missing-element-{item}"))
+                reference = field_schema == GENERATION_SCHEMA
+                asserted_lease = field_schema == LEASE_SCHEMA and event["point"] in {"projection", "stage", "published", "complete"}
+                if reference or asserted_lease:
+                    for field, old in value.items():
+                        new = old + (999999999 if "expires" in field else 999) if type(old) is int else "foreign-observation"
+                        mutated = deepcopy(events)
+                        mutated[event_index] = replace_observation_field(event, (*path, field), new)
+                        semantic_cases.append((step, mutated, f"{step['rule']}/{event_index}/{path}/{field}"))
+            for field in ("sequence", "session"):
+                mutated = deepcopy(events)
+                mutated[event_index][field] = event[field] + 999 if field == "sequence" else "foreign-session"
+                semantic_cases.append((step, mutated, f"{step['rule']}/{event_index}/{field}"))
+            for operation in ("delete", "duplicate", "swap"):
+                if operation == "swap" and event_index + 1 == len(events): continue
+                mutated = deepcopy(events)
+                if operation == "delete": del mutated[event_index]
+                elif operation == "duplicate": mutated.insert(event_index, deepcopy(event))
+                else: mutated[event_index], mutated[event_index + 1] = mutated[event_index + 1], mutated[event_index]
+                for i, item in enumerate(mutated): item["sequence"] = i
+                label = f"{step['rule']}/{event_index}/{operation}"
+                if operation == "swap" and event["point"] == events[event_index + 1]["point"]:
+                    positives.append(expression(step, mutated))
+                else: semantic_cases.append((step, mutated, label))
+        renewed = deepcopy(events)
+        for event in renewed:
+            data = event["data"]
+            if "attachments" in data:
+                if data["lease"]: data["lease"]["expires_at_unix_ms"] += 1000
+                for attachment in data["attachments"]:
+                    if attachment["claim"]: attachment["claim"]["lease_expires_at_unix_ms"] += 1000
+        positives.append(expression(step, renewed))
+
+    artifact_root = os.environ.get("AWAKEN_FORMAL_MUTATION_EVIDENCE_DIR")
+    with tempfile.TemporaryDirectory(prefix="awaken-observation-matrix-") as temp:
+        raw, rendered = Path(temp) / "raw", Path(temp) / "rendered"
+        raw.mkdir()
+        write_json(raw / f"{name}.json", original)
+        render_observations(raw, rendered, ROOT, manifest, False)
+        module = module_name(name)
+        config = (rendered / f"{module}.cfg").read_text()
+        declarations = "\n".join(f"{symbol} == {observation_value(trace)}" for symbol, trace in bases.values())
+        prelude = f"---- MODULE {module} ----\nEXTENDS SessionRealizationMutex\n" + declarations + "\nTraceInit == Init\nTraceNext == UNCHANGED vars\nTraceSpec == TraceInit /\\ [][TraceNext]_vars\n"
+        def model(expressions): return prelude + "TraceRefines == /\\ " + "\n    /\\ ".join(expressions) + "\n" + "=" * 77 + "\n"
+        check_tlc_model_mutations(tlc_jar, module, model(positives), config, [], dependencies=("SessionRealizationMutex",), artifact_directory=Path(artifact_root) / "positive-controls" if artifact_root else None)
+        negatives = []
+        # Q12 independently exercise the model's required-authority guard even
+        # though v3 schema rejects missing raw leases before model projection.
+        for step in original["steps"]:
+            symbol, states = bases[step["rule"]]
+            for index, state in enumerate(states, 1):
+                if state["event"] not in {"begin-before", "crash", "publish-one", "drain-one"}:
+                    negatives.append(f'~RealizationTraceIsRefinement([{symbol} EXCEPT ![{index}].hasauthority = FALSE], {observation_value(step["cut"])}, {step["count"]})')
+                    report.append({"case": f"{step['rule']}/{index - 1}/required-authority", "oracle": "TLC-projection-refutation"})
+        for step, events, label in semantic_cases:
+            try: expr = expression(step, events)
+            except ValueError as error:
+                if "must begin with an observed root" not in str(error): raise
+                report.append({"case": label, "oracle": "missing-initial-root"})
+                continue
+            if expr == expression(step, step["trace"]): raise SystemExit(f"erased semantic mutant: {label}")
+            negatives.append("~(" + expr + ")")
+            report.append({"case": label, "oracle": "TLC-refutation"})
+        # Each conjunction asserts rejection of EVERY counterfactual, never
+        # "at least one fails". The shared oracle requires clean TLC completion;
+        # parser/tool/timeout errors and any surviving case fail the gate.
+        if artifact_root:
+            write_json(Path(artifact_root) / "cases.json", {"schema_rejections": schema_killed, "positive_controls": len(positives), "cases": report})
+        for offset in range(0, len(negatives), 64):
+            source = model(negatives[offset:offset + 64])
+            check_tlc_model_mutations(tlc_jar, module, source, config, [], dependencies=("SessionRealizationMutex",),
+                artifact_directory=Path(artifact_root) / f"batch-{offset // 64}" if artifact_root else None)
+    print(f"Observation schema mutations: {schema_killed}/{schema_killed} rejected")
+    print(f"Continuous observation matrix: {len(report)}/{len(report)} rejected; {len(positives)} positive controls passed; {len(bases)} rules")
 
 
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,
                               mutations: list[tuple[str, str, str]], *,
-                              dependencies: tuple[str, ...] = ()) -> None:
+                              dependencies: tuple[str, ...] = (), artifact_directory: Path | None = None) -> None:
     # One TLC invocation/oracle for every model mutation family. Validate both
     # the process result and semantic outcome; always establish the green base.
     cases = [(source, config, None), *mutations]
@@ -901,12 +1114,22 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
             model.write_text(model_text, encoding="utf-8")
             config_path = directory / f"{name}.cfg"
             config_path.write_text(config_text, encoding="utf-8")
-            result = subprocess.run(
-                ["java", "-Xmx512m", "-jar", str(tlc_jar.resolve()),
-                 "-metadir", str(directory / "states"), "-config", str(config_path), str(model)],
-                cwd=directory, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                timeout=30, check=False,
-            )
+            if artifact_directory:
+                artifact_directory.mkdir(parents=True, exist_ok=False)
+                for source_path in directory.glob("*"):
+                    if source_path.is_file(): shutil.copy2(source_path, artifact_directory / source_path.name)
+            try:
+                result = subprocess.run(
+                    ["java", "-Xmx512m", "-jar", str(tlc_jar.resolve()),
+                     "-metadir", str(directory / "states"), "-config", str(config_path), str(model)],
+                    cwd=directory, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    timeout=30, check=False,
+                )
+            except (subprocess.TimeoutExpired, OSError) as error:
+                if artifact_directory: (artifact_directory / "tlc.log").write_text(f"proof tool failed: {error}")
+                raise
+            if artifact_directory:
+                (artifact_directory / "tlc.log").write_text(result.stdout)
             temporal = invariant is not None and invariant.startswith("temporal:")
             action = invariant is not None and invariant.startswith("action:")
             constant = invariant is not None and invariant.startswith("constant:")

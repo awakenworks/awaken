@@ -84,6 +84,7 @@ async fn application_creation_time_survives_process_crash_boundaries() {
             prior.as_ref(),
             Some(&recovered),
             2_000,
+            mode,
         ));
         assert_eq!(
             recovered.created_at_unix_ms,

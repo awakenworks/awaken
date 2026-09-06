@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-22.04, macos-15, windows-2025]
+        runner: [ubuntu-22.04, macos-15, macos-15-intel, windows-2025]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     steps:
@@ -45,6 +45,23 @@ jobs:
       - name: Verify TrustedHost filesystem and native Sandbox contracts
         shell: bash
         run: scripts/ci/check-trusted-host-portability.sh
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        if: runner.os != 'Windows'
+        with:
+          version: 11.6.0
+      # Same exact candidate SHA must exercise the Session/MCP crash matrix on
+      # native Linux/macOS before merge, independently of tag publication.
+      - name: Verify native Session observations and MCP recovery
+        if: runner.os != 'Windows'
+        shell: bash
+        run: scripts/ci/check-reliability.sh --session-observations
+      - name: Retain native Session validation evidence
+        if: always() && runner.os != 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: session-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.runner }}
+          path: target/test-timings/session-observations-*/
+          if-no-files-found: error
 
   full_quality:
     # The strict sandbox group requires Docker, unprivileged user namespaces,

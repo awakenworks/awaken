@@ -27,7 +27,7 @@ if [ "${1:-}" = "--require-tools" ]; then
 fi
 
 # One invocation replaces any previous receipt with Running before executing.
-# Only the successful tail below may publish Passed. The quality workflow
+# Only successful artifact finalization may publish Passed. The quality workflow
 # retains this file beside its existing exact-SHA timing evidence.
 formal_run_record="${AWAKEN_FORMAL_RUN_EVIDENCE:-target/test-timings/formal-run.json}"
 python3 scripts/ci/formal_run_evidence.py begin \
@@ -35,11 +35,23 @@ python3 scripts/ci/formal_run_evidence.py begin \
 
 missing=0
 formal_tmp_root="$(mktemp -d)"
-trap 'rm -rf "$formal_tmp_root"' EXIT
-rust_trace_dir="$formal_tmp_root/rust-traces"
-rendered_trace_dir="$formal_tmp_root/rendered-traces"
-observation_trace_dir="$formal_tmp_root/observation-traces"
-observation_rendered_dir="$formal_tmp_root/observation-rendered"
+formal_artifact_dir="$(python3 scripts/ci/formal_run_evidence.py artifacts-begin --kind formal)"
+finish_formal_artifacts() {
+  result=$?
+  trap - EXIT
+  python3 scripts/ci/formal_run_evidence.py artifacts-finish --directory "$formal_artifact_dir" --exit-code "$result" || result=1
+  if [ "$result" -eq 0 ] && [ "$require_tools" -eq 1 ]; then
+    python3 scripts/ci/formal_run_evidence.py finish \
+      --record "$formal_run_record" --missing-tools "$missing" || result=1
+  fi
+  rm -rf "$formal_tmp_root"
+  exit "$result"
+}
+trap finish_formal_artifacts EXIT
+rust_trace_dir="$formal_artifact_dir/rust-traces"
+rendered_trace_dir="$formal_artifact_dir/rendered-traces"
+observation_trace_dir="$formal_artifact_dir/session-observations/raw"
+observation_rendered_dir="$formal_artifact_dir/session-observations/rendered"
 
 python3 scripts/ci/check_feature_coverage.py --require-complete
 python3 scripts/ci/check_formal_coverage.py --require-complete
@@ -96,11 +108,7 @@ python3 scripts/ci/render_runtime_refinement_traces.py \
 
 # Actual application/driver/store observations refine the SAME relations used
 # by the Session/Store models below. Missing scenarios fail before TLC runs.
-AWAKEN_OBSERVATION_TRACE_DIR="$observation_trace_dir" cargo test -p awaken-session-application --lib
-AWAKEN_OBSERVATION_TRACE_DIR="$observation_trace_dir" cargo test -p awaken-session-contract --lib processed_time_is_first_observation_and_legacy_is_unknown
-AWAKEN_OBSERVATION_TRACE_DIR="$observation_trace_dir" cargo test -p awaken-store-fs --test recovery every_torn_envelope_prefix_preserves_committed_time_and_facts
-python3 scripts/ci/render_runtime_refinement_traces.py --projection session-observations \
-  "$observation_trace_dir" "$observation_rendered_dir" --require-complete-transition-coverage
+AWAKEN_SESSION_EVIDENCE_DIR="$formal_artifact_dir/session-observations" scripts/ci/check-reliability.sh --session-observations
 
 if command -v cargo-kani >/dev/null 2>&1; then
   # Kani compiles every selected package once and verifies its named harnesses
@@ -507,7 +515,8 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   fi
   tlc_state_root="$formal_tmp_root/tlc-states"
   python3 scripts/ci/check_formal_mutations.py --session-observation-model-mutants "$tla_jar"
-  python3 scripts/ci/check_formal_mutations.py --session-observation-trace-mutants "$tla_jar" --observation-trace-dir "$observation_trace_dir"
+  AWAKEN_FORMAL_MUTATION_EVIDENCE_DIR="$formal_artifact_dir/observation-mutations" \
+    python3 scripts/ci/check_formal_mutations.py --session-observation-trace-mutants "$tla_jar" --observation-trace-dir "$observation_trace_dir"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/run-ingress" \
     -config formal/tla/RunIngress.cfg formal/tla/RunIngress.tla
@@ -818,7 +827,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     java -XX:+UseParallelGC \
       -jar "$tla_jar" \
       -metadir "$tlc_state_root/$trace_name" \
-      -config "$trace_config" "$trace_module"
+      -config "$trace_config" "$trace_module" 2>&1 | tee "$formal_artifact_dir/$trace_name.log"
   done
 else
   echo "skipped TLC: set TLA2TOOLS_JAR and install Java 11+"
@@ -828,8 +837,4 @@ fi
 if [ "$require_tools" -eq 1 ] && [ "$missing" -ne 0 ]; then
   echo "formal verification tools are required but unavailable" >&2
   exit 1
-fi
-if [ "$require_tools" -eq 1 ]; then
-  python3 scripts/ci/formal_run_evidence.py finish \
-    --record "$formal_run_record" --missing-tools "$missing"
 fi
