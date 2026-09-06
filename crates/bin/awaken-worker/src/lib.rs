@@ -58,7 +58,7 @@ pub type RegisteredMemoryMounterFactory = Arc<
 
 use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_session_executor::SharedHost;
-use awaken_worker_contract::{RegistryMutation, WorkerHeartbeat, WorkerManifest};
+use awaken_worker_contract::{RegistryMutation, WorkerManifest};
 use awaken_coordinator_client::WorkerControlClient;
 use awaken_worker_transport_security::WorkerUpstream;
 
@@ -1294,21 +1294,16 @@ impl WorkerNode {
         // started. Anchoring locally before I/O prevents response latency from
         // extending the Coordinator-owned expiry in the Worker process.
         let initial_heartbeat_started = std::time::Instant::now();
-        let observations = lifecycle.observations.snapshot();
+        let initial_heartbeat = lifecycle.observations.snapshot().into_heartbeat(
+            1,
+            awaken_worker_contract::process_ready_after_startup(
+                awaken_worker_contract::DynamicEvidenceProbeState::Pending,
+            ),
+            0,
+            lifecycle.warm_environment_shapes(),
+        );
         let initial = control
-            .heartbeat(
-                &lifecycle.identity,
-                WorkerHeartbeat {
-                    sequence: 1,
-                    ready: awaken_worker_contract::process_ready_after_startup(
-                        awaken_worker_contract::DynamicEvidenceProbeState::Pending,
-                    ),
-                    in_flight: 0,
-                    warm_environment_shapes: lifecycle.warm_environment_shapes(),
-                    credential_observations: observations.credentials,
-                    acp_capability_observations: observations.acp_capabilities,
-                },
-            )
+            .heartbeat(&lifecycle.identity, initial_heartbeat)
             .await;
         let initial = match initial {
             Ok(initial) => initial,
