@@ -133,7 +133,12 @@ physical effects under `SessionRealizationLease`. A separate lease-only renew
 command extends the exact same fence and resident Runtime projection; it cannot
 create/reassign a projection or replay Stage/Publish. The Worker must fail
 closed if Control has no frozen Session or if the claimed Resource projection
-differs.
+differs. An effect-capable Control projection that conflicts with the immutable
+claimed Resource envelope is a terminal resolution failure: the existing
+claim-fenced failure commit settles the Run and releases its queue position.
+It must not relinquish and repeatedly claim the same incompatible envelope,
+nor substitute newly authored resources into that Run. Temporary Control
+unavailability and ownership contention retain their contract retry disposition.
 
 A lease-only response is applied only to its unchanged local assertion: the
 slot compare/write is atomic and cannot recreate a removed projection, regress
