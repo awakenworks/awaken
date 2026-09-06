@@ -749,7 +749,21 @@ result and init termination observation, rather than treating leader exit as
 tree emptiness. Drop only requests termination; errors/timeouts are never durable
 cleanup receipts. The helper watches control disconnection and a conservative
 BOOTTIME execution cutoff (including host suspend). The caller must derive that
-cutoff from remaining current authority. Cutoff renewal, Session-wide launch/close
+cutoff from remaining current authority. `refresh_deadline_authorized` now reuses
+the GO grant's synchronous authorization/retry seam to send a newer absolute
+BOOTTIME cutoff. It is a transport projection, not a second lease owner or
+scheduler. The caller derives and commits it inside the current Session guard;
+omitted authorization denies, retry rechecks authority, and a committed frame
+cannot be undone by a later callback error. A send receipt is not a helper ACK.
+Signals and renewals share one short-write lock on the private channel. A partial
+write shuts down that channel rather than retrying a suffix after releasing
+authority; a zero-byte WouldBlock leaves it usable for fresh authorization.
+The helper preserves partial-read state across cutoff checks, rejects expiry
+before applying any queued renewal, and ignores older cutoffs. Transit delay
+never adds time. Explicit revocation must force-stop the scope; denying a new
+cutoff does not revoke an older still-live one.
+
+Session lease-to-cutoff propagation, Session-wide launch/close
 serialization, crash-safe marker participation, Native Hand routing and Worker
 capability activation still require production integration. Built-in supervision
 capabilities therefore remain false.
@@ -760,15 +774,26 @@ synthetic credentials, binary stdio, loader-time namespace membership, denied
 grant, failed exec, detached descendants, exact scope kill, separate owner
 SIGKILL, helper SIGKILL, stalled-owner SIGSTOP and execution expiry (including
 expiry while waiting for GO). TERM/INT must reach the exact workload trap before
-normal exit. Descendants each retain their own
+normal exit. Renewal tests distinguish accepted/new, stale, denied, omitted,
+expired and retry-then-revoked updates. The accepted update keeps all detached
+members alive past the original cutoff; the replacement cutoff subsequently
+terminates them even when the owner is SIGSTOPed. An observed exited scope
+rejects further updates without calling the authorization adapter.
+Descendants each retain their own
 external observer socket; a forwarding process's EOF is not the oracle.
 An independently live neighboring scope must survive every target termination;
 cancelling its waiter retains ownership. Malformed private frames and descriptor
 handoffs fail closed, and pipe EOF proves that rejected received descriptors do
 not leak. The process boundary model reuses the existing admission/GO model,
 distinguishes init stopping from exited, and checks all four failure links under
-explicit kernel-progress fairness. It does not prove a hard wall-clock bound,
-renewal, host-kernel correctness or production Session recovery.
+explicit kernel-progress fairness. `LocalProcessRenewal.cfg` composes that same
+model with a bounded absolute clock, one queued renewal and a stalled proper
+frame prefix. It checks fresh send authority, monotonic cutoff, no resurrection,
+no minted transit time and clock progress despite a stalled prefix; five exact
+mutants must violate those named properties. Unit tests own actual byte framing,
+concurrent writer serialization and real short-write/EOF behavior. The model
+does not prove a hard wall-clock bound, business lease renewal, host-kernel
+correctness or production Session recovery.
 Unavailable PID namespace/pidfd support fails rather than becoming a successful
 skip. These tests qualify the Linux adapter, not full Worker/resource recovery,
 real vendor login or cloud/local deployment.

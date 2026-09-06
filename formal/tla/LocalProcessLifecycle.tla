@@ -1,5 +1,5 @@
 ---------------------- MODULE LocalProcessLifecycle ----------------------
-EXTENDS FiniteSets, TLC
+EXTENDS FiniteSets, Naturals, Sequences, TLC
 
 \* One local ProcessHandle, two concurrent waiters and the signal caller.
 \* Poll's OS call is synchronous; only mutex acquisition/backoff can suspend.
@@ -14,6 +14,8 @@ VARIABLES scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt
 VARIABLES launchStage, joined, goIssued, workloadStarted
 VARIABLES authorityLive, authorityAtGrant, authorityHeld
 VARIABLES initState, helperAlive, controlLive, deadlineLive
+VARIABLES cutoffClock, cutoff, cutoffQueue, cutoffPartial, cutoffWriteAuthorized
+renewalVars == <<cutoffClock, cutoff, cutoffQueue, cutoffPartial, cutoffWriteAuthorized>>
 boundaryVars == <<initState, helperAlive, controlLive, deadlineLive>>
 authorityVars == <<authorityLive, authorityAtGrant, authorityHeld>>
 launchVars == <<launchStage, joined, goIssued, workloadStarted>>
@@ -35,6 +37,8 @@ Init ==
   /\ authorityLive = TRUE /\ authorityAtGrant = FALSE /\ authorityHeld = FALSE
   /\ initState = "absent" /\ helperAlive = FALSE
   /\ controlLive = TRUE /\ deadlineLive = TRUE
+  /\ cutoffClock = 0 /\ cutoff = 2 /\ cutoffQueue = <<>>
+  /\ cutoffPartial = FALSE /\ cutoffWriteAuthorized = TRUE
 
 Spawn ==
   /\ phase = "new" /\ phase' = "owned"
@@ -142,7 +146,7 @@ SignalDenialIsNotAcknowledged == signalOutcome = "denied" => ~signalAccepted
 CrashPreservesOSProcesses == [][(phase = "owned" /\ phase' = "crashed")
                             => UNCHANGED <<leaderAlive, descendantAlive>>]_vars
 
-Spec == Init /\ [][Next /\ UNCHANGED <<scopeVars, boundaryVars>>]_<<vars, scopeVars, boundaryVars>>
+Spec == Init /\ [][Next /\ UNCHANGED <<scopeVars, boundaryVars, renewalVars>>]_<<vars, scopeVars, boundaryVars, renewalVars>>
 
 \* Descriptor-pinned process scope: ONE owner, one launch admission and one
 \* bounded workload tree. The trusted helper's pre-GO transport/OS lifetime is
@@ -244,7 +248,7 @@ ScopeWorkloadRequiresGrant == workloadStarted => joined /\ goIssued
 ScopeCancelNeverGrants == launchStage = "cancelled" => ~goIssued /\ ~workloadStarted
 ScopePendingJoinExcludesClose == launchStage \in {"bootstrap", "joined", "acknowledged"}
   => scopePermit /\ ~scopeClosed
-ScopeSpec == Init /\ [][ScopeNext /\ UNCHANGED boundaryVars]_<<vars, scopeVars, boundaryVars>>
+ScopeSpec == Init /\ [][ScopeNext /\ UNCHANGED <<boundaryVars, renewalVars>>]_<<vars, scopeVars, boundaryVars, renewalVars>>
 
 \* Physical Linux boundary composition: reuse the admission/GO authority above,
 \* adding only OS observations. No new Session lease or recovery state machine.
@@ -307,7 +311,71 @@ BoundaryExecRequiresLiveCutoff ==
   [][(~workloadStarted /\ workloadStarted') => BoundaryRunnable]_allBoundaryVars
 BoundaryFailureEventuallyTerminates ==
   BoundaryStopRequired ~> (initState = "exited")
-BoundarySpec == BoundaryInit /\ [][BoundaryNext]_allBoundaryVars
+BoundarySpec == BoundaryInit /\ [][BoundaryNext /\ UNCHANGED renewalVars]_<<allBoundaryVars, renewalVars>>
   /\ WF_allBoundaryVars(BoundaryBeginStop)
   /\ WF_allBoundaryVars(BoundaryKernelExit)
+
+\* Renewal composes the SAME launch/close/current-authority and kernel boundary
+\* above, replacing only the abstract expiry event with a bounded absolute clock.
+\* Causes/effects: R1 live + newer complete frame => exact incoming cutoff;
+\* R2 stale => retain; R3 expiry/disconnect/partial stall => no resurrection;
+\* R4 held authorization excludes revoke; R5 backpressure releases that SAME
+\* guard (ScopeRetryAuthorization); R6 clock progresses even with a half-frame.
+\* Queue capacity 1, deadlines 1..3, clock 0..4. A partial frame represents any
+\* proper byte prefix; Rust transport tests own actual framing/short-write
+\* shutdown. This is NOT a business lease model or a Rust refinement proof.
+allRenewalVars == <<allBoundaryVars, renewalVars>>
+RenewalAuthorize ==
+  /\ workloadStarted /\ initState = "live" /\ controlLive
+  /\ authorityLive /\ ~authorityHeld
+  /\ authorityHeld' = TRUE
+  /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt,
+                  launchVars, authorityLive, authorityAtGrant, boundaryVars, renewalVars>>
+RenewalWrite(incoming) ==
+  /\ workloadStarted /\ authorityHeld /\ controlLive
+  /\ Len(cutoffQueue) < 1 /\ incoming > cutoffClock
+  /\ authorityHeld' = FALSE /\ cutoffWriteAuthorized' = authorityLive
+  /\ cutoffQueue' = Append(cutoffQueue, incoming)
+  /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt,
+                  launchVars, authorityLive, authorityAtGrant, boundaryVars,
+                  cutoffClock, cutoff, cutoffPartial>>
+RenewalReadPrefix ==
+  /\ initState = "live" /\ helperAlive /\ controlLive
+  /\ cutoffQueue # <<>> /\ ~cutoffPartial
+  /\ cutoffPartial' = TRUE
+  /\ UNCHANGED <<allBoundaryVars, cutoffClock, cutoff, cutoffQueue, cutoffWriteAuthorized>>
+RenewalReceive ==
+  /\ initState = "live" /\ helperAlive /\ controlLive /\ deadlineLive
+  /\ cutoffQueue # <<>> /\ cutoffPartial
+  /\ cutoff' = IF Head(cutoffQueue) > cutoff THEN Head(cutoffQueue) ELSE cutoff
+  /\ cutoffQueue' = Tail(cutoffQueue) /\ cutoffPartial' = FALSE
+  /\ UNCHANGED <<allBoundaryVars, cutoffClock, cutoffWriteAuthorized>>
+RenewalTick ==
+  /\ cutoffClock < 4 /\ cutoffClock' = cutoffClock + 1
+  /\ deadlineLive' = (cutoffClock' < cutoff)
+  /\ UNCHANGED <<vars, scopeVars, initState, helperAlive, controlLive,
+                  cutoff, cutoffQueue, cutoffPartial, cutoffWriteAuthorized>>
+RenewalNext ==
+  \/ ((BoundarySpawn \/ BoundaryProtocol \/ BoundaryBeginStop \/ BoundaryKernelExit
+       \/ (\E cause \in {"helper", "disconnect"} : BoundaryFailure(cause)))
+      /\ UNCHANGED renewalVars)
+  \/ RenewalAuthorize \/ (\E incoming \in 1..3 : RenewalWrite(incoming))
+  \/ RenewalReadPrefix \/ RenewalReceive \/ RenewalTick
+RenewalTypeOK == BoundaryTypeOK
+  /\ cutoffClock \in 0..4 /\ cutoff \in 1..3
+  /\ cutoffQueue \in {<<>>} \cup {<<d>> : d \in 1..3}
+  /\ cutoffPartial \in BOOLEAN /\ cutoffWriteAuthorized \in BOOLEAN
+RenewalWritesRequireCurrentAuthority == cutoffWriteAuthorized
+RenewalCutoffNeverDecreases == [][cutoff' >= cutoff]_allRenewalVars
+RenewalCannotResurrect ==
+  [][(cutoff' > cutoff) => deadlineLive /\ helperAlive /\ controlLive
+      /\ initState = "live"]_allRenewalVars
+RenewalCannotMintTransitTime ==
+  [][(cutoff' > cutoff) => cutoffQueue # <<>> /\ cutoff' = Head(cutoffQueue)]_allRenewalVars
+RenewalClockMatchesCutoff == deadlineLive = (cutoffClock < cutoff)
+RenewalPartialCannotStallClock == <> (cutoffClock = 4)
+RenewalSpec == BoundaryInit /\ [][RenewalNext]_allRenewalVars
+  /\ WF_allRenewalVars(RenewalTick)
+  /\ WF_allRenewalVars(BoundaryBeginStop /\ UNCHANGED renewalVars)
+  /\ WF_allRenewalVars(BoundaryKernelExit /\ UNCHANGED renewalVars)
 =============================================================================

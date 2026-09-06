@@ -12,15 +12,41 @@ pub(super) const INTERRUPT: u8 = 4;
 
 /// A single control byte is atomic even with concurrent signal callers. A
 /// successful send requests delivery only; it never certifies process exit.
-pub(super) async fn send_signal(control: &UnixStream, byte: u8) -> io::Result<()> {
+pub(super) async fn send_signal(
+    control: &UnixStream,
+    writer: &std::sync::Mutex<()>,
+    byte: u8,
+) -> io::Result<()> {
     loop {
         control.writable().await?;
-        match control.try_write(&[byte]) {
-            Ok(1) => return Ok(()),
-            Ok(_) => return Err(io::ErrorKind::WriteZero.into()),
+        let result = {
+            let _guard = writer.lock().map_err(|_| invalid())?;
+            write_complete(control, &[byte])
+        };
+        match result {
+            Ok(()) => return Ok(()),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             Err(error) => return Err(error),
         }
+    }
+}
+
+/// A short stream write is NOT an atomic frame. Retrying its suffix after an
+/// authorization guard is released could mix generations or other signals.
+/// Poison the channel instead; helper EOF fails closed without a new registry.
+pub(super) fn write_complete(control: &UnixStream, frame: &[u8]) -> io::Result<()> {
+    let written = control.try_write(frame)?;
+    complete_write_result(written, frame.len(), || {
+        let _ = rustix::net::shutdown(control, rustix::net::Shutdown::Both);
+    })
+}
+
+fn complete_write_result(written: usize, expected: usize, poison: impl FnOnce()) -> io::Result<()> {
+    if written == expected {
+        Ok(())
+    } else {
+        poison();
+        Err(io::ErrorKind::WriteZero.into())
     }
 }
 
@@ -35,17 +61,9 @@ pub struct ScopedLaunchGrant<'a> {
 
 impl ScopedLaunchGrant<'_> {
     pub fn commit(self) -> io::Result<()> {
-        match self.control.try_write(&[GO]) {
-            Ok(1) => {
-                self.committed.set(true);
-                Ok(())
-            }
-            Ok(_) => Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "incomplete scoped grant",
-            )),
-            Err(error) => Err(error),
-        }
+        write_complete(self.control, &[GO])?;
+        self.committed.set(true);
+        Ok(())
     }
 }
 
@@ -59,15 +77,22 @@ pub(super) async fn authorize_checked(
     if control.read_u8().await? != JOINED {
         return Err(invalid());
     }
+    commit_checked(control, |committed| {
+        authorize_effect(ScopedLaunchGrant { control, committed })
+    })
+    .await
+}
+
+pub(super) async fn commit_checked(
+    control: &UnixStream,
+    mut authorize_effect: impl FnMut(&Cell<bool>) -> io::Result<()>,
+) -> io::Result<()> {
     loop {
         control.writable().await?;
         let committed = Cell::new(false);
-        let result = authorize_effect(ScopedLaunchGrant {
-            control,
-            committed: &committed,
-        });
-        // Once GO has been sent, a later adapter error cannot turn this into
-        // an unlaunched result and discard the only live process handle.
+        let result = authorize_effect(&committed);
+        // Once a grant has been sent, a later adapter error cannot undo it.
+        // For GO this also preserves the only live process handle.
         if committed.get() {
             return Ok(());
         }
@@ -100,6 +125,67 @@ pub(super) async fn await_grant(control: &mut UnixStream) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn incomplete_frame_poisons_instead_of_retrying_a_suffix() {
+        // W1 exact write => committed/no shutdown. W2 zero/partial/impossible
+        // oversized result => WriteZero + shutdown exactly once. A suffix
+        // retry outside the authority lock could mix generations or signals.
+        for written in [0, 1, 8, 9, 10] {
+            let poisoned = Cell::new(0);
+            let result = complete_write_result(written, 9, || poisoned.set(poisoned.get() + 1));
+            assert_eq!(result.is_ok(), written == 9);
+            assert_eq!(poisoned.get(), usize::from(written != 9));
+            if let Err(error) = result {
+                assert_eq!(error.kind(), io::ErrorKind::WriteZero);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn real_short_write_shuts_down_the_channel_but_backpressure_does_not() {
+        // W3 a real nonblocking stream accepts only a prefix => WriteZero,
+        // queued prefix then EOF, even while sender is still owned. W4 a full
+        // buffer => WouldBlock with ZERO bytes from this frame; draining makes
+        // a fresh complete frame possible. No synthetic short-write result is
+        // used as evidence of actual kernel channel shutdown.
+        let (parent, mut child) = UnixStream::pair().unwrap();
+        rustix::net::sockopt::set_socket_send_buffer_size(&parent, 4096).unwrap();
+        parent.writable().await.unwrap();
+        let frame = vec![7; 1024 * 1024];
+        assert_eq!(
+            write_complete(&parent, &frame).unwrap_err().kind(),
+            io::ErrorKind::WriteZero
+        );
+        let mut prefix = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), child.read_to_end(&mut prefix))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!prefix.is_empty() && prefix.len() < frame.len());
+        assert!(prefix.iter().all(|b| *b == 7));
+        drop(parent);
+
+        let (parent, mut child) = UnixStream::pair().unwrap();
+        rustix::net::sockopt::set_socket_send_buffer_size(&parent, 4096).unwrap();
+        parent.writable().await.unwrap();
+        let mut queued = 0;
+        loop {
+            match parent.try_write(&[8; 4096]) {
+                Ok(n) => queued += n,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                other => panic!("unexpected fill result: {other:?}"),
+            }
+        }
+        assert_eq!(
+            write_complete(&parent, &[GO]).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        child.read_exact(&mut vec![0; queued]).await.unwrap();
+        parent.writable().await.unwrap();
+        write_complete(&parent, &[GO]).unwrap();
+        assert_eq!(child.read_u8().await.unwrap(), GO);
+    }
     async fn authorize(control: &mut UnixStream, frame: &[u8]) -> io::Result<()> {
         authorize_checked(control, frame, |g| g.commit()).await
     }

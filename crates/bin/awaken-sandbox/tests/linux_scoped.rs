@@ -297,9 +297,165 @@ fi
 #[ignore = "owner participant invoked by scoped_detached_trees_close_on_all_failure_triggers"]
 async fn scoped_owner_participant() {
     let port = std::env::var("SCOPED_TREE_PORT").unwrap().parse().unwrap();
-    let _process = launch(&tree_command(port), Path::new("/"), Duration::from_secs(3)).await;
+    let process = launch(&tree_command(port), Path::new("/"), Duration::from_secs(3)).await;
+    if std::env::var("SCOPED_OWNER_RENEWED").as_deref() == Ok("1") {
+        process
+            .refresh_deadline_authorized(Duration::from_secs(1), |grant| {
+                grant.commit(ExecutionDeadline::after(Duration::from_secs(6))?)
+            })
+            .await
+            .unwrap();
+        println!("SCOPED_RENEWAL_SENT");
+    }
     let mut byte = [0];
     let _ = tokio::io::stdin().read(&mut byte).await;
+}
+
+type ObservedNode = (String, BufReader<tokio::net::TcpStream>);
+
+async fn observe_tree(listener: &tokio::net::TcpListener) -> Vec<ObservedNode> {
+    let mut nodes = Vec::new();
+    let mut groups = std::collections::BTreeSet::new();
+    let mut roles = std::collections::BTreeSet::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        for _ in 0..3 {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut line = String::new();
+            assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            assert_eq!(fields.len(), 4);
+            assert!(roles.insert(fields[0].to_owned()));
+            assert!(groups.insert(fields[2].to_owned()));
+            if fields[0] != "leader" {
+                assert_eq!(fields[1], fields[2]);
+                assert_eq!(fields[1], fields[3]);
+            }
+            nodes.push((fields[0].to_owned(), stream));
+        }
+    })
+    .await
+    .expect("three running detached nodes before trigger");
+    assert_tree_live(&nodes);
+    nodes
+}
+
+fn assert_tree_live(nodes: &[ObservedNode]) {
+    for (_, node) in nodes {
+        assert_eq!(
+            node.get_ref().try_read(&mut [0]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
+async fn assert_tree_closed(nodes: Vec<ObservedNode>) {
+    for (role, mut stream) in nodes {
+        match stream.read(&mut [0]).await {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!("{role}: descendant remained alive: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn scoped_cutoff_refresh_preserves_authorization_and_eventual_tree_exit() {
+    // Decision table S16-S20. Current cutoff live + authorized newer => tree
+    // survives ORIGINAL cutoff, then exits at the absolute new cutoff. Stale
+    // update must not shorten it. Denied/omitted/expired-input/retry-revoked
+    // updates must not extend it. Every row observes three detached members
+    // and exact init exit, then rejects a resurrection without calling authority.
+    // These are adapter tests; the production Session lease is not simulated.
+    for rule in [
+        "renew",
+        "stale",
+        "deny",
+        "omit",
+        "expired",
+        "retry-revoked",
+        "timeout",
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let started = tokio::time::Instant::now();
+        let process = launch(
+            &tree_command(listener.local_addr().unwrap().port()),
+            Path::new("/"),
+            Duration::from_secs(2),
+        )
+        .await;
+        let nodes = observe_tree(&listener).await;
+        // S22 invalid timeout rejects before consulting authority. Persistent
+        // backpressure times out without extending the original cutoff.
+        for invalid_timeout in [Duration::ZERO, Duration::MAX] {
+            let error = process
+                .refresh_deadline_authorized(invalid_timeout, |_| {
+                    panic!("invalid timeout must not reach authority")
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
+        let mut calls = 0;
+        let expired = ExecutionDeadline::after(Duration::from_millis(1)).unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let result = process
+            .refresh_deadline_authorized(Duration::from_millis(30), |grant| {
+                calls += 1;
+                match rule {
+                    "renew" => grant.commit(ExecutionDeadline::after(Duration::from_secs(4))?),
+                    "stale" => grant.commit(ExecutionDeadline::after(Duration::from_millis(100))?),
+                    "deny" => Err(std::io::ErrorKind::PermissionDenied.into()),
+                    "omit" => Ok(()),
+                    "expired" => grant.commit(expired),
+                    "retry-revoked" if calls == 1 => Err(std::io::ErrorKind::WouldBlock.into()),
+                    "retry-revoked" => Err(std::io::ErrorKind::PermissionDenied.into()),
+                    "timeout" => Err(std::io::ErrorKind::WouldBlock.into()),
+                    _ => unreachable!(),
+                }
+            })
+            .await;
+        assert_eq!(result.is_ok(), matches!(rule, "renew" | "stale"), "{rule}");
+        if let Err(error) = result {
+            assert_eq!(
+                error.kind(),
+                if matches!(rule, "expired" | "timeout") {
+                    std::io::ErrorKind::TimedOut
+                } else {
+                    std::io::ErrorKind::PermissionDenied
+                }
+            );
+        }
+        if rule == "timeout" {
+            assert!(calls > 1, "backpressure must reauthorize");
+        } else {
+            assert_eq!(calls, if rule == "retry-revoked" { 2 } else { 1 });
+        }
+        tokio::time::sleep_until(
+            started + Duration::from_millis(if rule == "renew" { 2300 } else { 500 }),
+        )
+        .await;
+        assert_tree_live(&nodes);
+        assert!(process.poll().await.unwrap().is_none());
+        tokio::time::timeout(
+            Duration::from_secs(if rule == "renew" { 3 } else { 2 }),
+            async {
+                assert_tree_closed(nodes).await;
+                process.wait().await.unwrap();
+            },
+        )
+        .await
+        .expect("cutoff terminates all detached members and init");
+        let mut called_after_exit = false;
+        let result = process
+            .refresh_deadline_authorized(Duration::from_secs(1), |grant| {
+                called_after_exit = true;
+                grant.commit(ExecutionDeadline::after(Duration::from_secs(10))?)
+            })
+            .await;
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
+        assert!(!called_after_exit);
+    }
 }
 
 #[tokio::test]
@@ -312,7 +468,14 @@ async fn scoped_detached_trees_close_on_all_failure_triggers() {
     // This is a helper deadline, not proof of installed Session lease renewal.
     // Leader wait,
     // forwarding EOF and Drop are not the death oracle. Missing substrate fails.
-    for trigger in ["scope", "owner", "helper", "deadline", "owner-stall"] {
+    for trigger in [
+        "scope",
+        "owner",
+        "helper",
+        "deadline",
+        "owner-stall",
+        "owner-stall-renewed",
+    ] {
         // S12 cancellation of a waiter retains the physical owner. Every
         // subsequent target stop must leave this neighboring scope alive.
         let mut neighbor_command = MaterializedCommand::new(["/bin/sleep", "25"]);
@@ -325,9 +488,10 @@ async fn scoped_detached_trees_close_on_all_failure_triggers() {
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        let mut renewed_observed = None;
         let mut owner = None;
         let mut scope = None;
-        if matches!(trigger, "owner" | "owner-stall") {
+        if matches!(trigger, "owner" | "owner-stall" | "owner-stall-renewed") {
             owner = Some(
                 tokio::process::Command::new(std::env::current_exe().unwrap())
                     .args([
@@ -337,8 +501,20 @@ async fn scoped_detached_trees_close_on_all_failure_triggers() {
                         "--nocapture",
                     ])
                     .env("SCOPED_TREE_PORT", port.to_string())
+                    .env(
+                        "SCOPED_OWNER_RENEWED",
+                        if trigger == "owner-stall-renewed" {
+                            "1"
+                        } else {
+                            "0"
+                        },
+                    )
                     .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::null())
+                    .stdout(if trigger == "owner-stall-renewed" {
+                        std::process::Stdio::piped()
+                    } else {
+                        std::process::Stdio::null()
+                    })
                     .stderr(std::process::Stdio::inherit())
                     .kill_on_drop(true)
                     .spawn()
@@ -354,37 +530,29 @@ async fn scoped_detached_trees_close_on_all_failure_triggers() {
                 .await,
             );
         }
-        let mut nodes = Vec::new();
-        let mut groups = std::collections::BTreeSet::new();
-        let mut roles = std::collections::BTreeSet::new();
-        tokio::time::timeout(Duration::from_secs(2), async {
-            for _ in 0..3 {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut stream = BufReader::new(stream);
-                let mut line = String::new();
-                assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
-                let fields = line.split_whitespace().collect::<Vec<_>>();
-                assert_eq!(fields.len(), 4);
-                assert!(roles.insert(fields[0].to_owned()));
-                assert!(groups.insert(fields[2].to_owned()));
-                if fields[0] != "leader" {
-                    assert_eq!(fields[1], fields[2]);
-                    assert_eq!(fields[1], fields[3]);
+        let mut nodes = observe_tree(&listener).await;
+        if trigger == "owner-stall-renewed" {
+            // S21 renewal sent before SIGSTOP; all three nodes must survive the
+            // old cutoff without owner progress, then expire at the new one.
+            // The participant marker is a send receipt, never a helper ACK;
+            // survival past the old deadline is the independent apply oracle.
+            let mut output = BufReader::new(owner.as_mut().unwrap().stdout.take().unwrap());
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let mut line = String::new();
+                    assert_ne!(output.read_line(&mut line).await.unwrap(), 0);
+                    if line.trim() == "SCOPED_RENEWAL_SENT" {
+                        break;
+                    }
                 }
-                nodes.push((fields[0].to_owned(), stream));
-            }
-        })
-        .await
-        .expect("three running detached nodes before trigger");
-        for (_, node) in &nodes {
-            assert_eq!(
-                node.get_ref().try_read(&mut [0]).unwrap_err().kind(),
-                std::io::ErrorKind::WouldBlock
-            );
+            })
+            .await
+            .unwrap();
+            renewed_observed = Some(tokio::time::Instant::now());
         }
         match trigger {
             "owner" => owner.as_mut().unwrap().kill().await.unwrap(),
-            "owner-stall" => {
+            "owner-stall" | "owner-stall-renewed" => {
                 assert!(
                     tokio::process::Command::new("/bin/kill")
                         .args(["-STOP", &owner.as_ref().unwrap().id().unwrap().to_string()])
@@ -412,21 +580,19 @@ async fn scoped_detached_trees_close_on_all_failure_triggers() {
             "deadline" => {}
             _ => unreachable!(),
         }
+        if trigger == "owner-stall-renewed" {
+            tokio::time::sleep_until(renewed_observed.unwrap() + Duration::from_millis(3300)).await;
+            assert_tree_live(&nodes);
+        }
         tokio::time::timeout(Duration::from_secs(5), async {
-            for (_, mut stream) in nodes {
-                match stream.read(&mut [0]).await {
-                    Ok(0) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
-                    other => panic!("{trigger}: descendant remained alive: {other:?}"),
-                }
-            }
+            assert_tree_closed(nodes).await;
             if let Some(scope) = scope {
                 scope.wait().await.unwrap();
             }
         })
         .await
         .expect("all descendants and init stop before backstop");
-        if trigger == "owner-stall" {
+        if matches!(trigger, "owner-stall" | "owner-stall-renewed") {
             let owner = owner.as_mut().unwrap();
             assert!(
                 owner.try_wait().unwrap().is_none(),

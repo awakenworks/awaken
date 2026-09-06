@@ -684,6 +684,43 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
                               boundary_mutations,
                               action_properties={"BoundaryExecRequiresLiveCutoff"})
     print("Local boundary mutation score: 7/7 killed (init receipt, detached member, expired exec, owner/helper/control/deadline links)")
+    # R1 no held current authority at write => unauthorized frame; R2 stale
+    # frame overwrites cutoff => shortening; R3 late frame bypasses expiry =>
+    # resurrection; R4 receive-time arithmetic => minted transit time; R5 a
+    # stalled prefix suppresses clock progress => lost cutoff. Isolate each
+    # named property so unrelated type/invariant failures cannot count as kills.
+    renewal_config = (ROOT / "formal/tla/LocalProcessRenewal.cfg").read_text(encoding="utf-8")
+    renewal_header = renewal_config.split("INVARIANTS\n", 1)[0]
+    renewal_replacements = [
+        ('/\\ workloadStarted /\\ authorityHeld /\\ controlLive',
+         '/\\ workloadStarted /\\ controlLive',
+         "RenewalWritesRequireCurrentAuthority", False),
+        ("IF Head(cutoffQueue) > cutoff THEN Head(cutoffQueue) ELSE cutoff",
+         "Head(cutoffQueue)", "RenewalCutoffNeverDecreases", True),
+        ('/\\ initState = "live" /\\ helperAlive /\\ controlLive /\\ deadlineLive\n  /\\ cutoffQueue',
+         '/\\ initState = "live" /\\ helperAlive /\\ controlLive\n  /\\ cutoffQueue',
+         "RenewalCannotResurrect", True),
+        ("IF Head(cutoffQueue) > cutoff THEN Head(cutoffQueue) ELSE cutoff",
+         "IF Head(cutoffQueue) > cutoff THEN Head(cutoffQueue) + cutoffClock ELSE cutoff",
+         "RenewalCannotMintTransitTime", True),
+        ("/\\ cutoffClock < 4 /\\ cutoffClock' = cutoffClock + 1",
+         "/\\ ~cutoffPartial /\\ cutoffClock < 4 /\\ cutoffClock' = cutoffClock + 1",
+         "temporal:RenewalPartialCannotStallClock", False),
+    ]
+    renewal_mutations = []
+    actions = set()
+    for original, replacement, property_name, action in renewal_replacements:
+        if source.count(original) != 1:
+            raise SystemExit(f"Local renewal mutation anchor drifted: {property_name}")
+        if action:
+            actions.add(property_name)
+        keyword = "PROPERTIES" if action or property_name.startswith("temporal:") else "INVARIANTS"
+        selected = property_name.removeprefix("temporal:")
+        selected_config = renewal_header + f"{keyword} {selected}\n"
+        renewal_mutations.append((source.replace(original, replacement), selected_config, property_name))
+    check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, renewal_config,
+                              renewal_mutations, action_properties=actions)
+    print("Local renewal mutation score: 5/5 killed (current grant, stale cutoff, resurrection, transit time, partial stall)")
 
 
 def check_memory_copy_model_mutant(tlc_jar: Path) -> None:

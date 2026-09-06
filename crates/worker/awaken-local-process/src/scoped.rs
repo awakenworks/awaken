@@ -16,14 +16,16 @@ use std::{
     path::Path,
     time::Duration,
 };
+use tokio::net::UnixStream;
 use tokio::net::unix::pipe::{Receiver, Sender};
-use tokio::{io::AsyncReadExt, net::UnixStream};
 
 mod descriptor;
 mod grant;
 mod process_io;
+mod renewal;
 mod wire;
 pub use grant::ScopedLaunchGrant;
+pub use renewal::ScopedDeadlineGrant;
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const MAX_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
@@ -89,6 +91,7 @@ pub struct ScopedProcess {
     _namespace: OwnedFd,
     init: OwnedFd,
     control: UnixStream,
+    control_writer: std::sync::Mutex<()>,
     io: process_io::ProcessIo,
     identity: ProcessNamespaceIdentity,
 }
@@ -155,6 +158,7 @@ impl ScopedProcess {
                 _namespace: namespace,
                 init,
                 control,
+                control_writer: std::sync::Mutex::new(()),
                 io,
                 identity,
             })
@@ -164,6 +168,36 @@ impl ScopedProcess {
     }
     pub fn identity(&self) -> ProcessNamespaceIdentity {
         self.identity
+    }
+
+    /// Request a conservative cutoff extension under CURRENT Session authority.
+    /// Derive the deadline and commit INSIDE the caller's existing authorization
+    /// lock. A send receipt is not a helper ACK, business renewal or stop proof.
+    /// Denial does not revoke an older still-valid cutoff; explicit revocation
+    /// must also force-stop the scope. Backpressure is bounded and reauthorizes.
+    pub async fn refresh_deadline_authorized(
+        &self,
+        timeout: Duration,
+        mut authorize: impl FnMut(ScopedDeadlineGrant<'_>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if timeout.is_zero() || timeout > MAX_WAIT {
+            return Err(invalid());
+        }
+        tokio::time::timeout(
+            timeout,
+            grant::commit_checked(&self.control, |committed| {
+                if self.tree_exited()? {
+                    return Err(io::ErrorKind::BrokenPipe.into());
+                }
+                authorize(ScopedDeadlineGrant::new(
+                    &self.control,
+                    &self.control_writer,
+                    committed,
+                ))
+            }),
+        )
+        .await
+        .map_err(|_| timed_out())?
     }
     pub fn take_stdin(&mut self) -> Option<Sender> {
         self.io.stdin.take()
@@ -242,7 +276,7 @@ impl ProcessHandle for ScopedProcess {
                 Signal::Int => grant::INTERRUPT,
                 Signal::Kill => unreachable!(),
             };
-            return match grant::send_signal(&self.control, byte).await {
+            return match grant::send_signal(&self.control, &self.control_writer, byte).await {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     // The helper can exit between the first poll and delivery.
@@ -276,7 +310,7 @@ pub async fn bootstrap() -> io::Result<ExitStatus> {
     let stream = std::os::unix::net::UnixStream::from(inherited);
     stream.set_nonblocking(true)?;
     let mut control = UnixStream::from_std(stream)?;
-    let (deadline, process) = tokio::time::timeout(MAX_WAIT, async {
+    let (mut deadline, process) = tokio::time::timeout(MAX_WAIT, async {
         let namespace: OwnedFd = std::fs::File::open("/proc/self/ns/pid")?.into();
         let init = pidfd_open(Pid::from_raw(1).ok_or_else(invalid)?, PidfdFlags::empty())?;
         descriptor::send(&control, &[namespace, init]).await?;
@@ -295,18 +329,17 @@ pub async fn bootstrap() -> io::Result<ExitStatus> {
     .await
     .map_err(|_| timed_out())??;
     loop {
-        let remaining = deadline.remaining()?;
-        tokio::select! {
+        let message = tokio::select! {
             status = process.wait() => return status.map_err(|_| invalid()),
-            byte = control.read_u8() => {
-                let signal = match byte? {
-                    grant::TERMINATE => Signal::Term,
-                    grant::INTERRUPT => Signal::Int,
-                    _ => return Err(invalid()),
-                };
+            message = renewal::receive_before_cutoff(&mut control, deadline) => message?,
+        };
+        match message {
+            renewal::ControlMessage::Signal(signal) => {
                 process.signal(signal).await.map_err(|_| invalid())?;
-            },
-            _ = tokio::time::sleep(remaining.min(Duration::from_millis(100))) => {}
+            }
+            renewal::ControlMessage::Deadline(incoming) => {
+                deadline.0 = renewal::apply_deadline(deadline.0, incoming, boot_millis()?)?;
+            }
         }
     }
 }

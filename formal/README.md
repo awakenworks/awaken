@@ -634,11 +634,21 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   termination under explicit weak fairness of kernel progress. Seven exact
   mutations remove the init receipt guard, preserve a detached member, permit
   expired execution, or sever one of the four failure links. The deadline is
-  finite-state and irreversible; renewal, real elapsed-time bounds, kernel
-  implementation, hostile host escape and production Session integration are
-  not proved. `awaken-sandbox/tests/linux_scoped.rs` independently tests actual
+  finite-state and irreversible in that configuration.
+  `LocalProcessRenewal.cfg` composes the same boundary and current-authority
+  lock with cutoff values 1..3, clock 0..4, one queued frame and a stalled
+  proper prefix. A complete live update preserves the exact absolute cutoff;
+  stale frames cannot shorten it, expired frames cannot resurrect execution,
+  and stalled input cannot stop clock progress. Its five exact mutants remove
+  current authorization, overwrite with a stale cutoff, bypass expiry, add
+  receive-time latency, or stop clock progress during a partial frame.
+  These are bounded safety/liveness checks with explicit clock/kernel fairness,
+  not a business lease model, Rust refinement, real elapsed-time bound, kernel
+  implementation, hostile-host safety or production Session integration proof.
+  `awaken-sandbox/tests/linux_scoped.rs` independently tests actual
   loader-time containment, binary stdio, private descriptor ownership, detached
-  trees, owner/helper SIGKILL, cutoff and unaffected neighboring execution.
+  trees, owner/helper SIGKILL, cutoff, authorized/denied/stale cutoff updates,
+  owner SIGSTOP after renewal and unaffected neighboring execution.
   The old delegated-systemd adapter/test is removed, not an alternative mode.
 - `WorkerReplacement.tla` composes authored route resolution, dispatch-time
   candidate pinning, worker claims, credential materialization, execution and
