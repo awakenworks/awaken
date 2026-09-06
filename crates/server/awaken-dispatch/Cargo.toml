@@ -52,6 +52,7 @@ test-support = ["durable"]
 nats = ["durable", "dep:async-nats", "dep:futures-lite"]
 
 [dev-dependencies]
+awaken-reliability-testkit.workspace = true
 awaken-dispatch-testkit = { workspace = true }
 awaken-store-inmem.workspace = true
 awaken-store-postgres = { workspace = true }

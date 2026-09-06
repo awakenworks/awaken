@@ -20046,6 +20046,9 @@ struct RemoteTerminalCleanupControl {
     claim_targets: Mutex<Vec<awaken_session_contract::SessionRealizationTarget>>,
     renewal_sessions: Mutex<Vec<String>>,
     renewal_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    renewal_response_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    renewal_response_ready: tokio::sync::Notify,
+    renewal_delay_ms: Mutex<std::collections::HashMap<String, u64>>,
     renewals_active: AtomicUsize,
     max_renewals_active: AtomicUsize,
     renewals: Mutex<BTreeMap<String, awaken_session_contract::SessionRealizationLease>>,
@@ -20109,18 +20112,38 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
         if let Some(failure) = self.renewal_failure.lock().unwrap().clone() {
             return Err(failure);
         }
-        if let Some(current) = self.renewals.lock().unwrap().get_mut(&command.session_id) {
-            if !awaken_session_contract::realization_lease_generation_authorizes(
-                current,
-                &command.asserted_lease,
-            ) || command.requested_expires_at_unix_ms < current.expires_at_unix_ms
+        let delay = self
+            .renewal_delay_ms
+            .lock()
+            .unwrap()
+            .get(&command.session_id)
+            .copied();
+        if let Some(delay) = delay {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
+        let response =
             {
-                return Err(
-                    awaken_session_contract::SessionRealizationControlFailure::StaleOwnership,
-                );
+                let mut renewals = self.renewals.lock().unwrap();
+                renewals.get_mut(&command.session_id).map(|current| {
+                if !awaken_session_contract::realization_lease_generation_authorizes(
+                    current, &command.asserted_lease,
+                ) || command.requested_expires_at_unix_ms < current.expires_at_unix_ms {
+                    Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership)
+                } else {
+                    current.expires_at_unix_ms = command.requested_expires_at_unix_ms;
+                    Ok(current.clone())
+                }
+            })
+            };
+        if let Some(response) = response {
+            // Gate the already accepted immutable response, not the request:
+            // later Control mutations cannot rewrite this response in flight.
+            let gate = self.renewal_response_gate.lock().unwrap().clone();
+            if let Some(gate) = gate {
+                self.renewal_response_ready.notify_one();
+                gate.acquire_owned().await.unwrap().forget();
             }
-            current.expires_at_unix_ms = command.requested_expires_at_unix_ms;
-            return Ok(current.clone());
+            return response;
         }
 
         let (projection, current) = self

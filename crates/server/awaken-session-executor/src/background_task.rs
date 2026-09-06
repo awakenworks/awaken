@@ -1492,9 +1492,17 @@ mod tests {
         pub(super) starts: AtomicUsize,
         pub(super) polls: AtomicUsize,
         pub(super) cancels: AtomicUsize,
+        pub(super) effect_gate: Option<Arc<tokio::sync::Semaphore>>,
+        pub(super) effect_entered: tokio::sync::Notify,
     }
 
     impl RemoteTaskTool {
+        async fn before_effect(&self) {
+            if let Some(gate) = &self.effect_gate {
+                self.effect_entered.notify_one();
+                gate.acquire().await.unwrap().forget();
+            }
+        }
         pub(super) fn handle() -> ToolTaskHandle {
             ToolTaskHandle {
                 owner: "fixture-durable-adapter".into(),
@@ -1516,6 +1524,7 @@ mod tests {
         }
 
         async fn start_task(&self, _call: ToolCall) -> Result<ToolTaskStart, ToolError> {
+            self.before_effect().await;
             self.starts.fetch_add(1, Ordering::SeqCst);
             Ok(ToolTaskStart::Pending(Self::handle()))
         }
@@ -1526,6 +1535,7 @@ mod tests {
             task: &ToolTaskHandle,
         ) -> Result<ToolTaskPoll, ToolError> {
             assert_eq!(task.task_id, "remote-secret-id");
+            self.before_effect().await;
             self.polls.fetch_add(1, Ordering::SeqCst);
             Ok(ToolTaskPoll::Completed(ToolOutput::ok(
                 &call.call_id,
@@ -1539,6 +1549,7 @@ mod tests {
             task: &ToolTaskHandle,
         ) -> Result<ToolTaskPoll, ToolError> {
             assert_eq!(task.task_id, Self::handle().task_id);
+            self.before_effect().await;
             self.cancels.fetch_add(1, Ordering::SeqCst);
             Ok(ToolTaskPoll::Cancelled)
         }
