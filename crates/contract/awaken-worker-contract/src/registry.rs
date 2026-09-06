@@ -361,6 +361,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn startup_readiness_is_independent_of_dynamic_probe_outcome() {
+        // Causes: C1 registration and runtime assembly already succeeded; C2
+        // the asynchronous dynamic-evidence probe is Pending, Succeeded, or
+        // Failed. Effects: E1 process readiness remains true for every C2;
+        // E2 dynamic evidence is still evaluated separately by placement.
+        // Constraint: this policy cannot manufacture credential/capability
+        // evidence. Decision rules P1/P2/P3 = C1 + each C2 => E1, while E2 is
+        // owned by `dynamic_evidence_admits`.
+        for probe in [
+            DynamicEvidenceProbeState::Pending,
+            DynamicEvidenceProbeState::Succeeded,
+            DynamicEvidenceProbeState::Failed,
+        ] {
+            assert!(process_ready_after_startup(probe));
+        }
+    }
+
+    #[test]
     fn replacement_and_heartbeat_follow_one_non_resurrection_table() {
         // Causes: C1 record exists; C2 identity matches; C3 half-open lease is
         // live; C4 sequence is newer; C5 state is open vs Quiesced/Dead.
