@@ -207,6 +207,7 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
                 "fn validate_credential_file_ownership() { let _ = Role::Worker; }",
             ),
             ("authorization", "fn check_entitlement() {}"),
+            ("authorization", "verify_current_worker_identity(directory, context, identity, now, false).await;"),
             (
                 "authorization",
                 "struct WorkSessionAccess; struct WorkspaceScope; "
@@ -313,6 +314,7 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
 
         for source in [
             "struct CredentialArtifactCodec;",
+            "use worker_security::verify_current_worker_identity;",
             "fn project_work_with_secret() {}",
             "let _: watch::Receiver<Option<JsonRpcNotifier>>;",
             "async fn published_notifier() {}",
@@ -330,6 +332,25 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
             [],
             "R3",
         )
+
+    def test_worker_identity_admission_survives_temporal_variant_renaming(self) -> None:
+        # W1 actual production identity check remains authorization, independently
+        # of the policy enum's spelling. The old scan accidentally depended on
+        # TerminalGeneration + rejection_status to detect a state machine;
+        # renaming the policy to SessionRoot hid an unchanged safety decision.
+        # W2 a comment, import or cfg(test)-only call grants no production signal.
+        # The canonical scanner/projection owns both rules; no path allowlist or
+        # second classifier is introduced. This remains a literal-source inventory,
+        # not compiler-level resolution of arbitrary aliases or proof coverage.
+        source = (MODULE.ROOT / "crates/resources/awaken-resource-worker-http/src/worker_authority.rs").read_text()
+        for variant in ("TerminalGeneration", "SessionRoot", "RootTruth"):
+            self.assertIn("authorization", MODULE.detect_signals(source.replace("SessionRoot", variant)), variant)
+        for source in (
+            "// verify_current_worker_identity(directory, context, identity, now, false);",
+            "use worker_security::verify_current_worker_identity;",
+            "#[cfg(test)] fn fixture() { verify_current_worker_identity(directory, context, identity, now, false); }",
+        ):
+            self.assertEqual(MODULE.detect_signals(source), [], "W2")
 
 
 if __name__ == "__main__":
