@@ -20,6 +20,42 @@ export function hostedSessionEntry(
 ): HostedSessionEntry {
   if (!navigation.hub_url || sessionBearer) return { kind: "continue" };
   const hub = new URL(navigation.hub_url);
+  hub.searchParams.delete("product");
+  hub.searchParams.delete("entry");
+  hub.hash = "";
   hub.searchParams.set("continue", currentUrl);
   return { kind: "redirect", url: hub.href };
+}
+
+/** Presentation only: failure never invents a hub or authorizes local access. */
+export function suiteHubUrl(navigation: SuiteNavigation | undefined, failed: boolean): string | null {
+  return failed ? null : navigation?.hub_url ?? null;
+}
+
+/** Opaque product intent; only the composing hub can authorize its target. */
+export function suiteProductEntryUrl(hubUrl: string, product: string): string {
+  const entry = new URL(hubUrl);
+  entry.searchParams.delete("continue");
+  entry.searchParams.delete("entry");
+  entry.searchParams.set("product", product);
+  entry.hash = "";
+  return entry.href;
+}
+
+/** Consumers choose their visible destinations; never accept an external URL. */
+export function suiteCloudUrl(hubUrl: string, path: string): string {
+  if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\")
+    || path.includes("?") || path.includes("#")) throw new Error("invalid suite destination");
+  const destination = new URL(hubUrl);
+  destination.pathname = path;
+  destination.search = "";
+  destination.hash = "";
+  return destination.href;
+}
+
+/** Only for an authenticated hosted-scope probe, not arbitrary resource GETs. */
+export function hostedAccessFailure(status: number): "restart" | "denied" | "unavailable" {
+  if (status === 401) return "restart";
+  if (status === 403 || status === 404) return "denied";
+  return "unavailable";
 }

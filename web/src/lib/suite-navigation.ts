@@ -7,6 +7,10 @@ import {
 
 export {
   hostedSessionEntry,
+  hostedAccessFailure,
+  suiteHubUrl,
+  suiteProductEntryUrl,
+  suiteCloudUrl,
   type HostedSessionEntry,
   type SuiteNavigation,
 } from "./generated/suite-navigation";
@@ -22,36 +26,6 @@ export const suiteNavigationQuery = {
 
 export function useSuiteNavigation() {
   return useQuery(suiteNavigationQuery);
-}
-
-/** Optional presentation capability: failure is equivalent to standalone mode. */
-export function suiteHubUrl(
-  navigation: SuiteNavigation | undefined,
-  failed: boolean,
-): string | null {
-  if (failed) return null;
-  return navigation?.hub_url ?? null;
-}
-
-/**
- * Pure presentation intent. Cloud remains responsible for authenticating the
- * account and resolving an authorized launch; the product never learns a
- * sibling origin, Workspace, placement, or readiness coordinate.
- */
-export function suiteProductEntryUrl(hubUrl: string, product: "awaken" | "flow"): string {
-  const entry = new URL(hubUrl);
-  entry.searchParams.delete("continue");
-  entry.searchParams.set("product", product);
-  return entry.href;
-}
-
-/** Build one Cloud-owned account destination from the projected deployment hub. */
-export function suiteCloudUrl(hubUrl: string, path: "/products" | "/usage-billing" | "/settings" | "/logout"): string {
-  const destination = new URL(hubUrl);
-  destination.pathname = path;
-  destination.search = "";
-  destination.hash = "";
-  return destination.href;
 }
 
 export type HostedBootstrapDecision =
@@ -73,10 +47,4 @@ export function hostedBootstrapDecision(
     currentUrl,
   );
   return entry.kind === "redirect" ? entry : { kind: "verify" };
-}
-
-export function hostedAccessFailure(status: number): "restart" | "denied" | "unavailable" {
-  if (status === 401) return "restart";
-  if (status === 403) return "denied";
-  return "unavailable";
 }

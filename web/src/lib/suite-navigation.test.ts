@@ -36,7 +36,7 @@ describe("suite navigation projection", () => {
    */
   it("requests a sibling only through the exact suite hub", () => {
     expect(suiteProductEntryUrl(
-      "https://cloud.example/entry?continue=https%3A%2F%2Fagents.example%2Fw%2Fsecret",
+      "https://cloud.example/entry?entry=stale&continue=https%3A%2F%2Fagents.example%2Fw%2Fsecret#stale",
       "flow",
     )).toBe("https://cloud.example/entry?product=flow");
   });
@@ -82,7 +82,7 @@ describe("suite navigation projection", () => {
      * | B2 | exact | exact | absent | Cloud entry with continuation |
      * | B3 | exact | exact | present | verify exact Workspace context |
      * | B4 | null | any | any | standalone local-session path |
-     * Probe effects: 401 restarts Cloud login, 403 is terminal deny, all other
+     * Probe effects: 401 restarts Cloud login, 403/404 are terminal deny, all other
      * failures remain retryable/unavailable.
      */
     const hosted = { hub_url: "https://cloud.example/entry" };
@@ -107,8 +107,9 @@ describe("suite navigation projection", () => {
       "http://localhost/",
       "/",
     )).toEqual({ kind: "standalone" });
-    expect([401, 403, 503].map(hostedAccessFailure)).toEqual([
+    expect([401, 403, 404, 503].map(hostedAccessFailure)).toEqual([
       "restart",
+      "denied",
       "denied",
       "unavailable",
     ]);
