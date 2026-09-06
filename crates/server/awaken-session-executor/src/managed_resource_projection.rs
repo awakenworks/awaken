@@ -19,6 +19,26 @@ pub(crate) struct CompiledEffectiveInputs {
         std::collections::HashMap<String, std::sync::Arc<crate::memory::BoundMemory>>,
 }
 
+fn validate_preparation_publication(
+    slot: &crate::session_slot::SessionRuntimeSlot,
+    asserted: Option<&awaken_session_contract::SessionRealizationLease>,
+) -> Result<(), RunError> {
+    if slot.resource_preparation.is_some()
+        && !asserted.is_some_and(|lease| {
+            slot.resource_preparation_authorized(
+                lease,
+                crate::terminal_repository_publication::runtime_unix_now_ms(),
+            )
+        })
+    {
+        return Err(RunError::unavailable_classified(
+            "session_realization_authority_lost",
+            "Resource preparation cannot publish after realization authority ended",
+        ));
+    }
+    Ok(())
+}
+
 fn resource_requirement_effect_key(
     transition: &awaken_session_contract::SessionResourceTransition,
     claim: Option<&awaken_dispatch::RunClaim>,
@@ -181,17 +201,6 @@ impl crate::ManagedHost {
         )))
     }
 
-    fn install_staged_inputs(&self, thread: &str, compiled: CompiledEffectiveInputs) {
-        // Staged provider requirements are needed to create/adopt an Environment,
-        // but they are not physical-completion evidence. Only the transition
-        // effect edge below may publish `SessionResourceManifest`.
-        self.host.register_thread_resources(thread, compiled.staged);
-        // Standard mounts and the optional automatic-memory selection are
-        // separate facts. Installing a manifest never picks a "first" store.
-        self.host
-            .register_thread_memory_bindings(thread, compiled.memory_bindings);
-    }
-
     /// Publish the completed active generation. Callers must have completed the
     /// exact aggregate-authored physical transition before entering this edge;
     /// desired-only staging is deliberately unable to reach it.
@@ -309,8 +318,10 @@ impl crate::ManagedHost {
                 )
                 .await?;
             self.host.session_slots.update(thread, |slot| {
+                validate_preparation_publication(slot, realization_lease)?;
                 slot.skills = Some(versions);
-            });
+                Ok(())
+            })?;
             return Ok(());
         }
         let effect_key = resource_requirement_effect_key(transition, claim, realization_lease);
@@ -359,12 +370,19 @@ impl crate::ManagedHost {
         // The slot then exposes one complete set of cold requirements; failed
         // compilation leaves no Workspace, prompt, binding, or active-manifest
         // residue. Only the exact physical transition publishes the manifest.
-        self.host.register_thread_workspace(thread, workspace);
-        self.install_staged_inputs(thread, compiled);
         self.host.session_slots.update(thread, |slot| {
+            // The lease check and correlated cache publication share the slot
+            // lock with renewal rejection. Neither a late read nor cancellation
+            // may publish requirements after that rejection has linearized.
+            validate_preparation_publication(slot, realization.map(|(_, _, lease)| lease))?;
+            slot.workspace = Some(workspace.to_owned());
+            slot.resources = compiled.staged;
+            slot.memory_bindings = compiled.memory_bindings;
+            slot.memory = None;
             slot.skills = Some(versions);
             slot.staged_resource_effect_key = Some(effect_key);
-        });
+            Ok(())
+        })?;
         Ok(())
     }
 

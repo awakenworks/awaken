@@ -355,6 +355,9 @@ pub(crate) struct SessionRuntimeSlot {
     /// Current Control-issued projection authority. It is a live cache used to
     /// request renewal; durable ownership remains in the Session aggregate.
     pub realization_lease: Option<awaken_session_contract::SessionRealizationLease>,
+    /// Cancellation of the current Resource preparation only. This carries no
+    /// ownership: `realization_lease` and Control remain the sole authorities.
+    pub resource_preparation: Option<Arc<awaken_runtime_contract::CancellationToken>>,
     /// Wakes a claim resolver waiting for the Session application's initial
     /// restart reassignment. The lease above remains the only projected fact;
     /// this notification carries no authority or parallel state.
@@ -403,6 +406,47 @@ pub(crate) enum EnvironmentResourceReconciliation {
     None,
     Fresh,
     Adopted,
+}
+
+impl SessionRuntimeSlot {
+    pub(crate) fn install_realization_lease(
+        &mut self,
+        lease: awaken_session_contract::SessionRealizationLease,
+    ) {
+        if self.realization_lease.as_ref().is_some_and(|current| {
+            awaken_session_contract::realization_lease_generation_authorizes(current, &lease)
+        }) {
+            // A slow preparation must not overwrite an intervening renewal.
+            return;
+        }
+        if self.realization_lease.as_ref().is_some_and(|current| {
+            !awaken_session_contract::realization_lease_generation_authorizes(&lease, current)
+        }) && let Some(preparation) = &self.resource_preparation
+        {
+            preparation.cancel();
+        }
+        self.realization_lease = Some(lease);
+    }
+
+    pub(crate) fn resource_preparation_authorized(
+        &self,
+        asserted: &awaken_session_contract::SessionRealizationLease,
+        now_unix_ms: u64,
+    ) -> bool {
+        self.resource_preparation
+            .as_ref()
+            .is_none_or(|preparation| {
+                !preparation.is_cancelled()
+                    && self.realization_lease.as_ref().is_some_and(|current| {
+                        awaken_session_contract::realization_lease_generation_authorizes(
+                            current, asserted,
+                        ) && awaken_session_contract::realization_lease_is_live_at(
+                            current.expires_at_unix_ms,
+                            now_unix_ms,
+                        )
+                    })
+            })
+    }
 }
 
 #[derive(Clone, Default)]
@@ -498,10 +542,18 @@ impl SessionRuntimeSlots {
     }
 
     pub fn remove(&self, session: &str) -> Option<SessionRuntimeSlot> {
-        self.0
+        let removed = self
+            .0
             .lock()
             .expect("session runtime slots mutex poisoned")
-            .remove(session)
+            .remove(session);
+        if let Some(slot) = &removed {
+            if let Some(preparation) = &slot.resource_preparation {
+                preparation.cancel();
+            }
+            slot.realization_changed.notify_waiters();
+        }
+        removed
     }
 
     pub fn realization_leases(

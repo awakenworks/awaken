@@ -7,7 +7,7 @@ EXTENDS Naturals
 CONSTANTS
     RootRun, ChildRunA, ChildRunB,
     RootThread, ChildThread,
-    WorkItem, Workers, NoWorker, MaxEpoch, MaxHeartbeat, MaxTime
+    WorkItem, Workers, NoWorker, MaxEpoch, MaxHeartbeat, MaxTime, ConflictedRuns
 
 Runs == {RootRun, ChildRunA, ChildRunB}
 RootRuns == {RootRun}
@@ -253,6 +253,8 @@ ReclaimRun(run, candidate) ==
                    committedWorkEpoch, sessionObservationApplied>>
 
 StartExecution(run, candidate, epoch) ==
+    /\ run \notin ConflictedRuns
+    /\ committedDisposition[run] = "None"
     /\ run \notin executionStarted
     /\ DState(run) = "Leased"
     /\ DOwner(run) = candidate
@@ -285,7 +287,11 @@ FinishExecution(run, candidate, epoch) ==
 ObserveCommittedRun(run, disposition, candidate, epoch) ==
     /\ disposition \in {"Awaiting", "Ended"}
     /\ committedDisposition[run] = "None"
-    /\ AuthoritativeAttempt(run)
+    /\ \/ AuthoritativeAttempt(run)
+       \/ /\ run \in ConflictedRuns
+          /\ disposition = "Ended"
+          /\ DState(run) = "Leased"
+          /\ run \notin executionStarted
     /\ DOwner(run) = candidate
     /\ DEpoch(run) = epoch
     /\ CurrentRealization(candidate)
@@ -378,9 +384,26 @@ Next ==
     \/ \E run \in Runs, worker \in Workers, epoch \in 0..MaxEpoch:
          SettleDone(run, worker, epoch)
 
-Spec == Init /\ [][Next]_vars
+\* Deterministic pre-execution failure reuses the same committed disposition,
+\* Session observation and Dispatch settlement. Failed storage writes stutter;
+\* a lost acknowledgement changes no committed fact. Liveness is conditional
+\* on a commit already existing and fair observation/settlement, not on recovery
+\* from a permanent storage outage or on external-model termination.
+ResolutionFairness ==
+    /\ \A run \in ConflictedRuns: WF_vars(ApplySessionObservation(run))
+    /\ \A run \in ConflictedRuns, worker \in Workers, epoch \in 0..MaxEpoch:
+         WF_vars(SettleDone(run, worker, epoch))
+
+Spec == Init /\ [][Next]_vars /\ ResolutionFairness
+
+ConflictedRunsNeverExecute == executionStarted \intersect ConflictedRuns = {}
+NoConflictedRunHasSettled == \A run \in ConflictedRuns: DState(run) # "Removed"
+ConflictedChildCommitEventuallySettles ==
+    \A run \in ConflictedRuns \ RootRuns:
+      [](committedDisposition[run] = "Ended" => <>(DState(run) = "Removed"))
 
 TypeOK ==
+    /\ ConflictedRuns \subseteq Runs
     /\ RootRun # ChildRunA
     /\ RootRun # ChildRunB
     /\ ChildRunA # ChildRunB

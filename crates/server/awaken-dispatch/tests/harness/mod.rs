@@ -555,6 +555,7 @@ pub fn schedule_n_runtime(n: usize) -> (Arc<Runtime>, Arc<AtomicUsize>) {
 pub struct FailingCommit<C> {
     inner: Arc<C>,
     fail: Arc<AtomicBool>,
+    lose_response: Arc<AtomicBool>,
 }
 
 impl<C> FailingCommit<C> {
@@ -563,12 +564,19 @@ impl<C> FailingCommit<C> {
         Self {
             inner,
             fail: Arc::new(AtomicBool::new(fail)),
+            lose_response: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Flip the injected commit failure on or off.
     pub fn set_failing(&self, failing: bool) {
         self.fail.store(failing, Ordering::SeqCst);
+    }
+
+    /// Persist normally, then lose one acknowledgement. Reads still expose the
+    /// real committed truth, through the same fault boundary as rejection.
+    pub fn lose_next_response(&self) {
+        self.lose_response.store(true, Ordering::SeqCst);
     }
 }
 
@@ -578,7 +586,13 @@ impl<C: CommitCoordinator> CommitCoordinator for FailingCommit<C> {
         if self.fail.load(Ordering::SeqCst) {
             return Err(CommitError::Rejected("injected commit failure".to_string()));
         }
-        self.inner.commit(commit).await
+        let receipt = self.inner.commit(commit).await?;
+        if self.lose_response.swap(false, Ordering::SeqCst) {
+            return Err(CommitError::Rejected(
+                "injected lost commit response".to_string(),
+            ));
+        }
+        Ok(receipt)
     }
 }
 
