@@ -32,6 +32,7 @@ fn agent_argv() -> Vec<String> {
 /// name; the pool assigns its own scopes to warm containers.
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
         environment: None,

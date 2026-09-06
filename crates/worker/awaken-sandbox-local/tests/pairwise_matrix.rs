@@ -262,6 +262,7 @@ async fn build(
     };
 
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: format!("pw-{:?}-{:?}-{:?}", case.tier, case.res, case.shape).to_lowercase(),
         isolation,
         mounts,

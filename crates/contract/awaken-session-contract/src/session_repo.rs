@@ -331,6 +331,7 @@ mod mutation_tests {
         };
         let fingerprint = awaken_provisioning_contract::SandboxRealizationFingerprint::from_spec(
             &awaken_provisioning_contract::SandboxSpec {
+                process_tree_supervision: false,
                 scope: "session-memory".into(),
                 isolation: awaken_provisioning_contract::IsolationClass::Workdir,
                 environment: None,

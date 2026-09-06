@@ -1,6 +1,64 @@
 use super::*;
 use awaken_session_contract::SessionRealizationControl;
 
+#[test]
+fn terminal_cleanup_retains_exact_process_owner_requirements_through_dispose() {
+    // TC1 trust x supervision x {Prepare,Dispose} is exhaustive. Every phase
+    // retains the exact physical-owner requirement frozen by Environment.
+    // TC2 model/ACP/credential requirements remain empty; process cleanup is
+    // independent of an available inference login. No cleanup effect is run
+    // here: the production requirement compiler is the subject under test.
+    use awaken_provisioning_contract::{
+        HostAccessPolicy, SandboxDisposalPreparation, SandboxEffectFence,
+    };
+    use awaken_session_contract::{SessionCleanupDisposalCommand, SessionTerminalCleanupAction};
+    let fence = SandboxEffectFence::new("terminal", "worker", "boot", 1, u64::MAX).unwrap();
+    let disposal = SessionTerminalCleanupAction::Dispose {
+        command: SessionCleanupDisposalCommand {
+            session_id: "supervised-terminal".into(),
+            effect_id: "terminal".into(),
+            preparation_fingerprint: "fixture-preparation".into(),
+            provider_disposal: SandboxDisposalPreparation::new(fence, "fixture-provider").unwrap(),
+            restore_target: None,
+        },
+    };
+    for trusted in [false, true] {
+        for supervised in [false, true] {
+            let mut session = persisted("supervised-terminal", true, "terminated");
+            let awaken_session_contract::SessionBaselineState::Frozen(baseline) =
+                &mut session.baseline
+            else {
+                panic!("frozen fixture");
+            };
+            baseline.environment.sandbox.host_access = if trusted {
+                HostAccessPolicy::TrustedHost
+            } else {
+                HostAccessPolicy::Isolated
+            };
+            baseline.environment.sandbox.process_tree_supervision = supervised;
+            for action in [
+                &SessionTerminalCleanupAction::Prepare { commands: vec![] },
+                &disposal,
+            ] {
+                let requirements = crate::realization::terminal_cleanup_worker_requirements(
+                    "workspace",
+                    &session,
+                    action,
+                )
+                .unwrap();
+                assert_eq!(requirements.sandbox.process_tree_supervision, supervised);
+                assert_eq!(
+                    requirements.sandbox_backend.as_deref(),
+                    trusted.then_some(awaken_worker_contract::TRUSTED_HOST_SANDBOX_BACKEND)
+                );
+                assert!(requirements.required_credentials.is_empty());
+                assert!(requirements.required_acp_capabilities.is_empty());
+                assert!(requirements.required_sandbox_tool_recovery.is_empty());
+            }
+        }
+    }
+}
+
 fn terminal_prepare_commands(
     work: awaken_session_contract::SessionTerminalCleanupWork,
 ) -> Vec<awaken_session_contract::SessionCleanupCommand> {
@@ -2624,6 +2682,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
             let realization_fingerprint =
                 awaken_provisioning_contract::SandboxRealizationFingerprint::from_spec(
                     &awaken_provisioning_contract::SandboxSpec {
+                        process_tree_supervision: false,
                         scope: session_id.into(),
                         isolation: awaken_provisioning_contract::IsolationClass::Workdir,
                         environment: None,

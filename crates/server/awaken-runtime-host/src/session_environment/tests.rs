@@ -447,6 +447,7 @@ impl pc::Sandbox for FakeContainer {
 
 fn spec() -> SandboxSpec {
     SandboxSpec {
+        process_tree_supervision: false,
         scope: "session-env".into(),
         isolation: IsolationClass::Workdir,
         mounts: Vec::new(),

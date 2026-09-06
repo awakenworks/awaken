@@ -1139,6 +1139,7 @@ fn batch_artifact_container_handle(spec: &pc::SandboxSpec) -> pc::SandboxHandle 
 impl awaken_sandbox_container::ContainerEnvironmentProvider for BatchArtifactContainerProvider {
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
         pc::SandboxCapabilities {
+            process_tree_supervision: false,
             isolation: pc::IsolationClass::Container,
             tool_transparent: true,
             path_fidelity: true,

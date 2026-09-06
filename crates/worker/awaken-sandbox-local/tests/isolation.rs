@@ -13,6 +13,7 @@ use awaken_sandbox_local::{LocalProvider, LocalSandbox};
 /// A bare Workdir spec, egress denied when `deny` (carried on the opaque `extra`).
 fn spec(scope: &str, deny: bool) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Workdir,
         mounts: Vec::new(),

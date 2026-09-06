@@ -94,36 +94,6 @@ fn claim_storage_class_matches(expected: Option<&str>, observed: Option<&str>) -
     }
 }
 
-#[cfg(test)]
-mod claim_projection_tests {
-    use super::claim_storage_class_matches;
-
-    #[test]
-    fn storage_class_defaulting_decision_table_is_exact() {
-        // Cause/effect graph: C1 the desired PVC names a class or delegates to
-        // apiserver defaulting; C2 the observed class is absent, non-empty, or
-        // empty. Effects: E1 an explicit class must match byte-for-byte; E2 a
-        // delegated class accepts either no default or one concrete admitted
-        // default; E3 an empty admitted name fails closed. Rules are all six
-        // meaningful rows below; the live restore test owns the API mutation.
-        assert!(
-            claim_storage_class_matches(Some("fast"), Some("fast")),
-            "R1/E1"
-        );
-        assert!(
-            !claim_storage_class_matches(Some("fast"), Some("slow")),
-            "R2/E1"
-        );
-        assert!(!claim_storage_class_matches(Some("fast"), None), "R3/E1");
-        assert!(
-            claim_storage_class_matches(None, Some("local-path")),
-            "R4/E2"
-        );
-        assert!(claim_storage_class_matches(None, None), "R5/E2");
-        assert!(!claim_storage_class_matches(None, Some("  ")), "R6/E3");
-    }
-}
-
 struct Observation {
     pod: Pod,
 }

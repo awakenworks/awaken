@@ -416,6 +416,13 @@ fn worker_manifest_reports_trusted_host_only_from_operator_configuration() {
             config: &StandardManifestConfig::default(),
         });
         assert!(manifest.sandbox_backends.contains(&primary_backend), "E1");
+        // E3 the additional profile comes from the installed Workdir provider,
+        // not from the primary tier. In particular Namespace's hard path and
+        // network guarantees must remain absent on TrustedHost.
+        assert_eq!(
+            manifest.trusted_host_sandbox,
+            expected_trusted.then(awaken_provisioning_contract::SandboxCapabilities::default)
+        );
         assert_eq!(
             manifest
                 .sandbox_backends
@@ -459,6 +466,49 @@ fn explicit_manifest_cannot_overstate_session_environment_recovery() {
             .contains("does not match installed SessionEnvironment"),
         "R2: {error}"
     );
+}
+
+#[test]
+fn explicit_manifest_cannot_promote_a_kernel_probe_to_installed_supervision() {
+    // WI1 primary-only, WI2 additional-host-only, WI3 both supervision claims
+    // must fail while the complete Session lifecycle is not installed.
+    // WI4 neither claim preserves legacy admission. A manually supplied
+    // manifest cannot bypass the same truthful standard-manifest boundary.
+    for primary in [false, true] {
+        for trusted in [false, true] {
+            let mut manifest = awaken_worker_contract::WorkerManifest {
+                build_digest: "supervision-fixture".into(),
+                ..Default::default()
+            };
+            manifest.sandbox.process_tree_supervision = primary;
+            manifest.trusted_host_sandbox =
+                trusted.then(|| awaken_provisioning_contract::SandboxCapabilities {
+                    process_tree_supervision: true,
+                    ..Default::default()
+                });
+            assert_eq!(
+                validate_worker_manifest(&manifest, &deployment()).is_ok(),
+                !primary && !trusted
+            );
+        }
+    }
+    // WI5 a claimed Workdir profile must also match all other installed axes.
+    // A caller cannot smuggle network enforcement under the new profile.
+    let mut configured = deployment();
+    configured.sandbox.trusted_host_enabled = true;
+    let mut manifest = awaken_worker_contract::WorkerManifest {
+        build_digest: "profile-fixture".into(),
+        trusted_host_sandbox: configured.trusted_host_support(),
+        sandbox_backends: [awaken_worker_contract::TRUSTED_HOST_SANDBOX_BACKEND.into()].into(),
+        ..Default::default()
+    };
+    assert!(validate_worker_manifest(&manifest, &configured).is_ok());
+    manifest
+        .trusted_host_sandbox
+        .as_mut()
+        .unwrap()
+        .network_isolation = true;
+    assert!(validate_worker_manifest(&manifest, &configured).is_err());
 }
 
 #[test]
@@ -537,6 +587,7 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
     // boundary without constructing a duplicate Session container path. R3
     // prevents an unaddressable boundary from entering placement evidence.
     let capabilities = awaken_provisioning_contract::SandboxCapabilities {
+        process_tree_supervision: false,
         isolation: awaken_provisioning_contract::IsolationClass::Container,
         tool_transparent: true,
         path_fidelity: true,

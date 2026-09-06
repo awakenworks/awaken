@@ -97,6 +97,7 @@ mod tests {
 
     fn spec() -> SandboxSpec {
         SandboxSpec {
+            process_tree_supervision: false,
             scope: "tool-output-spill".into(),
             isolation: IsolationClass::Workdir,
             mounts: Vec::new(),

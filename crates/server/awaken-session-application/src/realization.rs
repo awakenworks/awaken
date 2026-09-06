@@ -32,10 +32,10 @@ mod authority;
 mod control;
 mod recovery_backoff;
 
+pub(super) use authority::terminal_cleanup_worker_requirements;
 use authority::{
     TerminalCleanupClaimConflict, TerminalCleanupClaimScope, TerminalCleanupRootClaim,
-    exact_generation_key, generation_set_authorizes, terminal_cleanup_worker_requirements,
-    verify_lease,
+    exact_generation_key, generation_set_authorizes, verify_lease,
 };
 use control::RefreshedSessionRealizationControl;
 use recovery_backoff::{SessionRecoveryTrigger, next_session_recovery_delay};

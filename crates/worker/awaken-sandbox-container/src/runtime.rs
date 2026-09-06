@@ -263,6 +263,7 @@ pub(crate) fn container_capabilities(
     control_services: std::collections::BTreeSet<SandboxControlServiceKind>,
 ) -> pc::SandboxCapabilities {
     pc::SandboxCapabilities {
+        process_tree_supervision: false,
         isolation: pc::IsolationClass::Container,
         tool_transparent: true,
         path_fidelity: true,
@@ -710,6 +711,7 @@ pub(crate) fn container_state_observation(
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) fn legacy_unfenced_fingerprint(scope: &str) -> pc::SandboxRealizationFingerprint {
     pc::SandboxRealizationFingerprint::from_spec(&pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.to_owned(),
         isolation: pc::IsolationClass::Container,
         environment: None,
@@ -734,6 +736,7 @@ mod realization_tests {
 
     fn fingerprint(scope: &str) -> pc::SandboxRealizationFingerprint {
         pc::SandboxRealizationFingerprint::from_spec(&pc::SandboxSpec {
+            process_tree_supervision: false,
             scope: scope.into(),
             isolation: pc::IsolationClass::Container,
             environment: None,

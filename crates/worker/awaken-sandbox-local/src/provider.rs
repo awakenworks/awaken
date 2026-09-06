@@ -755,19 +755,7 @@ impl LocalProvider {
     /// Static capability evidence shared by provider admission and owners of an
     /// already-created local environment.
     pub fn capabilities() -> pc::SandboxCapabilities {
-        pc::SandboxCapabilities {
-            isolation: pc::IsolationClass::Workdir,
-            tool_transparent: false,
-            path_fidelity: false,
-            enforced_readonly: false,
-            network_isolation: false,
-            enforced_network_allowlist: false,
-            secret_egress_substitution: false,
-            resource_limits: false,
-            custom_rootfs: false,
-            package_provisioning: false,
-            control_services: Default::default(),
-        }
+        pc::SandboxCapabilities::default()
     }
 
     async fn realize_mount(

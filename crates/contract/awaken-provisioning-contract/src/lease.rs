@@ -761,6 +761,7 @@ mod actuator_tests {
     impl SandboxProvider for FakeProvider {
         fn capabilities(&self) -> SandboxCapabilities {
             SandboxCapabilities {
+                process_tree_supervision: false,
                 isolation: IsolationClass::Container,
                 tool_transparent: true,
                 path_fidelity: true,
@@ -936,6 +937,7 @@ mod actuator_tests {
 
     fn spec_min() -> SandboxSpec {
         SandboxSpec {
+            process_tree_supervision: false,
             scope: "s".into(),
             isolation: IsolationClass::Container,
             mounts: Vec::new(),

@@ -75,6 +75,19 @@ impl LocalProcess {
         cwd: &Path,
         timeout: Duration,
     ) -> io::Result<Self> {
+        Self::spawn_scoped_authorized(scope, helper, command, cwd, timeout, || Ok(())).await
+    }
+
+    /// Provider authority is checked at the final synchronous point before GO.
+    /// The caller retains its durable realization lock through this call.
+    pub async fn spawn_scoped_authorized(
+        scope: &LinuxProcessScope,
+        helper: &Path,
+        command: &MaterializedCommand,
+        cwd: &Path,
+        timeout: Duration,
+        authorize_effect: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<Self> {
         if !helper.is_absolute() || timeout.is_zero() || timeout > MAX_WAIT {
             return Err(invalid());
         }
@@ -100,7 +113,7 @@ impl LocalProcess {
             let process = Self::spawn(&mut bootstrap)?;
             let (mut control, _) = listener.accept().await?;
             peer(&control, process.id.parse().map_err(|_| invalid())?)?;
-            authorize(&mut control, &frame).await?;
+            authorize_checked(&mut control, &frame, authorize_effect).await?;
             Ok(process)
         })
         .await
@@ -108,15 +121,39 @@ impl LocalProcess {
     }
 }
 
+#[cfg(test)]
 async fn authorize(control: &mut UnixStream, frame: &[u8]) -> io::Result<()> {
+    authorize_checked(control, frame, || Ok(())).await
+}
+
+async fn authorize_checked(
+    control: &mut UnixStream,
+    frame: &[u8],
+    mut authorize_effect: impl FnMut() -> io::Result<()>,
+) -> io::Result<()> {
     control.write_u32(frame.len() as u32).await?;
     control.write_all(frame).await?;
     if control.read_u8().await? != JOINED {
         return Err(invalid());
     }
-    // One-byte authorization: write_u8 cannot yield after writing a partial
-    // GO. No await after this write, including in the owning launch function.
-    control.write_u8(GO).await
+    loop {
+        control.writable().await?;
+        authorize_effect()?;
+        // No suspension between checking provider authority and issuing GO.
+        // A spurious writable notification retries authorization as well as IO;
+        // it cannot preserve an earlier check across a lease-expiry window.
+        match control.try_write(&[GO]) {
+            Ok(1) => return Ok(()),
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "incomplete scoped grant",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn stdio(mode: Stdio) -> std::process::Stdio {
@@ -424,6 +461,54 @@ mod tests {
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
         assert!(child.read_u8().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn final_provider_authorization_is_after_join_and_before_go() {
+        // B24 JOINED + live final authorization => one GO. B25 JOINED +
+        // expired/revoked authorization => EOF and no GO. B26 wrong ACK =>
+        // authorization callback is never evaluated. These 2x2 rows pin the
+        // production last-mile gate, not a parallel model of lease validity.
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        for joined in [false, true] {
+            for authorized in [false, true] {
+                let called = Arc::new(AtomicBool::new(false));
+                let observed = called.clone();
+                let (mut parent, mut child) = UnixStream::pair().unwrap();
+                let task = tokio::spawn(async move {
+                    authorize_checked(&mut parent, b"", || {
+                        called.store(true, Ordering::SeqCst);
+                        if authorized {
+                            Ok(())
+                        } else {
+                            Err(io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "expired fixture",
+                            ))
+                        }
+                    })
+                    .await
+                });
+                assert_eq!(child.read_u32().await.unwrap(), 0);
+                assert!(!observed.load(Ordering::SeqCst));
+                child
+                    .write_u8(if joined { JOINED } else { 99 })
+                    .await
+                    .unwrap();
+                let result = task.await.unwrap();
+                assert_eq!(result.is_ok(), joined && authorized);
+                assert_eq!(observed.load(Ordering::SeqCst), joined);
+                let grant = child.read_u8().await;
+                if joined && authorized {
+                    assert_eq!(grant.unwrap(), GO);
+                } else {
+                    assert!(grant.is_err());
+                }
+            }
+        }
     }
 
     #[tokio::test]

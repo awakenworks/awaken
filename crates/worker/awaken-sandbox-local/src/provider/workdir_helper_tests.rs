@@ -6,6 +6,7 @@ use awaken_provisioning_contract::{
 
 fn workdir_spec(scope: &str, deny_egress: bool) -> SandboxSpec {
     SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: IsolationClass::Workdir,
         mounts: Vec::new(),

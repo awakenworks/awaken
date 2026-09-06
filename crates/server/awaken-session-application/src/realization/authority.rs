@@ -58,18 +58,35 @@ impl<'a> TerminalCleanupClaimScope<'a> {
 /// current Worker for every remaining source-dependent phase. Model execution,
 /// ACP, tool recovery, and inference credentials are deliberately absent: the
 /// cleanup driver never starts a new Run.
-pub(super) fn terminal_cleanup_worker_requirements(
+pub(crate) fn terminal_cleanup_worker_requirements(
     owner_scope: &str,
     session: &PersistedSession,
     action: &awaken_session_contract::SessionTerminalCleanupAction,
 ) -> Result<awaken_worker_contract::PlacementRequirements, SessionRealizationControlFailure> {
+    // Model credentials are irrelevant to cleanup; the physical process owner
+    // is not. Preserve this requirement even after resource harvesting so the
+    // final Dispose cannot be handed to an incapable replacement Worker.
+    let physical_requirements =
+        |mut requirements: awaken_worker_contract::PlacementRequirements| {
+            if let Some(baseline) = session.frozen_baseline() {
+                requirements.sandbox.process_tree_supervision =
+                    baseline.environment.sandbox.process_tree_supervision;
+                if baseline.environment.sandbox.host_access
+                    == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
+                {
+                    requirements.sandbox_backend =
+                        Some(awaken_worker_contract::TRUSTED_HOST_SANDBOX_BACKEND.to_owned());
+                }
+            }
+            requirements
+        };
     if matches!(
         action,
         awaken_session_contract::SessionTerminalCleanupAction::Dispose { .. }
     ) {
-        return Ok(
+        return Ok(physical_requirements(
             awaken_worker_contract::PlacementRequirements::terminal_cleanup(false, false, None),
-        );
+        ));
     }
 
     let resource_facts = session
@@ -127,13 +144,13 @@ pub(super) fn terminal_cleanup_worker_requirements(
             .map(|request| request.format)
     };
 
-    Ok(
+    Ok(physical_requirements(
         awaken_worker_contract::PlacementRequirements::terminal_cleanup(
             resource_facts.has_resources() || pending_publication.is_some(),
             resource_facts.has_credentialed_repository() || publication_has_credential,
             checkpoint_format,
         ),
-    )
+    ))
 }
 
 pub(super) fn verify_lease(

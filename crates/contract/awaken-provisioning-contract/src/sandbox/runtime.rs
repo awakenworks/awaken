@@ -791,6 +791,8 @@ pub enum IsolationClass {
 /// live handles, paths, mounts, credentials, and provider implementation names.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxRequirements {
+    #[serde(default, skip_serializing_if = "crate::spec::is_false")]
+    pub process_tree_supervision: bool,
     #[serde(default)]
     pub isolation: IsolationClass,
     #[serde(default)]
@@ -824,6 +826,7 @@ impl SandboxRequirements {
 
         let custom_rootfs = spec.environment.is_some();
         Self {
+            process_tree_supervision: spec.process_tree_supervision,
             isolation: if opaque_process {
                 spec.isolation.max(IsolationClass::Namespace)
             } else {
@@ -847,8 +850,10 @@ impl SandboxRequirements {
 
 /// What a backend can actually enforce — the host probes this to pick a provider
 /// and to fail closed when a spec asks for more than a backend can give.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxCapabilities {
+    #[serde(default, skip_serializing_if = "crate::spec::is_false")]
+    pub process_tree_supervision: bool,
     pub isolation: IsolationClass,
     /// **The load-bearing flag.** True when isolation is OS-enforced on an
     /// arbitrary launched process (so it holds for Claude Code / any CLI); false
@@ -887,14 +892,16 @@ impl SandboxCapabilities {
     /// and remote Worker admission. Ranking policy runs only after this succeeds.
     #[must_use]
     pub fn satisfies_requirements(&self, required: &SandboxRequirements) -> bool {
-        capability_requirements_satisfied(
-            self.isolation,
-            required.isolation,
-            self.network_isolation,
-            required.network_isolation,
-            self.resource_limits,
-            required.resource_limits,
-        ) && (!required.tool_transparent || self.tool_transparent)
+        (!required.process_tree_supervision || self.process_tree_supervision)
+            && capability_requirements_satisfied(
+                self.isolation,
+                required.isolation,
+                self.network_isolation,
+                required.network_isolation,
+                self.resource_limits,
+                required.resource_limits,
+            )
+            && (!required.tool_transparent || self.tool_transparent)
             && (!required.path_fidelity || self.path_fidelity)
             && (!required.enforced_readonly || self.enforced_readonly)
             && (!required.enforced_network_allowlist || self.enforced_network_allowlist)
@@ -1122,15 +1129,13 @@ impl SandboxCheckpointRef {
     }
 }
 
-// A backend honors the spec's non-isolation requirements (network) — the isolation
-// floor is decided by the policy, so it is checked separately here.
+// Only isolation can be explicitly degraded. All other guarantees pass through
+// the same closed requirement projection and compatibility predicate as direct
+// provider selection and Worker placement; do not keep a second partial list.
 fn non_isolation_ok(caps: &SandboxCapabilities, spec: &SandboxSpec) -> bool {
-    let network_ok =
-        matches!(spec.network, crate::vocab::NetworkPolicy::Unrestricted) || caps.network_isolation;
-    // Resource caps are load-bearing like isolation: a spec asking for cgroup limits
-    // must not be placed on a tier that cannot enforce them, even under a degrade.
-    let limits_ok = !spec.limits.is_set() || caps.resource_limits;
-    network_ok && limits_ok
+    let mut required = SandboxRequirements::from_spec(spec, false);
+    required.isolation = IsolationClass::Workdir;
+    caps.satisfies_requirements(&required)
 }
 
 /// Fail-closed provider selection with an explicit **policy floor** (ADR-0056 §5). It

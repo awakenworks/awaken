@@ -426,6 +426,7 @@ impl NamespaceProvider {
     /// already-created namespace environment.
     pub fn capabilities() -> pc::SandboxCapabilities {
         pc::SandboxCapabilities {
+            process_tree_supervision: false,
             isolation: pc::IsolationClass::Namespace,
             tool_transparent: true,
             // Seatbelt is a policy boundary, not a mount namespace: it cannot make

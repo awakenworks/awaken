@@ -16,6 +16,7 @@ fn unique_base(tag: &str) -> PathBuf {
 
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Workdir,
         mounts: Vec::new(),

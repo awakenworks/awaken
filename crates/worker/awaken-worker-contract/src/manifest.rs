@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use awaken_provisioning_contract::{IsolationClass, ResourceLimits, SandboxCapabilities};
+use awaken_provisioning_contract::{ResourceLimits, SandboxCapabilities};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -104,6 +104,11 @@ pub struct WorkerManifest {
     pub zone: Option<String>,
     pub architecture: String,
     pub sandbox: SandboxCapabilities,
+    /// Additional host-identity backend only. Its guarantees must never be
+    /// borrowed from the primary Namespace/Container backend. Omitted legacy
+    /// manifests grant only the unenforced Workdir baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_host_sandbox: Option<SandboxCapabilities>,
     /// Trusted recovery capability of the SessionEnvironment-owned Sandbox
     /// executor. Production derives this from the same typed deployment value
     /// that constructs the executor; it is never an Agent-authored claim.
@@ -129,19 +134,8 @@ impl Default for WorkerManifest {
             capabilities: BTreeSet::new(),
             zone: None,
             architecture: std::env::consts::ARCH.to_string(),
-            sandbox: SandboxCapabilities {
-                isolation: IsolationClass::Workdir,
-                tool_transparent: false,
-                path_fidelity: false,
-                enforced_readonly: false,
-                network_isolation: false,
-                enforced_network_allowlist: false,
-                secret_egress_substitution: false,
-                resource_limits: false,
-                custom_rootfs: false,
-                package_provisioning: false,
-                control_services: Default::default(),
-            },
+            trusted_host_sandbox: None,
+            sandbox: SandboxCapabilities::default(),
             sandbox_tool_recovery:
                 awaken_runtime_contract::tool::ToolRecoveryCapability::NonRecoverable,
             sandbox_backends: BTreeSet::new(),

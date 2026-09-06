@@ -276,10 +276,21 @@ pub fn can_claim(
             actual: manifest.architecture.clone(),
         });
     }
-    if !manifest
-        .sandbox
-        .satisfies_requirements(&requirements.sandbox)
-    {
+    let legacy_host = awaken_provisioning_contract::SandboxCapabilities::default();
+    let sandbox =
+        if requirements.sandbox_backend.as_deref() == Some(crate::TRUSTED_HOST_SANDBOX_BACKEND) {
+            let host = manifest
+                .trusted_host_sandbox
+                .as_ref()
+                .unwrap_or(&legacy_host);
+            if host.isolation != awaken_provisioning_contract::IsolationClass::Workdir {
+                return Err(Incompatibility::SandboxCapabilities);
+            }
+            host
+        } else {
+            &manifest.sandbox
+        };
+    if !sandbox.satisfies_requirements(&requirements.sandbox) {
         return Err(Incompatibility::SandboxCapabilities);
     }
     if let Some(required) = requirements

@@ -792,6 +792,7 @@ mod tests {
 
     fn spec(scope: &str, cmd: &[&str]) -> pc::SandboxSpec {
         pc::SandboxSpec {
+            process_tree_supervision: false,
             scope: scope.into(),
             isolation: pc::IsolationClass::Container,
             environment: None,

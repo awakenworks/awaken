@@ -79,12 +79,43 @@ async fn payload(
 #[ignore = "trusted participant invoked by the explicit systemd gate"]
 async fn linux_cgroup_participant() {
     let mode = std::env::var("AWAKEN_CGROUP_TEST_MODE").unwrap();
+    if mode == "probe-child" {
+        // SUP7 sharing an eligible service cgroup does not make a descendant
+        // its supervised main process. A nested Worker must not borrow that
+        // unrelated owner's crash boundary.
+        assert!(
+            awaken_local_process::supervisor::LinuxProcessSupervisor::detect()
+                .await
+                .is_err()
+        );
+        return;
+    }
     let parent = own_cgroup();
-    let path = parent.join("owned");
+    // SUP4 actual service main process discovers its external owner without a
+    // supplied unit/cgroup/PID; allocation uses that same verified instance.
+    // SUP5 malformed scope identity => reject before any cgroup mutation.
+    let supervisor = awaken_local_process::supervisor::LinuxProcessSupervisor::detect()
+        .await
+        .unwrap();
+    supervisor.revalidate().await.unwrap();
+    let mut nested_probe = Command::new(std::env::current_exe().unwrap());
+    nested_probe
+        .args(["--exact", PARTICIPANT, "--ignored"])
+        .env("AWAKEN_CGROUP_TEST_MODE", "probe-child")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+    let nested_probe = LocalProcess::spawn(&mut nested_probe).unwrap();
+    assert_eq!(nested_probe.wait().await.unwrap().code, Some(0));
+    assert!(supervisor.create_scope("../neighbor").await.is_err());
+    let scope = supervisor.create_scope(&"a".repeat(64)).await.unwrap();
+    let path = scope.path().to_owned();
+    assert!(
+        supervisor.create_scope(&"a".repeat(64)).await.is_err(),
+        "SUP6 existing scope cannot be adopted as a fresh allocation"
+    );
     let neighbor_path = parent.join("neighbor");
-    std::fs::create_dir(&path).unwrap();
     std::fs::create_dir(&neighbor_path).unwrap();
-    let scope = LinuxProcessScope::open(&path).unwrap();
     let neighbor = LinuxProcessScope::open(&neighbor_path).unwrap();
     if mode == "crash" {
         let mut command = payload_command();
@@ -278,8 +309,12 @@ printf 'stderr-only' >&2
         (
             "EXPECTED_SCOPE",
             format!(
-                "0::/{}/owned",
-                parent.strip_prefix("/sys/fs/cgroup").unwrap().display()
+                "0::/{}",
+                scope
+                    .path()
+                    .strip_prefix("/sys/fs/cgroup")
+                    .unwrap()
+                    .display()
             ),
         ),
         ("EXPECTED_CWD", cwd.to_str().unwrap().to_owned()),
@@ -351,6 +386,30 @@ printf 'stderr-only' >&2
         marker.to_str().unwrap(),
     ]);
     command.stdio = awaken_provisioning_contract::Stdio::Null;
+    // B28 real helper joins successfully but the final provider authorization
+    // is revoked: no workload side effect and no handle can escape.
+    let revoked = LocalProcess::spawn_scoped_authorized(
+        scope,
+        helper(),
+        &command,
+        &cwd,
+        Duration::from_secs(5),
+        || {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "revoked fixture",
+            ))
+        },
+    )
+    .await;
+    assert_eq!(
+        revoked.err().unwrap().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert!(
+        !marker.exists(),
+        "B28 revoked launch has no workload effect"
+    );
     assert_eq!(
         LocalProcess::spawn_scoped(
             scope,

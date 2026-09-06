@@ -616,13 +616,17 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   still preserves OS processes in the model. The same configuration now models
   bootstrap join, ACK, atomic GO/admission release, execution and cancellation;
   execution requires membership and GO, and cancellation cannot invent GO.
-  Six additional mutations must violate the exact admission, subtree-empty,
-  accepted-stop, premature-exec, premature-release and cancelled-GO invariants.
+  Final provider authorization is checked after ACK with no yield before the
+  nonblocking GO write. Revocation before GO prevents a grant; revocation after
+  GO does not undo a workload already authorized. Seven additional mutations
+  must violate the exact final-authority, admission, subtree-empty, accepted-stop,
+  premature-exec, premature-release and cancelled-GO invariants.
   The private socket/OS lifetime of a cancelled trusted helper is abstracted;
   this does not certify its immediate exit or permanent scope emptiness after
   cancellation. A single admitted owner, correct peer/identity checking and
   absence of external cgroup migration remain assumptions. The real
-  `awaken-sandbox` delegated-systemd test invokes the production bootstrap and
+  `awaken-sandbox` delegated-systemd test discovers the exact external service
+  main process, rejects a nested process borrowing that service, invokes the production bootstrap and
   exercises descriptor identity/ABA and owner SIGKILL independently; neither
   model nor test proves production Worker/Session wiring or unbounded liveness.
 - `WorkerReplacement.tla` composes authored route resolution, dispatch-time

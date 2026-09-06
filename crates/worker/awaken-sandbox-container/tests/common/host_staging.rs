@@ -39,6 +39,7 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
             .as_nanos()
     );
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope,
         isolation: pc::IsolationClass::Container,
         environment: Some(pc::EnvironmentKind::Image {

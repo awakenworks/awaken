@@ -11,6 +11,7 @@ mod binary_support;
 
 fn spec() -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "namespace-hand-path-contract".into(),
         isolation: pc::IsolationClass::Namespace,
         mounts: vec![pc::MountRequirement {

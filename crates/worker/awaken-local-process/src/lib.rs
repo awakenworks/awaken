@@ -32,6 +32,9 @@ pub mod cgroup;
 #[cfg(target_os = "linux")]
 pub mod scoped;
 
+#[cfg(target_os = "linux")]
+pub mod supervisor;
+
 /// Configure a command so the child becomes leader of a private process group.
 fn configure_process_group(command: &mut Command) {
     #[cfg(not(unix))]

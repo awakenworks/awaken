@@ -29,13 +29,14 @@ fn claim_projection_preserves_policy_across_api_defaulting() {
         )
         .unwrap();
         realization::stamp_realization(&mut expected).unwrap();
-        for actual in [None, Some("pinned"), Some("default-class"), Some("")] {
+        // CP5 delegated defaulting rejects empty and whitespace-only names.
+        for actual in [None, Some("pinned"), Some("default-class"), Some(""), Some("  ")] {
             let mut observed = expected.clone();
             let spec = observed.spec.as_mut().unwrap();
             spec.storage_class_name = actual.map(str::to_owned);
             spec.volume_name = Some("api-bound-pv".into());
             let accepts = match configured {
-                None => actual != Some(""),
+                None => !matches!(actual, Some("" | "  ")),
                 Some(pinned) => actual == Some(pinned),
             };
             assert_eq!(

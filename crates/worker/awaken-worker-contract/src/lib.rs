@@ -262,6 +262,7 @@ mod tests {
             capabilities: BTreeSet::from(["mcp".to_string(), "github".to_string()]),
             zone: Some("cn-a".to_string()),
             sandbox: SandboxCapabilities {
+                process_tree_supervision: false,
                 isolation: IsolationClass::Container,
                 tool_transparent: true,
                 path_fidelity: true,
@@ -305,6 +306,7 @@ mod tests {
             required_zone: Some("cn-a".to_string()),
             architecture: Some("x86_64".to_string()),
             sandbox: SandboxRequirements {
+                process_tree_supervision: false,
                 isolation: IsolationClass::Container,
                 tool_transparent: true,
                 path_fidelity: true,
@@ -875,6 +877,73 @@ mod tests {
             .sandbox_backends
             .insert(TRUSTED_HOST_SANDBOX_BACKEND.to_string());
         assert!(can_claim(&reported, &exact).is_ok());
+    }
+
+    #[test]
+    fn supervision_matching_never_borrows_another_backends_claim() {
+        // WM1 requested backend x primary guarantee x additional-host
+        // guarantee/legacy omission x requirement is the complete 2x2x3x2
+        // table. Effect: only the selected backend's guarantee can satisfy
+        // a strict request. Legacy omission is false, never primary fallback.
+        let mut manifest = manifest("supervision", 0).manifest;
+        manifest
+            .sandbox_backends
+            .insert(TRUSTED_HOST_SANDBOX_BACKEND.into());
+        for trusted in [false, true] {
+            for primary in [false, true] {
+                for additional in [None, Some(false), Some(true)] {
+                    for required in [false, true] {
+                        manifest.sandbox.process_tree_supervision = primary;
+                        manifest.trusted_host_sandbox =
+                            additional.map(|available| SandboxCapabilities {
+                                process_tree_supervision: available,
+                                ..Default::default()
+                            });
+                        let request = PlacementRequirements {
+                            sandbox: SandboxRequirements {
+                                process_tree_supervision: required,
+                                ..Default::default()
+                            },
+                            sandbox_backend: trusted.then(|| TRUSTED_HOST_SANDBOX_BACKEND.into()),
+                            ..PlacementRequirements::remote_preferred()
+                        };
+                        let available = if trusted {
+                            additional.unwrap_or(false)
+                        } else {
+                            primary
+                        };
+                        let result = can_claim(&manifest, &request);
+                        assert_eq!(
+                            result.is_ok(),
+                            !required || available,
+                            "trusted={trusted} primary={primary} additional={additional:?} required={required}: {result:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // WM2 a malformed host profile cannot smuggle a stronger isolation
+        // identity; WM3 legacy serialization omits the new field entirely.
+        manifest.trusted_host_sandbox = Some(SandboxCapabilities {
+            isolation: IsolationClass::Container,
+            ..Default::default()
+        });
+        let request = PlacementRequirements {
+            sandbox_backend: Some(TRUSTED_HOST_SANDBOX_BACKEND.into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            can_claim(&manifest, &request),
+            Err(Incompatibility::SandboxCapabilities)
+        );
+        let legacy = WorkerManifest::default();
+        let wire = serde_json::to_value(&legacy).unwrap();
+        assert!(wire.get("trusted_host_sandbox").is_none());
+        assert!(wire["sandbox"].get("process_tree_supervision").is_none());
+        assert_eq!(
+            serde_json::from_value::<WorkerManifest>(wire).unwrap(),
+            legacy
+        );
     }
 
     #[test]

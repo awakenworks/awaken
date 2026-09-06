@@ -183,6 +183,7 @@ mod tests {
 
     fn spec(output: &str) -> pc::SandboxSpec {
         pc::SandboxSpec {
+            process_tree_supervision: false,
             scope: "checkpoint-roots".into(),
             isolation: pc::IsolationClass::Container,
             mounts: Vec::new(),

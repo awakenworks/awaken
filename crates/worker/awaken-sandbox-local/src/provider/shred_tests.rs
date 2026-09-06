@@ -24,6 +24,7 @@ impl pc::SecretBroker for Broker {
 
 fn secret_spec(scope: &str) -> SandboxSpec {
     SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: IsolationClass::Workdir,
         mounts: vec![MountRequirement {

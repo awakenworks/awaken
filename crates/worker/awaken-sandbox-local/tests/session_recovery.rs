@@ -41,6 +41,7 @@ fn provider(tier: Tier, base: &std::path::Path) -> Box<dyn pc::SandboxProvider> 
 
 fn spec(tier: Tier, scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: match tier {
             Tier::Workdir => pc::IsolationClass::Workdir,

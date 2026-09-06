@@ -756,12 +756,32 @@ still observe those outcomes. Linux bootstrap is explicit and fails closed on
 other platforms, without changing ordinary local launch behavior.
 
 This is a Linux adapter foundation, NOT an installed Worker supervision mode.
-Ordinary `LocalProcess::spawn`, Workdir Native tools and Worker capability
-reporting are unchanged. Production integration must still bind this adapter
+Ordinary `LocalProcess::spawn` and Workdir Native tools remain unscoped. The
+capability vocabulary now expresses supervision, but production Worker
+registration deliberately cannot advertise it. Production integration must still bind this adapter
 to the existing physical realization/Session fence, keep one owner, route
 Workdir Native tools through the same supervised boundary, and qualify
 external-supervisor loss. The trusted bootstrap acknowledgment is implemented;
 production adoption/recovery and capability advertising are not.
+The external-owner adapter now detects the exact systemd service main process,
+delegation, control-group KILL, final SIGKILL, non-resident running state, boot
+identity and service invocation. It neither installs a service nor treats a
+child merely sharing that service as its supervised main process. Fresh
+scope creation rechecks the same observed owner. The scoped launcher additionally
+accepts a final provider-authorization predicate after JOINED; it waits for socket
+writability first, then checks authority and writes GO without suspension.
+This is an integration seam, not an installed Session lease source: the
+production owner must supply the current renewed fence, rather than reuse a
+Sandbox's historical creation fence. The finite scope model explores revocation
+before/after grant and its seventh scope mutation removes this final check.
+The supported external-service subset is Type=exec/simple, ExitType=main,
+NotifyAccess=none, TimeoutStopFailureMode=terminate, FinalKillSignal=9, and a
+positive stop timeout no greater than 30 seconds. Infinite/extendable stop
+deadlines and ExitType=cgroup cannot attest this owner-crash boundary.
+These checks follow the upstream
+[service lifetime](https://github.com/systemd/systemd/blob/main/man/systemd.service.xml)
+and [kill policy](https://github.com/systemd/systemd/blob/main/man/systemd.kill.xml)
+contracts, rather than inferring final SIGKILL from SendSIGKILL alone.
 The adapter does not own a Session ledger or persist cleanup receipts; it
 cannot guarantee containment against actors authorized to migrate processes
 outside the delegated hierarchy or undo already-issued remote effects.

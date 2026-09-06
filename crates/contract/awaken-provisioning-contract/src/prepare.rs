@@ -34,6 +34,8 @@ pub struct EnvironmentPlan {
 pub enum PrepareError {
     #[error("backend isolation is weaker than requested")]
     InsufficientIsolation,
+    #[error("backend cannot supervise the complete process tree across owner failure")]
+    ProcessTreeSupervisionUnsupported,
     #[error("trusted-host admission requires an exact Workdir provider and spec")]
     TrustedHostRequiresWorkdir,
     #[error("read-only mount {0:?} requested but backend does not enforce read-only")]
@@ -128,6 +130,9 @@ pub fn prepare_environment(
     // Isolation: backend must meet or exceed the requested class.
     if caps.isolation < spec.isolation {
         return Err(PrepareError::InsufficientIsolation);
+    }
+    if spec.process_tree_supervision && !caps.process_tree_supervision {
+        return Err(PrepareError::ProcessTreeSupervisionUnsupported);
     }
     validate_sandbox_control_services(&spec.control_services, caps)?;
 
@@ -245,6 +250,7 @@ mod tests {
 
     fn caps(isolation: IsolationClass) -> SandboxCapabilities {
         SandboxCapabilities {
+            process_tree_supervision: false,
             isolation,
             tool_transparent: isolation >= IsolationClass::Namespace,
             path_fidelity: isolation >= IsolationClass::Namespace,
@@ -261,6 +267,7 @@ mod tests {
 
     fn spec() -> SandboxSpec {
         SandboxSpec {
+            process_tree_supervision: false,
             scope: "thread-1".into(),
             isolation: IsolationClass::Namespace,
             mounts: vec![MountRequirement {
@@ -326,6 +333,46 @@ mod tests {
             prepare_trusted_host_environment(&requested, &caps(IsolationClass::Container)),
             Err(PrepareError::TrustedHostRequiresWorkdir)
         );
+    }
+
+    #[test]
+    fn process_supervision_is_independent_of_isolation_and_trusted_readonly() {
+        // PS4 required x available x isolation x trust is exhaustive.
+        // Constraints: TrustedHost accepts exactly Workdir; readonly exception
+        // is irrelevant here (no mounts). Every other row accepts iff the
+        // supervision implication holds. Strong isolation cannot compensate
+        // for missing owner-crash supervision, nor can advisory readonly.
+        for isolation in [
+            IsolationClass::Workdir,
+            IsolationClass::Namespace,
+            IsolationClass::Container,
+        ] {
+            for required in [false, true] {
+                for available in [false, true] {
+                    for trusted in [false, true] {
+                        let mut spec = spec();
+                        spec.isolation = IsolationClass::Workdir;
+                        spec.mounts.clear();
+                        spec.network = NetworkPolicy::Unrestricted;
+                        spec.process_tree_supervision = required;
+                        let mut capabilities = caps(isolation);
+                        capabilities.process_tree_supervision = available;
+                        let result = if trusted {
+                            prepare_trusted_host_environment(&spec, &capabilities)
+                        } else {
+                            prepare_environment(&spec, &capabilities)
+                        };
+                        assert_eq!(
+                            result.is_ok(),
+                            (!trusted || isolation == IsolationClass::Workdir)
+                                && (!required || available),
+                            "{isolation:?}/{required}/{available}/{trusted}"
+                        );
+                        assert_eq!(capabilities.satisfies(&spec), !required || available);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

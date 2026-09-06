@@ -130,6 +130,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
     let live_inputs = staging.path().join("live-inputs");
     std::fs::create_dir(&live_inputs).unwrap();
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "s1".into(),
         isolation: pc::IsolationClass::Container,
         environment: None,
@@ -191,6 +192,7 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
         "R2"
     );
     let wrong_fingerprint = pc::SandboxRealizationFingerprint::from_spec(&pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "different".into(),
         isolation: pc::IsolationClass::Container,
         environment: None,

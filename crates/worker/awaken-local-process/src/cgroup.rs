@@ -101,7 +101,7 @@ impl LinuxProcessScope {
         self.identity
     }
 
-    pub(crate) fn path(&self) -> &Path {
+    pub fn path(&self) -> &Path {
         &self.path
     }
 

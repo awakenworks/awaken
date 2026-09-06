@@ -29,6 +29,7 @@ async fn declared() -> (pc::EnvironmentDecl, pc::SandboxSpec, Arc<InMemoryFileSt
     };
 
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "e2e-1".into(),
         isolation: pc::IsolationClass::Workdir,
         mounts: vec![pc::MountRequirement {

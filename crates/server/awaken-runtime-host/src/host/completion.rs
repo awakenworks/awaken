@@ -1060,6 +1060,30 @@ mod completion_tests {
         assert!(native.sandbox.enforced_network_allowlist, "R1 allowlist");
         assert!(native.sandbox.resource_limits, "R1 limits");
         assert!(native.sandbox.package_provisioning, "R1 packages");
+        // R7 strict supervision is independent of opaque-process path rules.
+        // Native/ACP x isolated/trusted x required/omitted all preserve the
+        // frozen requirement; TrustedHost still waives no process guarantee.
+        for models in [host_models(), projected_acp_models()] {
+            for trusted in [false, true] {
+                for supervised in [false, true] {
+                    let mut requested = environment();
+                    requested.sandbox = awaken_provisioning_contract::SandboxOverride {
+                        process_tree_supervision: supervised,
+                        isolation: Some(IsolationClass::Workdir),
+                        host_access: if trusted {
+                            awaken_provisioning_contract::HostAccessPolicy::TrustedHost
+                        } else {
+                            awaken_provisioning_contract::HostAccessPolicy::Isolated
+                        },
+                        ..Default::default()
+                    };
+                    requested.network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
+                    requested.packages = Default::default();
+                    let placement = remote_worker_placement(&models, Some(&requested), None, true);
+                    assert_eq!(placement.sandbox.process_tree_supervision, supervised);
+                }
+            }
+        }
         assert_eq!(native.resources.cpu_millis, Some(250), "R1 cpu request");
         assert_eq!(
             native.resources.memory_bytes,
@@ -1198,6 +1222,7 @@ mod completion_tests {
 
                     for path_fidelity in [false, true] {
                         let worker = SandboxCapabilities {
+                            process_tree_supervision: false,
                             isolation: IsolationClass::Namespace,
                             tool_transparent: true,
                             path_fidelity,

@@ -125,6 +125,7 @@ mod tests {
     impl SandboxProvider for FakeProvider {
         fn capabilities(&self) -> SandboxCapabilities {
             SandboxCapabilities {
+                process_tree_supervision: false,
                 isolation: IsolationClass::Workdir,
                 tool_transparent: false,
                 path_fidelity: false,
@@ -154,6 +155,7 @@ mod tests {
 
     fn spec() -> SandboxSpec {
         SandboxSpec {
+            process_tree_supervision: false,
             scope: "thread-1".into(),
             isolation: IsolationClass::Workdir,
             mounts: Vec::new(),
@@ -174,6 +176,7 @@ mod tests {
 
     fn caps(isolation: IsolationClass, network_isolation: bool) -> SandboxCapabilities {
         SandboxCapabilities {
+            process_tree_supervision: false,
             isolation,
             tool_transparent: true,
             path_fidelity: true,
@@ -579,6 +582,50 @@ mod tests {
             matches!(result, Err(SelectionError::NoCapableBackend)),
             "a limits-incapable backend is excluded even from the degrade set"
         );
+    }
+
+    #[tokio::test]
+    async fn isolation_consent_cannot_waive_process_supervision() {
+        // PS5 available supervision x provider readiness x isolation floor
+        // x consent: a missing process guarantee always rejects, including the
+        // below-floor degraded set. With the guarantee, the original isolation
+        // decision remains authoritative (no automatic stronger-isolation claim).
+        for supervised in [false, true] {
+            for ready in [false, true] {
+                for floor in [IsolationClass::Workdir, IsolationClass::Container] {
+                    for consent in [false, true] {
+                        let mut spec = spec();
+                        spec.process_tree_supervision = true;
+                        let candidates: Vec<Box<dyn SandboxProvider>> =
+                            vec![Box::new(ProbeProvider {
+                                caps: SandboxCapabilities {
+                                    process_tree_supervision: supervised,
+                                    ..caps(IsolationClass::Namespace, true)
+                                },
+                                ready,
+                            })];
+                        let result = select_provider_with_policy(
+                            &candidates,
+                            &spec,
+                            &policy(
+                                floor,
+                                floor,
+                                if consent {
+                                    OnUnmet::DegradeWithConsent
+                                } else {
+                                    OnUnmet::FailClosed
+                                },
+                            ),
+                        )
+                        .await;
+                        assert_eq!(
+                            result.is_ok(),
+                            supervised && ready && (floor == IsolationClass::Workdir || consent)
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]

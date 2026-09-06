@@ -395,6 +395,7 @@ mod memory_mount_release_tests {
             required: true,
         };
         let spec = pc::SandboxSpec {
+            process_tree_supervision: false,
             scope: "memory-replay-post-validate".into(),
             isolation: pc::IsolationClass::Workdir,
             environment: None,

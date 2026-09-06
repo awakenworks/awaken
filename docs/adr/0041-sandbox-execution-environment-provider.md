@@ -614,3 +614,28 @@ POST /v1/awaken/environments
 Namespace and Container use the same two commands with `isolation` set to
 `namespace` or `container` and `host_access` omitted. There is no run-level
 string that can bypass the Environment revision or Worker claim fence.
+
+The same policy body now accepts `process_tree_supervision: true` as an
+independent hard requirement. Omission retains the legacy wire/fingerprint;
+an overlay cannot weaken an already-required guarantee. The requirement is
+frozen into the effective SandboxSpec, realization/capacity identity, Worker
+placement, and terminal cleanup including final Dispose. Consent to weaker
+isolation cannot waive this or any other non-isolation requirement: policy
+selection uses the same canonical capability predicate as direct selection.
+
+An additional TrustedHost backend has its own optional
+`WorkerManifest.trusted_host_sandbox` capability profile. The existing
+`sandbox` field continues to describe only the primary backend. Legacy absence
+means unenforced Workdir capabilities, never permission to borrow the primary
+Namespace/Container guarantees. The backend identity set still owns operator
+opt-in; a profile alone cannot select or install a backend.
+
+This requirement is currently fail-closed, not an enabled production mode:
+all built-in providers still report supervision as false, and Worker assembly
+rejects an explicit manifest claiming it. The Linux external-owner and trusted
+bootstrap adapters are qualified separately (ADR-0038). Full activation still
+requires current Session lease propagation through launch, Native execution
+under that same boundary, and process identity/stop evidence integrated into
+the existing realization marker before adoption, checkpoint and resource
+cleanup. No process database, second lifecycle or manual per-Session cgroup/PID
+configuration is introduced.

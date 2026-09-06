@@ -117,6 +117,7 @@ fn cat_mount_argv() -> Vec<String> {
 /// (the codex `config.toml` / ADR-0038 resource path on the k8s tier).
 fn inline_spec(scope: &str, marker: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
         environment: Some(container_environment(fixture_image())),
@@ -146,6 +147,7 @@ fn inline_spec(scope: &str, marker: &str) -> pc::SandboxSpec {
 
 fn managed_input_spec(scope: &str, path: &str, marker: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
         environment: Some(container_environment(fixture_image())),
@@ -177,6 +179,7 @@ fn managed_input_spec(scope: &str, path: &str, marker: &str) -> pc::SandboxSpec 
 /// injected `BlobSource` — then realizes as a ConfigMap volume just like inline content.
 fn file_spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
         environment: Some(container_environment(fixture_image())),
@@ -269,6 +272,7 @@ async fn exchange(
 /// ConfigMap `binaryData` entry (the text `data` path would reject the invalid UTF-8).
 fn binary_file_spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
         environment: Some(container_environment(fixture_image())),
@@ -299,6 +303,7 @@ fn binary_file_spec(scope: &str) -> pc::SandboxSpec {
 
 fn credential_spec(scope: &str, refreshed: &[u8]) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
         environment: Some(container_environment(fixture_image())),

@@ -242,6 +242,7 @@ fn sandbox_spec_from_projection(
     };
     let deny_tool_egress = environment.is_some_and(|projection| projection.network.is_restricted());
     let base = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.to_owned(),
         isolation: pc::IsolationClass::Workdir,
         environment: None,
@@ -339,6 +340,7 @@ fn mime_type_for_path(path: &str) -> &'static str {
 /// skill fork): scoped to the thread, no staged resource mounts, host-shared network.
 pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: thread.to_string(),
         isolation: pc::IsolationClass::Workdir,
         environment: None,
