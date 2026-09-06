@@ -5940,123 +5940,187 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
 /// In-flight renewal cause/effect graph: C1 one MCP generation is Realizing
 /// under an admitted lease; C2 the same owner/incarnation/epoch is durably
 /// extended before its Stage receipt returns. E1 accepts the old exact
-/// receipt under the stable realization binding; E2 activates and publishes
-/// that same generation under the extended lease without a second Stage.
+/// receipt under the stable realization binding; E2 activates durably, then
+/// catches the exact Runtime projection up through the existing Stage port;
+/// E3 publishes only after a matching renewed receipt, without another root
+/// write on replay. A lease-only Runtime update does not renew its MCP slot.
 /// Different owner/epoch is A2 in the contract table; conflicting receipt
 /// bindings remain rejected by the canonical receipt verification gate.
 ///
 /// | Rule | C1 | C2 | Effect |
 /// |---|---|---|---|
-/// | F1 | yes | yes | E1 + E2; one Publish, zero restage |
+/// | F1 | yes | yes | E1 + E2 + E3; one renewal Stage before Publish |
+/// | F2 | yes | no | E1 + E3; publish directly, no redundant Stage |
 #[tokio::test]
-async fn activation_publishes_a_generation_renewed_while_its_stage_was_in_flight() {
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .expect("session repository"),
-    );
-    let now = u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis(),
-    )
-    .unwrap();
-    let admitted_expiry = now + 60_000;
-    let renewed_expiry = now + 120_000;
-    let asserted_lease = awaken_session_contract::SessionRealizationLease {
-        owner: "runtime-a".into(),
-        runtime_incarnation: "runtime-a/boot-1".into(),
-        epoch: 7,
-        expires_at_unix_ms: admitted_expiry,
-    };
-    let current_lease = awaken_session_contract::SessionRealizationLease {
-        expires_at_unix_ms: renewed_expiry,
-        ..asserted_lease.clone()
-    };
-    let mut session = persisted("in-flight-renewal", false, "activating");
-    session.realization = Some(current_lease.clone());
-    session.mcp = awaken_session_contract::SessionMcpAttachmentSet::from_initial(
-        vec![awaken_session_contract::McpAttachmentDraft {
-            name: "browser".into(),
-            target: McpTarget::parse_http("https://browser.example.test/mcp").unwrap(),
-            prompts_as_skills: false,
-            credential: None,
-            origin: awaken_session_contract::McpAttachmentOrigin::Session,
-        }],
-        None,
-    )
-    .unwrap();
-    let attachment_id = session.mcp.attachments[0].attachment_id.clone();
-    session
-        .mcp
-        .claim_realization(
-            &attachment_id,
-            awaken_session_contract::McpGeneration(1),
-            awaken_session_contract::McpRealizationClaim {
-                realization_id: "realization-1".into(),
-                runtime_incarnation: asserted_lease.runtime_incarnation.clone(),
-                lease_epoch: asserted_lease.epoch,
-                lease_expires_at_unix_ms: admitted_expiry,
-                stage_idempotency_key: "stage-1".into(),
-            },
+async fn activation_catches_up_a_generation_renewed_while_its_stage_was_in_flight() {
+    for renewal in [false, true] {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        let now = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
         )
         .unwrap();
-    let admitted_request = projection::stage_mcp_request(
-        "workspace",
-        &session.session_id,
-        &session.mcp.attachments[0],
-    )
-    .unwrap();
-    create(repo.as_ref(), session).await;
-    let app = application(repo, Arc::new(RecordingEnvironmentSource::default()));
-    let admitted_receipt = awaken_session_contract::McpRealizationReceipt {
-        receipt_fingerprint: admitted_request.fingerprint(),
-        generation: admitted_request.generation.clone(),
-        realization_id: admitted_request.realization_id.clone(),
-        selected_plaintext_holder: admitted_request.selected_plaintext_holder.clone(),
-        actual_realization_kind: None,
-    };
-
-    let directive =
-        awaken_session_contract::SessionRealizationControl::activate_session_realization(
-            &app,
-            awaken_session_contract::ActivateSessionRealization {
-                session_id: "in-flight-renewal".into(),
-                lease: asserted_lease,
-                prepared_resource_revision: None,
-                mcp_receipts: vec![admitted_receipt],
-            },
+        let admitted_expiry = now + 60_000;
+        let renewed_expiry = if renewal {
+            now + 120_000
+        } else {
+            admitted_expiry
+        };
+        let asserted_lease = awaken_session_contract::SessionRealizationLease {
+            owner: "runtime-a".into(),
+            runtime_incarnation: "runtime-a/boot-1".into(),
+            epoch: 7,
+            expires_at_unix_ms: admitted_expiry,
+        };
+        let current_lease = awaken_session_contract::SessionRealizationLease {
+            expires_at_unix_ms: renewed_expiry,
+            ..asserted_lease.clone()
+        };
+        let mut session = persisted("in-flight-renewal", false, "activating");
+        session.realization = Some(current_lease.clone());
+        session.mcp = awaken_session_contract::SessionMcpAttachmentSet::from_initial(
+            vec![awaken_session_contract::McpAttachmentDraft {
+                name: "browser".into(),
+                target: McpTarget::parse_http("https://browser.example.test/mcp").unwrap(),
+                prompts_as_skills: false,
+                credential: None,
+                origin: awaken_session_contract::McpAttachmentOrigin::Session,
+            }],
+            None,
         )
-        .await
-        .expect("F1/E1");
-    let awaken_session_contract::SessionRealizationAction::Publish { publish, drain } =
-        directive.action
-    else {
-        panic!("F1/E2 must publish without replaying Stage")
-    };
-    assert!(drain.is_empty(), "F1/E2 does not invent an obsolete drain");
-    assert_eq!(publish.len(), 1, "F1/E2 publishes the one admitted claim");
-    let renewed_generation = &publish[0];
-    assert_eq!(
-        renewed_generation.attachment_id, admitted_request.generation.attachment_id,
-        "F1/E2 preserves the admitted attachment"
-    );
-    assert_eq!(
-        renewed_generation.generation, admitted_request.generation.generation,
-        "F1/E2 preserves the admitted generation"
-    );
-    assert_eq!(
-        renewed_generation.runtime_incarnation, admitted_request.generation.runtime_incarnation,
-        "F1/E2 preserves the admitted runtime incarnation"
-    );
-    assert_eq!(
-        renewed_generation.lease_epoch, admitted_request.generation.lease_epoch,
-        "F1/E2 preserves the admitted lease epoch"
-    );
-    assert_eq!(
-        renewed_generation.lease_expires_at_unix_ms, renewed_expiry,
-        "F1/E2 publishes the extended lease"
-    );
+        .unwrap();
+        let attachment_id = session.mcp.attachments[0].attachment_id.clone();
+        session
+            .mcp
+            .claim_realization(
+                &attachment_id,
+                awaken_session_contract::McpGeneration(1),
+                awaken_session_contract::McpRealizationClaim {
+                    realization_id: "realization-1".into(),
+                    runtime_incarnation: asserted_lease.runtime_incarnation.clone(),
+                    lease_epoch: asserted_lease.epoch,
+                    lease_expires_at_unix_ms: admitted_expiry,
+                    stage_idempotency_key: "stage-1".into(),
+                },
+            )
+            .unwrap();
+        let admitted_request = projection::stage_mcp_request(
+            "workspace",
+            &session.session_id,
+            &session.mcp.attachments[0],
+        )
+        .unwrap();
+        create(repo.as_ref(), session).await;
+        let app = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let admitted_receipt = awaken_session_contract::McpRealizationReceipt {
+            receipt_fingerprint: admitted_request.fingerprint(),
+            generation: admitted_request.generation.clone(),
+            realization_id: admitted_request.realization_id.clone(),
+            selected_plaintext_holder: admitted_request.selected_plaintext_holder.clone(),
+            actual_realization_kind: None,
+        };
+
+        let mut directive =
+            awaken_session_contract::SessionRealizationControl::activate_session_realization(
+                &app,
+                awaken_session_contract::ActivateSessionRealization {
+                    session_id: "in-flight-renewal".into(),
+                    lease: asserted_lease.clone(),
+                    prepared_resource_revision: None,
+                    mcp_receipts: vec![admitted_receipt],
+                },
+            )
+            .await
+            .expect("F1/E1");
+        if renewal {
+            let awaken_session_contract::SessionRealizationAction::Stage {
+                prepare_session,
+                mcp_stages,
+            } = &directive.action
+            else {
+                panic!("F1/E2 must renew the exact MCP projection before publication")
+            };
+            assert!(!prepare_session, "F1/E2 do not rematerialize Resources");
+            assert_eq!(mcp_stages.len(), 1, "F1/E2 one canonical generation");
+            let renewed = &mcp_stages[0];
+            assert_eq!(
+                renewed.renewal_binding_fingerprint(),
+                admitted_request.renewal_binding_fingerprint(),
+                "F1/E2 retain exact immutable binding/material"
+            );
+            assert_eq!(renewed.generation.lease_expires_at_unix_ms, renewed_expiry);
+            let command = awaken_session_contract::ActivateSessionRealization {
+                session_id: "in-flight-renewal".into(),
+                lease: current_lease.clone(),
+                prepared_resource_revision: None,
+                mcp_receipts: vec![awaken_session_contract::McpRealizationReceipt {
+                    receipt_fingerprint: renewed.fingerprint(),
+                    generation: renewed.generation.clone(),
+                    realization_id: renewed.realization_id.clone(),
+                    selected_plaintext_holder: renewed.selected_plaintext_holder.clone(),
+                    actual_realization_kind: None,
+                }],
+            };
+            let revision = repo.get("in-flight-renewal").await.unwrap().revision;
+            directive =
+                awaken_session_contract::SessionRealizationControl::activate_session_realization(
+                    &app,
+                    command.clone(),
+                )
+                .await
+                .expect("F1/E3 renewed receipt");
+            assert_eq!(
+                awaken_session_contract::SessionRealizationControl::activate_session_realization(
+                    &app, command
+                )
+                .await
+                .unwrap(),
+                directive,
+                "F1/E3 response-loss replay"
+            );
+            assert_eq!(
+                repo.get("in-flight-renewal").await.unwrap().revision,
+                revision,
+                "F1/E3 no duplicate activation write"
+            );
+        }
+        let awaken_session_contract::SessionRealizationAction::Publish { publish, drain } =
+            directive.action
+        else {
+            panic!("F1/E3 and F2/E3 publish only an exact staged generation")
+        };
+        assert!(drain.is_empty(), "F1/E2 does not invent an obsolete drain");
+        assert_eq!(publish.len(), 1, "F1/E2 publishes the one admitted claim");
+        let renewed_generation = &publish[0];
+        assert_eq!(
+            renewed_generation.attachment_id, admitted_request.generation.attachment_id,
+            "F1/E2 preserves the admitted attachment"
+        );
+        assert_eq!(
+            renewed_generation.generation, admitted_request.generation.generation,
+            "F1/E2 preserves the admitted generation"
+        );
+        assert_eq!(
+            renewed_generation.runtime_incarnation, admitted_request.generation.runtime_incarnation,
+            "F1/E2 preserves the admitted runtime incarnation"
+        );
+        assert_eq!(
+            renewed_generation.lease_epoch, admitted_request.generation.lease_epoch,
+            "F1/E2 preserves the admitted lease epoch"
+        );
+        assert_eq!(
+            renewed_generation.lease_expires_at_unix_ms, renewed_expiry,
+            "F1/E2 publishes the extended lease"
+        );
+    }
 }
 
 #[test]
