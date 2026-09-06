@@ -476,6 +476,14 @@ downstream idempotency; they are not claimed exactly once by these proofs.
 - `SessionResourceActivation.tla` covers durable prepare-before-IO activation,
   exact revision issuance, commit/rollback, terminal release, and the rule that
   a terminated Session can never reactivate a pending resource generation.
+  Stage now carries an active or pending revision across root changes:
+  retained-active reconstruction cannot consume pending replacement, commit
+  uses the prepared revision, and a rejected stale Stage has no root effect.
+  The bounded model does not prove manifest byte equality, lease identity, or
+  physical IO. The production crossover/rollback/failure decision tables are
+  in `awaken-session-application/src/tests/resource_resume.rs`; signed dispatch
+  transport and contract serialization are separately exercised tests, not a
+  Rust-to-TLA refinement proof.
 - `ResourceDispatch.tla` covers one-time configuration pinning, mutable content,
   worker capability admission, Workspace equality, explicit-empty revocation,
   and the live lifecycle deny evaluated at each activation attempt.

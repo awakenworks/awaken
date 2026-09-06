@@ -5977,6 +5977,9 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
 /// | F4 | C2+C3+C4 + None | E5, use active 2; no new Resource authority |
 /// | F5 | C4 + mismatched Some | E6, with and without C2/C3 |
 /// | F6 | !C3+C4 + Some(3) | commit 3 before Publish; never regress |
+/// | F7 | C4 + Some(2) | rebuild retained active 2; leave pending 3 untouched |
+/// F5 means neither active nor pending, not merely different from pending.
+/// Cross F5/F7 with renewal and MCP state to preserve both independent fences.
 #[tokio::test]
 async fn activation_preserves_completed_receipts_during_same_generation_renewal() {
     for (renewal, already_active, pending_resources, prepared_resource_revision) in [
@@ -5992,6 +5995,14 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
         (true, true, true, Some(4)),
         (false, true, true, Some(2)),
         (true, false, true, Some(2)),
+        (false, false, true, Some(2)),
+        (false, true, true, Some(4)),
+        (true, false, true, Some(4)),
+        (false, false, true, Some(4)),
+        (true, true, true, Some(1)),
+        (true, false, true, Some(1)),
+        (false, true, true, Some(1)),
+        (false, false, true, Some(1)),
     ] {
         let repo = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -6115,7 +6126,9 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
                 command.clone(),
             )
             .await;
-        if pending_resources && prepared_resource_revision.is_some_and(|revision| revision != 3) {
+        if pending_resources
+            && prepared_resource_revision.is_some_and(|revision| revision != 2 && revision != 3)
+        {
             assert!(
                 matches!(
                     result,

@@ -301,8 +301,8 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
 /// owner/incarnation/epoch and monotonic expiry; C3 revision, target kind, and full resolved input/Skill equal
 /// the authoritative generation; C4 a replacement is pending. Effects: E1
 /// return the root-owned Workspace; E2 stale ownership; E3 invalid frozen
-/// input; E4 terminal denial. Pending is exclusive when present; otherwise the
-/// active generation supports cold Worker reconstruction. No Run claim or
+/// input; E4 terminal denial. Active and pending are independently exact
+/// retained pairs (their crossover table lives in resource_resume). No Run claim or
 /// parallel staging state is synthesized.
 ///
 /// | Rule | C1 | C2 | C3 | C4 | Effect |
@@ -771,6 +771,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
     assert!(
         matches!(
             app.begin_session_realization(awaken_session_contract::BeginSessionRealization {
+                expected_resources: None,
                 session_id: "retry-budget".into(),
                 target: target("worker/refresh-failure"),
             })
@@ -788,6 +789,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
 
     let first = app
         .begin_session_realization(awaken_session_contract::BeginSessionRealization {
+            expected_resources: None,
             session_id: "retry-budget".into(),
             target: target("worker/1"),
         })
@@ -818,6 +820,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
 
     let second = app
         .begin_session_realization(awaken_session_contract::BeginSessionRealization {
+            expected_resources: None,
             session_id: "retry-budget".into(),
             target: target("worker/2"),
         })
@@ -1013,6 +1016,7 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
     let reassigned = awaken_session_contract::SessionRealizationControl::begin_session_realization(
         &other,
         awaken_session_contract::BeginSessionRealization {
+            expected_resources: None,
             session_id: "local-restart".into(),
             target: awaken_session_contract::SessionRealizationTarget {
                 owner: "other-worker".into(),

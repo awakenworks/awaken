@@ -220,6 +220,22 @@ content is returned. This changes neither the Run claim fence nor credential
 transport expiry caps; it does not authorize writes, re-resolve Resource versions,
 or revive a terminal Session.
 
+A pending replacement does not retire the active generation. Claim-guarded
+resume passes the dispatch's exact Workspace/revision/manifest into the existing
+Begin operation, which selects active or pending under the Session root CAS.
+Materialization accepts only an exact retained revision/target under the current
+lease. Activating prepared active A preserves pending B; activating prepared B
+commits B. Unknown generations fail before root mutation. This also uses the
+active revision after rollback, not the attempted-generation watermark. No
+additional generation store or weaker Worker snapshot comparison is introduced.
+The same root persists `committed_revision` alongside its active manifest: input
+activation records cannot represent Skill-only or empty generations. Prepare
+retains that pair, commit replaces it, and rollback preserves it across restart.
+Older rows without this field use the existing activation-record interpretation
+until the next transition records the pair; already-lossy historical rows with
+neither an active record nor a committed revision cannot reconstruct an earlier
+revision from the watermark alone and require separate historical evidence.
+
 Durable dispatch carries `SessionResourceManifest { workspace_id, revision, resources }`
 beside the executable Agent snapshot. This envelope is secret-free and is not a
 second Session model: `resources` is the exact persisted

@@ -607,6 +607,10 @@ mod repository_publication_projection_tests {
 pub struct BeginSessionRealization {
     pub session_id: String,
     pub target: SessionRealizationTarget,
+    /// Exact manifest decoded from a live guarded dispatch, never a browser
+    /// hint. Unclaimed Control realization selects the current desired state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_resources: Option<crate::SessionResourceManifest>,
 }
 
 /// Extend one already-authoritative realization lease without replaying the
@@ -684,9 +688,9 @@ pub struct FailSessionRealization {
     pub reason: String,
 }
 
-/// Exact pending Resource target authorized by one Session realization lease.
+/// Exact active or pending Resource target authorized by one Session realization lease.
 /// The Workspace is intentionally absent: the Session root adds it only after
-/// matching this untrusted transport value to its current pending generation.
+/// matching this untrusted transport value to its retained generation and target.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "target", rename_all = "snake_case")]
 pub enum SessionResourceMaterializationTarget {

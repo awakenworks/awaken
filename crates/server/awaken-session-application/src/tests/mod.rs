@@ -2442,4 +2442,5 @@ mod creation;
 mod event_batch_cutover_validation;
 mod event_batches;
 mod realization;
+mod resource_resume;
 mod run_admission;

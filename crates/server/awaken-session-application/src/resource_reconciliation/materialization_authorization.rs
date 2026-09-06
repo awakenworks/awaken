@@ -31,24 +31,21 @@ impl SessionApplication {
         }) {
             return Err(SessionRealizationControlFailure::StaleOwnership);
         }
-        // A pending replacement is exclusive: while it exists, the prior active
-        // generation cannot be reopened under the new realization lease. When
-        // no replacement is pending, the active generation is the exact durable
-        // truth needed to rebuild a lost Worker projection.
-        let authoritative = session
+        // A retained Run can rebuild the still-active generation while a later
+        // replacement waits. Both pairs come from the same Session root; never
+        // pair the attempted-revision watermark with unrelated active bytes
+        // (including after rollback), or authorize an already-retired target.
+        let exact_target = session
             .resources
-            .pending
-            .as_ref()
-            .unwrap_or(&session.resources.active);
-        let exact_target = session.resources.revision == intent.resource_revision()
-            && match intent.target() {
+            .retained_generation(intent.resource_revision())
+            .is_some_and(|resources| match intent.target() {
                 awaken_session_contract::SessionResourceMaterializationTarget::Input(input) => {
-                    authoritative.inputs().contains(input)
+                    resources.inputs().contains(input)
                 }
                 awaken_session_contract::SessionResourceMaterializationTarget::Skill(binding) => {
-                    authoritative.skills().contains(binding)
+                    resources.skills().contains(binding)
                 }
-            };
+            });
         if !exact_target {
             return Err(SessionRealizationControlFailure::Invalid(
                 "Session Resource materialization intent does not match the authoritative generation"
