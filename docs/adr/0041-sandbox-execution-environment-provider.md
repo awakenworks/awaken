@@ -755,6 +755,17 @@ late admission of new Sessions after Worker authority loss, the production
 provider callback and its cutoff refresh remain explicit composition work;
 these are not implied by the selected-cohort proof.
 
+Worker heartbeat supervision now has one revocation exit for ordinary proof
+loss and dependency unwind. The heartbeat future is consumed before invoking
+the existing cohort-close/drain/retire sequence; the task cannot report normal
+completion while that sequence is pending. This remains in the same heartbeat
+task during graceful drain, without another monitor or lease projection.
+`WorkerAuthorityExit` composes the existing cohort model; barrier tests check
+normal return, unwind, pending cleanup and explicit abort, and a real Worker
+HTTP fixture injects a post-Ready provider-probe panic. Explicit task abort,
+process death and panic-abort builds are not unwind recovery; physical cutoff
+and final shutdown ownership remain separate requirements.
+
 Native Linux readiness now executes the same `bubblewrap_argv` profile as a
 real Namespace launch, including PID/IPC/UTS/network namespaces and parent-death
 linkage. A user-namespace-only probe is insufficient. Each observation is fresh,

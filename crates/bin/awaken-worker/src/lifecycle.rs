@@ -8,6 +8,7 @@ use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_host::SharedHost;
 use awaken_worker_contract::{RegistryMutation, WorkerIdentity};
 use awaken_worker_runtime::WorkerControlClient;
+use futures_util::FutureExt as _;
 
 use crate::credential_liveness::WorkerObservationCache;
 
@@ -267,6 +268,7 @@ pub(crate) fn spawn_heartbeat(
         // Independent, single-flight lanes under the same incarnation owner.
         // Neither a slow security probe nor a registry retry can extend the
         // other's proof. Losing either proof irreversibly drains both lanes.
+        supervise_worker_authority(async {
         tokio::select! {
             biased;
             () = async {
@@ -282,10 +284,34 @@ pub(crate) fn spawn_heartbeat(
             } => {}
             () = renew_registry_authority(&lifecycle, sequence, last_proof, timing) => {}
         }
-        revoke_worker_session_authority(&lifecycle).await;
+        }, || revoke_worker_session_authority(&lifecycle)).await;
     })
 }
 
+/// One exit edge for normal proof loss and unwinding dependency failures. This
+/// stays in the heartbeat task, so it also supervises authority during graceful
+/// drain. It never restarts the failed loop or creates a second monitor task.
+/// Explicit owner abort/process death is outside unwind handling; the physical
+/// execution cutoff and final shutdown owner retain those responsibilities.
+async fn supervise_worker_authority<Revoke, Revocation>(
+    heartbeat: impl std::future::Future<Output = ()>,
+    revoke: Revoke,
+) where
+    Revoke: FnOnce() -> Revocation,
+    Revocation: std::future::Future<Output = ()>,
+{
+    if std::panic::AssertUnwindSafe(heartbeat)
+        .catch_unwind()
+        .await
+        .is_err()
+    {
+        awaken_observability::record_worker_authority_loss("heartbeat_panicked");
+        tracing::error!("worker heartbeat panicked; revoking Session authority before task exit");
+    }
+    // The heartbeat future has been dropped before revocation. Borrowed
+    // provider/transport state is never reused after an unwind.
+    revoke().await;
+}
 async fn renew_registry_authority(
     lifecycle: &WorkerSupervisor,
     mut sequence: u64,
@@ -644,7 +670,106 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use super::supervise_session_realization_reconciliation;
+    use super::{supervise_session_realization_reconciliation, supervise_worker_authority};
+
+    #[tokio::test]
+    async fn heartbeat_exit_owns_one_revocation_before_completion_even_after_unwind() {
+        // Cause/effect graph: C1 heartbeat returns normally or unwinds after a
+        // dependency await; C2 cleanup finishes or the owner cancels its wait;
+        // C3 explicit owner abort occurs before heartbeat exit instead.
+        // E1 release heartbeat-owned temporaries before revocation; E2 invoke
+        // the SAME revocation exactly once; E3 never complete while revocation
+        // is pending; E4 cancellation cannot manufacture a completed receipt.
+        // | rule | heartbeat | owner action | effect |
+        // | H1-H2 | return/panic | finish cleanup | E1+E2+E3, then completion |
+        // | H3-H4 | return/panic | cancel cleanup | E1+E2+E4, closure retained |
+        // | H5-H6 | still pending | abort heartbeat | no invented revoke/receipt |
+        // H5-H6 explicitly bound this unwind guarantee: process death/abort
+        // requires physical cutoff and the outer shutdown owner, not catch_unwind.
+        struct DropMark(Arc<AtomicBool>);
+        impl Drop for DropMark {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        for panics in [false, true] {
+            for action in ["finish", "cancel-cleanup", "abort-heartbeat"] {
+                let dropped = Arc::new(AtomicBool::new(false));
+                let calls = Arc::new(AtomicUsize::new(0));
+                let closed = Arc::new(AtomicBool::new(false));
+                let completed = Arc::new(AtomicBool::new(false));
+                let (started, observed) = tokio::sync::oneshot::channel();
+                let (exit, exit_wait) = tokio::sync::oneshot::channel();
+                let (closing, close_observed) = tokio::sync::oneshot::channel();
+                let (finish, finish_wait) = tokio::sync::oneshot::channel();
+                let heartbeat_guard = DropMark(dropped.clone());
+                let task = tokio::spawn(supervise_worker_authority(
+                    async move {
+                        let _guard = heartbeat_guard;
+                        started.send(()).unwrap();
+                        exit_wait.await.unwrap();
+                        assert!(!panics, "injected heartbeat dependency panic");
+                    },
+                    {
+                        let dropped = dropped.clone();
+                        let calls = calls.clone();
+                        let closed = closed.clone();
+                        let completed = completed.clone();
+                        move || async move {
+                            assert!(dropped.load(Ordering::SeqCst), "E1");
+                            assert_eq!(calls.fetch_add(1, Ordering::SeqCst), 0, "E2");
+                            closed.store(true, Ordering::SeqCst);
+                            closing.send(()).unwrap();
+                            finish_wait.await.unwrap();
+                            completed.store(true, Ordering::SeqCst);
+                        }
+                    },
+                ));
+                observed.await.unwrap();
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+                if action == "abort-heartbeat" {
+                    task.abort();
+                    assert!(task.await.unwrap_err().is_cancelled(), "H5-H6");
+                    assert!(dropped.load(Ordering::SeqCst));
+                    assert!(!closed.load(Ordering::SeqCst));
+                    assert!(!completed.load(Ordering::SeqCst));
+                    assert_eq!(calls.load(Ordering::SeqCst), 0);
+                    continue;
+                }
+                exit.send(()).unwrap();
+                close_observed.await.unwrap();
+                assert!(!task.is_finished(), "E3");
+                assert!(closed.load(Ordering::SeqCst));
+                assert!(!completed.load(Ordering::SeqCst));
+                if action == "cancel-cleanup" {
+                    task.abort();
+                    assert!(task.await.unwrap_err().is_cancelled(), "E4");
+                    assert!(!completed.load(Ordering::SeqCst));
+                    assert!(closed.load(Ordering::SeqCst));
+                } else {
+                    finish.send(()).unwrap();
+                    task.await.unwrap();
+                    assert!(completed.load(Ordering::SeqCst));
+                }
+                assert_eq!(calls.load(Ordering::SeqCst), 1, "E2");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn revocation_unwind_is_not_retried_or_reported_as_completed() {
+        // H7: revocation itself unwinds after closing admission (cause).
+        // It must escape to the outer Worker owner, not restart heartbeat,
+        // retry destructive cleanup, or turn the panic into normal completion.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let task = tokio::spawn(supervise_worker_authority(async {}, move || async move {
+            observed.fetch_add(1, Ordering::SeqCst);
+            panic!("injected revocation panic");
+        }));
+        assert!(task.await.unwrap_err().is_panic());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 
     struct ProbeProvider {
         mode: u8,

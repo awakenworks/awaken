@@ -942,6 +942,29 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
         mutations.append((source, config + "\nINVARIANT " + invariant + "\n", invariant))
     check_tlc_model_mutations(tlc_jar, "SessionRealizationAuthority", source, config, mutations)
     print("Session authority: 6/6 guard mutants killed; grant/cleanup reachability witnessed")
+    # H1/H2 ordinary and panicking heartbeat completion must use the SAME
+    # cohort fence. H3 the wrapper cannot finish ahead of revocation. Exact
+    # semantic oracles, plus panic/completion reachability, exclude inert proofs.
+    source = (ROOT / "formal/tla/WorkerAuthorityExit.tla").read_text()
+    config = (ROOT / "formal/tla/WorkerAuthorityExit.cfg").read_text()
+    header = config.split("INVARIANTS\n", 1)[0]
+    mutations = []
+    for anchor, broken, invariant in [
+        ("  /\\ CloseWorker\n", '  /\\ IF kind = "panicked" THEN UNCHANGED vars ELSE CloseWorker\n',
+         "HeartbeatExitFencesCohort"),
+        ("  /\\ CloseWorker\n", '  /\\ IF kind = "returned" THEN UNCHANGED vars ELSE CloseWorker\n',
+         "HeartbeatExitFencesCohort"),
+        ('/\\ exitPhase = "revoking" /\\ cleaned /\\ peerCleaned /\\ ~ownerLocked',
+         '/\\ exitPhase = "revoking"', "CompletionRequiresRevocation"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit("Worker authority exit mutation anchor drifted")
+        mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
+    for witness in ("NoPanickedRevocationReached", "NoCompletedRevocationReached"):
+        mutations.append((source, header + "INVARIANTS " + witness, witness))
+    check_tlc_model_mutations(tlc_jar, "WorkerAuthorityExit", source, config, mutations,
+                              dependencies=("SessionRealizationAuthority",))
+    print("Worker authority exit: 3/3 mutants killed; panic/completion reachability witnessed")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
