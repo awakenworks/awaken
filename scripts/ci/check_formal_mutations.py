@@ -897,10 +897,16 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
     anchors = [
         ('IF projection = "Live" /\\ lease = request', 'IF lease = request',
          "ClosedGenerationCannotRenew"),
-        ('Grant ==\n  /\\ projection = "Live"', 'Grant ==\n  /\\ TRUE',
+        ('Grant ==\n  /\\ UNCHANGED selectionVars\n  /\\ projection = "Live"',
+         'Grant ==\n  /\\ UNCHANGED selectionVars\n  /\\ TRUE',
          "NoGrantAfterClose"),
         ('admitted == projection = "Closed" /\\ lease = cleanup[c]',
          'admitted == TRUE', "OldCleanupCannotTouchReplacement"),
+        ('/\\ slotIdentity = selectedSlot[c]', '/\\ TRUE', "OldCleanupCannotTouchReplacement"),
+        ('workerClosed\' = TRUE /\\ peerLive\' = FALSE',
+         'workerClosed\' = TRUE /\\ UNCHANGED peerLive', "WorkerCloseIncludesPeer"),
+        ('FinishPeer ==\n  /\\ workerClosed', 'FinishPeer ==\n  /\\ ~ownerLocked /\\ workerClosed',
+         "temporal:PeerEventuallyCleans"),
     ]
     mutations = []
     for guard, broken, invariant in anchors:
@@ -910,7 +916,7 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
     for invariant in ("NoGrantReached", "NoCleanupReached"):
         mutations.append((source, config + "\nINVARIANT " + invariant + "\n", invariant))
     check_tlc_model_mutations(tlc_jar, "SessionRealizationAuthority", source, config, mutations)
-    print("Session authority: 3/3 guard mutants killed; grant/cleanup reachability witnessed")
+    print("Session authority: 6/6 guard mutants killed; grant/cleanup reachability witnessed")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:

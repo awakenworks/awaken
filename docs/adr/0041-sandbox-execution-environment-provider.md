@@ -729,10 +729,22 @@ The existing phase model still owns scheduler fairness; the bounded
 `SessionRealizationAuthority` model separately checks exact response, closure and
 cleanup interleavings with two callers. Its mutation checks include positive
 grant/cleanup reachability. Executable Host barriers cover both owner locks,
-single/Worker-wide revocation, cancellation and generation replacement. This
-does not prove removed/recreated-slot ABA, Worker-wide atomic closure, or install
-the still-pending provider callback: those remain explicit composition work,
-not consequences of the model's synchronous mutex assumption.
+single/Worker-wide revocation, cancellation and generation replacement.
+Worker authority loss now atomically closes the currently installed cohort and
+captures its existing owner-lock Arcs before awaiting pool drain or interruption.
+The subsequent cleanup uses those captured locks and rechecks both allocation
+identity and closed lease, so removal/recreation with identical lease bytes
+cannot redirect an old cleanup into new owner locks or effects. Independent
+Session cleanups are joined without short-circuiting on another error or lock
+wait; cancellation retains the closed pending owners for explicit retry. This
+is one ephemeral cleanup selection, not another registry, timer or lease store.
+The authority model includes two slot allocations and one ready peer, checking
+cohort closure and peer progress under weak scheduling fairness. Host tests
+cover both owner locks, same-lease/lease-free ABA, blocked peers, failed cleanup,
+and the Worker handler's split close/interruption/retirement sequence. Actual
+late admission of new Sessions after Worker authority loss, the production
+provider callback and its cutoff refresh remain explicit composition work;
+these are not implied by the selected-cohort proof.
 
 Native Linux readiness now executes the same `bubblewrap_argv` profile as a
 real Namespace launch, including PID/IPC/UTS/network namespaces and parent-death

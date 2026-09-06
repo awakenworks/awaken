@@ -21,6 +21,17 @@ use agent_filesystem_context::consistent_agent_filesystem_context;
 #[cfg(test)]
 pub(crate) use realization_renewal::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS;
 
+/// Already-closed process-local projections awaiting nonterminal cleanup.
+/// Dropping this value cannot reopen admission or certify cleanup. A retry
+/// reselects the retained slot owners through the same Host operation.
+#[must_use = "closed projections still require cleanup or an explicit retry"]
+pub struct SessionRealizationRevocation {
+    selected: Vec<(
+        String,
+        crate::session_slot::SessionRealizationRevocationSelection,
+    )>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RenewalFailureDisposition {
     /// Control proves that this exact local owner may no longer execute.
@@ -1156,45 +1167,34 @@ impl crate::SharedHost {
         // Close admission under the synchronous slot mutex before waiting for
         // either async owner lock. Retain the exact closed projection for the
         // post-lock CAS; neither a renewal reply nor cancellation reopens it.
-        let Some(closed) = self
+        let Some(selected) = self
             .session_slots
-            .modify(session_id, |slot| {
-                if expected_projection.is_some_and(|(_, realization)| !Arc::ptr_eq(&slot.realization, realization))
-                    || !slot.close_realization_authority(expected_projection.map(|(lease, _)| lease)) {
-                    return None;
-                }
-                Some(slot.realization_authority.clone())
-            })
-            .flatten()
+            .close_realization(session_id, expected_projection)
         else {
             return Ok(false);
         };
-        let Some(realization) = self
-            .session_slots
-            .read(session_id, |slot| slot.realization.clone())
-        else {
-            return Ok(false);
-        };
-        let _realization = realization.lock().await;
-        let Some(lifecycle) = self
-            .session_slots
-            .read(session_id, |slot| slot.lifecycle.clone())
-        else {
-            return Ok(false);
-        };
-        let _lifecycle = lifecycle.lock().await;
+        self.retire_selected_session_realization(session_id, selected, expected_projection.is_some())
+            .await
+    }
+
+    async fn retire_selected_session_realization(
+        &self,
+        session_id: &str,
+        selected: crate::session_slot::SessionRealizationRevocationSelection,
+        interrupt: bool,
+    ) -> Result<bool, crate::HostError> {
+        let _realization = selected.realization.lock().await;
+        let _lifecycle = selected.lifecycle.lock().await;
         // This fence also applies to Worker-wide revocation: waiting cannot
         // authorize cleanup of a replacement installed after the close edge.
         if !self
             .session_slots
-            .read(session_id, |slot| slot.realization_authority == closed
-                && Arc::ptr_eq(&slot.realization, &realization)
-                && Arc::ptr_eq(&slot.lifecycle, &lifecycle))
+            .read(session_id, |slot| selected.matches(slot))
             .unwrap_or(false)
         {
             return Ok(false);
         }
-        if expected_projection.is_some() {
+        if interrupt {
             let _ = self
                 .interrupt_with_commit_read(
                     session_id,
@@ -1215,14 +1215,44 @@ impl crate::SharedHost {
     /// no longer provable. Durable Session environments remain available for
     /// adoption; only terminal Session lifecycle commands may dispose them.
     pub async fn revoke_all_session_realizations(&self) -> Result<usize, crate::HostError> {
-        let session_ids = self.session_slots.session_ids();
+        self.finish_session_realization_revocation(self.begin_session_realization_revocation())
+            .await
+    }
+
+    /// Close all current Session authority BEFORE a Worker starts asynchronous
+    /// drain/interruption. This selection is not a new Worker registry lease.
+    pub fn begin_session_realization_revocation(&self) -> SessionRealizationRevocation {
+        SessionRealizationRevocation {
+            selected: self.session_slots.close_all_realizations(),
+        }
+    }
+
+    /// Join every selected cleanup without letting one error or held owner lock
+    /// prevent an unrelated Session from reaching its own stop edge. No detached
+    /// task, additional scheduler, or cancellation-as-success path is created.
+    pub async fn finish_session_realization_revocation(
+        &self,
+        revocation: SessionRealizationRevocation,
+    ) -> Result<usize, crate::HostError> {
+        let results = futures_util::future::join_all(revocation.selected.into_iter().map(
+            |(id, selected)| async move {
+                self.retire_selected_session_realization(&id, selected, false)
+                    .await
+            },
+        ))
+        .await;
         let mut revoked = 0;
-        for session_id in session_ids {
-            if self.revoke_session_realization(&session_id, None).await? {
-                revoked += 1;
+        let mut error = None;
+        for result in results {
+            match result {
+                Ok(true) => revoked += 1,
+                Ok(false) => {}
+                Err(failure) => {
+                    error.get_or_insert(failure);
+                }
             }
         }
-        Ok(revoked)
+        error.map_or(Ok(revoked), Err)
     }
 
     /// Cancel every run currently backed by a process-local Session projection.
