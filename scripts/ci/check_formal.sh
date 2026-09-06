@@ -465,6 +465,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-worker-contract \
     --harness accepted_version_is_inside_worker_range \
     --harness non_ready_worker_never_accepts_work \
+    --harness placement_extension_admits_only_allowed_unique_identity \
     --harness never_replace_rejects_every_replacement \
     --harness sandbox_continuity_authorizes_replacement_exactly_when_bound \
     --harness same_incarnation_never_spends_replacement_authority \
