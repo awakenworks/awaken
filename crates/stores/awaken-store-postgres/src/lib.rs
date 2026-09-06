@@ -28,7 +28,8 @@ use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error, OperationCoordinator,
 };
 use awaken_agent_contract::thread::commit::operation::{
-    CommitOperation, CommitPayloadHash, CommitReceipt,
+    CommitOperation, CommitPayloadHash, CommitReceipt, admit_commit_operation_append,
+    replay_commit_operation_receipt, require_commit_operation_identity,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -509,24 +510,18 @@ impl OperationCoordinator for PostgresCommitCoordinator {
             .commit
             .validate()
             .map_err(|error| Error::Rejected(error.to_string()))?;
-        if operation.operation_id.run_id != *operation.commit.run_id() {
-            return Err(Error::Rejected(
-                "commit operation run_id does not match ThreadCommit run_id".to_string(),
-            ));
-        }
+        require_commit_operation_identity(&operation)
+            .map_err(|error| Error::Rejected(error.to_string()))?;
         let operation_ordinal = i64::try_from(operation.operation_id.ordinal).map_err(|_| {
             Error::Rejected("commit operation ordinal exceeds backend range".to_string())
         })?;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let current_version = lock_thread_version(&mut tx, &operation.commit.thread_id).await?;
-        if let Some(receipt) = load_receipt(&mut tx, &operation).await? {
+        let existing = load_receipt(&mut tx, &operation).await?;
+        if let Some(receipt) = replay_commit_operation_receipt(&operation, existing.as_ref())
+            .map_err(|error| Error::Rejected(error.to_string()))?
+        {
             return Ok(receipt);
-        }
-        if current_version != operation.expected_thread_version {
-            return Err(Error::Rejected(format!(
-                "thread version conflict: expected {}, current {}",
-                operation.expected_thread_version, current_version
-            )));
         }
         let current_ordinal: i64 = sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM {NS}_commit WHERE run_id = $1"
@@ -536,14 +531,10 @@ impl OperationCoordinator for PostgresCommitCoordinator {
         .await
         .map_err(reject)?;
         let current_ordinal = decode_authority(current_ordinal)?;
-        if current_ordinal != operation.operation_id.ordinal {
-            return Err(Error::Rejected(format!(
-                "commit operation ordinal conflict: expected {}, current {}",
-                operation.operation_id.ordinal, current_ordinal
-            )));
-        }
+        let thread_version =
+            admit_commit_operation_append(&operation, current_version, current_ordinal)
+                .map_err(|error| Error::Rejected(error.to_string()))?;
         let (next, committed_events) = append_commit(&mut tx, &operation.commit).await?;
-        let thread_version = increment_authority(current_version)?;
         set_thread_version(&mut tx, &operation.commit.thread_id, thread_version).await?;
         sqlx::query(&format!(
             "INSERT INTO {NS}_commit_receipt \
@@ -638,12 +629,6 @@ async fn load_receipt(
         return Ok(None);
     };
     let payload_hash: String = row.try_get("payload_hash").map_err(reject)?;
-    if payload_hash != operation.payload_hash.0 {
-        return Err(Error::Rejected(format!(
-            "commit operation {}:{} was reused with another payload",
-            operation.operation_id.run_id.0, operation.operation_id.ordinal
-        )));
-    }
     Ok(Some(CommitReceipt {
         operation_id: operation.operation_id.clone(),
         commit_sequence: decode_authority(

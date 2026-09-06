@@ -144,6 +144,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness every_relationship_effect_has_one_documented_precondition \
     --harness delegation_admission_requires_every_budget_and_lineage_guard \
     --harness cancellation_delivery_is_enabled_only_by_durable_intent \
+    --harness operation_identity_replays_only_the_same_run_and_payload \
+    --harness operation_append_requires_exact_prefix_and_nonwrapping_version \
     --harness tool_policy_selector_fails_closed_for_unregistered_widened_or_mismatched_calls \
     --harness stream_terminal_projection_is_exact_fail_closed_and_absorbing
   run_kani awaken-authorization-contract \
