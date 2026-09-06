@@ -355,6 +355,7 @@ def main() -> None:
     model_selection.add_argument("--config-cas-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--background-completion-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--audit-commit-model-mutants", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--effect-retirement-model-mutant", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
     if arguments.memory_copy_model_mutant is not None:
         check_memory_copy_model_mutant(arguments.memory_copy_model_mutant)
@@ -376,6 +377,9 @@ def main() -> None:
         return
     if arguments.audit_commit_model_mutants is not None:
         check_audit_commit_model_mutants(arguments.audit_commit_model_mutants)
+        return
+    if arguments.effect_retirement_model_mutant is not None:
+        check_effect_retirement_model_mutant(arguments.effect_retirement_model_mutant)
         return
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(MutationOracleTests)
     if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
@@ -566,6 +570,20 @@ def check_audit_commit_model_mutants(tlc_jar: Path) -> None:
          config, "BusinessCommitIffAuditCommitted"),
     ])
     print("Audit commit mutation score: 2/2 killed (exact intent, committed replay)")
+
+
+def check_effect_retirement_model_mutant(tlc_jar: Path) -> None:
+    # ABA rule: removing exact receipt/current identity matching lets a delayed
+    # old worker delete the successor journal without applying its resource state.
+    source = (ROOT / "formal/tla/ResourceBindingEffect.tla").read_text(encoding="utf-8")
+    config = (ROOT / "formal/tla/ResourceBindingEffect.cfg").read_text(encoding="utf-8")
+    guard = "IF effectQueued = captured[w] THEN 0 ELSE effectQueued"
+    if source.count(guard) != 1:
+        raise SystemExit("Effect retirement mutation anchor drifted; review the model")
+    check_tlc_model_mutations(tlc_jar, "ResourceBindingEffect", source, config, [
+        (source.replace(guard, "0"), config, "CommittedDraftHasAuditAndRecoverableBinding"),
+    ])
+    print("Effect retirement mutation score: 1/1 killed (stale receipt retires successor)")
 
 
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,

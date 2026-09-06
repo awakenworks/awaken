@@ -11,8 +11,8 @@ use crate::schema::{BUNDLE_ID, converged_config_bundle, selected_config_bundle};
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
     ConfigWrite, DEFAULT_SCOPE, ManagementAuditAdmission, ManagementAuditEntry,
-    ManagementAuditRecord, ManagementEffect, PublicationRevisionDecision, ScopedConfigRegistry,
-    StoredPublication, publication_revision_decision,
+    ManagementAuditRecord, ManagementEffect, ManagementEffectReceipt, PublicationRevisionDecision,
+    ScopedConfigRegistry, StoredPublication, publication_revision_decision,
 };
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in.
@@ -283,23 +283,12 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                     )
                     .optional()
                     .map_err(reject)?;
-                match existing_payload {
-                    Some(payload) if payload != effect_payload => {
-                        return Err(ConfigStoreError(
-                            "stable management effect key was reused with different content".into(),
-                        ));
-                    }
-                    Some(_) => {}
-                    None => {
-                        tx.execute(
-                            &format!(
-                                "INSERT INTO {p}_management_effect \
-                                 (scope_id, kind, effect_key, payload) VALUES (?1, ?2, ?3, ?4)"
-                            ),
-                            params![scope, effect.kind(), effect.key(), effect_payload],
-                        )
-                        .map_err(reject)?;
-                    }
+                let pending = existing_payload.as_deref().map(serde_json::from_str::<ManagementEffect>).transpose().map_err(reject)?;
+                if effect.requires_enqueue(pending.as_ref())? {
+                    tx.execute(
+                        &format!("INSERT INTO {p}_management_effect (scope_id, kind, effect_key, payload) VALUES (?1, ?2, ?3, ?4)"),
+                        params![scope, effect.kind(), effect.key(), effect_payload],
+                    ).map_err(reject)?;
                 }
             }
             if write_config_revision(&tx, p, &scope, &id, &data, expected_generation)?.is_none() {
@@ -353,11 +342,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
             rows.map(|row| {
                 let (kind, key, payload) = row.map_err(reject)?;
                 let effect: ManagementEffect = serde_json::from_str(&payload).map_err(reject)?;
-                if kind != effect.kind() || key != effect.key() {
-                    return Err(ConfigStoreError(
-                        "management effect index does not match its typed payload".into(),
-                    ));
-                }
+                effect.validate_index(&kind, &key)?;
                 Ok(effect)
             })
             .collect()
@@ -367,23 +352,46 @@ impl ScopedConfigRegistry for SqliteConfigStore {
 
     async fn complete_management_effect_scoped(
         &self,
-        scope: &ScopeId,
-        kind: &str,
-        key: &str,
-    ) -> Result<(), ConfigStoreError> {
-        let scope = scope.0.clone();
-        let kind = kind.to_string();
-        let key = key.to_string();
+        receipt: &ManagementEffectReceipt,
+    ) -> Result<bool, ConfigStoreError> {
+        let receipt = receipt.clone();
         self.with_conn(move |conn, p| {
-            conn.execute(
-                &format!(
-                    "DELETE FROM {p}_management_effect \
-                     WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3"
-                ),
-                params![scope, kind, key],
-            )
-            .map_err(reject)?;
-            Ok(())
+            let tx = conn.transaction().map_err(reject)?;
+            let effect = receipt.effect();
+            let scope = &receipt.scope().0;
+            let payload: Option<String> = tx
+                .query_row(
+                    &format!(
+                        "SELECT payload FROM {p}_management_effect \
+                          WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3"
+                    ),
+                    params![scope, effect.kind(), effect.key()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(reject)?;
+            let Some(payload) = payload else {
+                return Ok(false);
+            };
+            let pending: ManagementEffect = serde_json::from_str(&payload).map_err(reject)?;
+            pending.validate_index(effect.kind(), effect.key())?;
+            if !receipt.matches_pending(&pending) {
+                return Ok(false);
+            }
+            // The same transaction protects the exact observation through DELETE.
+            // A concurrent SQLite writer makes this upgrade fail, never delete a
+            // newer payload using an earlier unfenced observation.
+            let removed = tx
+                .execute(
+                    &format!(
+                        "DELETE FROM {p}_management_effect \
+                          WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3"
+                    ),
+                    params![scope, effect.kind(), effect.key()],
+                )
+                .map_err(reject)?;
+            tx.commit().map_err(reject)?;
+            Ok(removed == 1)
         })
         .await
     }

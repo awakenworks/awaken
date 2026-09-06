@@ -19,6 +19,21 @@ mod revision_cas;
 #[path = "support/audit_identity.rs"]
 mod audit_identity;
 
+#[path = "support/effect_retirement.rs"]
+mod effect_retirement;
+
+#[tokio::test]
+async fn postgres_management_effect_stale_completion_preserves_replacement() {
+    let Some(pool) = schema_pool("t_effect_retirement_aba").await else {
+        return;
+    };
+    effect_retirement::stale_completion_preserves_replacement(
+        &PostgresConfigStore::with_pool(pool).await.unwrap(),
+        &agent_config(),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn postgres_audit_identity_decision_table() {
     let Some(pool) = schema_pool("t_config_audit_identity").await else {
@@ -252,8 +267,10 @@ async fn postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fence
             .unwrap(),
         vec![effect.clone()]
     );
+    let ManagementEffect::UpsertAgentInputs { config: applied } = &effect;
+    let receipt = effect.confirm_readback(&scope, Some(applied)).unwrap();
     store
-        .complete_management_effect_scoped(&scope, effect.kind(), effect.key())
+        .complete_management_effect_scoped(&receipt)
         .await
         .unwrap();
 

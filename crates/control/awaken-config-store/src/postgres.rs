@@ -12,8 +12,8 @@ use crate::schema::{BUNDLE_ID, converged_config_bundle, selected_config_bundle};
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
     ConfigWrite, DEFAULT_SCOPE, ManagementAuditAdmission, ManagementAuditEntry,
-    ManagementAuditRecord, ManagementEffect, PublicationRevisionDecision, ScopedConfigRegistry,
-    StoredPublication, publication_revision_decision,
+    ManagementAuditRecord, ManagementEffect, ManagementEffectReceipt, PublicationRevisionDecision,
+    ScopedConfigRegistry, StoredPublication, publication_revision_decision,
 };
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in, so the
@@ -296,15 +296,14 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             .fetch_optional(&mut *tx)
             .await
             .map_err(reject)?;
-            if let Some(row) = existing {
-                let Json(existing_effect): Json<ManagementEffect> =
-                    row.try_get("payload").map_err(reject)?;
-                if existing_effect != *effect {
-                    return Err(ConfigStoreError(
-                        "stable management effect key was reused with different content".into(),
-                    ));
-                }
-            } else {
+            let pending = existing
+                .map(|row| {
+                    let Json(effect): Json<ManagementEffect> =
+                        row.try_get("payload").map_err(reject)?;
+                    Ok::<_, ConfigStoreError>(effect)
+                })
+                .transpose()?;
+            if effect.requires_enqueue(pending.as_ref())? {
                 sqlx::query(&format!(
                     "INSERT INTO {NS}_management_effect \
                      (scope_id, kind, effect_key, payload) VALUES ($1, $2, $3, $4)"
@@ -363,11 +362,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             let kind: String = row.try_get("kind").map_err(reject)?;
             let key: String = row.try_get("effect_key").map_err(reject)?;
             let Json(effect): Json<ManagementEffect> = row.try_get("payload").map_err(reject)?;
-            if kind != effect.kind() || key != effect.key() {
-                return Err(ConfigStoreError(
-                    "management effect index does not match its typed payload".into(),
-                ));
-            }
+            effect.validate_index(&kind, &key)?;
             Ok(effect)
         })
         .collect()
@@ -375,21 +370,40 @@ impl ScopedConfigRegistry for PostgresConfigStore {
 
     async fn complete_management_effect_scoped(
         &self,
-        scope: &ScopeId,
-        kind: &str,
-        key: &str,
-    ) -> Result<(), ConfigStoreError> {
-        sqlx::query(&format!(
+        receipt: &ManagementEffectReceipt,
+    ) -> Result<bool, ConfigStoreError> {
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let effect = receipt.effect();
+        let row = sqlx::query(&format!(
+            "SELECT payload FROM {NS}_management_effect \
+             WHERE scope_id = $1 AND kind = $2 AND effect_key = $3 FOR UPDATE"
+        ))
+        .bind(&receipt.scope().0)
+        .bind(effect.kind())
+        .bind(effect.key())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let Json(pending): Json<ManagementEffect> = row.try_get("payload").map_err(reject)?;
+        pending.validate_index(effect.kind(), effect.key())?;
+        if !receipt.matches_pending(&pending) {
+            return Ok(false);
+        }
+        let removed = sqlx::query(&format!(
             "DELETE FROM {NS}_management_effect \
              WHERE scope_id = $1 AND kind = $2 AND effect_key = $3"
         ))
-        .bind(&scope.0)
-        .bind(kind)
-        .bind(key)
-        .execute(&self.pool)
+        .bind(&receipt.scope().0)
+        .bind(effect.kind())
+        .bind(effect.key())
+        .execute(&mut *tx)
         .await
         .map_err(reject)?;
-        Ok(())
+        tx.commit().await.map_err(reject)?;
+        Ok(removed.rows_affected() == 1)
     }
 
     async fn record_management_audit_scoped(

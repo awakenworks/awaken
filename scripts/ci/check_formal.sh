@@ -70,6 +70,9 @@ cargo test -p awaken-session-executor --lib background_task::ownership::tests
 # Keep the production projection and SQLite conformance/migration tests beside it;
 # live PostgreSQL parity belongs to the existing required database gate.
 cargo test -p awaken-agent-config --lib audit_admission_tests
+cargo test -p awaken-agent-config --lib effect_receipt_tests
+cargo test -p awaken-control --lib management_effect
+cargo test -p awaken-config-store --features test-support --test integration management_effect
 cargo test -p awaken-config-store --features test-support --lib audit_identity
 cargo test -p awaken-config-store --features test-support --test integration audit_identity
 
@@ -221,6 +224,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness work_lease_epoch_is_exact_nonnegative_and_nonwrapping
   run_kani awaken-agent-config \
     --harness management_audit_admission_requires_exact_intent_and_closed_state \
+    --harness management_effect_confirmation_requires_positive_exact_readback \
     --harness processing_geography_requires_exact_evidence_from_every_candidate \
     --harness publication_revision_decision_is_target_safe_fail_closed_and_replay_first
   run_kani awaken-credential-contract \
@@ -651,6 +655,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/resource-binding-effect" \
     -config formal/tla/ResourceBindingEffect.cfg formal/tla/ResourceBindingEffect.tla
+  python3 scripts/ci/check_formal_mutations.py --effect-retirement-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/agent-input-revision" \
     -config formal/tla/AgentInputRevision.cfg formal/tla/AgentInputRevision.tla
