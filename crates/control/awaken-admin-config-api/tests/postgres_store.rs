@@ -68,6 +68,99 @@ fn commit_webhook(store: &dyn WebhookStore, definition: WebhookEndpointDef) {
     store.complete_mutation(&intent).unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postgres_agent_input_first_writers_have_one_authoritative_winner() {
+    // C1 absent row; C2 eight different revision-1 contents; C3 all writers
+    // overlap before INSERT. R1 exactly one applies, seven conflict; R2 replay
+    // of its exact content succeeds; R3 rejected writes never replace the winner.
+    // A transaction-owned gate in a BEFORE INSERT trigger freezes the first
+    // writer. Observe all eight database sessions waiting on locks before
+    // releasing it: this forces the missing-row race without timing sleeps in
+    // production. The fixed adapter queues seven writers BEFORE their SELECT;
+    // the broken adapter queues all eight AFTER reading absence.
+    let Some(url) = schema_url("t_admin_input_first_writers").await else {
+        assert!(
+            std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_none(),
+            "an explicitly configured database must be reachable"
+        );
+        return;
+    };
+    let control = PgPool::connect(&url).await.unwrap();
+    let writer_url = format!("{url}&application_name=awaken_input_first_writers");
+    let store = std::sync::Arc::new(PostgresAdminStore::connect(&writer_url).unwrap());
+    control.execute("CREATE FUNCTION hold_input_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(89142761); RETURN NEW; END $$").await.unwrap();
+    control.execute("CREATE TRIGGER hold_input_insert BEFORE INSERT ON admin_agent_resource FOR EACH ROW EXECUTE FUNCTION hold_input_insert()").await.unwrap();
+    let mut gate = control.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(89142761)")
+        .execute(&mut *gate)
+        .await
+        .unwrap();
+    let writers: Vec<_> = (0..8)
+        .map(|i| {
+            let store = store.clone();
+            tokio::task::spawn_blocking(move || {
+                let config = AgentInputConfig {
+                    agent_id: "agent".into(),
+                    environment: Some(awaken_config_resolver::AgentEnvironmentBinding {
+                        environment_id: format!("env-{i}"),
+                        revision: 1,
+                    }),
+                    inputs: Vec::new(),
+                    revision: 1,
+                };
+                let result = store.put_agent_inputs("workspace", config.clone());
+                (config, result)
+            })
+        })
+        .collect();
+    let waiting = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE application_name = 'awaken_input_first_writers' AND wait_event_type = 'Lock'")
+                .fetch_one(&control).await.unwrap();
+            if count == 8 { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await;
+    // Release even on timeout so fixture failure cannot strand writer threads.
+    gate.commit().await.unwrap();
+    let mut outcomes = Vec::new();
+    for writer in writers {
+        outcomes.push(writer.await.unwrap());
+    }
+    waiting.expect("all eight real database writers must reach the controlled overlap");
+    let winners: Vec<_> = outcomes
+        .iter()
+        .filter(|(_, result)| result.is_ok())
+        .collect();
+    assert_eq!(
+        winners.len(),
+        1,
+        "first creation must not silently overwrite another revision-1 value"
+    );
+    let winner = winners[0].0.clone();
+    for (_, result) in outcomes.iter().filter(|(_, result)| result.is_err()) {
+        assert_eq!(
+            result,
+            &Err(
+                awaken_config_resolver::AgentInputRepositoryError::RevisionConflict {
+                    current: 1,
+                    attempted: 1
+                }
+            )
+        );
+    }
+    assert_eq!(
+        store.get_agent_inputs("workspace", "agent").unwrap(),
+        Some(winner.clone())
+    );
+    store.put_agent_inputs("workspace", winner.clone()).unwrap();
+    assert_eq!(
+        store.get_agent_inputs("workspace", "agent").unwrap(),
+        Some(winner)
+    );
+    control.close().await;
+}
+
 #[tokio::test]
 async fn postgres_admin_store_serves_every_port() {
     let Some(url) = schema_url("t_admin_store").await else {

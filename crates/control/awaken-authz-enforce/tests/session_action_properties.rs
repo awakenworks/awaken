@@ -1,10 +1,10 @@
-//! Formal (property-based) verification of `session_action` — the HTTP-method → action
+//! Sampled property tests of `session_action` — the HTTP-method → action
 //! mapping that decides whether a request needs `agent.read` or `agent.write` authority
 //! (ADR-0059 verification pass). The unit tests sample GET/HEAD/POST/lowercase; this
-//! asserts the FAIL-SAFE law over ALL method strings: only an exactly-uppercase safe
+//! sample the FAIL-SAFE law over generated method strings: only an exactly-uppercase safe
 //! method maps to the read (less-privileged) action; everything else — unknown verbs,
 //! lowercase, garbage — maps to write (more-privileged), so a mis-cased or novel method
-//! can never be under-authorized.
+//! must not be under-authorized. This is not exhaustive verification of all strings.
 
 use awaken_authz_enforce::session_action;
 use proptest::prelude::*;

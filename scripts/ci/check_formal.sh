@@ -102,6 +102,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness legacy_workspace_binding_migration_is_idempotent_and_authority_exact
   run_kani awaken-acp-contract \
     --harness acp_capability_is_detected_exactly_after_a_verified_observation
+  run_kani awaken-authz-enforce \
+    --harness session_decision_collapse_allows_only_explicit_allow
   run_kani awaken-environment-realization-contract \
     --harness environment_image_build_claim_is_exact_non_wrapping_and_blocked_is_inert \
     --harness environment_image_build_mutation_requires_exact_claim_and_admissible_command
@@ -199,7 +201,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness hand_channel_only_exact_decoded_reply_restores_readiness \
     --harness hand_protocol_requires_supported_version_and_v2_operation_identity
   run_kani awaken-config-resolver \
-    --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence
+    --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence \
+    --harness agent_input_revision_decision_is_exact_non_wrapping_and_replay_first
   run_kani awaken-agent-config \
     --harness processing_geography_requires_exact_evidence_from_every_candidate \
     --harness publication_revision_decision_is_target_safe_fail_closed_and_replay_first
@@ -629,6 +632,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/agent-input-revision" \
     -config formal/tla/AgentInputRevision.cfg formal/tla/AgentInputRevision.tla
+  python3 scripts/ci/check_formal_mutations.py --agent-input-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/outcome-lifecycle" \
     -config formal/tla/OutcomeLifecycle.cfg formal/tla/OutcomeLifecycle.tla

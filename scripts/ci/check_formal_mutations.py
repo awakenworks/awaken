@@ -246,6 +246,35 @@ def mutate_disconnected_product_feature(case_root: Path) -> None:
 
 
 class MutationOracleTests(unittest.TestCase):
+    def test_tlc_mutations_require_a_green_base_and_exact_invariant_failure(self) -> None:
+        # TLC cause/effect table: baseline green x mutant exit x invariant text.
+        # Only green+12+exact invariant passes. Infrastructure/parser failures,
+        # unrelated invariants and surviving mutants must not count as kills.
+        green = subprocess.CompletedProcess([], 0, "Model checking completed. No error has been found.")
+        for code, output, accepted in (
+            (12, "Invariant ExactRule is violated", True),
+            (0, "Invariant ExactRule is violated", False),
+            (12, "Invariant OtherRule is violated", False),
+            (1, "parse error", False),
+            (-9, "Invariant ExactRule is violated", False),
+        ):
+            with self.subTest(code=code, output=output), patch("subprocess.run", side_effect=[
+                green, subprocess.CompletedProcess([], code, output),
+            ]):
+                if accepted:
+                    check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config",
+                                              [("mutant", "config", "ExactRule")])
+                else:
+                    with self.assertRaisesRegex(SystemExit, "not killed correctly"):
+                        check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config",
+                                                  [("mutant", "config", "ExactRule")])
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 12,
+                "Invariant ExactRule is violated")) as runner:
+            with self.assertRaisesRegex(SystemExit, "baseline failed"):
+                check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config",
+                                          [("mutant", "config", "ExactRule")])
+            self.assertEqual(runner.call_count, 1, "a failed base cannot reach its mutant")
+
     def test_only_the_expected_semantic_rejection_is_a_kill(self) -> None:
         # G1-G5: C1 exit=0/1/signal/parser error; C2 expected rule matches;
         # C3 infrastructure traceback. Only exit=1+C2+!C3 is a killed mutant.
@@ -274,10 +303,15 @@ class MutationOracleTests(unittest.TestCase):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--memory-copy-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection = parser.add_mutually_exclusive_group()
+    model_selection.add_argument("--memory-copy-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--agent-input-model-mutant", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
     if arguments.memory_copy_model_mutant is not None:
         check_memory_copy_model_mutant(arguments.memory_copy_model_mutant)
+        return
+    if arguments.agent_input_model_mutant is not None:
+        check_agent_input_model_mutant(arguments.agent_input_model_mutant)
         return
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(MutationOracleTests)
     if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
@@ -357,22 +391,50 @@ def check_memory_copy_model_mutant(tlc_jar: Path) -> None:
         (source.replace(root_guard, "                 /\\ TRUE"),
          "CopyMutationRequiresOriginalRoot"),
     ]
-    for mutated, invariant in mutations:
-        with tempfile.TemporaryDirectory(prefix="awaken-memory-copy-mutant-") as temp:
+    config = (ROOT / "formal/tla/MemoryCASCopy.cfg").read_text(encoding="utf-8")
+    check_tlc_model_mutations(tlc_jar, "MemoryCAS", source, config,
+                              [(mutated, config, invariant) for mutated, invariant in mutations])
+    print("Memory copy mutation score: 3/3 killed (frozen base, complete scan, original root)")
+
+
+def check_agent_input_model_mutant(tlc_jar: Path) -> None:
+    # C1 lock omitted before reading absence -> E1 duplicate/stale commit.
+    # Require a green original model, then the exact successor invariant failure;
+    # parse failures, timeouts and unrelated errors are never mutation kills.
+    source = (ROOT / "formal/tla/AgentInputRevision.tla").read_text(encoding="utf-8")
+    config = (ROOT / "formal/tla/AgentInputRevision.cfg").read_text(encoding="utf-8")
+    anchor = "CONSTANT SerializeAdmissions = TRUE"
+    if config.count(anchor) != 1:
+        raise SystemExit("Agent input serialization mutation anchor drifted; review the model")
+    mutant = config.replace(anchor, "CONSTANT SerializeAdmissions = FALSE")
+    check_tlc_model_mutations(tlc_jar, "AgentInputRevision", source, config,
+                              [(source, mutant, "AppliedIsExactSuccessor")])
+    print("Agent input mutation score: 1/1 killed (missing-row admission lock)")
+
+
+def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,
+                              mutations: list[tuple[str, str, str]]) -> None:
+    # One TLC invocation/oracle for every model mutation family. Validate both
+    # the process result and semantic outcome; always establish the green base.
+    cases = [(source, config, None), *mutations]
+    for model_text, config_text, invariant in cases:
+        with tempfile.TemporaryDirectory(prefix="awaken-tlc-mutant-") as temp:
             directory = Path(temp)
-            model = directory / "MemoryCAS.tla"
-            model.write_text(mutated, encoding="utf-8")
-            config = directory / "MemoryCASCopy.cfg"
-            shutil.copy2(ROOT / "formal/tla/MemoryCASCopy.cfg", config)
+            model = directory / f"{name}.tla"
+            model.write_text(model_text, encoding="utf-8")
+            config_path = directory / f"{name}.cfg"
+            config_path.write_text(config_text, encoding="utf-8")
             result = subprocess.run(
                 ["java", "-Xmx512m", "-jar", str(tlc_jar.resolve()),
-                 "-metadir", str(directory / "states"), "-config", str(config), str(model)],
+                 "-metadir", str(directory / "states"), "-config", str(config_path), str(model)],
                 cwd=directory, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 timeout=30, check=False,
             )
-            if result.returncode != 12 or f"Invariant {invariant} is violated" not in result.stdout:
-                raise SystemExit(f"Memory copy mutant was not killed correctly:\n{result.stdout}")
-    print("Memory copy mutation score: 3/3 killed (frozen base, complete scan, original root)")
+            expected_code = 0 if invariant is None else 12
+            expected_text = ("Model checking completed. No error has been found." if invariant is None
+                             else f"Invariant {invariant} is violated")
+            if result.returncode != expected_code or expected_text not in result.stdout:
+                raise SystemExit(f"{name} {'baseline failed' if invariant is None else 'mutant was not killed correctly'}:\n{result.stdout}")
 
 
 if __name__ == "__main__":
