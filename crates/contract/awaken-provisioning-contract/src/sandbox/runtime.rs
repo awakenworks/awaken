@@ -1551,7 +1551,9 @@ pub trait ProcessHandle: Send + Sync {
 
     /// Await exit. Over a lossy transport this connection may drop mid-run; treat a
     /// transport error as "unknown" and re-establish via [`Sandbox::process`] +
-    /// [`ProcessHandle::poll`] rather than assuming failure.
+    /// [`ProcessHandle::poll`] rather than assuming failure. Cancelling this
+    /// observation must preserve the provider's completion handle; an outstanding
+    /// wait must not block another caller's status query or signal delivery.
     async fn wait(&self) -> Result<ExitStatus, SandboxError>;
 
     /// Non-blocking, idempotent status: `None` while still running, `Some(status)`

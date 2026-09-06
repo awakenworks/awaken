@@ -2143,6 +2143,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-channel",
  "awaken-connection-plan",
+ "awaken-local-process",
  "awaken-memory-store",
  "awaken-provisioning-contract",
  "awaken-resource-contract",

@@ -719,6 +719,90 @@ async fn exec_wait_and_poll_cache_the_remote_completion_status() {
     assert_eq!(process.poll().await.unwrap().unwrap().code, Some(7));
 }
 
+#[tokio::test(start_paused = true)]
+async fn exec_cancelled_wait_retains_the_exact_remote_completion() {
+    // Cause/effect graph: C1 remote status is pending; C2 caller polls wait once
+    // then drops it (Supervisor deadline); C3 that same remote exec later ends.
+    // W1 C1+C2 => no cached exit, retain the sole completion owner; W2 +C3 =>
+    // next wait and poll return the exact exit repeatedly. A timeout is neither
+    // process termination nor permission to discard its eventual status.
+    for code in [0, 7] {
+        let (finish, finished) = tokio::sync::oneshot::channel();
+        let process = exec_process(Some(tokio::spawn(async move {
+            finished.await.unwrap();
+            Some(success_status(code))
+        })));
+        let mut waiting = Box::pin(process.wait());
+        std::future::poll_fn(|cx| {
+            assert!(
+                waiting.as_mut().poll(cx).is_pending(),
+                "W1 actual wait entered"
+            );
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(waiting);
+        assert_eq!(
+            process.poll().await.unwrap(),
+            None,
+            "W1 cancellation keeps pending status"
+        );
+        finish.send(()).unwrap();
+        assert_eq!(
+            process.wait().await.unwrap().code,
+            Some(code),
+            "W2 exact exit survives cancelled observer"
+        );
+        assert_eq!(
+            process.poll().await.unwrap().unwrap().code,
+            Some(code),
+            "W2 repeat observation"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn exec_pending_wait_does_not_block_poll_or_another_waiter() {
+    // W3 C1 one waiter is pending + C2 another observer polls => immediate None,
+    // not the first waiter's lifetime lock. W4 producer completes => both waiters
+    // return the same cached exit. Explicit first polling fixes the interleaving;
+    // the virtual deadline detects a lock inversion without wall-clock guesses.
+    let (finish, finished) = tokio::sync::oneshot::channel();
+    let process = exec_process(Some(tokio::spawn(async move {
+        finished.await.unwrap();
+        Some(success_status(0))
+    })));
+    let mut first = Box::pin(process.wait());
+    std::future::poll_fn(|cx| {
+        assert!(
+            first.as_mut().poll(cx).is_pending(),
+            "W3 first waiter entered"
+        );
+        std::task::Poll::Ready(())
+    })
+    .await;
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), process.poll())
+            .await
+            .expect("W3 poll must not wait for process exit")
+            .unwrap(),
+        None
+    );
+    let mut second = Box::pin(process.wait());
+    std::future::poll_fn(|cx| {
+        assert!(
+            second.as_mut().poll(cx).is_pending(),
+            "W4 second waiter entered"
+        );
+        std::task::Poll::Ready(())
+    })
+    .await;
+    finish.send(()).unwrap();
+    let (a, b) = tokio::join!(first, second);
+    assert_eq!(a.unwrap().code, Some(0));
+    assert_eq!(b.unwrap().code, Some(0));
+}
+
 #[tokio::test]
 async fn exec_poll_distinguishes_running_missing_and_finished_status() {
     let process = exec_process(Some(tokio::spawn(async {

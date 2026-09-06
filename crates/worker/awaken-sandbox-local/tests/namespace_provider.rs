@@ -204,6 +204,30 @@ async fn namespace_signals_reach_the_program_and_preserve_forced_cleanup() {
             })
             .await
             .unwrap();
+            // S5 every S1-S4 row first cancels an entered wait, then keeps a
+            // second wait pending across signal delivery. Neither observer may
+            // consume exit ownership or block poll; exact signal/artifact
+            // outcomes remain checked below for ordinary and opaque launches.
+            let mut cancelled_wait = Box::pin(process.wait());
+            std::future::poll_fn(|cx| {
+                assert!(cancelled_wait.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), process.poll())
+                    .await
+                    .expect("S5 poll stays available during wait")
+                    .unwrap()
+                    .is_none()
+            );
+            drop(cancelled_wait);
+            let mut concurrent_wait = Box::pin(process.wait());
+            std::future::poll_fn(|cx| {
+                assert!(concurrent_wait.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
             process.signal(signal).await.unwrap();
             let remained_live = if ignores {
                 tokio::time::sleep(std::time::Duration::from_millis(40)).await;
@@ -214,7 +238,7 @@ async fn namespace_signals_reach_the_program_and_preserve_forced_cleanup() {
                 true
             };
             let status =
-                tokio::time::timeout(std::time::Duration::from_secs(5), process.wait()).await;
+                tokio::time::timeout(std::time::Duration::from_secs(5), concurrent_wait).await;
             if status.is_err() {
                 process.signal(pc::Signal::Kill).await.unwrap();
                 process.wait().await.unwrap();

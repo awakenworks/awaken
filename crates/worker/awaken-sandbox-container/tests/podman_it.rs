@@ -5,6 +5,9 @@
 //! Run with: `cargo test -p awaken-sandbox-container --features podman --test podman_it`
 #![cfg(feature = "podman")]
 
+#[path = "common/process.rs"]
+mod process_lifecycle;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -254,7 +257,8 @@ async fn podman_separates_container_environment_from_cli_environment() {
     // E1+E2+E3+E4; R3 C1,C2 (this case) -> all effects together. The existing
     // inline-content test covers R1; this mixed case covers the secret branch.
     let Some(rt) = runtime().await else { return };
-    let provider = ContainerProvider::new(Arc::new(rt), "docker.io/library/busybox:latest")
+    let rt = Arc::new(rt);
+    let provider = ContainerProvider::new(rt.clone(), "docker.io/library/busybox:latest")
         .with_secret_broker(Arc::new(ProcessSecretBroker));
     let spec = pc::SandboxSpec {
         scope: "pod-exec-env".into(),
@@ -289,6 +293,13 @@ async fn podman_separates_container_environment_from_cli_environment() {
         .await
         .expect("spawn environment probe");
     let status = process.wait().await.expect("wait for environment probe");
+    let container_id = sandbox
+        .handle()
+        .container_payload()
+        .unwrap()
+        .container_id
+        .clone();
+    process_lifecycle::verify_wait_cancellation_and_signal(rt.as_ref(), &container_id).await;
     sandbox.dispose().await.expect("dispose environment");
     assert_eq!(status.code, Some(0), "R3: E1-E4 must hold");
 }

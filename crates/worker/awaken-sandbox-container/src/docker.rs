@@ -234,12 +234,7 @@ impl pc::ProcessHandle for DockerExecProcess {
     }
 
     async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
-        loop {
-            if let Some(status) = self.status().await? {
-                return Ok(status);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
+        awaken_local_process::wait_for_process_exit(self).await
     }
 
     async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {

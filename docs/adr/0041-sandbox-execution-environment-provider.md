@@ -70,7 +70,13 @@ adapters**. The neutral seam is realized as the crate
    crate's adapter* over `spawn`, not a method on the seam). `Sandbox` also carries
    `attach` (mount), `artifacts`/`read_artifact` (retrieve), and the distributed
    primitives `handle`/`process`/`status`/`renew_lease`. `ProcessHandle` is
-   `wait`/`poll`/`signal`.
+   `wait`/`poll`/`signal`. Waiting is a cancellable observation: it cannot consume
+   the only unfinished exit handle or hold a lock needed by concurrent poll/signal.
+   Local/Namespace and Docker/Podman/Kubernetes exec adapters share the existing
+   `awaken-local-process` waiting policy over provider-owned `poll`; native process
+   status, remote completion frames, signals and isolation stay in each adapter.
+   A transport error remains unknown, never synthesized process exit or a Dispatch
+   physical-quiescence acknowledgement.
 
 3. **Tiered adapters behind the one seam**, selected by `SandboxCapabilities` and
    gated fail-closed by `prepare_environment`:
