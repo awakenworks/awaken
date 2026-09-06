@@ -135,6 +135,15 @@ create/reassign a projection or replay Stage/Publish. The Worker must fail
 closed if Control has no frozen Session or if the claimed Resource projection
 differs.
 
+A lease-only response is applied only to its unchanged local assertion: the
+slot compare/write is atomic and cannot recreate a removed projection, regress
+a later expiry, or overwrite a replacement generation. Failure-driven
+revocation rechecks the same assertion under the existing realization/lifecycle
+locks before interruption and retirement. A delayed response is not authority
+over a newer projection; the durable Work/Run fences remain mandatory for its
+execution. This uses the same slot and cleanup path, with no grace period or
+additional lease registry.
+
 The Coordinator's `Dispatch` projection is not a Worker realization receipt.
 Before any external attempt observes a pending Resource generation, the Session
 aggregate may revise that generation in place; the Coordinator may therefore
