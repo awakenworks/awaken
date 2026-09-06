@@ -58,6 +58,10 @@ cargo test -p awaken-worker-registry --features loom --lib loom_tests
 # Reclaim, release and observation share the same implementation used outside
 # the Loom proof build; only the mutex implementation is substituted.
 cargo test -p awaken-work-store --features loom --lib lease_book::loom_tests
+# Exercise the production BackgroundTask projection under callback/replacement
+# races. Only its single mutex is instrumented; durable commits remain outside
+# this bounded lock-interleaving claim.
+cargo test -p awaken-ext-background-task --features loom --lib supervisor::loom_tests
 
 AWAKEN_FORMAL_TRACE_DIR="$rust_trace_dir" \
   cargo test -p awaken-runtime --test formal_refinement

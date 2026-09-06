@@ -374,7 +374,9 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     // C2 replacement worker before lease expiry -> E2 no command;
     // C3 replacement worker at expiry + replay-safe policy -> E3 epoch increments
     // and ownership moves in one command; C4 an old local completion observes
-    // the new durable fence -> E4 it is retired and cannot suppress relaunch.
+    // the new durable fence -> E4 it is retired and cannot suppress relaunch;
+    // C5 an old Run snapshot observes a newer local completion -> E5 preserve it
+    // for the current Run, never evict it using that older snapshot's fence.
     // This is the persisted recovery edge;
     // the product observer may execute only after E1/E3's enclosing Run commits.
     let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker-new"));
@@ -410,7 +412,9 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
         )
         .expect("completed claim");
     assert!(
-        supervisor.register(&completed.id).is_some(),
+        supervisor
+            .register(&completed.id, &completed_fence)
+            .is_some(),
         "C1 completion must follow local launch registration"
     );
     supervisor.complete(
@@ -497,7 +501,12 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     assert_eq!(attempt.worker_id, supervisor.worker_id());
     assert_eq!(attempt.epoch, 2);
 
-    assert!(supervisor.register(&replacement.id).is_some(), "C4 setup");
+    assert!(
+        supervisor
+            .register(&replacement.id, &replacement.attempt().unwrap().fence())
+            .is_some(),
+        "C4 setup"
+    );
     supervisor.complete(
         replacement.id.clone(),
         BackgroundTaskCompletion {
@@ -521,8 +530,51 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     );
     assert!(supervisor.completion(&replacement.id).is_none(), "C4/E4");
     assert!(
-        supervisor.register(&replacement.id).is_some(),
+        supervisor
+            .register(&replacement.id, &attempt.fence())
+            .is_some(),
         "C4/E4 the stale guard no longer suppresses post-commit launch"
+    );
+    supervisor.complete(
+        replacement.id.clone(),
+        BackgroundTaskCompletion {
+            fence: attempt.fence(),
+            end: BackgroundTaskEnd::Indeterminate {
+                message: "retained-new-epoch".into(),
+            },
+        },
+    );
+    let mut stale_snapshot = Store::new();
+    stale_snapshot.apply(
+        &task_state_cell(&replacement.id)
+            .write(&replacement)
+            .unwrap(),
+    );
+    let _rejected_old_run = hook.on_phase(&ctx, &[], &stale_snapshot).await;
+    let retained = supervisor
+        .completion(&replacement.id)
+        .expect("C5/E5 newer evidence retained");
+    assert_eq!(retained.fence, attempt.fence(), "C5/E5 exact identity");
+    assert_eq!(
+        retained.end,
+        BackgroundTaskEnd::Indeterminate {
+            message: "retained-new-epoch".into()
+        }
+    );
+    let current = hook.on_phase(&ctx, &[], &replacement_state).await;
+    assert_eq!(
+        current.state.len(),
+        1,
+        "C5/E5 current Run can still fold completion"
+    );
+    replacement_state.apply(&current.state[0]);
+    assert!(
+        task_state_cell(&replacement.id)
+            .load(&replacement_state)
+            .unwrap()
+            .unwrap()
+            .lifecycle
+            .is_terminal()
     );
 }
 
@@ -597,11 +649,11 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
     if cancelling {
         task.request_cancel().expect("durable cancellation intent");
     }
-    assert!(supervisor.register(&task.id).is_some());
+    assert!(supervisor.register(&task.id, &fence).is_some());
     supervisor.complete(
         task.id.clone(),
         BackgroundTaskCompletion {
-            fence,
+            fence: fence.clone(),
             end: end.clone(),
         },
     );
@@ -615,7 +667,10 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
     let rejected = hook.on_phase(&ctx, &[], &durable).await;
     assert_eq!(rejected.state.len(), 1, "R1");
     assert!(supervisor.completion(&task.id).is_some(), "R2");
-    assert!(supervisor.register(&task.id).is_none(), "R2 dedup guard");
+    assert!(
+        supervisor.register(&task.id, &fence).is_none(),
+        "R2 dedup guard"
+    );
 
     let retried = hook.on_phase(&ctx, &[], &durable).await;
     assert_eq!(retried.state.len(), 1, "R2 retry");
@@ -633,7 +688,10 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
     let retired = hook.on_phase(&ctx, &[], &durable).await;
     assert!(retired.state.is_empty(), "R4 has no second durable write");
     assert!(supervisor.completion(&task.id).is_none(), "R4");
-    assert!(supervisor.register(&task.id).is_some(), "R4 guard retired");
+    assert!(
+        supervisor.register(&task.id, &fence).is_some(),
+        "R4 guard retired"
+    );
     assert!(matches!(
         task_state_cell(&task.id)
             .load(&durable)

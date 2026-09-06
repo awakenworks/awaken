@@ -9,6 +9,9 @@ context = "runtime"
 layer = "infrastructure"
 authority = "ext-background-task"
 
+[features]
+loom = []
+
 [dependencies]
 async-trait.workspace = true
 awaken-agent-contract.workspace = true
@@ -20,6 +23,7 @@ thiserror.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
+loom = "0.7"
 tokio.workspace = true
 
 [lints]

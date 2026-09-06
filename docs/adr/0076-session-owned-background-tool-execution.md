@@ -112,6 +112,21 @@ to that task id without replaying creation, retains the lifecycle phase, and
 transfers authority by a strictly increasing epoch. A stale executor cannot
 poll, cancel, heartbeat, or publish completion.
 
+The process supervisor has one atomic Active/Waiting/Completed slot per task.
+Every phase, including a resumed Active poll, retains the exact attempt fence.
+Wait, completion and cancellation reject either owner or epoch mismatch. A
+strictly newer committed registration supersedes the old slot without signalling
+cancellation: ownership loss must not cancel a shared remote operation.
+Equal/older registrations cannot restart an effect. Reconciliation
+may retire a candidate only if its observed fence still identifies the slot and
+the committed snapshot has a strictly newer epoch. An older Run snapshot must
+retain a newer completion. Terminal cleanup is a separate observation of
+absorbing durable Ended truth, not an unfenced stale-callback cleanup operation.
+Loom instruments the production slot mutex for selected two-thread callback,
+replacement, completion/wait and duplicate-ack interleavings. It does not prove
+Tokio cancellation internals, caller freshness, database commits or all async
+driver traces; execution still requires canonical Runtime admission.
+
 ### D4: existing Thread persistence is the sole durable authority
 
 There is no `background_task_item` table, BackgroundTask repository/service, or

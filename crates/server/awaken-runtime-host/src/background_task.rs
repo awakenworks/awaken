@@ -266,7 +266,7 @@ impl BackgroundTaskTerminalObserver {
         thread_id: awaken_runtime_contract::ThreadId,
         expected: awaken_ext_background_task::TaskExecutionPolicy,
     ) {
-        let Some(cancellation) = self.supervisor.register(&task_id) else {
+        let Some(cancellation) = self.supervisor.register(&task_id, &fence) else {
             return;
         };
         let mut context = self.context.clone();
@@ -460,10 +460,10 @@ impl BackgroundTaskTerminalObserver {
         let cancellation = self
             .supervisor
             .resume_wait(&task_id, &fence)
-            .or_else(|| self.supervisor.register(&task_id));
+            .or_else(|| self.supervisor.register(&task_id, &fence));
         let Some(cancellation) = cancellation else {
             if cancelling {
-                self.supervisor.cancel(&task_id);
+                self.supervisor.cancel(&task_id, &fence);
             }
             return;
         };
@@ -840,9 +840,9 @@ impl BackgroundTaskTerminalObserver {
                 BackgroundTaskLifecycle::Cancelling { attempt, .. }
                     if attempt.worker_id == self.supervisor.worker_id() =>
                 {
-                    self.supervisor.cancel(&task.id);
+                    self.supervisor.cancel(&task.id, &attempt.fence());
                 }
-                BackgroundTaskLifecycle::Ended { .. } => self.supervisor.retire(&task.id),
+                BackgroundTaskLifecycle::Ended { .. } => self.supervisor.retire_terminal(&task.id),
                 _ => {}
             }
         }
@@ -1508,7 +1508,7 @@ mod tests {
             "C5/E5: detached execution reuses the canonical stable spill identity"
         );
         assert!(
-            supervisor.register(&task.id).is_none(),
+            supervisor.register(&task.id, &fence).is_none(),
             "completion remains a deduplication guard until durable Ended truth"
         );
     }
