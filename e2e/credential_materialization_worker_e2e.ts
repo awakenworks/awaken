@@ -12,6 +12,9 @@
 // unauthorized publication pin -> fail closed while the same Worker remains
 // available for P1; P5 the current seed owner commits its exact Run as Ended
 // and receives a durable receipt before terminal observation and Done removal;
+// P6 remote upstream + registered installed capabilities -> the per-Thread
+// Worker revalidates the SAME evidence before materialization; transport presence
+// must not erase it. P1 is the positive cross-layer oracle, P2/P4 retain rejection.
 // a non-null Session
 // pointer is constrained to a real Managed Session and fails closed otherwise.
 

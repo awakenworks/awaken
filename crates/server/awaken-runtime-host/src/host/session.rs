@@ -234,10 +234,9 @@ impl SharedHost {
         // (R1). `None` when no provider is installed — the worker stays on the host
         // default.
         let inference_materializer = self.worker_inference_materializer();
-        let local_credential_capabilities = self
-            .upstream
-            .is_none()
-            .then(|| self.local_credential_realization_capabilities());
+        // Transport presence does not remove installed adapters. Both local
+        // claims and remote claims revalidate against this same Host evidence.
+        let local_credential_capabilities = self.local_credential_realization_capabilities();
         let recovery_projection = commit.recovery_projection();
         let settlement_observer = self.dispatch_settlement_observer();
         // The recovered dispatch a crash left mid-flight is re-executed by this
@@ -263,9 +262,7 @@ impl SharedHost {
             Some(publisher) => worker.with_claimed_stream_publisher(publisher.clone()),
             None => worker.with_stream_sink(self.completion.clone()),
         };
-        if let Some(capabilities) = local_credential_capabilities {
-            worker = worker.with_local_credential_capabilities(capabilities);
-        }
+        worker = worker.with_local_credential_capabilities(local_credential_capabilities);
         if let Some(resolver) = &self.worker_credential_resolver {
             worker = worker.with_worker_credential_resolver(resolver.clone());
         }

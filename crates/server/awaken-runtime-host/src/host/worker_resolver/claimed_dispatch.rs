@@ -63,17 +63,7 @@ impl HostWorkerResolver {
             &authorization,
         );
         let commit = substrate.commit;
-        let acp = host
-            .acp
-            .as_ref()
-            .map(|acp| acp.child_executor_factory(environment.clone()));
-        let adapters = crate::agent_runner::ChildExecutionAdapters {
-            acp,
-            remote: host.remote_attempt_executor.clone(),
-            remote_credentials: host.remote_credential_realization.clone(),
-            web_search: Some(host.web_search_plugin(&session_thread_id.0, None)),
-            web_fetch: Some(host.web_fetch_plugin(&session_thread_id.0, None)),
-        };
+        let adapters = host.child_execution_adapters(&session_thread_id.0, environment.clone());
         let mut runtime =
             crate::agent_runner::configure_child_native_runtime(runtime, snapshot, &adapters)
                 .map_err(|error| Self::execution_error(error.to_string()))?;
@@ -124,7 +114,7 @@ impl HostWorkerResolver {
             ));
         worker = worker
             .with_context(child_context)
-            .with_local_credential_capabilities(adapters.remote_credentials);
+            .with_local_credential_capabilities(adapters.credential_capabilities);
         Ok(Arc::new(worker))
     }
 
