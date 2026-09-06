@@ -91,6 +91,7 @@ impl McpStdioServer {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
+        let service = Arc::new(service.new_connection());
         let (notifier_publisher, notifier) = watch::channel(None);
         let sink = Arc::new(PeerSink { notifier });
         let handler = Arc::new(ServiceHandler {

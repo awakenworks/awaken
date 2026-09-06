@@ -194,19 +194,25 @@ async fn initialize_issues_a_session_header() {
 }
 
 #[tokio::test]
-async fn a_call_on_an_unknown_session_is_not_found() {
-    let req = Request::builder()
-        .method("POST")
-        .uri("/mcp")
-        .header("content-type", "application/json")
-        .header("accept", "application/json, text/event-stream")
-        .header("Mcp-Session-Id", "never-opened")
-        .body(Body::from(
-            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#.to_string(),
-        ))
-        .unwrap();
-    let resp = app(None).oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+async fn requests_and_notifications_on_an_unknown_session_are_not_found() {
+    // H1 request / H2 cancellation notification + unknown connection identity
+    // -> 404 before dispatch. A notification cannot bypass session resolution
+    // and reach another connection's active request with the same id.
+    for body in [
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+        r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2}}"#,
+    ] {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("Mcp-Session-Id", "never-opened")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app(None).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
 }
 
 #[tokio::test]
