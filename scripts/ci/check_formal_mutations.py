@@ -579,10 +579,11 @@ def main() -> None:
 
 def check_local_process_model_mutants(tlc_jar: Path) -> None:
     # Cause/effect rules LP1 missing atomic spawn policy -> unconfigured handle;
-    # LP2 backoff retains mutex -> signal/poll exclusion; LP3 cancelled waiter
+    # LP2 backoff retains mutex -> peer-poll exclusion; LP3 cancelled waiter
     # retains mutex -> abandoned owner; LP4 crash erases descendants -> a false
-    # OS guarantee has been smuggled into the model. Each must violate its named
-    # property; the one shared TLC runner rejects parse/tool failures as kills.
+    # OS guarantee has been smuggled into the model; LP5 a denied group signal
+    # succeeds after leader exit -> false cleanup acknowledgement. Each violates
+    # its named property; the shared TLC runner rejects parse/tool failures as kills.
     source = (ROOT / "formal/tla/LocalProcessLifecycle.tla").read_text(encoding="utf-8")
     config = (ROOT / "formal/tla/LocalProcessLifecycle.cfg").read_text(encoding="utf-8")
     replacements = [
@@ -592,9 +593,12 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
          "/\\ lock' = IF leaderAlive THEN w ELSE NoLock\n  /\\ waiter' = [waiter EXCEPT ![w] = IF leaderAlive",
          "NoParkedWaiterOwnsLock"),
         ("lock' = IF lock = w THEN NoLock ELSE lock", "lock' = lock", "NoParkedWaiterOwnsLock"),
-        ("/\\ UNCHANGED <<privateGroup, dropPolicy, leaderAlive, descendantAlive,\n                  stopRequested, observedExit>>",
-         "/\\ descendantAlive' = FALSE\n  /\\ UNCHANGED <<privateGroup, dropPolicy, leaderAlive,\n                  stopRequested, observedExit>>",
+        ("/\\ UNCHANGED <<privateGroup, dropPolicy, leaderAlive, descendantAlive,\n                  stopRequested, observedExit, signalVars>>",
+         "/\\ descendantAlive' = FALSE\n  /\\ UNCHANGED <<privateGroup, dropPolicy, leaderAlive,\n                  stopRequested, observedExit, signalVars>>",
          "CrashPreservesOSProcesses"),
+        ('signalAccepted\' = (outcome \\in {"accepted", "absent"})',
+         'signalAccepted\' = (outcome \\in {"accepted", "absent"} \\/ ~leaderAlive)',
+         "SignalDenialIsNotAcknowledged"),
     ]
     mutations = []
     for original, replacement, property_name in replacements:
@@ -603,7 +607,7 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
         mutations.append((source.replace(original, replacement), config, property_name))
     check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, config, mutations,
                               action_properties={"CrashPreservesOSProcesses"})
-    print("Local process mutation score: 4/4 killed (spawn, backoff, cancellation, false crash cleanup)")
+    print("Local process mutation score: 5/5 killed (spawn, backoff, cancellation, crash, denied signal)")
 
 
 def check_memory_copy_model_mutant(tlc_jar: Path) -> None:

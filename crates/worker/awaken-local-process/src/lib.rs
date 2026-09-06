@@ -122,6 +122,19 @@ fn exit(status: std::process::ExitStatus) -> ExitStatus {
     }
 }
 
+#[cfg(unix)]
+fn group_signal_result(result: Result<(), nix::errno::Errno>) -> Result<(), SandboxError> {
+    match result {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
+        // EPERM (including an ambiguous macOS response after natural exit) is
+        // not proof that the group is absent. A reaped leader says nothing
+        // about surviving descendants. Preserve every error except exact ESRCH.
+        Err(error) => Err(SandboxError::new(format!(
+            "process-group signal failed: {error}"
+        ))),
+    }
+}
+
 #[async_trait]
 impl ProcessHandle for LocalProcess {
     fn id(&self) -> &str {
@@ -157,26 +170,7 @@ impl ProcessHandle for LocalProcess {
                 Signal::Kill => nix::sys::signal::Signal::SIGKILL,
                 Signal::Int => nix::sys::signal::Signal::SIGINT,
             };
-            return match nix::sys::signal::killpg(group, signal) {
-                Ok(()) => Ok(()),
-                Err(signal_error) => {
-                    // `poll(None) -> natural exit -> signal` is an unavoidable OS
-                    // race. macOS may report EPERM for the vanished process group
-                    // (other Unix targets commonly report ESRCH). Only suppress the
-                    // signal error after the owned child confirms it has exited; a
-                    // still-live or unobservable child continues to fail closed.
-                    match self.child.lock().await.try_wait() {
-                        Ok(Some(_)) => Ok(()),
-                        Ok(None) => Err(SandboxError::new(format!(
-                            "{signal_error}; child {} is still running",
-                            self.id
-                        ))),
-                        Err(poll_error) => Err(SandboxError::new(format!(
-                            "{signal_error}; child exit check failed: {poll_error}"
-                        ))),
-                    }
-                }
-            };
+            return group_signal_result(nix::sys::signal::killpg(group, signal));
         }
         #[cfg(not(unix))]
         {
@@ -295,10 +289,10 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn signal_accepts_a_process_group_that_already_exited() {
-        // The supervisor can observe a running child, receive its terminal protocol
-        // frame, and then race its natural exit while beginning cleanup. Once the
-        // owned Child confirms the exit, a stale process-group signal is successful
-        // cleanup rather than a new business failure.
+        // G1 natural exit before signal => exact ESRCH is an idempotent success.
+        // G2 macOS may report ambiguous EPERM instead: retain that error even
+        // though the leader exited. The exhaustive errno table below pins G2
+        // on Linux as well; this integration row observes the executing kernel.
         let mut command = Command::new("sh");
         command
             .arg("-c")
@@ -319,10 +313,81 @@ mod tests {
         .await
         .expect("child exits");
 
-        process
-            .signal(Signal::Term)
+        let result = process.signal(Signal::Term).await;
+        #[cfg(target_os = "macos")]
+        if let Err(error) = &result {
+            assert!(error.to_string().contains("EPERM"), "G2: {error}");
+            return;
+        }
+        result.expect("G1 an absent group is an idempotent signal outcome");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn group_signal_errors_require_exact_absence_evidence() {
+        // Decision table G3: delivery accepted => Ok; G4 ESRCH => Ok;
+        // G5 EPERM/EACCES/EINVAL/other failure => Err. Enumerate errno codes
+        // 0..4095, including nix's unknown-error class. Leader exit is NOT an
+        // input: poll/wait before or after the OS result cannot waive G5.
+        // Success is signal acceptance/absence only, never tree quiescence.
+        assert!(group_signal_result(Ok(())).is_ok());
+        for code in 0..=4095 {
+            let errno = nix::errno::Errno::from_raw(code);
+            let result = group_signal_result(Err(errno));
+            assert_eq!(
+                result.is_ok(),
+                errno == nix::errno::Errno::ESRCH,
+                "G4/G5 {errno}"
+            );
+            if let Err(error) = result {
+                assert!(error.to_string().contains(&errno.to_string()));
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn reaped_leader_does_not_prevent_signalling_a_live_descendant() {
+        // Timing rule G6: private group -> fork -> child-ready barrier ->
+        // reaped leader -> group KILL => descendant-held stdout reaches EOF.
+        // The pipe and live group probe establish survival before signalling;
+        // the 10s backstop exceeds the 2s oracle and bounds leaks on assertion
+        // failure. No PID scan or leader-exit-as-tree-exit assumption is used.
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "sh -c 'printf \"AWAKEN_DESCENDANT_READY\\n\"; exec sleep 10' & exit 0",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut process = LocalProcess::spawn(&mut command).unwrap();
+        let mut output = BufReader::new(process.take_stdout().unwrap());
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(2), output.read_line(&mut line))
             .await
-            .expect("an already-exited owned process is settled");
+            .unwrap()
+            .unwrap();
+        assert_eq!(line, "AWAKEN_DESCENDANT_READY\n");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), process.wait())
+                .await
+                .unwrap()
+                .unwrap()
+                .code,
+            Some(0)
+        );
+        nix::sys::signal::killpg(process.process_group.unwrap(), None)
+            .expect("G6 group still live");
+        process.signal(Signal::Kill).await.unwrap();
+        let mut remaining = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), output.read_to_end(&mut remaining))
+            .await
+            .expect("G6 descendant exits before its voluntary backstop")
+            .unwrap();
+        assert!(remaining.is_empty());
     }
 
     #[test]

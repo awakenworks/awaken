@@ -17,6 +17,7 @@ cargo test -p awaken-runtime-host --lib resource_prompt_tests
 cargo test -p awaken-runtime-host --lib trusted_host_repository_projection_preserves_the_exact_tier
 cargo test -p awaken-runtime-host --lib trusted_host_live_resource_admission_keeps_readonly_advisory
 cargo test -p awaken-runtime-host --lib local_and_namespace_restart_replay_exact_memory_participants_before_late_mounts
+cargo test -p awaken-runtime-host --lib resident_and_cold_terminal_memory_use_one_terminal_v2_authority
 cargo test -p awaken-runtime-host --lib \
   trusted_host_filesystem_view_maps_workspace_relative_cwd_once
 cargo test -p awaken-runtime-host --lib \
