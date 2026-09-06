@@ -134,20 +134,19 @@ pub fn require_commit_operation_identity(
     })
 }
 
-/// Return the exact durable receipt on replay, or `None` for a new operation.
-pub fn replay_commit_operation_receipt(
+/// Require a durable receipt to name the submitted operation and payload.
+pub fn require_commit_operation_receipt(
     operation: &CommitOperation,
-    existing: Option<&CommitReceipt>,
-) -> Result<Option<CommitReceipt>, CommitOperationAdmissionError> {
-    let disposition = classify_operation_identity(
+    receipt: &CommitReceipt,
+) -> Result<(), CommitOperationAdmissionError> {
+    classify_operation_identity(
         operation.operation_id.run_id == *operation.commit.run_id(),
-        existing.map(|receipt| {
-            (
-                receipt.operation_id == operation.operation_id,
-                receipt.payload_hash == operation.payload_hash,
-            )
-        }),
+        Some((
+            receipt.operation_id == operation.operation_id,
+            receipt.payload_hash == operation.payload_hash,
+        )),
     )
+    .map(|_| ())
     .map_err(|error| match error {
         OperationIdentityError::Run => CommitOperationAdmissionError::RunIdentityMismatch,
         OperationIdentityError::Receipt => CommitOperationAdmissionError::ReceiptIdentityMismatch,
@@ -155,15 +154,23 @@ pub fn replay_commit_operation_receipt(
             run_id: operation.operation_id.run_id.0.clone(),
             ordinal: operation.operation_id.ordinal,
         },
-    })?;
-    match (disposition, existing) {
-        (OperationIdentityDisposition::Replay, Some(receipt)) => {
+    })
+}
+
+/// Return the exact durable receipt on replay, or `None` for a new operation.
+pub fn replay_commit_operation_receipt(
+    operation: &CommitOperation,
+    existing: Option<&CommitReceipt>,
+) -> Result<Option<CommitReceipt>, CommitOperationAdmissionError> {
+    require_commit_operation_identity(operation)?;
+    match existing {
+        Some(receipt) => {
+            require_commit_operation_receipt(operation, receipt)?;
             let mut duplicate = receipt.clone();
             duplicate.duplicate = true;
             Ok(Some(duplicate))
         }
-        (OperationIdentityDisposition::New, None) => Ok(None),
-        _ => unreachable!("identity disposition is derived from receipt presence"),
+        None => Ok(None),
     }
 }
 
