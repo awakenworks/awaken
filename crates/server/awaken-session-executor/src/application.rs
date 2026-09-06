@@ -955,7 +955,7 @@ impl crate::SharedHost {
         changed.notify_waiters();
     }
 
-    /// Remove only the failed local projection of one exact realization
+    /// Close only the failed local projection of one exact realization
     /// generation. A renewed same-generation projection is also invalidated,
     /// because the aggregate failure command authorizes the shorter admitted
     /// effect and expires that whole owner/incarnation/epoch generation. A
@@ -965,25 +965,15 @@ impl crate::SharedHost {
         session_id: &str,
         failed: &awaken_session_contract::SessionRealizationLease,
     ) {
-        let changed = self
-            .session_slots
-            .modify(session_id, |slot| {
-                if slot.realization_lease.as_ref().is_some_and(|current| {
-                    failed_realization_invalidates_projection(current, failed)
-                }) {
-                    slot.realization_lease = None;
-                    if let Some(preparation) = &slot.resource_preparation {
-                        preparation.cancel();
-                    }
-                    Some(slot.realization_changed.clone())
-                } else {
-                    None
-                }
-            })
-            .flatten();
-        if let Some(changed) = changed {
-            changed.notify_waiters();
-        }
+        self.session_slots.modify(session_id, |slot| {
+            if slot
+                .realization_authority
+                .lease()
+                .is_some_and(|current| failed_realization_invalidates_projection(current, failed))
+            {
+                slot.close_realization_authority(None);
+            }
+        });
     }
 
     /// Authorize an MCP effect admitted before a same-epoch lease extension.
@@ -1016,7 +1006,10 @@ impl crate::SharedHost {
     ) -> Option<bool> {
         self.session_slots
             .read(&generation.session_id, |slot| {
-                slot.realization_lease.as_ref().map(|current| {
+                if slot.realization_authority.is_closed() {
+                    return Some(false);
+                }
+                slot.realization_authority.lease().map(|current| {
                     current.runtime_incarnation == generation.runtime_incarnation
                         && current.epoch == generation.lease_epoch
                         && current.expires_at_unix_ms >= generation.lease_expires_at_unix_ms
@@ -1152,7 +1145,7 @@ impl crate::SharedHost {
     /// no longer provable. This is not a terminal Session edge: preserve the
     /// durable Sandbox so the next authorized Worker can adopt it, while local
     /// processes, routes, credentials, and runtime references are discarded.
-    async fn revoke_session_realization(
+    pub(crate) async fn revoke_session_realization(
         &self,
         session_id: &str,
         expected_projection: Option<(
@@ -1160,19 +1153,22 @@ impl crate::SharedHost {
             &Arc<tokio::sync::Mutex<()>>,
         )>,
     ) -> Result<bool, crate::HostError> {
-        // Preparation owns the realization lock. Cancel only the matching
-        // scoped read before waiting for it. All revocation callers (including
-        // Worker-wide authority loss) share this edge; runtime interruption and
-        // retirement still require the post-lock ownership check below.
-        self.session_slots.modify(session_id, |slot| {
-            if expected_projection.is_none_or(|(expected, realization)| {
-                Arc::ptr_eq(&slot.realization, realization)
-                    && slot.realization_lease.as_ref() == Some(expected)
-            }) && let Some(preparation) = &slot.resource_preparation
-            {
-                preparation.cancel();
-            }
-        });
+        // Close admission under the synchronous slot mutex before waiting for
+        // either async owner lock. Retain the exact closed projection for the
+        // post-lock CAS; neither a renewal reply nor cancellation reopens it.
+        let Some(closed) = self
+            .session_slots
+            .modify(session_id, |slot| {
+                if expected_projection.is_some_and(|(_, realization)| !Arc::ptr_eq(&slot.realization, realization))
+                    || !slot.close_realization_authority(expected_projection.map(|(lease, _)| lease)) {
+                    return None;
+                }
+                Some(slot.realization_authority.clone())
+            })
+            .flatten()
+        else {
+            return Ok(false);
+        };
         let Some(realization) = self
             .session_slots
             .read(session_id, |slot| slot.realization.clone())
@@ -1187,23 +1183,18 @@ impl crate::SharedHost {
             return Ok(false);
         };
         let _lifecycle = lifecycle.lock().await;
-        if let Some((expected, expected_realization)) = expected_projection {
-            // Recheck after both existing owner locks: a claimed replacement
-            // may have completed while this stale revocation waited. Interrupt
-            // belongs after this fence too; otherwise it cancels the new Run
-            // even when physical retirement is correctly skipped.
-            if !self
-                .session_slots
-                .read(session_id, |slot| {
-                    Arc::ptr_eq(&slot.realization, expected_realization)
-                        && Arc::ptr_eq(&slot.realization, &realization)
-                        && Arc::ptr_eq(&slot.lifecycle, &lifecycle)
-                        && slot.realization_lease.as_ref() == Some(expected)
-                })
-                .unwrap_or(false)
-            {
-                return Ok(false);
-            }
+        // This fence also applies to Worker-wide revocation: waiting cannot
+        // authorize cleanup of a replacement installed after the close edge.
+        if !self
+            .session_slots
+            .read(session_id, |slot| slot.realization_authority == closed
+                && Arc::ptr_eq(&slot.realization, &realization)
+                && Arc::ptr_eq(&slot.lifecycle, &lifecycle))
+            .unwrap_or(false)
+        {
+            return Ok(false);
+        }
+        if expected_projection.is_some() {
             let _ = self
                 .interrupt_with_commit_read(
                     session_id,

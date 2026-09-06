@@ -241,7 +241,7 @@ impl SharedHost {
         // than deriving a competing effect identity.
         let current = self
             .session_slots
-            .read(thread, |slot| slot.realization_lease.clone())
+            .read(thread, |slot| slot.realization_authority.lease().cloned())
             .flatten();
         let now_unix_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1148,6 +1148,15 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<bool, HostError> {
+        self.session_slots.modify(thread, |slot| {
+            // Physical retirement of an Unowned LegacyDirect environment is
+            // not loss of a never-installed Control lease. Preserve that
+            // existing rebuild path. Explicit Worker/Session revocation has
+            // already closed admission, including Closed(None), before waiting.
+            if slot.realization_authority.lease().is_some() {
+                slot.close_realization_authority(None);
+            }
+        });
         let cause = SessionEnvironmentRetirementCause::RealizationRevocation;
         let retirement = match self.retire_current_environment(
             thread,
@@ -1196,6 +1205,7 @@ impl SharedHost {
                 let lifecycle = slot.lifecycle.clone();
                 let resource_projection = slot.resource_projection.clone();
                 let realization_changed = slot.realization_changed.clone();
+                let realization_authority = slot.realization_authority.clone();
                 let environment_owner = std::mem::take(&mut slot.environment_owner);
                 // A live/unknown Retiring owner is retryable physical state.
                 // Preserve its exact provider selection and SandboxSpec inputs;
@@ -1221,6 +1231,7 @@ impl SharedHost {
                 slot.lifecycle = lifecycle;
                 slot.resource_projection = resource_projection;
                 slot.realization_changed = realization_changed;
+                slot.realization_authority = realization_authority;
                 slot.environment_owner = environment_owner;
                 slot.published_snapshot = published_snapshot;
                 slot.environment_projection = environment_projection;

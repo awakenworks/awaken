@@ -1,5 +1,176 @@
 use super::*;
 
+// Authority decision table A1-A8. Causes: C1 realization/lifecycle owner lock
+// is held; C2 a successful renewal reply is in flight; C3 exact/Worker-wide
+// revocation closes A; C4 cleanup is cancelled or B replaces A before unlock.
+// Effects: E1 no lease is visible to admission/scheduling; E2 no MCP assertion
+// fallback; E3 delayed renewal/reinstallation cannot reopen A; E4 cancellation
+// leaves closure retryable; E5 stale cleanup leaves B and its claim untouched.
+// Cross product {two locks} x {exact, all} x {cancel, replace} selects eight
+// rules. Notify/Control semaphore barriers force the actual production edges;
+// no sleep establishes ordering, and no test-only lease reducer is involved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn realization_revocation_closes_admission_before_waiting_for_owner_locks() {
+    for lifecycle in [false, true] {
+        for all in [false, true] {
+            for replace in [false, true] {
+                let control = Arc::new(RemoteTerminalCleanupControl::default());
+                let gate = Arc::new(tokio::sync::Semaphore::new(0));
+                *control.renewal_gate.lock().unwrap() = Some(gate.clone());
+                let host = Arc::new(
+                    SharedHost::new(Arc::new(OkModel), "stub")
+                        .with_session_control(control.clone()),
+                );
+                let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+                let lease = awaken_session_contract::SessionRealizationLease {
+                    owner: "worker".into(),
+                    runtime_incarnation: "worker/1".into(),
+                    epoch: 1,
+                    expires_at_unix_ms: now + 5_000,
+                };
+                install_test_renewal_authority(&host, &control, SESSION, lease.clone());
+                let generation = awaken_session_contract::McpGenerationRef {
+                    session_id: SESSION.into(),
+                    attachment_id: awaken_session_contract::McpAttachmentId("mcp".into()),
+                    generation: awaken_session_contract::McpGeneration(1),
+                    runtime_incarnation: lease.runtime_incarnation.clone(),
+                    lease_epoch: lease.epoch,
+                    lease_expires_at_unix_ms: lease.expires_at_unix_ms,
+                };
+                assert!(host.mcp_generation_is_authorized_at(&generation, now));
+                let h = host.clone();
+                let renewal = tokio::spawn(async move {
+                    h.renew_due_session_realizations(
+                        now,
+                        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                            30_000,
+                        ),
+                    )
+                    .await
+                });
+                tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                    while control.renewal_sessions.lock().unwrap().is_empty() {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("C2 request reached Control barrier");
+                let (lock, changed) = host
+                    .session_slots
+                    .read(SESSION, |slot| {
+                        (
+                            if lifecycle {
+                                slot.lifecycle.clone()
+                            } else {
+                                slot.realization.clone()
+                            },
+                            slot.realization_changed.clone(),
+                        )
+                    })
+                    .unwrap();
+                let held = lock.lock().await;
+                let closed = changed.notified();
+                tokio::pin!(closed);
+                closed.as_mut().enable();
+                let h = host.clone();
+                let expected = lease.clone();
+                let mut revocation = tokio::spawn(async move {
+                    if all {
+                        h.revoke_all_session_realizations().await.map(|n| n != 0)
+                    } else {
+                        h.revoke_session_realization(SESSION, Some(&expected)).await
+                    }
+                });
+                tokio::time::timeout(std::time::Duration::from_secs(2), &mut closed)
+                    .await
+                    .expect("C3 close precedes async lock wait");
+                assert!(!revocation.is_finished());
+                assert!(host.session_slots.realization_leases().is_empty(), "E1");
+                assert!(
+                    host.authorize_environment_effect_before_io(
+                        SESSION,
+                        awaken_session_contract::SessionEnvironmentEffectKind::Create,
+                        None,
+                    )
+                    .await
+                    .is_err(),
+                    "E1 closed is not an unowned/direct Environment fallback"
+                );
+                assert_eq!(
+                    host.mcp_generation_root_authority_at(&generation, now),
+                    Some(false),
+                    "E2"
+                );
+                assert!(
+                    !host.mcp_generation_is_authorized_at(&generation, now),
+                    "E2"
+                );
+                gate.add_permits(1);
+                assert_eq!(
+                    tokio::time::timeout(std::time::Duration::from_secs(2), renewal)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .unwrap(),
+                    0,
+                    "E3 delayed successful reply discarded"
+                );
+                let mut extended = lease.clone();
+                extended.expires_at_unix_ms += 120_000;
+                host.install_session_realization_lease(SESSION, extended.clone());
+                assert!(
+                    host.session_slots.realization_leases().is_empty(),
+                    "E3 assertion cannot reopen"
+                );
+                let managed = crate::ManagedHost::new(host.clone());
+                assert!(
+                    awaken_session_contract::SessionRuntime::renew_session_realization_lease(
+                        &managed,
+                        SESSION,
+                        extended.clone(),
+                    )
+                    .await
+                    .is_err(),
+                    "E3 public renewal port rejects closed authority"
+                );
+                if !replace {
+                    revocation.abort();
+                    assert!((&mut revocation).await.unwrap_err().is_cancelled());
+                    assert!(host.session_slots.realization_leases().is_empty(), "E4");
+                }
+                extended.epoch += 1;
+                host.install_session_realization_lease(SESSION, extended.clone());
+                let claim = awaken_dispatch::RunClaim {
+                    run_id: RunId("replacement".into()),
+                    owner: "worker".into(),
+                    epoch: 2,
+                };
+                host.session_slots
+                    .update(SESSION, |slot| slot.dispatch_claim = Some(claim.clone()));
+                drop(held);
+                if replace {
+                    assert!(
+                        !tokio::time::timeout(std::time::Duration::from_secs(2), revocation)
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .unwrap(),
+                        "E5 stale retirement discarded"
+                    );
+                }
+                assert_eq!(
+                    host.session_slots.read(SESSION, |slot| (
+                        slot.realization_authority.lease().cloned(),
+                        slot.dispatch_claim.clone(),
+                    )),
+                    Some((Some(extended), Some(claim))),
+                    "E5"
+                );
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct GatedFileSource {
     entered: tokio::sync::Notify,
@@ -170,7 +341,7 @@ async fn cold_resource_staging_is_renewable_before_projection_publication() {
     assert_eq!(
         f.host
             .session_slots
-            .read(SESSION, |slot| slot.realization_lease.clone())
+            .read(SESSION, |slot| slot.realization_authority.lease().cloned())
             .flatten()
             .unwrap()
             .expires_at_unix_ms,
@@ -200,7 +371,7 @@ async fn failed_or_cancelled_resource_preparation_drops_only_its_unpublished_lea
             f.host
                 .session_slots
                 .read(SESSION, |slot| {
-                    slot.realization_lease.is_none()
+                    slot.realization_authority.lease().is_none()
                         && slot.resource_preparation.is_none()
                         && slot.workspace.is_none()
                         && slot.skills.is_none()
@@ -348,7 +519,7 @@ async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
         let current = f
             .host
             .session_slots
-            .read(SESSION, |slot| slot.realization_lease.clone())
+            .read(SESSION, |slot| slot.realization_authority.lease().cloned())
             .flatten();
         assert_eq!(current, (mutation == "replace").then_some(successor));
         if mutation == "remove" {

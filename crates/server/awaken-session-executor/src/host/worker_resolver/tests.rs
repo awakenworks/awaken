@@ -1179,7 +1179,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         host.session_slots
             .read("ordinary-remote", |slot| {
                 slot.baseline.is_some()
-                    && slot.realization_lease.as_ref().is_some_and(|lease| {
+                    && slot.realization_authority.lease().is_some_and(|lease| {
                         lease.owner == claimed.lease.owner && lease.epoch == claimed.lease.epoch
                     })
             })

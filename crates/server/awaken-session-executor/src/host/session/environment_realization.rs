@@ -325,17 +325,27 @@ impl SharedHost {
         kind: awaken_session_contract::SessionEnvironmentEffectKind,
         source_binding: Option<&str>,
     ) -> Result<AuthorizedSessionEnvironmentEffect, HostError> {
-        let (realization, claimed_ordinary_run) = self
+        let (realization, claimed_ordinary_run, closed) = self
             .session_slots
             .read(thread, |slot| {
-                let realization = slot.realization_lease.clone();
+                let realization = slot.realization_authority.lease().cloned();
                 let claimed_ordinary_run = realization.is_none()
                     && slot.dispatch_claim.is_some()
                     && !slot.session_dispatch
                     && slot.baseline.is_none();
-                (realization, claimed_ordinary_run)
+                (
+                    realization,
+                    claimed_ordinary_run,
+                    slot.realization_authority.is_closed(),
+                )
             })
             .unwrap_or_default();
+        if closed {
+            return Err(HostError::unavailable_classified(
+                "session_environment_realization_closed",
+                "closed Session realization cannot authorize an Environment effect",
+            ));
+        }
         let environment_fingerprint = self
             .session_slots
             .read(thread, |slot| {
@@ -655,7 +665,10 @@ impl SharedHost {
         let (claim, realization_lease) = self
             .session_slots
             .read(thread, |slot| {
-                (slot.dispatch_claim.clone(), slot.realization_lease.clone())
+                (
+                    slot.dispatch_claim.clone(),
+                    slot.realization_authority.lease().cloned(),
+                )
             })
             .unwrap_or_default();
         let rebuild_source = self
@@ -788,7 +801,10 @@ impl SharedHost {
         let (claim, realization_lease) = self
             .session_slots
             .read(thread, |slot| {
-                (slot.dispatch_claim.clone(), slot.realization_lease.clone())
+                (
+                    slot.dispatch_claim.clone(),
+                    slot.realization_authority.lease().cloned(),
+                )
             })
             .unwrap_or_default();
         self.apply_dispatched_resource_transition_under_lifecycle(
@@ -927,7 +943,7 @@ impl SharedHost {
         let current_fence = |asserted: &awaken_provisioning_contract::SandboxEffectFence| {
             let lease = self
                 .session_slots
-                .read(thread, |slot| slot.realization_lease.clone())
+                .read(thread, |slot| slot.realization_authority.lease().cloned())
                 .flatten()
                 .ok_or_else(|| {
                     awaken_provisioning_contract::SandboxError::new(

@@ -531,7 +531,7 @@ impl SharedHost {
         let authorized = self
             .session_slots
             .read(session_id, |slot| {
-                slot.realization_lease.as_ref().is_some_and(|current| {
+                slot.realization_authority.lease().is_some_and(|current| {
                     awaken_session_contract::realization_lease_generation_authorizes(current, lease)
                 })
             })
@@ -570,7 +570,7 @@ impl SharedHost {
                 let authorized = self
                     .session_slots
                     .read(session_id, |slot| {
-                        slot.realization_lease.as_ref().is_some_and(|current| {
+                        slot.realization_authority.lease().is_some_and(|current| {
                             awaken_session_contract::realization_lease_generation_authorizes(
                                 current, lease,
                             )
@@ -599,7 +599,7 @@ impl SharedHost {
             let authorized = self
                 .session_slots
                 .read(session_id, |slot| {
-                    slot.realization_lease.as_ref().is_some_and(|current| {
+                    slot.realization_authority.lease().is_some_and(|current| {
                         awaken_session_contract::realization_lease_generation_authorizes(
                             current, lease,
                         )

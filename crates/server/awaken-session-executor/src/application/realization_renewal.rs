@@ -35,7 +35,7 @@ impl<'a> ResourcePreparation<'a> {
                     "Resource preparation already holds its projection lock",
                 ));
             }
-            let introduced = slot.realization_lease.is_none();
+            let introduced = slot.realization_authority.lease().is_none();
             slot.install_realization_lease(asserted.clone());
             slot.resource_preparation = Some(cancellation.clone());
             Ok((introduced, slot.realization_changed.clone()))
@@ -110,8 +110,8 @@ impl<'a> ResourcePreparation<'a> {
                 .session_slots
                 .read(self.session, |slot| {
                     self.authorized(slot).then(|| {
-                        slot.realization_lease
-                            .as_ref()
+                        slot.realization_authority
+                            .lease()
                             .expect("authorized lease")
                             .expires_at_unix_ms
                     })
@@ -141,14 +141,15 @@ impl Drop for ResourcePreparation<'_> {
             {
                 slot.resource_preparation = None;
                 if self.introduced_lease
-                    && slot.realization_lease.as_ref().is_some_and(|current| {
+                    && slot.realization_authority.lease().is_some_and(|current| {
                         awaken_session_contract::realization_lease_generation_authorizes(
                             current,
                             &self.asserted,
                         )
                     })
                 {
-                    slot.realization_lease = None;
+                    slot.realization_authority =
+                        crate::session_slot::SessionRealizationAuthority::Uninstalled;
                     slot.realization_changed.notify_waiters();
                 }
             }
@@ -213,28 +214,14 @@ impl crate::SharedHost {
             // and install atomically: another driver may already have extended,
             // replaced, or removed that projection. A renewal is not authority
             // to recreate a slot or overwrite a later installed lease.
-            let changed = self
+            let applied = self
                 .session_slots
                 .modify(&session_id, |slot| {
-                    if !Arc::ptr_eq(&slot.realization, &realization)
-                        || slot.realization_lease.as_ref() != Some(&lease)
-                        || !awaken_session_contract::realization_lease_generation_authorizes(
-                            &renewed_lease,
-                            &lease,
-                        )
-                    {
-                        return None;
-                    }
-                    slot.realization_lease = Some(renewed_lease);
-                    Some(slot.realization_changed.clone())
+                    Arc::ptr_eq(&slot.realization, &realization)
+                        && slot.renew_realization_lease(&lease, renewed_lease)
                 })
-                .flatten();
-            if let Some(changed) = changed {
-                changed.notify_waiters();
-                Ok(true)
-            } else {
-                Ok(false)
-            }
+                .unwrap_or(false);
+            Ok(applied)
         }
         .await;
         match renewal {
@@ -244,7 +231,7 @@ impl crate::SharedHost {
                     .session_slots
                     .read(&session_id, |slot| {
                         Arc::ptr_eq(&slot.realization, &realization)
-                            && slot.realization_lease.as_ref() == Some(&lease)
+                            && slot.realization_authority.lease() == Some(&lease)
                     })
                     .unwrap_or(false) =>
             {

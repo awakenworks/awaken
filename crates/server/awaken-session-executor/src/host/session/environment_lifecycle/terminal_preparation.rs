@@ -41,7 +41,9 @@ impl SharedHost {
     ) -> Result<awaken_session_contract::SessionRealizationLease, HostError> {
         let current = self
             .session_slots
-            .read(session_id, |slot| slot.realization_lease.clone())
+            .read(session_id, |slot| {
+                slot.realization_authority.lease().cloned()
+            })
             .flatten()
             .ok_or_else(|| {
                 HostError::unavailable_classified(
@@ -527,7 +529,7 @@ impl SharedHost {
                     slot.baseline
                         .as_ref()
                         .map(|baseline| baseline.environment.idle_retention.clone()),
-                    slot.realization_lease.clone(),
+                    slot.realization_authority.lease().cloned(),
                     slot.baseline
                         .as_ref()
                         .map(|baseline| baseline.environment.config_fingerprint.0.clone()),
