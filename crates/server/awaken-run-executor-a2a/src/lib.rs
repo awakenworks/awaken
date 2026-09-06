@@ -1345,6 +1345,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resume_rejects_context_rebinding_without_replacing_the_committed_reference() {
+        // Causes: C1 the committed task reference owns context ctx-original;
+        // C2 resume sends to that context; C3 the remote response instead names
+        // ctx-rebound. Effects: E1 reject the response; E2 leave the committed
+        // task/context reference unchanged. The positive C1+C2+matching row is
+        // covered by `replacement_executor_resumes_input_on_the_committed_context`.
+        //
+        // | Rule | committed context | response context | Effects |
+        // |---|---|---|---|
+        // | R1 | ctx-original | ctx-original | admit replacement |
+        // | R2 | ctx-original | ctx-rebound | E1+E2 |
+        let transport = Arc::new(ScriptedTransport::new(vec![
+            response(
+                r#"{"task":{"kind":"task","id":"remote-input","contextId":"ctx-original","status":{"state":"input-required"}}}"#,
+            ),
+            response(
+                r#"{"task":{"kind":"task","id":"remote-rebound","contextId":"ctx-rebound","status":{"state":"completed"}}}"#,
+            ),
+        ]));
+        let rec = Arc::new(Rec::default());
+        let activation = activation("a2a:http://remote.invalid");
+        let context = || {
+            RuntimeRunContext::new()
+                .with_commit(rec.clone())
+                .with_reader(rec.clone())
+        };
+
+        assert_eq!(
+            scripted_executor(transport.clone())
+                .execute(activation.clone(), context())
+                .await
+                .unwrap(),
+            RunState::Awaiting
+        );
+        let ticket = rec
+            .resume_ticket(&activation.run_id)
+            .expect("durable ticket");
+        let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input("answer".into()), 0);
+        let error = scripted_executor(transport)
+            .resume(activation.clone(), command, context())
+            .await
+            .expect_err("a remote response cannot rebind the committed context");
+        assert!(error.to_string().contains("changed context"), "R2/E1");
+
+        let reference = restored_task_reference(&context(), &activation)
+            .expect("decode committed reference")
+            .expect("reference remains committed");
+        assert_eq!(reference.task_id, "remote-input", "R2/E2");
+        assert_eq!(reference.context_id, "ctx-original", "R2/E2");
+    }
+
+    #[tokio::test]
     async fn durable_cancel_addresses_the_committed_remote_task() {
         let active = r#"{"kind":"task","id":"remote-cancel","contextId":"ctx-cancel","status":{"state":"input-required"}}"#;
         let transport = Arc::new(ScriptedTransport::new(vec![

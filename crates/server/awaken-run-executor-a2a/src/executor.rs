@@ -230,14 +230,13 @@ impl RunAttemptExecutor for A2aRunExecutor {
         )
         .await
         .map_err(|error| Error::Execution(error.to_string()))?;
+        let reference = continued_task_reference(&endpoint, &reference, &task)?;
         commit_boundary(
             &context,
             &activation,
             RunDisposition::running(activation.run_id.clone()),
             Vec::new(),
-            vec![task_reference_state(&TaskReference::from_task(
-                &endpoint, &task,
-            ))?],
+            vec![task_reference_state(&reference)?],
         )
         .await?;
         task_driver::drive_task(transport, &endpoint, &activation, &context, task).await
