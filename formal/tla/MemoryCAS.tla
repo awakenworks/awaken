@@ -111,14 +111,17 @@ AbsentDeleteIsIdempotent == lastAction = "absent_delete" => (~lastPresentBefore 
 \* linearization; C3 commit then crash before acknowledgement => idempotent
 \* same-content retry; C4 intervening writer => stale retry cannot rebase.
 \* Tests: copy_lifecycle.rs concurrent_copy_harvest_* / recovered_copy_retries_*.
-\* Bounds: one pending edit per writer, atomic Repository calls. A complete
+\* Rules L1-L6: admitted request -> caller crash -> late SQL commit -> retry.
+\* Test: writeback_faults.rs sqlite_commit_continues_after_caller_abort_and_retry_converges.
+\* Bounds: one in-flight edit per writer, atomic Repository commit. A complete
 \* quiescent-tree scan is an external observation: the model checks admission
 \* on that observation, not OS snapshot atomicity or hostile process fencing.
 \* This is safety checking, not a proof of eventual recovery or Rust refinement.
 VARIABLES mounted, crashed, materializationBase, scanComplete, lastMutationScan,
-          rootMatches, lastMutationRoot, pendingAck
+          rootMatches, lastMutationRoot, pendingAck, inFlight, requestScan, requestRoot
+requestVars == <<inFlight, requestScan, requestRoot>>
 copyVars == <<vars, mounted, crashed, materializationBase, scanComplete, lastMutationScan,
-              rootMatches, lastMutationRoot, pendingAck>>
+              rootMatches, lastMutationRoot, pendingAck, requestVars>>
 CopyInit == /\ Init
             /\ mounted = [w \in Writers |-> FALSE]
             /\ crashed = [w \in Writers |-> FALSE]
@@ -128,48 +131,62 @@ CopyInit == /\ Init
             /\ rootMatches = [w \in Writers |-> TRUE]
             /\ lastMutationRoot = TRUE
             /\ pendingAck = [w \in Writers |-> FALSE]
+            /\ inFlight = [w \in Writers |-> "none"]
+            /\ requestScan = [w \in Writers |-> TRUE]
+            /\ requestRoot = [w \in Writers |-> TRUE]
 
 CopyCapture(w) == /\ ~mounted[w] /\ headPresent
                   /\ Read(w)
                   /\ mounted' = [mounted EXCEPT ![w] = TRUE]
                   /\ materializationBase' = [materializationBase EXCEPT ![w] = generation]
-                  /\ UNCHANGED <<crashed, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck>>
+                  /\ UNCHANGED <<crashed, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck, requestVars>>
 
-CopyFlush(w) == /\ mounted[w] /\ ~crashed[w]
-                /\ scanComplete[w]
-                /\ rootMatches[w]
-                /\ lastMutationRoot' = rootMatches[w]
-                /\ pendingAck' = [pendingAck EXCEPT ![w] = TRUE]
-                /\ lastMutationScan' = scanComplete[w]
+\* Admission captures the scan, just as the production walker captures bytes.
+\* Later root changes cannot alter that request. Cancellation of the caller
+\* does not cancel SQLite spawn_blocking; commit remains the same CAS owner.
+CopyStart(w, operation) ==
+    /\ mounted[w] /\ ~crashed[w] /\ inFlight[w] = "none"
+    /\ scanComplete[w]
+    /\ rootMatches[w]
+    /\ inFlight' = [inFlight EXCEPT ![w] = operation]
+    /\ requestScan' = [requestScan EXCEPT ![w] = scanComplete[w]]
+    /\ requestRoot' = [requestRoot EXCEPT ![w] = rootMatches[w]]
+    /\ UNCHANGED <<vars, mounted, crashed, materializationBase, scanComplete,
+                    lastMutationScan, rootMatches, lastMutationRoot, pendingAck>>
+
+CopyFlush(w) == /\ inFlight[w] = "write"
+                /\ inFlight' = [inFlight EXCEPT ![w] = "none"]
+                /\ lastMutationRoot' = requestRoot[w]
+                /\ pendingAck' = [pendingAck EXCEPT ![w] = ~crashed[w]]
+                /\ lastMutationScan' = requestScan[w]
                 /\ IF headPresent /\ value = w
                       THEN IdempotentWrite
                       ELSE CAS(w) \/ StaleCAS(w)
-                /\ UNCHANGED <<mounted, crashed, materializationBase, scanComplete, rootMatches>>
+                /\ UNCHANGED <<mounted, crashed, materializationBase, scanComplete, rootMatches, requestScan, requestRoot>>
 
-CopyDelete(w) == /\ mounted[w] /\ ~crashed[w]
-                 /\ scanComplete[w]
-                 /\ rootMatches[w]
-                 /\ lastMutationRoot' = rootMatches[w]
-                 /\ pendingAck' = [pendingAck EXCEPT ![w] = TRUE]
-                 /\ lastMutationScan' = scanComplete[w]
+CopyDelete(w) == /\ inFlight[w] = "delete"
+                 /\ inFlight' = [inFlight EXCEPT ![w] = "none"]
+                 /\ lastMutationRoot' = requestRoot[w]
+                 /\ pendingAck' = [pendingAck EXCEPT ![w] = ~crashed[w]]
+                 /\ lastMutationScan' = requestScan[w]
                  /\ DeleteIfMatch(w) \/ StaleDelete(w) \/ AlreadyAbsentDelete
-                 /\ UNCHANGED <<mounted, crashed, materializationBase, scanComplete, rootMatches>>
+                 /\ UNCHANGED <<mounted, crashed, materializationBase, scanComplete, rootMatches, requestScan, requestRoot>>
 
 CopyCrash(w) == /\ mounted[w] /\ ~crashed[w]
                 /\ crashed' = [crashed EXCEPT ![w] = TRUE]
                 /\ pendingAck' = [pendingAck EXCEPT ![w] = FALSE]
-                /\ UNCHANGED <<vars, mounted, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot>>
+                /\ UNCHANGED <<vars, mounted, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, requestVars>>
 
 CopyRecover(w) == /\ crashed[w]
                   /\ crashed' = [crashed EXCEPT ![w] = FALSE]
-                  /\ UNCHANGED <<vars, mounted, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck>>
+                  /\ UNCHANGED <<vars, mounted, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck, requestVars>>
 
 \* A missing root, scan IO error, or replaced entry cannot stand in for unlink.
 \* Retrying after the tree is restored changes only scan evidence, never CAS base.
 CopyScan(w, complete) ==
     /\ mounted[w] /\ ~crashed[w]
     /\ scanComplete' = [scanComplete EXCEPT ![w] = complete]
-    /\ UNCHANGED <<vars, mounted, crashed, materializationBase, lastMutationScan, rootMatches, lastMutationRoot, pendingAck>>
+    /\ UNCHANGED <<vars, mounted, crashed, materializationBase, lastMutationScan, rootMatches, lastMutationRoot, pendingAck, requestVars>>
 
 \* Physical root observations and acknowledgement are independent of durable
 \* Repository truth. In particular, commit -> lost acknowledgement -> crash
@@ -178,15 +195,16 @@ CopyRoot(w, valid) ==
     /\ mounted[w] /\ ~crashed[w]
     /\ rootMatches' = [rootMatches EXCEPT ![w] = valid]
     /\ scanComplete' = [scanComplete EXCEPT ![w] = FALSE]
-    /\ UNCHANGED <<vars, mounted, crashed, materializationBase, lastMutationScan, lastMutationRoot, pendingAck>>
+    /\ UNCHANGED <<vars, mounted, crashed, materializationBase, lastMutationScan, lastMutationRoot, pendingAck, requestVars>>
 
 CopyAcknowledge(w) ==
     /\ pendingAck[w] /\ ~crashed[w]
     /\ pendingAck' = [pendingAck EXCEPT ![w] = FALSE]
-    /\ UNCHANGED <<vars, mounted, crashed, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot>>
+    /\ UNCHANGED <<vars, mounted, crashed, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, requestVars>>
 
 CopyNext == \E w \in Writers:
               CopyCapture(w) \/ CopyFlush(w) \/ CopyDelete(w)
+              \/ CopyStart(w, "write") \/ CopyStart(w, "delete")
               \/ CopyCrash(w) \/ CopyRecover(w)
               \/ CopyScan(w, TRUE) \/ CopyScan(w, FALSE)
               \/ CopyRoot(w, TRUE) \/ CopyRoot(w, FALSE) \/ CopyAcknowledge(w)
@@ -199,11 +217,16 @@ CopyTypeOK == /\ TypeOK
               /\ rootMatches \in [Writers -> BOOLEAN]
               /\ lastMutationRoot \in BOOLEAN
               /\ pendingAck \in [Writers -> BOOLEAN]
+              /\ inFlight \in [Writers -> {"none", "write", "delete"}]
+              /\ requestScan \in [Writers -> BOOLEAN]
+              /\ requestRoot \in [Writers -> BOOLEAN]
 CopyRecoveryKeepsMaterializationBase ==
     \A w \in Writers: mounted[w] => expected[w] = materializationBase[w]
 CopyMutationRequiresCompleteScan == lastAction \in {"cas", "delete"} => lastMutationScan
 CopyMutationRequiresOriginalRoot == lastAction \in {"cas", "delete"} => lastMutationRoot
+CopyCrashKeepsInFlight ==
+    [][\A w \in Writers: (~crashed[w] /\ crashed'[w]) => inFlight' = inFlight]_copyVars
 CopySpec == CopyInit /\ [][CopyNext]_copyVars
 \* The original Repository configuration keeps projection history inert.
-Spec == CopyInit /\ [][Next /\ UNCHANGED <<mounted, crashed, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck>>]_copyVars
+Spec == CopyInit /\ [][Next /\ UNCHANGED <<mounted, crashed, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck, requestVars>>]_copyVars
 =============================================================================

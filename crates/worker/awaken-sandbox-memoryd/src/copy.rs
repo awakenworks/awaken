@@ -30,8 +30,15 @@ pub(crate) fn validate_copy_entries<'a>(
     entries: impl IntoIterator<Item = (&'a Path, usize)>,
 ) -> Result<(), FuseError> {
     let mut physical_entries = HashSet::new();
+    let mut files = HashSet::new();
+    let mut directories = HashSet::new();
     let mut remaining = COPY_LIMITS.total_bytes;
     for (path, bytes) in entries {
+        if !files.insert(path) || directories.contains(path) {
+            return Err(scan_error(
+                "duplicate or overlapping Memory projection path",
+            ));
+        }
         if path.components().count() > COPY_LIMITS.depth
             || bytes as u64 > COPY_LIMITS.file_bytes
             || bytes as u64 > remaining
@@ -43,6 +50,12 @@ pub(crate) fn validate_copy_entries<'a>(
             .ancestors()
             .take_while(|entry| !entry.as_os_str().is_empty())
         {
+            if entry != path {
+                if files.contains(entry) {
+                    return Err(scan_error("file is an ancestor of another Memory path"));
+                }
+                directories.insert(entry);
+            }
             physical_entries.insert(entry);
             if physical_entries.len() > COPY_LIMITS.entries {
                 return Err(scan_error("Memory projection exceeds entry budget"));
@@ -160,11 +173,26 @@ pub async fn materialize(
             memory.content.as_deref().unwrap_or_default().len(),
         )
     }))?;
+    std::fs::create_dir_all(root).map_err(scan_error)?;
+    // Parent names are exclusive too: create_dir_all would silently coalesce
+    // A/x and a/y on a case-insensitive filesystem, although both files are new.
+    // Remember only parents created for this projection, never adopt an ambient
+    // directory merely because the OS reports that it already exists.
+    let mut parents = HashSet::new();
+    for path in &paths {
+        let ancestors: Vec<_> = path
+            .ancestors()
+            .skip(1)
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .collect();
+        for parent in ancestors.into_iter().rev() {
+            if parents.insert(parent) {
+                std::fs::create_dir(root.join(parent)).map_err(scan_error)?;
+            }
+        }
+    }
     for (memory, relative) in memories.into_iter().zip(paths) {
         let dest = root.join(relative);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| FuseError::Internal(e.to_string()))?;
-        }
         std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -180,6 +208,27 @@ pub async fn materialize(
                 content_sha256: memory.content_sha256,
             },
         );
+    }
+    // Admission requires an exact round trip, including filesystem Unicode
+    // normalization. Never publish a mount whose first no-edit harvest would
+    // rename a logical head. Reuse the canonical bounded nofollow reader.
+    let projected =
+        awaken_sandbox_fs::read_tree_nofollow_with_limits(root, COPY_LIMITS).map_err(scan_error)?;
+    if projected.files.len() != snapshot.heads.len() {
+        return Err(scan_error("Memory projection changed the path set"));
+    }
+    for file in projected.files {
+        let path = memory_path(&file.relative_path)?;
+        let content = std::str::from_utf8(&file.bytes).map_err(scan_error)?;
+        if snapshot
+            .heads
+            .get(&path)
+            .is_none_or(|head| head.content_sha256 != sha256_hex(content))
+        {
+            return Err(scan_error(
+                "Memory projection did not preserve exact path and bytes",
+            ));
+        }
     }
     Ok(snapshot)
 }
@@ -219,6 +268,51 @@ pub async fn harvest(
             ))
         })
         .collect::<Result<Vec<_>, FuseError>>()?;
+    reconcile_files(fs, store, files, snapshot).await
+}
+
+/// Recover an already-captured projection without rematerializing sensitive
+/// bytes on the host. Admission is all-or-nothing; Repository writes retain the
+/// same per-file CAS/retry semantics as a live tree scan.
+pub(crate) async fn harvest_recovered_files(
+    fs: &dyn MemoryRepository,
+    store: &str,
+    files: &[(String, Vec<u8>)],
+    snapshot: &mut CopySnapshot,
+) -> Result<HarvestReport, FuseError> {
+    let paths = files
+        .iter()
+        .map(|(relative, _)| {
+            relative_memory_path(&format!("/{relative}")).map_err(|error| {
+                FuseError::Internal(format!("unsafe recovered Memory copy path: {error}"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_copy_entries(
+        paths
+            .iter()
+            .zip(files)
+            .map(|(path, (_, bytes))| (path.as_path(), bytes.len())),
+    )?;
+    let mut contents = files
+        .iter()
+        .map(|(path, bytes)| {
+            (
+                format!("/{path}"),
+                std::str::from_utf8(bytes).ok().map(str::to_owned),
+            )
+        })
+        .collect::<Vec<_>>();
+    contents.sort_by(|a, b| a.0.cmp(&b.0));
+    reconcile_files(fs, store, contents, snapshot).await
+}
+
+async fn reconcile_files(
+    fs: &dyn MemoryRepository,
+    store: &str,
+    files: Vec<(String, Option<String>)>,
+    snapshot: &mut CopySnapshot,
+) -> Result<HarvestReport, FuseError> {
     let present: HashSet<&str> = files.iter().map(|(path, _)| path.as_str()).collect();
     let mut report = HarvestReport::default();
     for (path, content) in &files {
@@ -400,12 +494,15 @@ mod tests {
                 admitted
             );
         }
-        let path = Path::new("same");
+        let paths: Vec<PathBuf> = (0..=awaken_resource_contract::MAX_MEMORIES_PER_STORE)
+            .map(|i| PathBuf::from(format!("file-{i}")))
+            .collect();
         assert!(
-            validate_copy_entries(std::iter::repeat_n(
-                (path, COPY_LIMITS.file_bytes as usize),
-                awaken_resource_contract::MAX_MEMORIES_PER_STORE + 1,
-            ))
+            validate_copy_entries(
+                paths
+                    .iter()
+                    .map(|path| (path.as_path(), COPY_LIMITS.file_bytes as usize))
+            )
             .is_err()
         );
     }
