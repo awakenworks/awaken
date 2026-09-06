@@ -71,9 +71,9 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
             .collect(),
-        // Standalone CLI keeps ephemeral Kubernetes writable roots. Hosted
-        // composition explicitly injects its retained-volume policy.
-        k8s_continuation_volume: None,
+        // The operator selects the existing retained-PVC policy. Omission
+        // preserves ephemeral roots and cannot advertise retained Session support.
+        k8s_continuation_volume: file.k8s_continuation_volume.clone(),
         container_hand_bin: file
             .container_hand_bin
             .clone()
@@ -134,6 +134,9 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
         return Err(
             "k8s_namespace, container_hand_bin and podman_bin must not be empty".to_owned(),
         );
+    }
+    if let Some(policy) = sandbox.k8s_continuation_volume.as_ref() {
+        policy.validate().map_err(|error| error.to_string())?;
     }
     if sandbox.package_image_builder.is_some() && sandbox.package_image_registry.is_none() {
         return Err("package_image_builder requires a non-empty package_image_registry".to_owned());

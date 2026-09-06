@@ -1,5 +1,7 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use super::{OperatingMode, Role};
 
 use super::file_support::read_or_create_local_key;
 
@@ -23,6 +25,38 @@ impl std::fmt::Debug for SealKeySource {
 }
 
 impl SealKeySource {
+    /// Select the role-owned source at the existing configuration boundary.
+    /// Root configuration composes this decision; this module owns key policy.
+    pub(super) fn from_config(
+        role: Role,
+        inline: &Option<String>,
+        file: &Option<PathBuf>,
+        mode: OperatingMode,
+        data_dir: &Path,
+    ) -> Result<Self, String> {
+        Ok(match (role, inline, file, mode) {
+            (Role::Coordinator | Role::Worker, None, None, _) => SealKeySource::NotOwnedByRole,
+            (Role::Coordinator | Role::Worker, _, _, _) => {
+                return Err("Control seal-key settings are not owned by this process role".into());
+            }
+            (_, Some(_), Some(_), _) => {
+                return Err(
+                    "configure exactly one of control_seal_key or control_seal_key_file".to_owned(),
+                );
+            }
+            (_, Some(value), None, _) => SealKeySource::Inline(value.clone()),
+            (_, None, Some(path), _) => SealKeySource::File(path.clone()),
+            (_, None, None, OperatingMode::Local) => {
+                SealKeySource::LocalFile(data_dir.join("control-seal.key"))
+            }
+            (_, None, None, OperatingMode::Server) => {
+                return Err(
+                    "server mode requires control_seal_key or control_seal_key_file".to_owned(),
+                );
+            }
+        })
+    }
+
     pub fn description(&self) -> String {
         match self {
             Self::NotOwnedByRole => "not owned by this role".to_owned(),

@@ -6,7 +6,35 @@ use std::path::{Path, PathBuf};
 
 use awaken_session_executor::DispatchBackend;
 
-use super::{OperatingMode, Role};
+use super::{ConfigOverrides, FileConfig, OperatingMode, ResolvedDeployment, Role};
+
+// File selection and decoding stay with the existing file mechanics owner;
+// resolve_file remains the sole typed deployment composition path.
+impl ResolvedDeployment {
+    pub fn load(overrides: ConfigOverrides) -> Result<Self, String> {
+        let home = home_dir();
+        let explicit_path = overrides.config_path.is_some();
+        let config_path = overrides
+            .config_path
+            .clone()
+            .or_else(|| home.as_ref().map(|home| home.join(".awaken/config.toml")))
+            .ok_or_else(|| "config_path_unavailable: pass --config <PATH>".to_owned())?;
+        let file = if config_path.exists() {
+            let source = fs::read_to_string(&config_path)
+                .map_err(|error| format!("read {}: {error}", config_path.display()))?;
+            toml::from_str::<FileConfig>(&source)
+                .map_err(|error| format!("parse {}: {error}", config_path.display()))?
+        } else if explicit_path {
+            return Err(format!(
+                "configured file {} does not exist",
+                config_path.display()
+            ));
+        } else {
+            FileConfig::default()
+        };
+        Self::resolve_file(overrides, home, config_path, file)
+    }
+}
 
 pub(super) fn resolve_data_dir(
     command_line: Option<PathBuf>,

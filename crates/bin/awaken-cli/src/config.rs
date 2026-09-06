@@ -8,6 +8,7 @@
 //! typed value; they do not independently rediscover the deployment.
 
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::fs;
 use std::path::PathBuf;
 
@@ -36,7 +37,7 @@ pub use deployment::{
 };
 use file_schema::FileConfig;
 use file_support::{
-    home_dir, override_port, read_database_url_file, resolve_data_dir, resolve_dispatch_backend,
+    override_port, read_database_url_file, resolve_data_dir, resolve_dispatch_backend,
     resolve_expected_platform_workspace_id, resolve_runtime_database_url, select_store_url,
     validate_suite_hub_url,
 };
@@ -49,30 +50,6 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
 
 impl ResolvedDeployment {
-    pub fn load(overrides: ConfigOverrides) -> Result<Self, String> {
-        let home = home_dir();
-        let explicit_path = overrides.config_path.is_some();
-        let config_path = overrides
-            .config_path
-            .clone()
-            .or_else(|| home.as_ref().map(|home| home.join(".awaken/config.toml")))
-            .ok_or_else(|| "config_path_unavailable: pass --config <PATH>".to_owned())?;
-        let file = if config_path.exists() {
-            let source = fs::read_to_string(&config_path)
-                .map_err(|error| format!("read {}: {error}", config_path.display()))?;
-            toml::from_str::<FileConfig>(&source)
-                .map_err(|error| format!("parse {}: {error}", config_path.display()))?
-        } else if explicit_path {
-            return Err(format!(
-                "configured file {} does not exist",
-                config_path.display()
-            ));
-        } else {
-            FileConfig::default()
-        };
-        Self::resolve_file(overrides, home, config_path, file)
-    }
-
     fn resolve_file(
         overrides: ConfigOverrides,
         home: Option<PathBuf>,
@@ -451,32 +428,13 @@ impl ResolvedDeployment {
         resources
             .validate_dispatch_compatibility(dispatch_backend == DispatchBackend::Postgres)
             .map_err(str::to_owned)?;
-        let seal_key = match (
+        let seal_key = SealKeySource::from_config(
             role,
             &file.control_seal_key,
             &file.control_seal_key_file,
             mode,
-        ) {
-            (Role::Coordinator | Role::Worker, None, None, _) => SealKeySource::NotOwnedByRole,
-            (Role::Coordinator | Role::Worker, _, _, _) => {
-                return Err("Control seal-key settings are not owned by this process role".into());
-            }
-            (_, Some(_), Some(_), _) => {
-                return Err(
-                    "configure exactly one of control_seal_key or control_seal_key_file".to_owned(),
-                );
-            }
-            (_, Some(value), None, _) => SealKeySource::Inline(value.clone()),
-            (_, None, Some(path), _) => SealKeySource::File(path.clone()),
-            (_, None, None, OperatingMode::Local) => {
-                SealKeySource::LocalFile(data_dir.join("control-seal.key"))
-            }
-            (_, None, None, OperatingMode::Server) => {
-                return Err(
-                    "server mode requires control_seal_key or control_seal_key_file".to_owned(),
-                );
-            }
-        };
+            &data_dir,
+        )?;
         let interactive_product = mode == OperatingMode::Local && role == Role::AllInOne;
         let identity_mode = overrides
             .identity_mode
@@ -960,6 +918,56 @@ mod tests {
         )
         .expect_err("O3 invalid owner");
         assert!(error.contains("dispatch_owner"), "O3/E3: {error}");
+    }
+
+    #[test]
+    fn kubernetes_retained_policy_uses_the_existing_runtime_type() {
+        // KP graph: C1 policy omitted/present; C2 size nonempty/blank/missing;
+        // C3 class omitted/explicit; C4 unknown nested key. KP1 omitted =>
+        // retain the existing None default; KP2 present+valid C2, either C3 =>
+        // exact Runtime policy, no new PVC registry; KP3 blank/missing/unknown
+        // => reject before provider construction. API quantity/class admission
+        // remains Kubernetes-owned and is exercised by the live PVC tests.
+        for (policy, accepts, expected) in [
+            (None, true, None),
+            (Some("{ size = '1Gi' }"), true, Some((None, "1Gi"))),
+            (
+                Some("{ size = '2Gi', storage_class_name = 'retained' }"),
+                true,
+                Some((Some("retained"), "2Gi")),
+            ),
+            (Some("{ size = ' ' }"), false, None),
+            (Some("{ storage_class_name = 'retained' }"), false, None),
+            (Some("{ size = '1Gi', unknown = true }"), false, None),
+        ] {
+            let mut source = "sandbox_tier = 'k8s'\n".to_owned();
+            if let Some(policy) = policy {
+                source.push_str(&format!("k8s_continuation_volume = {policy}\n"));
+            }
+            let result = toml::from_str::<FileConfig>(&source)
+                .map_err(|error| error.to_string())
+                .and_then(|file| {
+                    ResolvedDeployment::resolve_file(
+                        ConfigOverrides::default(),
+                        Some(PathBuf::from("/home/dev")),
+                        PathBuf::from("/home/dev/.awaken/config.toml"),
+                        file,
+                    )
+                });
+            assert_eq!(result.is_ok(), accepts, "KP policy={policy:?}: {result:?}");
+            if let Ok(resolved) = result {
+                assert_eq!(
+                    resolved.runtime.sandbox.k8s_continuation_volume,
+                    expected.map(
+                        |(class, size)| awaken_sandbox_container::K8sContinuationVolume {
+                            storage_class_name: class.map(str::to_owned),
+                            size: size.into(),
+                        }
+                    ),
+                    "KP exact policy"
+                );
+            }
+        }
     }
 
     #[test]
