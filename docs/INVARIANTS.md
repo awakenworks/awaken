@@ -17,7 +17,11 @@ holds the rule), and the **Validation** (the test kind that proves it).
   disjoint and that every row names its enforcer/evidence.
 - G42 and G43 remain target rows until their deployment-specific evidence is
   continuously enforced. Completed slices may be cited narrowly without claiming
-  promotion of the whole guardrail.
+  promotion of the whole guardrail. Their diagnostic obligation views reuse the
+  canonical feature requirements in `formal/features.json`; run
+  `scripts/ci/check_formal_coverage.py --require-guardrail G42` or `G43` to make
+  an incomplete promotion fail closed. Section membership here remains the sole
+  Active/Target status authority.
   - **Retired**: G7 (`ExecutionBackend`/`BackendProfile`). That god-seam stays
     retired. Remote tool execution returned in ADR-0044 as the narrow `ToolExecutor`
     port with a concrete driver and tests (G33), not as `ExecutionBackend`; the

@@ -728,6 +728,13 @@ feature prefixes and requires each obligation to be production_kernel_proved
 or implementation_refined. Its generated gap list is the authority; abstract
 evidence is never promoted to make the gate green.
 
+Target guardrails reuse that same qualification policy through exact
+feature/requirement references in `formal/features.json`. The JSON report emits
+the per-guardrail denominator, direct-proof count, exact gaps, and deployment
+assumptions. `--require-guardrail G42` (or `G43`) is the fail-closed promotion
+check; it does not move a row between the status tables in `docs/INVARIANTS.md`
+and does not claim that external deployment observations were executed.
+
 The formalizable-obligation denominator is not derived from all source code: it
 is the number of manually enumerated rows marked `formalizable` in that ledger.
 To prevent that
