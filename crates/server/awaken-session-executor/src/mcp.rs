@@ -456,28 +456,32 @@ impl crate::SharedHost {
             })
     }
 
-    /// Forget an already-cleaned process-local tombstone only when Control
-    /// replays the exact same authorized Stage command. A removed projection
+    /// Forget an already-cleaned process-local tombstone when Control replays
+    /// the exact Stage or renews only its lease/attempt key. A removed projection
     /// owns no remaining process, route, or credential material, so retaining
     /// it must not permanently prevent the canonical realization driver from
-    /// recovering after a concurrent Control CAS. Any changed request remains
-    /// resident and is rejected by the caller as a conflicting realization.
-    pub(crate) fn forget_exact_removed_mcp_projection(
+    /// recovering after a concurrent Control CAS and heartbeat. Changed immutable
+    /// bindings and non-monotonic renewals remain resident. The caller has already
+    /// checked current ownership; removing a tombstone grants no staged receipt.
+    pub(crate) fn forget_replayable_removed_mcp_projection(
         &self,
         request: &awaken_session_contract::StageMcpAttachment,
     ) -> bool {
         let request_fingerprint = request.fingerprint();
+        let renewal_binding = request.renewal_binding_fingerprint();
         self.session_slots
             .modify(&request.generation.session_id, |slot| {
                 if slot.mcp_quiescence_fence.is_some() {
                     return false;
                 }
                 let Some(index) = slot.mcp.iter().position(|projection| {
-                    projection.request.generation == request.generation
-                        && projection.state == crate::session_slot::McpProjectionState::Removed
-                        && projection.request.realization_id == request.realization_id
-                        && projection.request.stage_idempotency_key == request.stage_idempotency_key
-                        && projection.receipt.receipt_fingerprint == request_fingerprint
+                    projection.state == crate::session_slot::McpProjectionState::Removed
+                        && ((projection.request == *request
+                            && projection.receipt.receipt_fingerprint == request_fingerprint)
+                            || (projection.request.renewal_binding_fingerprint()
+                                == renewal_binding
+                                && request.generation.lease_expires_at_unix_ms
+                                    > projection.request.generation.lease_expires_at_unix_ms))
                 }) else {
                     return false;
                 };
