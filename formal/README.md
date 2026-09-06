@@ -746,11 +746,21 @@ toolchain contracts, and dirty candidate trees. Standard local packages may
 explicitly carry null execution evidence. The receipt is CI testimony signed
 through the existing release attestation, not an independently checkable proof
 certificate; tool and runner trust remain explicit.
-The release-side validator offers validate --require-verified --tcb-evidence;
-runtime startup and Session recovery integration are still required. The current
-validator checks observation completeness, contract identity, digest syntax and
-age; authenticating the observer and comparing its version/configuration against
-the actual deployed environment remain deployment admission work.
+The release-side validator offers `validate --require-verified --tcb-evidence
+evidence.json --runtime-fingerprint target.json`. The caller must independently
+authenticate both inputs. Evidence owns `observations`; the target snapshot owns
+`dependencies`, each with exactly `id`, `version`, and `configuration_digest`.
+Both must contain every non-semantic TCB contract exactly once, and observation
+version/configuration must equal the target. Missing/unknown/duplicate dependency
+IDs, unknown fields, malformed digests and invalid clocks fail closed; the
+maximum-age boundary is inclusive. This snapshot is not a second assumption
+ledger and cannot be derived from the evidence it is meant to check.
+`VerifiedProfileAdmission` checks the bounded point-in-time decision, including
+per-dependency mismatch and expiry mutants; Python decision-table tests exercise
+the production validator and its CLI. Neither is universal implementation
+refinement. Authenticating the observer/actual deployment, preventing snapshot
+TOCTOU, runtime invalidation and Session recovery integration remain required.
+Passing the offline validator is not a live runtime Verified identity.
 
 `scripts/ci/formal_profile.py` owns the shared requirement resolution and P0
 qualification used by feature coverage, formal coverage, and release packaging.
