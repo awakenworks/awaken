@@ -25,6 +25,18 @@ Read(w) == /\ w \in Writers
                            resultExpected, resultGeneration, lastApplied,
                            lastBefore, lastAfter>>
 
+\* Client revisions need not originate in this row's history. In particular,
+\* a positive revision can target an absent row (wrong scope or stale client).
+\* R1 missing/zero -> create; R2 missing/positive -> reject; R3 exact/present
+\* -> successor; R4 stale -> reject; R5 exhausted -> unchanged. SQL/storage
+\* conformance owns the concrete realization, not this finite abstract model.
+Propose(w, revision) ==
+    /\ w \in Writers
+    /\ revision \in 0..MaxGeneration
+    /\ expected' = [expected EXCEPT ![w] = revision]
+    /\ UNCHANGED <<generation, value, result, resultExpected, resultGeneration,
+                    lastApplied, lastBefore, lastAfter>>
+
 Write(w) ==
     /\ w \in Writers
     /\ IF expected[w] = generation /\ generation < MaxGeneration
@@ -46,6 +58,7 @@ Write(w) ==
     /\ UNCHANGED expected
 
 Next == (\E w \in Writers: Read(w)) \/ (\E w \in Writers: Write(w))
+        \/ (\E w \in Writers, r \in 0..MaxGeneration: Propose(w, r))
 
 TypeOK == /\ generation \in 0..MaxGeneration
           /\ value \in Writers \cup {NoWriter}

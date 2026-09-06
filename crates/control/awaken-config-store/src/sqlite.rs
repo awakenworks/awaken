@@ -1,6 +1,7 @@
 //! SQLite config-store adapter under the built-in `config` namespace.
 
 use async_trait::async_trait;
+use awaken_sql_storage::StoredU64;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_tenancy::ScopeId;
@@ -100,6 +101,46 @@ fn reject(err: impl std::fmt::Display) -> ConfigStoreError {
     ConfigStoreError(err.to_string())
 }
 
+/// The single CAS write seam for plain and audited writes. The caller owns
+/// any wider audit/effect transaction; this statement owns the atomic revision
+/// predicate, including the absent-row case (zero means create, never update).
+fn write_config_revision(
+    conn: &Connection,
+    p: &str,
+    scope: &str,
+    id: &str,
+    data: &str,
+    expected: u64,
+) -> Result<Option<u64>, ConfigStoreError> {
+    let expected = StoredU64::try_from(expected).map_err(reject)?;
+    let next = expected.checked_add(1).map_err(reject)?;
+    let statement = if expected.domain_value() == 0 {
+        format!(
+            "INSERT INTO {p}_agent (id, data, scope_id, generation) \
+                 SELECT ?1, ?2, ?3, ?4 WHERE ?5 = 0 \
+                 ON CONFLICT(scope_id, id) DO NOTHING RETURNING generation"
+        )
+    } else {
+        format!(
+            "UPDATE {p}_agent SET data = ?2, generation = ?4 \
+                 WHERE id = ?1 AND scope_id = ?3 AND generation = ?5 RETURNING generation"
+        )
+    };
+    conn.query_row(
+        &statement,
+        params![
+            id,
+            data,
+            scope,
+            next.database_value(),
+            expected.database_value()
+        ],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(reject)
+}
+
 #[async_trait]
 impl ScopedConfigRegistry for SqliteConfigStore {
     async fn list_config_scopes(&self) -> Result<Vec<ScopeId>, ConfigStoreError> {
@@ -132,15 +173,24 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         self.with_conn(move |conn, p| {
             // Agent identity is `(scope_id, id)`: another scope may reuse the
             // same portable Agent id without reading or clobbering this row.
-            conn.execute(
+            let applied: Option<u64> = conn.query_row(
                 &format!(
                     "INSERT INTO {p}_agent (id, data, scope_id, generation) VALUES (?1, ?2, ?3, 1) \
                      ON CONFLICT(scope_id, id) DO UPDATE SET data = excluded.data, \
-                     generation = {p}_agent.generation + 1"
+                     generation = {p}_agent.generation + 1 \
+                     WHERE {p}_agent.generation > 0 AND {p}_agent.generation < 9223372036854775807 \
+                     RETURNING generation"
                 ),
                 params![id, data, scope],
+                |row| row.get(0),
             )
+            .optional()
             .map_err(reject)?;
+            if applied.is_none() {
+                return Err(ConfigStoreError(
+                    "config generation exhausted or invalid".into(),
+                ));
+            }
             Ok(())
         })
         .await
@@ -254,18 +304,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                     }
                 }
             }
-            let changed = tx
-                .execute(
-                    &format!(
-                        "INSERT INTO {p}_agent (id, data, scope_id, generation) \
-                         VALUES (?1, ?2, ?3, 1) ON CONFLICT(scope_id, id) DO UPDATE SET \
-                         data = excluded.data, generation = {p}_agent.generation + 1 \
-                         WHERE {p}_agent.generation = ?4"
-                    ),
-                    params![id, data, scope, expected_generation],
-                )
-                .map_err(reject)?;
-            if changed != 1 {
+            if write_config_revision(&tx, p, &scope, &id, &data, expected_generation)?.is_none() {
                 let current_revision = tx
                     .query_row(
                         &format!(
@@ -460,21 +499,10 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         let data = serde_json::to_string(config).map_err(reject)?;
         let scope = scope.0.clone();
         self.with_conn(move |conn, p| {
-            let changed = conn
-                .execute(
-                    &format!(
-                        "INSERT INTO {p}_agent (id, data, scope_id, generation) \
-                         VALUES (?1, ?2, ?3, 1) ON CONFLICT(scope_id, id) DO UPDATE SET \
-                         data = excluded.data, generation = {p}_agent.generation + 1 \
-                         WHERE {p}_agent.generation = ?4"
-                    ),
-                    params![id, data, scope, expected_generation],
-                )
-                .map_err(reject)?;
-            if changed == 1 {
-                return Ok(ConfigWrite::Applied {
-                    revision: expected_generation.saturating_add(1).max(1),
-                });
+            if let Some(revision) =
+                write_config_revision(conn, p, &scope, &id, &data, expected_generation)?
+            {
+                return Ok(ConfigWrite::Applied { revision });
             }
             let current_revision = conn
                 .query_row(

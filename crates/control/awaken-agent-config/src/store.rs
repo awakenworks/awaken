@@ -222,7 +222,10 @@ pub trait ConfigRegistry: Send + Sync {
     async fn put_config(&self, config: &AgentConfig) -> Result<(), ConfigStoreError>;
 
     /// Store only when `expected_revision` is still current. Revision zero
-    /// means "create only". Adapters without CAS support fail explicitly.
+    /// means "create only"; a positive revision never creates an absent row.
+    /// Success returns the committed revision, not a client-side prediction.
+    /// Adapters reject revisions whose successor exceeds their durable range.
+    /// Adapters without CAS support fail explicitly.
     async fn put_config_if_revision(
         &self,
         _config: &AgentConfig,
@@ -387,6 +390,8 @@ pub trait ScopedConfigRegistry: Send + Sync {
         ))
     }
 
+    /// Scoped form of [`ConfigRegistry::put_config_if_revision`], including
+    /// create-only zero and fail-closed durable revision exhaustion.
     async fn put_config_if_revision_scoped(
         &self,
         _scope: &ScopeId,

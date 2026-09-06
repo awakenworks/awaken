@@ -308,6 +308,7 @@ def main() -> None:
     model_selection.add_argument("--agent-input-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--resource-preparation-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--resolution-failure-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--config-cas-model-mutant", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
     if arguments.memory_copy_model_mutant is not None:
         check_memory_copy_model_mutant(arguments.memory_copy_model_mutant)
@@ -320,6 +321,9 @@ def main() -> None:
         return
     if arguments.resolution_failure_model_mutant is not None:
         check_resolution_failure_model_mutant(arguments.resolution_failure_model_mutant)
+        return
+    if arguments.config_cas_model_mutant is not None:
+        check_config_cas_model_mutant(arguments.config_cas_model_mutant)
         return
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(MutationOracleTests)
     if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
@@ -455,6 +459,24 @@ def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
         (source, witness, "NoConflictedRunHasSettled"),
     ], dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
     print("Resolution conflict: execution mutant killed; terminal settlement reachability witnessed")
+
+
+def check_config_cas_model_mutant(tlc_jar: Path) -> None:
+    # R2: the old unconditional INSERT accepted a nonzero expected revision on
+    # absence; R5: removing exhaustion admits a successor outside storage bounds.
+    # The shared oracle requires a green baseline and each exact invariant;
+    # parser errors and unavailable TLC are never credited as detection.
+    source = (ROOT / "formal/tla/AggregateCAS.tla").read_text(encoding="utf-8")
+    config = (ROOT / "formal/tla/AggregateCAS.cfg").read_text(encoding="utf-8")
+    guard = "expected[w] = generation /\\ generation < MaxGeneration"
+    if source.count(guard) != 1:
+        raise SystemExit("Config CAS mutation anchor drifted; review the model")
+    check_tlc_model_mutations(tlc_jar, "AggregateCAS", source, config, [
+        (source.replace(guard, "(generation = 0 \\/ expected[w] = generation) /\\ generation < MaxGeneration"),
+         config, "AppliedMatchedGeneration"),
+        (source.replace(guard, "expected[w] = generation"), config, "TypeOK"),
+    ])
+    print("Config CAS mutation score: 2/2 killed (absent-row predicate, exhaustion)")
 
 
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,

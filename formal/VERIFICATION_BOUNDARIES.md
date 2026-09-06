@@ -24,6 +24,20 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- Config CAS uses one statement owner per SQL adapter for both ordinary and
+  audited writes: expected zero inserts only, positive revisions update only,
+  and the returned revision is the stored `RETURNING` value. Existing `StoredU64`
+  checked arithmetic prevents signed-range exhaustion; SQLite's unconditional
+  upsert also rejects exhaustion instead of promoting the integer to REAL.
+  Shared SQLite/PostgreSQL decision, concurrent-writer, audit rollback and
+  reopen tests cover the adapters. AggregateCAS permits arbitrary client
+  revisions, including positive revisions against absence; removing the
+  absent-row predicate or exhaustion guard must kill the corresponding model
+  mutant. These SQL obligations remain abstract-model grade.
+- Console initialization and route changes both reuse `workspaceFromPath`;
+  no separate encoded-Workspace parser remains. Storage remains presentation
+  only, and the server remains the authorization authority. Component tests and
+  type checking are product evidence, not Rust/WASM or browser-scheduler proof.
 - Agent input revisions use the existing config-resolver validator and one
   private scalar decision kernel. Kani checks all signed revision values and
   aggregate-equality classes: invalid attempts reject, positive exact replays

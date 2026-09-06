@@ -134,16 +134,46 @@ fn reject(err: impl std::fmt::Display) -> ConfigStoreError {
     ConfigStoreError(err.to_string())
 }
 
-fn database_generation(value: u64) -> Result<i64, ConfigStoreError> {
-    StoredU64::try_from(value)
-        .map(StoredU64::database_value)
-        .map_err(reject)
-}
-
 fn domain_generation(value: i64) -> Result<u64, ConfigStoreError> {
     StoredU64::try_from(value)
         .map(StoredU64::domain_value)
         .map_err(reject)
+}
+
+/// Shared by ordinary CAS and the audited transaction. A missing row is not
+/// locked by SELECT FOR UPDATE, so creation must be an atomic insert-only
+/// statement; a positive expected revision is strictly update-only.
+async fn write_config_revision(
+    conn: &mut sqlx::PgConnection,
+    scope: &ScopeId,
+    config: &AgentConfig,
+    expected: u64,
+) -> Result<Option<u64>, ConfigStoreError> {
+    let expected = StoredU64::try_from(expected).map_err(reject)?;
+    let next = expected.checked_add(1).map_err(reject)?;
+    let statement = if expected.domain_value() == 0 {
+        format!(
+            "INSERT INTO {NS}_agent (id, data, scope_id, generation) \
+                 SELECT $1, $2, $3, $4 WHERE $5 = 0 \
+                 ON CONFLICT(scope_id, id) DO NOTHING RETURNING generation"
+        )
+    } else {
+        format!(
+            "UPDATE {NS}_agent SET data = $2, generation = $4 \
+                 WHERE id = $1 AND scope_id = $3 AND generation = $5 RETURNING generation"
+        )
+    };
+    sqlx::query_scalar::<_, i64>(&statement)
+        .bind(&config.id)
+        .bind(Json(config))
+        .bind(&scope.0)
+        .bind(next.database_value())
+        .bind(expected.database_value())
+        .fetch_optional(conn)
+        .await
+        .map_err(reject)?
+        .map(domain_generation)
+        .transpose()
 }
 
 #[async_trait::async_trait]
@@ -292,19 +322,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
                 .map_err(reject)?;
             }
         }
-        let applied = sqlx::query_scalar::<_, i64>(&format!(
-            "INSERT INTO {NS}_agent (id, data, scope_id, generation) VALUES ($1, $2, $3, 1) \
-             ON CONFLICT (scope_id, id) DO UPDATE SET data = excluded.data, \
-             generation = {NS}_agent.generation + 1 \
-             WHERE {NS}_agent.generation = $4 RETURNING generation"
-        ))
-        .bind(&config.id)
-        .bind(Json(&config))
-        .bind(&scope.0)
-        .bind(database_generation(expected_generation)?)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(reject)?;
+        let applied = write_config_revision(&mut tx, scope, &config, expected_generation).await?;
         if applied.is_none() {
             let current_revision = sqlx::query_scalar::<_, i64>(&format!(
                 "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2"
@@ -472,30 +490,18 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         config: &AgentConfig,
         expected_generation: u64,
     ) -> Result<ConfigWrite, ConfigStoreError> {
-        let applied = sqlx::query_scalar::<_, i64>(&format!(
-            "INSERT INTO {NS}_agent (id, data, scope_id, generation) VALUES ($1, $2, $3, 1) \
-             ON CONFLICT (scope_id, id) DO UPDATE SET data = excluded.data, \
-             generation = {NS}_agent.generation + 1 \
-             WHERE {NS}_agent.generation = $4 RETURNING generation"
-        ))
-        .bind(&config.id)
-        .bind(Json(config))
-        .bind(&scope.0)
-        .bind(database_generation(expected_generation)?)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(reject)?;
-        if let Some(generation) = applied {
-            return Ok(ConfigWrite::Applied {
-                revision: domain_generation(generation)?,
-            });
+        let mut conn = self.pool.acquire().await.map_err(reject)?;
+        if let Some(revision) =
+            write_config_revision(&mut conn, scope, config, expected_generation).await?
+        {
+            return Ok(ConfigWrite::Applied { revision });
         }
         let current_revision = sqlx::query_scalar::<_, i64>(&format!(
             "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2"
         ))
         .bind(&config.id)
         .bind(&scope.0)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *conn)
         .await
         .map_err(reject)?
         .map(domain_generation)
