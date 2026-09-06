@@ -693,6 +693,15 @@ impl MetricsRecorder for RecordingMetrics {
 /// failure injector to the memory suites; disabled leaves Postgres-only suites
 /// compilable without reopening the in-memory production authority.
 #[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Debug)]
+pub enum FinishFault {
+    BeforeWrite,
+    LostResponse,
+    Timeout,
+    Rejected,
+}
+
+#[cfg(feature = "test-support")]
 pub struct FlakyDispatchStore {
     inner: Arc<awaken_run_ingress::MemoryDispatchStore>,
     fail_claims: AtomicUsize,
@@ -703,6 +712,8 @@ pub struct FlakyDispatchStore {
     renewal_response_gate: Option<Arc<tokio::sync::Semaphore>>,
     fail_retry_exhaustion_claims: AtomicUsize,
     retry_exhaustion_claim_attempts: AtomicUsize,
+    finish_fault: std::sync::Mutex<Option<FinishFault>>,
+    finish_claims: std::sync::Mutex<Vec<awaken_run_ingress::RunClaim>>,
 }
 
 #[cfg(feature = "test-support")]
@@ -719,7 +730,18 @@ impl FlakyDispatchStore {
             renewal_response_gate: None,
             fail_retry_exhaustion_claims: AtomicUsize::new(0),
             retry_exhaustion_claim_attempts: AtomicUsize::new(0),
+            finish_fault: std::sync::Mutex::new(None),
+            finish_claims: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    pub fn with_finish_fault(mut self, fault: FinishFault) -> Self {
+        self.finish_fault = std::sync::Mutex::new(Some(fault));
+        self
+    }
+
+    pub fn finish_claims(&self) -> Vec<awaken_run_ingress::RunClaim> {
+        self.finish_claims.lock().unwrap().clone()
     }
 
     pub fn with_retry_exhaustion_failures(self, failures: usize) -> Self {
@@ -911,6 +933,28 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
         &self,
         claim: &awaken_run_ingress::RunClaim,
     ) -> Result<awaken_run_ingress::SettleOutcome, awaken_run_ingress::DispatchError> {
+        self.finish_claims.lock().unwrap().push(claim.clone());
+        let fault = self.finish_fault.lock().unwrap().take();
+        match fault {
+            Some(FinishFault::BeforeWrite) => {
+                return Err(awaken_run_ingress::DispatchError::Unavailable(
+                    "before write".into(),
+                ));
+            }
+            Some(FinishFault::LostResponse) => {
+                self.inner.finish_attempt(claim).await?;
+                return Err(awaken_run_ingress::DispatchError::Unavailable(
+                    "lost response".into(),
+                ));
+            }
+            Some(FinishFault::Timeout) => return std::future::pending().await,
+            Some(FinishFault::Rejected) => {
+                return Err(awaken_run_ingress::DispatchError::Rejected(
+                    "invalid request".into(),
+                ));
+            }
+            None => {}
+        }
         self.inner.finish_attempt(claim).await
     }
     async fn relinquish_claim(

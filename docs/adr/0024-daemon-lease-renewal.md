@@ -107,13 +107,18 @@ begin B -> Applied -> external future B
 Explicit executor return can acknowledge quiescence only when no nested effect
 was abandoned and process cleanup succeeded. The attempt-local
 `RuntimeRunContext.physical_quiescence` latch propagates uncertainty from Native
-inference/tool cancellation and ACP cleanup failure; it can veto an ACK but
+tool cancellation and ACP cleanup failure; it can veto an ACK but
 cannot clear the Dispatch slot. Inline children share this latch; a separately
 admitted attempt receives a fresh one. No second durable authority is introduced.
 
 Cancellation that exceeds the lease request budget keeps observing the same
 owned executor Future with its Thread lock held. The budget emits a diagnostic;
 it does not preempt the executor's TERM-to-KILL cleanup or discard a late ACK.
+After observed return, unavailable or timed-out `finish_attempt` requests retry
+the same claim without rerunning the executor. This also covers a committed ACK
+whose response was lost: the existing empty-slot transition is idempotent, while
+a different successor slot remains fenced. Permanent rejection still fails.
+Process death before a successful ACK remains an explicit recovery boundary.
 Cooperative cancellation may cause a verified return; dropping or aborting a
 nested Future does not prove an opaque remote request stopped. Task abort, process crash, Lease
 expiry, and heartbeat expiry therefore leave the slot occupied. Recovery waits
@@ -122,12 +127,17 @@ authoritative provider terminal receipt. Process/Pod termination can prove only
 process-bound tool/Sandbox work. This chooses safety over availability when
 external work cannot be proven stopped.
 
-Consequently, a Native interruption can durably admit cancellation intent yet
-remain unable to finish or resume the same Thread after abandoning an opaque
-request. The current provider ports do not supply a terminal-receipt recovery
-command. This availability limit is explicit: neither a client disconnect nor
-an elapsed timeout may be treated as provider termination. ACP's fixed business
-outcome likewise does not imply successful process cleanup.
+Consequently, interruption of a Native opaque tool can admit cancellation intent
+yet remain unable to finish or resume the same Thread after abandoning that
+effect. The current ordinary-tool ports do not supply a terminal-receipt recovery
+command. Native inference is a separate branch: `LlmExecutor` returns response
+data, and the Runtime must admit and invoke any proposed tool afterward. Its
+closed provider-owned capabilities are search/fetch, not arbitrary mutation.
+Discarding that response ends the local attempt without leaving an invoked
+Awaken tool behind, so pure-inference cancellation can finish and resume. This
+does not establish that provider computation or billing stopped on disconnect.
+Adding a provider-owned mutation capability must revisit this boundary. ACP's
+fixed business outcome likewise does not imply successful process cleanup.
 
 One continuation case is stronger than terminal receipt: an A2A executor may
 recover a complete committed `TaskReference` whose endpoint matches the frozen

@@ -26,11 +26,20 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 - Cowork cancellation and credential rollout extend the existing Dispatch,
   Runtime context, ACP supervisor and Vault outbox owners. Lease-request timeout
-  retains the owned cleanup observer; Native abandonment and ACP reap failure
+  retains the owned cleanup observer; Native tool abandonment and ACP reap failure
   veto physical ACK without rewriting the business outcome. Tests distinguish
   cancellation admission, executor return, physical termination and settlement.
-  Native cancellation without a provider terminal receipt can still block
+  Native opaque-tool cancellation without a terminal receipt can still block
   same-Thread resumption indefinitely; no recovery API or receipt is invented.
+  Pure Native inference returns data, and its discarded response cannot invoke
+  a governed tool. Cancellation can end that local attempt and resume; neither
+  this test nor the model proves that provider computation/billing stopped.
+  The same owned drive retries an observed-return ACK after transient write
+  failure, response loss or request timeout, without rerunning execution; a
+  permanent rejection remains an error. Tests inject all four outcomes into
+  the existing Dispatch store fixture. Progress requires transport recovery
+  while the observer remains alive; process death before ACK is not repaired by
+  this local retry or proved away by scalar fencing.
   See ADR-0024 D5. Docker, Podman and Kubernetes share a real process oracle for
   Pending-wait cancellation, concurrent wait/poll/signal, TERM and KILL; these
   tests do not establish termination of an opaque remote provider operation.

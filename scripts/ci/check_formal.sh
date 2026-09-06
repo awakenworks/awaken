@@ -88,6 +88,7 @@ cargo test -p awaken-runtime-host --lib background_task::ownership::tests
 # Async return/cleanup is not covered by the scalar physical-slot proof.
 cargo test -p awaken-run-ingress --features test-support --test pool_memory
 cargo test -p awaken-run-ingress --features test-support --test lease_semantics
+cargo test -p awaken-runtime-host --lib durable_interrupt_returns_after_intent
 cargo test -p awaken-run-executor-acp --lib terminal_business_outcome
 cargo test -p awaken-protocol-managed --features test-support --lib rollout
 cargo test -p awaken-credential-vault --lib managed_update_atomically

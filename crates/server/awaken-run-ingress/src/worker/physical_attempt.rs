@@ -10,7 +10,9 @@ use std::sync::Arc;
 use super::DispatchWorker;
 use crate::Error;
 use crate::clock::Clock;
-use crate::dispatch::{AttemptAdmission, Claimed, Dispatch, RunClaim, SettleOutcome};
+use crate::dispatch::{
+    AttemptAdmission, Claimed, Dispatch, DispatchError, RunClaim, SettleOutcome,
+};
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{AttemptRecoveryMode, LiveInput};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -106,7 +108,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
 
         if cancellation.is_cancelled() {
-            let _ = self.store.finish_attempt(&claim).await?;
+            let _ = self.finish_observed_attempt(&claim, &timing).await?;
             return Err(Error::Execution(
                 awaken_runtime_contract::execution::Error::Execution(
                     "dispatch authority was lost before physical attempt start".to_string(),
@@ -150,7 +152,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 "Executor returned without physical termination evidence; retaining attempt slot");
             return Ok(result);
         }
-        if self.store.finish_attempt(&claim).await? != SettleOutcome::Applied {
+        if self.finish_observed_attempt(&claim, &timing).await? != SettleOutcome::Applied {
             return Err(Error::Execution(
                 awaken_runtime_contract::execution::Error::Execution(
                     "physical Run attempt quiescence acknowledgement was fenced".to_string(),
@@ -158,5 +160,30 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             ));
         }
         Ok(result)
+    }
+
+    async fn finish_observed_attempt(
+        &self,
+        claim: &RunClaim,
+        timing: &AuthorityLeaseTiming,
+    ) -> Result<SettleOutcome, Error> {
+        loop {
+            match tokio::time::timeout(timing.request_timeout(), self.store.finish_attempt(claim))
+                .await
+            {
+                Ok(Ok(outcome)) => return Ok(outcome),
+                Ok(Err(DispatchError::Unavailable(_))) | Err(_) => {
+                    // Actual return is already known; retry only its exact,
+                    // idempotent ACK. A lost response may have cleared the slot.
+                    // Claim loss cannot invalidate evidence about this old slot,
+                    // and a successor slot is fenced by the existing store.
+                    tracing::warn!(run_id = %claim.run_id.0, owner = %claim.owner,
+                        lease_epoch = claim.epoch, phase = "physical_quiescence_ack",
+                        "Physical attempt ACK unavailable; retaining observed return for retry");
+                    tokio::time::sleep(timing.retry_delay()).await;
+                }
+                Ok(Err(error)) => return Err(error.into()),
+            }
+        }
     }
 }

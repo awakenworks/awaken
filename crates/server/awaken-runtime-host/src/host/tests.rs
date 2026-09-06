@@ -2700,21 +2700,24 @@ async fn interrupt_ends_an_in_flight_run_as_cancelled() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn durable_interrupt_returns_after_intent_without_fabricating_physical_completion() {
+async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finishes() {
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
     // Cause/effect: C0 is the canonical Dispatch runtime composition; C1 is a
     // durable Run blocked inside Provider inference; C2 is an interrupt accepted
     // by the Session control edge. E0 is that setup failure cannot masquerade as
     // a gate hang; E1 is that C2 returns while C1 remains blocked; E2 is the
-    // physical slot remaining fenced when dropping the local inference future
-    // provides no provider terminal receipt. The former oracle expected a
-    // Cancelled terminal solely from local Drop and missed this uncertainty. Constraint: the caller may wake the pool but must never become
-    // a synchronous dispatch driver.
+    // existing pool drainer committing one Cancelled terminal fact under the new
+    // claim epoch. Constraint: the caller may wake the pool but must never become
+    // a synchronous dispatch driver. This is the pure Native inference branch:
+    // LlmExecutor yields response data, not an invoked Awaken tool. Discarding
+    // that response cannot authorize a later tool call. Opaque tool abandonment
+    // is separately fenced by lease_semantics::native_cancelled_external_future.
+    // No claim is made that disconnect terminates provider-side computation.
     //
     // | Rule | Runtime | durable Run | Provider | interrupt | Effects |
     // |---|---|---|---|---|---|
-    // | R1 | installed | active | blocked | accepted | E0 + E1 + E2 (no fabricated ACK) |
+    // | R1 | installed | active | blocked | accepted | E0 + E1 + eventual E2 |
     // | R2 | installed | absent | n/a | replay/no-op | immediate success (sibling test) |
     let reached = Arc::new(tokio::sync::Notify::new());
     let gate = Arc::new(tokio::sync::Notify::new());
@@ -2747,22 +2750,27 @@ async fn durable_interrupt_returns_after_intent_without_fabricating_physical_com
     .expect("R1/E1 interrupt admission must not await Provider completion")
     .expect("R1 interrupt admission");
 
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), run)
+        .await
+        .expect("R1/E2 cancellation drainer")
+        .expect("R1 join")
+        .expect("R1 durable Run");
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(150), &mut run)
-            .await
-            .is_err(),
-        "R1/E2 unknown provider termination cannot become a completed drain"
+        matches!(result.state, RunState::Ended(EndCause::Cancelled)),
+        "R1/E2: {:?}",
+        result.state
     );
     use awaken_run_ingress::DispatchQueue as _;
-    let rows = dispatch.list_dispatches().await.unwrap();
     assert!(
-        rows.iter()
-            .any(|row| row.physical_attempt_active && row.cancellation_requested),
-        "R1/E2 accepted cancellation and physical uncertainty are separate durable facts"
+        dispatch
+            .list_dispatches()
+            .await
+            .unwrap()
+            .iter()
+            .all(|row| !row.physical_attempt_active),
+        "pure inference cancellation leaves no tool effect to fence"
     );
     gate.notify_waiters();
-    run.abort();
-    assert!(matches!(run.await, Err(error) if error.is_cancelled()));
 }
 
 #[tokio::test]

@@ -937,6 +937,69 @@ async fn expired_replaced_claim_stops_the_only_renewal_and_executes_no_effect() 
 }
 
 #[tokio::test(start_paused = true)]
+async fn physical_return_ack_retries_transport_without_reexecuting_the_attempt() {
+    // Cause/effect table after actual executor return: A1 transient failure
+    // before write; A2 write committed but response lost; A3 request times out;
+    // A4 permanent rejection. A1-A3 -> retry the SAME claim, one inference,
+    // one input and one terminal commit, no occupied slot; A4 -> error, retain
+    // the slot. Empty-slot ACK is the existing idempotent store transition.
+    // This is a Worker integration test, not just a direct store retry oracle.
+    for fault in [
+        harness::FinishFault::BeforeWrite,
+        harness::FinishFault::LostResponse,
+        harness::FinishFault::Timeout,
+        harness::FinishFault::Rejected,
+    ] {
+        let rejected = matches!(fault, harness::FinishFault::Rejected);
+        let store = Arc::new(FlakyDispatchStore::new(0).with_finish_fault(fault));
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let (runtime, infers) = counting_text_runtime();
+        let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "ack-owner")
+            .with_lease_ms(90);
+        store
+            .enqueue(RunDispatch::new(activation("ack-retry")))
+            .await
+            .unwrap();
+        let claimed = store
+            .claim("ack-owner", 90, 0, &Default::default())
+            .await
+            .unwrap()
+            .unwrap();
+        let exact = RunClaim::from(&claimed.lease);
+        let result = tokio::time::timeout(
+            Duration::from_millis(250),
+            worker.drive_claimed(claimed, Arc::new(ManualClock::new(0))),
+        )
+        .await
+        .expect("A3 ACK request timeout must not abandon the observed return");
+        assert_eq!(
+            result.is_err(),
+            rejected,
+            "{fault:?}: retry transport, not execution"
+        );
+        assert_eq!(infers.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            commit.commit_count(),
+            2,
+            "one input and one terminal commit, no replay"
+        );
+        assert_eq!(
+            store.finish_claims(),
+            vec![exact; if rejected { 1 } else { 2 }]
+        );
+        assert_eq!(
+            store
+                .list_dispatches()
+                .await
+                .unwrap()
+                .iter()
+                .any(|row| row.physical_attempt_active),
+            rejected
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn lost_renewal_cancels_the_in_flight_attempt() {
     // Test design — Rule RG5 from the adjacent decision table. Causes: C1 the
     // exact claim has entered its attempt; C2 its lease expires; C3 a peer
