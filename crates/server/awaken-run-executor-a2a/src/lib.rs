@@ -1441,6 +1441,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_rejects_a_fetch_response_for_another_task_before_remote_abort() {
+        // Causes: C1 task remote-pinned is committed; C2 cancellation fetches
+        // that exact id; C3 the peer responds with active task remote-other.
+        // Effects: E1 reject the mismatched response; E2 never issue a cancel
+        // for either id. The matching active row is covered by
+        // `durable_cancel_addresses_the_committed_remote_task`.
+        //
+        // | Rule | requested id | response id | Effects |
+        // |---|---|---|---|
+        // | R1 | remote-pinned | remote-pinned | cancel remote-pinned |
+        // | R2 | remote-pinned | remote-other | E1+E2 |
+        let transport = Arc::new(ScriptedTransport::new(vec![
+            response(
+                r#"{"task":{"kind":"task","id":"remote-pinned","contextId":"ctx-pinned","status":{"state":"input-required"}}}"#,
+            ),
+            response(
+                r#"{"kind":"task","id":"remote-other","contextId":"ctx-pinned","status":{"state":"working"}}"#,
+            ),
+        ]));
+        let rec = Arc::new(Rec::default());
+        let activation = activation("a2a:http://remote.invalid");
+        let context = || {
+            RuntimeRunContext::new()
+                .with_commit(rec.clone())
+                .with_reader(rec.clone())
+        };
+        assert_eq!(
+            scripted_executor(transport.clone())
+                .execute(activation.clone(), context())
+                .await
+                .unwrap(),
+            RunState::Awaiting
+        );
+
+        let error = scripted_executor(transport.clone())
+            .cancel(activation, context())
+            .await
+            .expect_err("mismatched task identity must fail closed");
+        assert!(error.to_string().contains("identity changed"), "R2/E1");
+        let paths = transport
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, path, _)| path.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec!["/v1/a2a/message:send", "/v1/a2a/tasks/remote-pinned"],
+            "R2/E2"
+        );
+    }
+
+    #[tokio::test]
     async fn failed_remote_cancel_is_retryable_against_the_same_committed_task() {
         let active = r#"{"kind":"task","id":"remote-retry","contextId":"ctx-retry","status":{"state":"working"}}"#;
         let transport = Arc::new(ScriptedTransport::new(vec![

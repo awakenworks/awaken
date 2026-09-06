@@ -68,9 +68,11 @@ impl RunExecutor for A2aRunExecutor {
         let task = match route {
             TaskReferenceRoute::Reattach(reference) => {
                 verify_attempt_ownership(context.ownership.as_deref()).await?;
-                get_task(transport.as_ref(), &reference.task_id)
+                let task = get_task(transport.as_ref(), &reference.task_id)
                     .await
-                    .map_err(|error| Error::Execution(error.to_string()))?
+                    .map_err(|error| Error::Execution(error.to_string()))?;
+                validate_reattached_task(&reference, &task)?;
+                task
             }
             TaskReferenceRoute::Fresh => {
                 let normalized = awaken_runtime_contract::NormalizedModelInput::new(
@@ -259,6 +261,7 @@ impl RunAttemptExecutor for A2aRunExecutor {
         let task = get_task(transport.as_ref(), &reference.task_id)
             .await
             .map_err(|error| Error::Execution(error.to_string()))?;
+        validate_reattached_task(&reference, &task)?;
         if matches!(
             task.status.state,
             TaskState::Completed | TaskState::Failed | TaskState::Canceled | TaskState::Rejected

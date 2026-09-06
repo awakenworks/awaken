@@ -41,9 +41,14 @@ const fn task_reference_admitted(
     endpoint_present: bool,
     task_id_present: bool,
     context_id_present: bool,
+    task_id_matches: bool,
     continuation_context_matches: bool,
 ) -> bool {
-    endpoint_present && task_id_present && context_id_present && continuation_context_matches
+    endpoint_present
+        && task_id_present
+        && context_id_present
+        && task_id_matches
+        && continuation_context_matches
 }
 
 pub(super) fn task_reference_decision(
@@ -71,6 +76,7 @@ impl TaskReference {
             !self.endpoint.is_empty(),
             !self.task_id.is_empty(),
             !self.context_id.is_empty(),
+            true,
             true,
         ) {
             return Ok(());
@@ -100,6 +106,7 @@ pub(super) fn continued_task_reference(
         !reference.endpoint.is_empty(),
         !reference.task_id.is_empty(),
         !reference.context_id.is_empty(),
+        true,
         reference.context_id == previous.context_id,
     ) {
         return Ok(reference);
@@ -108,6 +115,28 @@ pub(super) fn continued_task_reference(
     Err(Error::Execution(format!(
         "A2A continuation changed context from {:?} to {:?}",
         previous.context_id, reference.context_id
+    )))
+}
+
+pub(super) fn validate_reattached_task(reference: &TaskReference, task: &Task) -> Result<()> {
+    if task_reference_admitted(
+        !reference.endpoint.is_empty(),
+        !task.id.is_empty(),
+        !task.context_id.is_empty(),
+        task.id == reference.task_id,
+        task.context_id == reference.context_id,
+    ) {
+        return Ok(());
+    }
+    reference.validate()?;
+    if task.id.is_empty() || task.context_id.is_empty() {
+        return Err(Error::Execution(
+            "reattached A2A task is missing its task or context identity".to_string(),
+        ));
+    }
+    Err(Error::Execution(format!(
+        "reattached A2A task identity changed from {:?}/{:?} to {:?}/{:?}",
+        reference.task_id, reference.context_id, task.id, task.context_id
     )))
 }
 
@@ -258,22 +287,25 @@ mod kani_proofs {
     }
 
     #[kani::proof]
-    fn continued_task_reference_requires_complete_fields_and_same_context() {
+    fn task_reference_admission_requires_complete_fields_and_required_identity_matches() {
         // Causes: C1 endpoint present; C2 task id present; C3 context id
-        // present; C4 continuation context matches the committed reference.
+        // present; C4 task identity matches when reattaching; C5 continuation
+        // context matches the committed reference.
         // Effect E1 admits replacement of the durable task reference; E2
         // rejects it without replacing committed state.
         //
-        // | Rule | C1 | C2 | C3 | C4 | Effect |
-        // |---|---|---|---|---|---|
-        // | R1 | yes | yes | yes | yes | E1 |
-        // | R2 | no  | * | * | * | E2 |
-        // | R3 | * | no  | * | * | E2 |
-        // | R4 | * | * | no  | * | E2 |
-        // | R5 | * | * | * | no  | E2 |
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // |---|---|---|---|---|---|---|
+        // | R1 | yes | yes | yes | yes | yes | E1 |
+        // | R2 | no  | * | * | * | * | E2 |
+        // | R3 | * | no  | * | * | * | E2 |
+        // | R4 | * | * | no  | * | * | E2 |
+        // | R5 | * | * | * | no  | * | E2 |
+        // | R6 | * | * | * | * | no  | E2 |
         let endpoint_present: bool = kani::any();
         let task_id_present: bool = kani::any();
         let context_id_present: bool = kani::any();
+        let task_id_matches: bool = kani::any();
         let continuation_context_matches: bool = kani::any();
 
         assert_eq!(
@@ -281,11 +313,13 @@ mod kani_proofs {
                 endpoint_present,
                 task_id_present,
                 context_id_present,
+                task_id_matches,
                 continuation_context_matches,
             ),
             endpoint_present
                 && task_id_present
                 && context_id_present
+                && task_id_matches
                 && continuation_context_matches
         );
     }
