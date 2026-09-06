@@ -28,6 +28,7 @@ into the single ``G`` namespace, and any survivor is reported as an error.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -35,6 +36,7 @@ from pathlib import Path
 INVARIANTS = Path("docs/INVARIANTS.md")
 DESIGN_DIR = Path("docs/design")
 WIKI_ROOT = Path("docs/wiki")
+FEATURES = Path("formal/features.json")
 
 ID_TOKEN = re.compile(r"\bG\d+\b")
 ROW_ID = re.compile(r"^G\d+$")
@@ -95,6 +97,31 @@ def status_table_errors(text: str) -> list[str]:
     return errors
 
 
+def promotion_profile_errors(target_ids: set[str], data: object) -> list[str]:
+    """Require one diagnostic profile for every table-owned target guardrail."""
+    if not isinstance(data, dict) or not isinstance(data.get("guardrail_promotions"), list):
+        return ["formal/features.json has no guardrail_promotions list"]
+    profile_ids: list[str] = []
+    errors: list[str] = []
+    for profile in data["guardrail_promotions"]:
+        guardrail_id = profile.get("id") if isinstance(profile, dict) else None
+        if not isinstance(guardrail_id, str) or ROW_ID.fullmatch(guardrail_id) is None:
+            errors.append("guardrail promotion profile has an invalid id")
+            continue
+        profile_ids.append(guardrail_id)
+    duplicates = sorted({value for value in profile_ids if profile_ids.count(value) > 1})
+    if duplicates:
+        errors.append("duplicate guardrail promotion profiles: " + ", ".join(duplicates))
+    profile_set = set(profile_ids)
+    missing = sorted(target_ids - profile_set)
+    stale = sorted(profile_set - target_ids)
+    if missing:
+        errors.append("target guardrails lack promotion profiles: " + ", ".join(missing))
+    if stale:
+        errors.append("promotion profiles do not belong to target guardrails: " + ", ".join(stale))
+    return errors
+
+
 def self_test() -> None:
     # Cause/effect decision table for status ownership:
     # C1 active table exists; C2 target table exists; C3 ids are disjoint;
@@ -118,6 +145,27 @@ def self_test() -> None:
     assert any("Target" in error for error in status_table_errors(valid.replace("| G2 | target | owner | test |\n", ""))), "R3"
     assert any("both" in error for error in status_table_errors(valid.replace("G2", "G1"))), "R4"
     assert any("prose" in error for error in status_table_errors(valid + "**Active** (G1)\n")), "R5"
+
+    # Promotion-profile cause/effect table: C1 target/profile sets are equal;
+    # C2 ids are canonical and unique. E1 accept iff C1+C2; R2 missing, R3
+    # stale, R4 duplicate, and R5 malformed each reject without changing which
+    # table owns status.
+    #
+    # | Rule | Equal sets | Canonical unique ids | Effect |
+    # |---|---|---|---|
+    # | P1 | T | T | accept |
+    # | P2 | F (missing) | T | reject |
+    # | P3 | F (stale) | T | reject |
+    # | P4 | T | F (duplicate) | reject |
+    # | P5 | - | F (malformed) | reject |
+    profiles = {"guardrail_promotions": [{"id": "G2"}]}
+    assert not promotion_profile_errors({"G2"}, profiles), "P1"
+    assert any("lack" in error for error in promotion_profile_errors({"G2", "G3"}, profiles)), "P2"
+    assert any("do not belong" in error for error in promotion_profile_errors(set(), profiles)), "P3"
+    assert any("duplicate" in error for error in promotion_profile_errors(
+        {"G2"}, {"guardrail_promotions": [{"id": "G2"}, {"id": "G2"}]}
+    )), "P4"
+    assert promotion_profile_errors({"G2"}, {"guardrail_promotions": [{"id": "bad"}]}), "P5"
 
 
 def ids_in(path: Path) -> set[str]:
@@ -146,6 +194,18 @@ def main(argv: list[str]) -> int:
     errors.extend(
         f"{INVARIANTS}: {error}" for error in status_table_errors(registry_text)
     )
+    target_ids = rows_in_section(
+        registry_text, "## Target Guardrails", "## DDD Review Checklist"
+    )
+    try:
+        feature_data = json.loads(FEATURES.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append(f"{FEATURES}: cannot read promotion profiles: {error}")
+    else:
+        errors.extend(
+            f"{FEATURES}: {error}"
+            for error in promotion_profile_errors(target_ids, feature_data)
+        )
 
     # 0: no legacy prefix survives anywhere under docs/.
     for doc in sorted(Path("docs").rglob("*.md")):

@@ -8,7 +8,7 @@ import subprocess
 import sys
 import unittest
 
-from formal_profile import profile_result, resolve_obligations
+from formal_profile import guardrail_results, profile_result, resolve_obligations
 
 
 def fixture():
@@ -111,6 +111,50 @@ class ProfileTests(unittest.TestCase):
                 "runner.safe": {"formalizable": True},
                 "run.external": {"formalizable": False}}
         self.assertEqual(resolve_obligations({"obligation_prefixes": ["run"]}, rows, "owner"), {"run.safe"})
+
+    def test_target_guardrail_profiles_reuse_exact_feature_requirements(self):
+        # Cause/effect graph: C1 exact feature/requirement coordinate exists;
+        # C2 it is repository-controlled safety; C3 its obligation is direct;
+        # C4 deployment assumptions are declared. E1 produces one deduplicated
+        # diagnostic without owning target status. E2 C3 false retains the exact
+        # gap. E3 missing/duplicate/malformed coordinates or C2 false reject.
+        #
+        # | Rule | C1 | C2 | C3 | C4 | Effect |
+        # |---|---|---|---|---|---|
+        # | G1 | T | T | T | T | eligible + assumption |
+        # | G2 | T | T | F | T | exact gap |
+        # | G3 | F | * | * | * | reject |
+        # | G4 | T | F | * | * | reject |
+        features, coverage = fixture()
+        features["features"][0]["requirements"][0]["assumptions"] = ["external.runtime"]
+        features["guardrail_promotions"] = [{
+            "id": "G42",
+            "requirements": [{"feature": "run", "requirement": None}],
+        }]
+        # The fixture requirement needs a stable id because target profiles use
+        # exact coordinates instead of repeating obligation prefixes.
+        features["features"][0]["requirements"][0]["id"] = "safety"
+        features["guardrail_promotions"][0]["requirements"][0]["requirement"] = "safety"
+        direct = profile_result(features, coverage)["guardrails"]["G42"]
+        self.assertTrue(direct["eligible"], "G1/E1")
+        self.assertEqual(direct["deployment_assumptions"], ["external.runtime"], "G1/E1")
+
+        coverage["obligations"][0]["proof_grade"] = "abstract_model_checked"
+        modeled = profile_result(features, coverage)["guardrails"]["G42"]
+        self.assertEqual(modeled["gaps"], ["run.safe"], "G2/E2")
+
+        for mutation in (
+            lambda value: value["guardrail_promotions"][0]["requirements"][0].update(requirement="missing"),
+            lambda value: value["guardrail_promotions"][0]["requirements"].append(
+                {"feature": "run", "requirement": "safety"}
+            ),
+            lambda value: value["guardrail_promotions"][0]["requirements"][0].update(extra=True),
+            lambda value: value["features"][0]["requirements"][0].update(kind="functional"),
+        ):
+            candidate = copy.deepcopy(features)
+            mutation(candidate)
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                guardrail_results(candidate, {"run.safe": coverage["obligations"][0]})
 
     def test_live_checker_and_release_consume_the_same_qualification(self):
         # One real ledger is consumed through the CLI and release imports.
