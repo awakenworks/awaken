@@ -2077,7 +2077,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                         && slot.resources.prompts.is_empty()
                         && slot.resources.resource_prompts.is_empty()
                         && slot.request_context.is_empty()
-                        && slot.realization_lease.is_none()
+                        && slot.realization_authority.lease().is_none()
                         && !slot.session_dispatch
                 })
                 .unwrap_or(true),
@@ -17911,7 +17911,8 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
     )
     .expect("HS1 project the exact durable source binding");
     host.session_slots.update(thread, |slot| {
-        slot.realization_lease = Some(lease.clone());
+        slot.realization_authority =
+            crate::session_slot::SessionRealizationAuthority::Live(lease.clone());
     });
     let generation = awaken_session_contract::SandboxGeneration::new(
         thread,
@@ -18327,7 +18328,8 @@ fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
     );
 
     host.session_slots.update(session_id, |slot| {
-        slot.realization_lease = Some(renewed_lease.clone());
+        slot.realization_authority =
+            crate::session_slot::SessionRealizationAuthority::Live(renewed_lease.clone());
     });
     assert_eq!(
         host.terminal_cleanup_effect_fence(&effect)
@@ -18346,7 +18348,8 @@ fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
     );
 
     host.session_slots.update(session_id, |slot| {
-        slot.realization_lease = Some(expired_lease.clone());
+        slot.realization_authority =
+            crate::session_slot::SessionRealizationAuthority::Live(expired_lease.clone());
     });
     assert!(
         host.terminal_cleanup_effect_fence(&effect).is_err(),
@@ -18364,7 +18367,8 @@ fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
         ..expired_lease
     };
     host.session_slots.update(session_id, |slot| {
-        slot.realization_lease = Some(successor);
+        slot.realization_authority =
+            crate::session_slot::SessionRealizationAuthority::Live(successor);
     });
     assert!(
         host.terminal_cleanup_effect_fence(&effect).is_err(),
@@ -21189,15 +21193,16 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
      * | F2 | timeout/Unavailable | expired | E2 |
      * Both outcomes must finish within the test deadline: revocation owns the
      * lifecycle lock, so its interruption read must not re-enter that lock.
+     * The transport clock is paused; the scheduler receives a synthetic due
+     * observation. MAX/1 keep actual wall-clock authority in the two intended
+     * partitions even on a loaded host. A 150ms real lease previously allowed
+     * scheduling delay to turn F1 into F2, testing a different cause combination.
      */
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     *control.renewal_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
     let host = SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone());
-    let now = crate::terminal_repository_publication::runtime_unix_now_ms();
-    for (session_id, expires_at_unix_ms) in [
-        ("renewal-live", now.saturating_add(150)),
-        ("renewal-expired", now.saturating_sub(1)),
-    ] {
+    let now = u64::MAX - 150;
+    for (session_id, expires_at_unix_ms) in [("renewal-live", u64::MAX), ("renewal-expired", 1)] {
         host.install_session_realization_lease(
             session_id,
             awaken_session_contract::SessionRealizationLease {
@@ -21445,7 +21450,10 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
             .expect("old completion does not hang")
             .expect("renewal task did not panic");
         let observed = host.session_slots.read(rule, |slot| {
-            (slot.realization_lease.clone(), slot.dispatch_claim.clone())
+            (
+                slot.realization_authority.lease().cloned(),
+                slot.dispatch_claim.clone(),
+            )
         });
         let preserved = if replacement == "removed" {
             observed.is_none()
@@ -21755,8 +21763,8 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     assert_eq!(
         host.session_slots
             .read(ordinary_id, |slot| {
-                slot.realization_lease
-                    .as_ref()
+                slot.realization_authority
+                    .lease()
                     .map(|lease| lease.expires_at_unix_ms)
             })
             .flatten(),
@@ -21766,8 +21774,8 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     assert_eq!(
         host.session_slots
             .read(terminal_id, |slot| {
-                slot.realization_lease
-                    .as_ref()
+                slot.realization_authority
+                    .lease()
                     .map(|lease| lease.expires_at_unix_ms)
             })
             .flatten(),
@@ -21896,7 +21904,10 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     );
     assert_eq!(
         host.session_slots
-            .read(session_id, |slot| slot.realization_lease.clone())
+            .read(session_id, |slot| slot
+                .realization_authority
+                .lease()
+                .cloned())
             .flatten(),
         Some(lease.clone()),
         "C1/E1"

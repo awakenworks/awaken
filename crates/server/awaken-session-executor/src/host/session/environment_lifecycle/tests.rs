@@ -2525,6 +2525,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     // as an authoritative restore/source-disposal reopen. Only an exact
     // Terminated observation may clear C1, so C2 is not a successful physical
     // cleanup; only the canonical durable projection proof may clear C4.
+    // C5 a live realization lease exists before stop => E4 retained owner reset
+    // preserves Closed(lease), never Uninstalled/Live or direct-assertion fallback.
     let thread = "revocation-retiring-retry-authority";
     let root = tempfile::tempdir().unwrap();
     let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
@@ -2535,6 +2537,13 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
             "provider", "model", "backend",
         ))
         .build();
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "worker".into(),
+        runtime_incarnation: "worker/1".into(),
+        epoch: 1,
+        expires_at_unix_ms: u64::MAX,
+    };
+    host.install_session_realization_lease(thread, lease.clone());
     host.session_slots.update(thread, |slot| {
         slot.published_snapshot = Some(snapshot.clone());
     });
@@ -2580,6 +2589,19 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     host.retire_session_environment_for_revocation(thread)
         .await
         .expect("C2 live revocation");
+    assert_eq!(
+        host.session_slots
+            .read(thread, |slot| slot.realization_authority.clone()),
+        Some(crate::session_slot::SessionRealizationAuthority::Closed(
+            Some(lease.clone())
+        )),
+        "E4"
+    );
+    host.install_session_realization_lease(thread, lease);
+    assert!(
+        host.session_slots.realization_leases().is_empty(),
+        "E4 replay stays closed"
+    );
     assert!(
         matches!(
             host.session_slots

@@ -773,7 +773,7 @@ mod tests {
             .read(thread, |slot| {
                 (
                     slot.published_snapshot.clone(),
-                    slot.realization_lease.clone(),
+                    slot.realization_authority.lease().cloned(),
                     slot.environment_projection
                         .as_ref()
                         .map(|projection| projection.fingerprint.clone()),
@@ -852,7 +852,7 @@ mod tests {
             host.session_slots.read(thread, |slot| {
                 (
                     slot.published_snapshot.clone(),
-                    slot.realization_lease.clone(),
+                    slot.realization_authority.lease().cloned(),
                     slot.environment_projection
                         .as_ref()
                         .map(|projection| projection.fingerprint.clone()),
