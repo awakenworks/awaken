@@ -20847,6 +20847,8 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
      * |---|---|---|---|
      * | F1 | timeout/Unavailable | live | E1 + diagnostic error |
      * | F2 | timeout/Unavailable | expired | E2 |
+     * Both outcomes must finish within the test deadline: revocation owns the
+     * lifecycle lock, so its interruption read must not re-enter that lock.
      */
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     *control.renewal_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
@@ -20867,11 +20869,15 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
         );
     }
 
-    host.renew_due_session_realizations(
-        now,
-        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(300),
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        host.renew_due_session_realizations(
+            now,
+            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(300),
+        ),
     )
     .await
+    .expect("F2 revocation cannot deadlock its interruption read")
     .expect_err("F1 keeps the retry diagnostic visible");
     assert!(host.session_slots.contains("renewal-live"), "F1/E1");
     assert!(!host.session_slots.contains("renewal-expired"), "F2/E2");
@@ -20883,6 +20889,8 @@ async fn stale_ownership_revokes_even_when_the_old_deadline_is_still_live() {
      * after Control reports StaleOwnership. The newer durable owner wins, so
      * the old Worker must interrupt and remove its local projection in the same
      * reconciliation; it may not consume the remaining timestamp as grace.
+     * Completion is bounded even when no resident Runtime supplies a reader:
+     * the cold interruption read must reuse the held lifecycle guard.
      */
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     *control.renewal_failure.lock().unwrap() =
@@ -20900,11 +20908,15 @@ async fn stale_ownership_revokes_even_when_the_old_deadline_is_still_live() {
     );
 
     assert_eq!(
-        host.renew_due_session_realizations(
-            now,
-            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(10_000),
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            host.renew_due_session_realizations(
+                now,
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(10_000),
+            )
         )
         .await
+        .expect("F3 cold interruption cannot re-enter the lifecycle lock")
         .expect("F3 explicit loss is a handled terminal outcome"),
         0,
         "F3"
@@ -20972,6 +20984,142 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
             "D1/E4"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
+    // Cause/effect graph: C1 a due renewal has captured lease A and blocks at
+    // Control; C2 canonical projection installation replaces A with generation
+    // B, extends A past the requested expiry, or removes the slot; C3 the old
+    // request returns success, explicit ownership loss, or Unavailable after
+    // A's expiry. Effects: E1 retain the newer projection and its dispatch claim;
+    // E2 never resurrect a removed slot; E3 retain existing fail-closed behavior
+    // when no projection changed (covered by F1-F3 above).
+    //
+    // | Rule | old response | projection during I/O | Effect |
+    // | P1 | success | new generation B | E1 |
+    // | P2 | success | same generation, later expiry | E1 |
+    // | P3 | success | removed | E2 |
+    // | P4 | StaleOwnership | new generation B | E1 |
+    // | P5 | StaleOwnership | same generation, later expiry | E1 |
+    // | P6 | Unavailable, A expired | newer live generation B | E1 |
+    // | P7 | StaleOwnership | B installed with owner lock held during completion | E1 |
+    // | P8 | StaleOwnership | removed | E2 |
+    // The barrier exercises the production renewal completion and revocation
+    // paths, not a duplicate lease reducer. Preserving B does not authorize a
+    // model request: the exact dispatch/Work checks remain mandatory there.
+    use awaken_session_contract::SessionRealizationControlFailure as Failure;
+    let mut violations = Vec::new();
+    for (rule, failure, replacement, expired) in [
+        ("P1", None, "generation", false),
+        ("P2", None, "extension", false),
+        ("P3", None, "removed", false),
+        ("P4", Some(Failure::StaleOwnership), "generation", false),
+        ("P5", Some(Failure::StaleOwnership), "extension", false),
+        (
+            "P6",
+            Some(Failure::Unavailable("delayed transport".into())),
+            "generation",
+            true,
+        ),
+        ("P7", Some(Failure::StaleOwnership), "generation", false),
+        ("P8", Some(Failure::StaleOwnership), "removed", false),
+    ] {
+        let control = Arc::new(RemoteTerminalCleanupControl::default());
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        *control.renewal_gate.lock().unwrap() = Some(gate.clone());
+        *control.renewal_failure.lock().unwrap() = failure;
+        let host = Arc::new(
+            SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()),
+        );
+        let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+        let old = awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a:old".into(),
+            epoch: 1,
+            expires_at_unix_ms: if expired {
+                now.saturating_sub(1)
+            } else {
+                now + 1_000
+            },
+        };
+        install_test_renewal_authority(&host, &control, rule, old.clone());
+        let task_host = host.clone();
+        let renewal = tokio::spawn(async move {
+            task_host
+                .renew_due_session_realizations(
+                    now,
+                    awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                        60_000,
+                    ),
+                )
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while control.renewal_sessions.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("C1 old request reached the controlled barrier");
+        let mut newer = old;
+        newer.expires_at_unix_ms = now + 120_000;
+        if replacement == "generation" {
+            newer.runtime_incarnation = "worker-a:new".into();
+            newer.epoch = 2;
+        }
+        let claim = awaken_dispatch::RunClaim {
+            run_id: RunId("new-attempt".into()),
+            owner: "worker-a:new".into(),
+            epoch: 2,
+        };
+        let realization = host.session_slots.realization_lock(rule);
+        let installation = if rule == "P7" {
+            Some(realization.lock().await)
+        } else {
+            None
+        };
+        if installation.is_some() {
+            gate.add_permits(1);
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while control.renewals_active.load(Ordering::SeqCst) != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("P7 response completes during owner-locked installation");
+        }
+        if replacement == "removed" {
+            host.session_slots.remove(rule);
+        } else {
+            host.install_session_realization_lease(rule, newer.clone());
+            host.session_slots
+                .update(rule, |slot| slot.dispatch_claim = Some(claim.clone()));
+        }
+        if installation.is_none() {
+            gate.add_permits(1);
+        }
+        drop(installation);
+        let _outcome = tokio::time::timeout(std::time::Duration::from_secs(2), renewal)
+            .await
+            .expect("old completion does not hang")
+            .expect("renewal task did not panic");
+        let observed = host.session_slots.read(rule, |slot| {
+            (slot.realization_lease.clone(), slot.dispatch_claim.clone())
+        });
+        let preserved = if replacement == "removed" {
+            observed.is_none()
+        } else {
+            observed == Some((Some(newer), Some(claim)))
+        };
+        if !preserved {
+            violations.push(rule);
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "delayed renewal violated projection ownership: {violations:?}"
+    );
 }
 
 #[tokio::test]

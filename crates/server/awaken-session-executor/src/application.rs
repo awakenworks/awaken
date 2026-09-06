@@ -7,6 +7,7 @@
 
 mod agent_filesystem_context;
 mod realization_control_deadline;
+mod realization_renewal;
 
 use std::sync::Arc;
 
@@ -14,17 +15,11 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_dispatch::RunClaim;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecutor};
-use futures_util::stream::{self, StreamExt};
 
 use agent_filesystem_context::consistent_agent_filesystem_context;
-use realization_control_deadline::DeadlineSessionRealizationControl;
-
-/// Independent Session lease renewals are fast root CAS operations. Bound them
-/// per Worker so cloud replica count scales total capacity without removing
-/// local backpressure or allowing one Worker to overload Control.
-pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS: usize = 8;
+#[cfg(test)]
+pub(crate) use realization_renewal::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RenewalFailureDisposition {
@@ -1060,7 +1055,7 @@ impl crate::SharedHost {
                     .retire_completed_terminal_cleanup_projection(session_id, lease)
                     .await
                 {
-                    self.revoke_session_realization(session_id).await?;
+                    self.revoke_session_realization(session_id, None).await?;
                 }
                 Ok(true)
             }
@@ -1118,7 +1113,7 @@ impl crate::SharedHost {
                     // Another actor completed the operation between claim and
                     // poll. This projection has no ordinary Run authority.
                     if let Err(error) = self
-                        .revoke_session_realization(&assignment.session_id)
+                        .revoke_session_realization(&assignment.session_id, None)
                         .await
                     {
                         terminal_error.get_or_insert(error);
@@ -1135,162 +1130,21 @@ impl crate::SharedHost {
         }
     }
 
-    async fn reconcile_one_session_realization(
-        &self,
-        control: &dyn awaken_session_contract::SessionRealizationControl,
-        session_id: String,
-        lease: awaken_session_contract::SessionRealizationLease,
-        requested_expiry_unix_ms: u64,
-    ) -> Result<bool, crate::HostError> {
-        // Cause/effect decision table: C1 this lease was selected by the due-only
-        // scheduler; C2 Control extends its exact generation; C3 Control
-        // explicitly rejects this owner; C4 Control is temporarily unavailable;
-        // C5 the old lease remains live. Effects: E1 install the monotonic lease;
-        // E2 interrupt and revoke immediately; E3 retain and retry; E4 interrupt
-        // and revoke at expiry. Terminal work is intentionally absent: the
-        // initiating command owns ordinary settlement and the Worker
-        // lifecycle's cold claim-next lane is the sole recovery scheduler.
-        //
-        // | Rule | due | Control | old lease | Effect |
-        // | R1 | yes | renewed | any | E1 |
-        // | R2 | yes | explicit loss | any | E2 |
-        // | R3 | yes | temporary failure | live | E3 |
-        // | R4 | yes | temporary failure | expired | E4 |
-        let renewal: Result<bool, (crate::HostError, bool)> = async {
-            let control_failure = |error| {
-                let revoke = realization_renewal_failure_disposition(&error)
-                    == RenewalFailureDisposition::RevokeImmediately;
-                (crate::HostError::internal(error.to_string()), revoke)
-            };
-            let renewed_lease = match control
-                .renew_session_realization(awaken_session_contract::RenewSessionRealization {
-                    session_id: session_id.clone(),
-                    asserted_lease: lease.clone(),
-                    requested_expires_at_unix_ms: requested_expiry_unix_ms,
-                })
-                .await
-            {
-                Ok(renewed_lease) => renewed_lease,
-                Err(error) => return Err(control_failure(error)),
-            };
-            // The aggregate returned only a monotonic same-generation fence.
-            // Installing that readback cannot start or duplicate a phase driver.
-            self.install_session_realization_lease(&session_id, renewed_lease);
-            Ok::<bool, (crate::HostError, bool)>(true)
-        }
-        .await;
-        match renewal {
-            Ok(true) => Ok(true),
-            Ok(false) => unreachable!("renewal returns only success or a classified failure"),
-            Err((error, revoke_immediately))
-                if !revoke_immediately
-                    && awaken_session_contract::realization_lease_is_live_at(
-                        lease.expires_at_unix_ms,
-                        crate::terminal_repository_publication::runtime_unix_now_ms(),
-                    ) =>
-            {
-                Err(error)
-            }
-            Err((error, _)) => {
-                eprintln!(
-                    "Session realization authority ended for `{session_id}`; revoking only that Session: {error}"
-                );
-                let _ = self.interrupt(&session_id).await;
-                self.revoke_session_realization(&session_id).await?;
-                Ok(false)
-            }
-        }
-    }
-
-    /// Renew every due Session through the lease-only root CAS. Environment-only
-    /// Sessions participate because physical realization can outlive the initial
-    /// lease even when no MCP attachment exists. Ordinary terminal settlement
-    /// remains on the initiating command path; recovery discovery and effects
-    /// remain exclusively on the Worker lifecycle's cold claim-next lane.
-    ///
-    /// A conclusive ownership loss or expired proof revokes only that Session;
-    /// a transient failure retains a still-live lease for the next sweep.
-    /// Authority-derived per-request deadlines release occupied capacity, and
-    /// earliest-deadline ordering prevents one Session from starving another.
-    pub async fn renew_due_session_realizations(
-        &self,
-        now_unix_ms: u64,
-        timing: AuthorityLeaseTiming,
-    ) -> Result<usize, crate::HostError> {
-        let renew_before_unix_ms = now_unix_ms
-            .saturating_add(u64::try_from(timing.proof_window().as_millis()).unwrap_or(u64::MAX));
-        let mut due = self
-            .session_slots
-            .realization_leases()
-            .into_iter()
-            .filter(|(_, lease)| lease.expires_at_unix_ms <= renew_before_unix_ms)
-            .collect::<Vec<_>>();
-        if due.is_empty() {
-            return Ok(0);
-        }
-        let control = self.session_control.as_ref().ok_or_else(|| {
-            crate::HostError::internal(
-                "active Worker Session projection has no Control renewal client",
-            )
-        })?;
-        let requested_expiry_unix_ms = now_unix_ms
-            .saturating_add(u64::try_from(timing.lease_ttl().as_millis()).unwrap_or(u64::MAX));
-        let control: Arc<dyn awaken_session_contract::SessionRealizationControl> = Arc::new(
-            DeadlineSessionRealizationControl::new(Arc::clone(control), timing.request_timeout()),
-        );
-        // This cadence owns only due lease writes. The independent lifecycle
-        // lane owns cold claim-next recovery and complete effect execution.
-        let order =
-            |left: &(String, awaken_session_contract::SessionRealizationLease),
-             right: &(String, awaken_session_contract::SessionRealizationLease)| {
-                left.1
-                    .expires_at_unix_ms
-                    .cmp(&right.1.expires_at_unix_ms)
-                    .then_with(|| left.0.cmp(&right.0))
-            };
-        due.sort_by(order);
-        let outcomes = stream::iter(due)
-            .map(|(session_id, lease)| {
-                let control = Arc::clone(&control);
-                async move {
-                    self.reconcile_one_session_realization(
-                        control.as_ref(),
-                        session_id,
-                        lease,
-                        requested_expiry_unix_ms,
-                    )
-                    .await
-                }
-            })
-            .buffer_unordered(MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS)
-            .collect::<Vec<_>>()
-            .await;
-        let mut renewed = 0;
-        let mut first_error = None;
-        for outcome in outcomes {
-            match outcome {
-                Ok(true) => renewed += 1,
-                Ok(false) => {}
-                Err(error) => {
-                    first_error.get_or_insert(error);
-                }
-            }
-        }
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(renewed),
-        }
-    }
-
     /// Remove one process-local realization after its continuing authority is
     /// no longer provable. This is not a terminal Session edge: preserve the
     /// durable Sandbox so the next authorized Worker can adopt it, while local
     /// processes, routes, credentials, and runtime references are discarded.
-    async fn revoke_session_realization(&self, session_id: &str) -> Result<bool, crate::HostError> {
-        if self.session_slots.read(session_id, |_| ()).is_none() {
+    async fn revoke_session_realization(
+        &self,
+        session_id: &str,
+        expected_lease: Option<&awaken_session_contract::SessionRealizationLease>,
+    ) -> Result<bool, crate::HostError> {
+        let Some(realization) = self
+            .session_slots
+            .read(session_id, |slot| slot.realization.clone())
+        else {
             return Ok(false);
-        }
-        let realization = self.session_slots.realization_lock(session_id);
+        };
         let _realization = realization.lock().await;
         let Some(lifecycle) = self
             .session_slots
@@ -1299,6 +1153,27 @@ impl crate::SharedHost {
             return Ok(false);
         };
         let _lifecycle = lifecycle.lock().await;
+        if let Some(expected) = expected_lease {
+            // Recheck after both existing owner locks: a claimed replacement
+            // may have completed while this stale revocation waited. Interrupt
+            // belongs after this fence too; otherwise it cancels the new Run
+            // even when physical retirement is correctly skipped.
+            if !self
+                .session_slots
+                .read(session_id, |slot| {
+                    slot.realization_lease.as_ref() == Some(expected)
+                })
+                .unwrap_or(false)
+            {
+                return Ok(false);
+            }
+            let _ = self
+                .interrupt_with_commit_read(
+                    session_id,
+                    self.commit_for_read_under_lifecycle(session_id),
+                )
+                .await;
+        }
         let retirement = self
             .retire_session_environment_for_revocation(session_id)
             .await?;
@@ -1315,7 +1190,7 @@ impl crate::SharedHost {
         let session_ids = self.session_slots.session_ids();
         let mut revoked = 0;
         for session_id in session_ids {
-            if self.revoke_session_realization(&session_id).await? {
+            if self.revoke_session_realization(&session_id, None).await? {
                 revoked += 1;
             }
         }

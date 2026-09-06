@@ -2544,6 +2544,10 @@ async fn returned_resolution_failure_commits_and_settles_when_resolver_owns_that
     // replacement fencing is covered by the worker/store fencing suites. This
     // case proves F3 and prevents a deterministic provisioning error from being
     // misclassified as a crash that leaves the foreground request waiting.
+    // F5 extends F3: two queued Runs share a Thread with pool concurrency=2.
+    // The first terminal settlement must release the follower; both resolve
+    // exactly once, commit errors, notify completion, and leave no queued work.
+    // This proves terminal queue progress, not physical execution exclusion.
     #[derive(Default)]
     struct RecordingSink(Mutex<Vec<(String, RunState)>>);
     impl CompletionSink for RecordingSink {
@@ -2560,6 +2564,13 @@ async fn returned_resolution_failure_commits_and_settles_when_resolver_owns_that
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let calls = Arc::new(AtomicUsize::new(0));
     let sink = Arc::new(RecordingSink::default());
+    let runs = ["resolution-failure", "resolution-failure-follower"];
+    for run in runs {
+        store
+            .enqueue(RunDispatch::new(activation(run)))
+            .await
+            .unwrap();
+    }
     let pool = DispatchPool::spawn_with_completion(
         store.clone(),
         Arc::new(SystemClock),
@@ -2570,29 +2581,42 @@ async fn returned_resolution_failure_commits_and_settles_when_resolver_owns_that
             worker,
             calls: calls.clone(),
         }),
-        1,
+        2,
         sink.clone(),
     );
 
-    pool.submit(activation("resolution-failure")).await.unwrap();
     assert!(
-        wait_for(|| !sink.0.lock().unwrap().is_empty()).await,
-        "F3 foreground completion is notified"
+        wait_for(|| sink.0.lock().unwrap().len() == runs.len()).await,
+        "F3/F5 both foreground completions are notified"
     );
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "F3 resolves once");
-    assert_eq!(store.dispatch_count(), 0, "F3 dispatch settled Done");
-    let state = commit
-        .run_state(&RunId("resolution-failure".into()))
-        .expect("F3 terminal Run commit");
-    assert!(
-        matches!(
-            state,
-            RunState::Ended(awaken_agent_contract::agent::run::EndCause::Error(_))
-        ),
-        "F3 deterministic resolution error is committed as a Run failure"
-    );
-
     pool.shutdown().await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        runs.len(),
+        "F3/F5 each resolves once"
+    );
+    assert_eq!(store.dispatch_count(), 0, "F3/F5 dispatches settled Done");
+    for run in runs {
+        let state = commit
+            .run_state(&RunId(run.into()))
+            .expect("F3/F5 terminal Run commit");
+        assert!(
+            matches!(
+                state,
+                RunState::Ended(awaken_agent_contract::agent::run::EndCause::Error(_))
+            ),
+            "F3/F5 deterministic resolution error is committed as a Run failure"
+        );
+        assert_eq!(
+            sink.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(id, _)| id == run)
+                .count(),
+            1
+        );
+    }
 }
 
 /// Pool drain cause/effect table: P1 expired+exhausted -> special claim; P2 the

@@ -1140,7 +1140,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         }),
     );
     dispatch
-        .enqueue(
+        .enqueue(with_empty_session_resources(
             awaken_dispatch::RunDispatch::new(test_activation(
                 "ordinary-remote",
                 "run-ordinary-remote",
@@ -1149,7 +1149,8 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
                 "ordinary-remote".into(),
             ))
             .with_session_activity_epoch(1),
-        )
+            "workspace",
+        ))
         .await
         .expect("O1 enqueue");
     let claimed = dispatch
@@ -1223,6 +1224,106 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     .await
     .expect("O5 ordinary Run bypasses Session realization");
     assert_eq!(resume_calls.load(Ordering::SeqCst), 1, "O5");
+}
+
+#[tokio::test]
+async fn claimed_resource_conflict_is_terminal_before_realization() {
+    use awaken_dispatch::{Clock, DispatchQueue};
+
+    // Cause/effect graph: C1 the Run claim is live; C2 its immutable Resource
+    // envelope differs from Control's desired Workspace/revision/bindings.
+    // C1+C2 => E1 typed terminal resolution, E2 no Worker realization effects.
+    // Retrying cannot rewrite the carried envelope: do not silently install new
+    // resources or relinquish forever. Decision table R1/R2/R3 isolates each
+    // differing coordinate. Exact equality is covered by the projection table;
+    // transient Control failures retain the contract-disposition table's retry.
+    for rule in ["workspace", "revision", "bindings"] {
+        let dispatch =
+            Arc::new(awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().unwrap());
+        let mut projection = ordinary_frozen_projection();
+        match rule {
+            "workspace" => {
+                projection.workspace_id = "another-workspace".into();
+                if let Some(previous) = projection.previous_resource_manifest.as_mut() {
+                    previous.workspace_id = projection.workspace_id.clone();
+                }
+            }
+            "revision" => projection.resource_revision += 1,
+            "bindings" => {
+                projection.resources = awaken_session_contract::ResolvedSessionResources::try_new(
+                    Vec::new(),
+                    vec![awaken_session_contract::ResolvedSkillBinding {
+                        kind: awaken_agent_contract::AgentSkillKind::Custom,
+                        skill_id: "replacement-skill".into(),
+                        version: 1,
+                        bundle_sha256: "sha256-replacement".into(),
+                    }],
+                )
+                .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let resume_calls = Arc::new(AtomicUsize::new(0));
+        let phases = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_dispatch_store(dispatch.clone())
+                .with_session_control(Arc::new(RecordingSessionControl {
+                    resume_calls: resume_calls.clone(),
+                    phases: phases.clone(),
+                    projection: Arc::new(std::sync::Mutex::new(Some(projection))),
+                    mcp_stage: None,
+                    fail_begin: Arc::new(AtomicBool::new(false)),
+                })),
+        );
+        dispatch
+            .enqueue(with_empty_session_resources(
+                awaken_dispatch::RunDispatch::new(test_activation("conflict", "conflict-run"))
+                    .for_session(awaken_agent_contract::agent::thread::Id("conflict".into()))
+                    .with_session_activity_epoch(1),
+                "workspace",
+            ))
+            .await
+            .unwrap();
+        let claimed = dispatch
+            .claim(
+                "worker-a",
+                30_000,
+                awaken_dispatch::SystemClock.now_ms(),
+                &Default::default(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let result = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        }
+        .worker_for_claimed(&claimed)
+        .await;
+        let error = match result {
+            Ok(_) => panic!("{rule}: incompatible resources must not execute"),
+            Err(error) => error,
+        };
+        assert!(error.is_terminal_resolution(), "{rule}/E1: {error}");
+        assert!(
+            error
+                .to_string()
+                .contains("conflicts with the claimed resource snapshot")
+        );
+        assert_eq!(
+            resume_calls.load(Ordering::SeqCst),
+            1,
+            "{rule}: reached Control"
+        );
+        assert!(
+            phases.lock().unwrap().is_empty(),
+            "{rule}/E2: no realization phase"
+        );
+        assert!(
+            host.session_environment("conflict").await.is_none(),
+            "{rule}/E2"
+        );
+    }
 }
 
 #[tokio::test]

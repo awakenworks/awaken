@@ -346,6 +346,18 @@ impl SharedHost {
     /// running. Never blocks on the run's own execution lock — it only touches the
     /// separate cancel slot — so it works from a concurrent request.
     pub async fn interrupt(&self, thread: &str) -> Result<(), HostError> {
+        self.interrupt_with_commit_read(thread, self.commit_for_read(thread))
+            .await
+    }
+
+    /// Use the lock-aware authoritative reader when the caller owns the
+    /// lifecycle guard. Cancellation selection and delivery remain identical;
+    /// reacquiring that guard through commit_for_read would deadlock revocation.
+    pub(crate) async fn interrupt_with_commit_read(
+        &self,
+        thread: &str,
+        commit_read: impl std::future::Future<Output = Result<Arc<HostCommit>, HostError>>,
+    ) -> Result<(), HostError> {
         // Cancellation is a control-plane operation. Resolve only an already
         // resident Runtime accelerator; creating a context here would make an
         // operator unable to recover the exact Runs whose Environment cannot be
@@ -396,11 +408,12 @@ impl SharedHost {
         // authority is installed, and require the Session's one executable root
         // row so an interrupt cannot broaden into unrelated queued work.
         if self.optional_dispatch_store().is_some() {
+            let commit = commit_read.await?;
             let logical_thread_id = resident
                 .as_ref()
                 .map_or_else(|| ThreadId(thread.to_string()), |ctx| ctx.thread_id.clone());
             let executable = self
-                .executable_session_dispatch_runs(thread, &logical_thread_id)
+                .executable_session_dispatch_runs(thread, &logical_thread_id, &commit)
                 .await?;
             match executable.as_slice() {
                 [] => {}
@@ -936,8 +949,9 @@ impl SharedHost {
                 "a coordinated child Thread must differ from its parent Session",
             ));
         }
+        let commit = self.commit_for_read(session_id).await?;
         let child_runs = self
-            .executable_session_dispatch_runs(session_id, child_thread_id)
+            .executable_session_dispatch_runs(session_id, child_thread_id, &commit)
             .await?;
         for run_id in child_runs {
             self.persist_recoverable_dispatch_cancellation(&run_id, None)
@@ -956,10 +970,10 @@ impl SharedHost {
         &self,
         session_id: &str,
         logical_thread_id: &ThreadId,
+        commit: &HostCommit,
     ) -> Result<Vec<RunId>, HostError> {
         let store = self.dispatch_store()?;
         let parent = ThreadId(session_id.to_string());
-        let commit = self.commit_for_read(session_id).await?;
         let rows = store
             .list_dispatches()
             .await
