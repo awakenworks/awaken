@@ -160,6 +160,18 @@ impl ResourcePurgeStatus {
     }
 }
 
+/// Closed admission kernel shared by every mutation which consumes a resource
+/// reclamation claim. Callers project the durable claim fields into these four
+/// predicates; no completion, retry or defer path can bypass this decision.
+const fn resource_purge_claim_is_current(
+    status_is_claimed: bool,
+    owner_matches: bool,
+    generation_matches: bool,
+    lease_is_live: bool,
+) -> bool {
+    status_is_claimed && owner_matches && generation_matches && lease_is_live
+}
+
 /// Recoverable physical-reclamation request created after logical denial commits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourcePurgeIntent {
@@ -407,12 +419,13 @@ impl ResourcePurgeIntent {
         generation: u64,
         now_unix_ms: u64,
     ) -> Result<(), ResourcePurgeError> {
-        let valid = self.status == ResourcePurgeStatus::Claimed
-            && self.claim_owner.as_deref() == Some(owner)
-            && self.claim_generation == generation
-            && self
-                .lease_expires_at_unix_ms
-                .is_some_and(|expires| expires > now_unix_ms);
+        let valid = resource_purge_claim_is_current(
+            self.status == ResourcePurgeStatus::Claimed,
+            self.claim_owner.as_deref() == Some(owner),
+            self.claim_generation == generation,
+            self.lease_expires_at_unix_ms
+                .is_some_and(|expires| expires > now_unix_ms),
+        );
         if valid {
             Ok(())
         } else {
@@ -671,6 +684,28 @@ mod tests {
     }
 
     #[test]
+    fn receipt_admission_requires_the_exact_live_claim() {
+        // Causes: C1 status is Claimed; C2 owner matches; C3 generation matches;
+        // C4 lease exists and has not expired. Effect E1 permits a mutation that
+        // can attach the purge receipt; E2 rejects it as stale. Constraint: all
+        // four durable claim facts are conjunctive, so changing any one fact
+        // from the sole accepting rule fails closed. Decision table:
+        // R1=1111=>E1; R2=0xxx=>E2; R3=10xx=>E2; R4=110x=>E2; R5=1110=>E2.
+        for (claimed, owner, generation, live, expected) in [
+            (true, true, true, true, true),
+            (false, true, true, true, false),
+            (true, false, true, true, false),
+            (true, true, false, true, false),
+            (true, true, true, false, false),
+        ] {
+            assert_eq!(
+                resource_purge_claim_is_current(claimed, owner, generation, live),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn receipt_kind_must_match_the_target() {
         let mut value = intent(ResourceKind::File);
         let generation = value.claim("worker", 20, 10).unwrap();
@@ -713,5 +748,30 @@ mod tests {
             prop_assert!(held);
             prop_assert!(value.claim("worker", not_before, 1).is_ok());
         }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn stale_resource_purge_claim_cannot_commit_receipt() {
+    // Symbolic form of the receipt-admission decision table: Kani covers every
+    // C1/C2/C3/C4 combination and proves E1 is exactly their conjunction.
+    let status_is_claimed = kani::any::<bool>();
+    let owner_matches = kani::any::<bool>();
+    let generation_matches = kani::any::<bool>();
+    let lease_is_live = kani::any::<bool>();
+    let admitted = resource_purge_claim_is_current(
+        status_is_claimed,
+        owner_matches,
+        generation_matches,
+        lease_is_live,
+    );
+
+    assert_eq!(
+        admitted,
+        status_is_claimed && owner_matches && generation_matches && lease_is_live
+    );
+    if !(status_is_claimed && owner_matches && generation_matches && lease_is_live) {
+        assert!(!admitted);
     }
 }
