@@ -4205,6 +4205,61 @@ fn realization_owner_follows_the_frozen_placement_decision_table() {
     );
 }
 
+pub(super) fn publication_fixture(
+    id: &str,
+) -> (
+    PersistedSession,
+    awaken_session_contract::SessionRealizationLease,
+    awaken_session_contract::McpGenerationRef,
+) {
+    let mut session = persisted(id, false, "activating");
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "worker-a".into(),
+        runtime_incarnation: "worker-a/boot-1".into(),
+        epoch: 7,
+        expires_at_unix_ms: (u64::MAX - 1_024),
+    };
+    let attachment_id = awaken_session_contract::McpAttachmentId("browser".into());
+    let generation = awaken_session_contract::McpGeneration(1);
+    session.realization = Some(lease.clone());
+    session
+        .mcp
+        .attachments
+        .push(awaken_session_contract::SessionMcpAttachment {
+            attachment_id: attachment_id.clone(),
+            name: "browser".into(),
+            generation,
+            target: awaken_session_contract::McpTarget::parse_http(
+                "https://browser.example.test/mcp",
+            )
+            .expect("MCP target"),
+            prompts_as_skills: false,
+            origin: awaken_session_contract::McpAttachmentOrigin::Agent,
+            credential: None,
+            selected_plaintext_holder: None,
+            state: awaken_session_contract::McpAttachmentState::Active,
+            publication_acknowledged: false,
+            realization: Some(awaken_session_contract::McpRealizationClaim {
+                realization_id: "realize-browser-1".into(),
+                runtime_incarnation: lease.runtime_incarnation.clone(),
+                lease_epoch: lease.epoch,
+                lease_expires_at_unix_ms: (u64::MAX - 1_024),
+                stage_idempotency_key: "renew-browser-1".into(),
+            }),
+            attempts: 1,
+            last_error: None,
+        });
+    let generation_ref = awaken_session_contract::McpGenerationRef {
+        session_id: id.into(),
+        attachment_id,
+        generation,
+        runtime_incarnation: lease.runtime_incarnation.clone(),
+        lease_epoch: lease.epoch,
+        lease_expires_at_unix_ms: (u64::MAX - 1_024),
+    };
+    (session, lease, generation_ref)
+}
+
 #[tokio::test]
 async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     // Cause/effect graph: C1 acknowledgement names the exact active
@@ -4227,60 +4282,14 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     let application = application(repo.clone(), environments);
     let current_expiry = u64::MAX - 1_024;
 
-    let fixture = |id: &str| {
-        let mut session = persisted(id, false, "activating");
-        let lease = awaken_session_contract::SessionRealizationLease {
-            owner: "worker-a".into(),
-            runtime_incarnation: "worker-a/boot-1".into(),
-            epoch: 7,
-            expires_at_unix_ms: current_expiry,
-        };
-        let attachment_id = awaken_session_contract::McpAttachmentId("browser".into());
-        let generation = awaken_session_contract::McpGeneration(1);
-        session.realization = Some(lease.clone());
-        session
-            .mcp
-            .attachments
-            .push(awaken_session_contract::SessionMcpAttachment {
-                attachment_id: attachment_id.clone(),
-                name: "browser".into(),
-                generation,
-                target: awaken_session_contract::McpTarget::parse_http(
-                    "https://browser.example.test/mcp",
-                )
-                .expect("MCP target"),
-                prompts_as_skills: false,
-                origin: awaken_session_contract::McpAttachmentOrigin::Agent,
-                credential: None,
-                selected_plaintext_holder: None,
-                state: awaken_session_contract::McpAttachmentState::Active,
-                publication_acknowledged: false,
-                realization: Some(awaken_session_contract::McpRealizationClaim {
-                    realization_id: "realize-browser-1".into(),
-                    runtime_incarnation: lease.runtime_incarnation.clone(),
-                    lease_epoch: lease.epoch,
-                    lease_expires_at_unix_ms: current_expiry,
-                    stage_idempotency_key: "renew-browser-1".into(),
-                }),
-                attempts: 1,
-                last_error: None,
-            });
-        let generation_ref = awaken_session_contract::McpGenerationRef {
-            session_id: id.into(),
-            attachment_id,
-            generation,
-            runtime_incarnation: lease.runtime_incarnation.clone(),
-            lease_epoch: lease.epoch,
-            lease_expires_at_unix_ms: current_expiry,
-        };
-        (session, lease, generation_ref)
-    };
+    let fixture = publication_fixture;
 
     // A7: cardinality 0/1/many x no predecessor/old unacknowledged Active x
     // exact/renewed lease. Stage returns both generations; activation retires
     // old authority, so only new generations may appear in Publish. Recreate
     // the application between activation and ACK, then replay the ACK: the
     // durable publication/drain sets and receipt times must remain unchanged.
+    let mut publication_traces = Vec::new();
     for count in 0..=2 {
         for predecessor in [false, true] {
             for renewed in [false, true] {
@@ -4318,6 +4327,13 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                 for request in requests {
                     receipts.push(NoopMcpRealizer.stage_mcp_attachment(request).await.unwrap());
                 }
+                let key = |g: &awaken_session_contract::McpGenerationRef| {
+                    format!("{}:{}", g.attachment_id.0, g.generation.0)
+                };
+                let staged = receipts
+                    .iter()
+                    .map(|r| key(&r.generation))
+                    .collect::<Vec<_>>();
                 if renewed {
                     application
                         .renew_session_realization(
@@ -4346,6 +4362,15 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                 else {
                     panic!("A7 expected Publish");
                 };
+                let durable = repo.get(&id).await.unwrap();
+                let active = durable
+                    .mcp
+                    .attachments
+                    .iter()
+                    .filter(|a| a.state == awaken_session_contract::McpAttachmentState::Active)
+                    .map(|a| format!("{}:{}", a.attachment_id.0, a.generation.0))
+                    .collect::<Vec<_>>();
+                publication_traces.push(serde_json::json!({"staged": staged, "active": active, "published": publish.iter().map(key).collect::<Vec<_>>(), "drained": drain.iter().map(key).collect::<Vec<_>>() }));
                 assert_eq!(publish.len(), count, "A7 {id}");
                 assert!(
                     publish.iter().all(|g| g.generation.0 == 2),
@@ -4379,6 +4404,12 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
             }
         }
     }
+
+    awaken_reliability_testkit::write_observation_trace(
+        "publication-cardinality-renewal",
+        "publication",
+        serde_json::json!(publication_traces),
+    );
 
     // A4: a successful same-incarnation/epoch heartbeat occurs after EVERY
     // directive is frozen and before its phase response. All effects and root CAS writes

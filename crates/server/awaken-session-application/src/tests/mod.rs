@@ -1,3 +1,4 @@
+mod observation_refinement;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{
     Arc, Mutex,
@@ -8,7 +9,7 @@ use awaken_environment_realization_contract::EnvironmentImageBuildError;
 use awaken_service_lifecycle::run_composed_async_test;
 use awaken_session_contract::{
     ManagedSessionRepository, McpAttachmentRealizer, PersistedSession, RunError,
-    SandboxProvisioning, SessionEnvironmentBindingSink, SessionRuntime, SessionRuntimePlacement,
+    SandboxProvisioning, SessionRuntime, SessionRuntimePlacement,
 };
 
 use super::*;
@@ -491,6 +492,7 @@ impl RecordingReplyRuntime {
 
 #[derive(Default)]
 struct RecordingCleanupRuntime {
+    binding_sink: Mutex<Option<Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>>>,
     fail_quiesce_once: AtomicBool,
     fail_before_effect_once: AtomicBool,
     fail_once: AtomicBool,
@@ -1272,6 +1274,12 @@ impl SessionRuntime for RecordingBoundaryBudgetRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingCleanupRuntime {
+    fn install_environment_binding_sink(
+        &self,
+        sink: Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+    ) {
+        *self.binding_sink.lock().unwrap() = Some(sink);
+    }
     async fn install_session_projection(
         &self,
         thread: &str,

@@ -221,6 +221,31 @@ legacy unknown metadata, crash-discarded caches and exact recovered prefixes.
 Stage receipt partition. Existing TLAPS root-kernel proofs do not automatically
 prove these new TLC observer axes.
 
+The existing Rust-to-TLA runner also consumes `session-observations-v1` from
+`runtime-refinement-manifest.json`. Binding receipt application/replay/rejection,
+root crash/lost-ACK recovery, processed Events, MCP publication, and filesystem
+prefix recovery emit actual durable observations. The renderer calls the same
+relations used by the four existing models; it does not generate another model
+of their behavior. The manifest binds each required scenario to its producer
+and model family; a fresh-run check rejects missing or misclassified traces.
+An injective increasing map makes real millisecond observations representable
+by TLC without conflating values: equality, ordering and max are preserved and
+reflected. Raw Rust observations remain unchanged.
+Four corrupted production traces must fail the exact TLC relation, independently
+of the existing model mutations. This establishes correspondence for those
+executed paths and fields, not universal Rust implementation refinement.
+
+The shared realization driver is additionally killed after physical publication,
+both before and after the ACK root CAS. Its file-backed external-port fixture
+checks ordering and idempotent generation identity. The separate Managed MCP
+HTTP E2E now uses SIGKILL and the real MCP adapter to check cold republishing,
+HTTP idempotency and non-resurrection of removed generations. Neither fixture
+asserts exactly-once execution by arbitrary external providers. The existing
+release matrix runs the same Rust suite and HTTP scenario on Linux and both
+native macOS runners before packaging. A configured gate is not a macOS execution
+receipt; current-source native run evidence must still be obtained.
+
+
 Executable decision tables remain beside their tests: application-root crashes,
 CAS and ambiguous acknowledgements; shared backend conformance; every byte cut
 of a filesystem log envelope; warm/cold/peer projection; generation-set renewal

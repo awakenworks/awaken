@@ -37,10 +37,16 @@ ASSUME /\ ObservationTimes \subseteq Nat
        /\ ObservationTimes /= {}
        /\ UnknownTime \notin ObservationTimes
 Init == /\ Kernel!Init /\ processedAt = UnknownTime
+ProcessedObservationTime(wasProcessed, isProcessed, before, now) ==
+    IF ~wasProcessed /\ isProcessed THEN now ELSE before
+
+ProcessedObservationStep(before, after, now) ==
+    /\ (before.processed => after.processed)
+    /\ after.time = ProcessedObservationTime(before.processed, after.processed, before.time, now)
+
 Next == /\ Kernel!Next
         /\ \E now \in ObservationTimes :
-             processedAt' = IF eventPhase # "Processed" /\ eventPhase' = "Processed"
-                            THEN now ELSE processedAt
+             processedAt' = ProcessedObservationTime(eventPhase = "Processed", eventPhase' = "Processed", processedAt, now)
 Spec == Init /\ [][Next]_vars
 Safety == /\ Kernel!Safety
           /\ ((eventPhase = "Processed") <=> (processedAt \in ObservationTimes))

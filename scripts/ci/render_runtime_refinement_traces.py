@@ -192,8 +192,111 @@ CHECK_DEADLOCK FALSE
     return module_path, config_path
 
 
+def observation_value(value: Any, *, as_set: bool = False) -> str:
+    if value is None:
+        return "UnknownTime"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, int) and value >= 0:
+        return str(value)
+    if isinstance(value, str):
+        return tla_string(value)
+    if isinstance(value, list):
+        body = ", ".join(observation_value(item) for item in value)
+        return "{" + body + "}" if as_set else "<<" + body + ">>"
+    if isinstance(value, dict) and value and all(re.fullmatch(r"[a-z][a-z_]*", key) for key in value):
+        return "[" + ", ".join(f"{key} |-> {observation_value(item)}" for key, item in value.items()) + "]"
+    raise ValueError(f"unsupported observation value: {value!r}")
+
+
+def normalize_observation_times(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order-embed observed times into TLC integers; retain legacy unknowns.
+
+    The canonical observation relations use time only through equality, order
+    and max (no duration/arithmetic). One injective, increasing map across the
+    entire scenario therefore preserves AND reflects their truth, including
+    deliberately corrupted timestamps. Revision/cursor fields are unchanged.
+    """
+    time_keys = {"now", "created", "updated", "time"}
+    times: set[int] = set()
+
+    def visit(value: Any, mapping: dict[int, int] | None = None, key: str = "") -> Any:
+        if key in time_keys:
+            if value is None:
+                return None
+            if type(value) is not int or value < 0:
+                raise ValueError(f"invalid observed time: {value!r}")
+            times.add(value)
+            return value if mapping is None else mapping[value]
+        if isinstance(value, dict):
+            return {field: visit(item, mapping, field) for field, item in value.items()}
+        if isinstance(value, list):
+            return [visit(item, mapping) for item in value]
+        return value
+
+    visit(steps)
+    return visit(steps, {time: rank for rank, time in enumerate(sorted(times), 1)})
+
+
+def render_observations(trace_dir: Path, output: Path, repository: Path, manifest: dict[str, Any], require_complete: bool) -> int:
+    profile = manifest["session_observations"]
+    output.mkdir(parents=True, exist_ok=True)
+    seen: set[str] = set()
+    families: set[str] = set()
+    for path in sorted(trace_dir.glob("*.json")):
+        document = json.loads(path.read_text())
+        if set(document) != {"schema_version", "projection_id", "name", "family", "steps"}:
+            raise ValueError(f"invalid observation document keys: {path}")
+        if document["schema_version"] != profile["schema_version"] or document["projection_id"] != profile["projection_id"]:
+            raise ValueError(f"observation schema/identity drift: {path}")
+        name, family = document["name"], document["family"]
+        if name in seen or name != path.stem:
+            raise ValueError(f"duplicate/mismatched observation scenario: {name}")
+        scenario = profile["required_scenarios"].get(name)
+        if scenario is None or scenario["family"] != family:
+            raise ValueError(f"observation scenario/family drift: {name}")
+        if not (repository / scenario["source"]).is_file():
+            raise ValueError(f"observation producer missing: {scenario['source']}")
+        definition = profile["families"][family]
+        arguments = definition["arguments"]
+        steps = document["steps"]
+        if not steps:
+            raise ValueError(f"empty observation scenario: {name}")
+        expressions = []
+        for step in normalize_observation_times(steps):
+            if set(step) != set(arguments):
+                raise ValueError(f"observation fields drift in {name}")
+            values = [observation_value(step[key], as_set=family == "publication") for key in arguments]
+            expressions.append(definition["operator"] + "(" + ", ".join(values) + ")")
+        model = definition["model"]
+        for dependency in [model, *definition["dependencies"]]:
+            shutil.copyfile(repository / f"formal/tla/{dependency}.tla", output / f"{dependency}.tla")
+        module = module_name(name)
+        conjunction = "\n    /\\ ".join(expressions)
+        (output / f"{module}.tla").write_text(
+            f"---- MODULE {module} ----\nEXTENDS {model}\n"
+            "TraceInit == Init\nTraceNext == UNCHANGED vars\nTraceSpec == TraceInit /\\ [][TraceNext]_vars\n"
+            f"TraceRefines == /\\ {conjunction}\n" + "=" * 77 + "\n")
+        config = (repository / f"formal/tla/{definition['config']}.cfg").read_text()
+        constants = re.search(r"(?ms)^CONSTANTS?\b(.*?)(?=^(?:SPECIFICATION|INVARIANTS?|PROPERTY|PROPERTIES|CONSTRAINT|CHECK_DEADLOCK)\b|\Z)", config)
+        if constants is None:
+            raise ValueError(f"missing model constants: {model}")
+        (output / f"{module}.cfg").write_text("CONSTANTS" + constants[1] + "\nSPECIFICATION TraceSpec\nINVARIANT TraceRefines\nCHECK_DEADLOCK FALSE\n")
+        seen.add(name)
+        families.add(family)
+    missing = sorted(set(profile["required_scenarios"]) - seen)
+    missing_families = sorted(set(profile["families"]) - families)
+    report = {"projection_id": profile["projection_id"], "scenarios": sorted(seen), "missing": missing, "missing_families": missing_families, "complete": not missing and not missing_families}
+    (output / "session-observation-coverage.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(f"session observation coverage: {len(seen)} scenarios, missing={missing}, missing_families={missing_families}")
+    if not seen or require_complete and (missing or missing_families):
+        raise ValueError("production observation trace coverage is incomplete")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--projection", choices=["thread-commit", "session-observations"], default="thread-commit")
     parser.add_argument("trace_dir", type=Path)
     parser.add_argument("output_dir", type=Path)
     parser.add_argument(
@@ -212,6 +315,11 @@ def main() -> int:
         help="fail when any modeled transition family has no production trace hit",
     )
     args = parser.parse_args()
+
+    if args.projection == "session-observations":
+        repository = Path(__file__).resolve().parents[2]
+        manifest = json.loads((args.manifest or repository / "formal/runtime-refinement-manifest.json").read_text())
+        return render_observations(args.trace_dir, args.output_dir, repository, manifest, args.require_complete_transition_coverage)
 
     traces = sorted(args.trace_dir.glob("*.json"))
     if not traces:

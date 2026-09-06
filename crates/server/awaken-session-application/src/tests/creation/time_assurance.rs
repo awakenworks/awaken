@@ -51,6 +51,7 @@ async fn application_creation_time_survives_process_crash_boundaries() {
             .unwrap();
         panic!("crash child unexpectedly returned");
     }
+    let mut crash_traces = Vec::new();
     for mode in ["before", "after"] {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("time.sqlite");
@@ -76,8 +77,14 @@ async fn application_creation_time_survives_process_crash_boundaries() {
         }
         // Replay may complete later activation; it must never recreate the root
         // or replace the original creation time with the recovery clock.
+        let prior = repo.get("time-assurance").await.ok();
         let app = timed_application(repo.clone(), 2_000);
         let recovered = app.create_session(command()).await.unwrap();
+        crash_traces.push(super::super::observation_refinement::root_observation(
+            prior.as_ref(),
+            Some(&recovered),
+            2_000,
+        ));
         assert_eq!(
             recovered.created_at_unix_ms,
             Some(if mode == "before" { 2_000 } else { 100 })
@@ -88,6 +95,11 @@ async fn application_creation_time_survives_process_crash_boundaries() {
             "T2 exact replay"
         );
     }
+    awaken_reliability_testkit::write_observation_trace(
+        "root-crash-recovery",
+        "root",
+        serde_json::json!(crash_traces),
+    );
 }
 
 #[tokio::test]
@@ -99,6 +111,7 @@ async fn mutation_time_receipts_reject_conflicts_and_recover_lost_ack() {
     let faulting = Arc::new(FaultingSessionRepository::new(repo.clone()));
     let app = timed_application(faulting.clone(), 100);
     let original = app.create_session(command()).await.unwrap();
+    let app = timed_application(faulting.clone(), 200);
     let owner = app.owner(&original.session_id).await.unwrap();
     let mut desired = original.clone();
     desired.title = Some("changed".into());
@@ -120,6 +133,7 @@ async fn mutation_time_receipts_reject_conflicts_and_recover_lost_ack() {
         .unwrap();
     assert!(!applied);
     assert_eq!(replayed, committed, "T7");
+    super::super::observation_refinement::root_step("root-lost-ack", &committed, &replayed, 999);
     desired.title = Some("conflicting payload".into());
     let conflicting = receipt(&key.key, &desired);
     assert!(
@@ -145,6 +159,12 @@ async fn mutation_time_receipts_reject_conflicts_and_recover_lost_ack() {
         repo.get(&original.session_id).await.unwrap(),
         committed,
         "T3/T4 no partial write"
+    );
+    super::super::observation_refinement::root_step(
+        "root-reject",
+        &committed,
+        &repo.get(&original.session_id).await.unwrap(),
+        999,
     );
 }
 

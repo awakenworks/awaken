@@ -1344,11 +1344,7 @@ fn mount_with_managed_over_and_models(
             policy: worker_placement_policy
                 .unwrap_or_else(|| worker_placement::shared_worker_placement_policy()),
             sessions: session_application.clone(),
-            session_environment_bindings: Arc::new(
-                awaken_session_application::RepositoryEnvironmentBindingSink::new(
-                    session_application.session_repository_handle(),
-                ),
-            ),
+            session_environment_bindings: session_application.environment_binding_sink(),
             coordination: session_application.clone(),
             session_work: session_application.clone(),
             authenticator: worker_authenticator.clone(),

@@ -303,6 +303,68 @@ def mutate_disconnected_product_feature(case_root: Path) -> None:
 
 
 class MutationOracleTests(unittest.TestCase):
+    def test_constant_trace_refutation_requires_exact_name_and_status(self) -> None:
+        # Q1 TLC rejects a false constant invariant before state exploration:
+        # exact 151+named false relation is a kill. Q2 unrelated syntax/tool
+        # failures, another relation or a successful exit are never kills.
+        green = subprocess.CompletedProcess([], 0, "Model checking completed. No error has been found.")
+        for code, output, accepted in [(151, "The invariant of TraceRefines is equal to FALSE", True),
+            (151, "The invariant of Other is equal to FALSE", False), (151, "parse error", False),
+            (0, "The invariant of TraceRefines is equal to FALSE", False)]:
+            with self.subTest(code=code, output=output), patch("subprocess.run", side_effect=[green, subprocess.CompletedProcess([], code, output)]):
+                if accepted:
+                    check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config", [("mutant", "config", "constant:TraceRefines")])
+                else:
+                    with self.assertRaises(SystemExit):
+                        check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config", [("mutant", "config", "constant:TraceRefines")])
+
+    def test_observation_time_embedding_preserves_and_reflects_relations(self) -> None:
+        from render_runtime_refinement_traces import normalize_observation_times
+        # Q4 TLC's integer bound must not truncate, saturate or conflate actual
+        # clocks. Equal/order/max outcomes must agree for every pair, including
+        # legacy None, zero, i32 overflow and u64::MAX. Non-time cursors stay exact.
+        values = [0, 1, 2**31, 1788710583713, 2**64 - 1]
+        steps = [{"before": {"time": a, "sequence": 7}, "after": {"time": b}, "now": max(a, b)} for a in values for b in values]
+        mapped = normalize_observation_times(steps)
+        for original, projected in zip(steps, mapped):
+            a, b = original["before"]["time"], original["after"]["time"]
+            x, y = projected["before"]["time"], projected["after"]["time"]
+            self.assertEqual(a == b, x == y)
+            self.assertEqual(a < b, x < y)
+            self.assertEqual(max(x, y), projected["now"])
+            self.assertEqual(projected["before"]["sequence"], 7)
+        self.assertEqual(normalize_observation_times([{"time": None}]), [{"time": None}])
+        for invalid in [-1, True, "100"]:
+            with self.assertRaises(ValueError):
+                normalize_observation_times([{"time": invalid}])
+
+    def test_observation_trace_gate_rejects_missing_scenarios_and_schema_drift(self) -> None:
+        from render_runtime_refinement_traces import render_observations
+        manifest = json.loads((ROOT / "formal/runtime-refinement-manifest.json").read_text())
+        # Q3 fresh empty output, unknown fields, or incomplete production
+        # scenarios cannot retain green coverage from a prior invocation.
+        with tempfile.TemporaryDirectory() as temp:
+            raw, output = Path(temp) / "raw", Path(temp) / "rendered"
+            raw.mkdir()
+            with self.assertRaises(ValueError):
+                render_observations(raw, output, ROOT, manifest, True)
+            write_json(raw / "bad.json", {"schema_version": 1})
+            with self.assertRaises(ValueError):
+                render_observations(raw, output, ROOT, manifest, False)
+            (raw / "bad.json").unlink()
+            # Q5 a present name with another family's relation cannot count as
+            # the required producer. Q6 a valid partial run must still fail the
+            # complete gate, even when the output directory already exists.
+            document = {"schema_version": 1, "projection_id": "session-observations-v1", "name": "binding-apply", "family": "processed", "steps": [{}]}
+            write_json(raw / "binding-apply.json", document)
+            with self.assertRaisesRegex(ValueError, "scenario/family drift"):
+                render_observations(raw, output, ROOT, manifest, False)
+            document["family"] = "root"
+            document["steps"] = [{"before": {"exists": True, "revision": 1, "created": 100, "updated": 100}, "after": {"exists": True, "revision": 2, "created": 100, "updated": 200}, "now": 200}]
+            write_json(raw / "binding-apply.json", document)
+            with self.assertRaisesRegex(ValueError, "coverage is incomplete"):
+                render_observations(raw, output, ROOT, manifest, True)
+
     def test_temporal_mutation_requires_exact_exit_and_a_single_property(self) -> None:
         # T1 green base + exit 13 + temporal violation + one named property is
         # a kill. T2 unrelated safety/parser/tool failures cannot count. T3 a
@@ -412,7 +474,14 @@ def main() -> None:
     model_selection.add_argument("--verified-admission-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--session-network-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--session-observation-model-mutants", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--session-observation-trace-mutants", type=Path, metavar="TLC_JAR")
+    parser.add_argument("--observation-trace-dir", type=Path)
     arguments = parser.parse_args()
+    if arguments.session_observation_trace_mutants is not None:
+        if arguments.observation_trace_dir is None:
+            parser.error("--observation-trace-dir is required")
+        check_observation_trace_mutants(arguments.session_observation_trace_mutants, arguments.observation_trace_dir)
+        return
     if arguments.session_observation_model_mutants is not None:
         check_session_observation_model_mutants(arguments.session_observation_model_mutants)
         return
@@ -742,17 +811,17 @@ def check_session_observation_model_mutants(tlc_jar: Path) -> None:
     root = (ROOT / "formal/tla/SessionRoot.tla").read_text()
     config = (ROOT / "formal/tla/SessionRoot.cfg").read_text().split("PROPERTIES")[0]
     config += "PROPERTIES NoRevisionChangePreservesTime\n"
-    anchor = "                              ELSE updatedAt"
+    anchor = "    ELSE before\nRootObservationStep"
     assert root.count(anchor) == 1
-    mutant = root.replace(anchor, "                              ELSE IF updatedAt = UnknownTime THEN updatedAt ELSE IF now > updatedAt THEN now ELSE updatedAt")
+    mutant = root.replace(anchor, "    ELSE IF before = UnknownTime THEN before ELSE IF now > before THEN now ELSE before\nRootObservationStep")
     check_tlc_model_mutations(tlc_jar, "SessionRoot", root, config,
         [(mutant, config, "action:NoRevisionChangePreservesTime")], dependencies=("SessionRootKernel",))
 
     event = (ROOT / "formal/tla/SessionEventProtocol.tla").read_text()
     config = (ROOT / "formal/tla/SessionEventProtocol.cfg").read_text().replace("PROPERTY First", "PROPERTIES First")
-    anchor = "THEN now ELSE processedAt"
+    anchor = "THEN now ELSE before"
     assert event.count(anchor) == 1
-    mutant = event.replace(anchor, 'THEN now ELSE IF eventPhase = "Processed" THEN now ELSE processedAt')
+    mutant = event.replace(anchor, 'THEN now ELSE IF wasProcessed THEN now ELSE before')
     check_tlc_model_mutations(tlc_jar, "SessionEventProtocol", event, config,
         [(mutant, config, "action:FirstProcessingTimeIsImmutable")],
         dependencies=("SessionEventKernel", "SessionActivityKernel", "RunIngressKernel"))
@@ -771,11 +840,50 @@ def check_session_observation_model_mutants(tlc_jar: Path) -> None:
 
     driver = (ROOT / "formal/tla/SessionRealizationMutex.tla").read_text()
     config = (ROOT / "formal/tla/SessionRealizationRenewal.cfg").read_text().replace("INVARIANTS Safety", "INVARIANTS PublicationExcludesRetiredGenerations")
-    anchor = '{"old", "new"} \\cap {"new"}'
+    anchor = 'PublicationCandidates({"old", "new"}, {"new"})'
     assert driver.count(anchor) == 1
     check_tlc_model_mutations(tlc_jar, "SessionRealizationMutex", driver, config,
         [(driver.replace(anchor, '{"old", "new"}'), config, "PublicationExcludesRetiredGenerations")])
     print("Session observation model mutation score: 4/4 killed")
+
+
+def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
+    from render_runtime_refinement_traces import render_observations, module_name
+    manifest = json.loads((ROOT / "formal/runtime-refinement-manifest.json").read_text())
+    # X1 bypass binding stamping; X2 resample processed time; X3 publish retired;
+    # X4 rewrite recovered metadata. Mutate REAL emitted observations, not the
+    # model. Each must violate the exact relation against a green trace baseline.
+    for name in ["binding-apply", "processed-first-replay-terminal", "publication-cardinality-renewal", "store-torn-prefix"]:
+        document = json.loads((trace_dir / f"{name}.json").read_text())
+        with tempfile.TemporaryDirectory(prefix="awaken-observation-mutant-") as temp:
+            directory = Path(temp)
+            raw, rendered = directory / "raw", directory / "rendered"
+            raw.mkdir()
+            path = raw / f"{name}.json"
+            write_json(path, document)
+            render_observations(raw, rendered, ROOT, manifest, False)
+            module = module_name(name)
+            baseline = (rendered / f"{module}.tla").read_text()
+            config = (rendered / f"{module}.cfg").read_text()
+            family = document["family"]
+            if family == "root":
+                step = document["steps"][0]
+                step["after"]["updated"] = step["before"]["updated"]
+            elif family == "processed":
+                document["steps"][0]["after"]["time"] += 1
+            elif family == "publication":
+                step = next(s for s in document["steps"] if s["drained"])
+                step["published"].append(step["drained"][0])
+            else:
+                document["steps"][0]["recovered"][0]["time"] += 1
+            write_json(path, document)
+            render_observations(raw, rendered, ROOT, manifest, False)
+            mutant = (rendered / f"{module}.tla").read_text()
+            assert mutant != baseline
+            definition = manifest["session_observations"]["families"][family]
+            check_tlc_model_mutations(tlc_jar, module, baseline, config,
+                [(mutant, config, "constant:TraceRefines")], dependencies=(definition["model"], *definition["dependencies"]))
+    print("Production observation trace mutation score: 4/4 killed")
 
 
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,
@@ -801,6 +909,7 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
             )
             temporal = invariant is not None and invariant.startswith("temporal:")
             action = invariant is not None and invariant.startswith("action:")
+            constant = invariant is not None and invariant.startswith("constant:")
             if temporal:
                 # TLC does not name a failed temporal property in its output.
                 # Restrict this oracle to one explicitly named CFG property.
@@ -808,8 +917,9 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
                               if line.strip().startswith(("PROPERTY ", "PROPERTIES "))]
                 if properties != [f"PROPERTIES {invariant.removeprefix('temporal:')}"]:
                     raise SystemExit("temporal mutation requires one exact named property")
-            expected_code = 0 if invariant is None else (13 if temporal or action else 12)
+            expected_code = 0 if invariant is None else (151 if constant else 13 if temporal or action else 12)
             expected_text = ("Model checking completed. No error has been found." if invariant is None
+                             else f"The invariant of {invariant.removeprefix('constant:')} is equal to FALSE" if constant
                              else f"Action property {invariant.removeprefix('action:')} is violated." if action
                              else "Temporal properties were violated." if temporal
                              else f"Invariant {invariant} is violated")

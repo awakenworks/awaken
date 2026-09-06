@@ -38,6 +38,7 @@ fi
 cargo test -p awaken-store-sqlite --features test-support --test failure_atomicity
 cargo test -p awaken-session-store --test process_crash_outbox
 cargo test -p awaken-session-application --lib tests::creation::time_assurance
+cargo test -p awaken-session-application --lib publication_ack_process_crashes_recover_through_the_shared_driver
 cargo test -p awaken-credential-store --features sqlite,sealed-aead,test-support \
   --test process_crash_creation --test process_crash_managed_creation
 cargo test -p awaken-config-store --test process_crash_audit

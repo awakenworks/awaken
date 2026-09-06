@@ -262,11 +262,28 @@ async fn every_torn_envelope_prefix_preserves_committed_time_and_facts() {
     let all = std::fs::read(source.path().join("commits.ndjson")).unwrap();
     let after = store.recovery_snapshot(&thread, &second).await.unwrap();
     drop(store);
+    let observations =
+        |snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot| {
+            snapshot
+                .commit_timestamps
+                .iter()
+                .map(|(sequence, time)| serde_json::json!({"sequence": sequence, "time": time}))
+                .collect::<Vec<_>>()
+        };
+    let committed = observations(&after);
+    let mut observed = Vec::new();
     for end in prefix.len()..=all.len() {
         let target = tempfile::tempdir().unwrap();
         std::fs::write(target.path().join("commits.ndjson"), &all[..end]).unwrap();
         let recovered = FsCommitCoordinator::open(target.path()).await.unwrap();
         let snapshot = recovered.recovery_snapshot(&thread, &second).await.unwrap();
+        let step =
+            serde_json::json!({"recovered": observations(&snapshot), "committed": committed});
+        // Coalesce identical observed prefixes; every byte-cut still executes
+        // the full Rust snapshot oracle below.
+        if !observed.contains(&step) {
+            observed.push(step);
+        }
         assert!(
             snapshot == before || snapshot == after,
             "T6 torn byte {end}: atomic old/new snapshot"
@@ -277,4 +294,9 @@ async fn every_torn_envelope_prefix_preserves_committed_time_and_facts() {
             "T6 immutable prefix"
         );
     }
+    awaken_reliability_testkit::write_observation_trace(
+        "store-torn-prefix",
+        "store",
+        serde_json::json!(observed),
+    );
 }

@@ -8,9 +8,9 @@
 // Decision table:
 // | Rule | durable state | trigger | Effect |
 // | R0 | idle baseline, no transcript | restart/retrieve | reconstruct idle Session |
-// | R1 | Active B | restart | same Session calls only B |
+// | R1 | Active B | SIGKILL + restart | same Session calls only B |
 // | R2 | Active B + update receipt | replay key after restart | same ETag, no MCP I/O/event |
-// | R3 | Removed B | restart | empty projection, no B resurrection |
+// | R3 | Removed B | SIGKILL + restart | empty projection, no B resurrection |
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 // @ts-ignore -- shared JS harness deliberately serves TS restart scenarios.
-import { availablePort, pass, realServerEnv, spawnServer, startUpstream, stopServer, waitForPort } from './harness.mjs';
+import { availablePort, pass, hardKillServer, realServerEnv, spawnServer, startUpstream, stopServer, waitForPort } from './harness.mjs';
 // @ts-ignore -- shared JS fixture deliberately serves TS scenarios.
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import {
@@ -91,7 +91,7 @@ async function main(): Promise<void> {
     await sendManagedMessage(client, session.id, 'add 2 5', BETAS);
     assert.equal(fixtureB.calls.filter((call: any) => call.method === 'tools/call').length, 1);
 
-    await stopServer(server);
+    await hardKillServer(server, "MCP durable recovery");
     server = null;
     started = spawnServer('management', port, env);
     server = started.server;
@@ -124,7 +124,7 @@ async function main(): Promise<void> {
       current.etag,
     );
     assert.deepEqual(removed.data.agent.mcp_servers, []);
-    await stopServer(server);
+    await hardKillServer(server, "MCP durable recovery");
     server = null;
     started = spawnServer('management', port, env);
     server = started.server;

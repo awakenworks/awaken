@@ -94,6 +94,12 @@ Renew(session, d) ==
   /\ receiptCurrent' = [receiptCurrent EXCEPT ![session] = FALSE]
   /\ UNCHANGED <<owner, phase, completed, leaseVisible, publishSet, drainSet>>
 
+PublicationCandidates(staged, active) == staged \cap active
+
+PublicationObservation(staged, active, published, drained) ==
+    /\ published = PublicationCandidates(staged, active)
+    /\ published \cap drained = {}
+
 Advance(session, d) ==
   /\ session \in Sessions
   /\ owner[session] = d
@@ -102,7 +108,7 @@ Advance(session, d) ==
   /\ receiptCurrent' = [receiptCurrent EXCEPT ![session] = TRUE]
   \* The regression witness: Stage returned both old and new generations.
   \* Activate durably retires old; Publish partitions those exact receipts.
-  /\ publishSet' = [publishSet EXCEPT ![session] = {"old", "new"} \cap {"new"}]
+  /\ publishSet' = [publishSet EXCEPT ![session] = PublicationCandidates({"old", "new"}, {"new"})]
   /\ drainSet' = [drainSet EXCEPT ![session] = {"old"}]
   /\ UNCHANGED <<owner, completed, remainingRenewals, leaseVisible>>
 

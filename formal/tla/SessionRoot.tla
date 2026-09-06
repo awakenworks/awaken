@@ -50,14 +50,20 @@ Init == /\ Kernel!Init
 \* Observe once at the existing root transaction; neither payload identity
 \* nor transition admission depends on wall time. Equal and backwards clocks
 \* are deliberately included. Exact replay/conflict leaves revision unchanged.
+CreatedObservation(wasPresent, isPresent, before, now) ==
+    IF ~wasPresent /\ isPresent THEN now ELSE before
+UpdatedObservation(beforeRevision, afterRevision, before, now) ==
+    IF afterRevision > beforeRevision
+    THEN IF before = UnknownTime THEN now ELSE IF now > before THEN now ELSE before
+    ELSE before
+RootObservationStep(before, after, now) ==
+    /\ after.created = CreatedObservation(before.exists, after.exists, before.created, now)
+    /\ after.updated = UpdatedObservation(before.revision, after.revision, before.updated, now)
+
 Next == /\ Kernel!Next
         /\ \E now \in ObservationTimes :
-             /\ createdAt' = IF existence = "Absent" /\ existence' = "Live"
-                              THEN now ELSE createdAt
-             /\ updatedAt' = IF revision' > revision
-                              THEN IF updatedAt = UnknownTime THEN now
-                                   ELSE IF now > updatedAt THEN now ELSE updatedAt
-                              ELSE updatedAt
+             /\ createdAt' = CreatedObservation(existence # "Absent", existence' # "Absent", createdAt, now)
+             /\ updatedAt' = UpdatedObservation(revision, revision', updatedAt, now)
 Spec == Init /\ [][Next]_vars
 Safety == /\ Kernel!Safety
           /\ (existence = "Absent" => createdAt = UnknownTime /\ updatedAt = UnknownTime)

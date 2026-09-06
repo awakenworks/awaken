@@ -190,9 +190,11 @@ ReceiptsNeverOutrunDurableHistory ==
       receipts[operation] /= NoReceipt =>
         receipts[operation].sequence <= Len(history)
 
-RecoveryPreservesExactCommittedMetadata ==
-    /\ Len(recoveredPrefix) <= Len(history)
-    /\ \A index \in 1..Len(recoveredPrefix) : recoveredPrefix[index] = history[index]
+CommittedMetadataPrefix(prefix, committed) ==
+    /\ Len(prefix) <= Len(committed)
+    /\ \A index \in 1..Len(prefix) : prefix[index] = committed[index]
+
+RecoveryPreservesExactCommittedMetadata == CommittedMetadataPrefix(recoveredPrefix, history)
 
 CommittedPrefixIsImmutable ==
     [][\A index \in HistoryIndexes : history'[index] = history[index]]_vars

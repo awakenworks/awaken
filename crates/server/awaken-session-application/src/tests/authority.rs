@@ -5811,8 +5811,30 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         expires_at_unix_ms: u64::MAX,
     };
     session.realization = Some(current.clone());
+    session.created_at_unix_ms = Some(100);
+    session.updated_at_unix_ms = Some(100);
     create(repo.as_ref(), session).await;
-    let sink = RepositoryEnvironmentBindingSink::new(repo.clone());
+    let clock = Arc::new(awaken_agent_contract::clock::ManualClock::new(200));
+    // B12 builder clock/repository replacement must update the Runtime-installed
+    // sink. A deliberately empty original repository detects stale composition.
+    let runtime = Arc::new(RecordingCleanupRuntime::default());
+    let original_repo =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let mut app = application_with_runtime(
+        runtime.clone(),
+        original_repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    )
+    .with_clock(clock.clone());
+    let faulting = Arc::new(FaultingSessionRepository::new(repo.clone()));
+    app.replace_repository(faulting.clone());
+    let sink = runtime
+        .binding_sink
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("B12 installed sink");
+    let before_binding = repo.get("binding-fence").await.unwrap();
 
     let first = receipt("binding-fence", "sandbox-a", Some(&current));
     let first_intent = first.effect_intent().expect("B1 intent");
@@ -5821,7 +5843,30 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized,
         "B1"
     );
+    // B13 the CAS commits but its acknowledgement is lost. Retry must read back
+    // exactly that root: one revision and the original observation survive.
+    faulting.commit_then_conflict_once("bind-environment");
     sink.persist(first).await.expect("B1");
+    assert!(
+        faulting.conflict_operation_once.lock().unwrap().is_none(),
+        "B13 fault consumed"
+    );
+    assert!(
+        original_repo.get("binding-fence").await.is_err(),
+        "B12 original repository untouched"
+    );
+    // B9 new binding advances the existing root observation at the same CAS;
+    // B10 replay after clock advance changes neither the root nor its time.
+    let bound = repo.get("binding-fence").await.unwrap();
+    assert_eq!(
+        bound.revision.0,
+        before_binding.revision.0 + 1,
+        "B13 one committed revision"
+    );
+    assert_eq!(bound.created_at_unix_ms, Some(100), "B9");
+    assert_eq!(bound.updated_at_unix_ms, Some(200), "B9");
+    super::observation_refinement::root_step("binding-apply", &before_binding, &bound, 200);
+    clock.set(300);
     assert_eq!(
         sink.authorize(&first_intent).await.expect("B2 authorize"),
         awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
@@ -5832,6 +5877,9 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     sink.persist(receipt("binding-fence", "sandbox-a", Some(&current)))
         .await
         .expect("B2");
+    let replayed = repo.get("binding-fence").await.unwrap();
+    assert_eq!(replayed, bound, "B10 exact replay");
+    super::observation_refinement::root_step("binding-replay", &bound, &replayed, 300);
     let mut renewed_session = persisted("binding-renewed", false, "idle");
     renewed_session.realization = Some(awaken_session_contract::SessionRealizationLease {
         expires_at_unix_ms: u64::MAX,
@@ -5874,6 +5922,9 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         "B4"
     );
     assert_eq!(stale_error.code, "session_realization_stale", "B4");
+    let rejected = repo.get("binding-fence").await.unwrap();
+    assert_eq!(rejected, bound, "B11 stale authority preserves full root");
+    super::observation_refinement::root_step("binding-reject", &bound, &rejected, 300);
     assert_eq!(
         repo.get("binding-fence").await.expect("B4").revision,
         revision_before_stale_replay,
@@ -5943,6 +5994,48 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
             .as_deref(),
         Some("sandbox-a"),
         "B4/B5/B7/B8"
+    );
+    // B14 causes: prior observation absent/equal/ahead of the clock; effect:
+    // successful binding stamps max(old, now), preserves legacy creation, and
+    // advances one revision. Same authority/binding subsequently replays whole-root.
+    let mut clock_cases = Vec::new();
+    for (index, previous, now, expected) in [
+        (0, None, 50, 50),
+        (1, Some(100), 100, 100),
+        (2, Some(200), 100, 200),
+    ] {
+        let id = format!("binding-clock-{index}");
+        let mut root = persisted(&id, false, "idle");
+        root.created_at_unix_ms = None;
+        root.updated_at_unix_ms = previous;
+        create(repo.as_ref(), root).await;
+        let before = repo.get(&id).await.unwrap();
+        clock.set(now);
+        sink.persist(receipt(&id, "sandbox-clock", None))
+            .await
+            .unwrap();
+        let after = repo.get(&id).await.unwrap();
+        assert_eq!(
+            after.created_at_unix_ms, None,
+            "B14 legacy creation remains unknown"
+        );
+        assert_eq!(after.updated_at_unix_ms, Some(expected), "B14");
+        assert_eq!(after.revision.0, before.revision.0 + 1, "B14");
+        clock_cases.push(super::observation_refinement::root_observation(
+            Some(&before),
+            Some(&after),
+            now,
+        ));
+        clock.set(now + 1);
+        sink.persist(receipt(&id, "sandbox-clock", None))
+            .await
+            .unwrap();
+        assert_eq!(repo.get(&id).await.unwrap(), after, "B14 exact replay");
+    }
+    awaken_reliability_testkit::write_observation_trace(
+        "binding-clock-cases",
+        "root",
+        serde_json::json!(clock_cases),
     );
     let absent = receipt("binding-missing", "sandbox", Some(&current))
         .effect_intent()

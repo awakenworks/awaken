@@ -873,8 +873,12 @@ mod tests {
         let anchor = SessionEventProjectionAnchor {
             source_commit_cursor: 1,
         };
+        let state = |batch: &SessionEventBatch, index: usize| serde_json::json!({"processed": batch.events[index].processed, "time": batch.events[index].processed_at_unix_ms});
+        let pending = state(&batch, 0);
         assert!(batch.mark_processed(&op, anchor, 100).unwrap(), "T1");
+        let first = state(&batch, 0);
         assert!(!batch.mark_processed(&op, anchor, 200).unwrap(), "T2");
+        let replayed = state(&batch, 0);
         let before = batch.clone();
         assert!(
             batch
@@ -889,7 +893,18 @@ mod tests {
             "T3"
         );
         assert_eq!(batch, before);
+        let rejected = state(&batch, 0);
+        let terminal_pending = state(&batch, 1);
         assert_eq!(batch.resolve_terminally(Some(anchor), 400), 1, "T4");
+        awaken_reliability_testkit::write_observation_trace(
+            "processed-first-replay-terminal",
+            "processed",
+            serde_json::json!([
+            {"before": pending, "after": first, "now":100},
+            {"before": first, "after": replayed, "now":200},
+            {"before": replayed, "after": rejected, "now":300},
+            {"before": terminal_pending, "after": state(&batch, 1), "now":400}]),
+        );
         assert_eq!(batch.events[0].processed_at_unix_ms, Some(100));
         assert_eq!(batch.events[1].processed_at_unix_ms, Some(400));
         let mut json = serde_json::to_value(&batch).unwrap();
