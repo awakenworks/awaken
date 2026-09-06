@@ -133,6 +133,11 @@ fn observe_adoption_inner(
         Ok(owned) => owned,
         Err(error) => return Ok(incompatible(error)),
     };
+    // Cold adoption must not race a surviving participant from the old Worker.
+    // Live means retry, unknown means error; neither is physical absence.
+    if !execution_participant::is_quiescent(&marker)? {
+        return Ok(pc::SandboxObservation::Provisioning);
+    }
     match marker.phase {
         RealizationPhase::Creating | RealizationPhase::Recreating => {
             Ok(pc::SandboxObservation::Provisioning)

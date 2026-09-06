@@ -52,6 +52,11 @@ struct RealizationMarker {
     /// checkpoint extraction effects against an already-usable root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completion: Option<RealizationCompletionReceipt>,
+    /// Physical process participants, written before GO under this marker's
+    /// existing lock. Session remains the sole execution authority. Old schema-2
+    /// markers have no such participants and retain their weaker guarantees.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    executions: Vec<awaken_local_process::ProcessExecutionIdentity>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -116,6 +121,8 @@ struct RebuildSourceRecord {
     restore_input_fingerprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completion: Option<RealizationCompletionReceipt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    executions: Vec<awaken_local_process::ProcessExecutionIdentity>,
 }
 
 fn ready_phase() -> RealizationPhase {
@@ -408,6 +415,7 @@ impl CreationGuard {
                     disposal_authorization: source.disposal_authorization.clone(),
                     restore_input_fingerprint: source.restore_input_fingerprint.clone(),
                     completion: source.completion.clone(),
+                    executions: source.executions.clone(),
                 };
                 replace_marker_locked(&self.root, self.lock()?, &self.marker, &restored)
             }
@@ -628,6 +636,7 @@ impl RemovalGuard {
                 "terminal reconstruction marker changed under its held lifecycle lock",
             ));
         }
+        execution_participant::require_quiescent(&self.marker)?;
         require_exact_root_locked(
             &self.root,
             &self.lock,
@@ -645,6 +654,7 @@ impl RemovalGuard {
         &mut self,
         effect_fence: &pc::SandboxEffectFence,
     ) -> Result<pc::SandboxEffectFence, pc::SandboxError> {
+        execution_participant::require_quiescent(&self.marker)?;
         if self.marker.disposal_authorization.is_some() {
             return Err(err(
                 "filesystem realization already entered aggregate-authorized physical authorization",
@@ -694,6 +704,7 @@ impl RemovalGuard {
         &mut self,
         authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), pc::SandboxError> {
+        execution_participant::require_quiescent(&self.marker)?;
         validate_live_effect_fence(authorization.effect_fence())?;
         authorization.validate()?;
 
@@ -799,6 +810,7 @@ impl RemovalGuard {
             ));
         }
         owned_realization_path_locked(&self.root, &self.lock, &marker)?;
+        execution_participant::require_quiescent(&marker)?;
         Ok(marker)
     }
 
@@ -808,6 +820,7 @@ impl RemovalGuard {
     pub(crate) fn owned_root(
         &self,
     ) -> Result<Option<(PathBuf, DirectoryIdentity)>, pc::SandboxError> {
+        execution_participant::require_quiescent(&self.marker)?;
         match owned_realization_path_locked(&self.root, &self.lock, &self.marker)? {
             OwnedRealizationPath::Absent => Ok(None),
             OwnedRealizationPath::Exact { path, identity } => Ok(Some((path, identity))),
@@ -848,6 +861,9 @@ pub(crate) struct ReadyOperationGuard {
 
 mod checkpoint_participant;
 pub(crate) use checkpoint_participant::CheckpointParticipantGuard;
+mod execution_participant;
+#[cfg(target_os = "linux")]
+pub(crate) use execution_participant::{begin_execution, verify_execution_quiescence};
 fn err(error: impl ToString) -> pc::SandboxError {
     pc::SandboxError::new(error.to_string())
 }
@@ -974,6 +990,7 @@ fn decode_marker(bytes: &[u8], display: &Path) -> Result<RealizationMarker, pc::
         ));
     }
     validate_stage_leaf(&marker.root)?;
+    execution_participant::validate(&marker)?;
     if let Some(completion) = &marker.completion {
         completion.validate()?;
     }
@@ -1306,6 +1323,7 @@ fn require_realization_absent(
     lock: &awaken_sandbox_fs::ExclusiveFileLock,
     marker: &RealizationMarker,
 ) -> Result<(), pc::SandboxError> {
+    execution_participant::require_quiescent(marker)?;
     match owned_realization_path_locked(root, lock, marker)? {
         OwnedRealizationPath::Absent => Ok(()),
         OwnedRealizationPath::Exact { path, .. } => Err(err(format!(
@@ -1320,6 +1338,7 @@ fn remove_owned_root_or_stage_locked(
     lock: &awaken_sandbox_fs::ExclusiveFileLock,
     marker: &RealizationMarker,
 ) -> Result<(), pc::SandboxError> {
+    execution_participant::require_quiescent(marker)?;
     match owned_realization_path_locked(root, lock, marker)? {
         OwnedRealizationPath::Absent => Ok(()),
         OwnedRealizationPath::Exact { path, identity } => {
@@ -1364,6 +1383,7 @@ fn marker_for_new_attempt(
         disposal_authorization: None,
         restore_input_fingerprint: restore_input_fingerprint.map(str::to_owned),
         completion: None,
+        executions: Vec::new(),
     })
 }
 
@@ -1414,6 +1434,7 @@ pub(crate) fn begin(
             "sandbox realization belongs to a different immutable specification",
         ));
     }
+    execution_participant::require_quiescent(&observed)?;
     match observed.phase {
         RealizationPhase::Creating => {
             validate_live_effect_fence(effect_fence)?;
@@ -1524,6 +1545,7 @@ pub(crate) fn begin(
                     disposal_authorization: observed.disposal_authorization.clone(),
                     restore_input_fingerprint: observed.restore_input_fingerprint.clone(),
                     completion: observed.completion.clone(),
+                    executions: observed.executions.clone(),
                 };
                 let mut rebuilding = marker_for_new_attempt(
                     root,
@@ -1578,6 +1600,7 @@ pub(crate) fn begin(
                 disposal_authorization: observed.disposal_authorization.clone(),
                 restore_input_fingerprint: observed.restore_input_fingerprint.clone(),
                 completion: observed.completion.clone(),
+                executions: observed.executions.clone(),
             };
             validate_removed_restore_source(&rebuild_source, restore_input)?;
             let mut restoring = marker_for_new_attempt(
@@ -1668,7 +1691,10 @@ pub(crate) fn begin_ready_operation(
     evidence: &RealizationEvidence,
     effect_fence: &pc::SandboxEffectFence,
 ) -> Result<ReadyOperationGuard, pc::SandboxError> {
-    begin_ready_operation_with_authorization(root, evidence, effect_fence, effect_fence)
+    let guard =
+        begin_ready_operation_with_authorization(root, evidence, effect_fence, effect_fence)?;
+    execution_participant::require_quiescent(&guard.marker)?;
+    Ok(guard)
 }
 
 /// Admit terminal recovery of an in-flight checkpoint while its live resident
@@ -1691,12 +1717,14 @@ pub(crate) fn begin_ready_terminal_checkpoint(
             "terminal checkpoint cleanup requires distinct realization, Suspend, and terminal effects",
         ));
     }
-    begin_ready_operation_with_authorization(
+    let guard = begin_ready_operation_with_authorization(
         root,
         evidence,
         expected_effect_fence,
         terminal_effect_fence,
-    )
+    )?;
+    execution_participant::require_quiescent(&guard.marker)?;
+    Ok(guard)
 }
 
 fn begin_ready_operation_with_authorization(
@@ -1807,6 +1835,7 @@ pub(crate) fn begin_terminal_takeover(
 
     let owned = owned_realization_path_locked(root, &lock, &marker)?;
     if marker.phase == RealizationPhase::Removed {
+        execution_participant::require_quiescent(&marker)?;
         return match owned {
             OwnedRealizationPath::Absent => Ok(None),
             OwnedRealizationPath::Exact { .. } => Err(err(
@@ -1852,6 +1881,7 @@ pub(crate) fn begin_terminal_takeover(
             required_root_identity(&marker)?
         }
         OwnedRealizationPath::Absent => {
+            execution_participant::require_quiescent(&marker)?;
             validate_live_effect_fence(&marker.effect_fence)?;
             let previous = marker.clone();
             marker.phase = RealizationPhase::Removed;

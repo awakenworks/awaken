@@ -35,6 +35,8 @@ use crate::{
 };
 
 mod checkpoint;
+#[cfg(target_os = "linux")]
+pub(crate) mod execution;
 mod restore_target;
 
 fn err(e: impl ToString) -> pc::SandboxError {
@@ -898,6 +900,8 @@ impl LocalProvider {
             terminal_removal: std::sync::Mutex::new(None),
             owned_paths: std::sync::Mutex::new(Vec::new()),
             adopted_handle,
+            #[cfg(target_os = "linux")]
+            execution: std::sync::OnceLock::new(),
         }
     }
 }
@@ -1087,6 +1091,28 @@ pub struct LocalSandbox {
     /// Exact restore-bound handle retained only for the unpublished/restored
     /// physical target. Ordinary P/V2 handles remain derived from the marker.
     adopted_handle: Option<pc::SandboxHandle>,
+    /// Selected before the first spawn. `Unsupervised` freezes the explicitly weaker
+    /// path, so installing supervision later cannot overlook earlier children.
+    #[cfg(target_os = "linux")]
+    execution: std::sync::OnceLock<execution::ExecutionBinding>,
+}
+
+struct PreparedCommand {
+    command: pc::MaterializedCommand,
+    cwd: PathBuf,
+}
+
+impl PreparedCommand {
+    fn into_tokio(self) -> TokioCommand {
+        let mut cmd = TokioCommand::new(&self.command.argv[0]);
+        cmd.args(&self.command.argv[1..])
+            .current_dir(self.cwd)
+            .env_clear();
+        for var in &self.command.env {
+            cmd.env(&var.name, var.value.expose());
+        }
+        cmd
+    }
 }
 
 impl LocalSandbox {
@@ -1186,19 +1212,21 @@ impl LocalSandbox {
 
     /// Build the child command (program, args, jailed cwd, reserved + declared env),
     /// leaving stdio for the caller to configure. Shared by `spawn`/`spawn_agent`.
-    async fn build_command(&self, command: pc::Command) -> Result<TokioCommand, pc::SandboxError> {
+    async fn build_command(
+        &self,
+        command: pc::Command,
+    ) -> Result<PreparedCommand, pc::SandboxError> {
         let root_identity = self.require_root_identity()?;
         let broker = self
             .secret_broker
             .read()
             .expect("secret broker lock poisoned")
             .clone();
-        let command =
+        let mut command =
             pc::materialize_process_command(&self.base_env, command, broker.as_ref()).await?;
-        let program = command
-            .argv
-            .first()
-            .ok_or_else(|| err("command argv is empty"))?;
+        if command.argv.is_empty() {
+            return Err(err("command argv is empty"));
+        }
         let cwd_logical = if command.cwd.is_empty() {
             "/"
         } else {
@@ -1223,21 +1251,24 @@ impl LocalSandbox {
         )
         .map_err(err)?;
 
-        let mut cmd = TokioCommand::new(program);
-        cmd.args(&command.argv[1..]);
-        cmd.current_dir(&host_cwd);
-        cmd.env_clear();
         // Reserved, runtime-owned env: where the agent writes/works (the local tier
         // has no path fidelity, so a process finds the outputs dir via this var).
-        crate::RuntimePathEnv::new(
+        let paths = crate::RuntimePathEnv::new(
             host_cwd.to_string_lossy().into_owned(),
             host_outputs.to_string_lossy().into_owned(),
-        )
-        .apply(&mut cmd);
-        for var in &command.env {
-            cmd.env(&var.name, var.value.expose());
+        );
+        for (name, value) in paths.entries() {
+            if !command.env.iter().any(|var| var.name == name) {
+                command.env.push(pc::MaterializedEnvVar {
+                    name: name.into(),
+                    value: pc::MaterializedEnvValue::Inline(value.into()),
+                });
+            }
         }
-        Ok(cmd)
+        Ok(PreparedCommand {
+            command,
+            cwd: host_cwd,
+        })
     }
 
     /// The tool-transparent capability (ADR-0041 amendment): launch an opaque agent
@@ -1250,7 +1281,30 @@ impl LocalSandbox {
         &self,
         command: pc::Command,
     ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannel>), pc::SandboxError> {
-        let mut cmd = self.build_command(command).await?;
+        #[cfg(target_os = "linux")]
+        if let execution::ExecutionBinding::Scoped(execution) = self
+            .execution
+            .get_or_init(|| execution::ExecutionBinding::Unsupervised)
+        {
+            let mut process = execution
+                .spawn(
+                    self,
+                    command,
+                    awaken_local_process::scoped::ScopedStdio::agent(self.inherit_agent_stderr),
+                )
+                .await?;
+            let stdin = process
+                .take_stdin()
+                .ok_or_else(|| err("agent stdin was not piped"))?;
+            let stdout = process
+                .take_stdout()
+                .ok_or_else(|| err("agent stdout was not piped"))?;
+            return Ok((
+                execution.track(process)?,
+                Box::new(SplitChannel::new(stdout, stdin)),
+            ));
+        }
+        let mut cmd = self.build_command(command).await?.into_tokio();
         let stderr = if self.inherit_agent_stderr {
             ProcStdio::inherit()
         } else {
@@ -1455,7 +1509,15 @@ impl pc::Sandbox for LocalSandbox {
         command: pc::Command,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
         let stdio = command.stdio;
-        let mut cmd = self.build_command(command).await?;
+        #[cfg(target_os = "linux")]
+        if let execution::ExecutionBinding::Scoped(execution) = self
+            .execution
+            .get_or_init(|| execution::ExecutionBinding::Unsupervised)
+        {
+            let process = execution.spawn(self, command, stdio.into()).await?;
+            return execution.track(process);
+        }
+        let mut cmd = self.build_command(command).await?.into_tokio();
         let (out, e) = match stdio {
             pc::Stdio::Inherit => (ProcStdio::inherit(), ProcStdio::inherit()),
             pc::Stdio::Piped => (ProcStdio::piped(), ProcStdio::piped()),

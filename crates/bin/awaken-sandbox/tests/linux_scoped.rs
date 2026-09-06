@@ -1,7 +1,7 @@
 //! Real Linux qualification without systemd or delegated cgroups.
 //! No successful prerequisite skips; Worker integration is a separate gate.
 #![cfg(target_os = "linux")]
-use awaken_local_process::scoped::{ExecutionDeadline, ScopedProcess};
+use awaken_local_process::scoped::{ExecutionDeadline, ScopedCommand, ScopedProcess};
 use awaken_provisioning_contract::{
     self as pc, MaterializedCommand, MaterializedEnvValue, MaterializedEnvVar, ProcessHandle as _,
 };
@@ -10,12 +10,18 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 const HELPER: &str = env!("CARGO_BIN_EXE_awaken-sandbox");
 
+#[path = "linux_scoped/provider.rs"]
+mod scoped_provider;
+
 async fn launch(command: &MaterializedCommand, cwd: &Path, lifetime: Duration) -> ScopedProcess {
     ScopedProcess::spawn_authorized(
         Path::new("/usr/bin/bwrap"),
         Path::new(HELPER),
-        command,
-        cwd,
+        ScopedCommand {
+            materialized: command,
+            cwd,
+            stdio: command.stdio.into(),
+        },
         ExecutionDeadline::after(lifetime).unwrap(),
         Duration::from_secs(5),
         |_, grant| grant.commit(),
@@ -158,12 +164,16 @@ async fn scoped_launch_denial_invalid_input_and_failed_exec_never_become_ready()
         let result = ScopedProcess::spawn_authorized(
             Path::new("/usr/bin/bwrap"),
             Path::new(HELPER),
-            &command,
-            root.path(),
+            ScopedCommand {
+                materialized: &command,
+                cwd: root.path(),
+                stdio: command.stdio.into(),
+            },
             ExecutionDeadline::after(Duration::from_secs(5)).unwrap(),
             Duration::from_secs(5),
             |identity, _grant| {
-                assert_ne!(identity.inode, 0, "S5");
+                assert_ne!(identity.namespace().inode, 0, "S5");
+                assert!(!identity.is_quiescent().unwrap(), "S5 live before GO");
                 if omitted {
                     Ok(())
                 } else {
@@ -190,8 +200,11 @@ async fn scoped_launch_denial_invalid_input_and_failed_exec_never_become_ready()
         let result = ScopedProcess::spawn_authorized(
             Path::new("/usr/bin/bwrap"),
             helper,
-            &command,
-            root.path(),
+            ScopedCommand {
+                materialized: &command,
+                cwd: root.path(),
+                stdio: command.stdio.into(),
+            },
             ExecutionDeadline::after(Duration::from_secs(5)).unwrap(),
             timeout,
             |_, grant| grant.commit(),
@@ -210,8 +223,11 @@ async fn scoped_launch_denial_invalid_input_and_failed_exec_never_become_ready()
     let expired = ScopedProcess::spawn_authorized(
         Path::new("/usr/bin/bwrap"),
         Path::new(HELPER),
-        &command,
-        root.path(),
+        ScopedCommand {
+            materialized: &command,
+            cwd: root.path(),
+            stdio: command.stdio.into(),
+        },
         ExecutionDeadline::after(Duration::from_secs(1)).unwrap(),
         Duration::from_secs(5),
         |_, grant| {
@@ -236,8 +252,11 @@ async fn scoped_launch_denial_invalid_input_and_failed_exec_never_become_ready()
     let committed = ScopedProcess::spawn_authorized(
         Path::new("/usr/bin/bwrap"),
         Path::new(HELPER),
-        &command,
-        root.path(),
+        ScopedCommand {
+            materialized: &command,
+            cwd: root.path(),
+            stdio: command.stdio.into(),
+        },
         ExecutionDeadline::after(Duration::from_secs(5)).unwrap(),
         Duration::from_secs(5),
         |_, grant| {

@@ -29,6 +29,9 @@ pub async fn wait_for_process_exit(
 #[cfg(target_os = "linux")]
 pub mod scoped;
 
+mod execution_identity;
+pub use execution_identity::{ProcessExecutionIdentity, ProcessNamespaceIdentity};
+
 /// One process-lifetime profile shared by Namespace and host-view rendering.
 /// Filesystem and network policy remain the sandbox provider's responsibility.
 pub const BUBBLEWRAP_PROCESS_BOUNDARY: [&str; 4] = [

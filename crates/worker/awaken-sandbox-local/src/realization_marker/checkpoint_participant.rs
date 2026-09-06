@@ -25,7 +25,7 @@ impl CheckpointParticipant {
 }
 
 impl ReadyOperationGuard {
-    fn current_marker(&self) -> Result<RealizationMarker, pc::SandboxError> {
+    pub(super) fn current_marker(&self) -> Result<RealizationMarker, pc::SandboxError> {
         let marker = read_marker_locked(&self.root, &self.lock)?
             .ok_or_else(|| err("ready filesystem operation lost its realization marker"))?;
         validate_ready_operation_marker(
@@ -108,7 +108,7 @@ impl ReadyOperationGuard {
     /// detects an out-of-protocol marker or pathname replacement.
     pub(crate) fn validate_before_effect(&self) -> Result<(), pc::SandboxError> {
         validate_live_effect_fence(&self.authorization_effect_fence)?;
-        self.current_marker().map(|_| ())
+        execution_participant::require_quiescent(&self.current_marker()?)
     }
 
     /// Keep response-loss Memory replay bound to the same immutable Ready
