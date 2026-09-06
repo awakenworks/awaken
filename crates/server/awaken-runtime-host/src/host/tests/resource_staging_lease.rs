@@ -489,3 +489,160 @@ async fn renewed_preparation_survives_its_original_deadline() {
         "S15 still owned after its original deadline"
     );
 }
+
+#[tokio::test]
+async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authority() {
+    // R16 old renewal commits at Control but its response stalls during File
+    // I/O. R17 a second renewal returns first => preserve its longer expiry;
+    // R18 takeover installs a different generation => cancel old staging.
+    // Deliver the original successful response last, then release File bytes.
+    // The canonical slot must neither regress nor publish the obsolete input.
+    for takeover in [false, true] {
+        let f = StagingFixture::new();
+        let preparation = f.start().await;
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        *f.control.renewal_response_gate.lock().unwrap() = Some(gate.clone());
+        let host = f.host.clone();
+        let now = f.now;
+        let renewal = tokio::spawn(async move {
+            host.renew_due_session_realizations(
+                now,
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000),
+            )
+            .await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            f.control.renewal_response_ready.notified(),
+        )
+        .await
+        .unwrap();
+        *f.control.renewal_response_gate.lock().unwrap() = None;
+        let mut expected = f.lease.clone();
+        expected.expires_at_unix_ms = f.now + 60_000;
+        if takeover {
+            expected.epoch += 1;
+            expected.runtime_incarnation = "worker-a/boot-2".into();
+            f.control
+                .renewals
+                .lock()
+                .unwrap()
+                .insert(SESSION.into(), expected.clone());
+            f.host
+                .install_session_realization_lease(SESSION, expected.clone());
+        } else {
+            assert_eq!(
+                f.host
+                    .renew_due_session_realizations(
+                        f.now,
+                        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                            60_000
+                        )
+                    )
+                    .await
+                    .unwrap(),
+                1
+            );
+        }
+        gate.add_permits(1);
+        assert_eq!(
+            renewal.await.unwrap().unwrap(),
+            0,
+            "R16 discard obsolete reply"
+        );
+        f.source.release.notify_one();
+        assert_eq!(preparation.await.unwrap().is_err(), takeover);
+        assert_eq!(f.host.session_slots.realization_leases()[0].1, expected);
+        if takeover {
+            f.assert_unpublished();
+        } else {
+            assert!(
+                f.host
+                    .session_slots
+                    .read(SESSION, |slot| slot.baseline.is_some()
+                        && slot.session_dispatch
+                        && slot.resource_preparation.is_none())
+                    .unwrap()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
+    // L1 16 blocked resource reads + mixed 0/10/25ms Control responses over
+    // >=10 real TTLs => every generation remains live, unpublished and renewable.
+    // L2 exceed the request budget for one session => healthy sessions continue;
+    // that session expires and cancels its blocked read without a late publish.
+    // Existing scheduler tests own capacity/order; this adds repeated complete
+    // staging lifetimes and subsequent overload to that same scheduler.
+    let mut f = StagingFixture::new();
+    let ttl = 600;
+    f.lease.expires_at_unix_ms = f.now + ttl;
+    let timing = awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(ttl);
+    let mut tasks = Vec::new();
+    for index in 0..16 {
+        let session = format!("soak-{index:02}");
+        f.control
+            .renewals
+            .lock()
+            .unwrap()
+            .insert(session.clone(), f.lease.clone());
+        f.control
+            .renewal_delay_ms
+            .lock()
+            .unwrap()
+            .insert(session.clone(), [0, 10, 25][index % 3]);
+        tasks.push(f.start_for(&session).await);
+    }
+    let started = std::time::Instant::now();
+    while started.elapsed() < std::time::Duration::from_millis(ttl * 10) {
+        let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+        f.host
+            .renew_due_session_realizations(now, timing)
+            .await
+            .unwrap();
+        for (index, task) in tasks.iter().enumerate() {
+            assert!(!task.is_finished(), "L1 session {index}");
+            assert!(
+                f.host
+                    .session_slots
+                    .read(&format!("soak-{index:02}"), |slot| slot.baseline.is_none()
+                        && slot.resource_preparation.is_some()
+                        && slot.realization_lease.as_ref().unwrap().expires_at_unix_ms
+                            > now)
+                    .unwrap()
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    f.control
+        .renewal_delay_ms
+        .lock()
+        .unwrap()
+        .insert("soak-00".into(), ttl * 10);
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !tasks[0].is_finished() {
+            let _ = f
+                .host
+                .renew_due_session_realizations(
+                    crate::terminal_repository_publication::runtime_unix_now_ms(),
+                    timing,
+                )
+                .await;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("L2 overloaded session loses authority");
+    assert!(
+        tasks.iter().skip(1).all(|task| !task.is_finished()),
+        "L2 healthy sessions survive"
+    );
+    f.source.release.notify_waiters();
+    for (index, task) in tasks.into_iter().enumerate() {
+        assert_eq!(task.await.unwrap().is_err(), index == 0);
+    }
+    assert_eq!(f.control.renewals_active.load(Ordering::SeqCst), 0);
+    assert!(f.host.thread_resource_manifest("soak-00").is_none());
+}

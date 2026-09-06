@@ -561,16 +561,57 @@ fn omits_tools_when_none_are_visible() {
 
 #[test]
 fn maps_genai_tool_call_back_to_neutral() {
-    let genai = GenaiToolCall {
-        call_id: "c9".to_string(),
-        fn_name: "calc".to_string(),
-        fn_arguments: serde_json::json!({"expr": "2+2"}),
-        thought_signatures: None,
-    };
-    let neutral = from_genai_tool_call(&genai);
-    assert_eq!(neutral.call_id, "c9");
-    assert_eq!(neutral.tool_id, "calc");
-    assert_eq!(neutral.arguments, serde_json::json!({"expr": "2+2"}));
+    // G1 object -> preserve; G2 exactly one encoded object -> decode; G3 parsed
+    // non-object / G4 malformed or twice-encoded JSON -> preserve for the
+    // canonical schema boundary, never invent arguments. Cross both existing
+    // captured-response and fallback mappers (G5), including Unicode/escapes.
+    // The separate SSE test owns raw incremental G6: normalization must not
+    // swallow the last fragment when the cumulative string becomes valid JSON.
+    let object = serde_json::json!({"expr": "中文 \"quoted\" 😀", "nested": {"n": 2}});
+    let encoded = serde_json::Value::String(object.to_string());
+    for (rule, input, expected) in [
+        ("G1", object.clone(), object.clone()),
+        ("G2", encoded.clone(), object),
+        (
+            "G3 array",
+            serde_json::json!("[1]"),
+            serde_json::json!("[1]"),
+        ),
+        (
+            "G3 null",
+            serde_json::json!("null"),
+            serde_json::json!("null"),
+        ),
+        (
+            "G3 number",
+            serde_json::json!("42"),
+            serde_json::json!("42"),
+        ),
+        (
+            "G4 malformed",
+            serde_json::json!("{broken"),
+            serde_json::json!("{broken"),
+        ),
+        (
+            "G4 nested",
+            serde_json::json!(encoded.to_string()),
+            serde_json::json!(encoded.to_string()),
+        ),
+    ] {
+        let call = GenaiToolCall {
+            call_id: "c9".into(),
+            fn_name: "calc".into(),
+            fn_arguments: input,
+            thought_signatures: None,
+        };
+        let fallback = from_genai_tool_call(&call);
+        let content = MessageContent::from_tool_calls(vec![call]);
+        let captured = map_assistant_output(&content).tool_calls();
+        assert_eq!(captured, vec![fallback.clone()], "{rule}/G5");
+        assert_eq!(fallback.call_id, "c9", "{rule}");
+        assert_eq!(fallback.tool_id, "calc", "{rule}");
+        assert_eq!(fallback.arguments, expected, "{rule}");
+    }
 }
 
 #[test]

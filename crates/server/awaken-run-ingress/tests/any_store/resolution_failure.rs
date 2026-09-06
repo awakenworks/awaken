@@ -23,100 +23,134 @@ async fn terminal_resolution_storage_faults_and_takeover_preserve_queue_progress
                 AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new()))
             });
             let committed = Arc::new(MemoryCommitCoordinator::new());
-            let boundary = Arc::new(harness::FailingCommit::new(
-                committed.clone(),
-                fault == "reject",
-            ));
-            if fault == "lost-reply" {
-                boundary.lose_next_response();
-            }
-            let (runtime, model_calls) = harness::counting_text_runtime();
-            let worker = DispatchWorker::new(runtime, store.clone(), boundary.clone(), "owner-a");
-            let clock = Arc::new(ManualClock::new(100));
-            let first = activation_on("conflict", "one-thread");
-            let first_id = first.run_id.clone();
-            store.enqueue(RunDispatch::new(first)).await.unwrap();
-            store
-                .enqueue(RunDispatch::new(activation_on("follower", "one-thread")))
-                .await
-                .unwrap();
-            let claimed = store
-                .claim("owner-a", 1_000, 100, &Default::default())
-                .await
-                .unwrap()
-                .unwrap();
-            assert!(
-                store
-                    .claim("peer", 1_000, 100, &Default::default())
-                    .await
-                    .unwrap()
-                    .is_none()
+            exercise_failure(store, committed.clone(), || committed.commit_count(), fault).await;
+            // R19 the SAME fault table also commits through a file-backed
+            // ThreadCommit authority; reopening must retain its one terminal
+            // fact after a lost reply, not just a process-local projection.
+            let root = tempfile::tempdir().unwrap();
+            let database = root.path().join("commit.db");
+            let committed = Arc::new(
+                awaken_store_sqlite::SqliteCommitCoordinator::open(database.to_str().unwrap())
+                    .unwrap(),
             );
-            let successor = if fault == "takeover" {
-                clock.advance(1_001);
-                Some(
-                    store
-                        .claim("owner-b", 1_000, 1_101, &Default::default())
-                        .await
-                        .unwrap()
-                        .unwrap(),
-                )
+            let store = Arc::new(if sqlite {
+                any_in_memory()
             } else {
-                None
-            };
-            let result = worker
-                .fail_claimed_before_execution(
-                    &claimed,
-                    "dispatch_resolution_failed",
-                    "immutable Resource snapshot conflict",
-                    clock.clone(),
-                )
-                .await;
-            if fault == "lost-reply" {
-                assert!(
-                    result.unwrap().is_some(),
-                    "F2 durable truth settles a lost reply"
-                );
-            } else {
-                assert!(
-                    result.is_err() || result.unwrap().is_none(),
-                    "F1/F3 cannot claim terminal success"
-                );
-                assert!(committed.run_state(&first_id).is_none());
-                assert_eq!(committed.commit_count(), 0);
-                boundary.set_failing(false);
-                let retry = successor.as_ref().unwrap_or(&claimed);
-                assert!(
-                    worker
-                        .fail_claimed_before_execution(
-                            retry,
-                            "dispatch_resolution_failed",
-                            "immutable Resource snapshot conflict",
-                            clock.clone()
-                        )
-                        .await
-                        .unwrap()
-                        .is_some()
-                );
-            }
-            assert_eq!(
-                committed.commit_count(),
-                1,
-                "one terminal commit, including lost reply"
-            );
+                AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new()))
+            });
+            exercise_failure(store, committed.clone(), || committed.commit_count(), fault).await;
+            drop(committed);
+            let reopened =
+                awaken_store_sqlite::SqliteCommitCoordinator::open(database.to_str().unwrap())
+                    .unwrap();
+            assert_eq!(reopened.commit_count(), 1, "R19 durable terminal count");
             assert!(matches!(
-                committed.run_state(&first_id),
-                Some(RunState::Ended(
-                    awaken_agent_contract::agent::run::EndCause::Error(_)
-                ))
+                reopened.run_state(&awaken_agent_contract::agent::run::Id("conflict".into())),
+                Some(RunState::Ended(_))
             ));
-            assert_eq!(model_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-            let follower = store
-                .claim("peer", 1_000, 1_101, &Default::default())
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(follower.request.run_id().0, "follower");
         }
     }
+}
+
+async fn exercise_failure<C>(
+    store: Arc<AnyDispatchStore>,
+    committed: Arc<C>,
+    count: impl Fn() -> u64,
+    fault: &str,
+) where
+    C: awaken_agent_contract::thread::commit::coordinator::Coordinator
+        + CommittedThreadView
+        + awaken_agent_contract::thread::read::recovery::RunRecoverySource
+        + 'static,
+{
+    let boundary = Arc::new(harness::FailingCommit::new(
+        committed.clone(),
+        fault == "reject",
+    ));
+    if fault == "lost-reply" {
+        boundary.lose_next_response();
+    }
+    let (runtime, model_calls) = harness::counting_text_runtime();
+    let worker = DispatchWorker::new(runtime, store.clone(), boundary.clone(), "owner-a");
+    let clock = Arc::new(ManualClock::new(100));
+    let first = activation_on("conflict", "one-thread");
+    let first_id = first.run_id.clone();
+    store.enqueue(RunDispatch::new(first)).await.unwrap();
+    store
+        .enqueue(RunDispatch::new(activation_on("follower", "one-thread")))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("owner-a", 1_000, 100, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        store
+            .claim("peer", 1_000, 100, &Default::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let successor = if fault == "takeover" {
+        clock.advance(1_001);
+        Some(
+            store
+                .claim("owner-b", 1_000, 1_101, &Default::default())
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+    } else {
+        None
+    };
+    let result = worker
+        .fail_claimed_before_execution(
+            &claimed,
+            "dispatch_resolution_failed",
+            "immutable Resource snapshot conflict",
+            clock.clone(),
+        )
+        .await;
+    if fault == "lost-reply" {
+        assert!(
+            result.unwrap().is_some(),
+            "F2 durable truth settles a lost reply"
+        );
+    } else {
+        assert!(
+            result.is_err() || result.unwrap().is_none(),
+            "F1/F3 cannot claim terminal success"
+        );
+        assert!(committed.run_state(&first_id).is_none());
+        assert_eq!(count(), 0);
+        boundary.set_failing(false);
+        let retry = successor.as_ref().unwrap_or(&claimed);
+        assert!(
+            worker
+                .fail_claimed_before_execution(
+                    retry,
+                    "dispatch_resolution_failed",
+                    "immutable Resource snapshot conflict",
+                    clock.clone()
+                )
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+    assert_eq!(count(), 1, "one terminal commit, including lost reply");
+    assert!(matches!(
+        committed.run_state(&first_id),
+        Some(RunState::Ended(
+            awaken_agent_contract::agent::run::EndCause::Error(_)
+        ))
+    ));
+    assert_eq!(model_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let follower = store
+        .claim("peer", 1_000, 1_101, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(follower.request.run_id().0, "follower");
 }

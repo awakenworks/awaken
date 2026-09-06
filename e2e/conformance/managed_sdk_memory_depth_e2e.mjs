@@ -84,6 +84,72 @@ async function exerciseHandoff(baseURL, apiKey, creatorSpec, operatorSpec) {
   pass(`Memory aggregate handoff ${creatorVersion} -> ${operatorVersion}`);
 }
 
+async function exerciseNullableVersionFiltersAndConditionalDelete(baseURL, apiKey, [version, Client]) {
+  // S1 SDK null/omitted page and optional actor filters => identical ordered
+  // history; S2 inclusive public timestamp bounds + memory id => exact subset;
+  // S3 pagination limit=1 preserves that subset without omissions/duplicates.
+  // S4 stale delete SHA => 409 and unchanged head/history; S5 current SHA =>
+  // exactly one tombstone. Every qualified SDK/candidate uses its own serializer.
+  // S0 lose one real successful HTTP update response after the server has
+  // committed. SDK retry must carry the same body/key and create no new version.
+  const updates = [];
+  const client = new Client({ apiKey, baseURL, maxRetries: 1, fetch: async (input, init) => {
+    const request = new Request(input, init);
+    const isUpdate = request.method === 'POST' && new URL(request.url).pathname.includes('/memories/');
+    if (isUpdate) updates.push({ body: await request.clone().text(), key: request.headers.get('idempotency-key') });
+    const response = await fetch(request);
+    if (isUpdate && updates.length === 1 && response.ok) {
+      await response.arrayBuffer();
+      throw new TypeError('injected loss after durable update');
+    }
+    return response;
+  } });
+  const store = await client.beta.memoryStores.create({ name: `filters-${version}` });
+  const first = await client.beta.memoryStores.memories.create(store.id, {
+    path: '/filters.md', content: 'base', view: 'full',
+  });
+  const second = await client.beta.memoryStores.memories.update(first.id, {
+    memory_store_id: store.id, content: 'next', view: 'full',
+    precondition: { type: 'content_sha256', content_sha256: first.content_sha256 },
+  });
+  assert.equal(updates.length, 2, 'S0 SDK retransmitted after the lost response');
+  assert.deepEqual(updates[1], updates[0], 'S0 exact body and stable command key');
+  const history = await drain(client.beta.memoryStores.memoryVersions.list(store.id));
+  const ids = history.map((entry) => entry.id);
+  assert.equal(ids.length, 2);
+  assert.deepEqual(ids, [...ids].sort(), 'S1 ascending durable identity');
+  for (const page of [undefined, null]) {
+    assert.deepEqual((await drain(client.beta.memoryStores.memoryVersions.list(store.id, {
+      page, limit: 1, memory_id: null, api_key_id: null, session_id: null, service_account_id: null,
+    }))).map((entry) => entry.id), ids, 'S1/S3 nullable SDK query');
+  }
+  for (const row of history) {
+    const filtered = await drain(client.beta.memoryStores.memoryVersions.list(store.id, {
+      memory_id: first.id, 'created_at[gte]': row.created_at, 'created_at[lte]': row.created_at,
+      limit: 1,
+    }));
+    assert.deepEqual(filtered.map((entry) => entry.id),
+      history.filter((entry) => entry.created_at === row.created_at).map((entry) => entry.id),
+      'S2 inclusive visible timestamp precision');
+  }
+  await assert.rejects(() => client.beta.memoryStores.memories.delete(first.id, {
+    memory_store_id: store.id, expected_content_sha256: first.content_sha256,
+  }), (error) => error?.status === 409, 'S4 stale delete');
+  assert.equal((await client.beta.memoryStores.memories.retrieve(first.id, {
+    memory_store_id: store.id, view: 'full',
+  })).content_sha256, second.content_sha256);
+  assert.deepEqual((await drain(client.beta.memoryStores.memoryVersions.list(store.id))).map((row) => row.id), ids);
+  await client.beta.memoryStores.memories.delete(first.id, {
+    memory_store_id: store.id, expected_content_sha256: second.content_sha256,
+  });
+  const deleted = await drain(client.beta.memoryStores.memoryVersions.list(store.id));
+  assert.equal(deleted.length, 3);
+  assert.equal(deleted.filter((row) => row.operation === 'deleted').length, 1, 'S5');
+  await client.beta.memoryStores.archive(store.id);
+  await client.beta.memoryStores.delete(store.id);
+  pass(`SDK ${version} nullable filters, inclusive timestamps, pagination and conditional deletion`);
+}
+
 async function exerciseConcurrentCAS(baseURL, apiKey) {
   const oldClient = new QUALIFIED_CLIENTS[0].Client({ apiKey, baseURL });
   const currentClient = new QUALIFIED_CLIENTS[1].Client({ apiKey, baseURL });
@@ -297,6 +363,7 @@ await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), asyn
       if (creator !== operator) await exerciseHandoff(baseURL, apiKey, creator, operator);
     }
   }
+  for (const spec of CLIENTS) await exerciseNullableVersionFiltersAndConditionalDelete(baseURL, apiKey, spec);
   await exerciseConcurrentCAS(baseURL, apiKey);
   await exerciseMutationAdmissionAndCursors(baseURL, apiKey);
   await exerciseRawHeaders(baseURL);

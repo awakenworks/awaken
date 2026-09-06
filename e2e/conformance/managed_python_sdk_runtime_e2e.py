@@ -367,6 +367,15 @@ def prepare_recovery(state_path: Path) -> None:
             content="durable-memory",
             view="full",
         )
+        # S6 first page is serialized before process death; a new SDK process
+        # resumes its opaque cursor after restart with the same nullable filters.
+        updated = client.beta.memory_stores.memories.update(
+            memory.id, memory_store_id=store.id, content="durable-memory-v2", view="full",
+            precondition={"type": "content_sha256", "content_sha256": memory.content_sha256},
+        )
+        versions = list(client.beta.memory_stores.memory_versions.list(store.id, limit=1, page=None))
+        first_page = client.beta.memory_stores.memory_versions.list(store.id, limit=1, page=None)
+        assert first_page.next_page
         file = client.beta.files.upload(file=("recovery.txt", b"durable-file", "text/plain"))
         skill = client.beta.skills.create(
             files=[("SKILL.md", SKILL_V1, "text/markdown")],
@@ -378,6 +387,11 @@ def prepare_recovery(state_path: Path) -> None:
                 "receipt_id": receipt.data[0].id,
                 "store_id": store.id,
                 "memory_id": memory.id,
+                "memory_original_sha": memory.content_sha256,
+                "memory_current_sha": updated.content_sha256,
+                "version_ids": [item.id for item in versions],
+                "first_version_id": first_page.data[0].id,
+                "version_page": first_page.next_page,
                 "file_id": file.id,
                 "skill_id": skill.id,
                 "skill_version_id": skill.latest_version_id,
@@ -417,7 +431,31 @@ def verify_recovery(state_path: Path) -> None:
             memory_store_id=store.id,
             view="full",
         )
-        assert memory.content == "durable-memory"
+        assert memory.content == "durable-memory-v2"
+        assert memory.content_sha256 == state["memory_current_sha"]
+        # S6 ordering and no duplicate page after restart; S7 Python None is
+        # omitted/empty on the wire and must preserve the unfiltered history.
+        resumed = list(client.beta.memory_stores.memory_versions.list(
+            store.id, page=state["version_page"], limit=1,
+        ))
+        assert [state["first_version_id"]] + [item.id for item in resumed] == state["version_ids"]
+        versions = list(client.beta.memory_stores.memory_versions.list(
+            store.id, page=None, limit=1, memory_id=None, api_key_id=None,
+            session_id=None, service_account_id=None,
+        ))
+        assert [item.id for item in versions] == state["version_ids"]
+        # S8 a pre-crash stale SHA must not delete a post-crash durable head or
+        # append history; exact current SHA below adds one tombstone.
+        try:
+            client.beta.memory_stores.memories.delete(
+                memory.id, memory_store_id=store.id,
+                expected_content_sha256=state["memory_original_sha"],
+            )
+        except anthropic.ConflictError as error:
+            assert error.status_code == 409
+        else:
+            raise AssertionError("stale pre-crash SHA deleted the newer head")
+        assert [item.id for item in client.beta.memory_stores.memory_versions.list(store.id)] == state["version_ids"]
         assert [item.id for item in client.beta.memory_stores.memories.list(store.id)] == [memory.id]
 
         assert client.files.retrieve_metadata(state["file_id"]).id == state["file_id"]
@@ -441,7 +479,9 @@ def verify_recovery(state_path: Path) -> None:
         assert SKILL_V1 in archived_skill
 
         client.beta.sessions.delete(session.id)
-        client.beta.memory_stores.memories.delete(memory.id, memory_store_id=store.id)
+        client.beta.memory_stores.memories.delete(memory.id, memory_store_id=store.id,
+            expected_content_sha256=memory.content_sha256)
+        assert len(list(client.beta.memory_stores.memory_versions.list(store.id))) == len(state["version_ids"]) + 1
         client.beta.memory_stores.archive(store.id)
         client.beta.memory_stores.delete(store.id)
         client.beta.files.delete(state["file_id"])

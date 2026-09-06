@@ -1886,6 +1886,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-observability",
+ "awaken-reliability-testkit",
  "awaken-run-ingress-contract",
  "awaken-run-ingress-testkit",
  "awaken-runtime",

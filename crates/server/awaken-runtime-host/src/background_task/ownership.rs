@@ -372,6 +372,135 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authority_changes_after_last_read_cannot_authorize_a_second_effect_or_stale_fold() {
+        // B1 start/poll/cancel has passed the final authoritative read and is
+        // already inside the adapter; B2 takeover/Ended commits before that
+        // adapter produces its response. One admitted external effect can still
+        // complete: a local read cannot atomically fence a remote service.
+        // B3 its old fence cannot fold into the newer durable task; B4 the next
+        // action rereads authority and emits zero additional effects. The gate
+        // sits INSIDE RawTool, after admission, unlike the pre-admission table.
+        for boundary in 0..3 {
+            for terminal in [false, true] {
+                let gate = Arc::new(tokio::sync::Semaphore::new(0));
+                let remote = Arc::new(RemoteTaskTool {
+                    effect_gate: Some(gate.clone()),
+                    ..Default::default()
+                });
+                let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
+                let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
+                    BackgroundTaskConfig {
+                        tools: BTreeSet::from(["remote".into()]),
+                    },
+                    supervisor.clone(),
+                ));
+                let runtime =
+                    Arc::new(Runtime::new().with_plugin(plugin).with_tool(remote.clone()));
+                let commit = local_commit();
+                let observer = BackgroundTaskTerminalObserver::new(
+                    runtime.clone(),
+                    remote_snapshot(),
+                    RuntimeRunContext::new(),
+                    commit.clone(),
+                    Arc::new(BackgroundRuns::new()),
+                    supervisor.clone(),
+                    "session".into(),
+                    "generation".into(),
+                    None,
+                );
+                let mut current = task(boundary);
+                persist(&commit, &current, "before-effect").await;
+                let old = current.clone();
+                let fence = old.attempt().unwrap().fence();
+                let token = supervisor.register(&old.id, &fence).unwrap();
+                let prepared = Arc::new(
+                    PreparedToolExecutor::new(
+                        runtime,
+                        &remote_snapshot(),
+                        observer.execution_context(&old, token),
+                    )
+                    .unwrap(),
+                );
+                let invoke = |prepared: Arc<PreparedToolExecutor>, expected: BackgroundTask| async move {
+                    let state = awaken_runtime_contract::Store::new();
+                    let run = RunId("effect".into());
+                    let call = &expected.invocation.call;
+                    let thread = &expected.origin.thread_id;
+                    match boundary {
+                        0 => prepared
+                            .start_task(&run, thread, "start".into(), call, &state)
+                            .await
+                            .map(|_| ()),
+                        1 => prepared
+                            .poll_task(
+                                &run,
+                                thread,
+                                "poll".into(),
+                                call,
+                                &RemoteTaskTool::handle(),
+                                &state,
+                            )
+                            .await
+                            .map(|_| ()),
+                        _ => prepared
+                            .cancel_task(
+                                &run,
+                                thread,
+                                "cancel".into(),
+                                call,
+                                &RemoteTaskTool::handle(),
+                                &state,
+                            )
+                            .await
+                            .map(|_| ()),
+                    }
+                };
+                let pending = tokio::spawn(invoke(prepared.clone(), old.clone()));
+                tokio::time::timeout(Duration::from_secs(2), remote.effect_entered.notified())
+                    .await
+                    .unwrap();
+                if terminal {
+                    current
+                        .finish(&fence, BackgroundTaskEnd::Cancelled)
+                        .unwrap();
+                } else {
+                    current
+                        .reclaim(
+                            "replacement",
+                            current.attempt().unwrap().lease_expires_at_ms,
+                            BackgroundTaskSupervisor::lease_ms(),
+                        )
+                        .unwrap();
+                }
+                persist(&commit, &current, "after-authority-change").await;
+                gate.add_permits(1);
+                pending.await.unwrap().unwrap();
+                let before_fold = current.clone();
+                assert!(
+                    current
+                        .finish(&fence, BackgroundTaskEnd::Cancelled)
+                        .is_err(),
+                    "B3"
+                );
+                assert_eq!(current, before_fold);
+                assert!(invoke(prepared, old).await.is_err(), "B4");
+                assert_eq!(
+                    remote.starts.load(Ordering::SeqCst),
+                    usize::from(boundary == 0)
+                );
+                assert_eq!(
+                    remote.polls.load(Ordering::SeqCst),
+                    usize::from(boundary == 1)
+                );
+                assert_eq!(
+                    remote.cancels.load(Ordering::SeqCst),
+                    usize::from(boundary == 2)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn missing_malformed_and_projected_authorities_fail_closed() {
         // R1 missing cell -> Lost; R2 malformed committed cell -> Unavailable;
         // R3 Worker projection (not live authority) -> Unavailable; R4 live

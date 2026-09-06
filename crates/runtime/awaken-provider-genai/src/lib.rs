@@ -317,7 +317,10 @@ impl LlmExecutor for GenaiExecutor {
                     // only the newly-appended suffix. A non-string or non-continuation
                     // snapshot is skipped (best-effort — the End event carries the
                     // authoritative parsed input).
-                    if let Some(cum) = call.arguments.as_str() {
+                    // Incremental transport is raw text, even when this snapshot
+                    // happens to complete an object. Final argument normalization
+                    // must not remove that snapshot's unsent suffix.
+                    if let Some(cum) = tool.tool_call.fn_arguments.as_str() {
                         let sent = tool_sent.entry(call.call_id.clone()).or_insert(0);
                         if cum.len() > *sent && cum.is_char_boundary(*sent) {
                             sink.on_tool_call_delta(&call.call_id, &call.tool_id, &cum[*sent..])
@@ -944,8 +947,20 @@ pub fn from_genai_tool_call(call: &GenaiToolCall) -> ToolCall {
     ToolCall {
         call_id: call.call_id.clone(),
         tool_id: call.fn_name.clone(),
-        arguments: call.fn_arguments.clone(),
+        arguments: normalize_genai_tool_arguments(&call.fn_arguments),
     }
+}
+
+/// The SDK-to-neutral owner of one extra JSON encoding layer. Only object
+/// roots qualify; invalid/non-object values remain for ordinary tool validation.
+fn normalize_genai_tool_arguments(arguments: &serde_json::Value) -> serde_json::Value {
+    if let serde_json::Value::String(encoded) = arguments
+        && let Ok(decoded) = serde_json::from_str::<serde_json::Value>(encoded)
+        && decoded.is_object()
+    {
+        return decoded;
+    }
+    arguments.clone()
 }
 
 /// Map a `genai::ChatResponse` onto the neutral `ChatResponse`.
@@ -1121,7 +1136,7 @@ pub fn map_assistant_output(content: &MessageContent) -> AssistantOutput {
             ContentPart::ToolCall(call) => blocks.push(ContentBlock::tool_use(
                 call.call_id.clone(),
                 call.fn_name.clone(),
-                call.fn_arguments.clone(),
+                normalize_genai_tool_arguments(&call.fn_arguments),
             )),
             ContentPart::ThoughtSignature(signature) => {
                 if let Some(ContentPart::ReasoningContent(reasoning)) = parts.peek() {
