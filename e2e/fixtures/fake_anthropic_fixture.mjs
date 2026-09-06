@@ -786,6 +786,9 @@ export function startFakeAnthropic(apiKey, opts = {}) {
   };
   const server = http.createServer((req, res) => {
     let body = '';
+    // Decode across HTTP chunks: converting each Buffer independently corrupts
+    // a multibyte character split at a chunk boundary (including approval JSON).
+    req.setEncoding('utf8');
     req.on('data', (c) => (body += c));
     req.on('end', async () => {
       const pathname = new URL(req.url, 'http://fixture.invalid').pathname;
@@ -842,7 +845,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       }
       if (!authorize()) return;
       state.attempts += 1;
-      const parsed = JSON.parse(body || '{}');
+      const parsed = arrival;
       if (failArrivalKind === arrivalKind) {
         state.requests.push({ url: req.url, model: parsed.model, stream: !!parsed.stream, failed: true });
         res.writeHead(faultStatus, { 'content-type': 'application/json' });

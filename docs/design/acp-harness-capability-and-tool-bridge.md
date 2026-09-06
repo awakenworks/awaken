@@ -295,6 +295,31 @@ this prompt does not grant a different command or establish that execution has
 already occurred. Real SDK continuation remains a separate acceptance boundary
 from deterministic JSON-RPC resume tests.
 
+Long-write acceptance must distinguish byte transport from model re-emission.
+The pinned real ACP/SDK matrix exercises a Write payload exceeding 16,073
+characters, including Unicode, quotes, backslashes and newlines, through the
+same MCP recording fixture. Its decision rules cover exact re-emission/allow,
+changed content/independent denial, and no re-emission. The last case must have
+no new permission request or MCP invocation even though the entire continuation
+reaches inference. Historical tool updates emitted by `session/load` are not
+new execution. This negative capability observation is not successful task
+recovery: a Cowork task that ends without its requested files still fails.
+
+The shared deterministic provider decodes HTTP input with the stream's UTF-8
+decoder before its single JSON parse. Decoding each byte chunk separately had
+corrupted multibyte characters in long approval prompts; the fixture tests split
+2/3/4-byte characters at every internal byte boundary. This fixture correction
+does not repair the separate external-model failure to reissue approved input.
+Do not relax exact argument equality to compensate for either problem.
+
+The inspected adapter's cancellation path aborts its active `canUseTool` call;
+`updatedInput` belongs to a live permission response. SDK `resumeSessionAt`
+selects a history boundary, not a demonstrated durable pending-tool replay
+contract. The upstream [permission lifecycle](https://github.com/agentclientprotocol/claude-agent-acp/blob/main/docs/permission-extension.md)
+also distinguishes cancellation from rejection. A future reliable continuation
+must retain Awaken's committed ticket, execution ownership and exact effect
+receipt; these SDK options alone are not evidence that this is implemented.
+
 Physical Hand exports are created only after Environment binding, never during
 deferred reservation. The MCP `RawTool` port delegates to
 `Environment::tool_executor()`, preserving Workdir rooting and Namespace/Container
