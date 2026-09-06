@@ -645,6 +645,45 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, scope_config, scope_mutations,
                               action_properties={"CrashPreservesOSProcesses"})
     print("Local scope mutation score: 8/8 killed (final authority, revoke/grant exclusion, launch/close, descendants, accepted stop, early exec, early release, cancelled GO)")
+    # NS decision table: NS1 workload exits before namespace init => no receipt;
+    # NS2 init teardown leaves a detached member => not quiescent; NS3 exec after
+    # helper/control/deadline loss => reject. NS4 each failure link must eventually
+    # begin teardown, given kernel progress. Mutants remove one cause at a time.
+    # Safety/action failures require the exact name. For liveness TLC supplies
+    # no name, so each mutant CFG selects ONLY the one named temporal property.
+    boundary_config = (ROOT / "formal/tla/LocalProcessBoundary.cfg").read_text(encoding="utf-8")
+    boundary_replacements = [
+        ('((~scopeReceipt /\\ scopeReceipt\') => initState \\in {"absent", "exited"})',
+         "TRUE", "BoundaryReceiptObservesInit"),
+        ("/\\ leaderAlive' = FALSE /\\ descendantAlive' = FALSE\n  /\\ helperAlive' = FALSE",
+         "/\\ leaderAlive' = FALSE /\\ UNCHANGED descendantAlive\n  /\\ helperAlive' = FALSE",
+         "BoundaryExitedHasNoMembers"),
+        ("((~workloadStarted /\\ workloadStarted') => BoundaryRunnable)",
+         "TRUE", "BoundaryExecRequiresLiveCutoff"),
+    ]
+    boundary_mutations = []
+    for original, replacement, property_name in boundary_replacements:
+        if source.count(original) != 1:
+            raise SystemExit(f"Local boundary mutation anchor drifted: {property_name}")
+        boundary_mutations.append((source.replace(original, replacement), boundary_config, property_name))
+    temporal_config = boundary_config.split("PROPERTIES\n", 1)[0]
+    temporal_config += "PROPERTIES BoundaryFailureEventuallyTerminates\n"
+    for cause in ["phase = \"crashed\"", "~helperAlive", "~controlLive", "~deadlineLive"]:
+        original = ('initState = "live" /\\ (phase = "crashed" \\/ ~helperAlive \\/ ~controlLive\n'
+                    '    \\/ ~deadlineLive \\/ scopeKillAccepted \\/ launchStage = "cancelled"\n'
+                    '    \\/ (workloadStarted /\\ ~leaderAlive))')
+        # Preserve the property antecedent; weaken only the transition guard,
+        # otherwise the obligation would disappear along with the implementation.
+        replacement = original.replace(cause, "FALSE")
+        guard = '/\\ BoundaryStopRequired /\\ initState\' = "stopping"'
+        if source.count(guard) != 1:
+            raise SystemExit("Local boundary stop mutation anchor drifted")
+        mutant = source.replace(guard, f'/\\ ({replacement}) /\\ initState\' = "stopping"')
+        boundary_mutations.append((mutant, temporal_config, "temporal:BoundaryFailureEventuallyTerminates"))
+    check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, boundary_config,
+                              boundary_mutations,
+                              action_properties={"BoundaryExecRequiresLiveCutoff"})
+    print("Local boundary mutation score: 7/7 killed (init receipt, detached member, expired exec, owner/helper/control/deadline links)")
 
 
 def check_memory_copy_model_mutant(tlc_jar: Path) -> None:

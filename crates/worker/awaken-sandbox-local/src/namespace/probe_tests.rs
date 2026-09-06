@@ -3,6 +3,56 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
+#[ignore = "isolated PATH participant invoked by native_probe_public_readiness_tracks_host_policy"]
+async fn native_probe_readiness_participant() {
+    use pc::SandboxProvider as _;
+    let launcher = std::env::var_os("AWAKEN_PROBE_TEST_LAUNCHER").unwrap();
+    let enabled = std::path::PathBuf::from(launcher).with_extension("enabled");
+    let root = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(root.path());
+    assert!(provider.probe_ready().await.is_err(), "P9 initially denied");
+    std::fs::write(&enabled, b"enabled").unwrap();
+    assert!(provider.probe_ready().await.is_ok(), "P10 newly enabled");
+    std::fs::remove_file(&enabled).unwrap();
+    assert!(provider.probe_ready().await.is_err(), "P11 revoked again");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn native_probe_public_readiness_tracks_host_policy() {
+    // P9-P11 exercise PUBLIC provider readiness in a separate process with an
+    // exact fixture launcher. Initial deny -> enable -> revoke must be observed
+    // on the same provider. Caching either success or failure violates a row.
+    // PATH is never changed in this test process, so concurrent tests cannot
+    // consume this fixture. The separate real Namespace test proves the kernel.
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let launcher = root.path().join("bwrap");
+    std::fs::write(&launcher, b"#!/bin/sh\nfor arg do\n  if [ \"$arg\" = --unshare-pid ] && [ ! -f \"$0.enabled\" ]; then exit 41; fi\ndone\n").unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut child = TokioCommand::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "namespace::probe_tests::native_probe_readiness_participant",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("PATH", root.path())
+        .env("AWAKEN_PROBE_TEST_LAUNCHER", &launcher)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(10), child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
 async fn native_probe_uses_the_real_profile_and_rechecks_changed_substrate() {
     // Cause/effect table P1-P4: user namespace works, PID namespace is denied
     // or allowed, and permission changes between observations. The historical

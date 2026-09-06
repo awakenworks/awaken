@@ -13,6 +13,8 @@ VARIABLES phase, privateGroup, dropPolicy, leaderAlive, descendantAlive,
 VARIABLES scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt
 VARIABLES launchStage, joined, goIssued, workloadStarted
 VARIABLES authorityLive, authorityAtGrant, authorityHeld
+VARIABLES initState, helperAlive, controlLive, deadlineLive
+boundaryVars == <<initState, helperAlive, controlLive, deadlineLive>>
 authorityVars == <<authorityLive, authorityAtGrant, authorityHeld>>
 launchVars == <<launchStage, joined, goIssued, workloadStarted>>
 scopeVars == <<scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt, launchVars, authorityVars>>
@@ -31,6 +33,8 @@ Init ==
   /\ launchStage = "idle" /\ joined = FALSE
   /\ goIssued = FALSE /\ workloadStarted = FALSE
   /\ authorityLive = TRUE /\ authorityAtGrant = FALSE /\ authorityHeld = FALSE
+  /\ initState = "absent" /\ helperAlive = FALSE
+  /\ controlLive = TRUE /\ deadlineLive = TRUE
 
 Spawn ==
   /\ phase = "new" /\ phase' = "owned"
@@ -138,9 +142,9 @@ SignalDenialIsNotAcknowledged == signalOutcome = "denied" => ~signalAccepted
 CrashPreservesOSProcesses == [][(phase = "owned" /\ phase' = "crashed")
                             => UNCHANGED <<leaderAlive, descendantAlive>>]_vars
 
-Spec == Init /\ [][Next /\ UNCHANGED scopeVars]_<<vars, scopeVars>>
+Spec == Init /\ [][Next /\ UNCHANGED <<scopeVars, boundaryVars>>]_<<vars, scopeVars, boundaryVars>>
 
-\* Descriptor-pinned cgroup adapter: ONE owner, one launch admission and one
+\* Descriptor-pinned process scope: ONE owner, one launch admission and one
 \* bounded workload tree. The trusted helper's pre-GO transport/OS lifetime is
 \* abstracted; joining and acknowledgement precede the atomic GO/permit release.
 \* Cancellation cannot authorize exec; no out-of-band migration is assumed.
@@ -240,5 +244,70 @@ ScopeWorkloadRequiresGrant == workloadStarted => joined /\ goIssued
 ScopeCancelNeverGrants == launchStage = "cancelled" => ~goIssued /\ ~workloadStarted
 ScopePendingJoinExcludesClose == launchStage \in {"bootstrap", "joined", "acknowledged"}
   => scopePermit /\ ~scopeClosed
-ScopeSpec == Init /\ [][ScopeNext]_<<vars, scopeVars>>
+ScopeSpec == Init /\ [][ScopeNext /\ UNCHANGED boundaryVars]_<<vars, scopeVars, boundaryVars>>
+
+\* Physical Linux boundary composition: reuse the admission/GO authority above,
+\* adding only OS observations. No new Session lease or recovery state machine.
+\* BOOTTIME expiry is abstracted as irreversible deadlineLive -> FALSE; this
+\* fixed-cutoff configuration does NOT model renewal or a wall-clock guarantee.
+allBoundaryVars == <<vars, scopeVars, boundaryVars>>
+BoundaryInit == Init
+BoundaryRunnable == initState = "live" /\ helperAlive /\ controlLive /\ deadlineLive
+BoundarySpawn ==
+  /\ ScopeSpawn /\ UNCHANGED authorityVars
+  /\ initState' = "live" /\ helperAlive' = TRUE
+  /\ UNCHANGED <<controlLive, deadlineLive>>
+\* Other protocol steps keep OS ownership. Creation is handled above. Only a
+\* live helper before cutoff may exec/fork; no process appears after init exit.
+\* A poll receipt additionally observes init exit, not just the workload leader.
+BoundaryProtocol ==
+  /\ ScopeNext
+  /\ ~(phase = "new" /\ phase' = "owned")
+  /\ ((~workloadStarted /\ workloadStarted') => BoundaryRunnable)
+  /\ ((~descendantAlive /\ descendantAlive') => BoundaryRunnable)
+  /\ ((~scopeReceipt /\ scopeReceipt') => initState \in {"absent", "exited"})
+  /\ UNCHANGED boundaryVars
+BoundaryFailure(cause) ==
+  /\ initState = "live"
+  /\ CASE cause = "helper" -> /\ helperAlive /\ helperAlive' = FALSE
+                             /\ UNCHANGED <<controlLive, deadlineLive>>
+       [] cause = "disconnect" -> /\ controlLive /\ controlLive' = FALSE
+                                 /\ UNCHANGED <<helperAlive, deadlineLive>>
+       [] OTHER -> /\ deadlineLive /\ deadlineLive' = FALSE
+                   /\ UNCHANGED <<helperAlive, controlLive>>
+  /\ UNCHANGED <<vars, scopeVars, initState>>
+BoundaryStopRequired ==
+  initState = "live" /\ (phase = "crashed" \/ ~helperAlive \/ ~controlLive
+    \/ ~deadlineLive \/ scopeKillAccepted \/ launchStage = "cancelled"
+    \/ (workloadStarted /\ ~leaderAlive))
+\* Parent death, helper failure, EOF or cutoff requests kernel teardown.
+\* This step deliberately does not erase live descendants or publish a receipt.
+BoundaryBeginStop ==
+  /\ BoundaryStopRequired /\ initState' = "stopping"
+  /\ UNCHANGED <<vars, scopeVars, helperAlive, controlLive, deadlineLive>>
+\* Assumption: the kernel eventually completes init teardown and reaps members.
+\* Uninterruptible I/O can postpone this indefinitely; no hard time bound is
+\* proved. PID namespaces prevent in-tree forks from escaping to an ancestor.
+BoundaryKernelExit ==
+  /\ initState = "stopping" /\ initState' = "exited"
+  /\ leaderAlive' = FALSE /\ descendantAlive' = FALSE
+  /\ helperAlive' = FALSE
+  /\ UNCHANGED <<phase, privateGroup, dropPolicy, stopRequested, lock, waiter,
+                  observedExit, signalVars, scopeVars, controlLive, deadlineLive>>
+BoundaryNext == BoundarySpawn \/ BoundaryProtocol \/ BoundaryBeginStop
+  \/ BoundaryKernelExit
+  \/ \E cause \in {"helper", "disconnect", "deadline"} : BoundaryFailure(cause)
+BoundaryTypeOK == ScopeTypeOK
+  /\ initState \in {"absent", "live", "stopping", "exited"}
+  /\ helperAlive \in BOOLEAN /\ controlLive \in BOOLEAN /\ deadlineLive \in BOOLEAN
+BoundaryReceiptObservesInit == scopeReceipt => initState \in {"absent", "exited"}
+BoundaryExitedHasNoMembers == initState = "exited"
+  => ~leaderAlive /\ ~descendantAlive /\ ~helperAlive
+BoundaryExecRequiresLiveCutoff ==
+  [][(~workloadStarted /\ workloadStarted') => BoundaryRunnable]_allBoundaryVars
+BoundaryFailureEventuallyTerminates ==
+  BoundaryStopRequired ~> (initState = "exited")
+BoundarySpec == BoundaryInit /\ [][BoundaryNext]_allBoundaryVars
+  /\ WF_allBoundaryVars(BoundaryBeginStop)
+  /\ WF_allBoundaryVars(BoundaryKernelExit)
 =============================================================================

@@ -9,7 +9,7 @@ awaken_configure_cargo_target "$PWD"
 awaken_unset_ambient_api_keys
 
 # Gate selection table: default preserves the cross-platform contract;
-# --linux-supervision additionally REQUIRES user systemd/cgroup-v2 execution.
+# --linux-supervision additionally REQUIRES real Linux PID namespaces/pidfd.
 # Unknown/multiple arguments or a non-Linux supervision request fail before
 # any tests. This is substrate qualification, not a production capability bit.
 linux_supervision=false
@@ -21,8 +21,7 @@ elif [[ "$#" != 0 ]]; then
   exit 2
 fi
 if [[ "$linux_supervision" == true ]]; then
-  cargo test -p awaken-sandbox --test linux_cgroup \
-    linux_systemd_process_scope_contract -- --ignored --exact
+  cargo test -p awaken-sandbox --test linux_scoped
 fi
 
 # Cause/effect matrix: provider={Workdir,sandbox-absolute}, cwd={default,nested},

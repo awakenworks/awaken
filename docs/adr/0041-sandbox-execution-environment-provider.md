@@ -642,7 +642,7 @@ opt-in; a profile alone cannot select or install a backend.
 
 This requirement is currently fail-closed, not an enabled production mode:
 all built-in providers still report supervision as false, and Worker assembly
-rejects an explicit manifest claiming it. The Linux external-owner and trusted
+rejects an explicit manifest claiming it. The systemd-free Linux namespace and trusted
 bootstrap adapters are qualified separately (ADR-0038). Full activation still
 requires current Session lease propagation through launch, Native execution
 under that same boundary, and process identity/stop evidence integrated into
@@ -653,7 +653,8 @@ configuration is introduced.
 Native Linux readiness now executes the same `bubblewrap_argv` profile as a
 real Namespace launch, including PID/IPC/UTS/network namespaces and parent-death
 linkage. A user-namespace-only probe is insufficient. Each observation is fresh,
-bounded, and starts without ambient environment values; a previously successful
+bounded, and retains only operator PATH for launcher lookup, not ambient
+credentials or loader hooks; a previously successful
 probe cannot mask policy revocation, and a failed probe cannot permanently mask
 subsequent installation. Probe failure is unavailable, not a fallback launch or
 a quiescence receipt. This improves the existing Namespace readiness path; it

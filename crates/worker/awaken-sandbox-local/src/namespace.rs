@@ -78,6 +78,12 @@ async fn run_native_probe_argv(argv: &[String], timeout: std::time::Duration) ->
         .stdin(ProcStdio::null())
         .stdout(ProcStdio::null())
         .stderr(ProcStdio::null());
+    // The launcher must be resolved from the same operator PATH as production,
+    // not the libc default search path selected by env_clear. No HOME, loader
+    // hooks or credential environment accompanies that executable lookup.
+    if let Some(path) = std::env::var_os("PATH") {
+        command.env("PATH", path);
+    }
     let Ok(process) = LocalProcess::spawn(&mut command) else {
         return false;
     };
@@ -233,21 +239,17 @@ fn control_directory_for(
 /// and the program argv.
 #[must_use]
 pub fn bubblewrap_argv(input: &RenderInput) -> Vec<String> {
-    let mut a: Vec<String> = [
-        "bwrap",
-        "--unshare-user",
-        "--unshare-pid",
-        "--unshare-ipc",
-        "--unshare-uts",
-    ]
-    .into_iter()
-    .map(s)
-    .collect();
+    let mut a = vec![s("bwrap")];
+    a.extend(
+        awaken_local_process::BUBBLEWRAP_PROCESS_BOUNDARY
+            .into_iter()
+            .map(s),
+    );
+    a.extend(["--unshare-ipc", "--unshare-uts"].into_iter().map(s));
     match input.network {
         pc::NetworkPolicy::Unrestricted => {} // share the host network namespace
         _ => a.push(s("--unshare-net")),
     }
-    a.extend(["--die-with-parent", "--new-session"].into_iter().map(s));
     a.extend(["--proc", "/proc"].into_iter().map(s));
     a.extend(["--dev", "/dev"].into_iter().map(s));
     a.extend(["--tmpfs", "/tmp"].into_iter().map(s));
