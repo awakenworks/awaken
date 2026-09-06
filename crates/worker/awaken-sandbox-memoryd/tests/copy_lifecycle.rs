@@ -23,7 +23,8 @@ async fn live_and_recovered_copy_do_not_follow_a_renamed_head() {
     // MP-COPY: live/recovered x unchanged/identical-candidate destination.
     // Rename preserves id; both hash-match and idempotence shortcuts must fail.
     // Effects: no durable mutation/history, original candidate stays on disk,
-    // repeated cleanup fails instead of acknowledging or rebasing onto the move.
+    // Live cleanup fails; terminal replay durably retains the exact candidate
+    // before acknowledging, never rebasing onto the moved head.
     for recovered in [false, true] {
         for same_candidate in [false, true] {
             let root = tempfile::tempdir().unwrap();
@@ -70,7 +71,13 @@ async fn live_and_recovered_copy_do_not_follow_a_renamed_head() {
                 } else {
                     mount.teardown().await
                 };
-                assert!(result.is_err());
+                assert_eq!(result.is_ok(), recovered);
+                let retained = repository.list_copy_conflicts("s").await.unwrap();
+                assert_eq!(retained.len(), usize::from(recovered));
+                if recovered {
+                    assert_eq!(retained[0].path, "/note.md");
+                    assert_eq!(retained[0].content.as_deref(), Some("candidate"));
+                }
                 assert_eq!(repository.snapshot_heads("s").await.unwrap(), heads);
                 assert_eq!(repository.list_versions("s").await.unwrap(), history);
                 assert_eq!(
@@ -801,18 +808,27 @@ async fn concurrent_copy_harvest_preserves_one_winner_and_retry_evidence() {
                 loser.teardown().await.is_err(),
                 "loser must not silently rebase"
             );
-            assert!(
-                mounter
-                    .reconcile_recovered_copy("s", &evidence, &stale_files, MountAccess::ReadWrite)
-                    .await
-                    .is_err(),
-                "restart must retain the frozen base"
+            mounter
+                .reconcile_recovered_copy("s", &evidence, &stale_files, MountAccess::ReadWrite)
+                .await
+                .unwrap();
+            let retained = repository.list_copy_conflicts("s").await.unwrap();
+            assert_eq!(retained.len(), 1, "restart retains losing proposal");
+            assert_eq!(retained[0].base.as_ref().unwrap().id, evidence.heads[0].id);
+            assert_eq!(
+                retained[0].base.as_ref().unwrap().content_sha256,
+                evidence.heads[0].content_sha256
+            );
+            assert_eq!(
+                retained[0].content.as_ref().map(|s| s.as_bytes()),
+                stale_files.first().map(|(_, bytes)| bytes.as_slice())
             );
             drop(left);
             drop(right);
             drop(mounter);
             drop(repository);
             let reopened = SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap();
+            assert_eq!(reopened.list_copy_conflicts("s").await.unwrap(), retained);
             assert_eq!(
                 reopened.get_by_path("s", "/note.md").await.unwrap(),
                 durable
@@ -1076,11 +1092,17 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
             ("a.md".into(), b"a-committed".to_vec()),
             ("z.md".into(), z_local.into_bytes()),
         ];
-        assert!(
+        assert_eq!(
             mounter
                 .reconcile_recovered_copy("s", &evidence, &files, MountAccess::ReadWrite)
                 .await
-                .is_err()
+                .is_err(),
+            oversized,
+            "invalid input blocks; a valid conflict is durably retained"
+        );
+        assert_eq!(
+            repository.list_copy_conflicts("s").await.unwrap().len(),
+            usize::from(!oversized)
         );
         assert_eq!(
             repository.get_by_path("s", "/a.md").await.unwrap(),
@@ -1107,7 +1129,8 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
 async fn recovered_copy_retries_committed_write_without_a_second_version() {
     // R5: durable commit + lost response/local snapshot + process replacement
     // => retry exact bytes with ORIGINAL materialization evidence is idempotent.
-    // R6: another writer advances after R5 => old retry conflicts, never reverts.
+    // R6: another writer advances after R5 => old proposal is retained, never
+    // reverts the head or adds a successful version.
     // This exercises the real SQLite commit boundary, not a mocked CAS result;
     // dropping the guard without teardown represents losing its acknowledgement.
     let root = temporary_root();
@@ -1149,12 +1172,13 @@ async fn recovered_copy_retries_committed_write_without_a_second_version() {
         .update("s", &base.id, "newer", &committed.content_sha256)
         .await
         .unwrap();
-    assert!(
-        replacement
-            .reconcile_recovered_copy("s", &evidence, &surviving_files, MountAccess::ReadWrite)
-            .await
-            .is_err()
-    );
+    replacement
+        .reconcile_recovered_copy("s", &evidence, &surviving_files, MountAccess::ReadWrite)
+        .await
+        .unwrap();
+    let retained = repository.list_copy_conflicts("s").await.unwrap();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].content.as_deref(), Some("committed"));
     assert_eq!(
         repository.get_by_path("s", "/note.md").await.unwrap(),
         Some(newer)

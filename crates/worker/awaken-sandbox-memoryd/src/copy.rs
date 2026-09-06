@@ -12,7 +12,9 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use awaken_provisioning_contract::MemoryMaterializationHead;
-use awaken_resource_contract::{MemErr, MemoryRepository, memory_sha256_hex as sha256_hex};
+use awaken_resource_contract::{
+    MemErr, MemoryCopyBase, MemoryCopyConflict, MemoryRepository, memory_sha256_hex as sha256_hex,
+};
 
 use crate::FuseError;
 
@@ -138,8 +140,8 @@ impl CopySnapshot {
 /// One local edit that could not be reconciled because the durable head changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarvestConflict {
-    pub path: String,
     pub reason: &'static str,
+    pub candidate: MemoryCopyConflict,
 }
 
 /// Copy reconciliation outcome. Conflicts preserve the durable head and are
@@ -341,8 +343,15 @@ async fn reconcile_files(
                     }
                     Err(MemErr::Conflict { .. } | MemErr::NotFound(_)) => {
                         report.conflicts.push(HarvestConflict {
-                            path: path.clone(),
                             reason: "durable head changed",
+                            candidate: MemoryCopyConflict {
+                                path: path.clone(),
+                                base: Some(MemoryCopyBase {
+                                    id: base.id,
+                                    content_sha256: base.content_sha256,
+                                }),
+                                content: Some(content.clone()),
+                            },
                         });
                     }
                     Err(error) => return Err(error.into()),
@@ -375,8 +384,12 @@ async fn reconcile_files(
                         );
                     } else {
                         report.conflicts.push(HarvestConflict {
-                            path: path.clone(),
                             reason: "path was concurrently created",
+                            candidate: MemoryCopyConflict {
+                                path: path.clone(),
+                                base: None,
+                                content: Some(content.clone()),
+                            },
                         });
                     }
                 }
@@ -403,7 +416,14 @@ async fn reconcile_files(
                 report.changed += usize::from(deleted);
             }
             Err(MemErr::Conflict { .. }) => report.conflicts.push(HarvestConflict {
-                path,
+                candidate: MemoryCopyConflict {
+                    path,
+                    base: Some(MemoryCopyBase {
+                        id: base.id,
+                        content_sha256: base.content_sha256,
+                    }),
+                    content: None,
+                },
                 reason: "removed path changed concurrently",
             }),
             Err(error) => return Err(error.into()),
@@ -840,7 +860,7 @@ mod tests {
             .block_on(harvest(&*fs, "s", &dir, &mut snapshot))
             .unwrap();
         assert_eq!(report.changed, 0);
-        assert_eq!(report.conflicts[0].path, "/note.md");
+        assert_eq!(report.conflicts[0].candidate.path, "/note.md");
         assert_eq!(
             rt.block_on(fs.get_by_path("s", "/note.md"))
                 .unwrap()
@@ -891,7 +911,7 @@ mod tests {
             .block_on(harvest(&*fs, "s", &dir, &mut snapshot))
             .unwrap();
         assert_eq!(report.changed, 0);
-        assert_eq!(report.conflicts[0].path, "/note.md");
+        assert_eq!(report.conflicts[0].candidate.path, "/note.md");
         assert_eq!(
             rt.block_on(fs.get_by_path("s", "/note.md"))
                 .unwrap()

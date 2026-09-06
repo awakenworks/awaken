@@ -28,6 +28,128 @@ fn router() -> Router {
     )
 }
 
+#[tokio::test]
+async fn retained_copy_candidates_use_store_visibility_and_explicit_content_view() {
+    use awaken_resource_contract::{MemoryCopyBase, MemoryCopyConflict};
+    // RC-API: store={owned,foreign,missing,archived}, view={basic,full,invalid},
+    // operation={write-empty,delete}, page={valid,zero}. Owned+valid returns
+    // stable identities, with content only under full; foreign/missing/archived
+    // is 404. Invalid view/page is 400; reads never mutate heads or history.
+    // This is an Awaken extension, not an assertion about the Anthropic schema.
+    let resources = support::resources::ephemeral_resources();
+    let memories = resources.authorities().memory_repository();
+    let router = memory_stores_router(memories.clone(), resources.memory_stores());
+    let store = create_store(&router, "conflicts").await;
+    let base = MemoryCopyBase {
+        id: "original".into(),
+        content_sha256: "a".repeat(64),
+    };
+    let candidates = [
+        MemoryCopyConflict {
+            path: "/a".into(),
+            base: Some(base.clone()),
+            content: Some(String::new()),
+        },
+        MemoryCopyConflict {
+            path: "/b".into(),
+            base: Some(base),
+            content: None,
+        },
+    ];
+    for candidate in &candidates {
+        memories
+            .preserve_copy_conflict(&store, candidate)
+            .await
+            .unwrap();
+    }
+    let url = format!("/v1/awaken/memory-stores/{store}/copy-conflicts");
+    // RC-API namespace: Awaken owns this extension; the vendor namespace must
+    // remain absent even for an authorized owner of an existing Store.
+    assert_eq!(
+        call(
+            &router,
+            "GET",
+            &format!("/v1/memory_stores/{store}/copy_conflicts"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND,
+    );
+    let (status, basic) = call(&router, "GET", &url, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(basic["data"].as_array().unwrap().len(), 2);
+    assert!(
+        basic["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|v| v["content"].is_null())
+    );
+    let (status, full) = call(&router, "GET", &format!("{url}?view=full"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    for candidate in &candidates {
+        let row = full["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == candidate.id())
+            .unwrap();
+        assert_eq!(row["content"], json!(candidate.content));
+        assert_eq!(
+            row["proposed_operation"],
+            if candidate.content.is_some() {
+                "write"
+            } else {
+                "delete"
+            }
+        );
+    }
+    let (status, page) = call(&router, "GET", &format!("{url}?limit=1"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["data"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        call_scoped(&router, "foreign", "GET", &url, None).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &router,
+            "GET",
+            "/v1/awaken/memory-stores/missing/copy-conflicts",
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    for suffix in ["?view=invalid", "?limit=0"] {
+        assert_eq!(
+            call(&router, "GET", &format!("{url}{suffix}"), None)
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert!(memories.snapshot_heads(&store).await.unwrap().is_empty());
+    assert!(memories.list_versions(&store).await.unwrap().is_empty());
+    assert_eq!(
+        call(
+            &router,
+            "POST",
+            &format!("/v1/memory_stores/{store}/archive"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&router, "GET", &url, None).await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
 async fn call(
     router: &Router,
     method: &str,
@@ -788,7 +910,7 @@ async fn memory_error_arms_are_fail_closed() {
 }
 
 #[tokio::test]
-async fn memory_store_router_exposes_only_the_anthropic_resource_contract() {
+async fn memory_store_router_does_not_reintroduce_a_parallel_store_configuration() {
     // Cause/effect decision table: R1 official Store and subresource paths have
     // an owner; R2 the former Store-policy endpoint and R3 its historical
     // config-version endpoint have no owner (404). Recall/extraction settings

@@ -595,11 +595,15 @@ same two initial Memory heads: equal edits converge, distinct edits preserve a
 single winner. It checks exact head/version history after concurrent release
 and restart through the public API, for both ACP fixture identities and Native
 Namespace. The registered Worker uses its existing copy-only mounter. This
-exercises mounted Agent composition; it does not establish in-flight crash
-fencing or that a conflict's pending reclamation has eventually completed.
+exercises mounted Agent composition. Its R7/R8 assertions now additionally
+require the losing proposal through the Memory API, the canonical Session
+delete tombstones (transactionally gated by verified completed cleanup), removal
+of both physical output projections, and candidate preservation across another
+Worker restart. This is not in-flight
+crash fencing or a vendor CLI/cloud acceptance claim.
 The commit/ack fault matrix in `tests/writeback_faults.rs` adds 24 actual SQLite
 teardown interruption rows, including a committed prefix and exact reopen.
-Six further rows pause inside the actual SQLite transaction while its caller
+Eight further rows pause inside the actual SQLite transaction while its caller
 is cancelled, then retry before/after the background commit. Recovery now
 feeds captured bytes into the same reconciliation function without an
 intermediate plaintext directory; unusable-temp-location subprocess tests cover
@@ -615,9 +619,37 @@ followed by repair, idempotent replay and SQLite reopen. Read-only mounts still
 do not publish local edits. The existing Host terminal Memory table adds resident
 and cold rejection/retry rows: no acknowledgement, provider preparation or
 physical disposal may follow rejected reconciliation; the exact binding survives
-and the same terminal effect resumes after participant recovery. This is
-fail-closed retention, not a new permanent conflict disposition or authorization
-to move local Memory into cloud Files.
+and the same terminal effect resumes after participant recovery.
+
+Terminal Copy reconciliation preserves valid losing proposals in the original
+Memory aggregate before it acknowledges reconciliation. `MemoryRepository`
+owns this storage operation, its content-addressed proposal identity (original
+path/base plus proposed content or deletion), bounded store-local capacity,
+readback and whole-store purge. SQLite and PostgreSQL serialize admission;
+the only schema append is in the existing converged Memory migration bundle.
+Retaining a proposal changes neither live heads nor successful version history.
+Identical proposals coalesce; these are content records, not another Session
+operation ledger or a guarantee against later legitimate head transitions.
+
+The existing flow remains `terminal fence -> stop/capture -> original-base CAS
+-> retain every conflict -> acknowledge exact Memory evidence -> provider
+prepare -> aggregate-authorized disposal`. A failed or unsupported retention
+write leaves cleanup retryable, with the source intact. Twelve additional
+fault rows interrupt candidate preservation before/after its real SQLite write,
+by error/cancellation, for create/update/delete; retries and reopen must preserve
+the exact candidate and winner. The deeper SQL-trigger matrix also cancels a
+caller inside the candidate INSERT transaction.
+
+Worker HTTP retention is terminal-v2-only and checks the same Worker, live
+Session root, binding and original path/id/hash. Run v1 and realization v3
+cannot append candidates. Embedded execution uses the same repository after
+Host terminal admission. Content never moves to Files or a separate cloud
+store. The Awaken-only `GET /v1/awaken/memory-stores/{id}/copy-conflicts` extension
+is route-owned by `awaken-protocol-awaken`, using its existing injected-handler
+pattern to reuse Store visibility and pagination, hiding content unless
+`view=full`; the Anthropic Memory and version schemas are unchanged.
+This does not supply automatic semantic conflict merging, change read-only
+behavior, retain invalid/binary copies, or prove OS process-tree quiescence.
 The existing `MemoryCAS` model adds the copy-recovery configuration, with
 automatically rejected rebase, incomplete-scan-delete and replaced-root mutants.
 It separates request admission, caller cancellation, late durable commit and

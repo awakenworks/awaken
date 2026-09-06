@@ -116,6 +116,7 @@ impl ResourcePhysicalReclaimer for ResourcePhysicalCleanup {
                 Ok(ResourcePurgeEvidence::MemoryStore {
                     heads_deleted: summary.heads_deleted,
                     versions_deleted: summary.versions_deleted,
+                    copy_conflicts_deleted: summary.copy_conflicts_deleted,
                 })
             }
             ResourceKind::Skill => Ok(ResourcePurgeEvidence::Skill {
