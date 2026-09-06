@@ -39,18 +39,18 @@ impl LaunchInfo {
 
     pub(super) async fn bind(
         self,
-        child: tokio::process::Child,
+        process: LocalProcess,
     ) -> Result<LocalProcess, pc::SandboxError> {
         #[cfg(not(target_os = "linux"))]
         {
-            Ok(LocalProcess::spawned(child))
+            Ok(process)
         }
         #[cfg(target_os = "linux")]
         {
             use pc::ProcessHandle as _;
             use std::time::Duration;
             use tokio::io::AsyncReadExt as _;
-            let mut process = LocalProcess::spawned(child);
+            let mut process = process;
             let binding = async {
                 // bubblewrap closes this fd in both monitor and namespace child
                 // before exec. The application cannot forge the reported identity.
@@ -153,23 +153,22 @@ mod tests {
             let peer = matches!(mode, "silent" | "cancelled").then_some(peer);
             let mut command = TokioCommand::new("/bin/sh");
             command.args(["-c", "exec sleep 30"]);
-            // Use the actual command preparation for R5: deleting kill-on-drop
-            // from attach must make the cancellation assertion fail.
+            // Use the sole LocalProcess spawn boundary for R5: its drop policy
+            // must retain cleanup when private-report binding is cancelled.
             let launch = if mode == "cancelled" {
                 LaunchInfo::attach(&mut command).unwrap()
             } else {
                 LaunchInfo { report }
             };
-            awaken_local_process::configure_process_group(&mut command);
-            let child = command.spawn().unwrap();
-            let pid = child.id().unwrap();
+            let process = LocalProcess::spawn(&mut command).unwrap();
+            let pid = pc::ProcessHandle::id(&process).to_owned();
             let deadline = if mode == "cancelled" {
                 Duration::from_millis(30)
             } else {
                 Duration::from_secs(8)
             };
             drop(command);
-            let result = tokio::time::timeout(deadline, launch.bind(child)).await;
+            let result = tokio::time::timeout(deadline, launch.bind(process)).await;
             if mode == "cancelled" {
                 assert!(result.is_err());
             } else {

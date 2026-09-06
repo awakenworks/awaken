@@ -242,25 +242,17 @@ async fn parent_alias_admission_preserves_exact_no_edit_heads_and_history() {
 async fn recovery_preserves_logical_names_without_host_rematerialization() {
     // R1 captured paths may alias on this host but are distinct logical names:
     // reconcile directly, retaining identity; input order cannot rename heads.
-    // R2 invalid UTF-8 is present-but-unpublished, not an implicit delete.
     let root = tempfile::tempdir().unwrap();
     let repository = Arc::new(
         SqliteMemoryRepository::open(root.path().join("memory.sqlite").to_str().unwrap()).unwrap(),
     );
     let mut files = vec![];
-    for path in ["A/x.md", "a/y.md", "é/x.md", "e\u{301}/y.md", "binary.md"] {
+    for path in ["A/x.md", "a/y.md", "é/x.md", "e\u{301}/y.md"] {
         repository
             .create("s", &format!("/{path}"), "base")
             .await
             .unwrap();
-        files.push((
-            path.to_owned(),
-            if path == "binary.md" {
-                vec![255]
-            } else {
-                b"base".to_vec()
-            },
-        ));
+        files.push((path.to_owned(), b"base".to_vec()));
     }
     let heads = repository.snapshot_heads("s").await.unwrap();
     let history = repository.list_versions("s").await.unwrap();
@@ -286,6 +278,137 @@ async fn recovery_preserves_logical_names_without_host_rematerialization() {
         .unwrap();
     assert_eq!(repository.snapshot_heads("s").await.unwrap(), heads);
     assert_eq!(repository.list_versions("s").await.unwrap(), history);
+}
+
+#[tokio::test]
+async fn unrepresentable_copy_blocks_writeback_until_source_is_repaired() {
+    // Cause/effect table U2-U5 (full Cartesian product, 16 rows):
+    // C1 live/recovered; C2 binary creates/replaces a head; C3 binary sorts
+    // before/after valid edits; C4 read-write/read-only. Every row also includes
+    // a valid create, update and local deletion.
+    // U2 RW + binary => error on every retry, NO partial CAS/delete/history or
+    // snapshot advance; exact source bytes and frozen bases survive.
+    // U3 RO + binary => success WITHOUT writeback; this is not a preservation
+    // receipt for unauthorized edits. U4 RW + repaired UTF-8 => four effects
+    // commit once; replay with original recovery bases adds no history.
+    // U5 close/reopen SQLite => exact heads/history, not merely cached success.
+    // Constraint: captured bytes are quiescent; OS fencing is outside this test.
+    for recovered in [false, true] {
+        for existing in [false, true] {
+            for binary_path in ["0.bin", "z.bin"] {
+                for access in [MountAccess::ReadWrite, MountAccess::ReadOnly] {
+                    let root = tempfile::tempdir().unwrap();
+                    let database = root.path().join("memory.sqlite");
+                    let repository =
+                        Arc::new(SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap());
+                    for path in ["/a.md", "/gone.md"] {
+                        repository.create("s", path, "base").await.unwrap();
+                    }
+                    if existing {
+                        repository
+                            .create("s", &format!("/{binary_path}"), "base")
+                            .await
+                            .unwrap();
+                    }
+                    let mounter = MemoryStoreMounter::copy_only(repository.clone());
+                    let projection = root.path().join("projection");
+                    let mount = mounter.mount("s", &projection, access).await.unwrap();
+                    let evidence = MemoryMaterializationEvidence::new(
+                        "s",
+                        "/workspace/memory",
+                        mount.materialization_heads().unwrap(),
+                    )
+                    .unwrap();
+                    let heads = repository.snapshot_heads("s").await.unwrap();
+                    let history = repository.list_versions("s").await.unwrap();
+                    let mut files = vec![
+                        ("a.md".to_owned(), b"edit".to_vec()),
+                        ("b.md".to_owned(), b"new".to_vec()),
+                        (binary_path.to_owned(), vec![0xff, 0xfe, 0, 0x42]),
+                    ];
+                    for (path, bytes) in &files {
+                        std::fs::write(projection.join(path), bytes).unwrap();
+                    }
+                    std::fs::remove_file(projection.join("gone.md")).unwrap();
+                    files.reverse(); // Transport order cannot admit a valid prefix.
+                    for _ in 0..2 {
+                        let result = if recovered {
+                            mounter
+                                .reconcile_recovered_copy("s", &evidence, &files, access)
+                                .await
+                        } else {
+                            mount.teardown().await
+                        };
+                        if access == MountAccess::ReadWrite {
+                            let error = result.unwrap_err().to_string();
+                            assert!(error.contains("non-UTF-8 Memory content"), "U2: {error}");
+                        } else {
+                            result.expect("U3 no unauthorized writeback");
+                        }
+                        assert_eq!(repository.snapshot_heads("s").await.unwrap(), heads);
+                        assert_eq!(repository.list_versions("s").await.unwrap(), history);
+                        assert_eq!(mount.materialization_heads().unwrap(), evidence.heads);
+                        for (path, bytes) in &files {
+                            assert_eq!(std::fs::read(projection.join(path)).unwrap(), *bytes);
+                        }
+                    }
+                    for (path, bytes) in &mut files {
+                        if path == binary_path {
+                            *bytes = "修复后的文本".as_bytes().to_vec();
+                            std::fs::write(projection.join(path), bytes).unwrap();
+                        }
+                    }
+                    let mut committed_history = None;
+                    for _ in 0..2 {
+                        if recovered {
+                            mounter
+                                .reconcile_recovered_copy("s", &evidence, &files, access)
+                                .await
+                                .unwrap();
+                        } else {
+                            mount.teardown().await.unwrap();
+                        }
+                        let after = repository.list_versions("s").await.unwrap();
+                        if access == MountAccess::ReadWrite {
+                            assert_eq!(after.len(), history.len() + 4, "U4 four effects");
+                            for (path, bytes) in &files {
+                                let head = repository
+                                    .get_by_path("s", &format!("/{path}"))
+                                    .await
+                                    .unwrap()
+                                    .unwrap();
+                                assert_eq!(head.content.unwrap().as_bytes(), bytes);
+                            }
+                            assert!(
+                                repository
+                                    .get_by_path("s", "/gone.md")
+                                    .await
+                                    .unwrap()
+                                    .is_none()
+                            );
+                        } else {
+                            assert_eq!(after, history);
+                        }
+                        if let Some(first) = &committed_history {
+                            assert_eq!(&after, first, "U4 idempotent replay");
+                        }
+                        committed_history = Some(after);
+                    }
+                    let durable_heads = repository.snapshot_heads("s").await.unwrap();
+                    drop(mount);
+                    drop(mounter);
+                    drop(repository);
+                    let reopened =
+                        SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap();
+                    assert_eq!(reopened.snapshot_heads("s").await.unwrap(), durable_heads);
+                    assert_eq!(
+                        reopened.list_versions("s").await.unwrap(),
+                        committed_history.unwrap()
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -1076,19 +1199,15 @@ async fn copy_mount_reconciles_once_and_survives_mounter_replacement() {
     // C1=the configured Repository contains an initial generation;
     // C2=a canonical read-write MemoryMounter materializes it;
     // C3=the projected tree updates, deletes and creates UTF-8 files;
-    // C4=the tree also contains a non-UTF-8 file;
-    // C5=the mount tears down and a fresh Repository/Mounter instance opens the
+    // C4=the mount tears down and a fresh Repository/Mounter instance opens the
     // same durable database. Effects: E1=initial bytes are visible; E2=the exact
-    // update/delete/create write set is harvested once; E3=C4 is excluded;
-    // E4=the replacement rematerializes durable truth.
+    // update/delete/create write set is harvested once;
+    // E3=the replacement rematerializes durable truth.
     //
-    // Decision table (constraints: C3/C4 require C1+C2; C5 follows teardown):
-    // | Rule | C1 | C2 | C3 | C4 | C5 | Effects |
-    // | M1   | T  | T  | F  | F  | F  | E1      |
-    // | M2   | T  | T  | T  | T  | F  | E2+E3   |
-    // | M3   | T  | T  | T  | T  | T  | E4      |
-    // FMECA: this detects lost harvest, stale resurrection, invalid-byte
-    // ingestion and Pod/Worker replacement reading a local cache as authority.
+    // Decision table (C3 requires C1+C2; C4 follows teardown):
+    // M1 C1+C2 => E1; M2 C1+C2+C3 => E2; M3 C1+C2+C3+C4 => E3.
+    // FMECA: lost harvest, stale resurrection and replacement reading a local
+    // cache as authority. Invalid-byte admission belongs to U2-U5 above.
     let root = temporary_root();
     let database = root.join("memory.sqlite");
     let first_projection = root.join("projection-1");
@@ -1121,7 +1240,6 @@ async fn copy_mount_reconciles_once_and_survives_mounter_replacement() {
     std::fs::remove_file(first_projection.join("deleted.md")).expect("delete memory");
     std::fs::create_dir_all(first_projection.join("nested")).expect("create nested directory");
     std::fs::write(first_projection.join("nested/new.md"), "new").expect("create memory");
-    std::fs::write(first_projection.join("invalid.bin"), [0xff, 0xfe]).expect("write invalid");
     mount.teardown().await.unwrap();
     drop(mounter);
     drop(repository);
@@ -1140,23 +1258,14 @@ async fn copy_mount_reconciles_once_and_survives_mounter_replacement() {
     assert_eq!(
         std::fs::read_to_string(second_projection.join("root.md")).expect("read update"),
         "two",
-        "M2+M3/E2+E4"
+        "M2+M3/E2+E3"
     );
     assert_eq!(
         std::fs::read_to_string(second_projection.join("nested/new.md")).expect("read creation"),
         "new",
-        "M2+M3/E2+E4"
+        "M2+M3/E2+E3"
     );
     assert!(!second_projection.join("deleted.md").exists(), "M2/E2");
-    assert!(!second_projection.join("invalid.bin").exists(), "M2/E3");
-    assert!(
-        replacement_repository
-            .get_by_path(store_id, "/invalid.bin")
-            .await
-            .expect("query invalid path")
-            .is_none(),
-        "M2/E3"
-    );
 
     replacement_mount.teardown().await.unwrap();
     std::fs::remove_dir_all(root).ok();

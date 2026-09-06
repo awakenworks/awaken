@@ -1554,6 +1554,9 @@ pub trait ProcessHandle: Send + Sync {
     /// [`ProcessHandle::poll`] rather than assuming failure. Cancelling this
     /// observation must preserve the provider's completion handle; an outstanding
     /// wait must not block another caller's status query or signal delivery.
+    /// Exit is the launched
+    /// process's status, not evidence that descendants stopped or that its
+    /// working directory is safe to reuse or dispose.
     async fn wait(&self) -> Result<ExitStatus, SandboxError>;
 
     /// Non-blocking, idempotent status: `None` while still running, `Some(status)`
@@ -1563,8 +1566,10 @@ pub trait ProcessHandle: Send + Sync {
 
     /// Deliver a signal (terminate/kill/interrupt). This operation is idempotent:
     /// if the owned process exits before or during delivery, implementations return
-    /// success after confirming that exit. Tearing down the sandbox reaps the whole
-    /// process group regardless.
+    /// success after confirming that exit. A successful delivery is not a
+    /// whole-process-tree quiescence receipt. Descendant termination and owner-crash
+    /// containment depend on the provider's OS execution boundary; callers must
+    /// not infer either from this process-only contract.
     async fn signal(&self, signal: Signal) -> Result<(), SandboxError>;
 }
 

@@ -17,6 +17,7 @@ cargo test -p awaken-session-executor --lib resource_prompt_tests
 cargo test -p awaken-session-executor --lib trusted_host_repository_projection_preserves_the_exact_tier
 cargo test -p awaken-session-executor --lib trusted_host_live_resource_admission_keeps_readonly_advisory
 cargo test -p awaken-session-executor --lib local_and_namespace_restart_replay_exact_memory_participants_before_late_mounts
+cargo test -p awaken-session-executor --lib resident_and_cold_terminal_memory_use_one_terminal_v2_authority
 cargo test -p awaken-session-executor --lib \
   trusted_host_filesystem_view_maps_workspace_relative_cwd_once
 cargo test -p awaken-session-executor --lib \
@@ -49,6 +50,8 @@ done
 # and not a successful skip on hosts lacking Namespace support. Other OS rows
 # still run Native Local contracts above; no cross-OS Namespace claim is made.
 if [[ "$(uname -s)" == "Linux" ]]; then
+  cargo test -p awaken-sandbox --features hand --test namespace_hand_stdio \
+    namespace_owner_sigkill_terminates_descendants_in_separate_process_groups -- --exact
   CODEX_ACP_PROFILE=native-fixture AWAKEN_ACP_RUNTIME=native \
     node e2e/codex_acp_live_e2e.mjs
 fi

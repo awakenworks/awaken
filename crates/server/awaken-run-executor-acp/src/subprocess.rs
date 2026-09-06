@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, SplitChannel};
-use awaken_local_process::{LocalProcess, configure_process_group};
+use awaken_local_process::LocalProcess;
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::activation::RunActivation;
 use tokio::process::Command;
@@ -257,14 +257,12 @@ async fn spawn(
         .split_first()
         .ok_or_else(|| OpenError("empty argv".to_string()))?;
     let mut command = Command::new(program);
-    configure_process_group(&mut command);
     command
         .args(args)
         .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true);
+        .stderr(Stdio::inherit());
     // Projected model/secret env plus the PATH/HOME allowlist, so a Node-backed
     // wrapper and the CLI-owned login resolve — everything else stays cleared.
     let env = match launch.identity {
@@ -280,19 +278,16 @@ async fn spawn(
     for var in &materialized.env {
         command.env(&var.name, var.value.expose());
     }
-    let mut child = command
-        .spawn()
+    let mut process = LocalProcess::spawn(&mut command)
         .map_err(|e| OpenError(format!("spawn `{program}`: {e}")))?;
-    let stdout = child
-        .stdout
-        .take()
+    let stdout = process
+        .take_stdout()
         .ok_or_else(|| OpenError("child has no stdout".to_string()))?;
-    let stdin = child
-        .stdin
-        .take()
+    let stdin = process
+        .take_stdin()
         .ok_or_else(|| OpenError("child has no stdin".to_string()))?;
     let channel: Box<dyn AgentChannel> = Box::new(SplitChannel::new(stdout, stdin));
-    let process: Arc<dyn pc::ProcessHandle> = Arc::new(LocalProcess::spawned(child));
+    let process: Arc<dyn pc::ProcessHandle> = Arc::new(process);
     Ok(AgentSession {
         channel,
         process,
