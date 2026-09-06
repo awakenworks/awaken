@@ -28,7 +28,7 @@ use awaken_agent_contract::thread::commit::coordinator::{
 };
 use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, CommitReceipt, admit_commit_operation_append,
-    replay_commit_operation_receipt, require_commit_operation_identity,
+    applied_commit_receipt, replay_commit_operation_receipt, require_commit_operation_identity,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -211,13 +211,12 @@ impl MemoryCommitCoordinator {
         let payload_hash = operation.payload_hash;
         let commit = operation.commit;
         let record = apply_commit_locked(&mut state, commit, committed_at_unix_ms)?;
-        let receipt = CommitReceipt {
-            operation_id: operation_id.clone(),
-            commit_sequence: record.sequence,
+        let receipt = applied_commit_receipt(
+            operation_id.clone(),
+            payload_hash.clone(),
+            record.sequence,
             thread_version,
-            payload_hash,
-            duplicate: false,
-        };
+        );
         state.receipts.insert(operation_id, receipt.clone());
         Ok(receipt)
     }
