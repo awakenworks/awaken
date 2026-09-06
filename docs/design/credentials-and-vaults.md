@@ -251,6 +251,21 @@ remove a successor. Scalar Kani proof covers phase/equality decisions; full
 envelope projection, transaction isolation and external material cleanup are
 separately tested/assumed, not proved by that predicate.
 
+Material reclamation also uses one phase-selected delta: published in-place
+mutations remove `before - after`, aborted mutations remove `after - before`,
+and distinct published replacements retain every predecessor reference.
+Shared refs are never removed, and Writing/Ready cannot execute cleanup even
+with an empty delta. One executor deletes each selected opaque reference and
+requires an exact-reference `SecretNotFound` readback before allowing WAL
+completion. A success acknowledgement with remaining bytes, unavailable
+readback, or an absence response naming another reference retains cleanup work.
+This observation is not a cross-store atomic receipt: future stale writes,
+legacy reference reuse and arbitrary remote adapter behavior remain explicit
+boundaries. The shared creation model separates physical removal from WAL
+completion; Source-only verification projects that model instead of assuming
+atomic compensation. Conditional progress additionally assumes physical
+deletion and observation eventually succeed.
+
 The child lifecycle is the closed `Active | Archived | Deleted` value;
 `Deleted` is absorbing and physical purge is separate GC. The configured
 rollout target adopts the event through the existing Session generation

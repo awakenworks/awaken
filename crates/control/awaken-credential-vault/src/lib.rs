@@ -773,6 +773,9 @@ pub trait SecretStore: Send + Sync {
     /// Idempotently remove material. Credential creation uses this as its
     /// compensation edge when the secret write succeeds but the secret-free row
     /// cannot be committed.
+    /// Cleanup subsequently confirms absence with `get`: only
+    /// `SecretNotFound` naming this exact reference confirms the observation.
+    /// A successful delete response alone does not retire its durable intent.
     async fn delete(&self, r: &SecretRef) -> Result<(), CredentialError>;
     /// Enumerate opaque references for reconciliation. Production stores must
     /// implement this; adapters without inventory support fail closed.

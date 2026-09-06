@@ -24,6 +24,17 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- Credential material reclamation has one phase/membership kernel and one
+  SecretStore executor for both envelopes, replacing four repeated cleanup
+  implementations. Kani checks the closed phase and set-membership decision;
+  typed tests exercise reference sets, duplicated slots and live predecessor
+  preservation. Actual recovery now retains WAL after a no-op delete success,
+  unavailable readback or a missing result for another ref; only exact absence
+  allows subsequent completion. Source creation reuses the canonical Managed
+  attempt model, whose physical removal and WAL completion are separate crash
+  boundaries, with an absence-guard mutant. Neither readback nor this bounded
+  model proves cross-store atomicity or prevents arbitrary later legacy writes;
+  late unreachable orphans remain excluded from the tracked-material invariant.
 - Credential abort/retirement decisions now have one owner for both existing
   Source and Managed pair envelopes. All three repository implementations call
   it under their existing lock/transaction; their six parallel phase tables

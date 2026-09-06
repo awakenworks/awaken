@@ -129,12 +129,23 @@ Reject(epoch) ==
                     duplicateSeen, conflictRejected, staleRejected,
                     recoveryClaimed, unreachableOrphan>>
 
-\* External deletion is retryable because ReclaimingAbort remains durable
-\* across every crash prefix. Only exact cleanup completion retires the fact.
+\* Cause/effect: a delete acknowledgement may stutter without removing bytes;
+\* deletion or its readback can fail and crash can separate effect from WAL CAS.
+\* Only observed absence enables completion. FairSpec separately assumes that
+\* physical removal eventually succeeds; arbitrary SecretStore behavior is TCB.
+RemoveAbortedMaterial ==
+    /\ processUp /\ phase = "ReclaimingAbort"
+    /\ material' = "None"
+    /\ UNCHANGED <<phase, intentId, sourcePublished, childPublished, processUp,
+                    owner, ownerEpoch, leaseExpired, liveWriterActive, admitted,
+                    duplicateSeen, conflictRejected, staleRejected,
+                    recoveryClaimed, unreachableOrphan>>
+
 CompleteAbortCleanup ==
     /\ processUp /\ phase = "ReclaimingAbort"
-    /\ phase' = "Aborted" /\ material' = "None" /\ owner' = "None"
-    /\ UNCHANGED <<intentId, sourcePublished, childPublished, processUp,
+    /\ material = "None"
+    /\ phase' = "Aborted" /\ owner' = "None"
+    /\ UNCHANGED <<intentId, material, sourcePublished, childPublished, processUp,
                     ownerEpoch, leaseExpired, liveWriterActive, admitted,
                     duplicateSeen, conflictRejected, staleRejected,
                     recoveryClaimed, unreachableOrphan>>
@@ -222,7 +233,7 @@ StaleCommitAny == \E epoch \in 0..MaxOwnerEpoch: StaleCommit(epoch)
 Next == (\E id \in IntentIds: Begin(id) \/ DuplicateBegin(id) \/ ConflictingBegin(id))
         \/ PutPartialAny \/ PutCompleteAny \/ MarkReadyAny
         \/ AbortClaimedWritingAny \/ CommitAny \/ RejectAny
-        \/ CompleteAbortCleanup
+        \/ RemoveAbortedMaterial \/ CompleteAbortCleanup
         \/ CancelLiveWriter \/ ExpireLiveLease \/ ClaimExpiredWriting
         \/ StaleWriteAny \/ StaleCommitAny \/ Crash \/ Restart \/ Quiesce
 
@@ -280,6 +291,7 @@ FairSpec ==
     /\ SF_vars(ExpireLiveLease)
     /\ SF_vars(ClaimExpiredWriting)
     /\ SF_vars(AbortClaimedWritingAny)
+    /\ SF_vars(RemoveAbortedMaterial)
     /\ SF_vars(CompleteAbortCleanup)
     /\ SF_vars(MarkReadyAny)
     /\ SF_vars(CommitAny)

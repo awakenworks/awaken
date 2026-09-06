@@ -1,11 +1,75 @@
 //! The owner of cleanup admission for both credential publication envelopes.
-//! Adapters must read these arguments and apply the decision under one lock or
-//! database transaction. This does not certify external SecretStore deletion.
+//! Admission consumes snapshots held under one repository lock/transaction.
+//! Material IO runs outside that transaction; observed absence is not an atomic
+//! cross-store receipt or certification of an arbitrary SecretStore.
 
 use super::{
     CredentialMaterialMutationPhase, CredentialMutationIntent, PendingManagedCredentialMutation,
 };
 use crate::{CredentialError, CredentialSource, catalog::ManagedVaultCredential};
+
+// One reference-membership decision for both publication envelopes. Shared
+// refs are never reclaimed; a distinct replacement keeps its predecessor live.
+const fn reclamation_selected(
+    phase: CredentialMaterialMutationPhase,
+    distinct: bool,
+    before: bool,
+    after: bool,
+) -> Option<bool> {
+    match phase {
+        CredentialMaterialMutationPhase::Writing | CredentialMaterialMutationPhase::Ready => None,
+        CredentialMaterialMutationPhase::Reclaiming => Some(!distinct && before && !after),
+        CredentialMaterialMutationPhase::ReclaimingAbort => Some(after && !before),
+    }
+}
+
+async fn reclaim_material(
+    phase: CredentialMaterialMutationPhase,
+    distinct: bool,
+    before: Option<&CredentialSource>,
+    after: &CredentialSource,
+    store: &dyn crate::SecretStore,
+) -> Result<(), CredentialError> {
+    use std::collections::HashSet;
+    let before = before
+        .into_iter()
+        .flat_map(CredentialSource::material_refs)
+        .collect::<HashSet<_>>();
+    let after = after.material_refs().collect::<HashSet<_>>();
+    // Check phase even when both sets are empty; empty IO is not authority to
+    // skip Writing/Ready and retire a pending envelope.
+    reclamation_selected(phase, distinct, false, false).ok_or_else(|| {
+        CredentialError::MutationConflict(
+            "credential material cleanup requires a terminal cleanup phase".into(),
+        )
+    })?;
+    let mut references = before
+        .union(&after)
+        .copied()
+        .filter(|reference| {
+            reclamation_selected(
+                phase,
+                distinct,
+                before.contains(reference),
+                after.contains(reference),
+            ) == Some(true)
+        })
+        .collect::<Vec<_>>();
+    references.sort_by(|left, right| left.0.cmp(&right.0));
+    for reference in references {
+        store.delete(reference).await?;
+        match store.get(reference).await {
+            Err(CredentialError::SecretNotFound(missing)) if missing == reference.0 => {}
+            Err(error) => return Err(error),
+            Ok(_) => {
+                return Err(CredentialError::Storage(
+                    "credential material remains after acknowledged deletion".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 const fn abort_admitted(
     phase: CredentialMaterialMutationPhase,
@@ -47,6 +111,24 @@ fn require_admission(admitted: bool) -> Result<(), CredentialError> {
 }
 
 impl CredentialMutationIntent {
+    /// Execute only this envelope's phase-selected material delta. A returned
+    /// success records observed absence, not atomicity with a later WAL CAS or
+    /// protection against an arbitrary backend's future write to the same ref.
+    pub(super) async fn reclaim_material(
+        &self,
+        store: &dyn crate::SecretStore,
+    ) -> Result<(), CredentialError> {
+        self.validate()?;
+        reclaim_material(
+            self.material_fence.phase,
+            self.is_distinct_replacement(),
+            self.before.as_ref(),
+            &self.after,
+            store,
+        )
+        .await
+    }
+
     fn is_unpublished_at(&self, current: Option<&CredentialSource>) -> bool {
         if self.is_distinct_replacement() {
             current.is_none()
@@ -91,6 +173,21 @@ impl CredentialMutationIntent {
 }
 
 impl PendingManagedCredentialMutation {
+    pub(super) async fn reclaim_material(
+        &self,
+        store: &dyn crate::SecretStore,
+    ) -> Result<(), CredentialError> {
+        self.validate()
+            .map_err(|error| CredentialError::MutationConflict(error.to_string()))?;
+        reclaim_material(
+            self.material_fence.phase,
+            false,
+            self.before_source.as_ref(),
+            &self.after_source,
+            store,
+        )
+        .await
+    }
     fn is_unpublished_at(
         &self,
         source: Option<&CredentialSource>,
@@ -139,6 +236,34 @@ impl PendingManagedCredentialMutation {
 
 #[cfg(kani)]
 #[kani::proof]
+fn credential_reclamation_never_deletes_shared_or_live_predecessor_material() {
+    // C1 all phases, C2 distinct replacement, C3 independent membership in
+    // before/after. R1 nonterminal => reject; R2 published => only retired refs,
+    // and never a live distinct predecessor; R3 aborted => only candidate refs;
+    // R4 shared or unrelated => never delete. No bound is assumed between C2/C3.
+    use CredentialMaterialMutationPhase::*;
+    let phase = match kani::any::<u8>() % 4 {
+        0 => Writing,
+        1 => Ready,
+        2 => Reclaiming,
+        _ => ReclaimingAbort,
+    };
+    let distinct = kani::any::<bool>();
+    let before = kani::any::<bool>();
+    let after = kani::any::<bool>();
+    let selected = reclamation_selected(phase, distinct, before, after);
+    match phase {
+        Writing | Ready => assert_eq!(selected, None),
+        Reclaiming => assert_eq!(selected, Some(before && !after && !distinct)),
+        ReclaimingAbort => assert_eq!(selected, Some(after && !before)),
+    }
+    if before == after {
+        assert_ne!(selected, Some(true));
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
 fn credential_cleanup_requires_exact_authority_and_phase_truth() {
     // Causes: all four phases, exact intent identity, published/unpublished
     // projection. No relation is assumed between the projections (a no-op
@@ -178,7 +303,58 @@ fn credential_cleanup_requires_exact_authority_and_phase_truth() {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
+
+    use crate::{InMemorySecretStore, SecretStore};
+    use awaken_agent_contract::RedactedString;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Default)]
+    pub(crate) struct FaultyDeleteStore {
+        pub(crate) inner: InMemorySecretStore,
+        pub(crate) fail_before_delete: AtomicBool,
+        pub(crate) lose_first_response: AtomicBool,
+        pub(crate) acknowledge_without_delete: AtomicBool,
+        pub(crate) readback_unavailable: AtomicBool,
+        pub(crate) wrong_missing_identity: AtomicBool,
+    }
+    #[async_trait::async_trait]
+    impl SecretStore for FaultyDeleteStore {
+        async fn put(
+            &self,
+            r: &crate::SecretRef,
+            secret: RedactedString,
+        ) -> Result<(), CredentialError> {
+            self.inner.put(r, secret).await
+        }
+
+        async fn get(&self, r: &crate::SecretRef) -> Result<RedactedString, CredentialError> {
+            if self.wrong_missing_identity.load(Ordering::SeqCst) {
+                return Err(CredentialError::SecretNotFound("foreign-reference".into()));
+            }
+            if self.readback_unavailable.load(Ordering::SeqCst) {
+                return Err(CredentialError::Storage(
+                    "cleanup readback unavailable".into(),
+                ));
+            }
+            self.inner.get(r).await
+        }
+
+        async fn delete(&self, r: &crate::SecretRef) -> Result<(), CredentialError> {
+            if self.fail_before_delete.load(Ordering::SeqCst) {
+                return Err(CredentialError::Storage("delete timeout".into()));
+            }
+            if self.acknowledge_without_delete.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            self.inner.delete(r).await?;
+            if self.lose_first_response.swap(false, Ordering::SeqCst) {
+                return Err(CredentialError::Storage("delete response lost".into()));
+            }
+            Ok(())
+        }
+    }
+
     use super::*;
     use crate::{
         CredentialKind, CredentialStatus, SecretRef,
@@ -210,6 +386,146 @@ mod tests {
         CredentialMaterialMutationPhase::Reclaiming,
         CredentialMaterialMutationPhase::ReclaimingAbort,
     ];
+
+    #[tokio::test]
+    async fn material_delta_covers_phase_membership_and_distinct_predecessors() {
+        // Decision table: 8 before sets x 8 after sets x 4 phases x 2 lineage
+        // shapes. Include a duplicated primary/aux ref and an unrelated ref.
+        // R1 Writing/Ready => zero deletes; R2 published => before-minus-after
+        // except distinct predecessor; R3 abort => after-minus-before. Every
+        // surviving physical ref is checked, not only the returned status.
+        fn with_refs(mask: u8) -> CredentialSource {
+            let mut value = source();
+            value.material_ref = (mask & 1 != 0).then(|| SecretRef("ref-0".into()));
+            for index in 0..3 {
+                if mask & (1 << index) != 0 {
+                    value
+                        .auxiliary_material_refs
+                        .insert(index.to_string(), SecretRef(format!("ref-{index}")));
+                }
+            }
+            value
+        }
+        for before in 0u8..8 {
+            for after in 0u8..8 {
+                for phase in PHASES {
+                    for distinct in [false, true] {
+                        let store = InMemorySecretStore::new();
+                        for index in 0..4 {
+                            store
+                                .put(
+                                    &SecretRef(format!("ref-{index}")),
+                                    RedactedString::new("fixture"),
+                                )
+                                .await
+                                .unwrap();
+                        }
+                        let result = reclaim_material(
+                            phase,
+                            distinct,
+                            Some(&with_refs(before)),
+                            &with_refs(after),
+                            &store,
+                        )
+                        .await;
+                        let terminal = matches!(
+                            phase,
+                            CredentialMaterialMutationPhase::Reclaiming
+                                | CredentialMaterialMutationPhase::ReclaimingAbort
+                        );
+                        assert_eq!(result.is_ok(), terminal);
+                        let removed = match phase {
+                            CredentialMaterialMutationPhase::Reclaiming if !distinct => {
+                                before & !after
+                            }
+                            CredentialMaterialMutationPhase::ReclaimingAbort => after & !before,
+                            _ => 0,
+                        };
+                        for index in 0..4 {
+                            assert_eq!(
+                                store.get(&SecretRef(format!("ref-{index}"))).await.is_ok(),
+                                removed & (1 << index) == 0
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_deletion_retains_source_intent_until_exact_absence() {
+        use crate::repo::{CredentialRepo, InMemoryCredentialRepo, recover_credential_mutations};
+        // C1 acknowledged delete which does nothing; C2 failed readback after
+        // actual deletion or absence naming another ref; C3 adapter recovered.
+        // Cross both published retirement and abort. R1 C1|C2 => error + same WAL;
+        // R2 C3 + exact absence => retire once; R3 retry after retirement => 0.
+        // Real source recovery, not a hand-implemented completion, is exercised.
+        for published in [false, true] {
+            for fault in 0..3 {
+                let store = FaultyDeleteStore::default();
+                let repo = InMemoryCredentialRepo::new();
+                let mut after = source();
+                let before = published.then(|| after.clone());
+                if let Some(before) = &before {
+                    repo.put(before.clone()).await.unwrap();
+                    after.version = 2;
+                    after.material_ref = None;
+                }
+                let intent = CredentialMutationIntent::prepare(before, after).unwrap();
+                repo.begin_mutation(intent.clone()).await.unwrap();
+                let abort = if published {
+                    repo.apply_mutation(&intent).await.unwrap()
+                } else {
+                    repo.abort_mutation(&intent).await.unwrap()
+                };
+                let reference = if published {
+                    abort.before.as_ref().unwrap().material_ref.as_ref()
+                } else {
+                    abort.after.material_ref.as_ref()
+                }
+                .unwrap();
+                store
+                    .inner
+                    .put(reference, RedactedString::new("cleanup-fixture"))
+                    .await
+                    .unwrap();
+                store
+                    .acknowledge_without_delete
+                    .store(fault == 0, Ordering::SeqCst);
+                store
+                    .readback_unavailable
+                    .store(fault == 1, Ordering::SeqCst);
+                store
+                    .wrong_missing_identity
+                    .store(fault == 2, Ordering::SeqCst);
+                assert!(
+                    recover_credential_mutations(&store, &repo).await.is_err(),
+                    "R1"
+                );
+                assert_eq!(
+                    repo.pending_mutations().await.unwrap(),
+                    vec![abort],
+                    "R1 retained"
+                );
+                store
+                    .acknowledge_without_delete
+                    .store(false, Ordering::SeqCst);
+                store.readback_unavailable.store(false, Ordering::SeqCst);
+                store.wrong_missing_identity.store(false, Ordering::SeqCst);
+                assert_eq!(
+                    recover_credential_mutations(&store, &repo).await.unwrap(),
+                    1,
+                    "R2"
+                );
+                assert_eq!(
+                    recover_credential_mutations(&store, &repo).await.unwrap(),
+                    0,
+                    "R3"
+                );
+            }
+        }
+    }
 
     #[test]
     fn source_cleanup_projection_covers_creation_mutation_and_distinct_replacement() {

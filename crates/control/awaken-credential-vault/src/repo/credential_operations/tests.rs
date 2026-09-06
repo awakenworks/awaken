@@ -5,11 +5,7 @@ use super::*;
 use crate::{CredentialKind, InMemorySecretStore, encode_structured_material, materialize};
 use awaken_agent_contract::RedactedString;
 
-struct FaultyDeleteStore {
-    inner: InMemorySecretStore,
-    fail_before_delete: AtomicBool,
-    lose_first_response: AtomicBool,
-}
+use crate::repo::cleanup::tests::FaultyDeleteStore;
 
 #[derive(Clone, Copy)]
 enum RotationReadbackFault {
@@ -200,32 +196,6 @@ impl SecretStore for ObservedSecretStore {
 
     async fn inventory(&self) -> Result<Vec<crate::SecretRef>, CredentialError> {
         self.inner.inventory().await
-    }
-}
-
-#[async_trait::async_trait]
-impl SecretStore for FaultyDeleteStore {
-    async fn put(
-        &self,
-        r: &crate::SecretRef,
-        secret: RedactedString,
-    ) -> Result<(), CredentialError> {
-        self.inner.put(r, secret).await
-    }
-
-    async fn get(&self, r: &crate::SecretRef) -> Result<RedactedString, CredentialError> {
-        self.inner.get(r).await
-    }
-
-    async fn delete(&self, r: &crate::SecretRef) -> Result<(), CredentialError> {
-        if self.fail_before_delete.load(Ordering::SeqCst) {
-            return Err(CredentialError::Storage("delete timeout".into()));
-        }
-        self.inner.delete(r).await?;
-        if self.lose_first_response.swap(false, Ordering::SeqCst) {
-            return Err(CredentialError::Storage("delete response lost".into()));
-        }
-        Ok(())
     }
 }
 
@@ -525,6 +495,7 @@ async fn delete_timeout_keeps_the_intent_for_a_later_reconciliation() {
         inner: InMemorySecretStore::new(),
         fail_before_delete: AtomicBool::new(true),
         lose_first_response: AtomicBool::new(false),
+        ..Default::default()
     };
     let repo = InMemoryCredentialRepo::new();
     let recovery_now = interrupted_creation(&store, &repo).await;
@@ -550,6 +521,7 @@ async fn lost_delete_response_is_retried_idempotently() {
         inner: InMemorySecretStore::new(),
         fail_before_delete: AtomicBool::new(false),
         lose_first_response: AtomicBool::new(true),
+        ..Default::default()
     };
     let repo = InMemoryCredentialRepo::new();
     let recovery_now = interrupted_creation(&store, &repo).await;
@@ -809,6 +781,16 @@ async fn rotation_does_not_publish_material_without_exact_readback() {
             "{rule}"
         );
         assert_eq!(store.inventory().await.unwrap(), vec![old_ref], "{rule}");
+        // V2/V3: a persistently broken get cannot confirm deletion either.
+        // Keep abort WAL even if the candidate is absent from inventory; once
+        // the adapter recovers, exact absence permits idempotent retirement.
+        assert_eq!(repo.pending_mutations().await.unwrap().len(), 1, "{rule}");
+        assert_eq!(
+            recover_credential_mutations(&store.inner, &repo)
+                .await
+                .unwrap(),
+            1
+        );
         assert!(repo.pending_mutations().await.unwrap().is_empty(), "{rule}");
     }
 }

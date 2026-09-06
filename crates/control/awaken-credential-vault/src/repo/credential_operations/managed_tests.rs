@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::*;
+use crate::repo::cleanup::tests::FaultyDeleteStore;
 use crate::{CredentialKind, InMemorySecretStore};
 use awaken_agent_contract::RedactedString;
 
@@ -31,12 +32,6 @@ impl ManagedCredentialRolloutTarget for RecordingRolloutTarget {
     }
 }
 
-struct FaultyDeleteStore {
-    inner: InMemorySecretStore,
-    fail_before_delete: AtomicBool,
-    lose_first_response: AtomicBool,
-}
-
 struct PoisonGetStore {
     inner: InMemorySecretStore,
     poison: std::sync::Mutex<Option<crate::SecretRef>>,
@@ -57,32 +52,6 @@ struct FailedPutAndCleanupStore {
 #[derive(Default)]
 struct UnopenableManagedWriteStore {
     inner: InMemorySecretStore,
-}
-
-#[async_trait::async_trait]
-impl SecretStore for FaultyDeleteStore {
-    async fn put(
-        &self,
-        r: &crate::SecretRef,
-        secret: RedactedString,
-    ) -> Result<(), CredentialError> {
-        self.inner.put(r, secret).await
-    }
-
-    async fn get(&self, r: &crate::SecretRef) -> Result<RedactedString, CredentialError> {
-        self.inner.get(r).await
-    }
-
-    async fn delete(&self, r: &crate::SecretRef) -> Result<(), CredentialError> {
-        if self.fail_before_delete.load(Ordering::SeqCst) {
-            return Err(CredentialError::Storage("delete timeout".into()));
-        }
-        self.inner.delete(r).await?;
-        if self.lose_first_response.swap(false, Ordering::SeqCst) {
-            return Err(CredentialError::Storage("delete response lost".into()));
-        }
-        Ok(())
-    }
 }
 
 #[async_trait::async_trait]
@@ -300,7 +269,7 @@ async fn managed_creation_does_not_publish_unopenable_material() {
         matches!(
             result,
             Err(ManagedCredentialCreationError::Credential(
-                CredentialError::Seal
+                CredentialError::MutationConflict(_)
             ))
         ),
         "M2"
@@ -320,9 +289,22 @@ async fn managed_creation_does_not_publish_unopenable_material() {
         "M2"
     );
     assert!(store.inventory().await.unwrap().is_empty(), "M2");
+    // M2: failed readback also prevents confirmation of compensating deletion.
+    // Physical absence alone (seen only by this test) cannot retire the WAL.
+    assert_eq!(
+        repo.pending_managed_mutations().await.unwrap().len(),
+        1,
+        "M2"
+    );
+    assert_eq!(
+        recover_managed_credential_mutations(&store.inner, &repo)
+            .await
+            .unwrap(),
+        1
+    );
     assert!(
         repo.pending_managed_mutations().await.unwrap().is_empty(),
-        "M2"
+        "M2 recovered"
     );
 }
 
@@ -1244,6 +1226,7 @@ async fn ambiguous_aborted_delete_keeps_exact_cleanup_fact_for_retry() {
         inner: InMemorySecretStore::new(),
         fail_before_delete: AtomicBool::new(false),
         lose_first_response: AtomicBool::new(true),
+        ..Default::default()
     };
     let repo = InMemoryCredentialRepo::new();
     repo.insert_vault("ws", managed_vault()).await.unwrap();
@@ -1349,6 +1332,7 @@ async fn committed_managed_pair_returns_success_and_retries_failed_cleanup() {
         inner: InMemorySecretStore::new(),
         fail_before_delete: AtomicBool::new(false),
         lose_first_response: AtomicBool::new(false),
+        ..Default::default()
     };
     let repo = InMemoryCredentialRepo::new();
     repo.insert_vault("ws", managed_vault()).await.unwrap();
