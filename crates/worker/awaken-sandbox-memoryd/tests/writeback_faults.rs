@@ -14,6 +14,8 @@ use std::sync::{
 
 struct Gate {
     after: bool,
+    detached: bool,
+    completed: tokio::sync::Notify,
     error: bool,
     ordinal: usize,
     calls: AtomicUsize,
@@ -26,27 +28,43 @@ struct FaultRepository {
     gate: Arc<Gate>,
 }
 
-impl FaultRepository {
+impl Gate {
     async fn pause(&self) -> Result<(), MemErr> {
-        self.gate.reached.notify_one();
-        self.gate.release.acquire().await.unwrap().forget();
-        if self.gate.error {
+        self.reached.notify_one();
+        self.release.acquire().await.unwrap().forget();
+        if self.error {
             Err(MemErr::Storage("injected acknowledgement failure".into()))
         } else {
             Ok(())
         }
     }
-    async fn mutate<T>(
+}
+
+impl FaultRepository {
+    async fn mutate<T: Send + 'static>(
         &self,
-        operation: impl std::future::Future<Output = Result<T, MemErr>>,
+        operation: impl std::future::Future<Output = Result<T, MemErr>> + Send + 'static,
     ) -> Result<T, MemErr> {
         let selected = self.gate.calls.fetch_add(1, Ordering::SeqCst) == self.gate.ordinal;
+        if selected && self.gate.detached {
+            let gate = self.gate.clone();
+            // Once dispatched, the repository operation has its own lifetime,
+            // as with SQLite's queued worker or an already-sent remote request.
+            return tokio::spawn(async move {
+                gate.pause().await?;
+                let result = operation.await;
+                gate.completed.notify_one();
+                result
+            })
+            .await
+            .unwrap();
+        }
         if selected && !self.gate.after {
-            self.pause().await?;
+            self.gate.pause().await?;
         }
         let value = operation.await?;
         if selected && self.gate.after {
-            self.pause().await?;
+            self.gate.pause().await?;
         }
         Ok(value)
     }
@@ -64,7 +82,9 @@ impl MemoryRepository for FaultRepository {
         self.inner.get_by_path(s, p).await
     }
     async fn create(&self, s: &str, p: &str, c: &str) -> Result<Memory, MemErr> {
-        self.mutate(self.inner.create(s, p, c)).await
+        let (inner, s, p, c) = (self.inner.clone(), s.to_owned(), p.to_owned(), c.to_owned());
+        self.mutate(async move { inner.create(&s, &p, &c).await })
+            .await
     }
     async fn update_head(
         &self,
@@ -74,8 +94,20 @@ impl MemoryRepository for FaultRepository {
         base: &str,
         target: Option<&str>,
     ) -> Result<Memory, MemErr> {
-        self.mutate(self.inner.update_head(s, id, c, base, target))
-            .await
+        let (inner, s, id, c, base, target) = (
+            self.inner.clone(),
+            s.to_owned(),
+            id.to_owned(),
+            c.to_owned(),
+            base.to_owned(),
+            target.map(str::to_owned),
+        );
+        self.mutate(async move {
+            inner
+                .update_head(&s, &id, &c, &base, target.as_deref())
+                .await
+        })
+        .await
     }
     async fn rename(&self, s: &str, a: &str, b: &str) -> Result<Memory, MemErr> {
         self.inner.rename(s, a, b).await
@@ -90,7 +122,14 @@ impl MemoryRepository for FaultRepository {
         id: &str,
         base: &str,
     ) -> Result<bool, MemErr> {
-        self.mutate(self.inner.delete_if_match(s, p, id, base))
+        let (inner, s, p, id, base) = (
+            self.inner.clone(),
+            s.to_owned(),
+            p.to_owned(),
+            id.to_owned(),
+            base.to_owned(),
+        );
+        self.mutate(async move { inner.delete_if_match(&s, &p, &id, &base).await })
             .await
     }
     async fn list_versions(&self, s: &str) -> Result<Vec<MemoryVersion>, MemErr> {
@@ -116,8 +155,19 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
     // one version per actual mutation, no accidental rebase/duplicate history.
     // The gate wraps real SQLite operations, not synthetic success responses.
     for operation in ["create", "update", "delete"] {
-        for after in [false, true] {
+        // F5 queued mutation outlives caller cancellation; F6 a newer writer
+        // wins before that queued mutation runs => stale CAS must not overwrite
+        // it, and both same-guard and recovered-copy retries must conflict.
+        for (after, detached, competitor) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, true, true),
+        ] {
             for error in [false, true] {
+                if detached && error {
+                    continue;
+                }
                 for prefix in [false, true] {
                     let root = tempfile::tempdir().unwrap();
                     let database = root.path().join("memory.sqlite");
@@ -135,6 +185,8 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                     let initial_history = repository.list_versions("s").await.unwrap().len();
                     let gate = Arc::new(Gate {
                         after,
+                        detached,
+                        completed: tokio::sync::Notify::new(),
                         error,
                         ordinal: usize::from(prefix),
                         calls: AtomicUsize::new(0),
@@ -197,8 +249,41 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                         pending.abort();
                         assert!(pending.await.unwrap_err().is_cancelled());
                     }
+                    if detached {
+                        if competitor {
+                            if operation == "create" {
+                                repository.create("s", "/z.md", "newer").await.unwrap();
+                            } else {
+                                let head =
+                                    repository.get_by_path("s", "/z.md").await.unwrap().unwrap();
+                                repository
+                                    .update_head("s", &head.id, "newer", &head.content_sha256, None)
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                        gate.release.add_permits(1);
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            gate.completed.notified(),
+                        )
+                        .await
+                        .expect("dispatched mutation finishes after caller cancellation");
+                        let head = repository.get_by_path("s", "/z.md").await.unwrap();
+                        assert_eq!(
+                            head.as_ref().and_then(|m| m.content.as_deref()),
+                            if competitor {
+                                Some("newer")
+                            } else if operation == "delete" {
+                                None
+                            } else {
+                                Some("edit")
+                            },
+                            "F5/F6"
+                        );
+                    }
                     for _ in 0..2 {
-                        mount.teardown().await.unwrap();
+                        assert_eq!(mount.teardown().await.is_err(), competitor, "F4/F6 retry");
                     }
                     let expected = repository.snapshot_heads("s").await.unwrap();
                     let history = repository.list_versions("s").await.unwrap();
@@ -220,10 +305,19 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                         files.push(("z.md".into(), b"edit".to_vec()));
                     }
                     let recovered = MemoryStoreMounter::copy_only(repository.clone());
-                    recovered
-                        .reconcile_recovered_copy("s", &evidence, &files, MountAccess::ReadWrite)
-                        .await
-                        .unwrap();
+                    assert_eq!(
+                        recovered
+                            .reconcile_recovered_copy(
+                                "s",
+                                &evidence,
+                                &files,
+                                MountAccess::ReadWrite
+                            )
+                            .await
+                            .is_err(),
+                        competitor,
+                        "F4/F6 recovered retry"
+                    );
                     assert_eq!(repository.snapshot_heads("s").await.unwrap(), expected);
                     assert_eq!(repository.list_versions("s").await.unwrap(), history);
                 }

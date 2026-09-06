@@ -837,3 +837,115 @@ async fn fresh_claim_drives_a_run_to_completion() {
     assert!(worker.tick(harness::clock(1)).await.unwrap().is_none());
     let _ = DispatchOutcome::Done;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen() {
+    // W4 A reaches a real executing tool and then is SIGKILLed (no Drop/ACK).
+    // W5 reopen independent dispatch/commit DBs and reclaim the expired logical
+    // lease => physical slot remains occupied, no B model/tool entry, unchanged
+    // execution output. W6 cancellation of B's wait also cannot clear A's slot.
+    // This is the fail-closed outcome: process death alone is not an adapter's
+    // durable proof that an arbitrary external operation stopped. The existing
+    // cooperative-return test owns the successful quiescence/NeverReplay path.
+    const MODE: &str = "AWAKEN_PHYSICAL_CRASH_ROOT";
+    if let Ok(root) = std::env::var(MODE) {
+        let root = std::path::Path::new(&root);
+        let dispatch = Arc::new(
+            SqliteDispatchStore::open(root.join("dispatch.db").to_str().unwrap()).unwrap(),
+        );
+        let commit = Arc::new(
+            awaken_store_sqlite::SqliteCommitCoordinator::open(
+                root.join("commit.db").to_str().unwrap(),
+            )
+            .unwrap(),
+        );
+        let (runtime, calls) = blocking_tool_runtime(Arc::new(tokio::sync::Semaphore::new(0)));
+        dispatch
+            .enqueue(RunDispatch::new(activation("crash-physical")))
+            .await
+            .unwrap();
+        let worker =
+            DispatchWorker::new(runtime, dispatch, commit, "process-a").with_lease_ms(LEASE);
+        let driving = tokio::spawn(async move { worker.tick(harness::clock(0)).await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!driving.is_finished());
+        std::fs::write(root.join("marker"), b"tool-entered").unwrap();
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        panic!("parent failed to kill child");
+    }
+    let root = tempfile::tempdir().unwrap();
+    let status = awaken_reliability_testkit::CrashProcess::new(
+        "killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen",
+        root.path().join("marker"),
+    )
+    .env(MODE, root.path())
+    .run()
+    .unwrap();
+    assert!(!status.success());
+    let dispatch = Arc::new(
+        SqliteDispatchStore::open(root.path().join("dispatch.db").to_str().unwrap()).unwrap(),
+    );
+    let commit = Arc::new(
+        awaken_store_sqlite::SqliteCommitCoordinator::open(
+            root.path().join("commit.db").to_str().unwrap(),
+        )
+        .unwrap(),
+    );
+    assert!(
+        commit.commit_count() > 0,
+        "W4 executing prefix survived death"
+    );
+    let messages =
+        CommittedThreadView::committed_messages(commit.as_ref(), &ThreadId(harness::THREAD.into()));
+    let row = dispatch.list_dispatches().await.unwrap().remove(0);
+    assert!(row.physical_attempt_active);
+    let replacement = dispatch
+        .claim("process-b", LEASE, LEASE + 1, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(replacement.recovered);
+    assert_eq!(
+        dispatch
+            .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1)
+            .await
+            .unwrap(),
+        AttemptAdmission::Blocked,
+        "W5 durable admission stays blocked after reopen"
+    );
+    let (runtime, model_calls) = counting_text_runtime();
+    let worker = DispatchWorker::new(runtime, dispatch.clone(), commit.clone(), "process-b")
+        .with_lease_ms(LEASE);
+    let driving = tokio::spawn(async move {
+        worker
+            .drive_claimed(replacement, harness::clock(LEASE + 1))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(model_calls.load(Ordering::SeqCst), 0, "W5");
+    assert!(!driving.is_finished());
+    driving.abort();
+    assert!(driving.await.unwrap_err().is_cancelled());
+    assert!(
+        dispatch.list_dispatches().await.unwrap()[0].physical_attempt_active,
+        "W6"
+    );
+    // Recovery may append Rescheduled before waiting for physical admission;
+    // it must not invent execution output or a terminal Run fact.
+    assert_eq!(
+        CommittedThreadView::committed_messages(commit.as_ref(), &ThreadId(harness::THREAD.into())),
+        messages
+    );
+    assert_eq!(
+        CommittedThreadView::run(commit.as_ref(), &RunId("crash-physical".into()))
+            .unwrap()
+            .state,
+        RunState::Running
+    );
+}

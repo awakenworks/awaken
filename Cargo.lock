@@ -944,6 +944,7 @@ dependencies = [
  "awaken-dispatch-contract",
  "awaken-dispatch-testkit",
  "awaken-observability",
+ "awaken-reliability-testkit",
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
