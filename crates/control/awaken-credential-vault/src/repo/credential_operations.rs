@@ -449,38 +449,6 @@ pub async fn create_managed_credential(
     Ok((committed.after_source, committed.after_credential))
 }
 
-async fn cleanup_retired_managed_material(
-    pending: &PendingManagedCredentialMutation,
-    store: &dyn SecretStore,
-) -> Result<(), CredentialError> {
-    let before = pending
-        .before_source
-        .iter()
-        .flat_map(CredentialSource::material_refs)
-        .collect::<HashSet<_>>();
-    let after = pending.after_source.material_refs().collect::<HashSet<_>>();
-    for reference in before.difference(&after) {
-        store.delete(reference).await?;
-    }
-    Ok(())
-}
-
-async fn cleanup_unpublished_managed_material(
-    pending: &PendingManagedCredentialMutation,
-    store: &dyn SecretStore,
-) -> Result<(), CredentialError> {
-    let before = pending
-        .before_source
-        .iter()
-        .flat_map(CredentialSource::material_refs)
-        .collect::<HashSet<_>>();
-    let after = pending.after_source.material_refs().collect::<HashSet<_>>();
-    for reference in after.difference(&before) {
-        store.delete(reference).await?;
-    }
-    Ok(())
-}
-
 /// Durably retain the exact abort cleanup authority before compensating its
 /// external writes. A stale writer must never delete material after another
 /// owner has claimed or published the same pending fact. If the exact
@@ -492,7 +460,7 @@ async fn abort_managed_mutation_before_cleanup(
     repo: &dyn ManagedCredentialRepository,
 ) -> Result<(), CredentialError> {
     let reclaiming = repo.abort_managed_mutation(pending).await?;
-    cleanup_unpublished_managed_material(&reclaiming, store).await?;
+    reclaiming.reclaim_material(store).await?;
     repo.complete_managed_mutation(&reclaiming).await
 }
 
@@ -564,13 +532,9 @@ async fn recover_managed_credential_mutation(
             abort_managed_mutation_before_cleanup(&claimed, store, repo).await?;
             return Ok(true);
         }
-        CredentialMaterialRecoveryAction::CleanupPublished => {
-            cleanup_retired_managed_material(&mutation, store).await?;
-            repo.complete_managed_mutation(&mutation).await?;
-            return Ok(true);
-        }
-        CredentialMaterialRecoveryAction::CleanupAborted => {
-            cleanup_unpublished_managed_material(&mutation, store).await?;
+        CredentialMaterialRecoveryAction::CleanupPublished
+        | CredentialMaterialRecoveryAction::CleanupAborted => {
+            mutation.reclaim_material(store).await?;
             repo.complete_managed_mutation(&mutation).await?;
             return Ok(true);
         }
@@ -595,7 +559,7 @@ async fn recover_managed_credential_mutation(
     if material_complete {
         match repo.commit_managed_mutation(&mutation).await {
             Ok(reclaiming) => {
-                cleanup_retired_managed_material(&reclaiming, store).await?;
+                reclaiming.reclaim_material(store).await?;
                 repo.complete_managed_mutation(&reclaiming).await?;
             }
             Err(ManagedCredentialMutationError::Store(error)) => return Err(error.into()),
@@ -666,10 +630,7 @@ async fn execute_managed_mutation(
     // retryable after-commit obligation: surfacing its failure to the command
     // caller would invite a duplicate logical mutation. Leave `Reclaiming`
     // durable for the supervisor and report the committed command as success.
-    if cleanup_retired_managed_material(&reclaiming, store)
-        .await
-        .is_ok()
-    {
+    if reclaiming.reclaim_material(store).await.is_ok() {
         let _completion = repo.complete_managed_mutation(&reclaiming).await;
     }
     Ok(reclaiming)
@@ -969,7 +930,7 @@ async fn execute_source_mutation(
             // fencing or cleanup fails, retain the WAL and attempt-owned refs
             // for supervised recovery.
             if let Ok(abort) = repo.abort_mutation(&intent).await
-                && cleanup_unpublished_material(&abort, store).await.is_ok()
+                && abort.reclaim_material(store).await.is_ok()
             {
                 let _completion = repo.complete_mutation(&abort).await;
             }
@@ -987,7 +948,7 @@ async fn execute_source_mutation(
     // Publication already committed. Cleanup is a retryable terminal phase;
     // returning an error would invite a duplicate logical command.
     if let Some(store) = store {
-        if cleanup_retired_material(&reclaiming, store).await.is_ok() {
+        if reclaiming.reclaim_material(store).await.is_ok() {
             let _completion = repo.complete_mutation(&reclaiming).await;
         }
     } else {
@@ -1434,44 +1395,6 @@ pub async fn revoke_credential_exact(
         .map(|committed| committed.after)
 }
 
-async fn cleanup_retired_material(
-    intent: &CredentialMutationIntent,
-    store: &dyn SecretStore,
-) -> Result<(), CredentialError> {
-    // A distinct replacement publishes a second source and deliberately keeps
-    // every predecessor ref alive for consumers still pinned to the old id.
-    // Only a later exact retirement command may reclaim predecessor material.
-    if intent.is_distinct_replacement() {
-        return Ok(());
-    }
-    let before = intent
-        .before
-        .iter()
-        .flat_map(CredentialSource::material_refs)
-        .collect::<HashSet<_>>();
-    let after = intent.after.material_refs().collect::<HashSet<_>>();
-    for reference in before.difference(&after) {
-        store.delete(reference).await?;
-    }
-    Ok(())
-}
-
-async fn cleanup_unpublished_material(
-    intent: &CredentialMutationIntent,
-    store: &dyn SecretStore,
-) -> Result<(), CredentialError> {
-    let before = intent
-        .before
-        .iter()
-        .flat_map(CredentialSource::material_refs)
-        .collect::<HashSet<_>>();
-    let after = intent.after.material_refs().collect::<HashSet<_>>();
-    for reference in after.difference(&before) {
-        store.delete(reference).await?;
-    }
-    Ok(())
-}
-
 /// Reconcile every interrupted source-only mutation through the shared
 /// material fence. A live `Writing` owner is skipped. An expired owner is
 /// atomically fenced and aborted, never promoted by inspecting its bytes: a
@@ -1527,18 +1450,14 @@ async fn recover_credential_mutation(
                 return Ok(false);
             };
             let abort = repo.abort_mutation(&claimed).await?;
-            cleanup_unpublished_material(&abort, store).await?;
+            abort.reclaim_material(store).await?;
             repo.complete_mutation(&abort).await?;
             return Ok(true);
         }
         CredentialMaterialRecoveryAction::PublishReady => pending.clone(),
-        CredentialMaterialRecoveryAction::CleanupPublished => {
-            cleanup_retired_material(pending, store).await?;
-            repo.complete_mutation(pending).await?;
-            return Ok(true);
-        }
-        CredentialMaterialRecoveryAction::CleanupAborted => {
-            cleanup_unpublished_material(pending, store).await?;
+        CredentialMaterialRecoveryAction::CleanupPublished
+        | CredentialMaterialRecoveryAction::CleanupAborted => {
+            pending.reclaim_material(store).await?;
             repo.complete_mutation(pending).await?;
             return Ok(true);
         }
@@ -1562,14 +1481,14 @@ async fn recover_credential_mutation(
     }
     if !material_complete {
         let abort = repo.abort_mutation(&mutation).await?;
-        cleanup_unpublished_material(&abort, store).await?;
+        abort.reclaim_material(store).await?;
         repo.complete_mutation(&abort).await?;
         return Ok(true);
     }
 
     match repo.apply_mutation(&mutation).await {
         Ok(reclaiming) => {
-            cleanup_retired_material(&reclaiming, store).await?;
+            reclaiming.reclaim_material(store).await?;
             repo.complete_mutation(&reclaiming).await?;
             Ok(true)
         }
@@ -1578,7 +1497,7 @@ async fn recover_credential_mutation(
             // conflict from a foreign row. A foreign row rejects this
             // transition, retaining both WAL and attempt-owned material.
             let abort = repo.abort_mutation(&mutation).await?;
-            cleanup_unpublished_material(&abort, store).await?;
+            abort.reclaim_material(store).await?;
             repo.complete_mutation(&abort).await?;
             Ok(true)
         }

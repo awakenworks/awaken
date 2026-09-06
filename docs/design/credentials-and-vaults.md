@@ -238,6 +238,34 @@ commit writes its exact-revision rollout outbox event in that same transaction;
 create has no rollout event. Periodic reconciliation publishes `Ready`, aborts
 expired `Writing`, and completes `Reclaiming`/`ReclaimingAbort` cleanup work.
 
+Both envelopes own abort and completion admission in the Credential repository
+domain's `cleanup` module. In-memory, SQLite and PostgreSQL read the complete
+durable intent and current Source/child under one lock or transaction, then
+consume that decision; adapters do not maintain parallel phase tables. A
+present WAL may retire only when its full identity and the phase's committed
+or unpublished truth match. Even abort replay must recheck unpublished truth.
+Source-only replay may carry its original request if the WAL is its exact
+derived abort; Managed recovery continues to require the durable abort envelope
+itself. A missing completion row is an idempotent no-op, never permission to
+remove a successor. Scalar Kani proof covers phase/equality decisions; full
+envelope projection, transaction isolation and external material cleanup are
+separately tested/assumed, not proved by that predicate.
+
+Material reclamation also uses one phase-selected delta: published in-place
+mutations remove `before - after`, aborted mutations remove `after - before`,
+and distinct published replacements retain every predecessor reference.
+Shared refs are never removed, and Writing/Ready cannot execute cleanup even
+with an empty delta. One executor deletes each selected opaque reference and
+requires an exact-reference `SecretNotFound` readback before allowing WAL
+completion. A success acknowledgement with remaining bytes, unavailable
+readback, or an absence response naming another reference retains cleanup work.
+This observation is not a cross-store atomic receipt: future stale writes,
+legacy reference reuse and arbitrary remote adapter behavior remain explicit
+boundaries. The shared creation model separates physical removal from WAL
+completion; Source-only verification projects that model instead of assuming
+atomic compensation. Conditional progress additionally assumes physical
+deletion and observation eventually succeed.
+
 The child lifecycle is the closed `Active | Archived | Deleted` value;
 `Deleted` is absorbing and physical purge is separate GC. The configured
 rollout target adopts the event through the existing Session generation

@@ -834,9 +834,7 @@ impl CredentialRepo for SqliteCredentialRepo {
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
         intent.validate()?;
-        let abort = intent.with_material_reclaiming_abort()?;
         let intent = intent.clone();
-        let abort_for_store = abort.clone();
         with_conn(&self.conn, move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -868,20 +866,7 @@ impl CredentialRepo for SqliteCredentialRepo {
             let current_after: Option<CredentialSource> = current_after_data
                 .map(|data| serde_json::from_str(&data).map_err(storage))
                 .transpose()?;
-            let unpublished = if intent.is_distinct_replacement() {
-                current_after.is_none()
-            } else {
-                current_after.as_ref() == intent.before.as_ref()
-            };
-            if durable == abort_for_store && unpublished {
-                tx.commit().map_err(storage)?;
-                return Ok(abort_for_store);
-            }
-            if durable != intent || !unpublished {
-                return Err(CredentialError::MutationConflict(
-                    "credential abort does not match exact unpublished truth".into(),
-                ));
-            }
+            let abort_for_store = intent.admit_abort(&durable, current_after.as_ref())?;
             let data = serde_json::to_string(&abort_for_store).map_err(storage)?;
             tx.execute(
                 &format!("UPDATE {p}_creation_intent SET data = ?2 WHERE source_id = ?1"),
@@ -928,25 +913,7 @@ impl CredentialRepo for SqliteCredentialRepo {
             let current_after: Option<CredentialSource> = current_after_data
                 .map(|data| serde_json::from_str(&data).map_err(storage))
                 .transpose()?;
-            let truth_matches_phase = match intent.material_fence.phase {
-                CredentialMaterialMutationPhase::Reclaiming => {
-                    current_after.as_ref() == Some(&intent.after)
-                }
-                CredentialMaterialMutationPhase::ReclaimingAbort => {
-                    if intent.is_distinct_replacement() {
-                        current_after.is_none()
-                    } else {
-                        current_after.as_ref() == intent.before.as_ref()
-                    }
-                }
-                CredentialMaterialMutationPhase::Writing
-                | CredentialMaterialMutationPhase::Ready => false,
-            };
-            if durable != intent || !truth_matches_phase {
-                return Err(CredentialError::MutationConflict(
-                    "credential completion does not match durable cleanup truth".into(),
-                ));
-            }
+            intent.admit_completion(&durable, current_after.as_ref())?;
             tx.execute(
                 &format!("DELETE FROM {p}_creation_intent WHERE source_id = ?1"),
                 params![intent.after.id.0],

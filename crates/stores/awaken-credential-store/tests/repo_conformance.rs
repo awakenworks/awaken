@@ -12,6 +12,9 @@
 //! R3 C2|C3+C4+C5 -> E3; R4 C1|C2|C3+C6 -> E4. Shared helpers keep the
 //! behavior contract authoritative while concrete storage lives in this crate.
 
+#[path = "support/cleanup.rs"]
+mod cleanup;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::RedactedString;
@@ -360,6 +363,8 @@ async fn completing_unpublished_mutation_is_idempotent(repo: &dyn CredentialRepo
         repo.get(&source.id).await,
         Err(CredentialError::SourceNotFound(_))
     ));
+
+    cleanup::source_cleanup_rechecks_durable_truth(repo).await;
 }
 
 /// Durable rotation FMECA/decision table. C1 current row equals the intent's
@@ -1019,7 +1024,7 @@ async fn sqlite_recovery_scans_reject_mismatched_durable_keys_before_secret_io()
 
 /// Live Postgres conformance: the same suites as the other backends, each on a
 /// fresh schema (so the four independent suites never see each other's rows).
-/// Skips when no Postgres is reachable (`AWAKEN_TEST_DATABASE_URL`).
+/// Only the default development URL may skip; an explicit fixture must work.
 #[cfg(feature = "postgres")]
 mod postgres {
     use super::*;
@@ -1052,6 +1057,12 @@ mod postgres {
         {
             Ok(pool) => pool,
             Err(err) => {
+                // R3: an explicitly configured durable-backend gate must fail,
+                // never count an unreachable database as passing coverage.
+                assert!(
+                    std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_none(),
+                    "explicit PostgreSQL fixture is unavailable: {err}"
+                );
                 println!("[skip] no Postgres reachable: {err}");
                 return None;
             }
@@ -1064,47 +1075,37 @@ mod postgres {
             .await
             .expect("create schema");
         admin.close().await;
-        PgPoolOptions::new()
-            .max_connections(4)
-            .after_connect(move |conn, _meta| {
-                Box::pin(async move {
-                    conn.execute(format!("SET search_path = {schema}").as_str())
-                        .await?;
-                    conn.execute(format!("SET application_name = '{schema}'").as_str())
-                        .await?;
-                    Ok(())
+        Some(
+            PgPoolOptions::new()
+                .max_connections(4)
+                .after_connect(move |conn, _meta| {
+                    Box::pin(async move {
+                        conn.execute(format!("SET search_path = {schema}").as_str())
+                            .await?;
+                        conn.execute(format!("SET application_name = '{schema}'").as_str())
+                            .await?;
+                        Ok(())
+                    })
                 })
-            })
-            .connect(&database_url())
-            .await
-            .ok()
+                .connect(&database_url())
+                .await
+                .expect("PostgreSQL scenario fixture must initialize after admin connection"),
+        )
     }
 
     async fn repo(schema: &'static str) -> Option<PostgresCredentialRepo> {
         let pool = schema_pool(schema).await?;
-        Some(
-            PostgresCredentialRepo::with_pool(pool)
-                .await
-                .expect("store"),
-        )
+        let repo = PostgresCredentialRepo::with_pool(pool)
+            .await
+            .expect("store");
+        Some(repo)
     }
 
     fn managed_source(id: &str, workspace_id: &str) -> CredentialSource {
         CredentialSource {
-            id: CredentialSourceId(id.into()),
-            replacement_of: None,
-            workspace_id: workspace_id.into(),
-            kind: CredentialKind::Vault,
-            descriptor: None,
             provider_id: None,
-            protocol_endpoint_id: None,
             env_key: None,
-            material_ref: None,
-            auxiliary_material_refs: BTreeMap::new(),
-            oauth_command: None,
-            worker_local_binding: None,
-            status: CredentialStatus::Active,
-            version: 1,
+            ..source(id, workspace_id)
         }
     }
 

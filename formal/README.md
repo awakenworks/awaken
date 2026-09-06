@@ -838,10 +838,11 @@ separately built worker images implement the same model identity with equivalent
 code/configuration remains a deployment-supply-chain assumption; image digest,
 SBOM/signature, and fleet-conformance checks must enforce it.
 
-The transaction-hardening batch closes the three formerly narrower boundaries.
+The transaction-hardening models cover three formerly narrower boundaries.
 `WebhookOutbox` now models the session repository's atomic lifecycle+outbox
-commit. `CredentialCreation` models the secret-free durable intent, atomic source
-publication/intent retirement, and restart/periodic compensation. `AuditCommit` models a
+commit. `CredentialCreation` now projects the canonical material-attempt model
+below: Source publication and external cleanup are not one atomic transaction.
+It no longer maintains a parallel atomic compensation protocol. `AuditCommit` models a
 durable pending audit followed by the config store's atomic business commit and
 pending→committed transition across exact `(scope, tool, call_id)` identities;
 delimiter-colliding tuples and conflicting summaries are distinct inputs, and
@@ -850,8 +851,8 @@ a bounded Kani proof, while live backend conformance and history-migration tests
 exercise SQL behavior. These are not a universal SQL/driver refinement. Tracing is
 an observability projection rather than the durable audit authority.
 
-`ManagedCredentialCreation` adds a bounded abstract Managed Agents creation
-protocol.
+`ManagedCredentialCreation` owns the bounded abstract material-attempt protocol
+shared by Source-only and Managed creation.
 One stable intent identity admits duplicate replay and rejects a conflicting
 begin. A durable writer token plus monotonic epoch abstracts the Rust owner
 fence; within the model an unexpired live lease cannot be claimed, while
@@ -864,10 +865,14 @@ recoverable without changing its already-durable token, and only that epoch-1
 fact may commit the Source/child pair. A late old external write after takeover
 can create only an unreachable orphan flag; stale ready/commit transitions
 cannot mutate durable material, phase, or either half of the pair. Crash/restart
-can interleave before retryable external deletion, and only exact cleanup
-completion reaches the clean `Aborted` state. An abandoned `Writing` intent
+can interleave between retryable physical deletion and WAL completion; only
+observed material absence permits the clean `Aborted` state. A false delete
+acknowledgement or failed readback cannot cause retirement. An abandoned `Writing` intent
 eventually aborts under the explicit expiry, restart, claim, abort, and cleanup
-fairness assumptions. Source plus Vault child publish in one abstract commit.
+fairness assumptions, including eventual physical removal and observation.
+Source plus Vault child publish in one abstract commit. Source-only projects
+away the child bit. Tracked-material claims exclude the late unreachable orphan
+flag and do not prove arbitrary SecretStore behavior or cross-store atomicity.
 
 Create enters `Writing` and produces no rollout. An update enters `Writing`
 only when it writes new material; metadata-only update, archive, and delete
