@@ -76,6 +76,12 @@ def direct_evidence_result(required: set[str], rows: dict) -> dict:
 
 def guardrail_results(features: dict, rows: dict) -> dict[str, dict]:
     """Resolve target guardrails through exact existing feature requirements."""
+    profiles = features.get("guardrail_promotions", [])
+    if not isinstance(profiles, list):
+        raise ValueError("guardrail promotion profiles must be a list")
+    if not profiles:
+        return {}
+
     feature_rows = features.get("features")
     if not isinstance(feature_rows, list) or not feature_rows:
         raise ValueError("qualification requires nonempty features")
@@ -93,9 +99,6 @@ def guardrail_results(features: dict, rows: dict) -> dict[str, dict]:
                 raise ValueError(f"{feature_id} requires unique nonempty requirement ids")
             requirement_index[coordinate] = requirement
 
-    profiles = features.get("guardrail_promotions", [])
-    if not isinstance(profiles, list):
-        raise ValueError("guardrail promotion profiles must be a list")
     results = {}
     for profile in profiles:
         guardrail_id = profile.get("id")

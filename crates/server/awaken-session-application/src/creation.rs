@@ -45,9 +45,7 @@ const fn session_create_effect_plan(
         (SessionCreateReceiptKind::Applied, SessionCreationCompletion::AcceptDurableRoot) => {
             SessionCreateEffectPlan::AcceptAppliedRoot
         }
-        (SessionCreateReceiptKind::Replayed, _) => {
-            SessionCreateEffectPlan::ReturnDurableReplay
-        }
+        (SessionCreateReceiptKind::Replayed, _) => SessionCreateEffectPlan::ReturnDurableReplay,
     }
 }
 

@@ -12,15 +12,24 @@
 
 use std::process::Command;
 
+fn awaken() -> Command {
+    let executable = std::env::var("CARGO_BIN_EXE_awaken")
+        .expect("Cargo must provide the awaken path when this integration test runs");
+    Command::new(executable)
+}
+
 #[test]
 fn control_profile_is_a_side_effect_free_release_projection() {
-    let binary = env!("CARGO_BIN_EXE_awaken");
-    let first = Command::new(binary)
+    // Harness causes/effects: H1 Cargo checks this target without a runnable
+    // path -> it compiles; H2 Cargo runs it with the runtime path -> the exact
+    // package binary is spawned. The workspace all-target check covers H1;
+    // this process-level test covers H2 without a second path resolver.
+    let first = awaken()
         .args(["control", "iam", "profile"])
         .env("AWAKEN_CONFIG", "/does/not/exist")
         .output()
         .expect("run profile projection");
-    let second = Command::new(binary)
+    let second = awaken()
         .args(["control", "iam", "profile"])
         .env("AWAKEN_CONFIG", "/also/does/not/exist")
         .output()
@@ -91,9 +100,8 @@ fn control_profile_is_a_side_effect_free_release_projection() {
 
 #[test]
 fn hosted_runtime_profile_is_a_side_effect_free_release_projection() {
-    let binary = env!("CARGO_BIN_EXE_awaken");
     let project = || {
-        Command::new(binary)
+        awaken()
             .args(["control", "iam", "profile", "runtime"])
             .env("AWAKEN_CONFIG", "/does/not/exist")
             .output()
@@ -129,9 +137,8 @@ fn hosted_runtime_surface_profile_projects_the_canonical_application_access_limi
     // | rule | command | canonical TTL | routes | outcome |
     // | S1 | surface profile runtime | positive canonical incumbent ceiling | populated | schema v2 with exact TTL and routes |
     // | S2 | same command twice | positive | populated | byte-identical JSON |
-    let binary = env!("CARGO_BIN_EXE_awaken");
     let project = || {
-        Command::new(binary)
+        awaken()
             .args(["control", "surface", "profile", "runtime"])
             .env("AWAKEN_CONFIG", "/does/not/exist")
             .output()
@@ -167,7 +174,7 @@ fn hosted_runtime_surface_profile_projects_the_canonical_application_access_limi
 
 #[test]
 fn control_profile_rejects_an_ambiguous_invocation() {
-    let output = Command::new(env!("CARGO_BIN_EXE_awaken"))
+    let output = awaken()
         .args(["control", "iam", "profile", "extra"])
         .output()
         .expect("run invalid profile projection");
@@ -182,7 +189,7 @@ fn control_profile_rejects_an_ambiguous_invocation() {
             .contains("control iam requires `profile` or `profile runtime` exactly")
     );
 
-    let retired = Command::new(env!("CARGO_BIN_EXE_awaken"))
+    let retired = awaken()
         .args(["control", "iam", "profile", "resources"])
         .output()
         .expect("run retired resource projection");

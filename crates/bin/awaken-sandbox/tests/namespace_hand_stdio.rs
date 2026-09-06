@@ -7,6 +7,8 @@ use awaken_runtime_contract::llm::ToolCall;
 use awaken_sandbox_local::NamespaceProvider;
 use awaken_tool_relay::{RemoteToolExecutor, wire::HandResult};
 
+mod binary_support;
+
 fn spec() -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: "namespace-hand-path-contract".into(),
@@ -104,7 +106,8 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
         .create_sandbox_for_effect(&sandbox_spec, &realization, None)
         .await
         .expect("fenced namespace");
-    let mut command = pc::Command::new([env!("CARGO_BIN_EXE_awaken-sandbox"), "hand", "--stdio"]);
+    let binary = binary_support::awaken_sandbox();
+    let mut command = pc::Command::new([binary.as_str(), "hand", "--stdio"]);
     command.cwd = "/workspace".into();
     let (process, channel) = sandbox.spawn_agent(command).await.expect("spawn Hand");
     let executor = RemoteToolExecutor::new(channel);
@@ -283,8 +286,8 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
         .attach(spec().mounts.into_iter().next().unwrap())
         .await
         .expect("reconcile frozen mount");
-    let mut adopted_command =
-        pc::Command::new([env!("CARGO_BIN_EXE_awaken-sandbox"), "hand", "--stdio"]);
+    let binary = binary_support::awaken_sandbox();
+    let mut adopted_command = pc::Command::new([binary.as_str(), "hand", "--stdio"]);
     adopted_command.cwd = "/workspace".into();
     let (adopted_process, adopted_channel) = adopted
         .spawn_agent(adopted_command)
