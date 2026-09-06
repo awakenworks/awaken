@@ -354,6 +354,7 @@ def main() -> None:
     model_selection.add_argument("--resolution-failure-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--config-cas-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--background-completion-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--audit-commit-model-mutants", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
     if arguments.memory_copy_model_mutant is not None:
         check_memory_copy_model_mutant(arguments.memory_copy_model_mutant)
@@ -372,6 +373,9 @@ def main() -> None:
         return
     if arguments.background_completion_model_mutant is not None:
         check_background_completion_model_mutant(arguments.background_completion_model_mutant)
+        return
+    if arguments.audit_commit_model_mutants is not None:
+        check_audit_commit_model_mutants(arguments.audit_commit_model_mutants)
         return
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(MutationOracleTests)
     if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
@@ -544,6 +548,24 @@ def check_background_completion_model_mutant(tlc_jar: Path) -> None:
         (source.replace(guard, 'p = "Cancelling"'), config, "CompletionProjectionRetainsUnknown"),
     ])
     print("Background completion mutation score: 1/1 killed (unknown is not cancelled)")
+
+
+def check_audit_commit_model_mutants(tlc_jar: Path) -> None:
+    # A1 remove exact request equality -> wrong intent commits. A3 allow a
+    # committed row through the pending guard -> duplicate business write.
+    # Each kill requires the green baseline and the named semantic invariant.
+    source = (ROOT / "formal/tla/AuditCommit.tla").read_text(encoding="utf-8")
+    config = (ROOT / "formal/tla/AuditCommit.cfg").read_text(encoding="utf-8")
+    exact = r" /\ auditSummary[k] = summary"
+    pending = 'auditState[k] = "pending"' + exact
+    if source.count(exact) != 1 or source.count(pending) != 1:
+        raise SystemExit("Audit commit mutation anchors drifted; review the model")
+    check_tlc_model_mutations(tlc_jar, "AuditCommit", source, config, [
+        (source.replace(exact, ""), config, "ExactIntentOwnsBusinessWrite"),
+        (source.replace(pending, 'auditState[k] # "none"' + exact),
+         config, "BusinessCommitIffAuditCommitted"),
+    ])
+    print("Audit commit mutation score: 2/2 killed (exact intent, committed replay)")
 
 
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,

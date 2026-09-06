@@ -285,6 +285,26 @@ atomically pair the business write with a Runtime-owned `run + step + call` oper
 identity. Read-only capability/help/validate calls do not enter the config-store
 idempotency path.
 
+The durable identity is the exact `(scope, tool, call_id)` tuple. Neither tool
+names (including `http:METHOD:path`) nor Runtime operation IDs exclude colons, so
+delimiter concatenation is not an identity codec. Config-owned V11 migrates both
+published schema histories from the record's coordinates, preserving content,
+commit state and creation time. The original `awaken.config` bundle owns this
+append; the existing convergence receipt remains only a seal. No legacy-key
+dual read or parallel audit store survives migration. Database constraints bind
+the tuple index to the record and reject malformed records/commit flags. Invalid
+history fails migration and requires repair from authoritative evidence; it is
+never guessed or silently converted to success. Upgrade Control writers together:
+the old key layout is not a supported mixed-version write protocol.
+
+The domain's `ManagementAuditRecord::admit_write` is the one business admission
+decision. Adapters read the exact row under the existing transaction fence, decode
+its closed state, and either reject, replay without writing, or atomically commit
+config/effect-journal/audit. Begin uses unique-key conflict arbitration and typed
+record equality in both backends. Kani proves the scalar admission classes;
+backend tests and the AuditCommit model do not prove arbitrary SQL, network
+effects, or cross-store atomicity.
+
 ## Consequences
 
 Positive:

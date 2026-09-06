@@ -14,6 +14,10 @@ const SQLITE_BASELINE: &str = include_str!("migrations/V0001__control_config.sql
 /// only database syntax differences; both establish the same five Control-owned
 /// tables and revision-capture behavior.
 pub fn config_bundle() -> Result<MigrationBundle, MigrationError> {
+    with_current_migrations(compact_baseline()?)
+}
+
+fn compact_baseline() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         BUNDLE_ID,
         vec![Migration::per_dialect(
@@ -29,10 +33,23 @@ pub(crate) fn selected_config_bundle(
     v1_checksum: Option<&str>,
 ) -> Result<MigrationBundle, MigrationError> {
     if v1_checksum == Some(expanded::V1_CHECKSUM) {
-        expanded::bundle()
+        with_current_migrations(expanded::bundle()?)
     } else {
         config_bundle()
     }
+}
+
+fn with_current_migrations(history: MigrationBundle) -> Result<MigrationBundle, MigrationError> {
+    // Both immutable histories end before V11. Append once under their original
+    // table owner; the already-published convergence bundle is a seal only.
+    let mut migrations = history.migrations().to_vec();
+    migrations.push(Migration::per_dialect(
+        11,
+        "management audit identity is the exact scoped tool and call tuple",
+        include_str!("migrations/V0011__audit_identity.postgres.sql").trim(),
+        include_str!("migrations/V0011__audit_identity.sqlite.sql").trim(),
+    )?);
+    MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
 pub(crate) fn converged_config_bundle() -> Result<MigrationBundle, MigrationError> {
@@ -50,18 +67,19 @@ pub(crate) fn converged_config_bundle() -> Result<MigrationBundle, MigrationErro
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
-    use awaken_scoped_migration::{Dialect, Migration, MigrationError, plan};
+    use awaken_scoped_migration::{Dialect, Migration, MigrationBundle, MigrationError, plan};
     use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
     use rusqlite::Connection;
 
     use super::{
-        BUNDLE_ID, config_bundle, converged_config_bundle, expanded, selected_config_bundle,
+        BUNDLE_ID, compact_baseline, config_bundle, converged_config_bundle, expanded,
+        selected_config_bundle, with_current_migrations,
     };
 
     #[test]
     fn current_baseline_has_one_history_and_captures_exact_revisions() {
         /* Causes: C1 empty ledger; C2 insert generation 1; C3 update to
-         * generation 2; C4 exact V1 receipt on replay. Effects: E1 create only
+         * generation 2; C4 exact V1/V11 receipts on replay. Effects: E1 create only
          * the five active Control tables; E2 append revision 1; E3 append
          * revision 2; E4 execute no SQL. Decision table: G1=C1=>E1;
          * G2=G1+C2=>E2; G3=G2+C3=>E3; G4=C4=>E4. */
@@ -72,11 +90,11 @@ mod tests {
                 .iter()
                 .map(Migration::version)
                 .collect::<Vec<_>>(),
-            [1]
+            [1, 11]
         );
         let conn = Connection::open_in_memory().expect("sqlite");
         let runner = SqliteMigrationRunner::with_prefix("config").expect("runner");
-        assert_eq!(runner.run_bundle(&conn, &bundle).expect("G1").len(), 1);
+        assert_eq!(runner.run_bundle(&conn, &bundle).expect("G1").len(), 2);
         let tables = conn
             .prepare(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'config_%' \
@@ -125,10 +143,87 @@ mod tests {
     }
 
     #[test]
+    fn audit_identity_migration_preserves_both_histories_and_rejects_corruption() {
+        // M1 compact/expanded history x pending/committed => preserve record,
+        // state and timestamp; replay migration => no SQL. M2 alternate tuple
+        // with the same legacy key => independent row. M3 mismatched indexed
+        // coordinates or invalid state => DB rejects. M4 corrupt/duplicate legacy row =>
+        // atomic rollback, old bytes and ledger intact, no shadow table remains.
+        for history in [compact_baseline().unwrap(), expanded::bundle().unwrap()] {
+            let current = with_current_migrations(history.clone()).unwrap();
+            for (state, valid_record, duplicate) in [
+                (0_i64, true, false),
+                (1, true, false),
+                (2, true, false),
+                (0, false, false),
+                (0, true, true),
+            ] {
+                let conn = Connection::open_in_memory().unwrap();
+                let runner = SqliteMigrationRunner::with_prefix("config").unwrap();
+                runner.run_bundle(&conn, &history).unwrap();
+                let record =
+                    r#"{ "summary":"body_sha256=one", "call_id":"b:调用", "tool":"http:POST:a" }"#;
+                let record = if valid_record { record } else { "{}" };
+                conn.execute("INSERT INTO config_management_audit(scope_id,call_id,record,business_committed,created_at) VALUES('ws','http:POST:a:b:调用',?1,?2,'2026-01-01 00:00:00')", rusqlite::params![record, state]).unwrap();
+                if duplicate {
+                    conn.execute("INSERT INTO config_management_audit(scope_id,call_id,record) VALUES('ws','other-legacy-key',?1)", [record]).unwrap();
+                }
+                let result = runner.run_bundle(&conn, &current);
+                if state == 2 || !valid_record || duplicate {
+                    assert!(result.is_err(), "M4");
+                    let (key, unchanged): (String, String) = conn
+                        .query_row(
+                            "SELECT call_id,record FROM config_management_audit WHERE call_id='http:POST:a:b:调用'",
+                            [],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .unwrap();
+                    assert_eq!(key, "http:POST:a:b:调用");
+                    assert_eq!(unchanged, record);
+                    let rows: i64 = conn
+                        .query_row("SELECT COUNT(*) FROM config_management_audit", [], |r| {
+                            r.get(0)
+                        })
+                        .unwrap();
+                    assert_eq!(rows, 1 + i64::from(duplicate));
+                    let receipt: i64 = conn.query_row("SELECT COUNT(*) FROM config_schema_migrations WHERE bundle_id='awaken.config' AND version=11", [], |r| r.get(0)).unwrap();
+                    assert_eq!(receipt, 0);
+                    let shadow: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name='config_management_audit_identity'", [], |r| r.get(0)).unwrap();
+                    assert_eq!(shadow, 0);
+                    continue;
+                }
+                result.unwrap();
+                let row: (String, String, String, i64, String) = conn.query_row("SELECT tool,call_id,record,business_committed,created_at FROM config_management_audit", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
+                assert_eq!(
+                    row,
+                    (
+                        "http:POST:a".into(),
+                        "b:调用".into(),
+                        record.into(),
+                        state,
+                        "2026-01-01 00:00:00".into()
+                    ),
+                    "M1"
+                );
+                assert!(runner.run_bundle(&conn, &current).unwrap().is_empty());
+                conn.execute("INSERT INTO config_management_audit(scope_id,tool,call_id,record) VALUES('ws','http:POST','a:b:调用',?1)", [r#"{"tool":"http:POST","call_id":"a:b:调用","summary":"different"}"#]).expect("M2");
+                for sql in [
+                    "UPDATE config_management_audit SET tool='wrong'",
+                    "UPDATE config_management_audit SET call_id='wrong'",
+                    "UPDATE config_management_audit SET business_committed=-1",
+                    "UPDATE config_management_audit SET record='{}'",
+                ] {
+                    assert!(conn.execute(sql, []).is_err(), "M3: {sql}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn published_config_histories_select_exact_v1_and_converge() {
-        /* History decision table: H1 empty/current V1 -> compact baseline;
-         * H2 expanded V1 -> exact V1..V10; H3 unknown V1 -> ordinary compact
-         * checksum mismatch; H4 either terminal -> shared convergence only.
+        /* History decision table: H1 empty/current V1 -> compact + common V11;
+         * H2 expanded V1 -> exact V1..V10 + same V11; H3 unknown V1 -> compact
+         * checksum mismatch; H4 either current history -> unchanged seal.
          */
         let compact = config_bundle().expect("compact");
         let expanded = expanded::bundle().expect("expanded");
@@ -141,7 +236,7 @@ mod tests {
         );
         assert_eq!(
             selected_config_bundle(Some(expanded::V1_CHECKSUM)).expect("H2"),
-            expanded,
+            with_current_migrations(expanded.clone()).unwrap(),
             "H2"
         );
         let sqlite_receipts = [
@@ -159,10 +254,20 @@ mod tests {
         for (migration, expected) in expanded.migrations().iter().zip(sqlite_receipts) {
             assert_eq!(migration.checksum_for(Dialect::Sqlite), expected, "H2");
         }
-        // Both executable schemas contain trigger `NEW` pseudo-rows which the
-        // generic cross-bundle scanner misclassifies as tables. The compact
-        // storage test and expanded ten-checksum proof cover those bodies; only
-        // the common future append stream is linted here.
+        // The inherited revision triggers contain NEW pseudo-rows unsupported
+        // by the pinned table scanner. Lint the exact audit ownership slice:
+        // published V7 declaration + current V11, with no hand-written DDL or
+        // cross-bundle exemption. Executable migration tests cover both complete
+        // histories; the old convergence receipt remains an unchanged seal.
+        awaken_scoped_migration::lint(&[MigrationBundle::new(
+            BUNDLE_ID,
+            vec![
+                expanded.migrations()[6].clone(),
+                compact.migrations()[1].clone(),
+            ],
+        )
+        .unwrap()])
+        .expect("audit migration ownership");
         awaken_scoped_migration::lint(std::slice::from_ref(
             &converged_config_bundle().expect("converged"),
         ))
