@@ -159,7 +159,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-acp-contract \
     --harness acp_capability_is_detected_exactly_after_a_verified_observation
   run_kani awaken-authz-enforce \
-    --harness session_decision_collapse_allows_only_explicit_allow
+    --harness session_decision_collapse_allows_only_explicit_allow \
+    --harness session_method_mapping_is_total_and_read_only_for_exact_safe_methods
   run_kani awaken-environment-realization-contract \
     --harness environment_image_build_claim_is_exact_non_wrapping_and_blocked_is_inert \
     --harness environment_image_build_mutation_requires_exact_claim_and_admissible_command
@@ -455,7 +456,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness resource_config_publication_is_exact_and_never_wraps \
     --harness exhausted_resource_config_versions_fail_closed \
     --harness portable_aggregate_revision_is_strictly_monotonic_and_never_wraps \
-    --harness resource_lifecycle_timestamps_project_the_exact_transition
+    --harness resource_lifecycle_timestamps_project_the_exact_transition \
+    --harness stale_resource_purge_claim_cannot_commit_receipt
+  run_kani awaken-cli \
+    --harness unchanged_observation_coalesces_and_failed_refresh_retains_fence
   run_kani awaken-mcp-server-core \
     --harness one_request_has_at_most_one_final_response \
     --harness notifications_never_have_a_jsonrpc_response \
@@ -465,6 +469,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-worker-contract \
     --harness accepted_version_is_inside_worker_range \
     --harness non_ready_worker_never_accepts_work \
+    --harness placement_extension_admits_only_allowed_unique_identity \
     --harness never_replace_rejects_every_replacement \
     --harness sandbox_continuity_authorizes_replacement_exactly_when_bound \
     --harness same_incarnation_never_spends_replacement_authority \
