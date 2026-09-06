@@ -385,7 +385,8 @@ async fn unsupported_environment_adapter_and_exporter_fail_closed() {
 
     let sandbox = Sandbox::new(None, false, false);
     let (mut source, _) = self::source(sandbox.clone(), false);
-    source.launch = LaunchSource::Fixed(AcpLaunch::custom(vec!["fixture".into()], vec![]));
+    source.launch =
+        LaunchSource::Fixed(Box::new(AcpLaunch::custom(vec!["fixture".into()], vec![])));
     let result = source
         .open(
             &acp_activation("acp:claude"),

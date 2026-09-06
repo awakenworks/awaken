@@ -205,7 +205,7 @@ impl ManagedState {
             }
             let historical_boundaries = Self::historical_message_boundaries(
                 message,
-                &historical_pending,
+                historical_pending,
                 lifecycle_events,
                 thread_id,
                 response_coordinates

@@ -610,7 +610,7 @@ async fn authorize_artifact_effect(
             if idempotency_scope.is_some() {
                 return Err(StatusCode::BAD_REQUEST);
             }
-            if let Err(status) = authorize_checkpoint_release_artifact(
+            authorize_checkpoint_release_artifact(
                 service,
                 worker,
                 identity,
@@ -618,16 +618,13 @@ async fn authorize_artifact_effect(
                 workspace_id,
                 session_id,
             )
-            .await
-            {
-                return Err(status);
-            }
+            .await?;
         }
         ArtifactPublicationFence::Terminal(effect) => {
             let Some(idempotency_scope) = idempotency_scope else {
                 return Err(StatusCode::BAD_REQUEST);
             };
-            if let Err(status) = authorize_terminal_artifact(
+            authorize_terminal_artifact(
                 service,
                 worker,
                 identity,
@@ -636,10 +633,7 @@ async fn authorize_artifact_effect(
                 session_id,
                 idempotency_scope,
             )
-            .await
-            {
-                return Err(status);
-            }
+            .await?;
         }
     }
     Ok(run_guard)
