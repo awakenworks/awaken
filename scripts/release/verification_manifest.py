@@ -273,7 +273,7 @@ class VerificationManifestTests(unittest.TestCase):
             kind="safety", repository_controlled=True, obligations=["fixture.safe"])])
         root = directory / "source"
         prepare_source_fixture(root, {
-            ".gitignore": "target/\ndist/\ndeploy/images/management/.awaken-management.bin\n",
+            ".gitignore": "target/\ndist/\ndeploy/images/management/.awaken-management.bin\ndeploy/images/management/.awaken-verification.json\n",
             "formal/coverage.json": json.dumps({"obligations": [row]}) + "\n",
             "formal/features.json": json.dumps({"features": [feature]}) + "\n",
             "formal/assumptions.json": '{"assumptions": []}\n',
@@ -370,9 +370,11 @@ class VerificationManifestTests(unittest.TestCase):
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                         if step.startswith("Stage"):
                             self.assertEqual(staged.read_bytes(), b"synthetic binary")
+                            self.assertEqual((staged.parent / ".awaken-verification.json").read_bytes(), sidecar.read_bytes())
                     else:
                         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertFalse(staged.exists())
+                        self.assertFalse((staged.parent / ".awaken-verification.json").exists())
 
     @staticmethod
     def tcb_case() -> tuple[dict, dict, dict]:

@@ -9,6 +9,9 @@
 # | exact           | all-in-one + split roles | canonical commands advertised |
 # | exact + preset  | default container start | Console responds + setup token logged |
 # | absent/wrong    | any                     | container start fails |
+# | exact + manifest | immutable evidence file | readable by runtime, not writable |
+# The release job separately compares the file to its validated original before
+# image promotion. Presence here is not runtime TCB authentication or eligibility.
 set -euo pipefail
 
 IMAGE="${AWAKEN_MANAGEMENT_IMAGE:?set AWAKEN_MANAGEMENT_IMAGE to the image under test}"
@@ -27,6 +30,8 @@ esac
 
 docker run --rm --entrypoint /bin/sh "$IMAGE" -ec \
   'test "$(id -u)" = 10001 && test -x /usr/local/bin/awaken && test -r /etc/awaken/config.toml && test ! -e /usr/local/bin/awaken-server'
+docker run --rm --entrypoint /bin/sh "$IMAGE" -ec \
+  'test -r /usr/share/awaken/verification.json && test ! -w /usr/share/awaken/verification.json'
 
 container="$(docker run --detach --publish 127.0.0.1::8080 "$IMAGE")"
 cleanup() {

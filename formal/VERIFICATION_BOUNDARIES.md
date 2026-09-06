@@ -470,6 +470,15 @@ prerequisites, and tests execute the actual local consumer shell blocks before
 their extraction/publication boundaries. CI authenticity and immutable checkout
 ownership remain assumptions; this is not runtime admission or image execution
 evidence, and it does not close deployment check/use races.
+The Management image now carries the original validated archive manifest as a
+read-only file. New/reused image paths share one exact binary/manifest/OCI-label
+check instead of independently deciding payload equivalence, and the reused
+signature must name the source workflow commit. The signed image digest binds
+the included file; no second proof manifest or qualification policy is created.
+The model's optional image-path projection checks payload equivalence before
+TCB admission, while actual shell tests cover wrong/missing payload, stale copy
+output and inspection cleanup. These are bounded model/adapter checks, not
+signature verification proofs or a live runtime Verified identity.
 
 The generated release manifest extends the existing signed release provenance;
 it is not a second obligation or assumption ledger. A standard artifact records

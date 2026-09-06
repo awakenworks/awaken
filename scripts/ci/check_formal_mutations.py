@@ -642,8 +642,12 @@ def check_verified_admission_model_mutants(tlc_jar: Path) -> None:
             raise SystemExit("Verified admission mutation anchor drifted; review the model")
         replacement = "ReleaseAdmissible == /\\ TRUE" if guard.startswith("ReleaseAdmissible ==") else ""
         mutations.append((source.replace(guard, replacement), config, invariant))
+    image_guard = r"IF ~release.imageRequired \/ release.imageMatches"
+    if source.count(image_guard) != 1:
+        raise SystemExit("Image payload mutation anchor drifted; review the model")
+    mutations.append((source.replace(image_guard, "IF TRUE"), config, "ImageConsumptionHasExactPayload"))
     check_tlc_model_mutations(tlc_jar, "VerifiedProfileAdmission", source, config, mutations)
-    print("Verified admission mutation score: 7/7 killed (target freshness and exact executed release)")
+    print("Verified admission mutation score: 8/8 killed (target freshness, exact executed release and image payload)")
 
 
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,

@@ -759,6 +759,15 @@ evidence too; local diagnostic packages with null receipts cannot pass these
 consumer gates. Final archive/sidecar sets must be nonempty and paired. Tests
 execute these local workflow blocks using synthetic packages; they do not
 claim a successful registry publication or a live deployment attestation.
+The Management image includes that exact original manifest as the read-only
+`/usr/share/awaken/verification.json`, not a rewritten image-specific ledger.
+One shared payload check compares executable/manifest bytes and OCI source,
+revision and version for both fresh and reused images. Reuse also pins the
+signature workflow commit. Temporary inspection containers and their anonymous
+volumes are reclaimed on success and check failure; Docker availability remains
+an external assumption. The admission model includes the optional exact-image
+payload prerequisite before TCB admission. Carrying this signed image content
+does not itself authenticate a deployment or freeze a Session's proof identity.
 The release-side validator offers `validate --require-verified --tcb-evidence
 evidence.json --runtime-fingerprint target.json`. The caller must independently
 authenticate both inputs. Evidence owns `observations`; the target snapshot owns
