@@ -787,6 +787,51 @@ async fn record_fresh_output(
     Ok(())
 }
 
+/// Advance the authoritative open batch before either a native inference or an
+/// external-loop handoff. Both entries use the same recovery and conflict rules;
+/// a finalized/other-Run batch never enters an executor again.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn recover_pending_tool_batch(
+    runtime: &Runtime,
+    context: &RuntimeRunContext,
+    delegation_origin: Option<&DelegationOrigin>,
+    resolved: &ResolvedRun,
+    env: &ResolvedExecutionEnv,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+    ledger: &mut StepLedger,
+    store: &mut Store,
+    discovery: &mut ToolDiscoveryState,
+) -> Result<Option<RunDisposition>> {
+    let Some(batch) = ActiveToolBatch::load(store)
+        .map_err(|error| Error::Execution(error.to_string()))?
+        .filter(|batch| batch.run_id() == run_id && batch.phase() != ToolBatchPhase::Finalized)
+    else {
+        return Ok(None);
+    };
+    match recover_tool_batch(
+        runtime,
+        context,
+        delegation_origin,
+        resolved,
+        env,
+        run_id,
+        thread_id,
+        batch,
+        ledger,
+        store,
+        discovery,
+    )
+    .await
+    {
+        Err(Error::StateConflict) => Ok(Some(RunDisposition::ended(
+            run_id.clone(),
+            EndCause::Error(Failure::StateConflict),
+        ))),
+        outcome => outcome,
+    }
+}
+
 /// Recover an open batch committed by a prior owner. Requested calls have not
 /// entered an executor and may start normally. Executing calls follow their
 /// pinned policy; terminal calls are only published, never invoked again.
