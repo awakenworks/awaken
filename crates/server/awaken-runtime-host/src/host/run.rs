@@ -1496,6 +1496,7 @@ mod committed_step_proof_tests {
         let thread_id = ThreadId("thread-proof".into());
         let run_id = RunId("run-proof".into());
         RunRecoverySnapshot {
+            commit_timestamps: Default::default(),
             thread_id: thread_id.clone(),
             claimed_run_id: run_id.clone(),
             runs: vec![RunRecord {

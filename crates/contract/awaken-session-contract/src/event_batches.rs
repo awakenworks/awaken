@@ -365,6 +365,8 @@ pub struct SessionEventEntry {
     pub event: SessionEventCommand,
     #[serde(default)]
     pub processed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processed_at_unix_ms: Option<u64>,
     /// Absent for unprocessed and legacy commands. Such entries remain durable
     /// provenance but are not listable until the existing effect owner supplies
     /// one immutable commit coordinate.
@@ -432,6 +434,7 @@ impl SessionEventBatch {
         &mut self,
         operation_id: &str,
         projection_anchor: SessionEventProjectionAnchor,
+        processed_at_unix_ms: u64,
     ) -> Result<bool, SessionEventBatchError> {
         let entry = self
             .events
@@ -447,6 +450,7 @@ impl SessionEventBatch {
         }
         entry.projection_anchor = Some(projection_anchor);
         entry.processed = true;
+        entry.processed_at_unix_ms = Some(processed_at_unix_ms);
         Ok(true)
     }
 
@@ -457,12 +461,14 @@ impl SessionEventBatch {
     pub fn resolve_terminally(
         &mut self,
         projection_anchor: Option<SessionEventProjectionAnchor>,
+        processed_at_unix_ms: u64,
     ) -> usize {
         let mut resolved = 0;
         for entry in &mut self.events {
             if !entry.processed {
                 entry.projection_anchor = projection_anchor;
                 entry.processed = true;
+                entry.processed_at_unix_ms = Some(processed_at_unix_ms);
                 resolved += 1;
             }
         }
@@ -542,6 +548,7 @@ impl SessionEventBatch {
                             data_subject_id: data_subject_id.clone(),
                         },
                         processed: false,
+                        processed_at_unix_ms: None,
                         projection_anchor: None,
                     });
                 }
@@ -555,6 +562,7 @@ impl SessionEventBatch {
                             content,
                         },
                         processed: false,
+                        processed_at_unix_ms: None,
                         projection_anchor: None,
                     });
                 }
@@ -582,6 +590,7 @@ impl SessionEventBatch {
                             max_iterations,
                         },
                         processed: false,
+                        processed_at_unix_ms: None,
                         projection_anchor: None,
                     });
                 }
@@ -599,6 +608,7 @@ impl SessionEventBatch {
                             reply,
                         },
                         processed: false,
+                        processed_at_unix_ms: None,
                         projection_anchor: None,
                     });
                 }
@@ -627,6 +637,7 @@ impl SessionEventBatch {
                             interrupt,
                         },
                         processed: false,
+                        processed_at_unix_ms: None,
                         projection_anchor: None,
                     });
                 }
@@ -798,6 +809,7 @@ mod tests {
                     SessionEventProjectionAnchor {
                         source_commit_cursor: 9,
                     },
+                    1_700_000_000_000
                 ),
                 Err(SessionEventBatchError::ProgressMismatch)
             ),
@@ -811,6 +823,7 @@ mod tests {
                     SessionEventProjectionAnchor {
                         source_commit_cursor: 9,
                     },
+                    1_700_000_000_000
                 )
                 .unwrap(),
             "R3/E4"
@@ -822,6 +835,53 @@ mod tests {
                 .map(|anchor| anchor.source_commit_cursor),
             Some(9),
             "R3/E4 processed CAS retains its immutable public-order receipt"
+        );
+    }
+
+    #[test]
+    fn processed_time_is_first_observation_and_legacy_is_unknown() {
+        // Decision table: T1 unprocessed -> stamp; T2 exact replay with later
+        // clock -> unchanged; T3 changed anchor -> reject atomically; T4 terminal
+        // resolution -> stamp only pending; T5 historical missing field -> None.
+        let mut batch =
+            SessionEventBatch::compile("s", "b", vec![user("one"), user("two")]).unwrap();
+        let op = batch.events[0].event.operation_id().to_string();
+        let anchor = SessionEventProjectionAnchor {
+            source_commit_cursor: 1,
+        };
+        assert!(batch.mark_processed(&op, anchor, 100).unwrap(), "T1");
+        assert!(!batch.mark_processed(&op, anchor, 200).unwrap(), "T2");
+        let before = batch.clone();
+        assert!(
+            batch
+                .mark_processed(
+                    &op,
+                    SessionEventProjectionAnchor {
+                        source_commit_cursor: 2
+                    },
+                    300
+                )
+                .is_err(),
+            "T3"
+        );
+        assert_eq!(batch, before);
+        assert_eq!(batch.resolve_terminally(Some(anchor), 400), 1, "T4");
+        assert_eq!(batch.events[0].processed_at_unix_ms, Some(100));
+        assert_eq!(batch.events[1].processed_at_unix_ms, Some(400));
+        let mut json = serde_json::to_value(&batch).unwrap();
+        for entry in json["events"].as_array_mut().unwrap() {
+            entry
+                .as_object_mut()
+                .unwrap()
+                .remove("processed_at_unix_ms");
+        }
+        let legacy: SessionEventBatch = serde_json::from_value(json).unwrap();
+        assert!(
+            legacy
+                .events
+                .iter()
+                .all(|entry| entry.processed_at_unix_ms.is_none()),
+            "T5"
         );
     }
 

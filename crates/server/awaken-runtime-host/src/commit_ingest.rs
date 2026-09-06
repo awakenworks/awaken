@@ -154,6 +154,8 @@ mod tests {
             7,
             awaken_session_contract::ResolvedSessionResources::try_new(
                 vec![awaken_session_contract::ResolvedInput {
+                    created_at_unix_ms: None,
+                    updated_at_unix_ms: None,
                     binding_id: awaken_resource_contract::BindingId::new(MEMORY_BINDING_ID),
                     source: awaken_session_contract::ResolvedInputSource::MemoryStore {
                         memory_store_id: store_id.to_string().into(),

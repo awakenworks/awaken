@@ -130,16 +130,16 @@ pub enum RepositoryCheckout {
 pub enum SessionResource {
     File {
         id: String,
-        created_at: &'static str,
+        created_at: String,
         file_id: String,
         mount_path: String,
-        updated_at: &'static str,
+        updated_at: String,
     },
     GithubRepository {
         id: String,
-        created_at: &'static str,
+        created_at: String,
         mount_path: String,
-        updated_at: &'static str,
+        updated_at: String,
         url: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         checkout: Option<RepositoryCheckout>,

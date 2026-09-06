@@ -600,6 +600,8 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
         let view = environment.agent_filesystem_view(cwd, AgentFilesystemClient::AcpProcess);
         let logical = "/mnt/session/uploads/资料 brief.txt";
         let input = awaken_session_contract::ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: "file".into(),
             source: awaken_session_contract::ResolvedInputSource::File {
                 file_id: "file".into(),

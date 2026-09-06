@@ -544,7 +544,7 @@ impl SessionApplication {
             let resolved = session
                 .event_batches
                 .iter_mut()
-                .map(|batch| batch.resolve_terminally(anchor))
+                .map(|batch| batch.resolve_terminally(anchor, self.now_unix_ms()))
                 .sum::<usize>();
             if resolved == 0 {
                 return Ok(true);
@@ -1010,7 +1010,7 @@ impl SessionApplication {
                     }
                 } else {
                     changed = batch
-                        .mark_processed(operation_id, projection_anchor)
+                        .mark_processed(operation_id, projection_anchor, self.now_unix_ms())
                         .map_err(|error| RunError::internal(error.to_string()))?;
                 }
             }
@@ -1041,7 +1041,7 @@ impl SessionApplication {
                             .then(|| entry.event.operation_id().to_string())
                     });
                     changed |= batch
-                        .mark_processed(&failed.operation_id, projection_anchor)
+                        .mark_processed(&failed.operation_id, projection_anchor, self.now_unix_ms())
                         .map_err(|error| RunError::internal(error.to_string()))?;
                     if let Some(system_operation_id) = adjacent_system
                         && batch.events.iter().any(|entry| {
@@ -1050,7 +1050,11 @@ impl SessionApplication {
                         })
                     {
                         changed |= batch
-                            .mark_processed(&system_operation_id, projection_anchor)
+                            .mark_processed(
+                                &system_operation_id,
+                                projection_anchor,
+                                self.now_unix_ms(),
+                            )
                             .map_err(|error| RunError::internal(error.to_string()))?;
                     }
                 }

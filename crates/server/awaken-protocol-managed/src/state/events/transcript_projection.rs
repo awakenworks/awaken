@@ -111,7 +111,7 @@ impl ManagedState {
                             from_agent_name: Some(agent_name.to_string()),
                             content,
                         },
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     });
                 }
             }
@@ -179,7 +179,7 @@ impl ManagedState {
                             from_agent_name: Some(agent_name.to_string()),
                             content: vec![ContentBlock::text(text.clone())],
                         },
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     });
                 }
                 record.consume_message(thread_id, &message.id.0);
@@ -287,7 +287,7 @@ impl ManagedState {
                     record.events.push(Event {
                         id,
                         kind,
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     });
                 }
             }
@@ -328,7 +328,7 @@ impl ManagedState {
                 record.events.push(Event {
                     id,
                     kind: projected.kind,
-                    processed_at: Some(PROCESSED_AT.to_string()),
+                    processed_at: None,
                 });
             }
         }
@@ -506,7 +506,7 @@ impl ManagedState {
             let agent_name = child.agent.display_name().to_string();
             if child.status != SessionThreadStatus::Running {
                 child.status = SessionThreadStatus::Running;
-                child.updated_at = PROCESSED_AT.to_string();
+                child.updated_at = LEGACY_UNRECORDED_AT.to_string();
                 record.events.push(Event {
                     id: managed_multiagent_event_id(
                         &record.session.id,
@@ -518,7 +518,7 @@ impl ManagedState {
                         session_thread_id: thread_id.clone(),
                         agent_name: agent_name.clone(),
                     },
-                    processed_at: Some(PROCESSED_AT.to_string()),
+                    processed_at: None,
                 });
             }
             record.events.push(Event {
@@ -528,7 +528,7 @@ impl ManagedState {
                     to_agent_name: Some(agent_name),
                     content: vec![ContentBlock::text(message)],
                 },
-                processed_at: Some(PROCESSED_AT.to_string()),
+                processed_at: None,
             });
         }
     }

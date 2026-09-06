@@ -145,6 +145,10 @@ pub enum ResolvedInputSource {
 /// content versions and Git revisions are deliberately absent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at_unix_ms: Option<u64>,
     pub binding_id: BindingId,
     pub source: ResolvedInputSource,
     pub mount_path: String,
@@ -399,6 +403,27 @@ impl ResolvedSessionResources {
         validate_resolved_inputs(&mut inputs, RepositoryPathPolicy::DurableReplay)?;
         validate_resolved_skills(&skills)?;
         Ok(Self { inputs, skills })
+    }
+
+    /// Observe binding changes at the existing manifest command boundary. Old
+    /// unknown times stay unknown; timestamps never make a no-op a replacement.
+    pub fn observe_input_times(&mut self, previous: &Self, now: u64) {
+        for input in &mut self.inputs {
+            if let Some(old) = previous
+                .inputs
+                .iter()
+                .find(|old| old.binding_id == input.binding_id)
+            {
+                input.created_at_unix_ms = old.created_at_unix_ms;
+                input.updated_at_unix_ms = old.updated_at_unix_ms;
+                if input != old {
+                    input.updated_at_unix_ms = Some(now.max(old.updated_at_unix_ms.unwrap_or(0)));
+                }
+            } else {
+                input.created_at_unix_ms = Some(now);
+                input.updated_at_unix_ms = Some(now);
+            }
+        }
     }
 
     #[must_use]
@@ -831,6 +856,8 @@ impl SessionInputResolver {
                     binding.access
                 };
                 Ok(ResolvedInput {
+                    created_at_unix_ms: None,
+                    updated_at_unix_ms: None,
                     binding_id: binding.binding_id,
                     source,
                     mount_path: binding.mount_path,
@@ -1343,8 +1370,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn binding_times_follow_manifest_changes_without_inventing_history() {
+        // T1 new binding => both times; T2 identical retry/forged caller times
+        // => unchanged; T3 path change => update only; T4 rollback => monotonic
+        // update; T5 old input without times => unknown until a real mutation.
+        let raw =
+            ResolvedSessionResources::try_new(vec![resolved_file("b", "f", "/f")], vec![]).unwrap();
+        let mut created = raw.clone();
+        created.observe_input_times(&Default::default(), 100);
+        assert_eq!(created.inputs()[0].created_at_unix_ms, Some(100), "T1");
+        let mut retry = raw.clone();
+        retry.observe_input_times(&created, 200);
+        assert_eq!(retry, created, "T2");
+        let mut changed = raw.clone();
+        changed.inputs[0].mount_path = "/changed".into();
+        changed.observe_input_times(&created, 300);
+        assert_eq!(changed.inputs()[0].created_at_unix_ms, Some(100), "T3");
+        assert_eq!(changed.inputs()[0].updated_at_unix_ms, Some(300), "T3");
+        let mut rollback = raw.clone();
+        rollback.observe_input_times(&changed, 1);
+        assert_eq!(rollback.inputs()[0].updated_at_unix_ms, Some(300), "T4");
+        let mut legacy = raw.clone();
+        legacy.observe_input_times(&raw, 500);
+        assert_eq!(legacy, raw, "T5");
+        let json = serde_json::to_value(&raw).unwrap();
+        assert!(
+            json["inputs"][0].get("created_at_unix_ms").is_none(),
+            "T5 wire compatibility"
+        );
+        assert_eq!(
+            serde_json::from_value::<ResolvedSessionResources>(json).unwrap(),
+            raw
+        );
+    }
+
     fn resolved_file(binding_id: &str, file_id: &str, mount_path: &str) -> ResolvedInput {
         ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: BindingId::from(binding_id),
             source: ResolvedInputSource::File {
                 file_id: FileId::from(file_id),

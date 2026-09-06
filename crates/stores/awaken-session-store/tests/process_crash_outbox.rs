@@ -35,6 +35,8 @@ fn session() -> PersistedSession {
         },
     };
     PersistedSession {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         session_id: "sesn_process_crash".into(),
         revision: Default::default(),
         baseline: awaken_session_contract::SessionBaselineState::Frozen(

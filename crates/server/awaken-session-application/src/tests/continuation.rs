@@ -429,6 +429,8 @@ fn memory_input(
     access: awaken_resource_contract::ResourceAccess,
 ) -> awaken_session_contract::ResolvedInput {
     awaken_session_contract::ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from(binding_id),
         source: awaken_session_contract::ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from("continuation-memory"),

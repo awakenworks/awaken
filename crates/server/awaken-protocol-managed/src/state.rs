@@ -71,7 +71,7 @@ pub(crate) mod work_session_access;
 pub use error::StateError;
 pub use managed_state::ManagedState;
 
-pub(crate) use constants::{DEFAULT_SCOPE, MEMORY_CREATE_ONLY, PROCESSED_AT};
+pub(crate) use constants::{DEFAULT_SCOPE, LEGACY_UNRECORDED_AT, MEMORY_CREATE_ONLY};
 pub(crate) use helpers::{
     content_text, durable_inbound_event_id, is_transient_event_id, lifecycle_fact, rubric_text,
     session_thread_usage_value, session_usage_value,

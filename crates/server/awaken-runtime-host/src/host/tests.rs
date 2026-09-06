@@ -646,6 +646,8 @@ fn effective_resources(
                     kind => panic!("unsupported test input kind {kind}"),
                 };
                 ResolvedInput {
+                    created_at_unix_ms: None,
+                    updated_at_unix_ms: None,
                     binding_id: BindingId::new(format!("test-input-{index}")),
                     source,
                     mount_path: resource.mount_path,
@@ -865,6 +867,8 @@ fn effective_repository(
     });
     awaken_session_contract::ResolvedSessionResources::try_new(
         vec![awaken_session_contract::ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from("test-repository"),
             source: awaken_session_contract::ResolvedInputSource::Repository {
                 repository_id: awaken_resource_contract::RepositoryId::from(id),
@@ -17657,6 +17661,8 @@ async fn remote_memory_staging_uses_the_session_realization_lease_without_a_run_
     );
     let managed = crate::ManagedHost::new(host);
     let input = awaken_session_contract::ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from("realization-memory"),
         source: awaken_session_contract::ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from(
@@ -22647,6 +22653,8 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     );
 
     let memory_with_path = awaken_session_contract::ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from("memory"),
         source: awaken_session_contract::ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from("store"),

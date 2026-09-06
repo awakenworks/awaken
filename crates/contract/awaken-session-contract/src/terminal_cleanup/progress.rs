@@ -1236,6 +1236,8 @@ mod tests {
     fn publication_intent() -> SessionRepositoryPublicationIntent {
         SessionRepositoryPublicationIntent {
             input: crate::ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::from("source"),
                 source: crate::ResolvedInputSource::Repository {
                     repository_id: awaken_resource_contract::RepositoryId::from("repo"),

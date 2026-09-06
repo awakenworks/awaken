@@ -5,26 +5,7 @@
 //! fencing share a timeline. Long-running services and pools own that source;
 //! direct tests pass [`ManualClock`] while production uses [`SystemClock`].
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-/// A source of wall-clock time in epoch milliseconds.
-pub trait Clock: Send + Sync {
-    fn now_ms(&self) -> u64;
-}
-
-/// The real system clock.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now_ms(&self) -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
-    }
-}
+pub use awaken_agent_contract::clock::{Clock, ManualClock, SystemClock};
 
 /// Store-owned wall-clock time for durable authority facts.
 ///
@@ -79,75 +60,5 @@ fn store_deadline_is_monotonic_saturating_and_never_wraps() {
     assert!(deadline >= normalize_millis(now_ms));
     if now_ms <= MAX_STORE_MILLIS && lease_ms <= MAX_STORE_MILLIS - now_ms {
         assert_eq!(deadline, now_ms + lease_ms);
-    }
-}
-
-/// A hand-driven clock for deterministic tests.
-#[derive(Debug, Default)]
-pub struct ManualClock {
-    now: AtomicU64,
-}
-
-impl ManualClock {
-    pub fn new(start_ms: u64) -> Self {
-        Self {
-            now: AtomicU64::new(start_ms),
-        }
-    }
-
-    /// Set the current time.
-    pub fn set(&self, now_ms: u64) {
-        self.now.store(normalize_millis(now_ms), Ordering::SeqCst);
-    }
-
-    /// Advance the current time by `delta_ms`.
-    pub fn advance(&self, delta_ms: u64) {
-        let _ = self
-            .now
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |now| {
-                Some(deadline_millis(now, delta_ms))
-            });
-    }
-}
-
-impl Clock for ManualClock {
-    fn now_ms(&self) -> u64 {
-        self.now.load(Ordering::SeqCst)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn manual_clock_atomic_advance_is_exact_and_saturating() {
-        // Cause/effect decision table: C1 current+delta fits the store domain;
-        // C2 it exceeds MAX_STORE_MILLIS; C3 multiple threads race advances.
-        // E1 C1 adds exactly delta; E2 C2 saturates at the canonical maximum;
-        // E3 C3 loses no successful update. R1/R2 cover the numeric boundary
-        // and R3 covers CAS retry under contention.
-        let clock = ManualClock::new(10);
-        clock.advance(7);
-        assert_eq!(clock.now_ms(), 17, "R1");
-        clock.set(MAX_STORE_MILLIS - 1);
-        clock.advance(2);
-        assert_eq!(clock.now_ms(), MAX_STORE_MILLIS, "R2");
-
-        let clock = std::sync::Arc::new(ManualClock::new(0));
-        let threads = (0..4)
-            .map(|_| {
-                let clock = clock.clone();
-                std::thread::spawn(move || {
-                    for _ in 0..250 {
-                        clock.advance(1);
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-        for thread in threads {
-            thread.join().expect("R3 clock thread");
-        }
-        assert_eq!(clock.now_ms(), 1_000, "R3");
     }
 }

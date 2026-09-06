@@ -147,6 +147,8 @@ mod tests {
     fn publication_intent() -> SessionRepositoryPublicationIntent {
         SessionRepositoryPublicationIntent {
             input: crate::ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::from("source"),
                 source: crate::ResolvedInputSource::Repository {
                     repository_id: awaken_resource_contract::RepositoryId::from("repo-1"),
@@ -180,6 +182,8 @@ mod tests {
         access: ResourceAccess,
     ) -> crate::ResolvedInput {
         crate::ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from(binding_id),
             source: crate::ResolvedInputSource::MemoryStore {
                 memory_store_id: awaken_resource_contract::MemoryStoreId::from(store_id),
@@ -309,6 +313,8 @@ mod tests {
             "B5 store"
         );
         let non_memory = crate::ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from("binding-file"),
             source: crate::ResolvedInputSource::File {
                 file_id: awaken_resource_contract::FileId::from("file"),

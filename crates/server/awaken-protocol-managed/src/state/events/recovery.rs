@@ -717,6 +717,7 @@ mod interrupt_target_tests {
     ) -> awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
         let run_id = RunId(format!("run-{thread_id}"));
         awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+            commit_timestamps: Default::default(),
             thread_id: ThreadId(thread_id.into()),
             claimed_run_id: run_id.clone(),
             runs: vec![Record {

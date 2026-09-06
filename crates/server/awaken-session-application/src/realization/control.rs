@@ -249,6 +249,7 @@ impl SessionApplication {
                         )
                     })?;
                 session.realization_progress.last_error = None;
+                session.realization_progress.failed_at_unix_ms = None;
                 session.realization_progress.failure_source_run_id = None;
             }
             session.realization = Some(lease);
@@ -433,10 +434,18 @@ impl SessionApplication {
                     error => unavailable(error),
                 })?;
         }
-        // The complete validated Stage set is exactly the newly activated or
-        // still-unacknowledged set. Publish what Runtime actually staged, never
-        // fabricate a receipt for a newer lease expiry.
-        let publish = receipt_generations;
+        // Stage also returns receipts for old active generations that activation
+        // moves to Draining. Publish only the canonical pending publication set,
+        // preserving each physical receipt and its originally observed lease.
+        let pending_publish = Self::publication_generations(&session)?;
+        let publish = receipt_generations
+            .into_iter()
+            .filter(|receipt| {
+                pending_publish.iter().any(|current| {
+                    awaken_session_contract::realization_generation_authorizes(current, receipt)
+                })
+            })
+            .collect();
         let drain = Self::draining_generations(&session)?;
         self.realization_directive(
             owner_scope,
@@ -629,6 +638,7 @@ impl SessionApplication {
                 .map_err(unavailable)?;
         }
         session.realization_progress.last_error = Some(command.reason.clone());
+        session.realization_progress.failed_at_unix_ms = Some(self.now_unix_ms());
         session.realization_progress.failure_source_run_id =
             command.source_run_id.clone().map(Box::new);
         let initial_realization = session.execution != SessionExecutionState::Idle;

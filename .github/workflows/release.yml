@@ -75,6 +75,20 @@ jobs:
         with:
           name: quality-${{ github.sha }}-${{ github.run_attempt }}
           path: target/test-timings
+      # Decision rule: native non-Windows artifact => exercise durable recovery
+      # on that same OS before packaging; a cross-platform build is not a test.
+      - name: Test native non-Windows persistence and Session projection
+        if: runner.os != 'Windows'
+        shell: bash
+        run: >-
+          cargo test --locked --features awaken-store-sqlite/test-support
+          -p awaken-session-contract -p awaken-session-application
+          -p awaken-store-inmem -p awaken-store-fs -p awaken-store-sqlite
+          -p awaken-protocol-managed
+      - name: Test native non-Windows initialization ownership
+        if: runner.os != 'Windows'
+        shell: bash
+        run: cargo test --locked -p awaken-coordinator --lib runtime_authority::tests
       - name: Build the canonical archive
         shell: bash
         env:

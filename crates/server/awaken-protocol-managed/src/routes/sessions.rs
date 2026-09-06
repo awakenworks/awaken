@@ -26,8 +26,8 @@ use crate::common::headers::{
 use crate::preview::ThreadPreviewProjector;
 use crate::routes::{ManagedJson, ManagedQuery};
 use crate::state::{
-    ManagedState, PROCESSED_AT, RunError, RunErrorKind, StateError, internal_thread_id,
-    lifecycle_event, lifecycle_fact,
+    ManagedState, RunError, RunErrorKind, StateError, internal_thread_id, lifecycle_event,
+    lifecycle_fact,
 };
 use crate::types::{
     DeletedSession, ErrorResponse, ListEventsResponse, PageCursor, PageQuery, SendEventsRequest,
@@ -1350,6 +1350,7 @@ pub async fn release_profiled_session(
         ))));
     }
 
+    let observed_at = state.session_application().now_unix_ms();
     let binding_id = publication.binding_id;
     let outcome = Box::pin(
         state
@@ -1358,12 +1359,13 @@ pub async fn release_profiled_session(
                 awaken_session_application::SessionArchiveWithRepositoryPublicationCommand {
                     owner_scope: owner_scope.clone(),
                     session_id: id.clone(),
-                    archived_at: PROCESSED_AT.to_string(),
+                    archived_at: awaken_session_contract::epoch_millis_to_rfc3339(observed_at),
                     lifecycle_fact: lifecycle_fact(
                         format!("session:{id}:terminated"),
                         &id,
                         Some(owner_scope),
                         lifecycle_event::SESSION_TERMINATED,
+                        observed_at,
                     ),
                     repository: awaken_session_application::SessionRepositoryPublicationSelector {
                         binding_id: awaken_resource_contract::BindingId::new(binding_id.clone()),

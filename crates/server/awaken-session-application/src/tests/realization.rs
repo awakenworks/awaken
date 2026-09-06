@@ -245,7 +245,10 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
     let app = application(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
-    );
+    )
+    .with_clock(Arc::new(awaken_agent_contract::clock::ManualClock::new(
+        100,
+    )));
     let desired = file_resources("safe-boundary");
     let outcome = app
         .replace_session_resource_manifest(
@@ -259,6 +262,9 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
         )
         .await
         .expect("M1 intent accepted");
+    // M3 new binding intent records its time before deferred physical effects.
+    let mut desired = desired;
+    desired.observe_input_times(&Default::default(), 100);
     assert!(
         outcome.session.resources.active.inputs().is_empty(),
         "M1/E1"
@@ -320,6 +326,8 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
         expires_at_unix_ms: u64::MAX - 1,
     };
     let input = awaken_session_contract::ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from("pending-memory"),
         source: awaken_session_contract::ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from("memory-pending"),
@@ -2518,6 +2526,8 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         ..asserted.clone()
     };
     let memory_input = awaken_session_contract::ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from("terminal-memory"),
         source: awaken_session_contract::ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from(

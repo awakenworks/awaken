@@ -230,7 +230,7 @@ pub fn outcome_evaluation(round: &OutcomeIteration) -> crate::types::OutcomeEval
         "satisfied" | "max_iterations_reached" | "failed" | "interrupted"
     );
     crate::types::OutcomeEvaluation {
-        completed_at: terminal.then(|| crate::state::PROCESSED_AT.to_string()),
+        completed_at: terminal.then(|| crate::state::LEGACY_UNRECORDED_AT.to_string()),
         description: round.description.clone(),
         explanation: Some(round.explanation.clone()),
         iteration: round.iteration,

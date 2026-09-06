@@ -587,6 +587,9 @@ pub struct RenewSessionRealization {
 /// the initial Environment so retry policy survives process and Worker loss.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionRealizationProgress {
+    /// Wall time of the retained failure; recovery and cleanup never resample it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_at_unix_ms: Option<u64>,
     #[serde(default)]
     pub attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -649,7 +652,7 @@ pub struct FailSessionRealization {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "target", rename_all = "snake_case")]
 pub enum SessionResourceMaterializationTarget {
-    Input(crate::ResolvedInput),
+    Input(Box<crate::ResolvedInput>),
     Skill(crate::ResolvedSkillBinding),
 }
 
@@ -678,7 +681,7 @@ impl SessionResourceMaterializationIntent {
         Ok(Self {
             session_id,
             resource_revision,
-            target: SessionResourceMaterializationTarget::Input(input),
+            target: SessionResourceMaterializationTarget::Input(Box::new(input)),
             lease,
         })
     }

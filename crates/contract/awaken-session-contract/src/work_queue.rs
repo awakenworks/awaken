@@ -41,7 +41,7 @@ pub fn next_heartbeat_receipt(now_ms: u64, previous: Option<&str>) -> String {
     format_rfc3339_utc_nanos(next)
 }
 
-fn parse_rfc3339_utc_nanos(value: &str) -> Option<i128> {
+pub(crate) fn parse_rfc3339_utc_nanos(value: &str) -> Option<i128> {
     let body = value.strip_suffix('Z')?;
     let (whole, fraction) = body.split_once('.').map_or((body, ""), |parts| parts);
     let bytes = whole.as_bytes();
@@ -114,7 +114,7 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-fn format_rfc3339_utc_nanos(total_nanos: i128) -> String {
+pub(crate) fn format_rfc3339_utc_nanos(total_nanos: i128) -> String {
     let seconds = total_nanos / 1_000_000_000;
     let subsecond = total_nanos % 1_000_000_000;
     let days = i64::try_from(seconds / 86_400).unwrap_or(i64::MAX);

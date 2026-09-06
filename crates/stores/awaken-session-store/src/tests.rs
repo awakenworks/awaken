@@ -542,6 +542,8 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
     let mut metadata = BTreeMap::new();
     metadata.insert("team".to_string(), "research".to_string());
     PersistedSession {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         session_id: id.to_string(),
         revision: Default::default(),
         baseline: SessionBaselineState::Frozen(SessionBaseline::compile(

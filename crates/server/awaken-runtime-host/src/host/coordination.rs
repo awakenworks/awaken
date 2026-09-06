@@ -1870,6 +1870,7 @@ mod tests {
         let mut batch_state = awaken_runtime_contract::ActiveToolBatch::write(&Some(batch));
         batch_state.bind_run(&run_id);
         let snapshot = RunRecoverySnapshot {
+            commit_timestamps: Default::default(),
             thread_id: ThreadId(session.into()),
             claimed_run_id: run_id.clone(),
             runs: vec![awaken_agent_contract::agent::run::Record {

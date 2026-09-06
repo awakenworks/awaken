@@ -395,6 +395,7 @@ fn remote_projection_is_the_single_awaiting_resume_reader() {
         .install(
             &run_id,
             RunRecoverySnapshot {
+                commit_timestamps: Default::default(),
                 thread_id: thread_id.clone(),
                 claimed_run_id: run_id.clone(),
                 runs: vec![RunRecord {
@@ -489,6 +490,7 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
         .install(
             &child_run,
             RunRecoverySnapshot {
+                commit_timestamps: Default::default(),
                 thread_id: child_thread.clone(),
                 claimed_run_id: child_run.clone(),
                 runs: Vec::new(),

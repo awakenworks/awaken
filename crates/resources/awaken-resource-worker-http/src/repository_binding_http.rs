@@ -546,7 +546,7 @@ async fn verify_session_repository_binding(
             worker: identity.clone(),
             session_id: intent.session_id().to_owned(),
             workspace_id: workspace_id.clone(),
-            input: input.clone(),
+            input: input.as_ref().clone(),
             authority: RepositoryTransportAuthority::SessionMaterialization {
                 intent: Box::new(intent.clone()),
             },

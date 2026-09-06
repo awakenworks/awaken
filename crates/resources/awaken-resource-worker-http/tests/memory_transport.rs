@@ -32,6 +32,8 @@ fn memory_input(
     access: ResourceAccess,
 ) -> awaken_session_contract::ResolvedInput {
     awaken_session_contract::ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::new(binding),
         source: awaken_session_contract::ResolvedInputSource::MemoryStore {
             memory_store_id: store.into(),

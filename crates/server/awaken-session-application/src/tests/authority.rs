@@ -66,6 +66,7 @@ async fn anchor_unsettled_event(
                 awaken_session_contract::SessionEventProjectionAnchor {
                     source_commit_cursor: 17,
                 },
+                1_700_000_000_000
             )
             .expect("anchor exact accepted effect")
     );
@@ -212,6 +213,8 @@ fn repository_retirement_resources(
     });
     awaken_session_contract::ResolvedSessionResources::try_new(
         vec![awaken_session_contract::ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from(format!(
                 "repository-{session_id}"
             )),
@@ -1286,9 +1289,22 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
         )
         .await
         .expect("R4/E5 admission after cleanup CAS");
+    // R4 a re-added binding is a new observation after the retired identity
+    // was released; compare the same manifest including that durable metadata.
+    let at = admitted
+        .session
+        .resources
+        .pending
+        .as_ref()
+        .unwrap()
+        .inputs()[0]
+        .created_at_unix_ms
+        .expect("R4 new binding time");
+    let mut expected = manifest;
+    expected.observe_input_times(&Default::default(), at);
     assert_eq!(
         admitted.session.resources.pending.as_ref(),
-        Some(&manifest),
+        Some(&expected),
         "R4/E5"
     );
 }
@@ -4143,6 +4159,7 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
         session_id,
         &thread_id,
         awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+            commit_timestamps: Default::default(),
             thread_id: thread_id.clone(),
             claimed_run_id: successor_run_id.clone(),
             runs: vec![
@@ -6355,6 +6372,8 @@ async fn complete_recovery_scan_reaches_page_two_and_purge_fails_closed() {
     blocker.resources = awaken_session_contract::SessionResourceState::from_active(
         awaken_session_contract::ResolvedSessionResources::try_new(
             vec![awaken_session_contract::ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::from("page-two-memory"),
                 source: awaken_session_contract::ResolvedInputSource::MemoryStore {
                     memory_store_id: memory_store_id.clone(),

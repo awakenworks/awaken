@@ -294,6 +294,7 @@ fn durable_inbound_projection_uses_only_session_root_provenance() {
                 awaken_session_contract::SessionEventProjectionAnchor {
                     source_commit_cursor: ordinal as u64 + 1,
                 },
+                1_700_000_000_000,
             )
             .expect("R2 exact marker");
     }
@@ -1220,6 +1221,7 @@ impl SessionRuntime for LifecycleRuntime {
             .unwrap_or_default();
         Ok(Some(
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                commit_timestamps: Default::default(),
                 thread_id: ThreadId(thread_id.to_string()),
                 claimed_run_id: run_id.clone(),
                 runs,
@@ -2918,7 +2920,7 @@ async fn qualified_event_id_routes_every_child_tool_reply_variant() {
             evaluated_permission: Some(EvaluatedPermission::Allow),
             session_thread_id: None,
         },
-        processed_at: Some(PROCESSED_AT.into()),
+        processed_at: Some(LEGACY_UNRECORDED_AT.into()),
     };
     assert!(
         ManagedState::project_event_for_thread(
@@ -3105,7 +3107,7 @@ async fn aggregate_running_edge_is_decided_from_the_locked_event_tail() {
     let event = |kind| Event {
         id: "test-event".into(),
         kind,
-        processed_at: Some(PROCESSED_AT.into()),
+        processed_at: Some(LEGACY_UNRECORDED_AT.into()),
     };
 
     record.events.clear();
@@ -4737,6 +4739,7 @@ fn outcome_projection_requires_a_terminal_fence_and_anchors_synthetic_interrupts
     let snapshot = |entries: Vec<(Command, u64)>| {
         let (state, state_commit_cursors) = entries.into_iter().unzip();
         awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+            commit_timestamps: Default::default(),
             thread_id: ThreadId("outcome-root".into()),
             claimed_run_id: RunId("outcome-state".into()),
             runs: Vec::new(),
@@ -7080,7 +7083,54 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
         ]);
     }
 
+    // Q7 root and child clocks differ: canonical ownership selects each
+    // child's own commit time; cold reconstruction preserves the full metadata.
+    for (thread, at) in [
+        (&session.id[..], 1_800_000_000_000),
+        (child_a.0, 1_800_000_001_000),
+        (child_b.0, 1_800_000_002_000),
+    ] {
+        runtime.commit_times_by_thread.lock().unwrap().insert(
+            thread.to_string(),
+            (1..100).map(|cursor| (cursor, at)).collect(),
+        );
+    }
     state.refresh_committed_events(&session.id).await.unwrap();
+    let warm_thread_times = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .child_threads
+        .iter()
+        .map(|child| {
+            (
+                child.id.clone(),
+                child.created_at.clone(),
+                child.updated_at.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        warm_thread_times
+            .iter()
+            .all(|(_, created, _)| created == "2027-01-15T08:00:00Z"),
+        "Q7 root creation operation"
+    );
+    assert!(
+        warm_thread_times
+            .iter()
+            .any(|(id, _, updated)| id == child_a.0 && updated == "2027-01-15T08:00:01Z"),
+        "Q7 child A time"
+    );
+    assert!(
+        warm_thread_times
+            .iter()
+            .any(|(id, _, updated)| id == child_b.0 && updated == "2027-01-15T08:00:02Z"),
+        "Q7 child B time"
+    );
+
     let primary_events = state
         .list_events(&session.id, None, None, false)
         .unwrap()
@@ -7195,6 +7245,23 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
         .map(|event| event.id)
         .collect::<std::collections::HashSet<_>>();
     assert_eq!(recovered_ids, public_ids, "Q2/E3");
+    let cold_thread_times = restarted
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .child_threads
+        .iter()
+        .map(|child| {
+            (
+                child.id.clone(),
+                child.created_at.clone(),
+                child.updated_at.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(cold_thread_times, warm_thread_times, "Q7 cold metadata");
     let cold_primary = restarted
         .list_events(&session.id, None, None, false)
         .unwrap()
@@ -8105,6 +8172,12 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
         ),
     ]);
 
+    // T1 known commit time -> exact subsecond wire value in every replica;
+    // T2 backwards wall clock between commits -> order remains commit order.
+    runtime.commit_times_by_thread.lock().unwrap().insert(
+        session.id.clone(),
+        [(1, 1_800_000_000_999), (2, 1_800_000_000_123)].into(),
+    );
     warm.refresh_committed_events(&session.id).await.unwrap();
     let assistant_signature = |state: &ManagedState| {
         state
@@ -8177,9 +8250,29 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
     restarted.ensure_session(&session.id).await.unwrap();
     assert_eq!(assistant_signature(&restarted), expected, "R3/E2");
 
+    let wire = |state: &ManagedState| {
+        serde_json::to_value(
+            state
+                .list_events(&session.id, None, None, false)
+                .unwrap()
+                .data,
+        )
+        .unwrap()
+    };
+    let timed = wire(&warm);
+    assert!(
+        timed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["processed_at"] == "2027-01-15T08:00:00.123Z"),
+        "T1"
+    );
+    assert_eq!(wire(&restarted), timed, "T1/T2 cold full payload");
     let peer = ManagedState::new(runtime).with_session_repo(repo);
     peer.ensure_session(&session.id).await.unwrap();
     peer.refresh_committed_events(&session.id).await.unwrap();
+    assert_eq!(wire(&peer), timed, "T1/T2 peer full payload");
     assert_eq!(assistant_signature(&peer), expected, "R4/E2-E3");
     assert_eq!(assistant_signature(&restarted), expected, "R4/E2-E3");
 }
@@ -10300,6 +10393,7 @@ async fn model_request_spans_are_paired_and_keep_required_zero_usage_on_error() 
         },
     ];
     let snapshot = RunRecoverySnapshot {
+        commit_timestamps: Default::default(),
         thread_id: thread_id.clone(),
         claimed_run_id: run_id.clone(),
         runs: vec![RunRecord {

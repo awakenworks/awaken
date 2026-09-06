@@ -99,7 +99,10 @@ impl ManagedState {
                         .budget
                         .then(|| record.session.budget.clone()),
                 },
-                processed_at: Some(PROCESSED_AT.to_string()),
+                processed_at: outcome
+                    .session
+                    .updated_at_unix_ms
+                    .map(awaken_session_contract::epoch_millis_to_rfc3339),
             };
             if let Some(predecessor) = predecessor.as_ref() {
                 record

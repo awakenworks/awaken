@@ -49,6 +49,14 @@ enum CommitLogEntry {
     Commit(ThreadCommit),
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredCommitLogEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    committed_at_unix_ms: Option<u64>,
+    #[serde(flatten)]
+    entry: CommitLogEntry,
+}
+
 /// A filesystem `CommitCoordinator` + `CheckpointReader`. Durable truth is the
 /// append-only log; reads are served from an in-memory model rebuilt from it.
 pub struct FsCommitCoordinator {
@@ -91,18 +99,24 @@ impl FsCommitCoordinator {
                     durable_len += read as u64;
                     continue;
                 }
-                match serde_json::from_slice::<CommitLogEntry>(payload) {
-                    Ok(CommitLogEntry::Commit(commit)) => {
+                match serde_json::from_slice::<StoredCommitLogEntry>(payload) {
+                    Ok(StoredCommitLogEntry {
+                        entry: CommitLogEntry::Commit(commit),
+                        committed_at_unix_ms,
+                    }) => {
                         // Replaying through the tested read model reconstructs the
                         // same committed state (and sequence) the writer produced.
                         inner
-                            .commit(commit)
+                            .commit_at(commit, committed_at_unix_ms)
                             .await
                             .map_err(|err| std::io::Error::other(err.to_string()))?;
                     }
-                    Ok(CommitLogEntry::Operation(operation)) => {
+                    Ok(StoredCommitLogEntry {
+                        entry: CommitLogEntry::Operation(operation),
+                        committed_at_unix_ms,
+                    }) => {
                         inner
-                            .commit_operation(operation)
+                            .commit_operation_at(operation, committed_at_unix_ms)
                             .await
                             .map_err(|err| std::io::Error::other(err.to_string()))?;
                     }
@@ -143,7 +157,7 @@ impl FsCommitCoordinator {
         })
     }
 
-    fn append(&self, entry: &CommitLogEntry) -> Result<(), Error> {
+    fn append(&self, entry: &StoredCommitLogEntry) -> Result<(), Error> {
         let line = serde_json::to_string(entry)
             .map_err(|err| Error::Rejected(format!("serialize commit: {err}")))?;
         let mut file = self
@@ -203,9 +217,14 @@ impl Coordinator for FsCommitCoordinator {
         }
         // Durable first: append + fsync the record before it is acknowledged, so a
         // crash after ack cannot lose it and a crash before ack replays nothing.
-        self.append(&CommitLogEntry::Commit(commit.clone()))?;
+        use awaken_agent_contract::clock::{Clock, SystemClock};
+        let committed_at_unix_ms = Some(SystemClock.now_ms());
+        self.append(&StoredCommitLogEntry {
+            committed_at_unix_ms,
+            entry: CommitLogEntry::Commit(commit.clone()),
+        })?;
         // Then advance the read model; sequence matches the replayed order.
-        self.inner.commit(commit).await
+        self.inner.commit_at(commit, committed_at_unix_ms).await
     }
 }
 
@@ -216,8 +235,15 @@ impl OperationCoordinator for FsCommitCoordinator {
         if let Some(duplicate) = self.inner.inspect_operation(&operation)? {
             return Ok(duplicate);
         }
-        self.append(&CommitLogEntry::Operation(operation.clone()))?;
-        self.inner.commit_operation(operation).await
+        use awaken_agent_contract::clock::{Clock, SystemClock};
+        let committed_at_unix_ms = Some(SystemClock.now_ms());
+        self.append(&StoredCommitLogEntry {
+            committed_at_unix_ms,
+            entry: CommitLogEntry::Operation(operation.clone()),
+        })?;
+        self.inner
+            .commit_operation_at(operation, committed_at_unix_ms)
+            .await
     }
 }
 

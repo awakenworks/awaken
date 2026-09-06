@@ -77,10 +77,22 @@ impl SessionApplication {
     pub async fn create_session_root(
         &self,
         owner_scope: &str,
-        session: PersistedSession,
+        mut session: PersistedSession,
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SessionCreateResult, SessionCreationError> {
+        // Receipt identity was compiled before this server-owned observation.
+        // A repository replay returns the first committed times unchanged.
+        let now = self.now_unix_ms();
+        session.created_at_unix_ms = Some(now);
+        session
+            .resources
+            .active
+            .observe_input_times(&Default::default(), now);
+        if let Some(pending) = &mut session.resources.pending {
+            pending.observe_input_times(&Default::default(), now);
+        }
+        session.updated_at_unix_ms = Some(now);
         self.sessions_repo
             .create(owner_scope, session, idempotency, lifecycle_facts)
             .await
@@ -170,6 +182,8 @@ impl SessionApplication {
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<(PersistedSession, bool), SessionMutationError> {
+        let now = self.now_unix_ms();
+        session.updated_at_unix_ms = Some(now.max(session.updated_at_unix_ms.unwrap_or(0)));
         let expected_revision = session.revision;
         let session_id = session.session_id.clone();
         let mutation = SessionMutation {

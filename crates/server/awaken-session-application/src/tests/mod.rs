@@ -162,6 +162,7 @@ impl RecordingBoundaries {
             session_id,
             thread_id,
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                commit_timestamps: Default::default(),
                 thread_id: thread_id.clone(),
                 claimed_run_id: run_id.clone(),
                 runs: vec![awaken_agent_contract::agent::run::Record {
@@ -2219,6 +2220,8 @@ fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {
             awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
     };
     PersistedSession {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         session_id: id.into(),
         revision: Default::default(),
         baseline: awaken_session_contract::SessionBaselineState::Frozen(
@@ -2331,6 +2334,8 @@ fn skill_resources(id: &str) -> awaken_session_contract::ResolvedSessionResource
 fn file_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources {
     awaken_session_contract::ResolvedSessionResources::try_new(
         vec![awaken_session_contract::ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from("input"),
             source: awaken_session_contract::ResolvedInputSource::File {
                 file_id: awaken_resource_contract::FileId::from(id),
@@ -2350,6 +2355,8 @@ fn repository_resources(
 ) -> awaken_session_contract::ResolvedSessionResources {
     awaken_session_contract::ResolvedSessionResources::try_new(
         vec![awaken_session_contract::ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from(binding_id),
             source: awaken_session_contract::ResolvedInputSource::Repository {
                 repository_id: repository_id.into(),

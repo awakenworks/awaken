@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CredentialSource, ProviderDriverDescriptor } from "../lib/api/types";
 import { cloudModelUiState, modelCatalogPresentation } from "./model-cloud-capability";
-import { modelTestAgentConfig, modelTestAgentId } from "./models";
+import { fmtTokens, modelTestAgentConfig, modelTestAgentId } from "./models";
 import {
   providerConfigurationDefaults,
   providerDraftDefaults,
@@ -179,5 +179,13 @@ describe("live model test publication", () => {
       modelTestAgentConfig("deepseek-e2e"),
       { ...modelTestAgentConfig("other"), id: "human-agent", metadata: {} },
     ])).toHaveLength(1);
+  });
+});
+
+describe("model limit disclosure", () => {
+  // T1 absent/null metadata -> explicit localized unknown; T2 zero -> 0,
+  // never unknown/unlimited; T3 positive counts -> existing compact format.
+  it.each([[undefined, "未提供"], [null, "未提供"], [0, "0"], [200_000, "200k"], [1_000_000, "1M"]])("formats %s", (value, expected) => {
+    expect(fmtTokens(value as number | null | undefined, "未提供")).toBe(expected);
   });
 });

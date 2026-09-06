@@ -748,6 +748,8 @@ mod tests {
         z1_control.resources = z1_control
             .resources
             .attach(crate::ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::new("input"),
                 source: crate::ResolvedInputSource::File {
                     file_id: awaken_resource_contract::FileId::from("file"),

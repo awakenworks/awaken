@@ -132,7 +132,7 @@ impl ManagedState {
                     record.events.push(Event {
                         id,
                         kind: projected.kind,
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     });
                 }
             }

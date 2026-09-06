@@ -518,6 +518,8 @@ mod tests {
                 transcript_prefix: None,
             }));
         PersistedSession {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             session_id: id.into(),
             revision: Default::default(),
             baseline,

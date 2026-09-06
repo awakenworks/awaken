@@ -590,6 +590,8 @@ mod tests {
     fn manifest(id: &str) -> ResolvedSessionResources {
         ResolvedSessionResources::try_new(
             vec![ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
                 binding_id: BindingId::from(format!("binding-{id}")),
                 source: ResolvedInputSource::File {
                     file_id: FileId::from(format!("file-{id}")),
@@ -634,6 +636,8 @@ mod tests {
             })
         });
         ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: BindingId::from(format!("binding-{id}")),
             source: ResolvedInputSource::Repository {
                 repository_id,

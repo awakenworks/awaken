@@ -661,13 +661,29 @@ async fn archive_session_disposes_on_the_terminal_transition_only() {
         .await
         .expect("create")
         .id;
-    state.archive_session(&id).await.expect("archive");
+    // A3 first archive observes real time; A4 idempotent replay retains the
+    // original observation and cannot replace it with a later clock value.
+    let first = state.archive_session(&id).await.expect("archive");
+    assert_ne!(
+        first.archived_at.as_deref(),
+        Some(LEGACY_UNRECORDED_AT),
+        "A3"
+    );
+    assert!(
+        first
+            .archived_at
+            .as_deref()
+            .and_then(awaken_session_contract::rfc3339_to_epoch_millis)
+            .is_some(),
+        "A3 valid time"
+    );
     assert_eq!(
         *ended.lock().unwrap(),
         vec![id.clone()],
         "archive reaps the sandbox on the terminal transition"
     );
-    state.archive_session(&id).await.expect("re-archive");
+    let replay = state.archive_session(&id).await.expect("re-archive");
+    assert_eq!(replay.archived_at, first.archived_at, "A4");
     assert_eq!(
         *ended.lock().unwrap(),
         vec![id],
@@ -1608,6 +1624,8 @@ pub(in crate::state) fn sample_persisted(id: &str) -> PersistedSession {
     .unwrap();
     mcp.attachments[0].state = awaken_session_contract::McpAttachmentState::Active;
     PersistedSession {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         session_id: id.to_string(),
         revision: Default::default(),
         baseline: awaken_session_contract::SessionBaselineState::Frozen(

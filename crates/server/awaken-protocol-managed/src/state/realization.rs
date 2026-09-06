@@ -199,6 +199,8 @@ mod tests {
         )
         .unwrap();
         PersistedSession {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             session_id: id.into(),
             revision: SessionRevision(0),
             baseline: SessionBaselineState::Frozen(baseline),

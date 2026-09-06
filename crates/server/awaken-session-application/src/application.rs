@@ -122,6 +122,7 @@ impl Default for SessionApplicationConfiguration {
 
 /// Canonical application object shared by wire adapters.
 pub struct SessionApplication {
+    clock: Arc<dyn awaken_agent_contract::clock::Clock>,
     configuration: SessionApplicationConfiguration,
     runtime: Arc<dyn SessionRuntime>,
     mcp_realizer: Arc<dyn McpAttachmentRealizer>,
@@ -163,6 +164,17 @@ pub struct SessionApplication {
 static APPLICATION_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl SessionApplication {
+    /// Install the existing clock port before sharing the application.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn awaken_agent_contract::clock::Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    pub fn now_unix_ms(&self) -> u64 {
+        self.clock.now_ms()
+    }
+
     pub(crate) fn realization_retry_budget(&self) -> u32 {
         self.configuration.realization_retry_budget.max(1)
     }
@@ -204,6 +216,7 @@ impl SessionApplication {
             "local Session realization owner must not be empty"
         );
         Self {
+            clock: Arc::new(awaken_agent_contract::clock::SystemClock),
             configuration,
             runtime,
             mcp_realizer,

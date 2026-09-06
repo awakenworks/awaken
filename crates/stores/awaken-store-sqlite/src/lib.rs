@@ -627,8 +627,21 @@ fn read_recovery_snapshot(
             }
         }
     }
+    let commit_timestamps = {
+        let mut stmt = tx.prepare(&format!(
+            "SELECT sequence, CAST(strftime('%s', committed_at) AS INTEGER) * 1000 + CAST(substr(strftime('%f', committed_at), 4, 3) AS INTEGER) FROM {NS}_commit WHERE thread_id = ?1 ORDER BY sequence"
+        )).map_err(recovery_reject)?;
+        let rows = stmt
+            .query_map(params![&thread_id.0], |row| {
+                Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?))
+            })
+            .map_err(recovery_reject)?;
+        rows.collect::<Result<std::collections::BTreeMap<_, _>, _>>()
+            .map_err(recovery_reject)?
+    };
     tx.commit().map_err(recovery_reject)?;
     Ok(RunRecoverySnapshot {
+        commit_timestamps,
         thread_id,
         claimed_run_id,
         runs,

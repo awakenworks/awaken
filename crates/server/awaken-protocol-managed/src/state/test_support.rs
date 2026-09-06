@@ -60,6 +60,9 @@ pub(super) type ChildCommitAfterHistorySnapshot = (
 /// never establish Session existence by itself.
 #[derive(Clone, Default)]
 pub(crate) struct RehydrateFake {
+    pub(super) commit_times_by_thread: Arc<
+        std::sync::Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, u64>>>,
+    >,
     pub(super) restored: Arc<
         std::sync::Mutex<
             Vec<(
@@ -657,6 +660,13 @@ impl SessionRuntime for RehydrateFake {
             .max()
             .unwrap_or_default();
         let snapshot = awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+            commit_timestamps: self
+                .commit_times_by_thread
+                .lock()
+                .unwrap()
+                .get(thread_id)
+                .cloned()
+                .unwrap_or_default(),
             thread_id: awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
             claimed_run_id: latest_run_id.clone(),
             runs,

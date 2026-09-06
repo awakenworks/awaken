@@ -240,6 +240,7 @@ impl CommittedEvidence {
         };
         let events = self.audit_records(&run_id, &terminal_state);
         awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+            commit_timestamps: Default::default(),
             thread_id: ThreadId(thread_id.into()),
             claimed_run_id: run_id.clone(),
             runs: vec![awaken_agent_contract::agent::run::Record {

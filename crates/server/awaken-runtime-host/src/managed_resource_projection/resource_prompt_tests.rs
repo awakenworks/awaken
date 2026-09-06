@@ -4,6 +4,8 @@ use awaken_session_contract::{ResolvedInput, ResolvedInputSource};
 
 fn file(instructions: Option<&str>) -> ResolvedInput {
     ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         binding_id: BindingId::from("input-file"),
         source: ResolvedInputSource::File {
             file_id: FileId::from("file-1"),
@@ -224,6 +226,8 @@ fn memory_path_variables_require_filesystem_delivery() {
     // tools. The Session delivery decision owns the eventual rejection.
     // Decision table: M1 C1=>E1; M2 C2=>E2.
     let memory = |instructions: &str| ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         binding_id: BindingId::from("memory"),
         source: ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from("store"),
@@ -275,6 +279,8 @@ fn every_managed_resource_kind_uses_the_same_prompt_projection() {
     // renderer arm and both access effects; authored variable parsing is
     // owned by the preceding decision table.
     let memory = |access| ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         binding_id: BindingId::from("memory"),
         source: ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from("store"),
@@ -289,6 +295,8 @@ fn every_managed_resource_kind_uses_the_same_prompt_projection() {
         instructions: None,
     };
     let repository = ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         binding_id: BindingId::from("repo"),
         source: ResolvedInputSource::Repository {
             repository_id: awaken_resource_contract::RepositoryId::from("repository"),

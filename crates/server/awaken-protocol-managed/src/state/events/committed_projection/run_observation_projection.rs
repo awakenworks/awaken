@@ -32,7 +32,7 @@ impl ManagedState {
                     record.events.push(Event {
                         id,
                         kind: OutboundKind::ThreadContextCompacted {},
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     });
                 }
             }
@@ -82,7 +82,7 @@ impl ManagedState {
                     Event {
                         id: start_id.clone(),
                         kind: OutboundKind::SpanModelRequestStart {},
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     },
                     Event {
                         id: end_id,
@@ -99,7 +99,7 @@ impl ManagedState {
                                 speed: None,
                             },
                         },
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     },
                 ]);
             }

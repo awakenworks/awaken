@@ -11,10 +11,8 @@ use awaken_session_contract::{
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
 
 pub(crate) fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default()
+    use awaken_agent_contract::clock::{Clock, SystemClock};
+    SystemClock.now_ms()
 }
 
 pub(crate) fn runtime_interval_fact(

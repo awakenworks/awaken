@@ -129,6 +129,7 @@ async fn reopen_file_resumes_from_committed_facts() {
     let thread = ThreadId("t1".to_string());
     let run = RunId("r1".to_string());
 
+    let original_times;
     {
         let store = SqliteCommitCoordinator::open(path).expect("open");
         store
@@ -148,10 +149,27 @@ async fn reopen_file_resumes_from_committed_facts() {
             })
             .await
             .expect("commit");
+        // T1 commit then lose process cache => replay the same persisted
+        // observation, not restart time; source facts and cursor remain equal.
+        original_times = store
+            .recovery_snapshot(&thread, &run)
+            .await
+            .unwrap()
+            .commit_timestamps;
+        assert_eq!(original_times.len(), 1);
         // store dropped — the in-memory projection is gone; only the DB file remains
     }
 
     let store = SqliteCommitCoordinator::open(path).expect("reopen");
+    assert_eq!(
+        store
+            .recovery_snapshot(&thread, &run)
+            .await
+            .unwrap()
+            .commit_timestamps,
+        original_times,
+        "T1"
+    );
     assert_eq!(store.committed_messages(&thread).len(), 1);
     assert_eq!(
         store.run(&run).map(|record| record.state),

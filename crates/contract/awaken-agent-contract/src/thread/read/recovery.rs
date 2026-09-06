@@ -92,6 +92,10 @@ pub struct RunRecoverySnapshot {
     /// not claim exact warm/cold total ordering for that prefix.
     #[serde(default)]
     pub message_commit_cursors: Vec<u64>,
+    /// Store-owned commit wall times from this same read transaction. Historical
+    /// file journals may lack times; absence is unknown, never recovery time.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub commit_timestamps: std::collections::BTreeMap<u64, u64>,
     pub state: Vec<StateCommand>,
     /// Backend commit coordinate for each state command at the same index.
     /// State-backed public facts (for example context compaction and Outcome
@@ -155,6 +159,7 @@ mod tests {
         // Constraints/invariants: compatibility defaults only the absent audit
         // prefix and preserves every existing recovery coordinate verbatim.
         let snapshot = RunRecoverySnapshot {
+            commit_timestamps: Default::default(),
             thread_id: ThreadId("thread".into()),
             claimed_run_id: RunId("run".into()),
             runs: Vec::new(),

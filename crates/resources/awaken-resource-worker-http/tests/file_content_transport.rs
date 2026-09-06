@@ -28,6 +28,8 @@ use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream
 fn resources(file_id: &str) -> awaken_session_contract::ResolvedSessionResources {
     awaken_session_contract::ResolvedSessionResources::try_new(
         vec![awaken_session_contract::ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::new("file-binding"),
             source: awaken_session_contract::ResolvedInputSource::File {
                 file_id: awaken_resource_contract::FileId::from(file_id),
@@ -211,6 +213,8 @@ fn frozen_application_session(
         .prepare(session_id, resources(file_id))
         .expect("prepare Worker Session resources");
     awaken_session_contract::PersistedSession {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         session_id: session_id.into(),
         revision: Default::default(),
         baseline: awaken_session_contract::SessionBaselineState::Frozen(
@@ -768,6 +772,7 @@ async fn model_content_recovery_uses_parent_partition_for_a_child_thread() {
         expected_thread_id: thread_id.clone(),
         expected_run_id: run_id.clone(),
         snapshot: RunRecoverySnapshot {
+            commit_timestamps: Default::default(),
             thread_id: thread_id.clone(),
             claimed_run_id: run_id.clone(),
             runs: vec![RunRecord {
