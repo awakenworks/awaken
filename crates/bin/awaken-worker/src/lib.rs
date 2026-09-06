@@ -798,6 +798,29 @@ fn validate_worker_manifest(
         .sandbox
         .container_hand_residency
         .recovery_capability();
+    // A kernel probe or a bootstrap primitive is not an installed Session
+    // lifecycle. Until both Native dispatch and fenced recovery use that
+    // boundary, neither standard nor explicit manifests may claim it.
+    if manifest.sandbox.process_tree_supervision
+        || manifest
+            .trusted_host_sandbox
+            .as_ref()
+            .is_some_and(|caps| caps.process_tree_supervision)
+    {
+        return Err(WorkerNodeBuildError(
+            "process-tree supervision is not installed in the complete Session lifecycle".into(),
+        ));
+    }
+    if let Some(host) = &manifest.trusted_host_sandbox
+        && (Some(host) != deployment.trusted_host_support().as_ref()
+            || !manifest
+                .sandbox_backends
+                .contains(awaken_worker_contract::TRUSTED_HOST_SANDBOX_BACKEND))
+    {
+        return Err(WorkerNodeBuildError(
+            "TrustedHost capability profile requires the installed exact Workdir backend".into(),
+        ));
+    }
     if !awaken_worker_contract::manifest_recovery_matches_installed(
         manifest.sandbox_tool_recovery,
         installed_recovery,

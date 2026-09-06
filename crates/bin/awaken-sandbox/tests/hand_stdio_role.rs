@@ -89,3 +89,143 @@ async fn hand_stdio_executes_a_real_tool_over_the_child_process_channel() {
         other => panic!("stdio hand failed: {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn explicit_mount_projection_survives_nested_cwd_and_separate_resource_roots() {
+    // Cause/effect decision table: P4 physical mount != cwd sibling + nested
+    // cwd with spaces/Unicode => logical File/Memory/Repository paths read the
+    // exact mounted bytes; P5 writes => only the configured Memory/output tree
+    // changes; P6 outside absolute path => denied. A decoy cwd-sibling mount
+    // detects the former heuristic. These are real Hand process/protocol/path
+    // tests, NOT Memory harvest, Repository publication or credential proofs.
+    // P7 explicit workspace + nested cwd => logical /workspace and cwd-relative
+    // reads reach one tree; Bash inherits the exact physical cwd. This is the
+    // same CLI consumed by TrustedHost's Session-owned Hand, without a mount
+    // namespace or host-root symlinks.
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().canonicalize().unwrap();
+    let cwd = root.join("workspace/深层 working dir/nested");
+    let mount = root.join("explicit 资源/mnt");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let resources = [
+        ("session/uploads/file-1", "file-bytes"),
+        ("memory/store-1/note.txt", "memory-bytes"),
+        ("session/repositories/repo-1/README.md", "repository-bytes"),
+    ];
+    for (relative, bytes) in resources {
+        let actual = mount.join(relative);
+        let decoy = cwd.parent().unwrap().join("mnt").join(relative);
+        for path in [&actual, &decoy] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        std::fs::write(actual, bytes).unwrap();
+        std::fs::write(decoy, "wrong-generation").unwrap();
+    }
+    std::fs::create_dir_all(mount.join("session/outputs")).unwrap();
+    let outside = root.join("outside-secret.txt");
+    std::fs::write(&outside, "not-authorized").unwrap();
+    std::fs::write(cwd.join("native.txt"), "workspace-bytes").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_awaken-sandbox"))
+        .args(["hand", "--stdio", "--mount-root"])
+        .arg(&mount)
+        .arg("--workspace-root")
+        .arg(root.join("workspace"))
+        .current_dir(&cwd)
+        .env("AWAKEN_HAND_LEDGER_DIR", root.join("ledger"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let executor = RemoteToolExecutor::new(ProcessChannel {
+        read: child.stdout.take().unwrap(),
+        write: child.stdin.take().unwrap(),
+    });
+    for file_path in [
+        "native.txt",
+        "/workspace/深层 working dir/nested/native.txt",
+    ] {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            executor.call_hand(&ToolCall {
+                call_id: format!("workspace-{file_path}"),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({"file_path": file_path}),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(result, HandResult::Ok { ref output }
+            if !output.is_error && output.text().contains("workspace-bytes")),
+            "{result:?}"
+        );
+    }
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        executor.call_hand(&ToolCall {
+            call_id: "physical-bash-cwd".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({"command": "pwd; cat native.txt"}),
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(result, HandResult::Ok { ref output }
+        if !output.is_error && output.text().contains("workspace-bytes")
+            && output.text().contains("深层 working dir/nested")),
+        "{result:?}"
+    );
+    for (relative, expected) in resources {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            executor.call_hand(&ToolCall {
+                call_id: format!("projection-read-{relative}"),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({"file_path": format!("/mnt/{relative}")}),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(result, HandResult::Ok { ref output }
+            if !output.is_error && output.text().contains(expected)),
+            "{result:?}"
+        );
+    }
+    for relative in ["memory/store-1/note.txt", "session/outputs/result.txt"] {
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), executor.call_hand(&ToolCall {
+            call_id: format!("projection-write-{relative}"),
+            tool_id: "write".into(),
+            arguments: serde_json::json!({"path": format!("/mnt/{relative}"), "content": "updated"}),
+        })).await.unwrap();
+        assert!(
+            matches!(result, HandResult::Ok { ref output } if !output.is_error),
+            "{result:?}"
+        );
+        assert_eq!(std::fs::read(mount.join(relative)).unwrap(), b"updated");
+    }
+    assert_eq!(
+        std::fs::read(cwd.parent().unwrap().join("mnt/memory/store-1/note.txt")).unwrap(),
+        b"wrong-generation"
+    );
+    let denied = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        executor.call_hand(&ToolCall {
+            call_id: "outside-projection".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({"file_path": outside}),
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(denied, HandResult::Err { ref error } if error.message.contains("escapes workdir")),
+        "{denied:?}"
+    );
+    drop(executor);
+    child.kill().await.unwrap();
+    child.wait().await.unwrap();
+}

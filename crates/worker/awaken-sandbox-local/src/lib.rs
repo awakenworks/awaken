@@ -2,9 +2,8 @@
 //! [`awaken_provisioning_contract`] seam (ADR-0041).
 //!
 //! Each sandbox is an [`IsolatedRoot`] (a path jail). Rooted tools execute in it:
-//! [`RootedTool`] wraps a native `RawTool` and rewrites its path arguments through
-//! the jail (and runs `bash` with `cd <root>` / `bwrap --unshare-net`), so a tool
-//! cannot touch a path outside its sandbox. A rooted tool is *just a `RawTool`* the
+//! [`HandToolContext`] owns path projection and directory-capability confinement
+//! (with `bwrap --unshare-net` for network-denied Bash). A rooted tool is a `RawTool` the
 //! host composes into a run (ADR-0034 D6), so the kernel stays sandbox-agnostic.
 //!
 //! The provider surface is the pc contract: [`LocalProvider`] (Workdir tier) and
@@ -25,7 +24,6 @@ use awaken_ext_builtin_tools::{HandToolContext, all_hand_tools_in};
 use awaken_runtime_contract::ContentBlock;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutionTarget, ToolOutput};
-use serde_json::Value;
 
 #[path = "namespace/memory_mount.rs"]
 mod memory_mount;
@@ -395,6 +393,7 @@ mod memory_mount_release_tests {
             required: true,
         };
         let spec = pc::SandboxSpec {
+            process_tree_supervision: false,
             scope: "memory-replay-post-validate".into(),
             isolation: pc::IsolationClass::Workdir,
             environment: None,
@@ -978,63 +977,6 @@ impl IsolatedRoot {
     }
 }
 
-/// Rewrite one tool call's file arguments so paths remain jailed under `root`.
-/// Bash confinement is configured once when its persistent process starts, so
-/// Bash arguments intentionally pass through unchanged here.
-fn jail_args(
-    tool_id: &str,
-    mut args: Value,
-    root: &IsolatedRoot,
-    host_outputs: &Path,
-    _deny_egress: bool,
-) -> Result<Value, ToolError> {
-    let escape = |e: EscapeError| ToolError::Execution(e.to_string());
-    let map_output_alias =
-        |args: &mut Value, key: &str, root: &IsolatedRoot| -> Result<(), ToolError> {
-            let Some(Value::String(input)) = args.get(key) else {
-                return Ok(());
-            };
-            if Path::new(input).is_absolute() {
-                // Managed Agents use sandbox-absolute `/mnt/...` paths. A
-                // Workdir tier has no kernel path fidelity, so translate only
-                // these public logical roots into its private backing root.
-                // Arbitrary host-absolute paths remain untouched and are then
-                // rejected by `FileContext`, preserving the escape boundary.
-                if matches!(input.as_str(), "/mnt" | "/outputs")
-                    || input.starts_with("/mnt/")
-                    || awaken_provisioning_contract::WorkspaceLayout::contains(input)
-                    || input.starts_with("/outputs/")
-                {
-                    let jailed = root.resolve(input).map_err(escape)?;
-                    args[key] = Value::String(jailed.to_string_lossy().into_owned());
-                }
-                return Ok(());
-            }
-            let jailed = root.resolve(input).map_err(escape)?;
-            let relative = jailed.strip_prefix(root.root()).map_err(|_| {
-                ToolError::Execution(format!("path `{input}` escaped its environment"))
-            })?;
-            if let Ok(suffix) = relative.strip_prefix("outputs") {
-                args[key] = Value::String(host_outputs.join(suffix).to_string_lossy().into_owned());
-            }
-            Ok(())
-        };
-    match tool_id {
-        "read" | "write" | "edit" => {
-            map_output_alias(&mut args, "file_path", root)?;
-            map_output_alias(&mut args, "path", root)?;
-        }
-        "grep" => map_output_alias(&mut args, "path", root)?,
-        "glob" => map_output_alias(&mut args, "path", root)?,
-        // Bash is confined when its persistent process is launched. Wrapping an
-        // individual command here would create a fresh inner shell and lose
-        // cross-call state such as `cd`, `export`, aliases, and functions.
-        "bash" => {}
-        _ => {}
-    }
-    Ok(args)
-}
-
 /// Build the trusted launcher argv for one persistent Bash process in a
 /// networkless bubblewrap namespace rooted at the environment workdir.
 fn bwrap_persistent_bash(root: &str) -> Vec<String> {
@@ -1113,50 +1055,18 @@ impl HandOutput {
     }
 }
 
-/// A [`HandTool`] that runs an inner `RawTool` jailed to an environment root. The
-/// jail rewrites path arguments; the inner result is narrowed to [`HandOutput`], so
-/// any runtime state the inner tool might carry is dropped at the boundary (G13).
-pub(crate) struct RootedTool {
-    inner: Arc<dyn RawTool>,
-    root: IsolatedRoot,
-    /// Concrete backing path for the one SandboxSpec output directory.
-    host_outputs: PathBuf,
-    /// Deny network egress for the `bash` tool (from the environment's spec).
-    deny_egress: bool,
-}
-
-impl RootedTool {
-    pub(crate) fn new(
-        inner: Arc<dyn RawTool>,
-        root: IsolatedRoot,
-        host_outputs: PathBuf,
-        deny_egress: bool,
-    ) -> Self {
-        Self {
-            inner,
-            root,
-            host_outputs,
-            deny_egress,
-        }
-    }
-}
+/// Narrow the canonical Hand tools to the environment's content-only boundary.
+/// Path resolution belongs to HandToolContext; this adapter never rewrites args.
+struct StateFreeHand(Arc<dyn RawTool>);
 
 #[async_trait]
-impl HandTool for RootedTool {
+impl HandTool for StateFreeHand {
     fn id(&self) -> &str {
-        self.inner.id()
+        self.0.id()
     }
 
-    async fn run(&self, mut call: ToolCall) -> Result<HandOutput, ToolError> {
-        call.arguments = jail_args(
-            self.inner.id(),
-            call.arguments,
-            &self.root,
-            &self.host_outputs,
-            self.deny_egress,
-        )?;
-        let out = self.inner.invoke(call).await?;
-        // Narrow to content/error: an environment tool never authors runtime state.
+    async fn run(&self, call: ToolCall) -> Result<HandOutput, ToolError> {
+        let out = self.0.invoke(call).await?;
         Ok(HandOutput {
             content: out.content,
             is_error: out.is_error,
@@ -1205,7 +1115,10 @@ pub(crate) fn rooted_hand_tools(
     deny_egress: bool,
 ) -> Vec<Arc<dyn HandTool>> {
     let mut context = HandToolContext::new(root.root())
-        .with_allowed_root(&host_outputs)
+        .with_path_projection("/workspace", root.root().join("workspace"))
+        .with_path_projection("/mnt", root.root().join("mnt"))
+        .with_path_projection("/outputs", &host_outputs)
+        .with_path_projection("outputs", &host_outputs)
         .with_bash_env(runtime_paths.bash_env());
     if deny_egress {
         context = context.with_bash_launcher(
@@ -1215,14 +1128,7 @@ pub(crate) fn rooted_hand_tools(
     }
     all_hand_tools_in(context)
         .into_iter()
-        .map(|inner| {
-            Arc::new(RootedTool::new(
-                inner,
-                root.clone(),
-                host_outputs.clone(),
-                deny_egress,
-            )) as Arc<dyn HandTool>
-        })
+        .map(|inner| Arc::new(StateFreeHand(inner)) as Arc<dyn HandTool>)
         .collect()
 }
 
@@ -1465,7 +1371,7 @@ mod tests {
         }
     }
 
-    // ---- jail_args branches ----
+    // ---- portable roots and canonical Hand path projection ----
 
     #[test]
     fn sandbox_directories_escape_nonportable_ids_deterministically() {
@@ -1505,157 +1411,103 @@ mod tests {
         assert_ne!(hashed, sandbox_dir(base, "state-entry:issue-2:deliver:3"));
     }
 
-    #[test]
-    fn jail_preserves_glob_pattern_and_persistent_bash_command() {
-        let root = IsolatedRoot::new("/env");
-        let g = jail_args(
-            "glob",
-            serde_json::json!({ "pattern": "src/*.rs" }),
-            &root,
-            test_outputs(),
+    #[tokio::test]
+    async fn local_paths_use_the_canonical_hand_projection_and_confinement() {
+        // Causes: logical root={workspace,mnt,outputs}, alias={absolute,relative},
+        // normalization={ordinary,parent,escape}, host path={inside,outside}.
+        // Effects: W1 logical workspace/mnt map once; W2 both output aliases
+        // use the ONE configured backing directory; W3 normalized outputs/..
+        // stays in workspace, not output parent; W4 escape/outside rejects.
+        // Read/write/edit/glob/grep must share FileContext, not per-tool JSON
+        // rewriting. Existing Bash state test owns persistent-shell behavior.
+        let root = tempfile::tempdir().unwrap();
+        let output_parent = tempfile::tempdir().unwrap();
+        let outputs = output_parent.path().join("canonical outputs");
+        std::fs::create_dir(&outputs).unwrap();
+        let tools = rooted_raw_tools(
+            IsolatedRoot::new(root.path()),
+            outputs.clone(),
+            RuntimePathEnv::new(root.path().to_string_lossy(), outputs.to_string_lossy()),
             false,
-        )
-        .unwrap();
-        assert_eq!(g["pattern"], "src/*.rs");
-
-        let b = jail_args(
-            "bash",
-            serde_json::json!({ "command": "ls" }),
-            &root,
-            test_outputs(),
-            false,
-        )
-        .unwrap();
-        assert_eq!(b["command"], "ls");
-    }
-
-    #[test]
-    fn logical_output_alias_targets_only_the_canonical_sandbox_directory() {
-        // Output-path FMECA / cause-effect decision table. C1 is an Agent-facing
-        // `outputs/...` path, C2 is an ordinary workspace path, and C3 contains a
-        // normalized parent segment. Effects: E1 maps to the one SandboxSpec
-        // output backing directory; E2 remains under the workspace jail; E3 never
-        // reaches the parent of that backing directory.
-        //
-        // | Rule | logical path | Effect |
-        // | O1 | outputs/result.txt | E1 canonical output |
-        // | O2 | notes/result.txt | E2 workspace file |
-        // | O3 | outputs/../secret | E2 workspace secret, not output-parent escape |
-        let root = IsolatedRoot::new("/env/workspace");
-        let outputs = Path::new("/env/mnt/session/outputs");
-        for (rule, logical, expected) in [
-            (
-                "O1",
-                "outputs/result.txt",
-                "/env/mnt/session/outputs/result.txt",
-            ),
-            ("O2", "notes/result.txt", "notes/result.txt"),
-            ("O3", "outputs/../secret", "outputs/../secret"),
-        ] {
-            let call = jail_args(
-                "write",
-                serde_json::json!({ "path": logical }),
-                &root,
-                outputs,
-                false,
-            )
-            .unwrap();
-            assert_eq!(call["path"], expected, "{rule}");
-        }
-    }
-
-    #[test]
-    fn managed_absolute_mount_paths_rebase_but_host_paths_still_fail_closed() {
-        // Cause/effect decision table for Workdir (path_fidelity=false): C1 is
-        // the exact WorkspaceLayout root, C2 is one of its descendants, C3 is a
-        // public `/mnt` mount, and C4 is an arbitrary host-absolute path. E1
-        // rebases below the private Session root; E2 leaves the host path
-        // untouched so FileContext rejects it. Rules: W1 C1=>E1; W2 C2=>E1;
-        // W3 C3=>E1; W4 C4=>E2. The exact-root rule also proves the shared
-        // WorkspaceLayout::contains authority covers ROOT without a second
-        // equality branch in this adapter.
-        let root = IsolatedRoot::new("/private/session-root");
-        for (tool, key, logical, expected) in [
-            (
-                "glob",
-                "path",
-                awaken_provisioning_contract::WorkspaceLayout::ROOT,
-                "/private/session-root/workspace",
-            ),
-            (
-                "read",
-                "file_path",
-                "/mnt/dream/input-memory/MEMORY.md",
-                "/private/session-root/mnt/dream/input-memory/MEMORY.md",
-            ),
-            (
-                "write",
-                "file_path",
-                "/mnt/dream/output-memory/MEMORY.md",
-                "/private/session-root/mnt/dream/output-memory/MEMORY.md",
-            ),
-            (
-                "glob",
-                "path",
-                "/workspace/project",
-                "/private/session-root/workspace/project",
-            ),
-        ] {
-            let mut arguments = serde_json::json!({});
-            arguments[key] = serde_json::Value::String(logical.into());
-            let mapped = jail_args(tool, arguments, &root, test_outputs(), false).unwrap();
-            assert_eq!(mapped[key], expected, "{tool}:{key}");
-        }
-        let outside = jail_args(
-            "read",
-            serde_json::json!({"file_path":"/etc/passwd"}),
-            &root,
-            test_outputs(),
-            false,
-        )
-        .unwrap();
-        assert_eq!(outside["file_path"], "/etc/passwd");
-    }
-
-    #[test]
-    fn jail_passes_unknown_tools_through_and_rejects_escapes() {
-        let root = IsolatedRoot::new("/env");
-        let u = jail_args(
-            "weird",
-            serde_json::json!({ "path": "../x" }),
-            &root,
-            test_outputs(),
-            false,
-        )
-        .unwrap();
-        assert_eq!(u["path"], "../x"); // unknown tool: untouched
-
-        assert!(
-            jail_args(
-                "read",
-                serde_json::json!({ "path": "../escape" }),
-                &root,
-                test_outputs(),
-                false,
-            )
-            .is_err()
         );
-    }
-
-    #[test]
-    fn deny_egress_bash_commands_are_not_wrapped_per_call() {
-        // Per-call wrapping would start an inner shell and discard `cd`,
-        // exports, aliases, and functions after every invocation.
-        let root = IsolatedRoot::new("/env");
-        let out = jail_args(
-            "bash",
-            serde_json::json!({ "command": "cd nested && export ANSWER=42" }),
-            &root,
-            test_outputs(),
-            true,
-        )
-        .unwrap();
-        assert_eq!(out["command"], "cd nested && export ANSWER=42");
+        let find = |id: &str| tools.iter().find(|tool| tool.id() == id).unwrap();
+        for (logical, physical) in [
+            (
+                "/workspace/note.txt",
+                root.path().join("workspace/note.txt"),
+            ),
+            ("/mnt/input.txt", root.path().join("mnt/input.txt")),
+            ("outputs/a.txt", outputs.join("a.txt")),
+            ("/outputs/b.txt", outputs.join("b.txt")),
+            ("outputs/../note.txt", root.path().join("note.txt")),
+        ] {
+            find("write")
+                .invoke(call(
+                    "write",
+                    serde_json::json!({"path": logical, "content":"before"}),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read(&physical).unwrap(), b"before", "{logical}");
+            find("edit").invoke(call("edit", serde_json::json!({"file_path": logical, "old_string":"before", "new_string":"after"}))).await.unwrap();
+            let read = find("read")
+                .invoke(call("read", serde_json::json!({"path": logical})))
+                .await
+                .unwrap();
+            assert!(read.text().contains("after"), "{logical}");
+            assert_eq!(std::fs::read(&physical).unwrap(), b"after");
+        }
+        for bad in ["../escape", "outputs/../../escape"] {
+            assert!(
+                find("write")
+                    .invoke(call(
+                        "write",
+                        serde_json::json!({"path":bad,"content":"forbidden"})
+                    ))
+                    .await
+                    .is_err()
+            );
+        }
+        let secret = output_parent.path().join("outside.txt");
+        std::fs::write(&secret, b"outside").unwrap();
+        assert!(
+            find("read")
+                .invoke(call("read", serde_json::json!({"path":secret})))
+                .await
+                .is_err()
+        );
+        let glob = find("glob")
+            .invoke(call(
+                "glob",
+                serde_json::json!({"pattern":"/workspace/*.txt"}),
+            ))
+            .await
+            .unwrap();
+        assert!(glob.text().contains("/workspace/note.txt"));
+        assert!(
+            !glob
+                .text()
+                .contains(&root.path().to_string_lossy().to_string())
+        );
+        let output_glob = find("glob")
+            .invoke(call("glob", serde_json::json!({"pattern":"outputs/*.txt"})))
+            .await
+            .unwrap();
+        assert!(output_glob.text().contains("a.txt"));
+        assert!(output_glob.text().contains("b.txt"));
+        assert!(
+            !output_glob
+                .text()
+                .contains(&output_parent.path().to_string_lossy().to_string())
+        );
+        let grep = find("grep")
+            .invoke(call(
+                "grep",
+                serde_json::json!({"path":"/mnt","pattern":"after"}),
+            ))
+            .await
+            .unwrap();
+        assert!(grep.text().contains("input.txt"));
     }
 
     #[test]

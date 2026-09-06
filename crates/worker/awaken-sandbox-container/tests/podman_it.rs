@@ -206,6 +206,7 @@ async fn podman_materializes_inline_content_through_the_provider() {
     let provider = ContainerProvider::new(Arc::new(rt), "docker.io/library/busybox:latest");
 
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "pod-inline".into(),
         isolation: pc::IsolationClass::Container,
         environment: Some(pc::EnvironmentKind::Image {
@@ -279,6 +280,7 @@ async fn podman_separates_container_environment_from_cli_environment() {
     let provider = ContainerProvider::new(rt.clone(), "docker.io/library/busybox:latest")
         .with_secret_broker(Arc::new(ProcessSecretBroker));
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "pod-exec-env".into(),
         isolation: pc::IsolationClass::Container,
         environment: None,
@@ -349,6 +351,7 @@ async fn podman_rotates_and_persists_a_native_credential_file() {
     let provider = ContainerProvider::new(Arc::new(rt), "docker.io/library/busybox:latest")
         .with_secret_broker(broker.clone());
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "pod-native-credential".into(),
         isolation: pc::IsolationClass::Container,
         environment: None,

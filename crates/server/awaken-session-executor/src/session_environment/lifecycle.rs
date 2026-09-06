@@ -6,11 +6,11 @@ use super::SessionEnvironment;
 use super::environment::{EnvironmentQuiescenceProof, EnvironmentStopProof};
 use super::session_hand::{HandStopProof, SessionHandExecutor};
 
-/// Close the one Hand owner, then always reach the owning Sandbox's physical
+/// Close the one Hand owner, then always reach the owning Container's physical
 /// disposal boundary. An indeterminate Hand reap forbids replacement, but the
 /// complete Environment disposal is itself the authoritative process-substrate
 /// teardown and must not be short-circuited by that narrower proof failure.
-async fn dispose_environment_after_closing_hand<S: pc::Sandbox + ?Sized>(
+async fn dispose_container_after_closing_hand<S: pc::Sandbox + ?Sized>(
     hand: &SessionHandExecutor,
     sandbox: &S,
 ) -> Result<(), pc::SandboxError> {
@@ -23,10 +23,22 @@ async fn dispose_environment_after_closing_hand<S: pc::Sandbox + ?Sized>(
     pc::Sandbox::dispose(sandbox).await
 }
 
+/// Both host filesystem providers delete directories, not an OS execution
+/// scope. Their one strict rule is stop receipt BEFORE every resource effect.
+async fn dispose_filesystem_after_closing_hand<S: pc::Sandbox + ?Sized>(
+    hand: Option<&SessionHandExecutor>,
+    sandbox: &S,
+) -> Result<(), pc::SandboxError> {
+    if let Some(hand) = hand {
+        hand.stop().await?;
+    }
+    pc::Sandbox::dispose(sandbox).await
+}
+
 impl SessionEnvironment {
     pub(super) fn sandbox(&self) -> &dyn pc::Sandbox {
         match self {
-            Self::Workdir(sandbox) => sandbox.as_ref(),
+            Self::Workdir { sandbox, .. } => sandbox.as_ref(),
             Self::Namespace { sandbox, .. } => sandbox.as_ref(),
             Self::Container { sandbox, .. } => sandbox.as_ref(),
         }
@@ -42,7 +54,7 @@ impl SessionEnvironment {
     /// boundary for crash recovery.
     pub(crate) fn reserve_owned_path(&self, path: &str) -> Result<(), pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => sandbox.reserve_owned_path(path),
+            Self::Workdir { sandbox, .. } => sandbox.reserve_owned_path(path),
             Self::Namespace { sandbox, .. } => sandbox.reserve_owned_path(path),
             Self::Container { sandbox, .. } => sandbox.record_owned_path(path)?,
         }
@@ -67,25 +79,29 @@ impl SessionEnvironment {
 
     pub(crate) async fn dispose(&self) -> Result<(), pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => pc::Sandbox::dispose(sandbox.as_ref()).await,
+            Self::Workdir { sandbox, hand } => {
+                dispose_filesystem_after_closing_hand(hand.as_deref(), sandbox.as_ref()).await
+            }
             Self::Namespace { sandbox, hand } => {
-                dispose_environment_after_closing_hand(hand, sandbox.as_ref()).await
+                dispose_filesystem_after_closing_hand(Some(hand), sandbox.as_ref()).await
             }
             Self::Container { sandbox, hand, .. } => {
                 // A resident Hand is terminated by disposal of its owning
                 // sandbox below; the retained proof is therefore admissible
                 // here but never at checkpoint-and-release quiescence.
-                dispose_environment_after_closing_hand(hand, sandbox.as_ref()).await
+                dispose_container_after_closing_hand(hand, sandbox.as_ref()).await
             }
         }
     }
 
     pub(crate) async fn quiesce(&self) -> Result<EnvironmentQuiescenceProof, pc::SandboxError> {
         let proof = match self {
-            Self::Workdir(_) => EnvironmentStopProof::NoBoundProcesses,
-            Self::Namespace { hand, .. } | Self::Container { hand, .. } => {
-                EnvironmentStopProof::Hand(hand.quiesce().await?)
+            Self::Workdir { hand: None, .. } => EnvironmentStopProof::NoBoundProcesses,
+            Self::Workdir {
+                hand: Some(hand), ..
             }
+            | Self::Namespace { hand, .. }
+            | Self::Container { hand, .. } => EnvironmentStopProof::Hand(hand.quiesce().await?),
         };
         match proof {
             EnvironmentStopProof::NoBoundProcesses

@@ -299,6 +299,7 @@ mod tests {
 
     fn spec() -> SandboxSpec {
         SandboxSpec {
+            process_tree_supervision: false,
             scope: "session-a".into(),
             isolation: IsolationClass::Workdir,
             mounts: Vec::new(),

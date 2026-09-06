@@ -62,6 +62,7 @@ async fn setup() -> Option<(ContainerProvider<DockerRuntime>, Arc<DockerRuntime>
 /// it does not — a deterministic, image-local probe that needs no external host.
 fn egress_probe_spec(scope: &str, network: pc::NetworkPolicy) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
         environment: None,
@@ -137,6 +138,7 @@ async fn probe_exit(
 /// host-path bind uses `CacheVolume`. This drives a real byte bind on the Docker tier.
 fn file_bind_spec(scope: &str, host_file: &str, command: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
         environment: None,
@@ -206,6 +208,7 @@ async fn inline_content_is_materialized_and_readable_in_a_real_container() {
     // provider stages them to a host file and binds it. This is the codex `config.toml` /
     // ADR-0038 resource path on the container tier. The container must read the content.
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "pw-inline".into(),
         isolation: pc::IsolationClass::Container,
         environment: None,
@@ -267,6 +270,7 @@ async fn multiple_memory_stores_enforce_exact_access_and_seal_the_parent_in_real
     // Constraint: assertions execute as the real container user against daemon
     // bind flags and the read-only image root, not against the planner model.
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "pw-memory-boundary".into(),
         isolation: pc::IsolationClass::Container,
         environment: None,
@@ -350,6 +354,7 @@ async fn a_real_container_rotates_and_persists_a_native_credential_file() {
     let provider =
         ContainerProvider::new(rt.clone(), "busybox:latest").with_secret_broker(broker.clone());
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "pw-native-credential".into(),
         isolation: pc::IsolationClass::Container,
         environment: None,
@@ -402,6 +407,7 @@ async fn a_file_mount_resolved_from_the_blob_source_is_readable_in_a_real_contai
     let provider = ContainerProvider::new(rt.clone(), "busybox:latest")
         .with_blob("blob-42", b"resolved-from-the-store".to_vec());
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "pw-file-blob".into(),
         isolation: pc::IsolationClass::Container,
         environment: None,
@@ -457,6 +463,7 @@ async fn a_cachevolume_binds_a_host_directory_the_repo_checkout_shape() {
     let host_dir = dir.to_string_lossy().to_string();
 
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "pw-repodir".into(),
         isolation: pc::IsolationClass::Container,
         environment: None,
@@ -557,6 +564,7 @@ async fn a_memory_cap_oom_kills_an_over_allocating_container() {
     };
 
     let hog = |scope: &str, limits: pc::ResourceLimits| pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
         environment: None,
@@ -629,6 +637,7 @@ async fn allowlist_rejects_a_forward_proxy_before_docker_creation() {
             url: "http://127.0.0.1:1/".into(),
         });
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "pw-allowlist-proxy".into(),
         isolation: pc::IsolationClass::Container,
         environment: None,

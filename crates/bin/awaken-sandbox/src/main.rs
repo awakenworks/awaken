@@ -19,8 +19,8 @@
 //!       Atomically publish one owned staged directory without replacing a name.
 //!   awaken-sandbox read-tree-nofollow <ROOT>
 //!       Snapshot regular files below one exact directory without following links.
-//!   awaken-sandbox scoped-exec <ABSTRACT_SOCKET> <PARENT_PID>
-//!       Linux-only trusted cgroup bootstrap; workload input uses a private socket.
+//!   awaken-sandbox scoped-exec
+//!       Linux-only trusted PID-namespace role; stdin is a private control socket.
 
 mod control_forwarder;
 mod git_credential;
@@ -93,20 +93,27 @@ async fn main() -> ExitCode {
 async fn run_scoped_exec(args: &[String]) -> ExitCode {
     #[cfg(target_os = "linux")]
     {
-        if let [socket, parent] = args
-            && let Ok(parent) = parent.parse::<u32>()
-        {
+        if args.is_empty() {
             // Never print workload bytes, credentials, or argv on a failed exec.
-            let error = awaken_local_process::scoped::bootstrap(socket, parent).await;
-            eprintln!("awaken-sandbox scoped-exec failed: {:?}", error.kind());
-            return ExitCode::FAILURE;
+            return match awaken_local_process::scoped::bootstrap().await {
+                Ok(status) => ExitCode::from(
+                    status
+                        .code
+                        .and_then(|code| u8::try_from(code).ok())
+                        .unwrap_or(1),
+                ),
+                Err(error) => {
+                    eprintln!("awaken-sandbox scoped-exec failed: {:?}", error.kind());
+                    ExitCode::FAILURE
+                }
+            };
         }
-        eprintln!("usage: awaken-sandbox scoped-exec <ABSTRACT_SOCKET> <PARENT_PID>");
+        eprintln!("usage: awaken-sandbox scoped-exec");
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = args;
-        eprintln!("awaken-sandbox scoped-exec requires Linux cgroup v2");
+        eprintln!("awaken-sandbox scoped-exec requires a Linux PID namespace");
     }
     ExitCode::FAILURE
 }

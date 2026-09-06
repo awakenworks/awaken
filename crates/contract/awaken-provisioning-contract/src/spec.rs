@@ -358,6 +358,10 @@ pub struct SandboxSpec {
     /// This is distinct from [`NetworkPolicy`], which describes whole-sandbox
     /// enforcement and participates in provider admission.
     pub deny_tool_egress: bool,
+    /// Require provider-owned whole-process-tree supervision, including owner
+    /// crash recovery. This is independent of filesystem/network isolation.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub process_tree_supervision: bool,
     #[serde(default)]
     pub mounts: Vec<MountRequirement>,
     /// Base env applied to every process launched in the sandbox.
@@ -730,6 +734,7 @@ mod tests {
 
     fn capacity_spec() -> SandboxSpec {
         SandboxSpec {
+            process_tree_supervision: false,
             scope: "session-a".into(),
             isolation: IsolationClass::Container,
             environment: Some(EnvironmentKind::Image {
@@ -998,6 +1003,8 @@ mod tests {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SandboxOverride {
+    #[serde(skip_serializing_if = "is_false")]
+    pub process_tree_supervision: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment: Option<EnvironmentKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1038,6 +1045,7 @@ impl SandboxOverride {
             && self.isolation.is_none()
             && self.network.is_none()
             && self.host_access.is_isolated()
+            && !self.process_tree_supervision
             && !self.requests.is_set()
             && !self.limits.is_set()
     }
@@ -1046,6 +1054,7 @@ impl SandboxOverride {
     /// synthesized value. Mounts/scope/outputs are the host's to decide, untouched.
     #[must_use]
     pub fn apply(&self, mut spec: SandboxSpec) -> SandboxSpec {
+        spec.process_tree_supervision |= self.process_tree_supervision;
         if let Some(environment) = &self.environment {
             spec.environment = Some(environment.clone());
         }
@@ -1065,6 +1074,10 @@ impl SandboxOverride {
     }
 }
 
+pub(crate) fn is_false(value: &bool) -> bool {
+    !value
+}
+
 #[cfg(test)]
 mod sandbox_override_tests {
     use super::*;
@@ -1072,6 +1085,7 @@ mod sandbox_override_tests {
 
     fn base() -> SandboxSpec {
         SandboxSpec {
+            process_tree_supervision: false,
             scope: "t".into(),
             isolation: IsolationClass::Workdir,
             environment: None,
@@ -1087,6 +1101,61 @@ mod sandbox_override_tests {
             filesystem_continuity: FilesystemContinuity::Retained,
             lease_ttl_secs: None,
             control_services: Default::default(),
+        }
+    }
+
+    #[test]
+    fn process_supervision_wire_overlay_and_identity_are_monotonic() {
+        // PS1 legacy omission/explicit false => same wire and fingerprints.
+        // PS2 either base or overlay requires supervision => resulting spec
+        // requires it. Exhaust all 2x2 inputs; no overlay can weaken a base.
+        // PS3 changing false->true changes both realization and capacity
+        // identity, preventing adoption/pool substitution of an unscoped root.
+        let legacy = base();
+        let wire = serde_json::to_value(&legacy).unwrap();
+        assert!(wire.get("process_tree_supervision").is_none());
+        assert_eq!(
+            serde_json::from_value::<SandboxSpec>(wire.clone()).unwrap(),
+            legacy
+        );
+        let mut explicit_false = wire;
+        explicit_false["process_tree_supervision"] = false.into();
+        assert_eq!(
+            serde_json::from_value::<SandboxSpec>(explicit_false).unwrap(),
+            legacy
+        );
+        for required in [false, true] {
+            for overlay in [false, true] {
+                let config: SandboxOverride = serde_json::from_value(serde_json::json!({
+                    "process_tree_supervision": overlay
+                }))
+                .unwrap();
+                assert_eq!(config.is_empty(), !overlay);
+                let mut input = legacy.clone();
+                input.process_tree_supervision = required;
+                assert_eq!(
+                    config.apply(input).process_tree_supervision,
+                    required || overlay
+                );
+            }
+        }
+        let mut strict = legacy.clone();
+        strict.process_tree_supervision = true;
+        assert_ne!(
+            SandboxRealizationFingerprint::from_spec(&strict),
+            SandboxRealizationFingerprint::from_spec(&legacy)
+        );
+        assert_ne!(
+            SandboxCapacityShapeId::from_spec(&strict),
+            SandboxCapacityShapeId::from_spec(&legacy)
+        );
+        for malformed in [serde_json::Value::Null, "yes".into(), 1.into()] {
+            assert!(
+                serde_json::from_value::<SandboxOverride>(serde_json::json!({
+                    "process_tree_supervision": malformed
+                }))
+                .is_err()
+            );
         }
     }
 

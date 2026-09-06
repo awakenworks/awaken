@@ -70,8 +70,9 @@ impl HandToolContext {
     ///
     /// Linux namespaces and containers normally use identity projections such
     /// as `/mnt` to `/mnt`. macOS Seatbelt has no mount namespace, so the same
-    /// logical path maps to the Session's private host projection. Only trusted
-    /// composition code can install this mapping; model-authored paths cannot.
+    /// logical path maps to the Session's private host projection. Relative
+    /// aliases (such as `outputs`) use the same resolver after normalization.
+    /// Only trusted composition code can install this mapping.
     #[must_use]
     pub fn with_path_projection(
         mut self,
@@ -79,7 +80,13 @@ impl HandToolContext {
         physical_root: impl Into<PathBuf>,
     ) -> Self {
         let physical_root = physical_root.into();
-        self.allowed_roots.push(physical_root.clone());
+        // A subdirectory of the existing workdir needs a name projection, not
+        // another authority root. Keeping the parent capability also permits
+        // creating that missing subdirectory; it must not grant a symlink
+        // escape just because its logical name has an alias.
+        if !physical_root.starts_with(&self.workdir) {
+            self.allowed_roots.push(physical_root.clone());
+        }
         self.path_projections
             .push((logical_root.into(), physical_root));
         self
@@ -125,26 +132,31 @@ impl FileContext {
             .map_err(|error| ToolError::Execution(format!("workdir: {error}")))
     }
 
+    fn projection_for(&self, input: &Path) -> Option<&(PathBuf, PathBuf)> {
+        self.0
+            .path_projections
+            .iter()
+            .filter(|(logical, _)| input.starts_with(logical))
+            .max_by_key(|(logical, _)| logical.components().count())
+    }
+
     fn resolve(&self, input: &str) -> Result<ConfinedPath, ToolError> {
         if input.is_empty() {
             return Err(ToolError::InvalidArguments("file path is required".into()));
         }
         let root = canonicalize_or_absolute(&self.0.workdir)?;
         let input_path = lexical_normalize(Path::new(input));
-        let candidate = if input_path.is_absolute() {
-            self.0
-                .path_projections
-                .iter()
-                .filter_map(|(logical, physical)| {
-                    input_path
-                        .strip_prefix(logical)
-                        .ok()
-                        .map(|suffix| (logical.components().count(), physical.join(suffix)))
-                })
-                .max_by_key(|(specificity, _)| *specificity)
-                .map_or(input_path, |(_, projected)| lexical_normalize(&projected))
-        } else {
-            lexical_normalize(&root.join(input_path))
+        let projected = self.projection_for(&input_path).map(|(logical, physical)| {
+            physical.join(
+                input_path
+                    .strip_prefix(logical)
+                    .expect("matching projection"),
+            )
+        });
+        let candidate = match projected {
+            Some(projected) => lexical_normalize(&projected),
+            None if input_path.is_absolute() => input_path,
+            None => lexical_normalize(&root.join(input_path)),
         };
         let resolved = canonicalize_with_missing(&candidate)
             .map_err(|error| file_error("path", input, &error))?;
@@ -187,6 +199,22 @@ impl FileContext {
         selected_root: Option<&str>,
     ) -> Result<(ConfinedPath, String), ToolError> {
         if !Path::new(pattern).is_absolute() {
+            let normalized = lexical_normalize(Path::new(pattern));
+            if selected_root.is_none()
+                && let Some((logical, _)) = self.projection_for(&normalized)
+            {
+                let relative = normalized
+                    .strip_prefix(logical)
+                    .expect("matching projection");
+                return Ok((
+                    self.resolve(&logical.to_string_lossy())?,
+                    if relative.as_os_str().is_empty() {
+                        ".".into()
+                    } else {
+                        relative.to_string_lossy().into_owned()
+                    },
+                ));
+            }
             return Ok((self.resolve(selected_root.unwrap_or("."))?, pattern.into()));
         }
         if selected_root.is_some() {
@@ -235,7 +263,7 @@ impl FileContext {
                 let projected = canonicalize_or_absolute(projected).ok()?;
                 physical.strip_prefix(&projected).ok().map(|suffix| {
                     (
-                        projected.components().count(),
+                        (projected.components().count(), logical.has_root()),
                         lexical_normalize(&logical.join(suffix)),
                     )
                 })
@@ -359,7 +387,15 @@ fn lexical_normalize(path: &Path) -> PathBuf {
             Component::RootDir => out.push(Path::new(std::path::MAIN_SEPARATOR_STR)),
             Component::CurDir => {}
             Component::ParentDir => {
-                out.pop();
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else if !out.has_root() {
+                    // Preserve leading relative parents until the path has
+                    // been resolved against its actual authorized workdir.
+                    // Dropping them here silently changes an escape attempt
+                    // (or a legitimate sibling mount) into another file.
+                    out.push("..");
+                }
             }
             Component::Normal(part) => out.push(part),
         }
@@ -1802,6 +1838,65 @@ pub(crate) fn hand_tools_in(context: HandToolContext) -> Vec<Arc<dyn RawTool>> {
 #[cfg(test)]
 mod write_tests {
     use super::*;
+
+    #[test]
+    fn relative_parents_and_aliases_share_one_authorized_resolution() {
+        // Decision table P2: normalize BEFORE matching aliases; preserve
+        // unmatched relative parents until the actual workdir is known.
+        // Sibling mount => allowed only if explicitly granted; outside sibling
+        // => reject; overlapping aliases => most specific; similarly named
+        // non-alias => ordinary workspace. Missing nested projection remains
+        // covered by the already-openable workdir, not another missing root.
+        let fixture = tempfile::tempdir().unwrap();
+        let workdir = fixture.path().join("workspace");
+        let mount = fixture.path().join("mnt");
+        let specific = fixture.path().join("special");
+        for dir in [&workdir, &mount, &specific] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let context = HandToolContext::new(&workdir)
+            .with_path_projection("/workspace", &workdir)
+            .with_path_projection("/nested", workdir.join("not-yet-created"))
+            .with_path_projection("/mnt", &mount)
+            .with_path_projection("outputs", &mount)
+            .with_path_projection("outputs/specific", &specific);
+        let files = FileContext::new(&context);
+        for (input, expected) in [
+            ("../mnt/file", mount.join("file")),
+            ("outputs/file", mount.join("file")),
+            ("outputs/specific/file", specific.join("file")),
+            ("outputs/specific/../file", mount.join("file")),
+            ("outputs/../file", workdir.join("file")),
+            ("outputs-similar/file", workdir.join("outputs-similar/file")),
+            ("/nested/file", workdir.join("not-yet-created/file")),
+        ] {
+            assert_eq!(files.resolve(input).unwrap().absolute, expected, "{input}");
+        }
+        for input in ["../outside/file", "../../file", "outputs/../../file", ""] {
+            assert!(files.resolve(input).is_err(), "{input}");
+        }
+        for (input, expected) in [
+            ("../a", "../a"),
+            ("a/../../b", "../b"),
+            ("../../b", "../../b"),
+        ] {
+            assert_eq!(lexical_normalize(Path::new(input)), Path::new(expected));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nested_projection_does_not_grant_an_escaping_symlink() {
+        // P3 a projected descendant already belongs to workdir authority.
+        // Replacing it by a symlink to an ungranted sibling must still deny;
+        // adding an alias must not silently grant the symlink target.
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("nested")).unwrap();
+        let context = HandToolContext::new(root.path())
+            .with_path_projection("/managed", root.path().join("nested"));
+        assert!(FileContext::new(&context).resolve("/managed/file").is_err());
+    }
 
     #[tokio::test]
     async fn write_creates_missing_parent_directories() {

@@ -27,10 +27,16 @@ pub async fn wait_for_process_exit(
 }
 
 #[cfg(target_os = "linux")]
-pub mod cgroup;
-
-#[cfg(target_os = "linux")]
 pub mod scoped;
+
+/// One process-lifetime profile shared by Namespace and host-view rendering.
+/// Filesystem and network policy remain the sandbox provider's responsibility.
+pub const BUBBLEWRAP_PROCESS_BOUNDARY: [&str; 4] = [
+    "--unshare-user",
+    "--unshare-pid",
+    "--die-with-parent",
+    "--new-session",
+];
 
 /// Configure a command so the child becomes leader of a private process group.
 fn configure_process_group(command: &mut Command) {
@@ -225,8 +231,8 @@ mod tests {
         // receives TERM. C1+C2+C3+C4 => E1 the leader exits and E2 the
         // descendant's TERM trap completes. Waiting for marker contents, rather
         // than file existence, covers the redirection-before-write shell rule.
-        // Signal-kind mapping is exhaustive in `signal`; the Supervisor's
-        // TERM→KILL escalation tests cover a descendant that does not settle.
+        // Signal-kind mapping is exhaustive in `signal`; this ordinary-process
+        // test does not qualify detached descendants or crash containment.
         let directory = tempfile::tempdir().expect("temporary marker directory");
         let ready = directory.path().join("descendant-ready");
         let marker = directory.path().join("descendant-terminated");

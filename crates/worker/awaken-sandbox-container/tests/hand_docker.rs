@@ -75,6 +75,7 @@ async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous(
     let provider = ContainerProvider::new(Arc::new(runtime), "python:3-slim");
 
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "hand-rv".into(),
         isolation: pc::IsolationClass::Container,
         mounts: vec![pc::MountRequirement {

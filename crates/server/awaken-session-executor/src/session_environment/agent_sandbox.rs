@@ -20,7 +20,7 @@ pub(crate) struct AgentFilesystemView {
 /// The component that will interpret a model-visible resource path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AgentFilesystemClient {
-    /// Awaken Hand tools consume provider-neutral sandbox-absolute paths.
+    /// Awaken Hand tools consume the environment's logical/relative prompt view.
     NativeTools,
     /// An ACP CLI consumes paths relative to its protocol working directory on
     /// TrustedHost and sandbox-absolute paths in Namespace/Container.
@@ -109,7 +109,7 @@ impl AgentSandbox for SessionEnvironment {
     }
 
     fn supports_host_identity(&self) -> bool {
-        matches!(self, Self::Workdir(_))
+        matches!(self, Self::Workdir { .. })
     }
 
     fn config_home(&self) -> String {
@@ -121,7 +121,7 @@ impl AgentSandbox for SessionEnvironment {
             Self::Container { .. } | Self::Namespace { .. } => {
                 pc::WorkspaceLayout::ACP_CONFIG_ROOT.to_string()
             }
-            Self::Workdir(sandbox) => sandbox
+            Self::Workdir { sandbox, .. } => sandbox
                 .workspace_path()
                 .join(pc::WorkspaceLayout::ACP_CONFIG_SUBDIR)
                 .to_string_lossy()
@@ -134,13 +134,15 @@ impl AgentSandbox for SessionEnvironment {
             Self::Container { .. } | Self::Namespace { .. } => {
                 pc::WorkspaceLayout::ACP_CONFIG_ROOT.to_string()
             }
-            Self::Workdir(_) => pc::WorkspaceLayout::ACP_CONFIG_SUBDIR.to_string(),
+            Self::Workdir { .. } => pc::WorkspaceLayout::ACP_CONFIG_SUBDIR.to_string(),
         }
     }
 
     fn workspace_cwd(&self) -> String {
         match self {
-            Self::Workdir(sandbox) => sandbox.workspace_path().to_string_lossy().into_owned(),
+            Self::Workdir { sandbox, .. } => {
+                sandbox.workspace_path().to_string_lossy().into_owned()
+            }
             Self::Namespace { .. } | Self::Container { .. } => {
                 pc::WorkspaceLayout::ROOT.to_string()
             }

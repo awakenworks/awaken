@@ -1,6 +1,6 @@
-//! The single Hand lifecycle shared by every tool-transparent Session environment.
+//! The single Hand lifecycle shared by every Hand-equipped Session environment.
 //!
-//! Namespace and Container providers differ only in how they open a channel. Tool
+//! TrustedHost, Namespace and Container differ in how they open a channel. Tool
 //! dispatch, retry fencing, idle hibernation, and process ownership remain one
 //! Runtime-Host responsibility.
 
@@ -13,7 +13,7 @@ use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::Sandbox as _;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{ToolError, ToolExecutor, ToolOutput, ToolRecoveryCapability};
-use awaken_sandbox_local::NamespaceSandbox;
+use awaken_sandbox_local::{LocalSandbox, NamespaceSandbox};
 use tokio::sync::Mutex;
 
 use super::container_skills::ContainerSkillCache;
@@ -46,6 +46,7 @@ impl HandExecutorFactory for UnusedHandExecutorFactory {
 }
 
 pub(super) enum SessionAgentLauncher {
+    Workdir(Arc<LocalSandbox>),
     Namespace(Arc<NamespaceSandbox>),
     Container {
         sandbox: Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
@@ -55,6 +56,7 @@ pub(super) enum SessionAgentLauncher {
 impl SessionAgentLauncher {
     fn operation_scope(&self) -> String {
         match self {
+            Self::Workdir(sandbox) => sandbox.handle().sandbox_id,
             Self::Namespace(sandbox) => sandbox.handle().sandbox_id,
             Self::Container { sandbox, .. } => sandbox.id().to_string(),
         }
@@ -71,6 +73,7 @@ impl SessionAgentLauncher {
         pc::SandboxError,
     > {
         match self {
+            Self::Workdir(sandbox) => sandbox.spawn_agent(command).await,
             Self::Namespace(sandbox) => sandbox.spawn_agent(command).await,
             Self::Container { sandbox } => sandbox
                 .spawn_agent_process(command)
@@ -84,8 +87,8 @@ impl SessionAgentLauncher {
     ) -> Result<Box<dyn awaken_run_executor_acp::AgentChannelType>, pc::SandboxError> {
         match self {
             Self::Container { sandbox } => sandbox.open_agent_channel().await,
-            Self::Namespace(_) => Err(pc::SandboxError::new(
-                "namespace Session environments do not own a resident Hand",
+            Self::Workdir(_) | Self::Namespace(_) => Err(pc::SandboxError::new(
+                "host-backed Session environments do not own a resident Hand",
             )),
         }
     }
@@ -471,8 +474,32 @@ async fn launch_hand(
         });
     }
 
+    let mut argv = vec![hand_bin, "hand".into(), "--stdio".into()];
+    if let SessionAgentLauncher::Workdir(sandbox) = launcher.as_ref() {
+        // The same provider-resolved paths serve native file tools and ACP.
+        // These are CLI argv, not shell interpolation or model-controlled roots.
+        argv.extend([
+            "--mount-root".into(),
+            sandbox
+                .workspace_path()
+                .join("mnt")
+                .to_string_lossy()
+                .into_owned(),
+            "--workspace-root".into(),
+            sandbox
+                .workspace_path()
+                .join(pc::WorkspaceLayout::ROOT.trim_start_matches('/'))
+                .to_string_lossy()
+                .into_owned(),
+        ]);
+    }
+    if matches!(launcher.as_ref(), SessionAgentLauncher::Namespace(_)) {
+        // The provider projects this root for Seatbelt. Container images keep
+        // their existing CLI contract and already expose the default /mnt.
+        argv.extend(["--mount-root".into(), "/mnt".into()]);
+    }
     let command = pc::Command {
-        argv: vec![hand_bin, "hand".into(), "--stdio".into()],
+        argv,
         cwd: pc::WorkspaceLayout::ROOT.into(),
         env: Vec::new(),
         stdio: pc::Stdio::Piped,
@@ -539,6 +566,21 @@ impl HandMode {
 }
 
 impl SessionHandExecutor {
+    pub(super) fn workdir(
+        sandbox: Arc<LocalSandbox>,
+        factory: Arc<dyn HandExecutorFactory>,
+        hand_bin: impl Into<String>,
+        idle_after: Duration,
+    ) -> Self {
+        Self::new(
+            Arc::new(SessionAgentLauncher::Workdir(sandbox)),
+            factory,
+            hand_bin.into(),
+            idle_after,
+            crate::deployment_config::ContainerHandResidency::AttachedExec,
+            None,
+        )
+    }
     /// Exact in-sandbox execution binary selected by deployment configuration.
     /// Internal container effects must reuse this path so custom images have
     /// one capability contract instead of a second hard-coded binary location.
@@ -978,6 +1020,96 @@ impl Drop for HandProjectionUpdate<'_> {
 mod tests {
     use super::*;
     use std::sync::Barrier;
+
+    #[tokio::test]
+    async fn workdir_unknown_hand_reap_retains_resources_until_exact_owner_is_reaped() {
+        // Causes: W1 Workdir/Namespace disposal has no OS teardown; W2 tracked Hand
+        // cannot be reaped; W3 same retained owner later proves exit.
+        // Effects: E1 quiescence/disposal fail without deleting resource bytes;
+        // E2 owner stays tracked, dispatch stays closed; E3 retry after W3
+        // completes disposal. Rules W1+W2=>E1+E2, W1+W3=>E3. These injected
+        // process receipts test lifecycle wiring, NOT Linux process-tree proof.
+        // Linux requires both filesystem adapters; other platforms exercise the
+        // portable Workdir row here and their OS-specific Namespace gate separately.
+        use super::super::tests::{DoneProcess, FakeHandExecutor, UnreapableProcess, spec};
+        use super::super::{SessionEnvironment, SessionEnvironmentProvider};
+        for namespace in [false, true]
+            .into_iter()
+            .filter(|namespace| !namespace || cfg!(target_os = "linux"))
+        {
+            let base = tempfile::tempdir().unwrap();
+            let provider = if namespace {
+                SessionEnvironmentProvider::namespace_with_agent_stderr(
+                    base.path(),
+                    false,
+                    Arc::new(UnusedHandExecutorFactory),
+                    "unused-hand",
+                    Duration::ZERO,
+                )
+            } else {
+                let mut provider =
+                    SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(
+                        base.path(),
+                        false,
+                    );
+                provider.install_workdir_hand(
+                    Arc::new(UnusedHandExecutorFactory),
+                    "unused-hand".into(),
+                    Duration::ZERO,
+                );
+                provider
+            };
+            let environment = provider.create(&spec()).await.unwrap();
+            environment
+                .attach_mount(pc::MountRequirement {
+                    mount_id: "retained-resource".into(),
+                    source: pc::MountSource::Inline {
+                        contents: "retained exact bytes".into(),
+                    },
+                    mount_path: "/mnt/session/uploads/retained-resource".into(),
+                    access: pc::MountAccess::ReadWrite,
+                    lifetime: pc::MountLifetime::Session,
+                    required: true,
+                })
+                .await
+                .unwrap();
+            let hand = match &environment {
+                SessionEnvironment::Workdir {
+                    hand: Some(hand), ..
+                }
+                | SessionEnvironment::Namespace { hand, .. } => hand.clone(),
+                _ => panic!("filesystem Hand required"),
+            };
+            *hand.lifecycle.binding.lock().await = HandBindingState::Ready(HandBinding {
+                process: Some(Box::new(UnreapableProcess)),
+                executor: Arc::new(FakeHandExecutor),
+            });
+            assert!(environment.quiesce().await.is_err());
+            assert!(environment.dispose().await.is_err());
+            assert!(
+                environment
+                    .list_frozen_mount_files("/mnt/session/uploads")
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|(_, bytes)| bytes == b"retained exact bytes")
+            );
+            assert!(hand.has_tracked_binding().await);
+            assert!(!hand.lifecycle.is_open());
+            if let HandBindingState::Ready(binding) = &mut *hand.lifecycle.binding.lock().await {
+                binding.process = Some(Box::new(DoneProcess::success("same-owner-now-reaped")));
+            } else {
+                panic!("owner must remain tracked")
+            }
+            environment.dispose().await.unwrap();
+            assert_eq!(
+                environment.status().await.unwrap(),
+                pc::SandboxStatus::Terminated
+            );
+            assert!(!hand.has_tracked_binding().await);
+            assert!(!hand.lifecycle.is_open());
+        }
+    }
 
     fn lifecycle_with_generation(
         generation: u64,

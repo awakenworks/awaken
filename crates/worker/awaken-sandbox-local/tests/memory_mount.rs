@@ -15,6 +15,7 @@ use awaken_sandbox_memoryd::MemoryStoreMounter;
 
 fn base_spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Workdir,
         mounts: Vec::new(),

@@ -716,58 +716,97 @@ vendor logins, macOS/Windows execution, and OS credential-manager/SSH integratio
 must be verified on their corresponding hosts; fixture or model success does
 not substitute for them.
 
-Linux supervision qualification now has an explicit
-`check-trusted-host-portability.sh --linux-supervision` gate. It requires a
-working user systemd manager and delegated cgroup v2; an unavailable substrate
-fails instead of becoming an ignored success. `awaken-local-process::cgroup`
-owns descriptor-pinned membership, launch admission and close/kill/empty
-observation. A missing/denied control operation or unknown populated state
-cannot become a stop receipt, and an old descriptor cannot target a replacement
-at the same pathname. `LocalProcess::spawn_scoped` now holds launch admission
-until the production `awaken-sandbox scoped-exec` role joins the exact cgroup,
-acknowledges membership, and receives a one-byte GO before workload exec.
-The old test-only bootstrap has been removed; the real binary integration test
-now lives in `crates/bin/awaken-sandbox/tests/linux_cgroup.rs` and owns this
-composition's qualification. It checks neighboring scopes and retry/ABA,
-and SIGKILLs a separate systemd-managed owner while detached descendants retain
-the external observer's stdout directly. Systemd's control-group teardown, not
-Rust Drop or a forwarding task's EOF, must end that tree.
+Linux supervision qualification uses the explicit
+`check-trusted-host-portability.sh --linux-supervision` gate, with no systemd
+manager or delegated cgroup dependency. The former systemd/cgroup adapter and
+its separate test path have been replaced, not retained as a fallback.
+`awaken-local-process::scoped::ScopedProcess` owns one execution tree:
+sanitized bubblewrap -> trusted namespace helper -> private command and
+descriptor handoff -> JOINED -> one-use GO -> workload. Namespace and host-view
+launchers share `BUBBLEWRAP_PROCESS_BOUNDARY`; mount/network policy remains
+provider-owned.
 
-The trusted helper starts with an empty environment and `/` cwd. Only a private
-abstract Unix socket, authenticated by both peers' exact process IDs, carries
-the bounded materialized workload input. This is a transient OS handoff, not a
-serializable planning contract or durable secret record. The helper applies
-the provider-resolved physical cwd and explicit environment to the final exec;
-the logical cwd is not mapped a second time. The provider must retain its
-realization/path authorization through launch: a physical cwd string does not
-pin a filesystem generation against external pathname replacement.
-Business stdin/stdout/stderr remain
-unframed. A real `LD_PRELOAD` constructor test requires membership even before
-workload main, while cwd, synthetic credential, binary stdio, failed exec,
-cancelled/expired admission, wrong ACK/peer, and concurrent launch/close tests
-pin the remaining launch contract. Tests own their cause/effect decision rules.
+The bootstrap control socket is an inherited socket pair, not a discoverable
+abstract address or a credential file. Its initial stdin is control-only; the
+workload receives separate stdin/stdout/stderr descriptors via SCM_RIGHTS.
+Received descriptors are CLOEXEC. The helper starts without workload environment
+or loader hooks, applies the provider-resolved physical cwd exactly once, and
+never renders payload bytes in diagnostics. The private codec remains distinct
+from the non-serializable planning contract. Native filesystem tools and opaque
+Agents still share the existing resource/prompt projection authority.
 
-Cancellation before GO cannot authorize workload effects. It can leave a
-briefly exiting trusted bootstrap: kill-on-drop is a request, and cancellation
-does not itself prove bootstrap exit or permanent cgroup emptiness. The permit
-is not a durable recovery fence. Successful launch means GO was issued, not
-successful exec or ACP/Hand readiness; the existing protocol supervisors must
-still observe those outcomes. Linux bootstrap is explicit and fails closed on
-other platforms, without changing ordinary local launch behavior.
+The helper sends a namespace descriptor and its init pidfd before GO. The caller
+must durably bind that physical identity while retaining the realization lock,
+then check CURRENT authorization and commit `ScopedLaunchGrant` inside the same
+synchronous guard used by revocation. Missing commit denies; backpressure retries
+with fresh authorization; an error after GO cannot discard the launched handle.
+This callback is an integration seam, not a newly installed Session lease source.
 
-This is a Linux adapter foundation, NOT an installed Worker supervision mode.
-Ordinary `LocalProcess::spawn`, Workdir Native tools and Worker capability
-reporting are unchanged. Production integration must still bind this adapter
-to the existing physical realization/Session fence, keep one owner, route
-Workdir Native tools through the same supervised boundary, and qualify
-external-supervisor loss. The trusted bootstrap acknowledgment is implemented;
-production adoption/recovery and capability advertising are not.
-The adapter does not own a Session ledger or persist cleanup receipts; it
-cannot guarantee containment against actors authorized to migrate processes
-outside the delegated hierarchy or undo already-issued remote effects.
+Forced scope stop targets the pinned init pidfd; TERM/INT travel through the
+private helper channel to the workload's process group, preserving graceful
+signal semantics. Wait/poll require both the local owner
+result and init termination observation, rather than treating leader exit as
+tree emptiness. Drop only requests termination; errors/timeouts are never durable
+cleanup receipts. The helper watches control disconnection and a conservative
+BOOTTIME execution cutoff (including host suspend). The caller must derive that
+cutoff from remaining current authority. `refresh_deadline_authorized` now reuses
+the GO grant's synchronous authorization/retry seam to send a newer absolute
+BOOTTIME cutoff. It is a transport projection, not a second lease owner or
+scheduler. The caller derives and commits it inside the current Session guard;
+omitted authorization denies, retry rechecks authority, and a committed frame
+cannot be undone by a later callback error. A send receipt is not a helper ACK.
+Signals and renewals share one short-write lock on the private channel. A partial
+write shuts down that channel rather than retrying a suffix after releasing
+authority; a zero-byte WouldBlock leaves it usable for fresh authorization.
+The helper preserves partial-read state across cutoff checks, rejects expiry
+before applying any queued renewal, and ignores older cutoffs. Transit delay
+never adds time. Explicit revocation must force-stop the scope; denying a new
+cutoff does not revoke an older still-live one.
 
-Cross-compilation of `awaken-local-process --tests` and
-`awaken-sandbox-memoryd --lib` passes for `x86_64-pc-windows-gnu` and
+Session lease-to-cutoff propagation, Session-wide launch/close
+serialization, crash-safe marker participation, Native Hand routing and Worker
+capability activation still require production integration. Built-in supervision
+capabilities therefore remain false.
+
+The real binary tests live in
+`crates/bin/awaken-sandbox/tests/linux_scoped.rs`: physical cwd with spaces/Unicode,
+synthetic credentials, binary stdio, loader-time namespace membership, denied
+grant, failed exec, detached descendants, exact scope kill, separate owner
+SIGKILL, helper SIGKILL, stalled-owner SIGSTOP and execution expiry (including
+expiry while waiting for GO). TERM/INT must reach the exact workload trap before
+normal exit. Renewal tests distinguish accepted/new, stale, denied, omitted,
+expired and retry-then-revoked updates. The accepted update keeps all detached
+members alive past the original cutoff; the replacement cutoff subsequently
+terminates them even when the owner is SIGSTOPed. An observed exited scope
+rejects further updates without calling the authorization adapter.
+Descendants each retain their own
+external observer socket; a forwarding process's EOF is not the oracle.
+An independently live neighboring scope must survive every target termination;
+cancelling its waiter retains ownership. Malformed private frames and descriptor
+handoffs fail closed, and pipe EOF proves that rejected received descriptors do
+not leak. The process boundary model reuses the existing admission/GO model,
+distinguishes init stopping from exited, and checks all four failure links under
+explicit kernel-progress fairness. `LocalProcessRenewal.cfg` composes that same
+model with a bounded absolute clock, one queued renewal and a stalled proper
+frame prefix. It checks fresh send authority, monotonic cutoff, no resurrection,
+no minted transit time and clock progress despite a stalled prefix; five exact
+mutants must violate those named properties. Unit tests own actual byte framing,
+concurrent writer serialization and real short-write/EOF behavior. The model
+does not prove a hard wall-clock bound, business lease renewal, host-kernel
+correctness or production Session recovery.
+Unavailable PID namespace/pidfd support fails rather than becoming a successful
+skip. These tests qualify the Linux adapter, not full Worker/resource recovery,
+real vendor login or cloud/local deployment.
+
+This is crash containment for trusted local work, not isolation from a hostile
+host user. Host-view namespaces can preserve physical paths while changing
+supplementary-group and host-PID semantics; those compatibility constraints must
+be qualified before admitting a TrustedHost supervision profile. External jobs
+created through Docker or remote APIs remain the corresponding resource owner's
+responsibility and cannot be undone by terminating a local execution tree.
+
+Earlier cross-compilation of `awaken-local-process --tests` and
+`awaken-sandbox-memoryd --lib` passed for `x86_64-pc-windows-gnu` and
 `x86_64-apple-darwin` (the latter selects Clang for its target C compiler).
 These are type/build checks, not executed platform tests. In particular, the
 shared `awaken-sandbox-fs` still returns `Unsupported` on Windows for nofollow
@@ -785,6 +824,11 @@ the thin `awaken-sandbox --bin awaken-sandbox` on Windows GNU and Intel Darwin.
 The broader Windows sandbox `--tests` check is blocked on this Linux host by
 the missing MinGW C compiler required by its existing `ring` dev-dependency;
 the passing thin-binary check does not substitute for that test target.
+The Hand-enabled Seatbelt integration-test cross-check is likewise blocked on
+this Linux host: `ring`'s target C build needs a Darwin sysroot. The portability
+gate now requires the real Seatbelt test when run on macOS, and unavailable
+Seatbelt is a failure, not a passing skip. Neither Linux path-renderer tests
+nor the passing local-process cross-check qualify that macOS execution row.
 
 Memory/Repository live addition remains an explicit
 create-time-only contract, not a missing hot-plug implementation to emulate.

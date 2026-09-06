@@ -44,9 +44,61 @@ fn err(e: impl ToString) -> pc::SandboxError {
     pc::SandboxError::new(e.to_string())
 }
 
-/// Process-global memo of the OS-native isolator's availability (the tool's presence
-/// is a host property, so the throwaway probe runs at most once — see `probe_ready`).
-static OS_SANDBOX_PROBE: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::const_new();
+/// Probe the actual launch profile, not only the presence of a user namespace.
+/// This is deliberately not cached: installation, permissions and host policy
+/// can change during a Worker incarnation. Readiness is observation, not consent
+/// or a process-tree supervision attestation.
+#[cfg(target_os = "linux")]
+fn linux_probe_argv() -> Vec<String> {
+    bubblewrap_argv(&RenderInput {
+        host_workspace: std::path::Path::new("/tmp"),
+        host_outputs: std::path::Path::new("/tmp"),
+        outputs_path: pc::WorkspaceLayout::OUTPUTS_ROOT,
+        mounts: &[],
+        env: &[],
+        network: &pc::NetworkPolicy::None,
+        cwd: "",
+        argv: &["/usr/bin/true".to_owned()],
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn run_native_probe_argv(argv: &[String], timeout: std::time::Duration) -> bool {
+    use pc::{ProcessHandle as _, Signal};
+    if timeout.is_zero() {
+        return false;
+    }
+    let Some(program) = argv.first() else {
+        return false;
+    };
+    let mut command = TokioCommand::new(program);
+    command
+        .args(&argv[1..])
+        .env_clear()
+        .stdin(ProcStdio::null())
+        .stdout(ProcStdio::null())
+        .stderr(ProcStdio::null());
+    // The launcher must be resolved from the same operator PATH as production,
+    // not the libc default search path selected by env_clear. No HOME, loader
+    // hooks or credential environment accompanies that executable lookup.
+    if let Some(path) = std::env::var_os("PATH") {
+        command.env("PATH", path);
+    }
+    let Ok(process) = LocalProcess::spawn(&mut command) else {
+        return false;
+    };
+    match tokio::time::timeout(timeout, process.wait()).await {
+        Ok(Ok(status)) => status.code == Some(0),
+        Ok(Err(_)) => false,
+        Err(_) => {
+            let _ = process.signal(Signal::Kill).await;
+            // A stop request is not evidence of quiescence. Probe failure never
+            // becomes readiness, even when this bounded cleanup cannot finish.
+            let _ = tokio::time::timeout(timeout, process.wait()).await;
+            false
+        }
+    }
+}
 
 /// Run the actual throwaway isolation probe: bwrap (Linux) / `sandbox-exec` (macOS)
 /// must run a trivial confined `true` here.
@@ -65,31 +117,10 @@ async fn run_os_native_probe() -> bool {
         })
     };
     #[cfg(target_os = "linux")]
-    let argv: Vec<String> = {
-        [
-            "bwrap",
-            "--unshare-user",
-            "--ro-bind",
-            "/",
-            "/",
-            "--",
-            "true",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect()
-    };
+    let argv = linux_probe_argv();
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        TokioCommand::new(&argv[0])
-            .args(&argv[1..])
-            .stdin(ProcStdio::null())
-            .stdout(ProcStdio::null())
-            .stderr(ProcStdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false)
+        run_native_probe_argv(&argv, std::time::Duration::from_secs(3)).await
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
@@ -208,28 +239,17 @@ fn control_directory_for(
 /// and the program argv.
 #[must_use]
 pub fn bubblewrap_argv(input: &RenderInput) -> Vec<String> {
-    bubblewrap_argv_for(input, true)
-}
-
-fn bubblewrap_argv_for(input: &RenderInput, isolate_process: bool) -> Vec<String> {
-    let mut a: Vec<String> = vec![s("bwrap")];
-    if isolate_process {
-        a.extend(
-            [
-                "--unshare-user",
-                "--unshare-pid",
-                "--unshare-ipc",
-                "--unshare-uts",
-            ]
+    let mut a = vec![s("bwrap")];
+    a.extend(
+        awaken_local_process::BUBBLEWRAP_PROCESS_BOUNDARY
             .into_iter()
             .map(s),
-        );
-    }
+    );
+    a.extend(["--unshare-ipc", "--unshare-uts"].into_iter().map(s));
     match input.network {
         pc::NetworkPolicy::Unrestricted => {} // share the host network namespace
         _ => a.push(s("--unshare-net")),
     }
-    a.extend(["--die-with-parent", "--new-session"].into_iter().map(s));
     a.extend(["--proc", "/proc"].into_iter().map(s));
     a.extend(["--dev", "/dev"].into_iter().map(s));
     a.extend(["--tmpfs", "/tmp"].into_iter().map(s));
@@ -426,6 +446,7 @@ impl NamespaceProvider {
     /// already-created namespace environment.
     pub fn capabilities() -> pc::SandboxCapabilities {
         pc::SandboxCapabilities {
+            process_tree_supervision: false,
             isolation: pc::IsolationClass::Namespace,
             tool_transparent: true,
             // Seatbelt is a policy boundary, not a mount namespace: it cannot make
@@ -588,16 +609,15 @@ impl pc::SandboxProvider for NamespaceProvider {
     }
 
     /// A real readiness probe of the OS-native isolator: bwrap must run an
-    /// unprivileged user namespace here (Linux), or `sandbox-exec` must run a trivial
+    /// full unprivileged Namespace profile here (Linux), or `sandbox-exec` must run a trivial
     /// Seatbelt profile (macOS). On a host that can't, this returns an error so
     /// `select_provider` fails closed at selection instead of deferring the failure
     /// to `create` (or, worse, launching an unisolated process).
     ///
-    /// **Memoized per process**: the underlying tool's availability is a host
-    /// property, so the throwaway probe runs at most once regardless of how many
-    /// times / providers ask (a hot selection path never re-spawns it).
+    /// Each observation is fresh and bounded. A previous success cannot mask
+    /// host policy revocation; a previous failure cannot mask installation.
     async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
-        let ok = *OS_SANDBOX_PROBE.get_or_init(run_os_native_probe).await;
+        let ok = run_os_native_probe().await;
         if ok {
             Ok(())
         } else {
@@ -1623,9 +1643,11 @@ impl NamespaceSandbox {
     }
 
     fn translate_macos_path(&self, value: &str) -> Option<String> {
+        let mount_root = self.root.root().join("mnt");
         let mut mappings: Vec<(&str, &std::path::Path)> = vec![
             (pc::WorkspaceLayout::ROOT, &self.host_workspace),
             (&self.outputs_path, &self.host_outputs),
+            ("/mnt", &mount_root),
         ];
         let layout = self.layout.read().expect("namespace layout lock poisoned");
         mappings.extend(
@@ -1822,3 +1844,7 @@ impl NamespaceSandbox {
 #[cfg(test)]
 #[path = "namespace/tests.rs"]
 mod tests;
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[path = "namespace/probe_tests.rs"]
+mod probe_tests;

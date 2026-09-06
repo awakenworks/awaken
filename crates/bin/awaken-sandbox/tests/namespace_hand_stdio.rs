@@ -11,6 +11,7 @@ mod binary_support;
 
 fn spec() -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "namespace-hand-path-contract".into(),
         isolation: pc::IsolationClass::Namespace,
         mounts: vec![pc::MountRequirement {
@@ -246,16 +247,17 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
      * adopted Hand sees the same sandbox path; E5=every cooperating tool and
      * the opaque Git subprocess observe `/workspace`, never the provider's
      * physical realization directory.
-     * Rules: P1 !C1=>gated skip; P2 C1+C2+C3+C4=>E1+E2;
+     * Rules: P1 !C1=>qualification failure, never a passing skip;
+     * P2 C1+C2+C3+C4=>E1+E2;
      * P3 C1+C2+C3+C5=>E3; P4 C1+C2+C6=>E4;
      * P5 C1+C3+C4 on writable workspace=>E1+E2+E5.
      */
     let base = tempfile::tempdir().expect("sandbox root");
     let provider = NamespaceProvider::new(base.path());
-    if provider.probe_ready().await.is_err() {
-        eprintln!("skipping: no usable bwrap/user namespace");
-        return;
-    }
+    provider
+        .probe_ready()
+        .await
+        .expect("P1 real Native path qualification requires a usable namespace");
     let sandbox_spec = spec();
     let realization = effect_fence("namespace-hand-realization");
     let sandbox = provider

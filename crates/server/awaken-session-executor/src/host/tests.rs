@@ -108,6 +108,7 @@ fn native_credential_profile() -> awaken_runtime_contract::CredentialRealization
 
 fn managed_test_container_capabilities() -> awaken_provisioning_contract::SandboxCapabilities {
     awaken_provisioning_contract::SandboxCapabilities {
+        process_tree_supervision: false,
         isolation: awaken_provisioning_contract::IsolationClass::Container,
         tool_transparent: true,
         path_fidelity: true,

@@ -766,6 +766,12 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -config formal/tla/LocalProcessScope.cfg formal/tla/LocalProcessLifecycle.tla
   python3 scripts/ci/check_formal_mutations.py --local-process-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/local-process-boundary" \
+    -config formal/tla/LocalProcessBoundary.cfg formal/tla/LocalProcessLifecycle.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/local-process-renewal" \
+    -config formal/tla/LocalProcessRenewal.cfg formal/tla/LocalProcessLifecycle.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/skill-version-pin" \
     -config formal/tla/SkillVersionPin.cfg formal/tla/SkillVersionPin.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \

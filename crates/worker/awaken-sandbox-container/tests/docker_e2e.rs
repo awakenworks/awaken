@@ -22,6 +22,7 @@ fn agent_argv() -> Vec<String> {
 
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
         mounts: Vec::new(),

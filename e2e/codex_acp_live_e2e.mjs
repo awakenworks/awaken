@@ -3,6 +3,7 @@
 // One script owns live deployments and the deterministic native-executable peer:
 //   CODEX_ACP_PROFILE=host-fixture node e2e/codex_acp_live_e2e.mjs
 //   CODEX_ACP_PROFILE=native-fixture AWAKEN_ACP_RUNTIME=native node e2e/codex_acp_live_e2e.mjs
+//   CODEX_ACP_PROFILE=native-host-fixture AWAKEN_ACP_RUNTIME=native node e2e/codex_acp_live_e2e.mjs
 //
 //   CODEX_ACP_LIVE=1 CODEX_ACP_PROFILE=host-login \
 //     node e2e/codex_acp_live_e2e.mjs
@@ -23,6 +24,7 @@
 // | Rule | C1 | C2 | C3-C5 | Effect |
 // | H1 | Y | host-login | Y | E1 + live local capability, no auth-file access |
 // | D1 | - | host-fixture | Y | same resource oracle, no inference service |
+// | N1 | - | native-host-fixture | Y | API-selected TrustedHost Native Hand, same resource oracle |
 // | C1 | Y | container  | Y | E1 + newly observed managed container |
 // | F1 | N | any        | - | fail before invoking Codex |
 // | F2 | Y | other      | - | fail before server/session work |
@@ -44,14 +46,15 @@ import { installHostResourceFixture, verifyAgentResources } from './fixtures/tru
 
 const profile = process.env.CODEX_ACP_PROFILE;
 const runtime = process.env.AWAKEN_ACP_RUNTIME ?? 'codex';
-const native = profile === 'native-fixture';
+const nativeHost = profile === 'native-host-fixture';
+const native = profile === 'native-fixture' || nativeHost;
 assert.ok(native ? runtime === 'native' : ['codex', 'claude'].includes(runtime), 'select the exact runtime for this profile');
-if (!['host-fixture', 'native-fixture'].includes(profile) && process.env.CODEX_ACP_LIVE !== '1') {
+if (!['host-fixture', 'native-fixture', 'native-host-fixture'].includes(profile) && process.env.CODEX_ACP_LIVE !== '1') {
   throw new Error('set CODEX_ACP_LIVE=1 to confirm this test may invoke the real Codex ACP adapter');
 }
 
-if (!['host-login', 'host-fixture', 'native-fixture', 'container'].includes(profile)) {
-  throw new Error('set CODEX_ACP_PROFILE=host-login, host-fixture, native-fixture or container');
+if (!['host-login', 'host-fixture', 'native-fixture', 'native-host-fixture', 'container'].includes(profile)) {
+  throw new Error('set CODEX_ACP_PROFILE=host-login, host-fixture, native-fixture, native-host-fixture or container');
 }
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -126,7 +129,7 @@ async function startHostLoginProfile() {
   // Reuse the runner's copy snapshot so EVERY launch keeps the selected bytes.
   const binary = snapshotExecutable(awakenBin(), path.join(temp, 'product',
     process.platform === 'win32' ? 'awaken.exe' : 'awaken'));
-  if (native) snapshotExecutable(cargoExecutable({
+  snapshotExecutable(cargoExecutable({
     cwd: ROOT, packageName: 'awaken-sandbox', targetName: 'awaken-sandbox', features: ['hand'],
   }), path.join(path.dirname(binary), process.platform === 'win32' ? 'awaken-sandbox.exe' : 'awaken-sandbox'));
   const environment = profile === 'host-fixture'
@@ -155,7 +158,7 @@ async function startHostLoginProfile() {
     `control_seal_key = ${JSON.stringify(randomBytes(32).toString('hex'))}`,
     // Host-login is the trusted local-process gate. Container isolation has its
     // own profile below, and native sandbox availability is host-specific.
-    `sandbox_tier = "${native ? 'namespace' : 'local'}"`,
+    `sandbox_tier = "${native && !nativeHost ? 'namespace' : 'local'}"`,
     'log_filter = "warn"',
     `acp_clis = ${JSON.stringify(native ? [] : [runtime])}`,
     // Select the runtime under test, without configuring a default backend or
@@ -323,7 +326,7 @@ try {
     await client.beta.sessions.delete(session.id, { betas: BETAS });
     await verifyAgentResources({
       client, runtime, temp: deployment.temp, restart: deployment.restart,
-      ...(native ? { nativeModel: 'fake-haiku' } : {}),
+      ...(native ? { nativeModel: 'fake-haiku', nativeIsolation: nativeHost ? 'workdir' : 'namespace' } : {}),
       request: (method, route, body) =>
         request(deployment.baseURL, deployment.apiKey, method, route, body),
     });
