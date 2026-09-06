@@ -501,102 +501,31 @@ delegation ownership, and terminal sealing.
 single-active invariant, lease authority, positive active epoch, and terminal
 lease clearing for every modeled transition.
 
-At the current source revision TLAPS discharges all obligations:
-
-- Runtime system safety: 143/143.
-- Implementation refinement: 108/108.
-- ThreadCommit projection safety: 49/49.
-- Managed WorkQueue safety: 35/35.
-- Session activity receipt safety: 26/26.
-- Session root creation and realization safety: 41/41.
-- LiveInbox reorder atomicity: 3/3.
-- Service lifecycle shutdown barriers: 4/4.
-- Shared mount reference safety: 29/29.
-- Observation reconciliation fencing: 69/69.
-- Executable projection refresh safety: 120/120.
+TLAPS results belong to the exact strict invocation, not a hand-maintained
+README counter. The canonical runner names the proof modules; its output records
+each module's discharged obligations. See the exact-SHA quality artifact and
+`target/test-timings/formal-run.json` for execution identity and completion.
+The receipt is not itself a theorem or a substitute for the tool reports.
 
 ## TLC exhaustive finite checks
 
-The checked configurations currently reach the following complete finite state
-graphs with zero invariant violations and zero states left on the queue:
-
-| Model | Generated | Distinct | Max depth |
-| --- | ---: | ---: | ---: |
-| RunIngress | 3,124 | 115 | 9 |
-| ThreadState | 15,001 | 3,031 | 5 |
-| SessionRunProtocol | 473,826,797 | 88,910,945 | 38 |
-| SessionThreadToolComposition | 2,098 | 924 | 34 |
-| WorkQueue | 26,521 | 4,206 | 15 |
-| SessionActivity | 436 | 79 | 7 |
-| SessionRoot | 58,273 | 8,073 | 13 |
-| SessionEventProtocol | 257 | 104 | 13 |
-| SessionStartProtocol | 81,228 | 23,171 | 29 |
-| SessionStartProtocol reachability | 121 | 109 | 20 |
-| Delegation | 5,835 | 1,097 | 14 |
-| ToolBatch | 1,414 | 979 | 12 |
-| RuntimeSystem | 110,923 | 12,896 | 13 |
-| RuntimeImplementation | 1,323,147 | 619,008 | 24 |
-| ThreadCommitProjection | 4,943 | 1,397 | 9 |
-| RemoteTool | 421 | 200 | 10 |
-| RemoteAttempt | 701 | 356 | 16 |
-| AuthzKernel | 180 | 18 | 1 |
-| SessionOwnership | 768 | 169 | 7 |
-| SessionDeletion | 67 | 27 | 8 |
-| WorkspacePathProjection | 300 | 70 | 8 |
-| SessionRuntimeProjection | 337 | 33 | 5 |
-| ManagedProjectionPublish | 75,764,860 | 18,571,810 | 29 |
-| AgentMessageProtocol | 629 | 276 | 14 |
-| AgentMessageProtocol early receipt | 10 | 10 | 10 |
-| AgentMessageProtocol late receipt recovery | 10 | 10 | 10 |
-| ToolPermissionPolicy | 4,097 | 256 | 5 |
-| CircuitBreaker | 1,573 | 478 | 10 |
-| AggregateCAS | 1,669 | 417 | 11 |
-| DeploymentCAS | 2,565,587 | 225,992 | 18 |
-| LiveInbox | 70,196 | 2,080 | 12 |
-| ServiceLifecycle | 226 | 131 | 9 |
-| ObservationReconcile | 10,055 | 2,835 | 16 |
-| ExecutableProjectionRefresh | 111,151 | 39,600 | 37 |
-| CheckpointRecovery | 462 | 141 | 8 |
-| WebhookOutbox | 10 | 6 | 4 |
-| RegistrationIntent | 1,454 | 487 | 17 |
-| ErasureSaga | 2,469 | 588 | 11 |
-| CredentialCreation | 14 | 8 | 5 |
-| MemoryCAS | 3,511 | 563 | 11 |
-| MemoryCAS copy recovery, scan/root admission and acknowledgement | 33911 | 4121 | 12 |
-| ToolResultProtocol | 273,949 | 18,744 | 14 |
-| WorkerDrain | 44 | 26 | 11 |
-| WorkerCredentialLiveness | 753,391 | 17,784 | 16 |
-| AuditCommit | 10 | 6 | 4 |
-| ConfigActivation | 85 | 35 | 9 |
-| InferenceAccessPublication | 466 | 234 | 9 |
-| ResourceBindingEffect | 21 | 10 | 6 |
-| AgentInputRevision (two writers, read/decide/commit/abort) | 317,793 | 50,326 | 17 |
-| OutcomeLifecycle | 62 | 31 | 9 |
-| SessionResourceActivation | 61 | 39 | 9 |
-| ResourceDispatch | 66,535 | 11,952 | 15 |
-| ResourceReclamation | 11,156 | 2,514 | 17 |
-| ManagementAuditIntent | 15 | 8 | 5 |
-| CredentialInventory | 7 | 4 | 3 |
-| ManagedCredentialCreation | 5,702 | 1,250 | 11 |
-| ManagedCredentialRollout | 234,903 | 28,492 | 20 |
-| RolloutEventIdentity | 42 | 17 | 6 |
-| ManagedVaultDeletion | 682,436 | 36,840 | 20 |
-| SkillVersionPin | 747 | 184 | 8 |
-| McpServer | 15 | 15 | 6 |
-| WorkerReplacement | 452,881 | 98,160 | 16 |
-| RemoteWorkerProtocol | 2,155,183 | 258,524 | 30 |
-| ACP boundary | 5 | 5 | 4 |
-| Credential effect boundary | 11 | 10 | 4 |
-| Session realization mutex | 23 | 20 | 12 |
-| Credential rotation workflow | 1,547 | 548 | 12 |
-| Credential rotation reachability | 6 | 6 | 6 |
-| Deployment execution workflow | 70 | 60 | 8 |
-| Deployment execution reachability | 15 | 15 | 5 |
-| Resource lifecycle workflow | 50 | 22 | 9 |
-| Resource lifecycle reachability | 6 | 6 | 6 |
-
-These are bounded exhaustive checks, not unbounded liveness proofs. The bounds
+TLC's generated/distinct state counts and maximum depth depend on the selected
+source and configuration. Read those values from the same strict invocation's
+tool output; this README does not duplicate a table of historical measurements.
+Require successful completion, no invariant violations and an empty state queue.
+These are bounded exhaustive checks, not unbounded liveness proofs; the bounds
 are explicit in the corresponding `.cfg` files.
+
+For the current declared obligation counts and proof grades, use the existing
+ledger-generated report:
+
+```sh
+python3 scripts/ci/check_formal_coverage.py --json
+```
+
+That command inventories evidence; only a completed strict run establishes that
+the current source passed its registered proofs. A `running` or source-mismatched
+receipt is not success evidence.
 
 ## Executable Rust refinement bridge
 

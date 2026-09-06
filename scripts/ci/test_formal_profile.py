@@ -2,6 +2,7 @@
 
 import copy
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -25,6 +26,18 @@ def fixture():
 
 
 class ProfileTests(unittest.TestCase):
+    def test_readme_does_not_duplicate_live_proof_measurements(self):
+        # D1 source/model changes make copied proof counts and state-space tables
+        # stale; D2 the ledger CLI and exact-invocation reports remain canonical.
+        # Require D2 and reject both old D1 forms. This is a documentation drift
+        # gate, not evidence that the displayed invocation actually passed.
+        root = Path(__file__).resolve().parents[2]
+        text = (root / "formal/README.md").read_text()
+        self.assertIn("check_formal_coverage.py --json", text)
+        self.assertIn("target/test-timings/formal-run.json", text)
+        self.assertIsNone(re.search(r"(?m)^- .*: [0-9]+/[0-9]+\.", text))
+        self.assertNotIn("| Model | Generated | Distinct |", text)
+
     def test_requirement_selection_is_exact_and_deduplicated(self):
         # C1 criticality=P0/P1/P2; C2 safety/other; C3 self/external owner.
         # R1 only P0+safety+self contributes. A mandatory anchor keeps the
