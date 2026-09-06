@@ -24,6 +24,20 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- Agent input revisions use the existing config-resolver validator and one
+  private scalar decision kernel. Kani checks all signed revision values and
+  aggregate-equality classes: invalid attempts reject, positive exact replays
+  do not write, successors cannot wrap, and corrupt stored revisions are not
+  silently repaired. The PostgreSQL adapter reuses the existing transaction
+  advisory-lock implementation before reading, including absent-row creation;
+  SQLite keeps its IMMEDIATE transaction. AgentInputRevision.tla now exposes
+  two writers' read/decide/commit/abort interleavings, and removing the lock must
+  violate the exact-successor invariant. Controlled real-PostgreSQL overlap and
+  SQLite exhaustion regressions cover adapters, not universal Rust/SQL refinement.
+- Session authorization collapse directly proves all three IAM decision
+  variants: only explicit Allow admits; Deny and RequireApproval both deny.
+  Existing method property tests remain sampled tests, not a proof of arbitrary
+  strings or the whole middleware/token/policy path.
 - Worker credentials, ACP capabilities and their refresh generation now share
   one atomic observation snapshot. Initial and periodic heartbeats freeze that
   snapshot once before projecting wire fields; independent getters and the

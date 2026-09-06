@@ -437,8 +437,12 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   Agent's input configuration: a changed configuration must be the exact next
   revision, an identical current revision is an idempotent replay, and every
   stale, skipped, zero, or conflicting revision is rejected without mutation.
-  Authorization is deliberately outside this state machine and remains an edge
-  admission concern.
+  Read/decide/commit are separate actions for two concurrent writers; an abort
+  releases admission without writing. Disabling serialization reproduces the
+  PostgreSQL missing-row-lock bug and must violate the exact-successor invariant
+  in the strict mutation gate. The production scalar validator has a separate
+  full-i64 Kani proof; database transactions and structural content equality are
+  not universally implementation-refined. Authorization remains edge admission.
 - `OutcomeLifecycle.tla` covers the zero-based Worker/Grader loop, stable logical
   Run identity under replay, the evaluation budget, the exactly-once ungraded
   acknowledgment, interruption, infrastructure failure, and terminal absorption.
@@ -566,7 +570,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | ConfigActivation | 85 | 35 | 9 |
 | InferenceAccessPublication | 466 | 234 | 9 |
 | ResourceBindingEffect | 21 | 10 | 6 |
-| AgentInputRevision | 297 | 65 | 9 |
+| AgentInputRevision (two writers, read/decide/commit/abort) | 317,793 | 50,326 | 17 |
 | OutcomeLifecycle | 62 | 31 | 9 |
 | SessionResourceActivation | 61 | 39 | 9 |
 | ResourceDispatch | 66,535 | 11,952 | 15 |

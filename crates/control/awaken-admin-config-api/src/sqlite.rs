@@ -1006,6 +1006,52 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_agent_input_revision_rejects_and_keeps_the_store_usable() {
+        // C1 durable revision is MAX (fixture seeds the unreachable-in-a-short
+        // test boundary); C2 replay vs changed content. R1 replay is a no-op;
+        // R2 changed MAX -> conflict, preserving bytes and releasing the lock.
+        // Regression: unchecked addition panicked while holding the store mutex.
+        let store = SqliteAdminStore::open_in_memory().unwrap();
+        let current = AgentInputConfig {
+            agent_id: "agent".into(),
+            environment: None,
+            inputs: Vec::new(),
+            revision: i64::MAX,
+        };
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                &format!("INSERT INTO {NS}_agent_resource(agent_id, data) VALUES (?1, ?2)"),
+                params![
+                    "workspace\u{1f}agent",
+                    serde_json::to_string(&current).unwrap()
+                ],
+            )
+            .unwrap();
+        store
+            .put_agent_inputs("workspace", current.clone())
+            .unwrap();
+        let mut changed = current.clone();
+        changed.environment = Some(awaken_config_resolver::AgentEnvironmentBinding {
+            environment_id: "changed".into(),
+            revision: 1,
+        });
+        assert_eq!(
+            store.put_agent_inputs("workspace", changed),
+            Err(AgentInputRepositoryError::RevisionConflict {
+                current: i64::MAX,
+                attempted: i64::MAX
+            })
+        );
+        assert_eq!(
+            store.get_agent_inputs("workspace", "agent").unwrap(),
+            Some(current)
+        );
+    }
+
+    #[test]
     fn rows_survive_a_reopen_from_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("admin.db");
