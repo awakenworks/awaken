@@ -221,6 +221,27 @@ pub fn validate_resume(ticket: &ResumeTicket, command: &ResumeCommand) -> Result
     Ok(())
 }
 
+/// Host-bound continuation of tools that Awaken itself exports. Selection is
+/// derived from the actual Session export set, never from an alias or provider
+/// name. External backends retain their own model loop and third-party clients.
+#[async_trait::async_trait]
+pub trait OwnedToolContinuation: Send + Sync {
+    fn owns_tool(&self, tool_id: &str) -> bool;
+
+    async fn resume(
+        &self,
+        activation: crate::activation::RunActivation,
+        command: ResumeCommand,
+        context: crate::RuntimeRunContext,
+    ) -> crate::execution::Result<awaken_agent_contract::agent::run::RunState>;
+
+    async fn recover(
+        &self,
+        activation: crate::activation::RunActivation,
+        context: crate::RuntimeRunContext,
+    ) -> crate::execution::Result<awaken_agent_contract::agent::run::RunState>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

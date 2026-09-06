@@ -197,6 +197,8 @@ pub struct AcpRunExecutor {
     /// policy / HITL uniformly across native and ACP runs.
     permission: Arc<dyn PermissionResolver>,
     permission_grant_observer: Option<Arc<dyn PermissionGrantObserver>>,
+    owned_tool_continuation:
+        Option<Arc<dyn awaken_runtime_contract::resume::OwnedToolContinuation>>,
     /// Recovers a local-dir CLI's session across directories/machines. Defaults to
     /// no-op (local config home as-is); a host wires a durable, cross-machine one.
     session_home: Arc<dyn SessionHomeProvider>,
@@ -223,6 +225,7 @@ impl AcpRunExecutor {
             observer: None,
             permission: Arc::new(AllowAll),
             permission_grant_observer: None,
+            owned_tool_continuation: None,
             session_home: Arc::new(NoSessionHome),
             session_mcp_servers: None,
         }
@@ -261,6 +264,17 @@ impl AcpRunExecutor {
         observer: Arc<dyn PermissionGrantObserver>,
     ) -> Self {
         self.permission_grant_observer = Some(observer);
+        self
+    }
+
+    /// Bind the Host's exact Session-owned tool continuation. Third-party MCP
+    /// calls stay on the external client's permission/re-emission path.
+    #[must_use]
+    pub fn with_owned_tool_continuation(
+        mut self,
+        continuation: Option<Arc<dyn awaken_runtime_contract::resume::OwnedToolContinuation>>,
+    ) -> Self {
+        self.owned_tool_continuation = continuation;
         self
     }
 
@@ -320,6 +334,7 @@ impl AcpRunExecutor {
                 grant_observer: grant_observer.clone(),
             }),
             permission_grant_observer: grant_observer,
+            owned_tool_continuation: None,
             session_home: self.session_home.clone(),
             session_mcp_servers: Some(mcp_servers.to_vec()),
         }
@@ -506,7 +521,7 @@ impl AcpRunExecutor {
         context: RuntimeRunContext,
         permission_resume: Option<PermissionResume>,
     ) -> Result<RunState> {
-        let context = activation.narrow_context(context);
+        let mut context = activation.narrow_context(context);
         // Restore the CLI's portable session-home before launch and harvest it after,
         // so a local-dir CLI's session recovers across directories/machines. A
         // Gateway (server-side) or stateless adapter has no local session-home → the
@@ -515,6 +530,9 @@ impl AcpRunExecutor {
         if let Some((key, plan)) = &home {
             verify_attempt_ownership(context.ownership.as_deref()).await?;
             self.session_home.restore(key, plan).await;
+        }
+        if let Some(state) = self.prepare_owned_tools(&activation, &mut context).await? {
+            return Ok(state);
         }
         let result = self.drive(activation, &context, permission_resume).await;
         if let Some((key, plan)) = &home {
@@ -548,6 +566,25 @@ impl RunAttemptExecutor for AcpRunExecutor {
             return Err(Error::Execution(
                 "ACP activation does not match the resumed Run".to_string(),
             ));
+        }
+        if ticket.reason() == AwaitReason::ToolPermission
+            && let Some((_, pending)) = ticket.tool_call()
+            && let Some(continuation) = &self.owned_tool_continuation
+            && continuation.owns_tool(&pending.tool_id)
+        {
+            let state = continuation
+                .resume(activation.clone(), command, context.clone())
+                .await?;
+            if state != RunState::Running {
+                return Ok(state);
+            }
+            // The kernel already committed context and the actual ToolResult.
+            // The SDK's cancelled historical call remains untouched; request-only
+            // committed receipts below tell its model what actually happened.
+            activation.input.clear();
+            return self
+                .execute_with_permission_resume(activation, context, None)
+                .await;
         }
         match command.result {
             ResumeResult::Input(input) if ticket.reason() == AwaitReason::ManualPause => {
@@ -1858,6 +1895,8 @@ pub use subprocess::{
     mcp_session_servers_from_routes, project_launch, with_backend_owned_host_environment,
     with_local_host_launch_environment,
 };
+
+mod tool_continuation;
 
 #[cfg(test)]
 mod tests;

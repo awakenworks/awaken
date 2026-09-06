@@ -6,6 +6,7 @@ pub(crate) async fn run_agent_loop(
     runtime: &Runtime,
     activation: RunActivation,
     context: RuntimeRunContext,
+    continuation: ResumeContinuation,
 ) -> Result<RunState> {
     let mut resolved = runtime
         .resolve(&activation.snapshot)
@@ -81,7 +82,7 @@ pub(crate) async fn run_agent_loop(
     // message id, a fresh run's uncommitted input passes through unchanged while a
     // reclaimed or redelivered input is dropped — input delivery is idempotent.
     transcript.extend(fresh_input.iter().cloned());
-    let store = store_from_commands(
+    let store = store_from_run_commands(
         context
             .reader
             .as_ref()
@@ -89,6 +90,20 @@ pub(crate) async fn run_agent_loop(
             .unwrap_or_default(),
         &run_id,
     );
+    if continuation == ResumeContinuation::ToolBatch {
+        return drive_tool_batch(
+            runtime,
+            &resolved,
+            &env,
+            &run_id,
+            &thread_id,
+            delegation_origin.as_ref(),
+            &context,
+            StepLedger::new(transcript, fresh_input, Vec::new(), Vec::new()),
+            store,
+        )
+        .await;
+    }
     let step_result = drive(
         runtime,
         &resolved,

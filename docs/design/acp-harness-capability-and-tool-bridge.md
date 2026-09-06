@@ -85,8 +85,14 @@ reachable inside containers.
 The expected write path is:
 
 `ACP permission ask -> Awaken policy -> durable Await ticket -> human decision
--> ACP resume -> one-shot execution grant -> Session MCP tool -> rooted RawTool
--> Artifact/Trace -> completion`.
+-> Runtime tool continuation -> rooted ToolExecutor -> committed ToolResult
+-> read-only result context -> ACP inference -> Artifact/Trace -> completion`.
+
+The Host binds this continuation only for the exact Session export membership,
+reusing the same membership held by MCP grants. Always-allow calls still use the
+Session MCP endpoint. Third-party MCP tools remain owned by the CLI and retain
+the exact-argument, one-shot permission continuation below. Native and ACP-owned
+continuations share the Runtime executor, admission and commit boundaries.
 
 Claude streams alias display titles (for example `Read File`) before its
 permission request identifies the resolved `mcp__awaken_session__read` target.
@@ -287,8 +293,9 @@ effect or replace Runtime-owned durable operation tokens. The relay still keeps
 the unresolved old operation indeterminate and rejects a distinct unsent call
 through the existing pre-dispatch replacement path.
 
-A loaded ACP session may remember a permission-boundary request as cancelled.
-The continuation therefore carries the immutable ticket's exact arguments and
+For tools owned by the external CLI, a loaded ACP session may remember a
+permission-boundary request as cancelled. That continuation therefore carries
+the immutable ticket's exact arguments and
 asks the agent to reissue that request after approval, or refrain after denial.
 The existing one-shot resolver still requires exact tool and argument equality;
 this prompt does not grant a different command or establish that execution has
@@ -320,8 +327,8 @@ also distinguishes cancellation from rejection. A future reliable continuation
 must retain Awaken's committed ticket, execution ownership and exact effect
 receipt; these SDK options alone are not evidence that this is implemented.
 
-The Runtime now exposes `Runtime::resume_tool_batch` as the shared durable
-permission phase without a Native parent inference. It uses the same ticket
+The Runtime exposes `Runtime::resume_tool_batch` and `recover_tool_batch` as the
+shared durable permission/reclaim phase without a Native parent inference. It uses the same ticket
 validator, `drive_resumed`, exact pending call, execution admission/ownership
 boundary and `dispatch` batch recovery as Native `resume`. It requires a commit
 coordinator and an owned tool-permission ticket. The caller must bind the exact
@@ -346,13 +353,42 @@ await/resume and reclaim without duplicate invocation or publication. Existing
 result tickets at this owned-permission entry. Run these with
 `cargo test -p awaken-runtime --test permission --test awaiting`.
 
-This kernel entry is not yet wired to ACP. The current ACP path above still
-requires re-emission, and the failed real Cowork long-write task remains failed.
-Remaining integration must select Awaken-owned bridge tools at the existing Host
-boundary, recover their committed batch before external inference, and project
-a truthful executed-tool receipt into the external continuation without editing
-the SDK's historical transcript. Successful kernel tests do not certify that
-integration, a Claude Cowork app comparison, or any deployment topology.
+Runtime Host now binds the neutral `OwnedToolContinuation` port to its existing
+Runtime and Session export membership. ACP routes owned permission decisions to
+that port before launching its next process and recovers an owned open batch
+before inference. A mixed execution-owner batch fails closed. The Run-scoped
+state filter is shared from runtime-contract, including the existing legacy
+batch migration, so another Run cannot replace the selected batch. Worker
+`RecoveryProjection` advances after acknowledged commits and supplies those
+fresh results through the existing committed-read port.
+
+The ACP request projection selects Runtime-minted, Assistant-call-paired results
+from committed Thread messages and preserves ordered content plus `is_error`.
+It rebuilds this read-only context on each attempt, including later Runs, without
+an acknowledgement cursor dependent on opaque SDK session-home persistence.
+A failure between tool-result commit and external delivery therefore loses no
+receipt and authorizes no repeated effect. SDK-owned results and unowned or
+User-authored calls are excluded. The existing ACP `session/load` replay sink
+continues discarding historical notifications; no SDK journal is rewritten.
+
+The Host test binds the actual Runtime, proves exact long-argument execution or
+zero execution on denial, and verifies that direct continuation leaves no MCP
+grant to consume again. ACP tests cover routing, mixed/foreign/finalized batch
+selection, missing durable wiring, and cross-Run receipt projection. The
+four-crate Runtime/runtime-contract/ACP/Host regression passed 1,169 tests with
+one external CLI test ignored. The rebuilt `0a710cbb1` product subsequently
+completed the unchanged real-model Cowork batch case in Namespace using Claude
+ACP/SDK and `deepseek-v4-flash`: fixture `cowork-service-9wz4rj`, Session
+`sesn_fnv1a64:84dcf6631bbcf351`, 9 approvals and 11 paired tool outcomes. One
+missing-`python-docx` error remained visible; the model continued and delivered
+both customer Word files plus the exact index and exception CSVs. Independent
+Office rendering and visual inspection passed, inputs stayed unchanged, the
+command exited zero and canonical Session disposal completed. Keep the original
+failed long-write evidence as historical evidence. This fresh task validates the
+integrated owned-tool path, not every possible long argument or recovery window.
+Claude Cowork app comparison and remaining deployment topology acceptance are
+still separate, uncompleted gates; application evidence is indexed in Cowork's
+`docs/verification.md`.
 
 Physical Hand exports are created only after Environment binding, never during
 deferred reservation. The MCP `RawTool` port delegates to

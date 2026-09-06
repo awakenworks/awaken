@@ -77,7 +77,7 @@ pub(super) async fn finish(
     // Parent termination, unfinished batch sealing, unconsumed-result discard,
     // and child-cancellation intent become one ThreadCommit.
     if matches!(run_state, RunState::Ended(_)) {
-        let mut store = store_from_commands(
+        let mut store = store_from_run_commands(
             context
                 .reader
                 .as_ref()
