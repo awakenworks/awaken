@@ -457,6 +457,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness portable_aggregate_revision_is_strictly_monotonic_and_never_wraps \
     --harness resource_lifecycle_timestamps_project_the_exact_transition \
     --harness stale_resource_purge_claim_cannot_commit_receipt
+  run_kani awaken-cli \
+    --harness unchanged_observation_coalesces_and_failed_refresh_retains_fence
   run_kani awaken-mcp-server-core \
     --harness one_request_has_at_most_one_final_response \
     --harness notifications_never_have_a_jsonrpc_response \

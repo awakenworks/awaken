@@ -4,6 +4,42 @@
 
 use awaken_config_service::PublicationBindingReconciler;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObservationReconcileEvent {
+    FingerprintObserved { unchanged: bool },
+    PublicationFinished { succeeded: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObservationReconcileEffect {
+    Coalesce,
+    Publish,
+    AdvanceFence,
+    RetainFence,
+}
+
+/// The sole decision kernel for coalescing an observation and advancing its
+/// successful-publication fence. The mutex-owning gate supplies both events in
+/// order while holding the same lock.
+const fn observation_reconcile_effect(
+    event: ObservationReconcileEvent,
+) -> ObservationReconcileEffect {
+    match event {
+        ObservationReconcileEvent::FingerprintObserved { unchanged: true } => {
+            ObservationReconcileEffect::Coalesce
+        }
+        ObservationReconcileEvent::FingerprintObserved { unchanged: false } => {
+            ObservationReconcileEffect::Publish
+        }
+        ObservationReconcileEvent::PublicationFinished { succeeded: true } => {
+            ObservationReconcileEffect::AdvanceFence
+        }
+        ObservationReconcileEvent::PublicationFinished { succeeded: false } => {
+            ObservationReconcileEffect::RetainFence
+        }
+    }
+}
+
 pub(crate) struct WorkerObservationReconcileGate {
     last_reconciled: tokio::sync::Mutex<Option<String>>,
     source: std::sync::Arc<dyn awaken_coordinator::WorkerObservationSource>,
@@ -65,12 +101,26 @@ impl WorkerObservationReconcileGate {
         // reconcile: only a successful publication refresh advances the fence,
         // so a failure is retried by the next heartbeat.
         let mut last = self.last_reconciled.lock().await;
-        if last.as_deref() == Some(fingerprint.as_str()) {
-            return Ok(0);
+        match observation_reconcile_effect(ObservationReconcileEvent::FingerprintObserved {
+            unchanged: last.as_deref() == Some(fingerprint.as_str()),
+        }) {
+            ObservationReconcileEffect::Coalesce => return Ok(0),
+            ObservationReconcileEffect::Publish => {}
+            ObservationReconcileEffect::AdvanceFence | ObservationReconcileEffect::RetainFence => {
+                unreachable!("an observed fingerprint cannot produce a completion effect")
+            }
         }
-        let changed = reconciler.reconcile_all().await?;
-        *last = Some(fingerprint);
-        Ok(changed)
+        let result = reconciler.reconcile_all().await;
+        match observation_reconcile_effect(ObservationReconcileEvent::PublicationFinished {
+            succeeded: result.is_ok(),
+        }) {
+            ObservationReconcileEffect::AdvanceFence => *last = Some(fingerprint),
+            ObservationReconcileEffect::RetainFence => {}
+            ObservationReconcileEffect::Coalesce | ObservationReconcileEffect::Publish => {
+                unreachable!("a publication result cannot produce an observation effect")
+            }
+        }
+        result
     }
 }
 
@@ -132,6 +182,36 @@ mod tests {
     struct RecordingReconciler {
         calls: AtomicUsize,
         fail: AtomicBool,
+    }
+
+    #[test]
+    fn observation_reconcile_decision_table_is_total_and_fail_closed() {
+        // Causes: C1 an observed fingerprint is unchanged; C2 a requested
+        // publication succeeds. Effects: E1 coalesce without publication, E2
+        // request publication, E3 advance the successful fingerprint fence,
+        // E4 retain the prior fence for retry. Constraints: C1 applies only to
+        // the observation phase and C2 only to completion. Decision table:
+        // O1 unchanged=>E1; O2 changed=>E2; P1 success=>E3; P2 failure=>E4.
+        for (event, expected) in [
+            (
+                ObservationReconcileEvent::FingerprintObserved { unchanged: true },
+                ObservationReconcileEffect::Coalesce,
+            ),
+            (
+                ObservationReconcileEvent::FingerprintObserved { unchanged: false },
+                ObservationReconcileEffect::Publish,
+            ),
+            (
+                ObservationReconcileEvent::PublicationFinished { succeeded: true },
+                ObservationReconcileEffect::AdvanceFence,
+            ),
+            (
+                ObservationReconcileEvent::PublicationFinished { succeeded: false },
+                ObservationReconcileEffect::RetainFence,
+            ),
+        ] {
+            assert_eq!(observation_reconcile_effect(event), expected);
+        }
     }
 
     #[async_trait::async_trait]
@@ -309,4 +389,35 @@ mod tests {
             .unwrap();
         assert_eq!(reverted, unchanged, "unchanged evidence still coalesces");
     }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn unchanged_observation_coalesces_and_failed_refresh_retains_fence() {
+    // Symbolic form of the phase-specific decision table. Both Boolean domains
+    // are exhausted and no observation can emit a completion effect (or vice
+    // versa).
+    let unchanged = kani::any::<bool>();
+    let observation =
+        observation_reconcile_effect(ObservationReconcileEvent::FingerprintObserved { unchanged });
+    assert_eq!(
+        observation,
+        if unchanged {
+            ObservationReconcileEffect::Coalesce
+        } else {
+            ObservationReconcileEffect::Publish
+        }
+    );
+
+    let succeeded = kani::any::<bool>();
+    let completion =
+        observation_reconcile_effect(ObservationReconcileEvent::PublicationFinished { succeeded });
+    assert_eq!(
+        completion,
+        if succeeded {
+            ObservationReconcileEffect::AdvanceFence
+        } else {
+            ObservationReconcileEffect::RetainFence
+        }
+    );
 }
