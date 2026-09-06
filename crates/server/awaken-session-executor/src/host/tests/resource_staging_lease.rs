@@ -539,6 +539,108 @@ impl StagingFixture {
 
 struct WorkerProofGate(std::sync::Mutex<bool>);
 
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "required real Linux helper supplied by the portability supervision gate"]
+async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_lease() {
+    use awaken_provisioning_contract::Sandbox as _;
+    // S22-S28 end-to-end: typed deployment -> actual probe/install -> unbound candidate (both spawn
+    // seams denied) -> existing publication owner binds -> real tree starts ->
+    // idempotent preparation retry -> existing sweep with NO due Session lease
+    // refreshes -> Worker close causes refresh and launch denial -> exact tree
+    // stop. A real workload File survives denial/stop. No vendor/cloud claim.
+    let base = tempfile::tempdir().unwrap();
+    let gate = Arc::new(WorkerProofGate(std::sync::Mutex::new(true)));
+    let mut deployment = crate::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = crate::SandboxTier::Local;
+    deployment.sandbox_dir = Some(base.path().into());
+    deployment.sandbox.trusted_host_scoped_execution = true;
+    let host = SharedHost::new_with_deployment(Arc::new(OkModel), "stub", deployment)
+        .with_session_environment_from_deployment(Some(Arc::new(
+            crate::session_environment::UnusedHandExecutorFactory,
+        )))
+        .await
+        .with_execution_authority(gate.clone());
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "worker".into(),
+        runtime_incarnation: "runtime".into(),
+        epoch: 1,
+        expires_at_unix_ms: u64::MAX,
+    };
+    host.install_session_realization_lease(SESSION, lease.clone())
+        .unwrap();
+    let provider = host.backend_owned_session_provider.as_ref().unwrap();
+    let mut spec = crate::session_environment::environment_test_spec();
+    spec.scope = SESSION.into();
+    let fence = lease.sandbox_effect_fence("scoped-candidate").unwrap();
+    let environment = provider
+        .create_effective_for_effect(
+            &spec,
+            Some(&fence),
+            None,
+            None,
+            awaken_sandbox_container::ContainerRealizationIntent::Create,
+        )
+        .await
+        .unwrap();
+    let environment = Arc::new(environment);
+    let crate::session_environment::SessionEnvironment::Workdir { sandbox, .. } =
+        environment.as_ref()
+    else {
+        unreachable!()
+    };
+    let command = || {
+        let mut command = awaken_provisioning_contract::Command::new([
+            "/bin/sh",
+            "-c",
+            "printf exact > ready; setsid /bin/sleep 60 & wait",
+        ]);
+        command.cwd = "/workspace".into();
+        command.stdio = awaken_provisioning_contract::Stdio::Null;
+        command
+    };
+    assert!(sandbox.spawn(command()).await.is_err());
+    assert!(sandbox.spawn_agent(command()).await.is_err());
+    let first = host
+        .begin_session_environment_preparation(SESSION, environment.clone())
+        .unwrap();
+    assert!(!sandbox.needs_execution_authority());
+    let retry = host
+        .begin_session_environment_preparation(SESSION, environment.clone())
+        .unwrap();
+    assert!(Arc::ptr_eq(&first.environment, &retry.environment));
+    let process = sandbox.spawn(command()).await.unwrap();
+    let ready = sandbox.workspace_path().join("workspace/ready");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while std::fs::read(&ready).ok().as_deref() != Some(b"exact") {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let timing =
+        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000);
+    let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+    assert_eq!(
+        host.renew_due_session_realizations(now, timing)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(process.poll().await.unwrap().is_none());
+    *gate.0.lock().unwrap() = false;
+    assert!(
+        host.renew_due_session_realizations(now, timing)
+            .await
+            .is_err(),
+        "no-due early return must not bypass physical refresh"
+    );
+    assert!(sandbox.spawn(command()).await.is_err());
+    environment.stop_bound_processes().await.unwrap();
+    assert!(process.poll().await.unwrap().is_some());
+    assert_eq!(std::fs::read(ready).unwrap(), b"exact");
+}
+
 impl awaken_provisioning_contract::CurrentExecutionAuthority for WorkerProofGate {
     fn with_current(
         &self,

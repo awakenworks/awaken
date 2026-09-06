@@ -38,6 +38,101 @@ fn sh(script: &str) -> pc::Command {
     c
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn execution_deployment_selects_once_and_never_claims_unqualified_supervision() {
+    use awaken_sandbox_local::LocalExecutionDeployment;
+    use pc::Sandbox as _;
+    // Cause/effect table: P1 relative binary -> reject configuration; P2 jailed
+    // provider -> reject host-view scope; P3 second installation -> reject;
+    // P4 no current fence -> reject before filesystem effects; P5 fenced create
+    // and exact spec adoption -> selected/unbound, both spawn seams deny;
+    // P6 spec-less adoption -> reject downgrade; P7 hard supervision demand ->
+    // reject (Managed Git and complete Worker bootstrap are not yet qualified).
+    // Configuration is immutable deployment data, NOT capability evidence.
+    // P8 Ready replay selects afresh; P9 legacy/restore cannot weaken it;
+    // P10 terminal reconstruction retains a selected, non-executable owner.
+    assert!(LocalExecutionDeployment::new("relative".into(), "/helper".into()).is_err());
+    assert!(LocalExecutionDeployment::new("/launcher".into(), "relative".into()).is_err());
+    let deployment =
+        LocalExecutionDeployment::new("/unused-launcher".into(), "/unused-helper".into()).unwrap();
+    let base = tempfile::tempdir().unwrap();
+    assert!(
+        LocalProvider::new(base.path())
+            .install_execution_deployment(deployment.clone())
+            .is_err()
+    );
+    let mut provider = LocalProvider::trusted_host(base.path());
+    provider
+        .install_execution_deployment(deployment.clone())
+        .unwrap();
+    assert!(provider.install_execution_deployment(deployment).is_err());
+    assert!(!pc::SandboxProvider::capabilities(&provider).process_tree_supervision);
+    let spec = spec("selected-boundary");
+    assert!(provider.create_sandbox(&spec).await.is_err());
+    assert_eq!(std::fs::read_dir(base.path()).unwrap().count(), 0);
+    let fence = pc::SandboxEffectFence::new("select", "owner", "runtime", 1, u64::MAX).unwrap();
+    let sandbox = provider
+        .create_sandbox_for_effect(&spec, &fence, None)
+        .await
+        .unwrap();
+    assert!(sandbox.has_scoped_execution() && sandbox.needs_execution_authority());
+    let handle = sandbox.handle();
+    assert!(sandbox.spawn(sh("exit 0")).await.is_err());
+    assert!(sandbox.spawn_agent(sh("exit 0")).await.is_err());
+    assert!(
+        sandbox.needs_execution_authority(),
+        "denial cannot downgrade scope"
+    );
+    assert!(provider.adopt_sandbox(&handle).await.is_err());
+    let adopted = provider
+        .adopt_sandbox_with_spec(&spec, &handle)
+        .await
+        .unwrap();
+    assert_eq!(adopted.handle(), handle);
+    assert!(adopted.has_scoped_execution() && adopted.needs_execution_authority());
+    let replay = provider
+        .create_sandbox_for_effect(&spec, &fence, None)
+        .await
+        .unwrap();
+    assert!(replay.has_scoped_execution() && replay.needs_execution_authority());
+    assert!(
+        provider
+            .adopt_sandbox_with_spec(&spec, &common::add_future_restoration(&handle))
+            .await
+            .is_err()
+    );
+    let mut legacy_spec = spec.clone();
+    legacy_spec.scope = "legacy-boundary".into();
+    let legacy = LocalProvider::trusted_host(base.path())
+        .create_sandbox(&legacy_spec)
+        .await
+        .unwrap();
+    assert!(
+        provider
+            .adopt_sandbox_with_spec(&legacy_spec, &legacy.handle())
+            .await
+            .is_err()
+    );
+    let terminal_fence =
+        pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX).unwrap();
+    let terminal = provider
+        .prepare_terminal_sandbox_for_effect(&spec, Some(&handle), Some(&fence), &terminal_fence)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(terminal.has_scoped_execution() && terminal.needs_execution_authority());
+    assert!(terminal.spawn(sh("exit 0")).await.is_err());
+    let mut required = spec;
+    required.process_tree_supervision = true;
+    assert!(
+        provider
+            .create_sandbox_for_effect(&required, &fence, None)
+            .await
+            .is_err()
+    );
+}
+
 #[tokio::test]
 async fn capabilities_are_workdir_and_not_tool_transparent() {
     let tmp = tempfile::tempdir().unwrap();

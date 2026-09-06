@@ -447,6 +447,31 @@ fn standard_builder_derives_from_its_installed_materializer() {
 }
 
 #[test]
+fn worker_builder_rejects_scoped_execution_without_platform_or_host_consent() {
+    // W1 typed builder bypasses TOML but must obey the same admission rule.
+    // W2 disabled/valid selection never attests a full supervision guarantee.
+    for scoped in [false, true] {
+        for trusted in [false, true] {
+            let mut deployment = deployment();
+            deployment.sandbox_tier = awaken_session_executor::SandboxTier::Namespace;
+            deployment.sandbox.trusted_host_enabled = trusted;
+            deployment.sandbox.trusted_host_scoped_execution = scoped;
+            let result = WorkerNodeBuilder::new(
+                awaken_worker_transport_security::WorkerUpstream::new("http://control"),
+            )
+            .with_deployment_config(deployment)
+            .with_standard_manifest(Default::default())
+            .build();
+            let allowed = !scoped || (cfg!(target_os = "linux") && trusted);
+            assert_eq!(result.is_ok(), allowed);
+            if let Ok(worker) = result {
+                assert!(!worker.manifest().sandbox.process_tree_supervision);
+            }
+        }
+    }
+}
+
+#[test]
 fn explicit_manifest_cannot_overstate_session_environment_recovery() {
     // Cause/effect decision table: C1=the installed default deployment uses
     // AttachedExec/NonRecoverable; C2=an explicit manifest claims

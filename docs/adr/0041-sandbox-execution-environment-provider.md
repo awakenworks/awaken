@@ -691,12 +691,65 @@ serializes launch against adoption, replay, checkpoint and terminal effects.
 Multiple live participants share that marker; only positively absent entries
 may be reclaimed. Rebuild source evidence retains the same participants.
 
+Operator selection is carried by the existing standalone Worker/all-in-one
+configuration key `sandbox_trusted_host_scoped_execution = true` (default
+false). It requires Linux plus the Local tier or the existing explicit
+TrustedHost opt-in. The one Deployment validator rejects unsupported combinations
+for file-based, typed Worker and direct Host construction. Host startup uses the
+existing release-companion locator and resolves bubblewrap once from absolute
+operator PATH entries, never Agent environment. A disposable real scoped command
+must complete private handoff and exact-tree exit before installation. Missing,
+incompatible or stalled binaries fail startup without direct-execution fallback.
+Repeated initialization preserves the exact installed deployment; configuration
+replacement is rejected, and provider readiness reuses the same probe.
+The existing `SessionExecutionBinding` model now distinguishes startup
+readiness from current business authority: selecting a scope requires a
+completed probe, but that fact alone can never authorize an effect. Its
+probe-bypass mutant and reachable candidate/resident effects guard both safety
+and non-vacuity. The probe's actual OS evidence remains a model assumption,
+exercised separately by real Linux tests rather than claimed as refinement.
+
+The existing Session preparation owner then binds current Worker/Session
+authority before its first effect; the probe grants no business authority.
+The startup and lease-refresh integration test follows this actual configuration
+path rather than manually configuring a test-only provider. This opt-in exposes
+the installed Local hardening path for qualification, not the full
+`process_tree_supervision` capability: that API/manifest guarantee remains
+false pending complete selected-provider and failure qualification.
+
+The same optional boundary wraps Local Repository realization/publication as
+one internal `repository-effect` helper operation. The existing Git transport
+remains the only clone/CAS/credential authority; its synchronous workflow and
+all Git descendants run inside the selected scope. This is post-Environment
+resource activation, not a second creation-lock protocol. Requests reuse the
+secret-free Repository plan and exact root identity; command credentials use
+opaque materialized environment values, never request JSON. Internal effects
+use Worker environment, not Agent-configured environment or broker references.
+Temporary Git state stays under the existing runtime-owned workspace root.
+The existing pre-GO marker and renewal sweep cover the operation; cancellation
+retains durable participant evidence until exact process-tree absence.
+
+The parent closes request stdin before awaiting the response, drains bounded
+stdio and joins complete scope exit. Valid stdout alone cannot yield a result;
+publication additionally checks the exact existing receipt/rejection contract.
+`LocalRepositoryEffect` composes `LocalProcessLifecycle`, checking reply,
+exit, cancellation and Worker-crash schedules. Its six mutants and three
+reachability witnesses are bounded abstract evidence, not Rust refinement,
+Git server correctness or a hard kernel teardown deadline. Real Linux tests
+exercise clone, publication replay/CAS, private environment, EOF ordering and
+early-reply rejection. Container host Git bundles and Namespace Git are not
+covered by this optional Local binding; production capability activation remains
+disabled until all selected effect paths and deployment wiring are qualified.
+
 Cold observation never signals a persisted numeric PID. A live participant
 blocks effects, and missing, masked, foreign-boot or foreign-observer evidence
 remains unknown. Destructive preparation, Memory guard retirement/unmount,
 secret shredding and deletion cannot turn that uncertainty into a terminal
 receipt. Runtime-local weak process handles only deliver explicit stop/cutoff
 refresh requests; they are neither a durable registry nor a renewal scheduler.
+Interrupted zero-timeout pidfd polling retains a pending observation; the
+existing waiter retries rather than spinning or creating an exit receipt.
+Invalid descriptor/error flags still fail closed, even alongside readiness.
 Refresh delivery errors re-poll the same exact process handle: an observed
 complete tree exit makes that renewal unnecessary, whereas a live tree or
 unknown poll remains an error regardless of transport error kind. This does
@@ -706,6 +759,22 @@ authority and broken-channel negative controls. `LocalProcessRefresh` composes
 the existing kernel boundary to check error classification under exit races;
 mutants reject unconditional success, unconditional failure and leader-only
 evidence, with both result branches required to be reachable.
+The same `ExecutionDeadline` conversion now samples BOOTTIME before entering
+current authority, then derives a fixed cutoff from that earlier anchor and
+the freshly returned remaining budget. Startup preflight and cutoff refresh
+share this operation and retain the original authority guard through their
+effect. Lock waits or thread suspension between budget sampling and conversion
+can shorten availability, but cannot extend authority. Expired conversion
+invokes no effect; it is not a tree-stop receipt. The ordinary `after` constructor
+reuses the same bounded arithmetic for non-authority transport/test deadlines.
+`LocalProcessDeadline` composes the existing OS clock/renewal model with this
+conversion window; two guard mutants and accepted/rejected reachability
+witnesses check both time-minting and stale-effect counterexamples. Adjacent
+Rust cases cover bounds, rounding, overflow, delay, denial and effect errors;
+real provider barriers cross launch and refresh with expired callback budgets
+while retaining exact participant and File evidence. This does not prove OS
+clock correctness, arbitrary business-lease callbacks or production Session
+scope installation.
 Provider integration tests cover two live trees and actual owner SIGKILL;
 `LocalProcessRecovery` composes the existing bounded launch model with marker
 ordering and unknown-evidence rules. The Session Environment's existing stop
@@ -800,10 +869,51 @@ It checks late responses, fresh admission, generation replacement and renewal;
 six guard mutants plus admission/renewal reachability witnesses run in CI.
 Its atomic callback abstraction does not prove arbitrary callback duration,
 physical GO/cutoff refresh, OS clock correctness, Rust refinement or cleanup
-liveness. Binding the intersection of this root proof and the exact current
-Session/environment to physical launch remains required before capability
-activation; managed Git, reboot recovery and real cross-platform/cloud tests
-also remain outside this slice's completion claim.
+liveness.
+
+The optional Linux Local execution deployment now selects one scope on fenced
+create, Ready replay and exact-spec adoption. It is immutable deployment data,
+not a capability proof: `process_tree_supervision` remains false, including for
+a configured provider. Unfenced creation, spec-less adoption and unqualified
+restoration reject instead of silently falling back. Selected-but-unbound
+scopes reject both process and Agent launch; a weak first launch cannot upgrade.
+
+The existing Session Environment candidate owner binds that scope once to a
+view of the current Worker proof and Session slot. Both create and adopt use
+one enrollment implementation. The view retains no renewable lease: it checks
+the asserted generation against the live lease, existing owner-lock allocation
+identity and exact Environment Arc under the original locks. Candidate and
+Resident may execute; Retiring, missing/replaced owners, expired authority and
+unknown binding cannot. Weak references to the map and Environment avoid an
+ownership cycle. Terminal-only candidates without live authority remain
+unbound and retain their cleanup identity without gaining execution permission.
+
+The existing Session renewal sweep concurrently drives due Control lease
+writes and bounded physical cutoff refresh. A long Session lease no longer
+short-circuits refresh of a shorter Worker proof. Both lanes finish their peer
+work before reporting errors; current authority is reread at each physical
+effect. No second timer, process registry or lease store is added. Native Hand,
+ACP and sandbox-stdio continue to share the provider spawn boundary. Local
+Repository preparation/publication uses the internal helper described above;
+Namespace/Container host-side Git is not covered by that Local boundary.
+
+`SessionExecutionBinding` composes the Worker/Session kernel with one selected
+scope, two physical owner allocations and candidate/resident/retiring phases.
+It checks one-time binding, no late weak upgrade, exact guarded effects and
+same-lease allocation ABA. Independent receipt oracles, ten guard mutants and
+candidate/resident reachability witnesses qualify the model. Adjacent Rust
+decision-table cases check every authority coordinate, both budget minima,
+original mutex retention, weak ownership and callback errors. A real Linux
+candidate test crosses unbound rejection, enrollment/retry, launch, no-due
+refresh, Worker closure and exact tree stop while preserving File bytes.
+Callback elapsed time and OS enforcement remain separate deadline/boundary
+obligations; this is not Rust refinement or unbounded distributed liveness.
+The opt-in deployment/probe installation described above is now production-wired.
+Startup still follows the existing panic-style composition policy: a probe
+failure after Worker registration has no demonstrated immediate deregistration
+path. Session lease wall-clock/monotonic correspondence, terminal Repository
+crash/retry integration, reboot recovery and real cross-platform/cloud
+qualification remain required before advertising full supervision.
 
 Native Linux readiness now executes the same `bubblewrap_argv` profile as a
 real Namespace launch, including PID/IPC/UTS/network namespaces and parent-death

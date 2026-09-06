@@ -304,7 +304,8 @@ pub trait MemoryMount: Send + Sync {
 /// It pins configuration semantics only. Branch is a clone preference; commit is
 /// an exact immutable checkout. Principal, role, API key, policy, Workspace
 /// hierarchy, and credential bytes are deliberately absent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RepositoryRealizationPlan {
     pub repository_id: String,
     /// Exact Agent-visible sandbox path selected by the frozen Session input.

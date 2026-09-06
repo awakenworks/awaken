@@ -17,6 +17,77 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 
 use pc::CurrentExecutionAuthority;
 
+/// Deployment bytes, not execution authority. Selection may precede Session
+/// binding; a selected scope cannot launch until its one authority is installed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalExecutionDeployment {
+    launcher: PathBuf,
+    helper: PathBuf,
+}
+
+impl LocalExecutionDeployment {
+    /// Resolve once from operator PATH, not Agent environment. Retain the exact
+    /// executable used by the probe; later launches do not repeat PATH lookup.
+    pub fn discover(helper: PathBuf) -> Result<Self, pc::SandboxError> {
+        let paths = std::env::var_os("PATH").unwrap_or_default();
+        Self::from_operator_path(helper, &paths)
+    }
+
+    fn from_operator_path(
+        helper: PathBuf,
+        paths: &std::ffi::OsStr,
+    ) -> Result<Self, pc::SandboxError> {
+        use std::os::unix::fs::PermissionsExt;
+        let launcher = std::env::split_paths(paths)
+            .filter(|directory| directory.is_absolute())
+            .map(|directory| directory.join("bwrap"))
+            .find(|path| {
+                std::fs::metadata(path)
+                    .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            })
+            .and_then(|path| std::fs::canonicalize(path).ok())
+            .ok_or_else(|| {
+                err("TrustedHost scoped execution requires bwrap on an absolute operator PATH")
+            })?;
+        Self::new(launcher, helper)
+    }
+
+    /// Exercise the actual private handoff and exact-tree wait, not merely
+    /// --version or Namespace readiness. No Session, business data, credentials
+    /// or durable resource ownership is created by this disposable probe.
+    pub async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        let command = pc::MaterializedCommand::new(["/usr/bin/true"]);
+        let process = ScopedProcess::spawn_authorized(
+            &self.launcher,
+            &self.helper,
+            ScopedCommand {
+                materialized: &command,
+                cwd: Path::new("/"),
+                stdio: pc::Stdio::Null.into(),
+            },
+            ExecutionDeadline::after(CONTROL_TIMEOUT).map_err(err)?,
+            CONTROL_TIMEOUT,
+            |_, grant| grant.commit(),
+        )
+        .await
+        .map_err(|_| err("TrustedHost scoped execution probe could not launch"))?;
+        let status = tokio::time::timeout(CONTROL_TIMEOUT, process.wait())
+            .await
+            .map_err(|_| err("TrustedHost scoped execution probe timed out"))??;
+        if status.code != Some(0) || status.signaled {
+            return Err(err("TrustedHost scoped execution probe failed"));
+        }
+        Ok(())
+    }
+
+    pub fn new(launcher: PathBuf, helper: PathBuf) -> Result<Self, pc::SandboxError> {
+        if !launcher.is_absolute() || !helper.is_absolute() {
+            return Err(err("execution deployment binaries must be absolute"));
+        }
+        Ok(Self { launcher, helper })
+    }
+}
+
 #[derive(Default)]
 struct LiveExecution {
     closed: bool,
@@ -26,7 +97,7 @@ struct LiveExecution {
 pub(super) struct ScopedExecution {
     launcher: PathBuf,
     helper: PathBuf,
-    authority: Arc<dyn CurrentExecutionAuthority>,
+    authority: std::sync::OnceLock<Arc<dyn CurrentExecutionAuthority>>,
     live: Mutex<LiveExecution>,
 }
 
@@ -40,6 +111,156 @@ fn denied() -> io::Error {
 }
 
 impl LocalSandbox {
+    pub(super) async fn scoped_repository(
+        &self,
+        plan: &pc::RepositoryRealizationPlan,
+        publication: Option<&pc::RepositoryPublicationExpectation>,
+        credential: Option<&pc::RepositoryHttpBasicCredential>,
+    ) -> Result<Option<crate::repository_effect::Outcome>, pc::SandboxError> {
+        use crate::repository_effect::{self, MAX_FRAME, Request};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let ExecutionBinding::Scoped(execution) = self
+            .execution
+            .get_or_init(|| ExecutionBinding::Unsupervised)
+        else {
+            return Ok(None);
+        };
+        let bytes = Request::new(
+            self.root.root(),
+            self.require_root_identity()?,
+            plan,
+            publication,
+            credential,
+        )
+        .encode()?;
+        let mut command = pc::MaterializedCommand::new([
+            execution.helper.to_string_lossy().into_owned(),
+            "repository-effect".into(),
+        ]);
+        command.cwd = self.root.root().to_string_lossy().into_owned();
+        command.stdio = pc::Stdio::Piped;
+        // This is Worker-side transport, not Agent execution. Preserve the
+        // existing direct Git caller's ambient environment, with opaque values;
+        // never resolve or inherit Session base_env (including loader knobs).
+        command.env = std::env::vars_os()
+            .map(|(name, value)| {
+                Ok(pc::MaterializedEnvVar {
+                    name: name
+                        .into_string()
+                        .map_err(|_| err("repository environment name is not Unicode"))?,
+                    value: pc::MaterializedEnvValue::Secret(
+                        value
+                            .into_string()
+                            .map_err(|_| err("repository environment value is not Unicode"))?
+                            .into(),
+                    ),
+                })
+            })
+            .collect::<Result<Vec<_>, pc::SandboxError>>()?;
+        for variable in repository_effect::environment(self.root.root(), credential) {
+            command.env.retain(|current| current.name != variable.name);
+            command.env.push(variable);
+        }
+        let prepared = PreparedCommand {
+            command,
+            cwd: self.root.root().to_owned(),
+        };
+        let mut process = execution
+            .spawn_prepared(self, async { Ok(prepared) }, pc::Stdio::Piped.into())
+            .await?;
+        let mut input = process
+            .take_stdin()
+            .ok_or_else(|| err("repository input pipe missing"))?;
+        let output = process
+            .take_stdout()
+            .ok_or_else(|| err("repository output pipe missing"))?;
+        let error = process
+            .take_stderr()
+            .ok_or_else(|| err("repository error pipe missing"))?;
+        // Register before any I/O wait. The existing sweep can refresh this
+        // operation; cancellation drops the same last-owner handle and leaves
+        // durable participant evidence until the complete tree is absent.
+        let process = execution.track(process)?;
+        let write = async move {
+            input.write_all(&bytes).await?;
+            input.shutdown().await?;
+            // ChildStdin shutdown need not close the pipe. The bounded codec
+            // reads to EOF, so release the writer before joining its response.
+            drop(input);
+            Ok::<_, io::Error>(())
+        };
+        let read = async {
+            let mut bytes = Vec::new();
+            output
+                .take((MAX_FRAME + 1) as u64)
+                .read_to_end(&mut bytes)
+                .await?;
+            Ok::<_, io::Error>(bytes)
+        };
+        let drain = async {
+            let mut sink = tokio::io::sink();
+            tokio::io::copy(&mut error.take((MAX_FRAME + 1) as u64), &mut sink).await
+        };
+        let (written, output, drained, status) = tokio::join!(write, read, drain, process.wait());
+        // Business stdout alone is never an exit/cleanup receipt. Do not expose
+        // malformed process bytes or stderr in errors (they may contain secrets).
+        written.map_err(|_| err("repository request delivery failed"))?;
+        drained.map_err(|_| err("repository error stream failed"))?;
+        let status = status?;
+        if status.code != Some(0) || status.signaled {
+            return Err(err("repository helper failed"));
+        }
+        let output = output.map_err(|_| err("repository response delivery failed"))?;
+        if output.len() > MAX_FRAME {
+            return Err(err("repository response too large"));
+        }
+        serde_json::from_slice(&output)
+            .map(Some)
+            .map_err(|_| err("repository response invalid"))
+    }
+
+    pub(super) fn select_execution_boundary(
+        &self,
+        deployment: &LocalExecutionDeployment,
+    ) -> Result<(), pc::SandboxError> {
+        if !self.trusted_host_access {
+            return Err(err(
+                "host-view execution requires TrustedHost authorization",
+            ));
+        }
+        self.execution
+            .set(ExecutionBinding::Scoped(Box::new(ScopedExecution {
+                launcher: deployment.launcher.clone(),
+                helper: deployment.helper.clone(),
+                authority: Default::default(),
+                live: Mutex::new(LiveExecution::default()),
+            })))
+            .map_err(|_| err("execution boundary is already selected; late upgrade is forbidden"))
+    }
+
+    /// Bind the current Session exactly once; an unselected/weak sandbox is not
+    /// upgraded implicitly. The same selected scope retains all process handles.
+    pub fn bind_execution_authority(
+        &self,
+        authority: Arc<dyn CurrentExecutionAuthority>,
+    ) -> Result<bool, pc::SandboxError> {
+        let Some(ExecutionBinding::Scoped(execution)) = self.execution.get() else {
+            return Ok(false);
+        };
+        execution
+            .authority
+            .set(authority)
+            .map_err(|_| err("execution authority is already bound"))?;
+        Ok(true)
+    }
+
+    pub fn has_scoped_execution(&self) -> bool {
+        matches!(self.execution.get(), Some(ExecutionBinding::Scoped(_)))
+    }
+
+    pub fn needs_execution_authority(&self) -> bool {
+        matches!(self.execution.get(), Some(ExecutionBinding::Scoped(scope)) if scope.authority.get().is_none())
+    }
     /// Composition installs this on an exact current TrustedHost realization
     /// before its first spawn. This does not advertise a Worker capability:
     /// probe, Session binding, renewal and recovery must all be installed there.
@@ -58,14 +279,11 @@ impl LocalSandbox {
                 "scoped execution requires an exact TrustedHost realization and absolute deployment binaries",
             ));
         }
-        self.execution
-            .set(ExecutionBinding::Scoped(Box::new(ScopedExecution {
-                launcher: launcher.into(),
-                helper: helper.into(),
-                authority,
-                live: Mutex::new(LiveExecution::default()),
-            })))
-            .map_err(|_| err("execution boundary is already selected; late upgrade is forbidden"))
+        self.select_execution_boundary(&LocalExecutionDeployment::new(
+            launcher.into(),
+            helper.into(),
+        )?)?;
+        self.bind_execution_authority(authority).map(|_| ())
     }
 
     /// Entry for the EXISTING Session renewal scheduler; composition must wire
@@ -79,16 +297,16 @@ impl LocalSandbox {
                 let refresh = process
                     .refresh_deadline_authorized(CONTROL_TIMEOUT, |grant| {
                         let mut grant = Some(grant);
-                        execution.authority.with_current(&mut |remaining| {
-                            let live = execution.live.lock().map_err(|_| denied())?;
-                            if live.closed {
-                                return Err(denied());
-                            }
-                            grant
-                                .take()
-                                .ok_or_else(denied)?
-                                .commit(ExecutionDeadline::after(remaining)?)
-                        })
+                        ExecutionDeadline::with_current_authority(
+                            execution.authority.get().ok_or_else(denied)?.as_ref(),
+                            &mut |deadline| {
+                                let live = execution.live.lock().map_err(|_| denied())?;
+                                if live.closed {
+                                    return Err(denied());
+                                }
+                                grant.take().ok_or_else(denied)?.commit(deadline)
+                            },
+                        )
                     })
                     .await;
                 if let Err(error) = refresh {
@@ -160,24 +378,39 @@ impl ScopedExecution {
         command: pc::Command,
         stdio: ScopedStdio,
     ) -> Result<ScopedProcess, pc::SandboxError> {
+        self.spawn_prepared(sandbox, sandbox.build_command(command), stdio)
+            .await
+    }
+
+    async fn spawn_prepared(
+        &self,
+        sandbox: &LocalSandbox,
+        prepare: impl std::future::Future<Output = Result<PreparedCommand, pc::SandboxError>>,
+        stdio: ScopedStdio,
+    ) -> Result<ScopedProcess, pc::SandboxError> {
         let evidence = sandbox
             .realization
             .current()
             .ok_or_else(|| err("scoped realization evidence missing"))?;
         let mut guard = crate::realization_marker::begin_execution(sandbox.root.root(), evidence)?;
         let mut deadline = None;
-        self.authority
-            .with_current(&mut |remaining| {
+        ExecutionDeadline::with_current_authority(
+            self.authority
+                .get()
+                .ok_or_else(|| err("execution authority is not bound"))?
+                .as_ref(),
+            &mut |current_deadline| {
                 if self.live.lock().map_err(|_| denied())?.closed || deadline.is_some() {
                     return Err(denied());
                 }
-                deadline = Some(ExecutionDeadline::after(remaining)?);
+                deadline = Some(current_deadline);
                 Ok(())
-            })
-            .map_err(err)?;
+            },
+        )
+        .map_err(err)?;
         let deadline =
             deadline.ok_or_else(|| err("current authority omitted execution deadline"))?;
-        let prepared = sandbox.build_command(command).await?;
+        let prepared = prepare.await?;
         ScopedProcess::spawn_authorized(
             &self.launcher,
             &self.helper,
@@ -190,14 +423,17 @@ impl ScopedExecution {
             CONTROL_TIMEOUT,
             |identity, grant| {
                 let mut grant = Some(grant);
-                self.authority.with_current(&mut |_| {
-                    let live = self.live.lock().map_err(|_| denied())?;
-                    if live.closed {
-                        return Err(denied());
-                    }
-                    guard.record_execution(identity).map_err(io::Error::other)?;
-                    grant.take().ok_or_else(denied)?.commit()
-                })
+                self.authority
+                    .get()
+                    .ok_or_else(denied)?
+                    .with_current(&mut |_| {
+                        let live = self.live.lock().map_err(|_| denied())?;
+                        if live.closed {
+                            return Err(denied());
+                        }
+                        guard.record_execution(identity).map_err(io::Error::other)?;
+                        grant.take().ok_or_else(denied)?.commit()
+                    })
             },
         )
         .await
@@ -236,5 +472,53 @@ impl pc::ProcessHandle for SharedScopedProcess {
     }
     async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
         self.0.signal(signal).await
+    }
+}
+
+#[cfg(test)]
+mod deployment_tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn deployment_discovery_is_absolute_executable_ordered_and_frozen() {
+        // P1 missing/relative/non-executable/directory PATH candidates -> reject;
+        // P2 first absolute executable wins and symlinks resolve once; P3 later
+        // PATH/file change never silently retargets the retained deployment.
+        // Pure input seam avoids mutating global PATH during parallel tests.
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let helper = root.path().join("helper");
+        let paths = std::env::join_paths([Path::new("."), &first, &second]).unwrap();
+        let lookup = || LocalExecutionDeployment::from_operator_path(helper.clone(), &paths);
+        assert!(lookup().is_err());
+        std::fs::write(first.join("bwrap"), "fixture").unwrap();
+        std::fs::set_permissions(first.join("bwrap"), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        assert!(lookup().is_err());
+        std::fs::write(second.join("bwrap"), "fixture").unwrap();
+        std::fs::set_permissions(second.join("bwrap"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let selected = lookup().unwrap();
+        assert_eq!(selected.launcher, second.join("bwrap"));
+        std::fs::remove_file(first.join("bwrap")).unwrap();
+        symlink(second.join("bwrap"), first.join("bwrap")).unwrap();
+        assert_eq!(lookup().unwrap(), selected);
+        std::fs::remove_file(first.join("bwrap")).unwrap();
+        std::fs::write(first.join("bwrap"), "different fixture").unwrap();
+        std::fs::set_permissions(first.join("bwrap"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        assert_eq!(lookup().unwrap().launcher, first.join("bwrap"));
+        assert_eq!(selected.launcher, second.join("bwrap"));
+        std::fs::remove_file(first.join("bwrap")).unwrap();
+        std::fs::create_dir(first.join("bwrap")).unwrap();
+        assert_eq!(lookup().unwrap(), selected);
+        std::fs::remove_file(second.join("bwrap")).unwrap();
+        assert!(lookup().is_err());
+        assert_eq!(selected.launcher, second.join("bwrap"));
+        assert!(LocalExecutionDeployment::new("relative".into(), helper).is_err());
     }
 }

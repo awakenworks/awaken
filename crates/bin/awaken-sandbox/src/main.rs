@@ -21,6 +21,8 @@
 //!       Snapshot regular files below one exact directory without following links.
 //!   awaken-sandbox scoped-exec
 //!       Linux-only trusted PID-namespace role; stdin is a private control socket.
+//!   awaken-sandbox repository-effect
+//!       Linux-only internal Repository workflow; bounded private stdio transport.
 
 mod control_forwarder;
 mod git_credential;
@@ -75,19 +77,39 @@ async fn main() -> ExitCode {
         Some("repository-publish-noreplace") => run_repository_publish_noreplace(&args[1..]),
         Some("read-tree-nofollow") => run_read_tree_nofollow(&args[1..]),
         Some("scoped-exec") => run_scoped_exec(&args[1..]).await,
+        Some("repository-effect") => run_repository_effect(&args[1..]),
         Some(role) => {
             eprintln!(
-                "awaken-sandbox: unknown role `{role}` (expected: acp | hand | git-credential | control-forwarder | control-forwarder-ready | repository-publish-noreplace | read-tree-nofollow | channel-listen | channel-connect | scoped-exec)"
+                "awaken-sandbox: unknown role `{role}` (expected: acp | hand | git-credential | control-forwarder | control-forwarder-ready | repository-publish-noreplace | read-tree-nofollow | channel-listen | channel-connect | scoped-exec | repository-effect)"
             );
             ExitCode::FAILURE
         }
         None => {
             eprintln!(
-                "usage: awaken-sandbox <acp|hand|git-credential|control-forwarder|control-forwarder-ready|repository-publish-noreplace|read-tree-nofollow|channel-listen|channel-connect|scoped-exec> [args...]"
+                "usage: awaken-sandbox <acp|hand|git-credential|control-forwarder|control-forwarder-ready|repository-publish-noreplace|read-tree-nofollow|channel-listen|channel-connect|scoped-exec|repository-effect> [args...]"
             );
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_repository_effect(args: &[String]) -> ExitCode {
+    #[cfg(target_os = "linux")]
+    if args.is_empty() {
+        return match awaken_sandbox_local::repository_effect::serve(
+            std::io::stdin().lock(),
+            std::io::stdout().lock(),
+        ) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => {
+                eprintln!("awaken-sandbox repository-effect transport failed");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    let _ = args;
+    eprintln!("usage: awaken-sandbox repository-effect (Linux internal role)");
+    ExitCode::FAILURE
 }
 
 async fn run_scoped_exec(args: &[String]) -> ExitCode {

@@ -449,7 +449,7 @@ impl pc::Sandbox for FakeContainer {
     }
 }
 
-pub(super) fn spec() -> SandboxSpec {
+pub(crate) fn spec() -> SandboxSpec {
     SandboxSpec {
         process_tree_supervision: false,
         scope: "session-env".into(),

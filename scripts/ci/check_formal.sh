@@ -778,6 +778,15 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/local-process-refresh" \
     -config formal/tla/LocalProcessRefresh.cfg formal/tla/LocalProcessRefresh.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/local-repository-effect" \
+    -config formal/tla/LocalRepositoryEffect.cfg formal/tla/LocalRepositoryEffect.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/local-process-deadline" \
+    -config formal/tla/LocalProcessDeadline.cfg formal/tla/LocalProcessDeadline.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-execution-binding" \
+    -config formal/tla/SessionExecutionBinding.cfg formal/tla/SessionExecutionBinding.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/skill-version-pin" \
     -config formal/tla/SkillVersionPin.cfg formal/tla/SkillVersionPin.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \

@@ -1,6 +1,8 @@
 //! Exact host Git transport for Repository realization.
 
 mod command;
+#[cfg(target_os = "linux")]
+pub(crate) use command::{GIT_CREDENTIAL_PASSWORD_ENV, GIT_CREDENTIAL_USERNAME_ENV};
 
 use std::path::{Path, PathBuf};
 
