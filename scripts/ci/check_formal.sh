@@ -285,6 +285,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness named_material_shape_is_exact_and_non_widening \
     --harness mcp_delivery_selection_has_only_the_explicit_pair_classes \
     --harness mcp_delivery_receipt_requires_exact_binding_holder_and_mechanism \
+    --harness worker_reference_revalidation_accepts_only_exact_available_state \
     --harness worker_plaintext_holder_projection_is_exact_and_non_widening
   run_kani awaken-run-executor-acp \
     --harness mcp_client_credential_admission_has_no_gateway_or_adapter_fallback
@@ -491,6 +492,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness worker_replacement_and_heartbeat_share_one_non_resurrection_boundary \
     --harness worker_dynamic_observation_requires_exact_fact_and_half_open_lease
   run_kani awaken-worker \
+    --harness observation_batch_is_single_generation_and_never_wraps \
     --harness worker_realization_scope_source_is_total_and_exact
   run_kani awaken-worker-transport-security \
     --harness worker_transport_selector_admits_only_three_exact_postures \

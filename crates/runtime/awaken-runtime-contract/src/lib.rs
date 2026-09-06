@@ -53,7 +53,8 @@ pub use credential::{
     OAuthCredentialMaterial, PlaintextBoundary, PlaintextHolder, ResolvedCredentialMaterial,
     SealedCredentialEnvelopeRef, StructuredCredentialMaterial, TokenEndpointAuth, TrustDomainRef,
     WorkerLocalCredentialResolver, WorkerLocalReferenceRevalidator, candidate_fingerprint,
-    compile_candidate_credential_bindings, verify_credential_realization_receipt,
+    compile_candidate_credential_bindings, require_exact_available_worker_reference,
+    verify_credential_realization_receipt,
 };
 pub use data_subject::{
     CaptureError, CaptureSink, ContentEraser, DataSubjectConsentSource, DataSubjectId,

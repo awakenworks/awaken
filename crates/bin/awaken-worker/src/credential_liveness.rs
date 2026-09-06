@@ -30,7 +30,42 @@ pub(crate) struct ObservationBatch {
     pub(crate) acp_capabilities: Vec<WorkerAcpCapabilityObservation>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ObservationBatchCoordinate {
+    generation: u64,
+    observed_at_ms: u64,
+    valid_until_ms: u64,
+}
+
+#[must_use]
+const fn next_observation_batch_coordinate(
+    current_generation: u64,
+    observed_at_ms: u64,
+    ttl_ms: u64,
+) -> Option<ObservationBatchCoordinate> {
+    let Some(generation) = current_generation.checked_add(1) else {
+        return None;
+    };
+    Some(ObservationBatchCoordinate {
+        generation,
+        observed_at_ms,
+        valid_until_ms: observed_at_ms.saturating_add(ttl_ms),
+    })
+}
+
 impl ObservationBatch {
+    fn leased(
+        coordinate: ObservationBatchCoordinate,
+        credentials: BTreeSet<CredentialObservation>,
+        acp_capabilities: Vec<AcpCapabilityObservation>,
+    ) -> Self {
+        Self {
+            generation: coordinate.generation,
+            credentials: lease_credential_observations(credentials, coordinate),
+            acp_capabilities: lease_capability_observations(acp_capabilities, coordinate),
+        }
+    }
+
     /// Consume one frozen observation batch into the sole heartbeat wire
     /// projection. Initial and periodic heartbeats share this path so neither
     /// can read credential and capability evidence from different generations.
@@ -69,22 +104,22 @@ impl WorkerObservationCache {
 
     fn publish(
         &self,
-        credentials: BTreeSet<WorkerCredentialObservation>,
-        acp_capabilities: Vec<WorkerAcpCapabilityObservation>,
+        credentials: BTreeSet<CredentialObservation>,
+        acp_capabilities: Vec<AcpCapabilityObservation>,
+        observed_at_ms: u64,
+        ttl: Duration,
     ) -> Result<(), String> {
         let mut batch = self
             .batch
             .write()
             .expect("observation batch cache poisoned");
-        let generation = batch
-            .generation
-            .checked_add(1)
-            .ok_or("observation generation exhausted")?;
-        *batch = ObservationBatch {
-            generation,
-            credentials,
-            acp_capabilities,
-        };
+        let coordinate = next_observation_batch_coordinate(
+            batch.generation,
+            observed_at_ms,
+            ttl.as_millis() as u64,
+        )
+        .ok_or("observation generation exhausted")?;
+        *batch = ObservationBatch::leased(coordinate, credentials, acp_capabilities);
         Ok(())
     }
 
@@ -111,12 +146,33 @@ impl WorkerObservationCache {
         // the full lease only after the complete causal batch has finished so
         // probe latency cannot consume (or entirely exhaust) fresh evidence.
         let observed_at_ms = crate::wall_clock_ms().max(now_ms);
-        let credentials = lease_credential_observations(credentials, observed_at_ms, ttl);
-        let acp_capabilities = lease_capability_observations(acp_capabilities, observed_at_ms, ttl);
         // Both probes form one causal batch. A hard failure in either source
         // cannot renew only half of the evidence or create mixed-generation
         // credential/capability truth.
-        self.publish(credentials, acp_capabilities)
+        self.publish(credentials, acp_capabilities, observed_at_ms, ttl)
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn observation_batch_is_single_generation_and_never_wraps() {
+    // Causes: C1 a current cache generation; C2 one completed credential and
+    // capability probe batch; C3 one trusted lease window. Effects: E1 a
+    // successor exists iff C1 is not exhausted; E2 both projected evidence
+    // families receive the same exclusive deadline; E3 the new generation is
+    // exactly one greater. The RwLock and probe I/O remain explicit TCB.
+    let current = kani::any::<u64>();
+    let observed_at_ms = kani::any::<u64>();
+    let ttl_ms = kani::any::<u64>();
+    let next = next_observation_batch_coordinate(current, observed_at_ms, ttl_ms);
+    if current == u64::MAX {
+        assert!(next.is_none(), "E1");
+    } else {
+        let batch = next.expect("every non-exhausted generation has one successor");
+        let deadline = observed_at_ms.saturating_add(ttl_ms);
+        assert_eq!(batch.generation, current + 1, "E3");
+        assert_eq!(batch.observed_at_ms, observed_at_ms, "E2");
+        assert_eq!(batch.valid_until_ms, deadline, "E2");
     }
 }
 
@@ -171,17 +227,15 @@ pub(crate) async fn capability_observations(
 
 fn lease_credential_observations(
     observations: BTreeSet<CredentialObservation>,
-    observed_at_ms: u64,
-    ttl: Duration,
+    coordinate: ObservationBatchCoordinate,
 ) -> BTreeSet<WorkerCredentialObservation> {
-    let valid_until_ms = observed_at_ms.saturating_add(ttl.as_millis() as u64);
     observations
         .into_iter()
         .map(|observation| WorkerCredentialObservation {
             credential: observation.credential,
             state: observation.state,
-            observed_at_ms,
-            valid_until_ms,
+            observed_at_ms: coordinate.observed_at_ms,
+            valid_until_ms: coordinate.valid_until_ms,
             reason_code: observation.reason_code,
         })
         .collect()
@@ -189,15 +243,13 @@ fn lease_credential_observations(
 
 fn lease_capability_observations(
     observations: Vec<AcpCapabilityObservation>,
-    observed_at_ms: u64,
-    ttl: Duration,
+    coordinate: ObservationBatchCoordinate,
 ) -> Vec<WorkerAcpCapabilityObservation> {
-    let valid_until_ms = observed_at_ms.saturating_add(ttl.as_millis() as u64);
     observations
         .into_iter()
         .map(|observation| WorkerAcpCapabilityObservation {
             observation,
-            valid_until_ms,
+            valid_until_ms: coordinate.valid_until_ms,
         })
         .collect()
 }
@@ -352,7 +404,10 @@ mod tests {
             .await
             .expect("worker-local probe");
         assert_eq!(
-            lease_credential_observations(observations, 100, Duration::from_millis(30)),
+            lease_credential_observations(
+                observations,
+                next_observation_batch_coordinate(0, 100, 30).expect("one batch"),
+            ),
             BTreeSet::from([WorkerCredentialObservation::available(
                 WorkerCredentialRevision {
                     id: "cred:worker".into(),
@@ -619,8 +674,10 @@ mod tests {
         let publish = |marker| {
             cache
                 .publish(
-                    lease_credential_observations(credentials.clone(), marker, Duration::ZERO),
-                    lease_capability_observations(capabilities.clone(), marker, Duration::ZERO),
+                    credentials.clone(),
+                    capabilities.clone(),
+                    marker,
+                    Duration::ZERO,
                 )
                 .unwrap();
         };
@@ -676,10 +733,16 @@ mod tests {
         // attempts without wrapping, clearing evidence or changing either part.
         let cache = WorkerObservationCache::default();
         cache.batch.write().unwrap().generation = u64::MAX - 1;
-        cache.publish(BTreeSet::new(), Vec::new()).unwrap();
+        cache
+            .publish(BTreeSet::new(), Vec::new(), 0, Duration::ZERO)
+            .unwrap();
         let before = cache.snapshot();
         for _ in 0..2 {
-            assert!(cache.publish(BTreeSet::new(), Vec::new()).is_err());
+            assert!(
+                cache
+                    .publish(BTreeSet::new(), Vec::new(), 0, Duration::ZERO)
+                    .is_err()
+            );
             assert_eq!(cache.snapshot(), before);
         }
     }

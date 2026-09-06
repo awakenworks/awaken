@@ -29,6 +29,8 @@ pub use custody::{
 };
 mod managed_rollout;
 pub use managed_rollout::{ManagedCredentialOperation, ManagedCredentialRollout};
+mod observation_admission;
+pub use observation_admission::require_exact_available_worker_reference;
 mod usage;
 pub use usage::{CredentialUsage, SignatureVerificationAlgorithm};
 #[cfg(kani)]
