@@ -376,10 +376,19 @@ zero execution on denial, and verifies that direct continuation leaves no MCP
 grant to consume again. ACP tests cover routing, mixed/foreign/finalized batch
 selection, missing durable wiring, and cross-Run receipt projection. The
 four-crate Runtime/runtime-contract/ACP/Host regression passed 1,169 tests with
-one external CLI test ignored. These are mechanism and integration tests; the
-original failed real Cowork long-write evidence is retained until the rebuilt
-product completes a fresh task. Claude Cowork app comparison and remaining
-deployment topology acceptance are still separate, uncompleted gates.
+one external CLI test ignored. The rebuilt `0a710cbb1` product subsequently
+completed the unchanged real-model Cowork batch case in Namespace using Claude
+ACP/SDK and `deepseek-v4-flash`: fixture `cowork-service-9wz4rj`, Session
+`sesn_fnv1a64:84dcf6631bbcf351`, 9 approvals and 11 paired tool outcomes. One
+missing-`python-docx` error remained visible; the model continued and delivered
+both customer Word files plus the exact index and exception CSVs. Independent
+Office rendering and visual inspection passed, inputs stayed unchanged, the
+command exited zero and canonical Session disposal completed. Keep the original
+failed long-write evidence as historical evidence. This fresh task validates the
+integrated owned-tool path, not every possible long argument or recovery window.
+Claude Cowork app comparison and remaining deployment topology acceptance are
+still separate, uncompleted gates; application evidence is indexed in Cowork's
+`docs/verification.md`.
 
 Physical Hand exports are created only after Environment binding, never during
 deferred reservation. The MCP `RawTool` port delegates to
