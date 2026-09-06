@@ -92,6 +92,7 @@ use crate::{
 };
 
 mod application_mcp;
+mod cleanup;
 pub use application_mcp::{
     APPLICATION_MCP_PROVIDER_ID, ApplicationMcpBearerCommand, PreparedApplicationMcpBearerRotation,
     application_mcp_material_ref, application_mcp_operation_id,

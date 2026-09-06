@@ -536,12 +536,6 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 .map_err(storage)?
                 .map(|data| serde_json::from_str(&data).map_err(storage))
                 .transpose()?;
-            if current_source != pending.before_source || current_child != pending.before_credential
-            {
-                return Err(CredentialError::MutationConflict(
-                    "cannot abort a published or superseded Managed credential mutation".into(),
-                ));
-            }
             let current = tx
                 .query_row(
                     &format!(
@@ -559,24 +553,8 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 })?;
             let durable: PendingManagedCredentialMutation =
                 serde_json::from_str(&current).map_err(storage)?;
-            if durable == pending
-                && pending.material_fence.phase == CredentialMaterialMutationPhase::ReclaimingAbort
-            {
-                tx.commit().map_err(storage)?;
-                return Ok(durable);
-            }
-            if durable != pending
-                || !matches!(
-                    pending.material_fence.phase,
-                    CredentialMaterialMutationPhase::Writing
-                        | CredentialMaterialMutationPhase::Ready
-                )
-            {
-                return Err(CredentialError::MutationConflict(
-                    "Managed credential abort does not match its durable pending fact".into(),
-                ));
-            }
-            let reclaiming = pending.with_material_reclaiming_abort()?;
+            let reclaiming =
+                pending.admit_abort(&durable, current_source.as_ref(), current_child.as_ref())?;
             let changed = tx
                 .execute(
                     &format!(
@@ -647,23 +625,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 .map_err(storage)?
                 .map(|data| serde_json::from_str(&data).map_err(storage))
                 .transpose()?;
-            let truth_matches_phase = match pending.material_fence.phase {
-                CredentialMaterialMutationPhase::Reclaiming => {
-                    current_source.as_ref() == Some(&pending.after_source)
-                        && current_child.as_ref() == Some(&pending.after_credential)
-                }
-                CredentialMaterialMutationPhase::ReclaimingAbort => {
-                    current_source == pending.before_source
-                        && current_child == pending.before_credential
-                }
-                CredentialMaterialMutationPhase::Writing
-                | CredentialMaterialMutationPhase::Ready => false,
-            };
-            if durable != pending || !truth_matches_phase {
-                return Err(CredentialError::MutationConflict(
-                    "Managed credential completion does not match its durable cleanup truth".into(),
-                ));
-            }
+            pending.admit_completion(&durable, current_source.as_ref(), current_child.as_ref())?;
             let changed = tx
                 .execute(
                     &format!(

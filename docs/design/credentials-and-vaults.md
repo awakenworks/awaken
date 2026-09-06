@@ -238,6 +238,19 @@ commit writes its exact-revision rollout outbox event in that same transaction;
 create has no rollout event. Periodic reconciliation publishes `Ready`, aborts
 expired `Writing`, and completes `Reclaiming`/`ReclaimingAbort` cleanup work.
 
+Both envelopes own abort and completion admission in the Credential repository
+domain's `cleanup` module. In-memory, SQLite and PostgreSQL read the complete
+durable intent and current Source/child under one lock or transaction, then
+consume that decision; adapters do not maintain parallel phase tables. A
+present WAL may retire only when its full identity and the phase's committed
+or unpublished truth match. Even abort replay must recheck unpublished truth.
+Source-only replay may carry its original request if the WAL is its exact
+derived abort; Managed recovery continues to require the durable abort envelope
+itself. A missing completion row is an idempotent no-op, never permission to
+remove a successor. Scalar Kani proof covers phase/equality decisions; full
+envelope projection, transaction isolation and external material cleanup are
+separately tested/assumed, not proved by that predicate.
+
 The child lifecycle is the closed `Active | Archived | Deleted` value;
 `Deleted` is absorbing and physical purge is separate GC. The configured
 rollout target adopts the event through the existing Session generation

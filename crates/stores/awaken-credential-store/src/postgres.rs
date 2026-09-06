@@ -884,20 +884,6 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
                 "Managed credential abort has no durable pending fact".into(),
             )
         })?;
-        let idempotent_reclaim = durable == *pending
-            && pending.material_fence.phase == CredentialMaterialMutationPhase::ReclaimingAbort;
-        if !idempotent_reclaim
-            && (durable != *pending
-                || !matches!(
-                    pending.material_fence.phase,
-                    CredentialMaterialMutationPhase::Writing
-                        | CredentialMaterialMutationPhase::Ready
-                ))
-        {
-            return Err(CredentialError::MutationConflict(
-                "Managed credential abort does not match its durable pending fact".into(),
-            ));
-        }
         let current_source = sqlx::query(&format!(
             "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
         ))
@@ -924,16 +910,8 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
                 .map_err(storage)
         })
         .transpose()?;
-        if current_source != pending.before_source || current_child != pending.before_credential {
-            return Err(CredentialError::MutationConflict(
-                "cannot abort a published or superseded Managed credential mutation".into(),
-            ));
-        }
-        if idempotent_reclaim {
-            tx.commit().await.map_err(storage)?;
-            return Ok(durable);
-        }
-        let reclaiming = pending.with_material_reclaiming_abort()?;
+        let reclaiming =
+            pending.admit_abort(&durable, current_source.as_ref(), current_child.as_ref())?;
         let changed = sqlx::query(&format!(
             "UPDATE {NS}_managed_credential_mutation SET data = $1 \
              WHERE source_id = $2 AND data = $3"
@@ -1003,24 +981,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
                 .map_err(storage)
         })
         .transpose()?;
-        let truth_matches_phase = match pending.material_fence.phase {
-            CredentialMaterialMutationPhase::Reclaiming => {
-                current_source.as_ref() == Some(&pending.after_source)
-                    && current_child.as_ref() == Some(&pending.after_credential)
-            }
-            CredentialMaterialMutationPhase::ReclaimingAbort => {
-                current_source == pending.before_source
-                    && current_child == pending.before_credential
-            }
-            CredentialMaterialMutationPhase::Writing | CredentialMaterialMutationPhase::Ready => {
-                false
-            }
-        };
-        if durable != *pending || !truth_matches_phase {
-            return Err(CredentialError::MutationConflict(
-                "Managed credential completion does not match its durable cleanup truth".into(),
-            ));
-        }
+        pending.admit_completion(&durable, current_source.as_ref(), current_child.as_ref())?;
         let deleted = sqlx::query(&format!(
             "DELETE FROM {NS}_managed_credential_mutation WHERE source_id = $1 AND data = $2"
         ))
@@ -1548,7 +1509,6 @@ impl CredentialRepo for PostgresCredentialRepo {
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
         intent.validate()?;
-        let abort = intent.with_material_reclaiming_abort()?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let row = sqlx::query(&format!(
             "SELECT data FROM {NS}_creation_intent WHERE source_id = $1 FOR UPDATE"
@@ -1573,20 +1533,7 @@ impl CredentialRepo for PostgresCredentialRepo {
             Ok(source)
         })
         .transpose()?;
-        let unpublished = if intent.is_distinct_replacement() {
-            current_after.is_none()
-        } else {
-            current_after.as_ref() == intent.before.as_ref()
-        };
-        if durable == abort && unpublished {
-            tx.commit().await.map_err(storage)?;
-            return Ok(abort);
-        }
-        if durable != *intent || !unpublished {
-            return Err(CredentialError::MutationConflict(
-                "credential abort does not match exact unpublished truth".into(),
-            ));
-        }
+        let abort = intent.admit_abort(&durable, current_after.as_ref())?;
         sqlx::query(&format!(
             "UPDATE {NS}_creation_intent SET data = $2 WHERE source_id = $1"
         ))
@@ -1633,26 +1580,7 @@ impl CredentialRepo for PostgresCredentialRepo {
             Ok(source)
         })
         .transpose()?;
-        let truth_matches_phase = match intent.material_fence.phase {
-            CredentialMaterialMutationPhase::Reclaiming => {
-                current_after.as_ref() == Some(&intent.after)
-            }
-            CredentialMaterialMutationPhase::ReclaimingAbort => {
-                if intent.is_distinct_replacement() {
-                    current_after.is_none()
-                } else {
-                    current_after.as_ref() == intent.before.as_ref()
-                }
-            }
-            CredentialMaterialMutationPhase::Writing | CredentialMaterialMutationPhase::Ready => {
-                false
-            }
-        };
-        if durable != *intent || !truth_matches_phase {
-            return Err(CredentialError::MutationConflict(
-                "credential completion does not match durable cleanup truth".into(),
-            ));
-        }
+        intent.admit_completion(&durable, current_after.as_ref())?;
         sqlx::query(&format!(
             "DELETE FROM {NS}_creation_intent WHERE source_id = $1"
         ))
