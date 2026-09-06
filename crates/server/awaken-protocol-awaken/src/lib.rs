@@ -7,6 +7,7 @@
 
 mod dream_policies;
 mod file_outputs;
+mod event_admissions;
 mod live_inbox;
 mod profiled_sessions;
 mod resource_manifests;
@@ -16,6 +17,9 @@ pub use dream_policies::dream_policy_router;
 pub use file_outputs::{
     FileOutputCapture, FileOutputCaptureParams, FileOutputCaptureResponse,
     file_output_capture_router,
+};
+pub use event_admissions::{
+    EventAdmissionReceipt, EventAdmissionStatus, session_event_admission_router,
 };
 pub use live_inbox::live_inbox_router;
 pub use profiled_sessions::{

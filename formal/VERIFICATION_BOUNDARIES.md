@@ -552,6 +552,14 @@ to that identity before a runtime may advertise Verified.
 
 ### Durable inbox/outbox and event-sourced reducers
 
+`ToolResultProtocol` also checks that a retained Event-batch retry identity
+cannot change between accepted and finally closed, including delayed sends.
+Its finite model does not contain physical Session deletion or Classroom quota
+settlement. Current Session tombstones discard Event-batch provenance; a 404
+after deletion therefore remains unknown, not a final non-admission proof.
+File-backed SQLite reopen and HTTP isolation tests cover the retained-root
+implementation, not deletion recovery or cross-service convergence liveness.
+
 Use durable inbox/outbox records for network and side-effect boundaries. Keep
 session, run, memory, deployment, and outcome state as deterministic reducers
 over immutable events. This makes safety independent of process crashes and

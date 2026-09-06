@@ -164,6 +164,85 @@ async fn post_session_with_idempotency(
 // Cause/effect graph: the owner-scoped key and payload select one canonical Session identity.
 // Decision table: same key+payload=replay; changed payload=409; invalid key=400; different owner=independent.
 #[tokio::test]
+async fn native_event_admission_close_preserves_standard_events_and_owner_isolation() {
+    // Decision table: N1 close unseen K/F => durable Closed, late standard POST
+    // fails; N2 standard POST accepted => native close reports Accepted without
+    // another event; N3 same K/changed F=>409; N4 missing key=>400;
+    // N5 foreign Workspace=>404 before any close. The native route is explicitly
+    // mounted: no fields or paths are added to the standard Anthropic surface.
+    let state = Arc::new(ManagedState::new(EchoFake::default()));
+    let app = router(state.clone()).merge(
+        awaken_protocol_awaken::session_event_admission_router(
+            awaken_protocol_managed::close_event_admission,
+        )
+        .with_state(state.clone()),
+    );
+    let (_, created) =
+        post_session_with_idempotency(&app, Some("admission-http"), "Admission").await;
+    let id = created["id"].as_str().unwrap();
+    let events = format!("/v1/sessions/{id}/events");
+    let close = format!("/v1/awaken/sessions/{id}/event-admissions/close");
+    let body = serde_json::json!({"events":[{"type":"user.message","content":[{"type":"text","text":"hello"}]}]});
+    let (status, receipt) = post_events_with_idempotency(&app, &close, "closed-key", &body).await;
+    assert_eq!(status, StatusCode::OK, "N1 {receipt}");
+    assert_eq!(receipt["status"], "closed", "N1");
+    assert_eq!(receipt["session_id"], id, "N1 exact identity");
+    let (status, late) = post_events_with_idempotency(&app, &events, "closed-key", &body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "N1 {late}");
+    assert!(
+        late["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("permanently closed"),
+        "N1"
+    );
+    let (status, accepted) =
+        post_events_with_idempotency(&app, &events, "accepted-key", &body).await;
+    assert_eq!(status, StatusCode::OK, "N2 {accepted}");
+    let (status, resolved) =
+        post_events_with_idempotency(&app, &close, "accepted-key", &body).await;
+    assert_eq!(status, StatusCode::OK, "N2 {resolved}");
+    assert_eq!(resolved["status"], "accepted", "N2");
+    let (_, replay) = post_events_with_idempotency(&app, &events, "accepted-key", &body).await;
+    assert_eq!(accepted, replay, "N2 original receipt unchanged");
+    let changed = serde_json::json!({"events":[{"type":"user.message","content":[{"type":"text","text":"changed"}]}]});
+    assert_eq!(
+        post_events_with_idempotency(&app, &close, "closed-key", &changed)
+            .await
+            .0,
+        StatusCode::CONFLICT,
+        "N3"
+    );
+    assert_eq!(
+        json_response(&app, "POST", &close, body.clone()).await.0,
+        StatusCode::BAD_REQUEST,
+        "N4"
+    );
+    let foreign = app
+        .clone()
+        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+            "foreign-workspace".into(),
+        )));
+    assert_eq!(
+        post_events_with_idempotency(&foreign, &close, "foreign-key", &body)
+            .await
+            .0,
+        StatusCode::NOT_FOUND,
+        "N5"
+    );
+    let stored = state
+        .session_application()
+        .session_event_batch_idempotency(id, "foreign-key", "any")
+        .await
+        .unwrap();
+    assert_eq!(
+        stored,
+        awaken_session_application::SessionEventBatchIdempotency::Absent,
+        "N5 no mutation"
+    );
+}
+
+#[tokio::test]
 async fn session_create_idempotency_replays_one_canonical_session() {
     // Causes: the fixtures below establish `session create idempotency replays one canonical
     // session` with the concrete inputs, state, dependencies, and failure triggers used by this

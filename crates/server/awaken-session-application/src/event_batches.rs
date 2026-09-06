@@ -25,6 +25,15 @@ pub enum SessionEventBatchIdempotency {
     Conflict,
 }
 
+enum EventBatchAdmission {
+    Accept {
+        inputs: Vec<SessionEventInput>,
+        data_subject_id: Option<String>,
+        traceparent: Option<String>,
+    },
+    Close,
+}
+
 fn classify_event_batch_idempotency(
     batches: &[SessionEventBatch],
     key: &str,
@@ -289,6 +298,44 @@ impl SessionApplication {
         traceparent: Option<String>,
         idempotency: Option<(String, String)>,
     ) -> Result<SessionEventBatch, RunError> {
+        let batch = self
+            .resolve_session_event_batch(
+                session_id,
+                EventBatchAdmission::Accept {
+                    inputs,
+                    data_subject_id,
+                    traceparent,
+                },
+                idempotency,
+            )
+            .await?;
+        batch.require_accepted()?;
+        Ok(batch)
+    }
+
+    /// Resolve response loss without replaying execution. If acceptance already
+    /// won, return its exact receipt. Otherwise close the SAME identity under
+    /// root CAS so a delayed request can never arrive after quota is released.
+    pub async fn close_session_event_admission(
+        &self,
+        session_id: &str,
+        key: String,
+        request_fingerprint: String,
+    ) -> Result<SessionEventBatch, RunError> {
+        self.resolve_session_event_batch(
+            session_id,
+            EventBatchAdmission::Close,
+            Some((key, request_fingerprint)),
+        )
+        .await
+    }
+
+    async fn resolve_session_event_batch(
+        &self,
+        session_id: &str,
+        admission: EventBatchAdmission,
+        idempotency: Option<(String, String)>,
+    ) -> Result<SessionEventBatch, RunError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner = self.owner(session_id).await.map_err(mutation_run_error)?;
             let mut session = self
@@ -316,7 +363,7 @@ impl SessionApplication {
                     SessionEventBatchIdempotency::Absent => {}
                 }
             }
-            if session.is_terminal() {
+            if session.is_terminal() && matches!(admission, EventBatchAdmission::Accept { .. }) {
                 return Err(RunError::bad_request(
                     "Session no longer accepts Event batches",
                 ));
@@ -330,16 +377,35 @@ impl SessionApplication {
             );
             let batch_id = session_event_batch_id(session_id, committed_revision)
                 .map_err(|error| RunError::bad_request(error.to_string()))?;
-            let mut batch = SessionEventBatch::compile_attributed(
-                session_id,
-                batch_id,
-                inputs.clone(),
-                data_subject_id.clone(),
-                traceparent.clone(),
-            )
+            let mut batch = match &admission {
+                EventBatchAdmission::Accept {
+                    inputs,
+                    data_subject_id,
+                    traceparent,
+                } => SessionEventBatch::compile_attributed(
+                    session_id,
+                    batch_id,
+                    inputs.clone(),
+                    data_subject_id.clone(),
+                    traceparent.clone(),
+                ),
+                EventBatchAdmission::Close => {
+                    let (key, fingerprint) = idempotency
+                        .as_ref()
+                        .expect("close always supplies an identity");
+                    SessionEventBatch::closed_admission(
+                        batch_id,
+                        committed_revision,
+                        key.clone(),
+                        fingerprint.clone(),
+                    )
+                }
+            }
             .map_err(|error| RunError::bad_request(error.to_string()))?;
             batch.admitted_revision = committed_revision;
-            if let Some((key, request_fingerprint)) = idempotency.as_ref() {
+            if !batch.admission_closed
+                && let Some((key, request_fingerprint)) = idempotency.as_ref()
+            {
                 batch
                     .bind_idempotency(key.clone(), request_fingerprint.clone())
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
@@ -350,7 +416,9 @@ impl SessionApplication {
                 .await
             {
                 Ok(_) => {
-                    self.wake_lifecycle_supervisor();
+                    if !batch.admission_closed {
+                        self.wake_lifecycle_supervisor();
+                    }
                     return Ok(batch);
                 }
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {}

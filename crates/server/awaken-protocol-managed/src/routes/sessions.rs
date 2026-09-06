@@ -1462,16 +1462,8 @@ async fn delete_resource(
     }))
 }
 
-async fn send_events(
-    State(state): State<Arc<ManagedState>>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    ManagedJson(req): ManagedJson<SendEventsRequest>,
-) -> Result<Json<SendEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Anthropic's Messages SDK projects request-grain `user_profile_id` to this
-    // header. Reuse the context carrier for Managed events without adding an
-    // out-of-contract field to the strict event envelope.
-    let data_subject_id = headers
+fn event_data_subject(headers: &HeaderMap) -> Result<Option<String>, WireErr> {
+    headers
         .get("anthropic-user-profile-id")
         .map(|value| {
             value
@@ -1486,7 +1478,69 @@ async fn send_events(
                     )))
                 })
         })
-        .transpose()?;
+        .transpose()
+}
+
+/// Native-only final-close proof; no projection rebuild, Run activation, or
+/// execution retry is performed. Ownership is checked before reading receipts.
+pub async fn close_event_admission(
+    State(state): State<Arc<ManagedState>>,
+    Path(id): Path<String>,
+    workspace: Option<axum::Extension<WorkspaceScope>>,
+    headers: HeaderMap,
+    body: Result<Json<SendEventsRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<awaken_protocol_awaken::EventAdmissionReceipt>, WireErr> {
+    let Json(req) = body.map_err(|rejection| {
+        error_response(StateError::Run(RunError::bad_request(
+            crate::routes::extractors::managed_json_message(rejection.body_text()),
+        )))
+    })?;
+    ensure_session_scope(
+        state.as_ref(),
+        &id,
+        workspace.as_ref().map(|scope| &scope.0),
+    )
+    .await?;
+    let key = parse_idempotency_key(&headers)?.ok_or_else(|| {
+        error_response(StateError::Run(RunError::bad_request(
+            "event admission close requires Idempotency-Key",
+        )))
+    })?;
+    let fingerprint =
+        awaken_session_contract::stable_fingerprint(&(&req, &event_data_subject(&headers)?));
+    let batch = state
+        .session_application()
+        .close_session_event_admission(&id, key.clone(), fingerprint)
+        .await
+        .map_err(|error| {
+            error_response(if error.code == "idempotency_conflict" {
+                StateError::IdempotencyMismatch
+            } else {
+                StateError::Run(error)
+            })
+        })?;
+    Ok(Json(awaken_protocol_awaken::EventAdmissionReceipt {
+        session_id: id,
+        idempotency_key: key,
+        batch_id: batch.batch_id,
+        status: if batch.admission_closed {
+            awaken_protocol_awaken::EventAdmissionStatus::Closed
+        } else {
+            awaken_protocol_awaken::EventAdmissionStatus::Accepted
+        },
+    }))
+}
+
+async fn send_events(
+    State(state): State<Arc<ManagedState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ManagedJson(req): ManagedJson<SendEventsRequest>,
+) -> Result<Json<SendEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Anthropic's Messages SDK projects request-grain `user_profile_id` to this
+    // header. Reuse the context carrier for Managed events without adding an
+    // out-of-contract field to the strict event envelope.
+    let data_subject_id = event_data_subject(&headers)?;
     let idempotency_key = parse_idempotency_key(&headers)?;
     state
         .send_events_attributed(&id, req, data_subject_id, idempotency_key)

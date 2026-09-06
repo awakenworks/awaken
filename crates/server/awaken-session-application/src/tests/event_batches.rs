@@ -923,6 +923,162 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
 }
 
 #[tokio::test]
+async fn final_event_admission_close_is_absorbing_across_restart_and_late_delivery() {
+    // Causes: C1 accept/close wins the same root CAS; C2 response is lost and a
+    // new application instance resolves; C3 delayed delivery is exact/changed.
+    // Effects: E1 accepted intent is never closed; E2 closed intent never runs;
+    // E3 exact resolution reuses one root revision; E4 changed body conflicts.
+    // Rules F1 accept first=>E1+E3; F2 close first=>E2+E3;
+    // F3 F1/F2 + restart=>same receipt; F4 changed fingerprint=>E4.
+    for accept_first in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("admission.db");
+        let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(
+                database_path.to_str().unwrap(),
+            )
+            .unwrap(),
+        );
+        let session = "final-admission";
+        create(repository.as_ref(), persisted(session, false, "idle")).await;
+        let runtime = Arc::new(EventBatchRuntime::default());
+        let app = application_with_runtime(
+            runtime.clone(),
+            repository.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let input = vec![SessionEventInput::UserMessage {
+            content: vec![ContentBlock::text("original request")],
+        }];
+        let key = Some(("key".to_owned(), "fingerprint".to_owned()));
+        if accept_first {
+            app.append_session_event_batch_idempotent(
+                session,
+                input.clone(),
+                None,
+                None,
+                key.clone(),
+            )
+            .await
+            .unwrap();
+        }
+        let first = app
+            .close_session_event_admission(session, "key".into(), "fingerprint".into())
+            .await
+            .unwrap();
+        assert_eq!(first.admission_closed, !accept_first, "F1/F2");
+        let revision = repository.get(session).await.unwrap().revision;
+        // Reopen the actual database, not merely a new application over the
+        // old in-memory connection; response-loss proof must survive restart.
+        drop(app);
+        drop(repository);
+        let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(
+                database_path.to_str().unwrap(),
+            )
+            .unwrap(),
+        );
+        let restarted = application_with_runtime(
+            runtime.clone(),
+            repository.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let replay = restarted
+            .close_session_event_admission(session, "key".into(), "fingerprint".into())
+            .await
+            .unwrap();
+        assert_eq!(first, replay, "F3 stable receipt after reconstruction");
+        let late = restarted
+            .append_session_event_batch_idempotent(session, input, None, None, key)
+            .await;
+        if accept_first {
+            assert_eq!(late.unwrap(), first, "F1 no duplicate acceptance");
+        } else {
+            assert_eq!(
+                late.unwrap_err().code,
+                "event_admission_closed",
+                "F2 late request fenced"
+            );
+            assert!(
+                first.is_complete() && first.events.is_empty(),
+                "F2 no unfinished execution intent"
+            );
+            restarted
+                .drive_session_event_batches(session, None)
+                .await
+                .unwrap();
+            assert!(
+                runtime.reserved.lock().unwrap().is_empty(),
+                "F2 no Run entered"
+            );
+        }
+        let conflict = restarted
+            .close_session_event_admission(session, "key".into(), "changed".into())
+            .await
+            .unwrap_err();
+        assert_eq!(conflict.code, "idempotency_conflict", "F4");
+        let retained = repository.get(session).await.unwrap();
+        assert_eq!(retained.revision, revision, "F3/F4 no new durable mutation");
+        assert_eq!(retained.event_batches.len(), 1, "one identity owner");
+    }
+}
+
+#[tokio::test]
+async fn final_event_admission_close_competes_atomically_with_acceptance() {
+    // F5: two replicas race accept versus final close under the existing root
+    // CAS. Exactly one retained identity wins. Accepted=>close returns accepted;
+    // closed=>accept rejects. An absent read alone is deliberately not a proof.
+    let repository: Arc<dyn ManagedSessionRepository> =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    create(
+        repository.as_ref(),
+        persisted("admission-race", false, "idle"),
+    )
+    .await;
+    let a = application_with_runtime(
+        Arc::new(EventBatchRuntime::default()),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let b = application_with_runtime(
+        Arc::new(EventBatchRuntime::default()),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let (accepted, resolved) = tokio::join!(
+        a.append_session_event_batch_idempotent(
+            "admission-race",
+            vec![SessionEventInput::UserMessage {
+                content: vec![ContentBlock::text("one request")],
+            }],
+            None,
+            None,
+            Some(("key".into(), "fingerprint".into()))
+        ),
+        b.close_session_event_admission("admission-race", "key".into(), "fingerprint".into()),
+    );
+    let resolved = resolved.unwrap();
+    if resolved.admission_closed {
+        assert_eq!(
+            accepted.unwrap_err().code,
+            "event_admission_closed",
+            "F5 close won"
+        );
+    } else {
+        assert_eq!(accepted.unwrap(), resolved, "F5 acceptance won");
+    }
+    assert_eq!(
+        repository
+            .get("admission-race")
+            .await
+            .unwrap()
+            .event_batches,
+        vec![resolved],
+        "F5 one root receipt"
+    );
+}
+
+#[tokio::test]
 async fn concurrent_event_batch_idempotency_converges_under_root_cas() {
     // Cause/effect graph: C1 two application replicas share one Session root;
     // C2 requests race with one key and equal or different fingerprints.

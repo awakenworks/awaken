@@ -38,6 +38,11 @@ fn invalid(message: impl Into<String>) -> serde_json::Error {
 }
 
 fn verify_aggregate(session: &PersistedSession) -> Result<(), serde_json::Error> {
+    for batch in &session.event_batches {
+        batch
+            .verify_admission()
+            .map_err(|error| invalid(error.to_string()))?;
+    }
     session
         .verified_terminal_cleanup()
         .map(|_| ())
@@ -483,6 +488,54 @@ mod tests {
             .expect("N1 renormalize")
             .is_none(),
             "N1/E3"
+        );
+    }
+
+    #[test]
+    fn aggregate_codec_rejects_executable_closed_admission_on_read_and_write() {
+        // C1 valid closed proof => roundtrip; C2 executable intent injected
+        // through an in-memory mutation or stored bytes => reject on encode
+        // AND decode. C3 former accepted rows without the new flag remain
+        // accepted (covered by the contract's legacy decision table).
+        let mut session = sample("codec-admission");
+        let closed = awaken_session_contract::SessionEventBatch::closed_admission(
+            "closed".into(),
+            awaken_session_contract::SessionRevision(1),
+            "key".into(),
+            "fingerprint".into(),
+        )
+        .unwrap();
+        session.event_batches.push(closed);
+        let encoded = super::encode(&session).unwrap();
+        assert!(
+            super::decode(super::EncodedSessionRow {
+                aggregate_json: encoded.clone(),
+                revision: i64::try_from(session.revision.0).unwrap(),
+            })
+            .is_ok()
+        );
+        let accepted = awaken_session_contract::SessionEventBatch::compile(
+            "codec-admission",
+            "accepted",
+            vec![awaken_session_contract::SessionEventInput::UserMessage {
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "must not run",
+                )],
+            }],
+        )
+        .unwrap();
+        session.event_batches[0].events = accepted.events;
+        assert!(super::encode(&session).is_err(), "C2 write boundary");
+        let mut wire: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        wire["aggregate"]["event_batches"][0]["events"] =
+            serde_json::to_value(&session.event_batches[0].events).unwrap();
+        assert!(
+            super::decode(super::EncodedSessionRow {
+                aggregate_json: wire.to_string(),
+                revision: i64::try_from(session.revision.0).unwrap(),
+            })
+            .is_err(),
+            "C2 read boundary"
         );
     }
 
