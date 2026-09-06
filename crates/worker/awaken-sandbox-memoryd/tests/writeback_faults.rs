@@ -23,6 +23,247 @@ struct Gate {
     release: tokio::sync::Semaphore,
 }
 
+#[derive(Default)]
+struct SqlCommitGate {
+    armed: std::sync::atomic::AtomicBool,
+    reached: tokio::sync::Notify,
+    released: std::sync::Mutex<bool>,
+    resume: std::sync::Condvar,
+}
+
+impl SqlCommitGate {
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.resume.notify_all();
+    }
+}
+
+// A failed assertion must not strand spawn_blocking during runtime shutdown.
+struct ReleaseSqlGate(Arc<SqlCommitGate>);
+impl Drop for ReleaseSqlGate {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
+    // L1-L6: operation={create,update,delete} × retry={before,after late commit}.
+    // Unlike the acknowledgement wrapper below, an AFTER SQL trigger pauses
+    // INSIDE the actual production spawn_blocking transaction. Abort only the
+    // awaiting teardown; SQL continues and must commit exactly once. An independent
+    // reader observes the old committed heads while SQL is paused. Re-drive from
+    // the same guard AND reopened original evidence preserves exact history/IDs.
+    for operation in ["INSERT", "UPDATE", "DELETE"] {
+        for retry_before_commit in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let database = root.path().join("memory.sqlite");
+            let conn = rusqlite::Connection::open(&database).unwrap();
+            let gate = Arc::new(SqlCommitGate::default());
+            let _release_on_failure = ReleaseSqlGate(gate.clone());
+            conn.create_scalar_function(
+                "pause_memory_commit",
+                0,
+                rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+                {
+                    let gate = gate.clone();
+                    move |_| {
+                        if gate.armed.swap(false, Ordering::SeqCst) {
+                            gate.reached.notify_one();
+                            let mut released = gate.released.lock().unwrap();
+                            while !*released {
+                                released = gate.resume.wait(released).unwrap();
+                            }
+                        }
+                        Ok(0_i64)
+                    }
+                },
+            )
+            .unwrap();
+            let repository = Arc::new(SqliteMemoryRepository::over(conn));
+            repository.ensure_schema().unwrap();
+            if operation != "INSERT" {
+                repository.create("s", "/note.md", "base").await.unwrap();
+            }
+            let initial_heads = repository.snapshot_heads("s").await.unwrap();
+            let initial_history = repository.list_versions("s").await.unwrap();
+            let observer = SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap();
+            let schema = rusqlite::Connection::open(&database).unwrap();
+            schema
+                .execute_batch(&format!(
+                    "CREATE TRIGGER pause_write AFTER {operation} ON memory_store_memories
+                 BEGIN SELECT pause_memory_commit(); END;"
+                ))
+                .unwrap();
+            let mounter = MemoryStoreMounter::copy_only(repository.clone());
+            let projection = root.path().join("projection");
+            let mount: Arc<dyn MemoryMount> = Arc::from(
+                mounter
+                    .mount("s", &projection, MountAccess::ReadWrite)
+                    .await
+                    .unwrap(),
+            );
+            let evidence = MemoryMaterializationEvidence::new(
+                "s",
+                "/workspace/memory",
+                mount.materialization_heads().unwrap(),
+            )
+            .unwrap();
+            let files = if operation == "DELETE" {
+                std::fs::remove_file(projection.join("note.md")).unwrap();
+                vec![]
+            } else {
+                std::fs::write(projection.join("note.md"), "edit").unwrap();
+                vec![("note.md".to_owned(), b"edit".to_vec())]
+            };
+            gate.armed.store(true, Ordering::SeqCst);
+            let pending = tokio::spawn({
+                let mount = mount.clone();
+                async move { mount.teardown().await }
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), gate.reached.notified())
+                .await
+                .expect("SQL transaction reached the pre-commit trigger");
+            pending.abort();
+            assert!(pending.await.unwrap_err().is_cancelled());
+            assert_eq!(observer.snapshot_heads("s").await.unwrap(), initial_heads);
+            assert_eq!(observer.list_versions("s").await.unwrap(), initial_history);
+            let mut retry = mount.teardown();
+            if retry_before_commit {
+                // Poll once to place the real retry behind the in-flight connection
+                // permit; no timing sleep or assumed task scheduling.
+                std::future::poll_fn(|cx| {
+                    assert!(std::future::Future::poll(retry.as_mut(), cx).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+            }
+            gate.release();
+            if !retry_before_commit {
+                // Same connection's serialized read is a late-commit completion barrier.
+                assert_eq!(
+                    repository.list_versions("s").await.unwrap().len(),
+                    initial_history.len() + 1
+                );
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(5), retry)
+                .await
+                .unwrap()
+                .unwrap();
+            mount.teardown().await.unwrap();
+            let heads = repository.snapshot_heads("s").await.unwrap();
+            let history = repository.list_versions("s").await.unwrap();
+            assert_eq!(history.len(), initial_history.len() + 1);
+            assert_eq!(
+                heads.first().and_then(|h| h.content.as_deref()),
+                if operation == "DELETE" {
+                    None
+                } else {
+                    Some("edit")
+                }
+            );
+            schema.execute_batch("DROP TRIGGER pause_write").unwrap();
+            drop(mount);
+            drop(mounter);
+            drop(repository);
+            let reopened =
+                Arc::new(SqliteMemoryRepository::open(database.to_str().unwrap()).unwrap());
+            MemoryStoreMounter::copy_only(reopened.clone())
+                .reconcile_recovered_copy("s", &evidence, &files, MountAccess::ReadWrite)
+                .await
+                .unwrap();
+            assert_eq!(reopened.snapshot_heads("s").await.unwrap(), heads);
+            assert_eq!(reopened.list_versions("s").await.unwrap(), history);
+        }
+    }
+}
+
+#[test]
+fn recovery_has_no_temp_directory_dependency_even_when_cancelled() {
+    // T1-T3 temp location is a FILE (unusable for staging); success, abort before
+    // commit and abort after commit must work without touching it. Environment
+    // mutation is child-only, so other tests cannot race a global TMPDIR change.
+    let root = tempfile::tempdir().unwrap();
+    let sentinel = root.path().join("not-a-directory");
+    std::fs::write(&sentinel, b"sentinel").unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "recovery_without_temp_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("AWAKEN_RECOVERY_TEMP_TEST", "1")
+        .env("TMPDIR", &sentinel)
+        .env("TMP", &sentinel)
+        .env("TEMP", &sentinel)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel");
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
+#[tokio::test]
+#[ignore = "child participant invoked by recovery_has_no_temp_directory_dependency_even_when_cancelled"]
+async fn recovery_without_temp_child() {
+    assert_eq!(std::env::var("AWAKEN_RECOVERY_TEMP_TEST").unwrap(), "1");
+    for after in [false, true] {
+        let repository = Arc::new(SqliteMemoryRepository::open_in_memory().unwrap());
+        let gate = Arc::new(Gate {
+            after,
+            error: false,
+            ordinal: 0,
+            calls: AtomicUsize::new(0),
+            reached: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        let mounter = Arc::new(MemoryStoreMounter::copy_only(Arc::new(FaultRepository {
+            inner: repository.clone(),
+            gate: gate.clone(),
+        })));
+        let evidence =
+            MemoryMaterializationEvidence::new("s", "/workspace/memory", vec![]).unwrap();
+        let files = vec![("note.md".to_owned(), b"private content".to_vec())];
+        let pending = tokio::spawn({
+            let mounter = mounter.clone();
+            let evidence = evidence.clone();
+            let files = files.clone();
+            async move {
+                mounter
+                    .reconcile_recovered_copy("s", &evidence, &files, MountAccess::ReadWrite)
+                    .await
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.reached.notified())
+            .await
+            .unwrap();
+        pending.abort();
+        assert!(pending.await.unwrap_err().is_cancelled());
+        for _ in 0..2 {
+            mounter
+                .reconcile_recovered_copy("s", &evidence, &files, MountAccess::ReadWrite)
+                .await
+                .unwrap();
+        }
+        assert_eq!(repository.list_versions("s").await.unwrap().len(), 1);
+        assert_eq!(
+            repository
+                .get_by_path("s", "/note.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("private content")
+        );
+    }
+}
+
 struct FaultRepository {
     inner: Arc<SqliteMemoryRepository>,
     gate: Arc<Gate>,
