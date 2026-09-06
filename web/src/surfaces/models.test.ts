@@ -3,6 +3,7 @@ import type { CredentialSource, ProviderDriverDescriptor } from "../lib/api/type
 import { cloudModelUiState, modelCatalogPresentation } from "./model-cloud-capability";
 import { fmtTokens, modelTestAgentConfig, modelTestAgentId } from "./models";
 import {
+  providerConnectionBaseUrl,
   providerConfigurationDefaults,
   providerDraftDefaults,
   credentialReusableForProvider,
@@ -80,6 +81,39 @@ describe("providerDraftDefaults", () => {
       project_id: "",
       location: "global",
     });
+  });
+});
+
+describe("provider connection URL submission", () => {
+  // Causes: blank input B; matching provider P; dialect default D; equal URL U.
+  // Effects: inherit descriptor I (null) or preserve explicit override O.
+  // Decision table: B -> I; !B & P & D & U -> I; all other rows -> O.
+  // Equality is trimmed but otherwise exact: never normalize paths or queries,
+  // compare another dialect/provider, or copy a discovery URL into inference.
+  const descriptor: ProviderDriverDescriptor = {
+    ...openai,
+    default_endpoints: [
+      ...openai.default_endpoints,
+      { dialect: "open_ai_chat", base_url: "https://example.test/chat" },
+    ],
+  };
+  const draft = { ...providerDraftDefaults(descriptor) };
+  const withoutDefaults: ProviderDriverDescriptor = { ...descriptor, default_endpoints: [] };
+  it.each([
+    ["blank", "", "open_ai_responses", "openai", descriptor, null],
+    ["whitespace", "  ", "open_ai_responses", "openai", undefined, null],
+    ["default", draft.baseUrl, draft.dialect, "openai", descriptor, null],
+    ["trimmed default", ` ${draft.baseUrl} `, draft.dialect, "openai", descriptor, null],
+    ["switched dialect", "https://example.test/chat", "open_ai_chat", "openai", descriptor, null],
+    ["custom", " https://custom.test/path?tenant=1 ", draft.dialect, "openai", descriptor, "https://custom.test/path?tenant=1"],
+    ["other dialect URL", draft.baseUrl, "open_ai_chat", "openai", descriptor, draft.baseUrl],
+    ["missing descriptor", draft.baseUrl, draft.dialect, "openai", undefined, draft.baseUrl],
+    ["wrong provider", draft.baseUrl, draft.dialect, "other", descriptor, draft.baseUrl],
+    ["missing default", draft.baseUrl, "unknown", "openai", descriptor, draft.baseUrl],
+    ["no defaults", draft.baseUrl, draft.dialect, "openai", withoutDefaults, draft.baseUrl],
+    ["path differs", `${draft.baseUrl}/`, draft.dialect, "openai", descriptor, `${draft.baseUrl}/`],
+  ] as const)("%s", (_name, baseUrl, dialect, provider, selected, expected) => {
+    expect(providerConnectionBaseUrl({ ...draft, baseUrl, dialect, provider }, selected)).toBe(expected);
   });
 });
 

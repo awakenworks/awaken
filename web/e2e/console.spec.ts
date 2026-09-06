@@ -1431,6 +1431,47 @@ test("Models either tests a discovered model or closes the provider prerequisite
   await expect(page.getByPlaceholder("Say hello…")).toBeVisible();
 });
 
+// Submission decision table (the descriptor and form are real; only POST is intercepted):
+// P1 selected provider/dialect default -> null, letting Control own discovery;
+// P2 dialect switch -> its new default also null;
+// P3 custom endpoint -> exact custom URL; P4 restoring the default -> null.
+// A rejected POST preserves the draft and permits retry without creating credentials.
+// This checks the actual mutation body, not merely the displayed form defaults.
+test("Provider connection submission preserves descriptor defaults and explicit custom endpoints", async ({ page }) => {
+  const submissions: Record<string, unknown>[] = [];
+  await page.route(/\/v1(?:\/workspaces\/[^/]+)?\/config\/provider-connections(?:\?|$)/, async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    submissions.push(route.request().postDataJSON());
+    await route.fulfill({ status: 422, contentType: "application/json", body: JSON.stringify({ error: "Synthetic submission boundary" }) });
+  });
+  await page.goto("/w/default/models");
+  await page.getByRole("button", { name: /^DeepSeek/ }).click();
+  await page.getByText("Advanced connection settings", { exact: true }).click();
+  await page.getByLabel("API key (write-only)").fill("synthetic-never-sent-to-provider");
+  const format = page.getByRole("combobox", { name: "API format", exact: true });
+  const address = page.getByLabel("Custom endpoint", { exact: true });
+  const submit = page.getByRole("button", { name: "Verify & import models", exact: true });
+  async function checkSubmission(dialect: string, expected: string | null) {
+    const count = submissions.length;
+    await submit.click();
+    await expect.poll(() => submissions.length).toBe(count + 1);
+    expect(submissions[count]).toMatchObject({ provider_id: "deepseek", dialect, base_url: expected });
+    await expect(submit).toBeEnabled();
+  }
+  await format.selectOption("anthropic_messages");
+  const anthropicDefault = await address.inputValue();
+  expect(anthropicDefault).not.toBe("");
+  await checkSubmission("anthropic_messages", null);
+  await format.selectOption("open_ai_chat");
+  expect(await address.inputValue()).not.toBe(anthropicDefault);
+  await checkSubmission("open_ai_chat", null);
+  await address.fill("https://operator.example.test/gateway?tenant=one");
+  await checkSubmission("open_ai_chat", "https://operator.example.test/gateway?tenant=one");
+  await format.selectOption("anthropic_messages");
+  await expect(address).toHaveValue(anthropicDefault);
+  await checkSubmission("anthropic_messages", null);
+});
+
 test("Admin Assistant truthfully shows a composer or the missing-model prerequisite", async ({ page }) => {
   await page.goto("/w/default/assistant");
   await expect(page.getByRole("heading", { name: /Ask the Console Assistant|询问 Console 助手/ })).toBeVisible();
