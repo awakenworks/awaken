@@ -144,7 +144,10 @@ pub(super) async fn install_claimed_session_projection(
             ))
         })?;
         if !exact {
-            return Err(HostWorkerResolver::execution_error(
+            // The claimed envelope is immutable. Relinquishing would claim
+            // the same incompatible Run forever; use the existing fenced
+            // terminal commit instead of replacing its resources on retry.
+            return Err(HostWorkerResolver::terminal_resolution_error(
                 "Control resume projection conflicts with the claimed resource snapshot",
             ));
         }
