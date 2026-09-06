@@ -213,21 +213,73 @@ pub fn validate_agent_input_revision(
     current: Option<&AgentInputConfig>,
     next: &AgentInputConfig,
 ) -> Result<bool, AgentInputRepositoryError> {
-    if next.revision < 1 {
-        return Err(AgentInputRepositoryError::InvalidRevision(next.revision));
+    agent_input_revision_decision(
+        current.map(|value| value.revision),
+        next.revision,
+        current.is_some_and(|value| value == next),
+    )
+}
+
+/// Scalar decision kernel of the existing aggregate validator. Content equality
+/// is projected exactly once by that validator, never supplied by an adapter.
+/// This private kernel owns all revision rules; callers own locking and commit.
+fn agent_input_revision_decision(
+    current: Option<i64>,
+    attempted: i64,
+    same_aggregate: bool,
+) -> Result<bool, AgentInputRepositoryError> {
+    if attempted < 1 {
+        return Err(AgentInputRepositoryError::InvalidRevision(attempted));
     }
     match current {
-        Some(current) if current == next => Ok(false),
-        Some(current) if next.revision == current.revision + 1 => Ok(true),
-        Some(current) => Err(AgentInputRepositoryError::RevisionConflict {
-            current: current.revision,
-            attempted: next.revision,
-        }),
-        None if next.revision == 1 => Ok(true),
+        Some(current) if current == attempted && same_aggregate => Ok(false),
+        Some(current) if current > 0 && current.checked_add(1) == Some(attempted) => Ok(true),
+        Some(current) => Err(AgentInputRepositoryError::RevisionConflict { current, attempted }),
+        None if attempted == 1 => Ok(true),
         None => Err(AgentInputRepositoryError::RevisionConflict {
             current: 0,
-            attempted: next.revision,
+            attempted,
         }),
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn agent_input_revision_decision_is_exact_non_wrapping_and_replay_first() {
+    // Causes: existence x all i64 current/attempted values x aggregate equality.
+    // R1 attempted<=0 -> invalid; R2 same positive revision+aggregate -> no write;
+    // R3 missing+1 or positive exact successor -> write; R4 all others -> conflict.
+    // The i128 specification cannot overflow when calculating the i64 successor.
+    // Equality is an unconstrained equivalence-class input (including impossible
+    // combinations); Rust structural equality, locks, SQL and commits are not
+    // proved by this scalar harness. No database non-mutation claim is implied.
+    let current: Option<i64> = kani::any();
+    let attempted: i64 = kani::any();
+    let same_aggregate: bool = kani::any();
+    let decision = agent_input_revision_decision(current, attempted, same_aggregate);
+    let replay = current == Some(attempted) && same_aggregate && attempted > 0;
+    let successor = match current {
+        None => attempted == 1,
+        Some(value) => value > 0 && i128::from(attempted) == i128::from(value) + 1,
+    };
+    // Inspect the closed result directly; formatting the Storage(String) error
+    // in assert_eq! would pull unrelated unbounded formatting into the solver.
+    match decision {
+        Ok(write) => {
+            assert!(attempted > 0);
+            assert!(if write { successor && !replay } else { replay });
+        }
+        Err(AgentInputRepositoryError::InvalidRevision(value)) => {
+            assert!(attempted <= 0 && value == attempted);
+        }
+        Err(AgentInputRepositoryError::RevisionConflict {
+            current: value,
+            attempted: next,
+        }) => {
+            assert!(attempted > 0 && !replay && !successor);
+            assert!(value == current.unwrap_or(0) && next == attempted);
+        }
+        Err(AgentInputRepositoryError::Storage(_)) => assert!(false),
     }
 }
 
@@ -314,6 +366,111 @@ mod tests {
             "file-a"
         );
         assert!(store.list_agent_inputs("workspace-c").unwrap().is_empty());
+    }
+
+    #[test]
+    fn agent_input_revision_exhaustion_rejects_without_panicking_or_mutating() {
+        // C1 current=i64::MAX; C2 exact replay vs changed content; C3 positive
+        // vs invalid next revision. R1 exact replay -> no write; R2 changed
+        // positive proposal -> conflict (never overflow); R3 nonpositive ->
+        // InvalidRevision. Every rejection leaves the borrowed aggregate intact.
+        let current = AgentInputConfig {
+            agent_id: "agent".into(),
+            environment: None,
+            inputs: Vec::new(),
+            revision: i64::MAX,
+        };
+        let before = current.clone();
+        assert_eq!(
+            validate_agent_input_revision(Some(&current), &current),
+            Ok(false)
+        );
+        for revision in [1, i64::MAX - 1, i64::MAX, 0, i64::MIN] {
+            let mut next = current.clone();
+            next.revision = revision;
+            next.environment = Some(crate::AgentEnvironmentBinding {
+                environment_id: "changed".into(),
+                revision: 1,
+            });
+            let expected = if revision < 1 {
+                AgentInputRepositoryError::InvalidRevision(revision)
+            } else {
+                AgentInputRepositoryError::RevisionConflict {
+                    current: i64::MAX,
+                    attempted: revision,
+                }
+            };
+            assert_eq!(
+                validate_agent_input_revision(Some(&current), &next),
+                Err(expected)
+            );
+            assert_eq!(current, before);
+        }
+    }
+
+    #[test]
+    fn agent_input_revision_decision_table_preserves_exact_content() {
+        // Causes: absent/corrupt/valid/exhausted current x attempted revision x
+        // exact/changed aggregate. Invalid attempts take priority; corrupt
+        // current is not silently repaired. Same revision is replay only when
+        // EVERY field agrees. A valid successor may change any authored field.
+        let config = |revision| AgentInputConfig {
+            agent_id: "agent".into(),
+            environment: None,
+            inputs: Vec::new(),
+            revision,
+        };
+        for current_revision in [
+            None,
+            Some(i64::MIN),
+            Some(0),
+            Some(1),
+            Some(i64::MAX - 1),
+            Some(i64::MAX),
+        ] {
+            let current = current_revision.map(config);
+            for revision in [i64::MIN, 0, 1, 2, 3, i64::MAX - 1, i64::MAX] {
+                for changed_field in 0..4 {
+                    let mut next = config(revision);
+                    match changed_field {
+                        0 => {}
+                        1 => next.agent_id = "different-agent".into(),
+                        2 => {
+                            next.environment = Some(crate::AgentEnvironmentBinding {
+                                environment_id: "environment".into(),
+                                revision: 1,
+                            })
+                        }
+                        _ => next.inputs.push(InputBinding {
+                            binding_id: BindingId::from("file"),
+                            target: InputResourceId::File(FileId::from("file")),
+                            mount_path: "/workspace/file".into(),
+                            access: ResourceAccess::ReadOnly,
+                            instructions: None,
+                        }),
+                    }
+                    let expected = if revision <= 0 {
+                        Err(AgentInputRepositoryError::InvalidRevision(revision))
+                    } else if current_revision == Some(revision) && changed_field == 0 {
+                        Ok(false)
+                    } else if current_revision.map_or(revision == 1, |c| {
+                        c > 0 && i128::from(revision) - i128::from(c) == 1
+                    }) {
+                        Ok(true)
+                    } else {
+                        Err(AgentInputRepositoryError::RevisionConflict {
+                            current: current_revision.unwrap_or(0),
+                            attempted: revision,
+                        })
+                    };
+                    assert_eq!(
+                        validate_agent_input_revision(current.as_ref(), &next),
+                        expected,
+                        "current={current_revision:?}, next={revision}, changed field={changed_field}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

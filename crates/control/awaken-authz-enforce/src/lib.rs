@@ -601,6 +601,25 @@ fn collapse_session_decision(decision: AuthorizationDecision) -> SessionDecision
     }
 }
 
+#[cfg(kani)]
+#[kani::proof]
+fn session_decision_collapse_allows_only_explicit_allow() {
+    // Closed-domain decision table: R1 Allow -> Allow; R2 Deny -> Deny;
+    // R3 RequireApproval -> Deny. No token, transport or IAM-policy proof is
+    // claimed: this verifies the sole production decision-collapse boundary.
+    let index: usize = kani::any();
+    kani::assume(index < 3);
+    let decision = [
+        AuthorizationDecision::Allow,
+        AuthorizationDecision::Deny,
+        AuthorizationDecision::RequireApproval,
+    ][index];
+    assert_eq!(
+        collapse_session_decision(decision) == SessionDecision::Allow,
+        index == 0
+    );
+}
+
 /// The session surface's authorization outcome. It has no `RequireApproval`
 /// variant: this in-memory seeded engine installs only Allow grants, so approval —
 /// a management-plane concept — cannot arise here. Mapping the shared engine's

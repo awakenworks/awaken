@@ -247,9 +247,10 @@ async fn selected_bundles(
     ))
 }
 
-/// Serialize every mutation for one webhook id, including the absent-row create
-/// case where `SELECT .. FOR UPDATE` has no tuple to lock.
-async fn lock_webhook_id(
+/// Serialize aggregate mutations including absent-row creation, where SELECT
+/// FOR UPDATE has no tuple to lock. Webhooks retain their existing lock identity;
+/// Agent inputs use a table-qualified key. Hash collisions only over-serialize.
+async fn lock_aggregate_id(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: &str,
 ) -> Result<(), ConfigRepositoryError> {
@@ -272,6 +273,9 @@ impl AgentInputBindingRepository for PostgresAdminStore {
         block(&self.handle, move || async move {
             let mut tx = pool
                 .begin()
+                .await
+                .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+            lock_aggregate_id(&mut tx, &format!("{NS}_agent_resource:{key}"))
                 .await
                 .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
             let row = sqlx::query(&format!(
@@ -369,7 +373,7 @@ impl WebhookStore for PostgresAdminStore {
                 .begin()
                 .await
                 .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            lock_webhook_id(&mut tx, &patch.id).await?;
+            lock_aggregate_id(&mut tx, &patch.id).await?;
             let pending = sqlx::query(&format!(
                 "SELECT 1 FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
             ))
@@ -432,7 +436,7 @@ impl WebhookStore for PostgresAdminStore {
                 .begin()
                 .await
                 .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            lock_webhook_id(&mut tx, &id).await?;
+            lock_aggregate_id(&mut tx, &id).await?;
             let pending = sqlx::query(&format!(
                 "SELECT data FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
             ))
@@ -494,7 +498,7 @@ impl WebhookStore for PostgresAdminStore {
                 .begin()
                 .await
                 .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            lock_webhook_id(&mut tx, &id).await?;
+            lock_aggregate_id(&mut tx, &id).await?;
             let pending = sqlx::query(&format!(
                 "SELECT data FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
             ))
@@ -567,7 +571,7 @@ impl WebhookStore for PostgresAdminStore {
                 .begin()
                 .await
                 .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            lock_webhook_id(&mut tx, &id).await?;
+            lock_aggregate_id(&mut tx, &id).await?;
             let pending = sqlx::query(&format!(
                 "SELECT data FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
             ))
@@ -624,7 +628,7 @@ impl WebhookStore for PostgresAdminStore {
                 .begin()
                 .await
                 .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            lock_webhook_id(&mut tx, &id).await?;
+            lock_aggregate_id(&mut tx, &id).await?;
             let pending = sqlx::query(&format!(
                 "SELECT 1 FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
             ))
