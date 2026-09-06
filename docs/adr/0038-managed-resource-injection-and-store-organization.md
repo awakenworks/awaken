@@ -723,17 +723,45 @@ fails instead of becoming an ignored success. `awaken-local-process::cgroup`
 owns descriptor-pinned membership, launch admission and close/kill/empty
 observation. A missing/denied control operation or unknown populated state
 cannot become a stop receipt, and an old descriptor cannot target a replacement
-at the same pathname. The real test holds launch admission until the trusted
-bootstrap joins before workload exec, checks neighboring scopes and retry/ABA,
+at the same pathname. `LocalProcess::spawn_scoped` now holds launch admission
+until the production `awaken-sandbox scoped-exec` role joins the exact cgroup,
+acknowledges membership, and receives a one-byte GO before workload exec.
+The old test-only bootstrap has been removed; the real binary integration test
+now lives in `crates/bin/awaken-sandbox/tests/linux_cgroup.rs` and owns this
+composition's qualification. It checks neighboring scopes and retry/ABA,
 and SIGKILLs a separate systemd-managed owner while detached descendants retain
 the external observer's stdout directly. Systemd's control-group teardown, not
 Rust Drop or a forwarding task's EOF, must end that tree.
 
+The trusted helper starts with an empty environment and `/` cwd. Only a private
+abstract Unix socket, authenticated by both peers' exact process IDs, carries
+the bounded materialized workload input. This is a transient OS handoff, not a
+serializable planning contract or durable secret record. The helper applies
+the provider-resolved physical cwd and explicit environment to the final exec;
+the logical cwd is not mapped a second time. The provider must retain its
+realization/path authorization through launch: a physical cwd string does not
+pin a filesystem generation against external pathname replacement.
+Business stdin/stdout/stderr remain
+unframed. A real `LD_PRELOAD` constructor test requires membership even before
+workload main, while cwd, synthetic credential, binary stdio, failed exec,
+cancelled/expired admission, wrong ACK/peer, and concurrent launch/close tests
+pin the remaining launch contract. Tests own their cause/effect decision rules.
+
+Cancellation before GO cannot authorize workload effects. It can leave a
+briefly exiting trusted bootstrap: kill-on-drop is a request, and cancellation
+does not itself prove bootstrap exit or permanent cgroup emptiness. The permit
+is not a durable recovery fence. Successful launch means GO was issued, not
+successful exec or ACP/Hand readiness; the existing protocol supervisors must
+still observe those outcomes. Linux bootstrap is explicit and fails closed on
+other platforms, without changing ordinary local launch behavior.
+
 This is a Linux adapter foundation, NOT an installed Worker supervision mode.
 Ordinary `LocalProcess::spawn`, Workdir Native tools and Worker capability
 reporting are unchanged. Production integration must still bind this adapter
-to the existing physical realization/Session fence, keep one owner, implement
-the trusted bootstrap acknowledgement, and qualify external-supervisor loss.
+to the existing physical realization/Session fence, keep one owner, route
+Workdir Native tools through the same supervised boundary, and qualify
+external-supervisor loss. The trusted bootstrap acknowledgment is implemented;
+production adoption/recovery and capability advertising are not.
 The adapter does not own a Session ledger or persist cleanup receipts; it
 cannot guarantee containment against actors authorized to migrate processes
 outside the delegated hierarchy or undo already-issued remote effects.
@@ -751,6 +779,12 @@ on Windows and must not be replaced with a duplicate identity mechanism.
 Apple Silicon cross-checking also needs a Darwin C sysroot for BLAKE3's NEON
 build; this Linux host's Clang header search fails before checking Awaken code.
 These implementation and toolchain gaps remain explicit release blockers.
+
+The scoped-launch change also cross-checks `awaken-local-process --tests` and
+the thin `awaken-sandbox --bin awaken-sandbox` on Windows GNU and Intel Darwin.
+The broader Windows sandbox `--tests` check is blocked on this Linux host by
+the missing MinGW C compiler required by its existing `ring` dev-dependency;
+the passing thin-binary check does not substitute for that test target.
 
 Memory/Repository live addition remains an explicit
 create-time-only contract, not a missing hot-plug implementation to emulate.

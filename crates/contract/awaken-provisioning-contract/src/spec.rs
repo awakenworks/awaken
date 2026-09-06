@@ -386,8 +386,8 @@ pub struct SandboxSpec {
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub control_services: BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
     /// Optional dead-man's-switch: the owner must `renew_lease` within this window
-    /// or the sandbox self-reaps. `None` = no lease (a local child dies with its
-    /// parent anyway); set it for remote sandboxes that outlive the owning host.
+    /// or the sandbox self-reaps. `None` = no lease, NOT parent-death cleanup:
+    /// local children can also outlive their owner without OS supervision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease_ttl_secs: Option<u64>,
 }

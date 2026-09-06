@@ -12,7 +12,7 @@
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rustix::fs::{Mode, OFlags, open, openat};
@@ -30,6 +30,7 @@ pub struct CgroupIdentity {
 /// Descriptor-pinned cgroup control. Renaming/replacing its path cannot redirect
 /// a stop to a different generation. Drop has no destructive effects.
 pub struct LinuxProcessScope {
+    path: PathBuf,
     identity: CgroupIdentity,
     membership: File,
     kill: File,
@@ -59,6 +60,9 @@ impl LinuxProcessScope {
     /// leaves, root cgroups and unavailable control interfaces. This verifies
     /// the kernel substrate, NOT systemd liveness or the caller's Session lease.
     pub fn open(path: &Path) -> io::Result<Self> {
+        if !path.is_absolute() {
+            return Err(invalid("process scope requires an absolute path"));
+        }
         let directory = open(
             path,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -79,6 +83,7 @@ impl LinuxProcessScope {
             .into())
         };
         let scope = Self {
+            path: path.to_owned(),
             identity: CgroupIdentity {
                 device: stat.st_dev,
                 inode: stat.st_ino,
@@ -94,6 +99,10 @@ impl LinuxProcessScope {
 
     pub fn identity(&self) -> CgroupIdentity {
         self.identity
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
     }
 
     pub async fn launch_permit(&self) -> io::Result<ScopeLaunchPermit<'_>> {
@@ -222,6 +231,7 @@ mod tests {
         std::fs::write(&events_path, "populated 1\n").unwrap();
         std::fs::write(&kill_path, "").unwrap();
         let mut scope = LinuxProcessScope {
+            path: root.path().to_owned(),
             identity: CgroupIdentity {
                 device: 1,
                 inode: 2,
@@ -315,5 +325,14 @@ mod tests {
         std::os::unix::fs::symlink(root.path(), root.path().join("alias")).unwrap();
         assert!(LinuxProcessScope::open(&root.path().join("alias")).is_err());
         assert!(LinuxProcessScope::open(&root.path().join("absent")).is_err());
+        // CG20 relative paths are not stable handoff addresses; reject before
+        // inspecting a filesystem, regardless of the current working directory.
+        assert!(
+            LinuxProcessScope::open(Path::new("."))
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("absolute path")
+        );
     }
 }

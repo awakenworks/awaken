@@ -21,7 +21,7 @@ elif [[ "$#" != 0 ]]; then
   exit 2
 fi
 if [[ "$linux_supervision" == true ]]; then
-  cargo test -p awaken-local-process --test linux_cgroup \
+  cargo test -p awaken-sandbox --test linux_cgroup \
     linux_systemd_process_scope_contract -- --ignored --exact
 fi
 
