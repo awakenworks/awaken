@@ -1855,7 +1855,6 @@ dependencies = [
 name = "awaken-reliability-testkit"
 version = "1.0.0"
 dependencies = [
-
  "serde_json",
  "tracing",
 ]
