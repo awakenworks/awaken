@@ -267,9 +267,9 @@ fn realization_renewal_never_widens_owner_epoch_or_expiry_authority() {
 
 /// Whether the current exact-generation fence is the asserted fence or a
 /// monotonic lease extension of it. Logical generation, owner incarnation, and
-/// epoch remain immutable; only expiry may advance. Control uses this relation
-/// to ask an in-flight phase driver to catch up instead of treating its already
-/// authorized predecessor receipt as a conflicting generation.
+/// epoch remain immutable; only expiry may advance. Under a live root lease,
+/// Control uses this relation to retain completed predecessor evidence without
+/// repeating a physical effect merely because authority duration increased.
 #[must_use]
 pub fn realization_generation_authorizes(
     current: &McpGenerationRef,
@@ -1669,7 +1669,7 @@ mod tests {
 
     /// Generation-fence cause/effect graph: C1 logical generation identity,
     /// owner incarnation, and epoch match; C2 current expiry is equal/later.
-    /// E1 permits a phase catch-up without committing the predecessor effect;
+    /// E1 retains completed evidence under separately verified live authority;
     /// E2 rejects replacement, regression, or cross-generation input.
     ///
     /// | Rule | C1 | C2 | Effect |

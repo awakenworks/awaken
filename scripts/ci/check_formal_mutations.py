@@ -303,6 +303,30 @@ def mutate_disconnected_product_feature(case_root: Path) -> None:
 
 
 class MutationOracleTests(unittest.TestCase):
+    def test_temporal_mutation_requires_exact_exit_and_a_single_property(self) -> None:
+        # T1 green base + exit 13 + temporal violation + one named property is
+        # a kill. T2 unrelated safety/parser/tool failures cannot count. T3 a
+        # different/multiple property selection cannot use TLC's generic text.
+        green = subprocess.CompletedProcess([], 0, "Model checking completed. No error has been found.")
+        for config, code, output, accepted in (
+            ("PROPERTIES Releases", 13, "Temporal properties were violated.", True),
+            ("PROPERTIES Releases", 12, "Invariant Safety is violated", False),
+            ("PROPERTIES Releases", 1, "parse error", False),
+            ("PROPERTIES Releases", 0, "Temporal properties were violated.", False),
+            ("PROPERTIES Releases Other", 13, "Temporal properties were violated.", False),
+            ("PROPERTIES Other", 13, "Temporal properties were violated.", False),
+        ):
+            with self.subTest(config=config, code=code), patch("subprocess.run", side_effect=[
+                green, subprocess.CompletedProcess([], code, output),
+            ]):
+                if accepted:
+                    check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", config,
+                                              [("mutant", config, "temporal:Releases")])
+                else:
+                    with self.assertRaises(SystemExit):
+                        check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", config,
+                                                  [("mutant", config, "temporal:Releases")])
+
     def test_tlc_mutations_require_a_green_base_and_exact_invariant_failure(self) -> None:
         # TLC cause/effect table: baseline green x mutant exit x invariant text.
         # Only green+12+exact invariant passes. Infrastructure/parser failures,
@@ -364,6 +388,7 @@ def main() -> None:
     model_selection.add_argument("--memory-copy-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--agent-input-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--resource-preparation-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--realization-renewal-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--resolution-failure-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--config-cas-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--background-completion-model-mutant", type=Path, metavar="TLC_JAR")
@@ -373,6 +398,9 @@ def main() -> None:
     model_selection.add_argument("--verified-admission-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--session-network-model-mutant", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
+    if arguments.realization_renewal_model_mutant is not None:
+        check_realization_renewal_model_mutant(arguments.realization_renewal_model_mutant)
+        return
     if arguments.session_network_model_mutant is not None:
         check_session_network_model_mutant(arguments.session_network_model_mutant)
         return
@@ -528,6 +556,21 @@ def check_resource_preparation_model_mutant(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "SessionRealizationMutex", source, config,
         [(mutant, config, "ResourcesHaveRenewableAuthority") for mutant in mutants])
     print("Resource preparation mutation score: 2/2 killed (hidden lease, cancelled publication)")
+
+
+def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
+    # L1: restore expiry-equality catch-up after a completed phase. Successful
+    # renewals forever must expose a non-releasing cycle, not an oracle error.
+    source = (ROOT / "formal/tla/SessionRealizationMutex.tla").read_text()
+    config = (ROOT / "formal/tla/SessionRealizationRenewal.cfg").read_text()
+    anchor = "  /\\ phase' = [phase EXCEPT ![session] = \"Committing\"]"
+    if source.count(anchor) != 1:
+        raise SystemExit("Realization renewal mutation anchor drifted; review the model")
+    mutant = source.replace(anchor,
+        "  /\\ phase' = [phase EXCEPT ![session] = IF receiptCurrent[session] THEN \"Committing\" ELSE \"Driving\"]")
+    check_tlc_model_mutations(tlc_jar, "SessionRealizationMutex", source, config,
+        [(mutant, config, "temporal:EveryAcquiredSlotEventuallyReleases")])
+    print("Realization renewal mutation score: 1/1 killed (continuous-renewal livelock)")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
@@ -694,8 +737,17 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
                 cwd=directory, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 timeout=30, check=False,
             )
-            expected_code = 0 if invariant is None else 12
+            temporal = invariant is not None and invariant.startswith("temporal:")
+            if temporal:
+                # TLC does not name a failed temporal property in its output.
+                # Restrict this oracle to one explicitly named CFG property.
+                properties = [line.strip() for line in config_text.splitlines()
+                              if line.strip().startswith(("PROPERTY ", "PROPERTIES "))]
+                if properties != [f"PROPERTIES {invariant.removeprefix('temporal:')}"]:
+                    raise SystemExit("temporal mutation requires one exact named property")
+            expected_code = 0 if invariant is None else (13 if temporal else 12)
             expected_text = ("Model checking completed. No error has been found." if invariant is None
+                             else "Temporal properties were violated." if temporal
                              else f"Invariant {invariant} is violated")
             if result.returncode != expected_code or expected_text not in result.stdout:
                 raise SystemExit(f"{name} {'baseline failed' if invariant is None else 'mutant was not killed correctly'}:\n{result.stdout}")

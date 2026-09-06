@@ -287,23 +287,22 @@ impl SessionApplication {
         let (owner_scope, mut session) = self.session_for_realization(&command.session_id).await?;
         verify_lease(&session, &command.lease)?;
         let expected = Self::realization_stage_requests(&owner_scope, &session)?;
-        if expected.len() != command.mcp_receipts.len() {
+        let receipt_generations = command
+            .mcp_receipts
+            .iter()
+            .map(|receipt| receipt.generation.clone())
+            .collect::<Vec<_>>();
+        let expected_generations = expected
+            .iter()
+            .map(|request| request.generation.clone())
+            .collect::<Vec<_>>();
+        if !generation_set_authorizes(&expected_generations, &receipt_generations) {
             return Err(SessionRealizationControlFailure::Invalid(
-                "MCP realization receipt set is incomplete or contains extras".into(),
+                "MCP realization receipt set does not match the authorized generation set".into(),
             ));
         }
-        let mut receipt_keys = BTreeSet::new();
-        for receipt in &command.mcp_receipts {
-            if !receipt_keys.insert(exact_generation_key(&receipt.generation)) {
-                return Err(SessionRealizationControlFailure::Invalid(
-                    "MCP realization receipt set contains a duplicate generation".into(),
-                ));
-            }
-        }
-        // The Resource receipt remains part of this Stage even when an MCP
-        // heartbeat forces expiry catch-up. Validate it before that early
-        // return; otherwise the next directive would project active R2 over
-        // already-prepared R3, or consume a different pending generation.
+        // Renewal changes authority duration, not which Resource generation
+        // this Stage prepared. Never consume an unreported pending mutation.
         let prepared_pending_resources = match command.prepared_resource_revision {
             Some(revision)
                 if session.resources.pending.is_some()
@@ -319,46 +318,28 @@ impl SessionApplication {
             }
             Some(_) | None => false,
         };
-        let expected_generations = expected
-            .iter()
-            .map(|request| request.generation.clone())
-            .collect::<Vec<_>>();
-        let receipt_generations = command
-            .mcp_receipts
-            .iter()
-            .map(|receipt| receipt.generation.clone())
-            .collect::<Vec<_>>();
-        if generation_set_is_renewed_successor(&expected_generations, &receipt_generations)
-            && command.mcp_receipts.iter().all(|receipt| {
-                expected.iter().any(|request| {
-                    awaken_session_contract::realization_generation_authorizes(
-                        &request.generation,
-                        &receipt.generation,
-                    ) && request.realization_id == receipt.realization_id
-                        && request.selected_plaintext_holder == receipt.selected_plaintext_holder
-                })
-            })
-        {
-            // A heartbeat advanced only the exact lease expiry while this Stage
-            // was in flight. The predecessor receipt commits nothing; return the
-            // latest Stage so the one driver catches up under current authority.
-            // Preserve only the exact Resource preparation already reported by
-            // this Stage; an MCP-only retry cannot admit a new pending mutation.
-            return self
-                .next_action(owner_scope, &session, false, prepared_pending_resources)
-                .await;
-        }
         for receipt in &command.mcp_receipts {
             let request = expected
                 .iter()
-                .find(|request| request.generation == receipt.generation)
+                .find(|request| {
+                    awaken_session_contract::realization_generation_authorizes(
+                        &request.generation,
+                        &receipt.generation,
+                    )
+                })
                 .ok_or_else(|| {
                     SessionRealizationControlFailure::Invalid(
                         "MCP realization receipt names an unclaimed generation".into(),
                     )
                 })?;
+            // Reconstruct the exact admitted request using only its older
+            // expiry. Every immutable field and the complete fingerprint still
+            // pass the existing verifier. A live same-generation root lease was
+            // checked above; no receipt grants or extends execution authority.
+            let mut admitted = request.clone();
+            admitted.generation = receipt.generation.clone();
             receipt
-                .verify(request)
+                .verify(&admitted)
                 .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
         }
         let prepared_legacy_resources = if session.resources.pending.is_none()
@@ -385,89 +366,77 @@ impl SessionApplication {
                 .attachments
                 .iter()
                 .any(|attachment| attachment.state == McpAttachmentState::Realizing);
-        if !needs_activation_commit {
-            let publish = Self::publication_generations(&session)?;
-            let drain = Self::draining_generations(&session)?;
-            return self
-                .realization_directive(
-                    owner_scope,
-                    &session,
-                    SessionRealizationAction::Publish { publish, drain },
-                    false,
-                )
-                .await;
-        }
-        if prepared_pending_resources {
-            session.resources.commit().map_err(unavailable)?;
-        }
-        if prepared_legacy_resources {
-            session.resources.adopt_legacy_active(&command.session_id);
-        }
-        for request in expected {
-            let attachment = session
-                .mcp
-                .attachments
-                .iter()
-                .find(|attachment| {
-                    attachment.attachment_id == request.generation.attachment_id
-                        && attachment.generation == request.generation.generation
-                })
-                .ok_or(SessionRealizationControlFailure::NotReady)?;
-            if attachment.state == McpAttachmentState::Realizing {
-                session
+        if needs_activation_commit {
+            if prepared_pending_resources {
+                session.resources.commit().map_err(unavailable)?;
+            }
+            if prepared_legacy_resources {
+                session.resources.adopt_legacy_active(&command.session_id);
+            }
+            for request in expected {
+                let attachment = session
                     .mcp
-                    .activate(
-                        &request.generation.attachment_id,
-                        request.generation.generation,
-                        &request.realization_id,
-                    )
+                    .attachments
+                    .iter()
+                    .find(|attachment| {
+                        attachment.attachment_id == request.generation.attachment_id
+                            && attachment.generation == request.generation.generation
+                    })
+                    .ok_or(SessionRealizationControlFailure::NotReady)?;
+                if attachment.state == McpAttachmentState::Realizing {
+                    session
+                        .mcp
+                        .activate(
+                            &request.generation.attachment_id,
+                            request.generation.generation,
+                            &request.realization_id,
+                        )
+                        .map_err(unavailable)?;
+                }
+            }
+            // Durable authority advances without rewriting the completed physical
+            // receipt. Runtime publication uses that exact receipt under its live
+            // same-generation Session lease, so continual heartbeats cannot starve
+            // the Stage -> Publish -> Complete transition.
+            let current_lease = session
+                .realization
+                .clone()
+                .ok_or(SessionRealizationControlFailure::NotReady)?;
+            session
+                .mcp
+                .extend_active_realization_leases(
+                    &current_lease.runtime_incarnation,
+                    current_lease.epoch,
+                    current_lease.expires_at_unix_ms,
+                )
+                .map_err(unavailable)?;
+            session.mcp.begin_obsolete_drains().map_err(unavailable)?;
+            // Initial creation remains non-visible until publication acknowledgement.
+            // A hot mutation belongs to an already-idle Session, so keep that lifecycle
+            // status while its new generation is unacknowledged; a failed replacement
+            // must not turn the established Session into a failed create.
+            if !session.execution.admits_activity() {
+                session
+                    .transition_execution(SessionExecutionState::Activating)
                     .map_err(unavailable)?;
             }
+            session = self
+                .commit_resource_snapshot(
+                    &owner_scope,
+                    session,
+                    "activate-session-realization",
+                    Vec::new(),
+                )
+                .await
+                .map_err(|error| match error {
+                    SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
+                    error => unavailable(error),
+                })?;
         }
-        // A heartbeat may have extended the aggregate lease while the Runtime
-        // was staging a previously admitted request. Promote the newly Active
-        // durable claim to that current lease. The Runtime's lease-only port
-        // updates Session authority, not the exact MCP projection/receipt.
-        // Publication must therefore wait for the existing renewal Stage below
-        // whenever this promotion advances beyond the admitted Stage receipt.
-        let current_lease = session
-            .realization
-            .clone()
-            .ok_or(SessionRealizationControlFailure::NotReady)?;
-        session
-            .mcp
-            .extend_active_realization_leases(
-                &current_lease.runtime_incarnation,
-                current_lease.epoch,
-                current_lease.expires_at_unix_ms,
-            )
-            .map_err(unavailable)?;
-        session.mcp.begin_obsolete_drains().map_err(unavailable)?;
-        // Initial creation remains non-visible until publication acknowledgement.
-        // A hot mutation belongs to an already-idle Session, so keep that lifecycle
-        // status while its new generation is unacknowledged; a failed replacement
-        // must not turn the established Session into a failed create.
-        if !session.execution.admits_activity() {
-            session
-                .transition_execution(SessionExecutionState::Activating)
-                .map_err(unavailable)?;
-        }
-        let session = self
-            .commit_resource_snapshot(
-                &owner_scope,
-                session,
-                "activate-session-realization",
-                Vec::new(),
-            )
-            .await
-            .map_err(|error| match error {
-                SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
-                error => unavailable(error),
-            })?;
-        let publish = Self::publication_generations(&session)?;
-        if generation_set_is_renewed_successor(&publish, &receipt_generations) {
-            return self.next_action(owner_scope, &session, false, false).await;
-        }
+        // The complete validated Stage set is exactly the newly activated or
+        // still-unacknowledged set. Publish what Runtime actually staged, never
+        // fabricate a receipt for a newer lease expiry.
+        let publish = receipt_generations;
         let drain = Self::draining_generations(&session)?;
         self.realization_directive(
             owner_scope,
@@ -492,7 +461,7 @@ impl SessionApplication {
                 .map(exact_generation_key)
                 .collect::<BTreeSet<_>>()
         };
-        if keys(&command.published).len() != command.published.len()
+        if !generation_set_authorizes(&command.published, &command.published)
             || keys(&command.drained).len() != command.drained.len()
         {
             return Err(SessionRealizationControlFailure::Invalid(
@@ -503,8 +472,13 @@ impl SessionApplication {
             session.mcp.attachments.iter().any(|attachment| {
                 attachment.state == McpAttachmentState::Active
                     && attachment.publication_acknowledged
-                    && projection::mcp_generation_ref(&session.session_id, attachment)
-                        .is_ok_and(|current| current == *generation)
+                    && projection::mcp_generation_ref(&session.session_id, attachment).is_ok_and(
+                        |current| {
+                            awaken_session_contract::realization_generation_authorizes(
+                                &current, generation,
+                            )
+                        },
+                    )
             })
         });
         let replayed_drain = command.drained.iter().all(|generation| {
@@ -518,7 +492,10 @@ impl SessionApplication {
             && expected_drain.is_empty()
             && replayed_publish
             && replayed_drain
-            && session.execution == SessionExecutionState::Idle
+            && matches!(
+                session.execution,
+                SessionExecutionState::Idle | SessionExecutionState::Running
+            )
         {
             return self
                 .realization_directive(
@@ -529,18 +506,8 @@ impl SessionApplication {
                 )
                 .await;
         }
-        let publish_mismatch = keys(&expected_publish) != keys(&command.published);
+        let publish_mismatch = !generation_set_authorizes(&expected_publish, &command.published);
         let drain_mismatch = keys(&expected_drain) != keys(&command.drained);
-        if publish_mismatch
-            && !drain_mismatch
-            && generation_set_is_renewed_successor(&expected_publish, &command.published)
-        {
-            // Publication happened under a shorter same-epoch lease while a
-            // heartbeat advanced durable authority. Do not acknowledge the old
-            // fence and do not fail the Session: return the latest Stage/Publish
-            // work to the same canonical driver.
-            return self.next_action(owner_scope, &session, false, false).await;
-        }
         if publish_mismatch || drain_mismatch {
             return Err(SessionRealizationControlFailure::Invalid(
                 "publication acknowledgement does not match the durable generation set".into(),
