@@ -82,7 +82,7 @@ impl LocalSandbox {
                 if process.poll().await?.is_some() {
                     continue;
                 }
-                process
+                let refresh = process
                     .refresh_deadline_authorized(CONTROL_TIMEOUT, |grant| {
                         let mut grant = Some(grant);
                         execution.authority.with_current(&mut |remaining| {
@@ -96,8 +96,17 @@ impl LocalSandbox {
                                 .commit(ExecutionDeadline::after(remaining)?)
                         })
                     })
-                    .await
-                    .map_err(err)?;
+                    .await;
+                if let Err(error) = refresh {
+                    // The exact tree can exit after the preflight poll, including
+                    // while current authority is being checked. Only a fresh
+                    // complete ProcessHandle receipt makes that race benign;
+                    // channel failure or leader exit alone cannot do so. This
+                    // is a skipped renewal, never a Session stop receipt.
+                    if process.poll().await?.is_none() {
+                        return Err(err(error));
+                    }
+                }
             }
         }
         Ok(())

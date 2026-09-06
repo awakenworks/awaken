@@ -755,6 +755,31 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
                                                  "EffectsRequireHandQuiescence",
                                                  "SessionReceiptRequiresAllParticipants"})
     print("Local recovery mutation score: 6/6 killed (pre-GO WAL, unknown observer, leader-only receipt, Hand effect, Hand receipt, tree receipt)")
+    # Refresh classification reuses the exact kernel model. F1 swallowing all
+    # errors must fail safety; F2 the old unconditional error must fail benign
+    # exit handling; F3 leader-only observation must fail exact-tree safety.
+    # Positive witnesses additionally exclude an inert/unreachable classifier.
+    refresh_source = (ROOT / "formal/tla/LocalProcessRefresh.tla").read_text(encoding="utf-8")
+    refresh_config = (ROOT / "formal/tla/LocalProcessRefresh.cfg").read_text(encoding="utf-8")
+    refresh_header = refresh_config.split("INVARIANTS\n", 1)[0]
+    refresh_mutations = []
+    for original, replacement, property_name in [
+        ('IF observation = "exited" THEN "ignored" ELSE "error"',
+         '"ignored"', "IgnoredRefreshRequiresExactExit"),
+        ('IF observation = "exited" THEN "ignored" ELSE "error"',
+         '"error"', "ConfirmedExitSkipsRefreshFailure"),
+        ('ELSE IF initState = "exited" THEN "exited" ELSE "live"',
+         'ELSE IF ~leaderAlive THEN "exited" ELSE "live"', "IgnoredRefreshRequiresExactExit"),
+    ]:
+        if refresh_source.count(original) != 1:
+            raise SystemExit(f"Local refresh mutation anchor drifted: {property_name}")
+        refresh_mutations.append((refresh_source.replace(original, replacement),
+                                  refresh_header + f"INVARIANTS {property_name}\n", property_name))
+    for witness in ("NoRefreshSkipReached", "NoRefreshErrorReached"):
+        refresh_mutations.append((refresh_source, refresh_header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "LocalProcessRefresh", refresh_source, refresh_config,
+                              refresh_mutations, dependencies=("LocalProcessLifecycle",))
+    print("Local refresh mutation score: 3/3 killed; both skip/error outcomes reachable")
 
 
 def check_memory_copy_model_mutant(tlc_jar: Path) -> None:
