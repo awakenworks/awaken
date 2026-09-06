@@ -261,11 +261,13 @@ async fn source_binds_the_exact_socket_and_reaps_tools_once_after_primary_exit()
 #[tokio::test(start_paused = true)]
 async fn startup_failure_and_cancellation_reap_without_starting_or_leaking_primary() {
     // Decision table A5 malformed readiness, A6 no readiness, A7 export failure,
-    // A8 primary spawn failure, A9 cancellation during readiness. All revoke
+    // A8 primary spawn failure, A9 cancellation during readiness, A15 old raw
+    // wire preamble after upgrading Host. All revoke
     // the owned helper. Only A8 reaches primary spawn; only A8 creates a lease.
-    for row in 5..=9 {
+    for row in [5, 6, 7, 8, 9, 15] {
         let ready = match row {
             5 => Some(b"wrong readiness contents\n".as_slice()),
+            15 => Some(b"AWAKEN_SOCKET_STDIO_READY\n".as_slice()),
             6 | 9 => None,
             _ => Some(awaken_connection_plan::socket_stdio::READY),
         };

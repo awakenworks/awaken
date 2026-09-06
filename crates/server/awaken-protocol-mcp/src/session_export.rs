@@ -52,13 +52,27 @@ impl awaken_runtime_contract::tool_export::AcpToolExporter for SessionToolExport
             return Err("attached ACP tool export requires a stdio projection".into());
         }
         let service = tool_service(&server.name, descriptors, tools)?;
-        let peer = crate::McpStdioServer::serve(service, reader, writer);
-        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let mut channel = awaken_connection_plan::MultiplexedChannel::server(
+            awaken_agent_channel::SplitChannel::new(reader, writer),
+        );
+        let (shutdown, mut stopped) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            tokio::select! {
-                _ = peer.closed() => {},
-                _ = stopped => peer.close(),
+            let mut peers: Vec<crate::McpStdioServer> = Vec::new();
+            loop {
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    incoming = channel.accept() => {
+                        let Some(Ok(stream)) = incoming else { break };
+                        peers.retain(crate::McpStdioServer::is_alive);
+                        let (reader, writer) = tokio::io::split(stream);
+                        peers.push(crate::McpStdioServer::serve(service.clone(), reader, writer));
+                    }
+                }
             }
+            for peer in peers {
+                peer.close();
+            }
+            // Dropping the one physical owner revokes its streams as well.
         });
         Ok(awaken_runtime_contract::tool_export::AcpToolExport::new(
             server,
@@ -131,11 +145,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attached_export_uses_the_exact_tools_and_revokes_the_live_peer_on_drop() {
-        // Decision table: S1 exact descriptor/executor pair + attached stdio ->
-        // unchanged projection, tools/list and tools/call use the same service;
-        // S2 lease drop with a still-live client -> peer EOF, no new admission;
-        // S3 incorrect transport or descriptor set -> reject before serving.
+    async fn attached_export_isolates_clients_and_revokes_every_peer_on_lease_drop() {
+        // Causes: C1 valid descriptor/executor + stdio; C2 concurrent clients
+        // with independent counters starting at id=1; C3 one client closes;
+        // C4 later client; C5 export lease ends; C6 invalid transport/tool set.
+        // Rules S1 C1+C2 -> same catalog, distinct arguments/results per peer;
+        // S2 C3+C4 -> remaining and later peers work; S3 C5 -> all peers close,
+        // no new stream admission; S4 C6 -> reject before serving. The shared
+        // service owns tool identity; the transport never rewrites request IDs.
         use awaken_mcp_wire::jsonrpc::JsonRpcPeer;
         use awaken_runtime_contract::resolved::{AcpMcpServer, AcpMcpTransport};
         use std::time::Duration;
@@ -161,39 +178,64 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(export.server, projection);
-        let (reader, writer) = tokio::io::split(client);
-        let (peer, _notifications) = JsonRpcPeer::new(reader, writer, None);
+        let channel = awaken_connection_plan::MultiplexedChannel::client(client);
         let timeout = Duration::from_secs(2);
-        peer.request("initialize", serde_json::json!({"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}), timeout).await.unwrap();
-        let listed = peer
-            .request("tools/list", serde_json::json!({}), timeout)
-            .await
-            .unwrap();
-        assert_eq!(listed["tools"].as_array().unwrap().len(), 1);
-        assert_eq!(listed["tools"][0]["name"], "read");
-        let called = peer
-            .request(
-                "tools/call",
-                serde_json::json!({"name":"read","arguments":{"marker":"unchanged"}}),
-                timeout,
-            )
-            .await
-            .unwrap();
-        assert!(
-            called["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("same-tool:read:{\"marker\":\"unchanged\"}")
-        );
-        drop(export);
-        tokio::time::timeout(timeout, peer.closed())
-            .await
-            .expect("S2 live peer revoked");
-        assert!(
-            peer.request("tools/list", serde_json::json!({}), timeout)
+        let mut peers = Vec::new();
+        for _ in 0..2 {
+            let (reader, writer) = tokio::io::split(channel.open().await.unwrap());
+            let (peer, _notifications) = JsonRpcPeer::new(reader, writer, None);
+            peers.push(peer);
+        }
+        let exercise = async |peer: &JsonRpcPeer, marker: &'static str| {
+            peer.request("initialize", serde_json::json!({"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":marker,"version":"1"}}), timeout).await.unwrap();
+            let listed = peer
+                .request("tools/list", serde_json::json!({}), timeout)
                 .await
-                .is_err()
-        );
+                .unwrap();
+            assert_eq!(listed["tools"].as_array().unwrap().len(), 1);
+            assert_eq!(listed["tools"][0]["name"], "read");
+            let called = peer
+                .request(
+                    "tools/call",
+                    serde_json::json!({"name":"read","arguments":{"marker":marker}}),
+                    timeout,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                called["content"][0]["text"],
+                format!("same-tool:read:{{\"marker\":\"{marker}\"}}"),
+                "S1 isolated result"
+            );
+        };
+        tokio::join!(exercise(&peers[0], "first"), exercise(&peers[1], "second"));
+        peers.remove(0).close();
+        exercise(&peers[0], "survivor").await;
+        let (reader, writer) = tokio::io::split(channel.open().await.unwrap());
+        let (peer, _notifications) = JsonRpcPeer::new(reader, writer, None);
+        exercise(&peer, "later").await;
+        peers.push(peer);
+        drop(export);
+        for peer in &peers {
+            tokio::time::timeout(timeout, peer.closed())
+                .await
+                .expect("S3 every live peer revoked");
+            assert!(
+                peer.request("tools/list", serde_json::json!({}), timeout)
+                    .await
+                    .is_err()
+            );
+        }
+        tokio::time::timeout(timeout, async {
+            loop {
+                if channel.open().await.is_err() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("S3 physical owner rejects new streams");
         for wrong_transport in [false, true] {
             let mut projection = projection.clone();
             if wrong_transport {

@@ -75,6 +75,7 @@ zeroize = "1"
 rustix = { version = "1", features = ["stdio"], optional = true }
 
 [dev-dependencies]
+awaken-agent-channel.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 awaken-tool-relay = { workspace = true, features = ["test-support"] }
 # hand-role integration test: drive the real hand with a real ToolCall over a socket.

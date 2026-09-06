@@ -20,9 +20,10 @@ impl AcpToolExport {
 
 #[async_trait::async_trait]
 pub trait AcpToolExporter: Send + Sync {
-    /// Serve the same tool set on an already-bound process channel. The Host
-    /// owns channel establishment and supplies the workload's exact stdio
-    /// command; the protocol adapter owns framing. Unsupported adapters fail
+    /// Serve the same tool set on the multiplexed attached process channel.
+    /// Each local client owns an independent MCP peer; the export lease owns
+    /// all peers. The Host supplies the workload's exact stdio command, the
+    /// connection adapter owns byte substreams, and MCP owns their framing. Unsupported adapters fail
     /// before publishing a transport they cannot serve.
     async fn export_channel_set(
         &self,

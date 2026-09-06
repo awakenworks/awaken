@@ -59,8 +59,23 @@ that same helper in connect mode inside the same container. Unix dialing and
 binding use the canonical ConnectionPlan factory. No extra network listener,
 permission authority, Git-control message type or tool catalog is introduced.
 
-The helper serves one client and bounds readiness waiting. Its private socket
-is bound exclusively, and cleanup removes only the inode this attempt created.
+The helper keeps one private socket for all clients in the attempt. Each local
+connection becomes an independent Yamux byte stream over the one attached
+channel, using ConnectionPlan's bounded multiplexer. SessionToolExporter serves
+one existing MCP JSON-RPC peer per stream with the same tool service; request IDs
+and client EOF are isolated without rewriting IDs or replaying calls. This
+supports SDKs that open multiple connector processes during an ACP lifetime.
+The helper's versioned `AWAKEN_SOCKET_STDIO_MUX_V1_READY` preamble replaces the
+old raw-stream contract: Host and image helpers must be upgraded together, and
+an old helper fails readiness before export or primary launch.
+
+Admission allows at most 32 live streams per owner. A bounded wire tail allows
+closing streams to flush while slots are reused; receive windows are bounded to
+16 MiB per physical connection. An excess client is closed without replacing the
+owner, and an unread stream applies its own backpressure. Only initial client
+readiness has a deadline; client EOF leaves the listener available for later
+connections. The socket is bound exclusively, and cleanup removes only the
+inode this attempt created.
 Real pipe and Unix socket-pair stdio preserve half-closes and drain replies;
 Tokio's global blocking stdin/stdout are unsuitable for this contract. A safe
 stdio descriptor adapter owns the endpoints without local unsafe code.
@@ -70,7 +85,8 @@ keeps MCP alive for SDK persistence; terminal wait/poll or forced stop revokes t
 export and reaps the helper, escalating after bounded TERM grace. Cancellation
 of opening schedules the same idempotent cleanup; Environment disposal remains
 physical teardown authority when process cleanup fails. Export lease drop closes
-the canonical JSON-RPC peer, rejecting new traffic and releasing its I/O. This
+every canonical JSON-RPC peer and the physical multiplex owner, rejecting new
+traffic and releasing its I/O. This
 transport revocation does not undo or replay already dispatched application effects.
 
 Tests attach cause/effect rules to socket framing, real binary pipes/socket pairs,
