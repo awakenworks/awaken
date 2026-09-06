@@ -27,6 +27,61 @@ const fn hand_channel_reply_admitted(decoded: bool, correlation_matches: bool) -
     decoded && correlation_matches
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HandResultDisposition {
+    Success,
+    Failure,
+    Indeterminate,
+}
+
+#[must_use]
+const fn hand_result_disposition(
+    explicit_success: bool,
+    indeterminate: bool,
+) -> HandResultDisposition {
+    if explicit_success {
+        HandResultDisposition::Success
+    } else if indeterminate {
+        HandResultDisposition::Indeterminate
+    } else {
+        HandResultDisposition::Failure
+    }
+}
+
+fn map_hand_result(tool_id: &str, result: HandResult) -> Result<ToolOutput, ToolError> {
+    let disposition = hand_result_disposition(
+        matches!(&result, HandResult::Ok { .. }),
+        matches!(&result, HandResult::Indeterminate),
+    );
+
+    match (disposition, result) {
+        (HandResultDisposition::Success, HandResult::Ok { output }) => Ok(output),
+        (HandResultDisposition::Failure, HandResult::Err { error })
+            if error.kind == HandErrorKind::Execution
+                && error.message == MISSING_DURABLE_OPERATION_TOKEN =>
+        {
+            // This is a local composition error, not evidence that replacing
+            // the Hand or its channel can make the invocation succeed.
+            Err(ToolError::Execution(format!(
+                "tool executor configuration rejected dispatch: {}",
+                error.message
+            )))
+        }
+        (HandResultDisposition::Failure, HandResult::Err { error }) => match error.kind {
+            // Preserve the in-process display so a remote unknown-tool reads
+            // identically to a local one.
+            HandErrorKind::UnknownTool => Err(ToolError::Unknown(tool_id.to_string())),
+            _ => Err(ToolError::Execution(error.message)),
+        },
+        (HandResultDisposition::Indeterminate, HandResult::Indeterminate) => {
+            Err(ToolError::Execution(format!(
+                "indeterminate: hand connection lost during `{tool_id}`"
+            )))
+        }
+        _ => unreachable!("HandResult disposition must match its closed enum variant"),
+    }
+}
+
 /// A `ToolExecutor` that runs each call on a remote hand over `channel`.
 ///
 /// Calls in one run are sequential (the loop awaits each), so a single framed
@@ -188,6 +243,33 @@ mod verification {
             decoded && correlation_matches
         );
     }
+
+    #[kani::proof]
+    fn hand_result_disposition_allows_only_explicit_success() {
+        // Cause graph: C1 the Hand returned Ok; C2 it returned a definite Err;
+        // C3 its outcome is Indeterminate. Effects: E1 select Success; E2
+        // select Failure; E3 select Indeterminate. Exactly one cause holds for
+        // the closed HandResult enum; the production mapper owns each payload.
+        //
+        // | Rule | Hand result | Effect |
+        // |---|---|---|
+        // | R1 | Ok | E1 |
+        // | R2 | Err | E2 |
+        // | R3 | Indeterminate | E3 |
+        let explicit_success: bool = kani::any();
+        let indeterminate: bool = kani::any();
+        kani::assume(!(explicit_success && indeterminate));
+
+        let disposition = hand_result_disposition(explicit_success, indeterminate);
+        assert_eq!(
+            disposition == HandResultDisposition::Success,
+            explicit_success
+        );
+        assert_eq!(
+            disposition == HandResultDisposition::Indeterminate,
+            indeterminate
+        );
+    }
 }
 
 #[async_trait]
@@ -200,29 +282,6 @@ where
     }
 
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
-        match self.call_hand(call).await? {
-            HandResult::Ok { output } => Ok(output),
-            HandResult::Err { error }
-                if error.kind == HandErrorKind::Execution
-                    && error.message == MISSING_DURABLE_OPERATION_TOKEN =>
-            {
-                // This is a local composition error, not evidence that replacing
-                // the Hand or its channel can make the invocation succeed.
-                Err(ToolError::Execution(format!(
-                    "tool executor configuration rejected dispatch: {}",
-                    error.message
-                )))
-            }
-            HandResult::Err { error } => match error.kind {
-                // Preserve the in-process display so a remote unknown-tool reads
-                // identically to a local one.
-                HandErrorKind::UnknownTool => Err(ToolError::Unknown(call.tool_id.clone())),
-                _ => Err(ToolError::Execution(error.message)),
-            },
-            HandResult::Indeterminate => Err(ToolError::Execution(format!(
-                "indeterminate: hand connection lost during `{}`",
-                call.tool_id
-            ))),
-        }
+        map_hand_result(&call.tool_id, self.call_hand(call).await?)
     }
 }

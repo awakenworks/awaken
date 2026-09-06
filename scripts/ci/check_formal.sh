@@ -262,7 +262,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness managed_rollout_ack_requires_converged_progress
   run_kani awaken-tool-relay \
     --harness hand_channel_only_exact_decoded_reply_restores_readiness \
-    --harness hand_protocol_requires_supported_version_and_v2_operation_identity
+    --harness hand_protocol_requires_supported_version_and_v2_operation_identity \
+    --harness hand_result_disposition_allows_only_explicit_success
   run_kani awaken-config-resolver \
     --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence \
     --harness agent_input_revision_decision_is_exact_non_wrapping_and_replay_first
