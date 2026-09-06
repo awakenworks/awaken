@@ -1427,6 +1427,10 @@ pub fn write_relative_file_atomic(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[allow(
+    clippy::useless_conversion,
+    reason = "Linux mode_t is u32; macOS has a narrower mode_t and requires checked conversion"
+)]
 fn portable_mode(mode: u32) -> std::io::Result<rustix::fs::Mode> {
     if mode & !0o7777 != 0 {
         return Err(std::io::Error::new(

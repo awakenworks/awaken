@@ -102,8 +102,8 @@ pub(crate) fn sandbox_observation(
     }
     if expected_incarnation.is_some()
         && observed.recovery == ExistingRealizationRecovery::CurrentAttemptOnly
-        && !retained_attempt
-            .is_some_and(|attempt| observed.attempt_id.as_deref() == Some(attempt.as_str()))
+        && retained_attempt
+            .is_none_or(|attempt| observed.attempt_id.as_deref() != Some(attempt.as_str()))
         && matches!(
             observed.phase,
             ExistingRealizationPhase::Creating | ExistingRealizationPhase::Ready

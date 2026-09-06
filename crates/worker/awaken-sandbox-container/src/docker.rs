@@ -1419,7 +1419,11 @@ impl ContainerRuntime for DockerRuntime {
         plan: &ContainerPlan,
         plan_fingerprint: &str,
         evidence: &pc::SandboxRestorationEvidence,
+        authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), RuntimeError> {
+        authorization
+            .validate()
+            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
         if restoration_plan_fingerprint(plan) != plan_fingerprint {
             return Err(backend("Docker restore cleanup plan fingerprint mismatch"));
         }

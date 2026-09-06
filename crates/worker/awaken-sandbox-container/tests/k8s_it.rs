@@ -189,6 +189,14 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
     let scope = format!("k8s-restore-{}", std::process::id());
     let spec = common::exact_restore_spec(&scope);
     let request = common::exact_restore_request(&scope);
+    // KR4 carries the caller's durable preparation/successor authorization
+    // through every provider layer; the backend cannot manufacture it.
+    let authorization = disposal_authorization(&effect_fence(
+        &scope,
+        "restore-terminal",
+        "terminal-owner",
+        2,
+    ));
     let image =
         std::env::var("AWAKEN_K8S_FIXTURE_IMAGE").unwrap_or_else(|_| "awaken-bb:1".to_string());
     let first = ContainerProvider::new(Arc::new(first_runtime), image.clone())
@@ -225,7 +233,7 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
         storage_class_name: None,
         size: "1Gi".into(),
     });
-    let retry = ContainerProvider::new(Arc::new(retry_runtime), image);
+    let retry = Arc::new(ContainerProvider::new(Arc::new(retry_runtime), image));
     let mut mismatch = request.clone();
     mismatch.generation_id.push_str("-other");
     assert!(
@@ -250,15 +258,12 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
         "KR2/E2"
     );
     drop(recovered);
-    retry
-        .dispose_restored_environment(&spec, &request)
-        .await
-        .expect("KR4 provider exact terminal cleanup");
-    retry
-        .dispose_restored_environment(&spec, &request)
-        .await
-        .expect("KR4 provider absent replay");
-
+    // KR5 response-loss cuts: D1 Pod+PVC both terminating, D2 Pod absent
+    // while PVC terminates, D3 both absent. Ordinary acquisition rejects D1;
+    // authorized disposal replays D1/D2, waits for physical absence, and D3
+    // is idempotent. Abort/join the caller only after real API deletion intent;
+    // release only test-owned finalizers and require the product result.
+    const TEST_FINALIZER: &str = "awaken.dev/k8s-it-restore-hold";
     let client = kube::Client::try_default()
         .await
         .expect("KR4 read cleanup state");
@@ -266,6 +271,102 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
     let claims = kube::Api::<k8s_openapi::api::core::v1::PersistentVolumeClaim>::namespaced(
         client, "default",
     );
+    k8s_common::set_test_finalizer(&pods, &pod_name, TEST_FINALIZER, true).await;
+    k8s_common::set_test_finalizer(&claims, &claim_name, TEST_FINALIZER, true).await;
+    let start_disposal = || {
+        let provider = retry.clone();
+        let spec = spec.clone();
+        let request = request.clone();
+        let authorization = authorization.clone();
+        tokio::spawn(async move {
+            provider
+                .dispose_restored_environment(&spec, &request, &authorization)
+                .await
+        })
+    };
+    let first_disposal = start_disposal();
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let pod = pods.get(&pod_name).await.unwrap();
+            let claim = claims.get(&claim_name).await.unwrap();
+            if pod.metadata.deletion_timestamp.is_some()
+                && claim.metadata.deletion_timestamp.is_some()
+            {
+                break;
+            }
+            assert!(
+                !first_disposal.is_finished(),
+                "KR5 D1 cleanup must wait for held objects"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("KR5 D1 real deletion intent");
+    first_disposal.abort();
+    assert!(
+        first_disposal.await.unwrap_err().is_cancelled(),
+        "KR5 D1 lose caller response"
+    );
+    assert!(
+        retry
+            .acquire_restore_environment(&spec, &request)
+            .await
+            .is_err(),
+        "KR5 D1 terminating target cannot become runnable"
+    );
+    let mut replay = start_disposal();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), &mut replay)
+            .await
+            .is_err(),
+        "KR5 D1 replay waits for held Pod"
+    );
+    k8s_common::set_test_finalizer(&pods, &pod_name, TEST_FINALIZER, false).await;
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        while pods.get_opt(&pod_name).await.unwrap().is_some() {
+            assert!(
+                !replay.is_finished(),
+                "KR5 D2 cleanup cannot complete before Pod absence"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("KR5 D2 Pod absence");
+    assert!(
+        claims
+            .get(&claim_name)
+            .await
+            .unwrap()
+            .metadata
+            .deletion_timestamp
+            .is_some(),
+        "KR5 D2 PVC remains terminating"
+    );
+    replay.abort();
+    assert!(
+        replay.await.unwrap_err().is_cancelled(),
+        "KR5 D2 lose second caller response"
+    );
+    let mut replay = start_disposal();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), &mut replay)
+            .await
+            .is_err(),
+        "KR5 D2 replay waits for held PVC"
+    );
+    k8s_common::set_test_finalizer(&claims, &claim_name, TEST_FINALIZER, false).await;
+    tokio::time::timeout(std::time::Duration::from_secs(60), replay)
+        .await
+        .expect("KR5 physical completion")
+        .expect("KR5 join replay")
+        .expect("KR4 product cleanup succeeds");
+    retry
+        .dispose_restored_environment(&spec, &request, &authorization)
+        .await
+        .expect("KR5 D3 absent replay");
+
     assert!(pods.get_opt(&pod_name).await.unwrap().is_none(), "KR4/E4");
     assert!(
         claims.get_opt(&claim_name).await.unwrap().is_none(),
@@ -844,8 +945,13 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         Ok(_) => panic!("KPV5a orphan live claim must fail closed"),
         Err(error) => error,
     };
+    // KPV5a is now rejected by the shared Pod/PVC observation classifier
+    // before the deletion-specific fallback. Keep the exact failure and the
+    // zero-delete, subsequent Rebuild and idempotent cleanup assertions below.
     assert!(
-        error.to_string().contains("cannot be disposed"),
+        error
+            .to_string()
+            .contains("continuation state differs from its durable handle"),
         "KPV5a: {error}"
     );
     assert!(
@@ -1002,17 +1108,7 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
         Some(claim_uid.as_str()),
         "KPV6 C1 exact P"
     );
-    let mut finalizers = observed_pod.metadata.finalizers.unwrap_or_default();
-    finalizers.push(TEST_FINALIZER.into());
-    pods.patch(
-        &pod_name,
-        &kube::api::PatchParams::default(),
-        &kube::api::Patch::Merge(serde_json::json!({
-            "metadata": { "finalizers": finalizers }
-        })),
-    )
-    .await
-    .expect("KPV6 C3 hold the accepted Rebuild deletion");
+    k8s_common::set_test_finalizer(&pods, &pod_name, TEST_FINALIZER, true).await;
 
     let terminator = pc::Sandbox::spawn(
         source.as_ref(),
@@ -1129,23 +1225,7 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
         .is_some();
     let cleanup_rejected_before_release = stale_cleanup.is_finished();
 
-    let held = pods.get(&pod_name).await.unwrap();
-    let remaining = held
-        .metadata
-        .finalizers
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|finalizer| finalizer != TEST_FINALIZER)
-        .collect::<Vec<_>>();
-    pods.patch(
-        &pod_name,
-        &kube::api::PatchParams::default(),
-        &kube::api::Patch::Merge(serde_json::json!({
-            "metadata": { "finalizers": remaining }
-        })),
-    )
-    .await
-    .expect("KPV6 release test-only Pod hold");
+    k8s_common::set_test_finalizer(&pods, &pod_name, TEST_FINALIZER, false).await;
 
     let stale_cleanup_result =
         tokio::time::timeout(std::time::Duration::from_secs(60), stale_cleanup)
@@ -1258,35 +1338,14 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
     );
     let observed_pod = pods.get(&pod_name).await.unwrap();
     let claim_name = only_bound_claim_name(&observed_pod);
-    let mut pod_finalizers = observed_pod.metadata.finalizers.unwrap_or_default();
-    pod_finalizers.push(TEST_FINALIZER.into());
-    pods.patch(
-        &pod_name,
-        &kube::api::PatchParams::default(),
-        &kube::api::Patch::Merge(serde_json::json!({
-            "metadata": { "finalizers": pod_finalizers }
-        })),
-    )
-    .await
-    .expect("KPV4 hold Pod deletion");
+    k8s_common::set_test_finalizer(&pods, &pod_name, TEST_FINALIZER, true).await;
     let observed_claim = claims.get(&claim_name).await.unwrap();
     assert_eq!(
         observed_claim.metadata.uid.as_deref(),
         Some(claim_uid.as_str()),
         "KPV4 C1 exact claim"
     );
-    let mut claim_finalizers = observed_claim.metadata.finalizers.unwrap_or_default();
-    claim_finalizers.push(TEST_FINALIZER.into());
-    claims
-        .patch(
-            &claim_name,
-            &kube::api::PatchParams::default(),
-            &kube::api::Patch::Merge(serde_json::json!({
-                "metadata": { "finalizers": claim_finalizers }
-            })),
-        )
-        .await
-        .expect("KPV4 hold claim deletion");
+    k8s_common::set_test_finalizer(&claims, &claim_name, TEST_FINALIZER, true).await;
 
     let terminal_fence = effect_fence(&scope, "terminal", "delete-order-owner", 2);
     source
@@ -1358,23 +1417,7 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
     .expect("KPV4d exact Pod/PVC cut still has a physical cleanup owner");
     drop(physical_cleanup);
 
-    let held_pod = pods.get(&pod_name).await.unwrap();
-    let remaining_pod_finalizers = held_pod
-        .metadata
-        .finalizers
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|finalizer| finalizer != TEST_FINALIZER)
-        .collect::<Vec<_>>();
-    pods.patch(
-        &pod_name,
-        &kube::api::PatchParams::default(),
-        &kube::api::Patch::Merge(serde_json::json!({
-            "metadata": { "finalizers": remaining_pod_finalizers }
-        })),
-    )
-    .await
-    .expect("KPV4 release Pod deletion");
+    k8s_common::set_test_finalizer(&pods, &pod_name, TEST_FINALIZER, false).await;
 
     let absent_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
@@ -1410,24 +1453,7 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
     .await;
     let no_replacement_pod = pods.get_opt(&pod_name).await.unwrap().is_none();
 
-    let held_claim = claims.get(&claim_name).await.unwrap();
-    let remaining_claim_finalizers = held_claim
-        .metadata
-        .finalizers
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|finalizer| finalizer != TEST_FINALIZER)
-        .collect::<Vec<_>>();
-    claims
-        .patch(
-            &claim_name,
-            &kube::api::PatchParams::default(),
-            &kube::api::Patch::Merge(serde_json::json!({
-                "metadata": { "finalizers": remaining_claim_finalizers }
-            })),
-        )
-        .await
-        .expect("KPV4 release claim deletion");
+    k8s_common::set_test_finalizer(&claims, &claim_name, TEST_FINALIZER, false).await;
     tokio::time::timeout(std::time::Duration::from_secs(60), disposal)
         .await
         .expect("KPV4 production dispose completes after finalizer release")

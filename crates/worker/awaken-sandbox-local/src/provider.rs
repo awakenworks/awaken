@@ -1049,8 +1049,10 @@ impl pc::SandboxProvider for LocalProvider {
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
+        authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), pc::SandboxError> {
-        self.dispose_restore_sandbox(spec, request).await
+        self.dispose_restore_sandbox(spec, request, authorization)
+            .await
     }
 }
 

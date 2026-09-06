@@ -913,8 +913,10 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
+        authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), pc::SandboxError> {
-        self.dispose_restore_target(spec, request).await
+        self.dispose_restore_target(spec, request, authorization)
+            .await
     }
 }
 
@@ -1025,7 +1027,9 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
+        authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), pc::SandboxError> {
-        self.dispose_restore_target(spec, request).await
+        self.dispose_restore_target(spec, request, authorization)
+            .await
     }
 }
