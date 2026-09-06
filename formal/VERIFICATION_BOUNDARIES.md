@@ -24,6 +24,21 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- Management audit identity is the database tuple `(scope, tool, call_id)`, not
+  delimiter concatenation. One V11 under the original config schema owner
+  migrates both published histories from each record's coordinates; constraints
+  bind index projections to the record and permit only pending/committed flags.
+  Invalid history fails transactionally without a migration receipt. Both SQL
+  adapters and the management test fake consume the config domain's single
+  exact-intent admission; SQLite retries compare decoded records and concurrent
+  begin uses the same unique-key arbitration contract as PostgreSQL. Kani checks
+  presence/equality classes and all signed state values; the existing AuditCommit
+  model now explores multiple scopes, delimiter-colliding tuples and conflicting
+  summaries, with exact-intent and duplicate-write mutants. Shared backend tests
+  cover tuple isolation and replay, with migration/rollback and cross-connection
+  checks. SQL selection/locking, arbitrary heap equality, cross-store effects and
+  universal implementation refinement remain outside this scalar proof: the
+  existing audit obligations retain their abstract-model grades.
 - BackgroundTask's detached context now supplies the existing Runtime ownership
   verifier at the common post-concurrency-admission effect boundary. It reads
   live local committed state and consumes the aggregate's exact request/policy/

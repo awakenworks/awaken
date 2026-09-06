@@ -643,8 +643,10 @@ Every obligation now also carries the non-overloaded proof_grade,
 claim_scope, bounds, tcb_assumptions, and production_entrypoints contract.
 abstract_model_checked and abstract_theorem_proved make claims about the
 abstract transition system only. production_kernel_proved names a Kani harness
-over code called by production; implementation_refined names the executable
-Runtime-to-model bridge. external_tcb is an explicit dependency rather than a
+over code called by production; implementation_refined requires a checked
+universal production refinement, which the current checker does not yet admit.
+The executable Runtime-to-model trace bridge alone does not qualify for that
+grade. external_tcb is an explicit dependency rather than a
 proof, and semantic_nonclaim records properties such as LLM output quality for
 which Awaken makes no completeness theorem.
 
@@ -841,7 +843,11 @@ The transaction-hardening batch closes the three formerly narrower boundaries.
 commit. `CredentialCreation` models the secret-free durable intent, atomic source
 publication/intent retirement, and restart/periodic compensation. `AuditCommit` models a
 durable pending audit followed by the config store's atomic business commit and
-pending→committed transition; stable committed-call replay is a no-op. Tracing is
+pending→committed transition across exact `(scope, tool, call_id)` identities;
+delimiter-colliding tuples and conflicting summaries are distinct inputs, and
+stable committed-call replay is a no-op. The config-domain admission kernel has
+a bounded Kani proof, while live backend conformance and history-migration tests
+exercise SQL behavior. These are not a universal SQL/driver refinement. Tracing is
 an observability projection rather than the durable audit authority.
 
 `ManagedCredentialCreation` adds a bounded abstract Managed Agents creation

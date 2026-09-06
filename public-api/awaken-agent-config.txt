@@ -59,6 +59,9 @@ pub awaken_agent_config::ConfigWrite::Applied
 pub awaken_agent_config::ConfigWrite::Applied::revision: u64
 pub awaken_agent_config::ConfigWrite::Conflict
 pub awaken_agent_config::ConfigWrite::Conflict::current_revision: core::option::Option<u64>
+pub enum awaken_agent_config::ManagementAuditAdmission
+pub awaken_agent_config::ManagementAuditAdmission::Commit
+pub awaken_agent_config::ManagementAuditAdmission::Replay
 pub enum awaken_agent_config::ManagementEffect
 pub awaken_agent_config::ManagementEffect::UpsertAgentInputs
 pub awaken_agent_config::ManagementEffect::UpsertAgentInputs::config: awaken_agent_config::AgentInputConfig
@@ -185,10 +188,14 @@ pub struct awaken_agent_config::ConfigStoreError(pub alloc::string::String)
 pub struct awaken_agent_config::ManagementAuditEntry
 pub awaken_agent_config::ManagementAuditEntry::business_committed: bool
 pub awaken_agent_config::ManagementAuditEntry::record: awaken_agent_config::ManagementAuditRecord
+impl awaken_agent_config::ManagementAuditEntry
+pub fn awaken_agent_config::ManagementAuditEntry::from_stored(awaken_agent_config::ManagementAuditRecord, i64) -> core::result::Result<Self, awaken_agent_config::ConfigStoreError>
 pub struct awaken_agent_config::ManagementAuditRecord
 pub awaken_agent_config::ManagementAuditRecord::call_id: alloc::string::String
 pub awaken_agent_config::ManagementAuditRecord::summary: alloc::string::String
 pub awaken_agent_config::ManagementAuditRecord::tool: alloc::string::String
+impl awaken_agent_config::ManagementAuditRecord
+pub fn awaken_agent_config::ManagementAuditRecord::admit_write(&self, core::option::Option<(&Self, i64)>) -> core::result::Result<awaken_agent_config::ManagementAuditAdmission, awaken_agent_config::ConfigStoreError>
 pub struct awaken_agent_config::MultiagentConfig
 pub awaken_agent_config::MultiagentConfig::agents: alloc::vec::Vec<awaken_agent_config::MultiagentTarget>
 impl awaken_agent_config::MultiagentConfig

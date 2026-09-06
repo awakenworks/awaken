@@ -87,10 +87,60 @@ pub struct ManagementAuditRecord {
     pub summary: String,
 }
 
+/// Authorization for an audited write, not evidence that a transaction committed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagementAuditAdmission {
+    Commit,
+    Replay,
+}
+
+fn management_audit_admission(
+    recorded_state: Option<i64>,
+    exact_record: bool,
+) -> Result<ManagementAuditAdmission, &'static str> {
+    match recorded_state {
+        None => Err("audited config transaction requires a pre-recorded management audit"),
+        Some(_) if !exact_record => Err("stable audit call id was reused with different content"),
+        Some(0) => Ok(ManagementAuditAdmission::Commit),
+        Some(1) => Ok(ManagementAuditAdmission::Replay),
+        Some(_) => Err("invalid management audit committed state"),
+    }
+}
+
+impl ManagementAuditRecord {
+    /// Admit only the exact durable intent. Adapters must hold their transaction
+    /// fence from this observation through the business write and audit update.
+    pub fn admit_write(
+        &self,
+        recorded: Option<(&Self, i64)>,
+    ) -> Result<ManagementAuditAdmission, ConfigStoreError> {
+        management_audit_admission(
+            recorded.map(|(_, state)| state),
+            recorded.is_some_and(|(record, _)| record == self),
+        )
+        .map_err(|message| ConfigStoreError(message.into()))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagementAuditEntry {
     pub record: ManagementAuditRecord,
     pub business_committed: bool,
+}
+
+impl ManagementAuditEntry {
+    /// Decode the closed durable state; corruption is never a successful replay.
+    pub fn from_stored(
+        record: ManagementAuditRecord,
+        state: i64,
+    ) -> Result<Self, ConfigStoreError> {
+        let business_committed =
+            record.admit_write(Some((&record, state)))? == ManagementAuditAdmission::Replay;
+        Ok(Self {
+            record,
+            business_committed,
+        })
+    }
 }
 
 /// A secret-free, idempotent effect that must be applied to a separate store
@@ -474,6 +524,78 @@ pub trait ScopedConfigRegistry: Send + Sync {
         &self,
         scope: &ScopeId,
     ) -> Result<Vec<StoredPublication>, ConfigStoreError>;
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn management_audit_admission_requires_exact_intent_and_closed_state() {
+    // Cause/effect rules: A0 absent => reject; A1 any changed record => reject;
+    // A2 exact/pending(0) => Commit; A3 exact/committed(1) => Replay;
+    // A4 every other signed database value => reject. Presence and equality are
+    // independent; SQL tuple selection/locking and heap equality are NOT proved.
+    let present: bool = kani::any();
+    let exact: bool = kani::any();
+    let state: i64 = kani::any();
+    let result = management_audit_admission(present.then_some(state), exact);
+    assert_eq!(
+        result == Ok(ManagementAuditAdmission::Commit),
+        present && exact && state == 0
+    );
+    assert_eq!(
+        result == Ok(ManagementAuditAdmission::Replay),
+        present && exact && state == 1
+    );
+    assert_eq!(
+        result.is_err(),
+        !present || !exact || (state != 0 && state != 1)
+    );
+}
+
+#[cfg(test)]
+mod audit_admission_tests {
+    use super::*;
+
+    #[test]
+    fn record_projection_and_durable_decode_follow_the_admission_table() {
+        // A0 absent; A1 independently change tool/call/summary (all 8 masks);
+        // A2/A3 pending/committed; A4 corrupt signed extrema and 2. Only mask 0
+        // with 0/1 admits, and decode accepts exactly 0/1. This tests the real
+        // String equality projection that the scalar Kani proof assumes.
+        let expected = ManagementAuditRecord {
+            tool: "http:POST:/管理".into(),
+            call_id: "run:step:call".into(),
+            summary: "hash=a".into(),
+        };
+        assert!(expected.admit_write(None).is_err(), "A0");
+        for mask in 0..8 {
+            let mut recorded = expected.clone();
+            if mask & 1 != 0 {
+                recorded.tool.push(':');
+            }
+            if mask & 2 != 0 {
+                recorded.call_id.push(':');
+            }
+            if mask & 4 != 0 {
+                recorded.summary.push(':');
+            }
+            for state in [i64::MIN, 0, 1, 2, i64::MAX] {
+                let result = expected.admit_write(Some((&recorded, state)));
+                assert_eq!(
+                    result.is_ok(),
+                    mask == 0 && matches!(state, 0 | 1),
+                    "mask={mask}, state={state}"
+                );
+                if let Ok(decision) = result {
+                    assert_eq!(decision == ManagementAuditAdmission::Replay, state == 1);
+                }
+                let decoded = ManagementAuditEntry::from_stored(recorded.clone(), state);
+                assert_eq!(decoded.is_ok(), matches!(state, 0 | 1));
+                if let Ok(entry) = decoded {
+                    assert_eq!(entry.business_committed, state == 1);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(kani)]

@@ -102,9 +102,9 @@ impl DraftValidator for FakeValidator {
 struct MemDraftStore {
     configs: Mutex<HashMap<String, AgentConfigRevision>>,
     resources: Mutex<HashMap<String, Vec<InputSpec>>>,
-    audits: Mutex<HashMap<String, (AdminAuditEvent, bool)>>,
+    audits: Mutex<HashMap<(String, String), (AdminAuditEvent, bool)>>,
     concurrent_config_before_audited_write: Mutex<Option<AgentConfig>>,
-    commit_audit_on_audit_read: Mutex<Option<(String, usize)>>,
+    commit_audit_on_audit_read: Mutex<Option<((String, String), usize)>>,
     reconcile_calls: Mutex<usize>,
 }
 
@@ -117,21 +117,18 @@ impl DraftStore for MemDraftStore {
         audit: &AdminAuditEvent,
         resources: Option<Vec<InputSpec>>,
     ) -> Result<(), String> {
-        let audit_key = format!("{}:{}", audit.tool, audit.call_id);
+        let audit_key = (audit.tool.clone(), audit.call_id.clone());
         {
             let audits = self.audits.lock().unwrap();
-            match audits.get(&audit_key) {
-                Some((existing, _)) if existing != audit => {
-                    return Err("conflicting audit id".into());
-                }
-                Some((_, true)) => return Ok(()),
-                Some((_, false)) => {}
-                None => {
-                    return Err(
-                        "audited config transaction requires a pre-recorded management audit"
-                            .into(),
-                    );
-                }
+            let recorded = audits
+                .get(&audit_key)
+                .map(|(record, committed)| (record, i64::from(*committed)));
+            if audit
+                .admit_write(recorded)
+                .map_err(|error| error.to_string())?
+                == awaken_agent_config::ManagementAuditAdmission::Replay
+            {
+                return Ok(());
             }
         }
         let concurrent = self
@@ -177,15 +174,16 @@ impl DraftStore for MemDraftStore {
         Ok(())
     }
     async fn record_audit(&self, audit: &AdminAuditEvent) -> Result<AuditedConfigWrite, String> {
-        let audit_key = format!("{}:{}", audit.tool, audit.call_id);
+        let audit_key = (audit.tool.clone(), audit.call_id.clone());
         let mut audits = self.audits.lock().unwrap();
-        match audits.get(&audit_key) {
-            Some((existing, _)) if existing != audit => Err("conflicting audit id".into()),
-            Some(_) => Ok(AuditedConfigWrite::Replayed),
-            None => {
-                audits.insert(audit_key, (audit.clone(), false));
-                Ok(AuditedConfigWrite::Applied)
-            }
+        if let Some((existing, _)) = audits.get(&audit_key) {
+            audit
+                .admit_write(Some((existing, 0)))
+                .map_err(|error| error.to_string())?;
+            Ok(AuditedConfigWrite::Replayed)
+        } else {
+            audits.insert(audit_key, (audit.clone(), false));
+            Ok(AuditedConfigWrite::Applied)
         }
     }
     async fn get_audit(
@@ -193,7 +191,7 @@ impl DraftStore for MemDraftStore {
         tool: &str,
         call_id: &str,
     ) -> Result<Option<ManagementAuditEntry>, String> {
-        let audit_key = format!("{tool}:{call_id}");
+        let audit_key = (tool.to_owned(), call_id.to_owned());
         let commit_now = {
             let mut scheduled = self.commit_audit_on_audit_read.lock().unwrap();
             match scheduled.as_mut() {
@@ -275,7 +273,7 @@ impl MemDraftStore {
     fn commit_audit_on_audit_read(&self, tool: &str, call_id: &str, read: usize) {
         assert!(read > 0);
         *self.commit_audit_on_audit_read.lock().unwrap() =
-            Some((format!("{tool}:{call_id}"), read));
+            Some(((tool.to_owned(), call_id.to_owned()), read));
     }
 }
 
@@ -1103,7 +1101,10 @@ async fn audit_fingerprint_upgrade_replays_only_committed_legacy_records() {
         summary: "draft agent `legacy-committed`".into(),
     };
     committed.store.audits.lock().unwrap().insert(
-        format!("{}:{}", committed_event.tool, committed_event.call_id),
+        (
+            committed_event.tool.clone(),
+            committed_event.call_id.clone(),
+        ),
         (committed_event, true),
     );
     let output = committed

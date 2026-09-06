@@ -28,6 +28,73 @@ use awaken_store_inmem::MemoryCommitCoordinator;
 #[path = "support/revision_cas.rs"]
 mod revision_cas;
 
+#[path = "support/audit_identity.rs"]
+mod audit_identity;
+
+#[tokio::test]
+async fn sqlite_audit_identity_decision_table() {
+    audit_identity::decision_table(
+        &SqliteConfigStore::open_in_memory().unwrap(),
+        &agent_config(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn sqlite_audit_identity_legacy_replay_and_cross_connection_begin() {
+    // M1 historical noncanonical JSON with colon/Unicode identity -> migrate
+    // once and replay by semantic equality. M2 independent store connections
+    // -> shared B1/B2 unique-key arbitration, not a fixture's shared mutex.
+    // M3 pending exact legacy intent -> atomic business+audit commit.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "awaken-audit-identity-{}-{nonce}.db",
+        std::process::id()
+    ));
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix("config")
+        .unwrap()
+        .run_bundle(&conn, &audit_identity::compact_history())
+        .unwrap();
+    let record = r#"{ "summary":"body_sha256=one", "call_id":"b:调用", "tool":"http:POST:a" }"#;
+    conn.execute("INSERT INTO config_management_audit(scope_id,call_id,record) VALUES('ws','http:POST:a:b:调用',?1)", [record]).unwrap();
+    drop(conn);
+    let audit: ManagementAuditRecord = serde_json::from_str(record).unwrap();
+    let scope = ScopeId::from("ws");
+    let first = SqliteConfigStore::open(path.to_str().unwrap()).unwrap();
+    let second = SqliteConfigStore::open(path.to_str().unwrap()).unwrap();
+    assert_eq!(
+        first
+            .record_management_audit_scoped(&scope, &audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Replayed,
+        "M1"
+    );
+    audit_identity::concurrent_begin(&first, &second).await;
+    assert_eq!(
+        first
+            .put_config_with_audit_scoped(&scope, &agent_config(), 0, &audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied,
+        "M3"
+    );
+    assert!(
+        second
+            .get_management_audit_scoped(&scope, &audit.tool, &audit.call_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .business_committed
+    );
+    drop((first, second));
+    std::fs::remove_file(path).unwrap();
+}
+
 #[tokio::test]
 async fn sqlite_config_cas_missing_row_and_revision_decision_table() {
     let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
