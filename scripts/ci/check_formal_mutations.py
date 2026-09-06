@@ -371,7 +371,11 @@ def main() -> None:
     model_selection.add_argument("--effect-retirement-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--credential-removal-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--verified-admission-model-mutants", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--session-network-model-mutant", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
+    if arguments.session_network_model_mutant is not None:
+        check_session_network_model_mutant(arguments.session_network_model_mutant)
+        return
     if arguments.verified_admission_model_mutants is not None:
         check_verified_admission_model_mutants(arguments.verified_admission_model_mutants)
         return
@@ -621,6 +625,21 @@ def check_credential_removal_model_mutant(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "ManagedCredentialCreation", source, config,
                              [(mutant, config, "AbortedCreationIsClean")])
     print("Credential removal mutation score: 1/1 killed (unobserved physical deletion)")
+
+
+def check_session_network_model_mutant(tlc_jar: Path) -> None:
+    # N7: the old duplicated intersection admitted the trimmed empty identity.
+    # Omitting canonicalization must violate the independent nonblank invariant;
+    # parser errors or infrastructure failure are not semantic mutation kills.
+    source = (ROOT / "formal/tla/SessionNetworkPolicy.tla").read_text()
+    config = (ROOT / "formal/tla/SessionNetworkPolicy.cfg").read_text()
+    guard = r"Meet(left, right) == Canonical(left) \intersect Canonical(right)"
+    if source.count(guard) != 1:
+        raise SystemExit("Session network mutation anchor drifted; review the model")
+    mutant = source.replace(guard, r"Meet(left, right) == left \intersect right")
+    check_tlc_model_mutations(tlc_jar, "SessionNetworkPolicy", source, config,
+                             [(mutant, config, "NoBlankHostIsGranted")])
+    print("Session network mutation score: 1/1 killed (blank host is not authority)")
 
 
 def check_verified_admission_model_mutants(tlc_jar: Path) -> None:
