@@ -10,15 +10,13 @@ use std::sync::Arc;
 use super::DispatchWorker;
 use crate::Error;
 use crate::clock::Clock;
-use crate::dispatch::{AttemptAdmission, Dispatch, RunClaim, SettleOutcome};
-use awaken_agent_contract::agent::thread::Id as ThreadId;
+use crate::dispatch::{AttemptAdmission, Claimed, Dispatch, RunClaim, SettleOutcome};
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{AttemptRecoveryMode, LiveInput};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 pub(super) struct PhysicalAttemptRequest<'a> {
-    pub claim: &'a RunClaim,
-    pub thread_id: &'a ThreadId,
+    pub claimed: &'a Claimed,
     pub context: &'a RuntimeRunContext,
     pub live_input: LiveInput,
     pub recovery_mode: AttemptRecoveryMode,
@@ -46,13 +44,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         Fut: Future<Output = Result<T, E>>,
     {
         let PhysicalAttemptRequest {
-            claim,
-            thread_id,
+            claimed,
             context,
             live_input,
             recovery_mode,
             clock,
         } = request;
+        // One claimed instruction owns both Run identity and Thread serialization.
+        let claim = RunClaim::from(&claimed.lease);
+        let thread_id = claimed.request.thread_id();
         // Cause L1: one Runtime receives the same exact claimed dispatch twice.
         // Cause L2: two different Runtimes own predecessor/successor claims.
         // Effect E1: L1 is serialized here before durable admission, so the
@@ -73,10 +73,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         loop {
             let admission = match recovery_mode {
                 AttemptRecoveryMode::RequirePredecessorQuiescence => {
-                    self.store.begin_attempt(claim, clock.now_ms()).await?
+                    self.store.begin_attempt(&claim, clock.now_ms()).await?
                 }
                 AttemptRecoveryMode::ContinueDurableRemoteOperation => {
-                    self.store.handoff_attempt(claim, clock.now_ms()).await?
+                    self.store.handoff_attempt(&claim, clock.now_ms()).await?
                 }
             };
             match admission {
@@ -105,7 +105,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
 
         if cancellation.is_cancelled() {
-            let _ = self.store.finish_attempt(claim).await?;
+            let _ = self.store.finish_attempt(&claim).await?;
             return Err(Error::Execution(
                 awaken_runtime_contract::execution::Error::Execution(
                     "dispatch authority was lost before physical attempt start".to_string(),
@@ -139,7 +139,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 ),
             ));
         };
-        if self.store.finish_attempt(claim).await? != SettleOutcome::Applied {
+        if self.store.finish_attempt(&claim).await? != SettleOutcome::Applied {
             return Err(Error::Execution(
                 awaken_runtime_contract::execution::Error::Execution(
                     "physical Run attempt quiescence acknowledgement was fenced".to_string(),

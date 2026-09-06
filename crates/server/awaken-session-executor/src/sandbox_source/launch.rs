@@ -162,12 +162,7 @@ impl LaunchSource {
         context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> Result<ResolvedLaunch, OpenError> {
         match self {
-            LaunchSource::Fixed(launch) => Ok(ResolvedLaunch {
-                launch: launch.as_ref().clone(),
-                credential_artifact: None,
-                secret_broker: None,
-            }),
-            LaunchSource::FixedAcp(launch) => Ok(ResolvedLaunch {
+            LaunchSource::Fixed(launch) | LaunchSource::FixedAcp(launch) => Ok(ResolvedLaunch {
                 launch: launch.as_ref().clone(),
                 credential_artifact: None,
                 secret_broker: None,

@@ -93,10 +93,6 @@ pub fn awaken_session_executor::AcpServeHost::new(alloc::sync::Arc<dyn awaken_se
 pub fn awaken_session_executor::AcpServeHost::new_session(&self) -> alloc::string::String
 pub async fn awaken_session_executor::AcpServeHost::prompt(&self, &str, core::option::Option<alloc::string::String>, &str) -> core::result::Result<awaken_session_executor::AcpTurn, awaken_session_contract::run_application::RunApplicationError>
 pub async fn awaken_session_executor::AcpServeHost::usage(&self, &str) -> core::result::Result<(u64, u64), awaken_session_contract::run_application::RunApplicationError>
-pub struct awaken_session_executor::AcpToolExport
-pub awaken_session_executor::AcpToolExport::server: awaken_runtime_contract::resolved::AcpMcpServer
-impl awaken_session_executor::AcpToolExport
-pub fn awaken_session_executor::AcpToolExport::new(awaken_runtime_contract::resolved::AcpMcpServer, impl core::marker::Send + core::marker::Sync + 'static) -> Self
 pub struct awaken_session_executor::AcpTurn
 pub awaken_session_executor::AcpTurn::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_session_executor::AcpTurn::stop: awaken_session_executor::AcpStop
@@ -308,7 +304,7 @@ pub fn awaken_session_executor::PublishedAcpLaunchResolver::new(awaken_run_execu
 impl awaken_run_executor_acp::subprocess::LaunchResolver for awaken_session_executor::PublishedAcpLaunchResolver
 pub fn awaken_session_executor::PublishedAcpLaunchResolver::credential_realization_capabilities(&self) -> awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities
 pub fn awaken_session_executor::PublishedAcpLaunchResolver::extra_env(&self, &awaken_runtime_contract::activation::RunActivation) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, awaken_run_executor_acp::OpenError>
-pub fn awaken_session_executor::PublishedAcpLaunchResolver::model<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation, &'life2 awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::acp_cli::ResolvedModel, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_session_executor::PublishedAcpLaunchResolver::model<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation, &'life2 awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::acp_cli::managed_delivery::ResolvedModel, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_executor::PublishedAcpLaunchResolver::secret_broker(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::foundation::SecretBroker>>
 pub struct awaken_session_executor::RemoteAttemptInstallation
 pub awaken_session_executor::RemoteAttemptInstallation::credential_realization: awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities
@@ -408,7 +404,7 @@ pub async fn awaken_session_executor::SharedHost::suspend_pool_admission(&self)
 pub fn awaken_session_executor::SharedHost::thread_agent_projection(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn awaken_session_executor::SharedHost::thread_workspace(&self, &str) -> alloc::string::String
 pub fn awaken_session_executor::SharedHost::web_search_provider_registry(&self) -> &awaken_ext_builtin_tools::web::WebSearchProviderRegistry
-pub fn awaken_session_executor::SharedHost::with_acp_tool_exporter(self, alloc::sync::Arc<dyn awaken_session_executor::AcpToolExporter>) -> Self
+pub fn awaken_session_executor::SharedHost::with_acp_tool_exporter(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool_export::AcpToolExporter>) -> Self
 pub fn awaken_session_executor::SharedHost::with_admin_tools(self, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
 pub fn awaken_session_executor::SharedHost::with_agent_publications(self, alloc::sync::Arc<dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>) -> Self
 pub fn awaken_session_executor::SharedHost::with_artifact_publisher(self, alloc::sync::Arc<dyn awaken_resource_contract::execution::ArtifactPublisher<awaken_dispatch_contract::ArtifactPublicationFence>>) -> Self
@@ -529,9 +525,6 @@ pub fn awaken_session_executor::ThreadEventHub::new() -> Self
 pub fn awaken_session_executor::ThreadEventHub::publish(&self, &str, awaken_session_executor::ThreadEvent)
 pub fn awaken_session_executor::ThreadEventHub::subscribe(&self, &str) -> tokio::sync::broadcast::Receiver<awaken_session_executor::ThreadEvent>
 pub const awaken_session_executor::UNCONFIGURED_MODEL_REF: &str
-pub trait awaken_session_executor::AcpToolExporter: core::marker::Send + core::marker::Sync
-pub fn awaken_session_executor::AcpToolExporter::export<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_executor::AcpToolExport, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_executor::AcpToolExporter::export_set<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_executor::AcpToolExport, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_session_executor::CacheVolumeInitializer: core::marker::Send + core::marker::Sync
 pub fn awaken_session_executor::CacheVolumeInitializer::initialize<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_executor::CacheVolumeWarmup) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_session_executor::HandExecutorFactory: core::marker::Send + core::marker::Sync

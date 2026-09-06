@@ -894,8 +894,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             if let Err(error) = self
                 .run_physical_attempt(
                     PhysicalAttemptRequest {
-                        claim: &claim,
-                        thread_id: claimed.request.thread_id(),
+                        claimed: &claimed,
                         context: &context,
                         live_input: awaken_runtime_contract::execution::LiveInput::None,
                         recovery_mode,
@@ -1067,8 +1066,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 match self
                     .run_physical_attempt(
                         PhysicalAttemptRequest {
-                            claim: &claim,
-                            thread_id: claimed.request.thread_id(),
+                            claimed: &claimed,
                             context: &execution_context,
                             live_input: awaken_runtime_contract::execution::LiveInput::None,
                             recovery_mode: AttemptRecoveryMode::RequirePredecessorQuiescence,
@@ -1107,8 +1105,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         match self
                             .run_physical_attempt(
                                 PhysicalAttemptRequest {
-                                    claim: &claim,
-                                    thread_id: claimed.request.thread_id(),
+                                    claimed: &claimed,
                                     context: &execution_context,
                                     live_input: attempt_executor.capabilities().live_input,
                                     recovery_mode:
@@ -1212,8 +1209,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     match self
                         .run_physical_attempt(
                             PhysicalAttemptRequest {
-                                claim: &claim,
-                                thread_id: claimed.request.thread_id(),
+                                claimed: &claimed,
                                 context: &execution_context,
                                 live_input: attempt_executor.capabilities().live_input,
                                 recovery_mode,
@@ -1245,8 +1241,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     state = match self
                         .run_physical_attempt(
                             PhysicalAttemptRequest {
-                                claim: &claim,
-                                thread_id: claimed.request.thread_id(),
+                                claimed: &claimed,
                                 context: &execution_context,
                                 live_input: awaken_runtime_contract::execution::LiveInput::None,
                                 recovery_mode: AttemptRecoveryMode::RequirePredecessorQuiescence,
