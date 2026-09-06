@@ -46,12 +46,14 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 #[cfg(test)]
 use awaken_runtime_contract::terminal::CommittedTerminalRun;
 
+mod message_identity;
 mod run_commit;
 mod task_driver;
 mod task_projection;
 mod task_state;
 
 pub use awaken_protocol_a2a::{HttpTransport, Transport};
+use message_identity::*;
 use run_commit::*;
 use task_projection::*;
 use task_state::*;
@@ -805,9 +807,11 @@ mod tests {
             body.contains(r#""contextId":"t""#),
             "contextId = thread id: {body}"
         );
-        assert!(
-            body.contains(r#""messageId":"a2a-msg-r""#),
-            "messageId = a2a-msg-<run_id>: {body}"
+        let wire: serde_json::Value = serde_json::from_str(&body).expect("captured JSON request");
+        assert_eq!(
+            wire["message"]["messageId"],
+            stable_message_id(&RunId("r".into()), None).unwrap(),
+            "messageId is the canonical Run identity: {body}"
         );
         assert!(
             body.contains(r#""kind":"message""#),

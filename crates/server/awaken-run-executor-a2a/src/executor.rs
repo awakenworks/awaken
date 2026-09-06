@@ -95,7 +95,7 @@ impl RunExecutor for A2aRunExecutor {
                     "projected privacy-safe model input"
                 );
                 let prompt = normalized.text_envelope();
-                let message_id = format!("a2a-msg-{}", activation.run_id.0);
+                let message_id = stable_message_id(&activation.run_id, None)?;
                 verify_attempt_ownership(context.ownership.as_deref()).await?;
                 let task = match send_message(
                     transport.as_ref(),
@@ -218,10 +218,7 @@ impl RunAttemptExecutor for A2aRunExecutor {
             .resolve(candidate, &context)
             .await
             .map_err(Error::Execution)?;
-        let message_id = format!(
-            "a2a-resume-{}-{}",
-            activation.run_id.0, ticket.correlation_id
-        );
+        let message_id = stable_message_id(&activation.run_id, Some(&ticket.correlation_id))?;
         verify_attempt_ownership(context.ownership.as_deref()).await?;
         let task = send_message(
             transport.as_ref(),
