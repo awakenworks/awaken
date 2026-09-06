@@ -162,10 +162,12 @@ impl StreamSink for EventForwardingSink {
 
 /// Format epoch milliseconds without losing subsecond precision. Whole seconds
 /// retain their historical spelling. Calendar arithmetic is owned by the same
-/// UTC codec as Work receipts.
+/// UTC codec as Work receipts. Values after year 9999 saturate only in this
+/// display projection; persisted milliseconds and lease arithmetic are unchanged.
 #[must_use]
 pub fn epoch_millis_to_rfc3339(epoch_millis: u64) -> String {
-    let text = crate::work_queue::format_rfc3339_utc_nanos(i128::from(epoch_millis) * 1_000_000);
+    let nanos = crate::work_queue::bounded_rfc3339_nanos(i128::from(epoch_millis) * 1_000_000);
+    let text = crate::work_queue::format_rfc3339_utc_nanos(nanos / 1_000_000 * 1_000_000);
     let (whole, fraction) = text
         .strip_suffix('Z')
         .expect("UTC codec")
@@ -258,6 +260,57 @@ mod tests {
             ),
             "R5"
         );
+    }
+
+    proptest::proptest! {
+        // D1 every legal millisecond round-trips; D2 every larger u64 saturates
+        // to the last representable millisecond. A fixed regression below also
+        // checks known dates independently of the round-trip oracle.
+        #[test]
+        fn timestamp_projection_round_trips_its_declared_domain(millis in proptest::prelude::any::<u64>()) {
+            let wire = epoch_millis_to_rfc3339(millis);
+            proptest::prop_assert_eq!(rfc3339_to_epoch_millis(&wire), Some(millis.min(253_402_300_799_999)));
+        }
+    }
+
+    #[test]
+    fn timestamp_input_and_calendar_boundary_decision_table() {
+        // D3 invalid syntax/date -> absent; D4 calendar boundaries -> exact
+        // independent golden value; D5 formatter output always remains in the
+        // declared four-digit UTC vocabulary, including u64/SQL extremes.
+        for invalid in [
+            "2026-09-06T00:00:00.Z",
+            "2026-09-06T00:00:00..1Z",
+            "2026-02-29T00:00:00Z",
+            "2100-02-29T00:00:00Z",
+            "2026-04-31T00:00:00Z",
+            "2026-00-01T00:00:00Z",
+            "2026-01-00T00:00:00Z",
+            "2026-01-01T24:00:00Z",
+            "2026-01-01T00:60:00Z",
+            "2026-01-01T00:00:60Z",
+            "2026-01-01T00:00:00.1234567890Z",
+            "2026-01-01T00:00:00+00:00",
+            "２０２６-01-01T00:00:00Z",
+        ] {
+            assert_eq!(rfc3339_to_epoch_millis(invalid), None, "D3 {invalid}");
+        }
+        for (millis, expected) in [
+            (946_684_800_000, "2000-01-01T00:00:00Z"),
+            (951_782_400_000, "2000-02-29T00:00:00Z"),
+            (4_107_542_400_000, "2100-03-01T00:00:00Z"),
+            (253_402_300_799_999, "9999-12-31T23:59:59.999Z"),
+        ] {
+            assert_eq!(epoch_millis_to_rfc3339(millis), expected, "D4");
+            assert_eq!(rfc3339_to_epoch_millis(expected), Some(millis), "D4");
+        }
+        for millis in [253_402_300_800_000, i64::MAX as u64, u64::MAX] {
+            assert_eq!(
+                epoch_millis_to_rfc3339(millis),
+                "9999-12-31T23:59:59.999Z",
+                "D5"
+            );
+        }
     }
 
     #[test]

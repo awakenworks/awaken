@@ -283,6 +283,44 @@ pub fn realization_generation_authorizes(
         && current.lease_expires_at_unix_ms >= asserted.lease_expires_at_unix_ms
 }
 
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn realization_generation_authority_requires_every_axis() {
+    // G1-G64: all combinations of the five immutable identity equalities and
+    // expiry ordering. Strings use two one-byte representatives of equality;
+    // expiry/epoch/generation retain arbitrary u64 values. Live root authority
+    // is a separate precondition, not a claim of this production predicate.
+    let same_session: bool = kani::any();
+    let same_attachment: bool = kani::any();
+    let same_incarnation: bool = kani::any();
+    let current = McpGenerationRef {
+        session_id: "a".into(),
+        attachment_id: crate::McpAttachmentId("a".into()),
+        generation: crate::McpGeneration(kani::any()),
+        runtime_incarnation: "a".into(),
+        lease_epoch: kani::any(),
+        lease_expires_at_unix_ms: kani::any(),
+    };
+    let asserted = McpGenerationRef {
+        session_id: if same_session { "a" } else { "b" }.into(),
+        attachment_id: crate::McpAttachmentId(if same_attachment { "a" } else { "b" }.into()),
+        generation: crate::McpGeneration(kani::any()),
+        runtime_incarnation: if same_incarnation { "a" } else { "b" }.into(),
+        lease_epoch: kani::any(),
+        lease_expires_at_unix_ms: kani::any(),
+    };
+    assert_eq!(
+        realization_generation_authorizes(&current, &asserted),
+        same_session
+            && same_attachment
+            && same_incarnation
+            && current.generation == asserted.generation
+            && current.lease_epoch == asserted.lease_epoch
+            && current.lease_expires_at_unix_ms >= asserted.lease_expires_at_unix_ms
+    );
+}
+
 /// Opaque Runtime assignment selected outside the Session domain. Worker and
 /// local-process identities are mapped to these strings at the authenticated
 /// application edge; the aggregate never imports their protocol vocabulary.
@@ -1691,6 +1729,34 @@ mod tests {
             lease_epoch: 3,
             lease_expires_at_unix_ms: 10,
         };
+        // G5 every feasible equality combination (64 rows) independently
+        // binds all six axes; G1-G4 below retain readable boundary examples.
+        for mask in 0_u8..64 {
+            let mut candidate = asserted.clone();
+            if mask & 1 != 0 {
+                candidate.session_id = "foreign".into();
+            }
+            if mask & 2 != 0 {
+                candidate.attachment_id = McpAttachmentId("foreign".into());
+            }
+            if mask & 4 != 0 {
+                candidate.generation = McpGeneration(2);
+            }
+            if mask & 8 != 0 {
+                candidate.runtime_incarnation = "foreign".into();
+            }
+            if mask & 16 != 0 {
+                candidate.lease_epoch += 1;
+            }
+            if mask & 32 != 0 {
+                candidate.lease_expires_at_unix_ms -= 1;
+            }
+            assert_eq!(
+                realization_generation_authorizes(&candidate, &asserted),
+                mask == 0,
+                "G5 mask={mask}"
+            );
+        }
         for (rule, current, expected) in [
             ("G1", asserted.clone(), true),
             (

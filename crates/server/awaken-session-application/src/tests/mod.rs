@@ -1496,6 +1496,7 @@ impl SessionRuntime for RecordingCleanupRuntime {
 }
 
 struct FaultingSessionRepository {
+    create_crash_boundary: Mutex<Option<(bool, std::path::PathBuf)>>,
     inner: Arc<dyn ManagedSessionRepository>,
     applied_create_roots: Mutex<Vec<PersistedSession>>,
     get_override_once: Mutex<Option<PersistedSession>>,
@@ -1533,9 +1534,18 @@ fn report_committed_mutation_as_conflict(
 }
 
 impl FaultingSessionRepository {
+    async fn pause_at_create_boundary(&self, after_commit: bool) {
+        let marker = self.create_crash_boundary.lock().unwrap().clone();
+        if let Some((after, marker)) = marker.filter(|(after, _)| *after == after_commit) {
+            std::fs::write(marker, if after { "after" } else { "before" }).unwrap();
+            std::future::pending::<()>().await;
+        }
+    }
+
     fn new(inner: Arc<dyn ManagedSessionRepository>) -> Self {
         Self {
             inner,
+            create_crash_boundary: Mutex::new(None),
             applied_create_roots: Mutex::new(Vec::new()),
             get_override_once: Mutex::new(None),
             fail_operation_once: Mutex::new(None),
@@ -1658,10 +1668,12 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         awaken_session_contract::SessionCreateResult,
         awaken_session_contract::SessionRepositoryError,
     > {
+        self.pause_at_create_boundary(false).await;
         let result = self
             .inner
             .create(owner_scope, session, idempotency, lifecycle_facts)
             .await?;
+        self.pause_at_create_boundary(true).await;
         if let awaken_session_contract::SessionCreateResult::Applied(session) = &result {
             self.applied_create_roots
                 .lock()

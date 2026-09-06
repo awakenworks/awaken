@@ -676,7 +676,7 @@ pub async fn commit_operation_is_idempotent_and_cas<
 /// Two operations prepared from the same Thread prefix race: the Thread CAS
 /// admits exactly one, even when they target different Runs.
 pub async fn concurrent_operations_cas_one_winner<
-    S: OperationCoordinator + CheckpointReader + Sync,
+    S: OperationCoordinator + CheckpointReader + RunRecoverySource + Sync,
 >(
     store: &S,
 ) {
@@ -704,6 +704,14 @@ pub async fn concurrent_operations_cas_one_winner<
         1,
         "the losing CAS appends no partial facts"
     );
+    // T10 the failed writer leaves no observation. Read the same fenced
+    // snapshot contract on all backends, not a separately cached timestamp map.
+    let snapshot = store
+        .recovery_snapshot(&thread, &RunId("left".into()))
+        .await
+        .unwrap();
+    assert_eq!(snapshot.thread_version, 1);
+    assert_eq!(snapshot.commit_timestamps.len(), 1, "T10 winner time only");
 }
 
 /// Empty-store reads: before any commit, every read port is absent — no messages,

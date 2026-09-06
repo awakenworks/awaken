@@ -2363,6 +2363,7 @@ dependencies = [
  "awaken-executable-agent-contract",
  "awaken-executable-environment-contract",
  "awaken-provisioning-contract",
+ "awaken-reliability-testkit",
  "awaken-resource-contract",
  "awaken-resource-persistence",
  "awaken-runtime-contract",
@@ -2470,6 +2471,7 @@ dependencies = [
  "awaken-store-inmem",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

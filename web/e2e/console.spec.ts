@@ -901,6 +901,7 @@ test("Session recovery interrupts committed pending tools through the shared eve
   // | U1 | requires_action | none | E1 |
   // | U2 | U1 | interrupt accepted + terminal projection | E2+E3 |
   const sessionId = "session-pending-recovery-ui";
+  const toolName = "bash_" + "long_tool_name_".repeat(12);
   let interrupted = false;
   let idempotencyKey = "";
   let postedBody: unknown;
@@ -923,13 +924,13 @@ test("Session recovery interrupts committed pending tools through the shared eve
     if (pathname.endsWith("/events")) {
       const data = interrupted
         ? [
-            { id: "tool_1", type: "agent.tool_use", name: "bash", evaluated_permission: "ask", input: { command: "git status" } },
+            { id: "tool_1", type: "agent.tool_use", name: toolName, evaluated_permission: "ask", input: { command: "git status" } },
             { id: "idle_1", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["tool_1"] } },
             { id: "evt_interrupt", type: "user.interrupt", processed_at: "2026-08-27T00:00:01Z" },
             { id: "idle_2", type: "session.status_idle", stop_reason: { type: "end_turn" }, processed_at: "2026-08-27T00:00:02Z" },
           ]
         : [
-            { id: "tool_1", type: "agent.tool_use", name: "bash", evaluated_permission: "ask", input: { command: "git status" } },
+            { id: "tool_1", type: "agent.tool_use", name: toolName, evaluated_permission: "ask", input: { command: "git status" } },
             { id: "idle_1", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["tool_1"] } },
           ];
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data, has_more: false, next_page: null }) });
@@ -969,6 +970,40 @@ test("Session recovery interrupts committed pending tools through the shared eve
   await page.getByRole("link", { name: "Link to event tool_1" }).click();
   await expect(page).toHaveURL(new RegExp(`view=trace&event=tool_1$`, "u"));
   await expect(page.locator("#event-tool_1")).toHaveClass(/trace-event-selected/u);
+  // U4 actual browser layout: long tool title x desktop/narrow viewport x
+  // normal/200% text size. The type badge must remain visible outside the
+  // aria-hidden rail, with no horizontal page overflow or rail overlap.
+  const traceText = page.locator(".trace, .trace *");
+  const originalFonts = await traceText.evaluateAll((nodes) => nodes.map((node) => ({
+    inline: (node as HTMLElement).style.fontSize,
+    pixels: Number.parseFloat(getComputedStyle(node).fontSize),
+  })));
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    for (const scale of [1, 2]) {
+      await page.evaluate((scale) => { document.documentElement.style.fontSize = `${16 * scale}px`; }, scale);
+      // Include px-sized text as well as rem-sized text: root font size alone
+      // cannot exercise a true 200% text condition for every existing UI label.
+      await traceText.evaluateAll((nodes, { fonts, scale }) => nodes.forEach((node, index) => {
+        (node as HTMLElement).style.fontSize = `${fonts[index].pixels * scale}px`;
+      }), { fonts: originalFonts, scale });
+      const badge = page.locator("#event-tool_1 .ui-event-list__metadata");
+      await expect(badge).toBeVisible();
+      await expect(badge).toContainText("tool");
+      await expect(page.locator("#event-tool_1 .ui-event-list__marker")).toBeEmpty();
+      const box = await badge.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(width + 2);
+      expect(await badge.evaluate((node) => node.closest('[aria-hidden="true"]') === null)).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2)).toBe(true);
+    }
+  }
+  await page.locator("#event-tool_1").screenshot({ path: test.info().outputPath("trace-narrow-large-text.png") });
+  await traceText.evaluateAll((nodes, fonts) => nodes.forEach((node, index) => {
+    (node as HTMLElement).style.fontSize = fonts[index].inline;
+  }), originalFonts);
+  await page.evaluate(() => { document.documentElement.style.fontSize = ""; });
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2)).toBe(true);
   await page.getByRole("button", { name: /Recover run/u }).click();

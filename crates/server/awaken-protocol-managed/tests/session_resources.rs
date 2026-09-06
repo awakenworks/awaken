@@ -5398,6 +5398,21 @@ async fn profiled_release_projects_one_durable_repository_publication() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "P2/E2: {first}");
+    // P7 archive with publication records one real timestamp in the durable
+    // root; exact HTTP replay below preserves it with the publication receipt.
+    let archived = sessions
+        .get("profiled-publication")
+        .await
+        .unwrap()
+        .archived_at()
+        .map(str::to_owned);
+    assert!(
+        archived
+            .as_deref()
+            .and_then(awaken_session_contract::rfc3339_to_epoch_millis)
+            .is_some_and(|millis| millis > 1_767_225_600_000),
+        "P7 actual archive observation"
+    );
     assert_eq!(
         first["repository_publication"]["binding_id"], "flow-repository",
         "P2/E2"

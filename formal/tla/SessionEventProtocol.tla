@@ -1,17 +1,17 @@
 ----------------------- MODULE SessionEventProtocol -----------------------
 EXTENDS Naturals
 
-CONSTANTS EventOperation, RunOperation, Workers, NoWorker, MaxEpoch
+CONSTANTS EventOperation, RunOperation, Workers, NoWorker, MaxEpoch, ObservationTimes, UnknownTime
 
 VARIABLES dispatchExists, dispatchState, dispatchOwner, dispatchEpoch,
           dispatchCancel, dispatchInput, activityEpoch, activeActivityEpochs,
           settledActivities, nextActivityEpoch, eventPhase,
-          committedDisposition, projectionAnchor
+          committedDisposition, projectionAnchor, processedAt
 
 vars == <<dispatchExists, dispatchState, dispatchOwner, dispatchEpoch,
           dispatchCancel, dispatchInput, activityEpoch, activeActivityEpochs,
           settledActivities, nextActivityEpoch, eventPhase,
-          committedDisposition, projectionAnchor>>
+          committedDisposition, projectionAnchor, processedAt>>
 
 Kernel == INSTANCE SessionEventKernel WITH
     EventOperation <- EventOperation,
@@ -33,9 +33,17 @@ Kernel == INSTANCE SessionEventKernel WITH
     kCommittedDisposition <- committedDisposition,
     kProjectionAnchor <- projectionAnchor
 
-Init == Kernel!Init
-Next == Kernel!Next
+ASSUME /\ ObservationTimes \subseteq Nat
+       /\ ObservationTimes /= {}
+       /\ UnknownTime \notin ObservationTimes
+Init == /\ Kernel!Init /\ processedAt = UnknownTime
+Next == /\ Kernel!Next
+        /\ \E now \in ObservationTimes :
+             processedAt' = IF eventPhase # "Processed" /\ eventPhase' = "Processed"
+                            THEN now ELSE processedAt
 Spec == Init /\ [][Next]_vars
-Safety == Kernel!Safety
+Safety == /\ Kernel!Safety
+          /\ ((eventPhase = "Processed") <=> (processedAt \in ObservationTimes))
+FirstProcessingTimeIsImmutable == [][processedAt # UnknownTime => processedAt' = processedAt]_vars
 
 =============================================================================

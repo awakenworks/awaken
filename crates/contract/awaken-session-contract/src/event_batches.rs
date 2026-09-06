@@ -407,6 +407,29 @@ pub struct SessionEventBatch {
     pub wake_activity_epoch: Option<u64>,
 }
 
+// The sole processed-marker transition, shared by normal processing and
+// terminal resolution. Lookup/command identity remains owned by the batch;
+// this pure reducer owns only its existing metadata fields, with no new state.
+fn mark_processed_observation(
+    processed: &mut bool,
+    recorded_anchor: &mut Option<SessionEventProjectionAnchor>,
+    recorded_time: &mut Option<u64>,
+    incoming_anchor: Option<SessionEventProjectionAnchor>,
+    now: u64,
+) -> Result<bool, SessionEventBatchError> {
+    if *processed {
+        return if *recorded_anchor == incoming_anchor {
+            Ok(false)
+        } else {
+            Err(SessionEventBatchError::ProgressMismatch)
+        };
+    }
+    *recorded_anchor = incoming_anchor;
+    *recorded_time = Some(now);
+    *processed = true;
+    Ok(true)
+}
+
 impl SessionEventBatch {
     pub fn bind_idempotency(
         &mut self,
@@ -441,17 +464,13 @@ impl SessionEventBatch {
             .iter_mut()
             .find(|entry| entry.event.operation_id() == operation_id)
             .ok_or(SessionEventBatchError::ProgressMismatch)?;
-        if entry.processed {
-            return if entry.projection_anchor == Some(projection_anchor) {
-                Ok(false)
-            } else {
-                Err(SessionEventBatchError::ProgressMismatch)
-            };
-        }
-        entry.projection_anchor = Some(projection_anchor);
-        entry.processed = true;
-        entry.processed_at_unix_ms = Some(processed_at_unix_ms);
-        Ok(true)
+        mark_processed_observation(
+            &mut entry.processed,
+            &mut entry.projection_anchor,
+            &mut entry.processed_at_unix_ms,
+            Some(projection_anchor),
+            processed_at_unix_ms,
+        )
     }
 
     /// Resolve every still-pending accepted command after a legacy terminal
@@ -466,9 +485,14 @@ impl SessionEventBatch {
         let mut resolved = 0;
         for entry in &mut self.events {
             if !entry.processed {
-                entry.projection_anchor = projection_anchor;
-                entry.processed = true;
-                entry.processed_at_unix_ms = Some(processed_at_unix_ms);
+                mark_processed_observation(
+                    &mut entry.processed,
+                    &mut entry.projection_anchor,
+                    &mut entry.processed_at_unix_ms,
+                    projection_anchor,
+                    processed_at_unix_ms,
+                )
+                .expect("an unprocessed entry admits its first observation");
                 resolved += 1;
             }
         }
@@ -1366,5 +1390,40 @@ mod tests {
         let second = session_event_outcome_id("session-1", "operation-2");
         assert_ne!(first, second, "O2/E2");
         assert!(second.starts_with("outc_"), "O2/E3");
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn processed_event_time_is_first_observation_or_atomic_rejection() {
+    // E1 pending -> stamp; E2 processed+exact anchor -> inert, including legacy
+    // unknown time; E3 changed anchor -> unchanged rejection. All u64 clocks,
+    // cursors and optional markers are symbolic. Batch lookup/operation identity
+    // is tested separately; this calls the production shared metadata reducer.
+    let before_processed: bool = kani::any();
+    let before_time = kani::any::<bool>().then(kani::any::<u64>);
+    let before_anchor = kani::any::<bool>().then(|| SessionEventProjectionAnchor {
+        source_commit_cursor: kani::any(),
+    });
+    let anchor = kani::any::<bool>().then(|| SessionEventProjectionAnchor {
+        source_commit_cursor: kani::any(),
+    });
+    let now: u64 = kani::any();
+    let (mut processed, mut time, mut recorded) = (before_processed, before_time, before_anchor);
+    let result = mark_processed_observation(&mut processed, &mut recorded, &mut time, anchor, now);
+    if before_processed {
+        assert_eq!(processed, before_processed);
+        assert_eq!(time, before_time);
+        assert_eq!(recorded, before_anchor);
+        if before_anchor == anchor {
+            assert_eq!(result, Ok(false));
+        } else {
+            assert!(result.is_err());
+        }
+    } else {
+        assert_eq!(result, Ok(true));
+        assert!(processed);
+        assert_eq!(time, Some(now));
+        assert_eq!(recorded, anchor);
     }
 }

@@ -4272,6 +4272,110 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         (session, lease, generation_ref)
     };
 
+    // A7: cardinality 0/1/many x no predecessor/old unacknowledged Active x
+    // exact/renewed lease. Stage returns both generations; activation retires
+    // old authority, so only new generations may appear in Publish. Recreate
+    // the application between activation and ACK, then replay the ACK: the
+    // durable publication/drain sets and receipt times must remain unchanged.
+    for count in 0..=2 {
+        for predecessor in [false, true] {
+            for renewed in [false, true] {
+                let id = format!("publish-set-{count}-{predecessor}-{renewed}");
+                let (mut session, lease, _) = fixture(&id);
+                let template = session.mcp.attachments[0].clone();
+                session.mcp.attachments.clear();
+                session.mcp.desired_names = Some((0..count).map(|i| format!("tool-{i}")).collect());
+                for index in 0..count {
+                    let mut next = template.clone();
+                    next.attachment_id =
+                        awaken_session_contract::McpAttachmentId(format!("tool-{index}"));
+                    next.name = format!("tool-{index}");
+                    if predecessor {
+                        session.mcp.attachments.push(next.clone());
+                    }
+                    next.generation = awaken_session_contract::McpGeneration(2);
+                    next.state = awaken_session_contract::McpAttachmentState::Realizing;
+                    next.realization.as_mut().unwrap().realization_id =
+                        format!("realize-{index}-2");
+                    next.realization.as_mut().unwrap().stage_idempotency_key =
+                        format!("stage-{index}-2");
+                    session.mcp.attachments.push(next);
+                }
+                let requests = session
+                    .mcp
+                    .attachments
+                    .iter()
+                    .map(|attachment| {
+                        crate::projection::stage_mcp_request("workspace", &id, attachment).unwrap()
+                    })
+                    .collect::<Vec<_>>();
+                create(repo.as_ref(), session).await;
+                let mut receipts = Vec::new();
+                for request in requests {
+                    receipts.push(NoopMcpRealizer.stage_mcp_attachment(request).await.unwrap());
+                }
+                if renewed {
+                    application
+                        .renew_session_realization(
+                            awaken_session_contract::RenewSessionRealization {
+                                session_id: id.clone(),
+                                asserted_lease: lease.clone(),
+                                requested_expires_at_unix_ms: lease.expires_at_unix_ms + 1,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                }
+                let directive = application
+                    .activate_session_realization(
+                        awaken_session_contract::ActivateSessionRealization {
+                            session_id: id.clone(),
+                            lease,
+                            prepared_resource_revision: None,
+                            mcp_receipts: receipts,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let awaken_session_contract::SessionRealizationAction::Publish { publish, drain } =
+                    directive.action
+                else {
+                    panic!("A7 expected Publish");
+                };
+                assert_eq!(publish.len(), count, "A7 {id}");
+                assert!(
+                    publish.iter().all(|g| g.generation.0 == 2),
+                    "A7 no retired publication"
+                );
+                assert_eq!(drain.len(), if predecessor { count } else { 0 }, "A7 {id}");
+                let recovered = super::application(
+                    repo.clone(),
+                    Arc::new(RecordingEnvironmentSource::default()),
+                );
+                let ack = awaken_session_contract::AcknowledgeSessionRealization {
+                    session_id: id.clone(),
+                    lease: directive.lease,
+                    published: publish,
+                    drained: drain,
+                };
+                recovered
+                    .acknowledge_session_realization(ack.clone())
+                    .await
+                    .unwrap();
+                let first = repo.get(&id).await.unwrap();
+                recovered
+                    .acknowledge_session_realization(ack)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    repo.get(&id).await.unwrap(),
+                    first,
+                    "A7 duplicate ACK is inert"
+                );
+            }
+        }
+    }
+
     // A4: a successful same-incarnation/epoch heartbeat occurs after EVERY
     // directive is frozen and before its phase response. All effects and root CAS writes
     // succeed; no immutable binding changes. Renewal must preserve authority
@@ -4721,10 +4825,12 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
+    let clock = Arc::new(awaken_agent_contract::clock::ManualClock::new(500));
     let application = application(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
-    );
+    )
+    .with_clock(clock.clone());
     let lease = awaken_session_contract::SessionRealizationLease {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a/boot-2".into(),
@@ -4830,6 +4936,40 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
         .await
         .expect("R4 terminal realization failure");
     let failed_truth = repo.get("running-realization-failed").await.unwrap();
+    assert_eq!(
+        failed_truth.realization_progress.failed_at_unix_ms,
+        Some(500),
+        "R5 failure observes application clock"
+    );
+    // R5 later housekeeping commits cannot rewrite the failure-owned time;
+    // terminal failure redelivery is inert under a different recovery clock.
+    clock.set(900);
+    let owner = application
+        .owner("running-realization-failed")
+        .await
+        .unwrap();
+    let later = application
+        .commit_session_snapshot(&owner, failed_truth.clone(), "later-housekeeping", vec![])
+        .await
+        .unwrap();
+    assert_eq!(later.updated_at_unix_ms, Some(900));
+    assert_eq!(later.realization_progress.failed_at_unix_ms, Some(500));
+    application
+        .fail_session_realization(awaken_session_contract::FailSessionRealization {
+            session_id: "running-realization-failed".into(),
+            lease: later.realization.clone().unwrap(),
+            prepared_resource_revision: None,
+            retryable: false,
+            source_run_id: None,
+            reason: "permanent realization failure".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get("running-realization-failed").await.unwrap(),
+        later,
+        "R5 terminal redelivery"
+    );
     assert_eq!(
         failed_truth.execution,
         SessionExecutionState::ActivationFailed,

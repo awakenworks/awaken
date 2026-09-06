@@ -1260,3 +1260,44 @@ async fn concurrent_commits_get_distinct_sequences_no_pk_collision() {
         .expect("count commits");
     assert_eq!(rows, i64::from(n), "all {n} commits persisted");
 }
+
+#[tokio::test]
+async fn recovery_time_truncates_postgres_submilliseconds_and_normalizes_timezone() {
+    // D8 SQL's microsecond clock x offset spelling -> floor to epoch millis,
+    // including the carry boundary. Read via the actual fenced recovery port;
+    // no formatter or mocked database acts as the conversion oracle.
+    let Some(pool) = schema_pool("commit_time_precision").await else {
+        return;
+    };
+    let store = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let thread = ThreadId("precision".into());
+    let run = RunId("precision".into());
+    store
+        .commit(ThreadCommit {
+            thread_id: thread.clone(),
+            run: running("precision"),
+            messages: vec![],
+            state: vec![],
+            events: vec![],
+        })
+        .await
+        .unwrap();
+    for (fraction, expected) in [(0, 1_000), (1_999, 1_001), (999_999, 1_999)] {
+        for (hour, offset) in [("00", "Z"), ("08", "+08:00")] {
+            let observation = format!("1970-01-01T{hour}:00:01.{fraction:06}{offset}");
+            sqlx::query("UPDATE runtime_commit SET committed_at = $1::text::timestamptz")
+                .bind(&observation)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let snapshot = store.recovery_snapshot(&thread, &run).await.unwrap();
+            assert_eq!(
+                snapshot.commit_timestamps.get(&1),
+                Some(&expected),
+                "D8 {observation}"
+            );
+        }
+    }
+}

@@ -87,7 +87,11 @@ parallel event store, or timestamp-based ordering is introduced.
 
 Managed canonicalization attaches the owning commit observation to the existing
 public event after resolving its immutable order. Millisecond precision survives
-formatting; backwards clocks cannot reorder events. Legacy records without time
+formatting; backwards clocks cannot reorder events. The shared UTC codec accepts
+1970 through year 9999; display projection saturates at the last representable
+millisecond. Persisted values and lease/deadline arithmetic retain their wider
+SQL domain. Malformed UTC strings, including an empty fractional part, are
+rejected rather than normalized into a valid observation. Legacy records without time
 remain unknown. Required string DTOs and the historical inbound `processed_at`
 completion marker retain the legacy `2026-01-01T00:00:00Z` compatibility sentinel;
 that sentinel is not a measured time. Optional historical runtime times stay null.

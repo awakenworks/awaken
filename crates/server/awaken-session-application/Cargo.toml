@@ -32,6 +32,7 @@ tracing = "0.1"
 test-support = []
 
 [dev-dependencies]
+awaken-reliability-testkit.workspace = true
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
 awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-session-store = { workspace = true, features = ["test-support"] }

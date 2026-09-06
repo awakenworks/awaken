@@ -203,6 +203,33 @@ The relationship and tool-call harnesses verify the same transition kernels
 used by `DelegationRegistry` and `ToolBatch`; they are not copies of the
 production logic.
 
+## Durable observation assurance
+
+Wall time is evidence attached to the existing Session root or Thread commit,
+not transition authority or event order. The Session UTC codec owns the
+four-digit calendar display domain; raw durable clocks retain the signed SQL
+millisecond domain. Out-of-calendar values saturate in presentation only.
+
+The direct Kani harnesses cover the production UTC clamp, all generation
+identity/expiry axes, the first processed-event observation/rejection boundary,
+and event ordering independent of time. Collection/string bounds are recorded
+in `coverage.json`; these are not proofs of database engines or arbitrary I/O.
+`SessionRoot` and `SessionEventProtocol` retain their existing shared kernels and
+add nonmonotonic observation values. `StoreHistory` adds commit-time receipts,
+legacy unknown metadata, crash-discarded caches and exact recovered prefixes.
+`SessionRealizationMutex` retains the same phase driver and adds the old+new
+Stage receipt partition. Existing TLAPS root-kernel proofs do not automatically
+prove these new TLC observer axes.
+
+Executable decision tables remain beside their tests: application-root crashes,
+CAS and ambiguous acknowledgements; shared backend conformance; every byte cut
+of a filesystem log envelope; warm/cold/peer projection; generation-set renewal
+and duplicate publication acknowledgements; and real browser layout. The
+reliability gate owns production mutation execution, and the formal gate owns
+model mutations. Neither a classified surface nor a compiled native artifact is
+an executed proof/platform result. macOS native execution remains a release-CI
+obligation when the development host is Linux.
+
 ## TLA+ specifications
 
 - `RunIngressKernel.tla` is the single parameterized Dispatch transition

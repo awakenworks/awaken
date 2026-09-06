@@ -1434,3 +1434,68 @@ impl ManagedState {
         Ok(())
     }
 }
+
+#[cfg(kani)]
+#[kani::proof]
+fn canonical_event_order_never_depends_on_wall_time() {
+    // O1 all order-key axes and optional wall-time observations are arbitrary.
+    // O2 same key/different time remains equal. Production Ord/Eq are invoked
+    // directly; evidence timestamps cannot reorder or split an identity.
+    let left = CanonicalEventOrder {
+        source_commit_cursor: kani::any(),
+        phase: kani::any(),
+        ordinal: kani::any(),
+        processed_at_unix_ms: kani::any::<bool>().then(kani::any::<u64>),
+    };
+    let right = CanonicalEventOrder {
+        source_commit_cursor: kani::any(),
+        phase: kani::any(),
+        ordinal: kani::any(),
+        processed_at_unix_ms: kani::any::<bool>().then(kani::any::<u64>),
+    };
+    assert_eq!(
+        left.cmp(&right),
+        (left.source_commit_cursor, left.phase, left.ordinal).cmp(&(
+            right.source_commit_cursor,
+            right.phase,
+            right.ordinal
+        ))
+    );
+    assert_eq!(
+        left,
+        CanonicalEventOrder {
+            processed_at_unix_ms: right.processed_at_unix_ms,
+            ..left
+        }
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn canonical_order_time_metamorphism_covers_every_sort_axis() {
+    // O1/O2 keys independently vary cursor/phase/ordinal; clocks independently
+    // vary missing/zero/max/backward. Changing only time must preserve both
+    // equality and strict ordering; each axis is a mandatory tie-breaker.
+    for left_key in [(0, 0, 0), (1, 0, 0), (1, 1, 0), (1, 1, 1)] {
+        for right_key in [(0, 0, 0), (1, 0, 0), (1, 1, 0), (1, 1, 1)] {
+            for left_time in [None, Some(0), Some(u64::MAX)] {
+                for right_time in [None, Some(0), Some(u64::MAX)] {
+                    let left = CanonicalEventOrder {
+                        source_commit_cursor: left_key.0,
+                        phase: left_key.1,
+                        ordinal: left_key.2,
+                        processed_at_unix_ms: left_time,
+                    };
+                    let right = CanonicalEventOrder {
+                        source_commit_cursor: right_key.0,
+                        phase: right_key.1,
+                        ordinal: right_key.2,
+                        processed_at_unix_ms: right_time,
+                    };
+                    assert_eq!(left.cmp(&right), left_key.cmp(&right_key));
+                    assert_eq!(left == right, left_key == right_key);
+                }
+            }
+        }
+    }
+}

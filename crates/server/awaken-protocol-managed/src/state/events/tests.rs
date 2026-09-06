@@ -1461,12 +1461,16 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
         session_id: &str,
         source_run_id: Option<RunId>,
         lifecycle_run_id: Option<RunId>,
-    ) -> Vec<(String, String)> {
+    ) -> Vec<(String, String, Option<String>)> {
         let repository = Arc::new(ephemeral_session_repo());
         let mut persisted = crate::state::tests::sample_persisted(session_id);
         persisted.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
         persisted.realization_progress.last_error =
             Some("broader Session realization failure".into());
+        // AF4 cleanup has a later root update time. The failure owns its
+        // immutable observation and must keep it in every replica.
+        persisted.realization_progress.failed_at_unix_ms = Some(100);
+        persisted.updated_at_unix_ms = Some(900);
         persisted.realization_progress.failure_source_run_id = source_run_id.map(Box::new);
         crate::state::test_support::create_session_fixture(
             repository.as_ref(),
@@ -1507,11 +1511,27 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
                 .data
                 .into_iter()
                 .filter_map(|event| match event.kind {
-                    OutboundKind::SessionError { error } => Some((event.id, error.message)),
+                    OutboundKind::SessionError { error } => {
+                        Some((event.id, error.message, event.processed_at))
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
         };
+        for event in warm
+            .list_events(session_id, None, None, false)
+            .unwrap()
+            .data
+        {
+            if matches!(&event.kind, OutboundKind::SessionError { error } if error.message == "broader Session realization failure")
+            {
+                assert_eq!(
+                    event.processed_at.as_deref(),
+                    Some("1970-01-01T00:00:00.1Z"),
+                    "AF4 failure time, not cleanup time"
+                );
+            }
+        }
         let projected = observe(&warm);
         let cold = ManagedState::new(runtime).with_session_repo(repository);
         cold.refresh_committed_events(session_id).await.unwrap();
@@ -1529,7 +1549,7 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
     assert_eq!(
         exact
             .iter()
-            .map(|(_, message)| message.as_str())
+            .map(|(_, message, _)| message.as_str())
             .collect::<Vec<_>>(),
         vec!["precise Run lifecycle failure"],
         "AF2/E2"
@@ -1544,13 +1564,13 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
     assert!(
         distinct
             .iter()
-            .any(|(_, message)| message == "broader Session realization failure"),
+            .any(|(_, message, _)| message == "broader Session realization failure"),
         "AF3/E3 current realization failure"
     );
     assert!(
         distinct
             .iter()
-            .any(|(_, message)| message == "precise Run lifecycle failure"),
+            .any(|(_, message, _)| message == "precise Run lifecycle failure"),
         "AF3/E3 historical Run failure"
     );
 }
@@ -10619,6 +10639,29 @@ async fn durable_outcome_projector_is_warm_cold_restart_and_active_active_stable
             ],
         }),
     );
+    // P5 the two evaluation commits and a later unrelated commit have distinct,
+    // nonmonotonic times. Latest evaluation completion belongs to cursor 20,
+    // never the largest clock or newest unrelated cursor; replicas retain it.
+    runtime
+        .state_cursors_by_thread
+        .lock()
+        .unwrap()
+        .insert(session_id.into(), vec![10, 20, 20, 20]);
+    runtime
+        .message_cursors_by_thread
+        .lock()
+        .unwrap()
+        .insert(session_id.into(), vec![20]);
+    *runtime.root_store_cursor_override.lock().unwrap() = Some(30);
+    runtime.commit_times_by_thread.lock().unwrap().insert(
+        session_id.into(),
+        [
+            (10, 1_900_000_000_123),
+            (20, 1_800_000_000_123),
+            (30, 2_000_000_000_123),
+        ]
+        .into(),
+    );
     let (left, right) = tokio::join!(
         warm.refresh_committed_events(session_id),
         warm.refresh_committed_events(session_id)
@@ -10657,6 +10700,11 @@ async fn durable_outcome_projector_is_warm_cold_restart_and_active_active_stable
     assert_eq!(warm_observation.1, 1, "P2-P3/E5");
     assert_eq!(warm_observation.2.len(), 1, "P2/E2");
     assert_eq!(warm_observation.2[0].iteration, 1, "P2/E2 latest");
+    assert_eq!(
+        warm_observation.2[0].completed_at.as_deref(),
+        Some("2027-01-15T08:00:00.123Z"),
+        "P5 owning evaluation commit time"
+    );
 
     for label in ["cold", "restart"] {
         let rebuilt = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());

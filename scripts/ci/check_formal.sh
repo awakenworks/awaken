@@ -135,6 +135,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness environment_image_build_claim_is_exact_non_wrapping_and_blocked_is_inert \
     --harness environment_image_build_mutation_requires_exact_claim_and_admissible_command
   run_kani awaken-session-contract \
+    --harness session_utc_projection_domain_is_total_exact_and_idempotent \
+    --harness realization_generation_authority_requires_every_axis \
+    --harness processed_event_time_is_first_observation_or_atomic_rejection \
     --harness session_realization_control_failure_disposition_is_total_exact_and_fail_closed \
     --harness realization_ownership_loss_proof_is_total_and_exact \
     --harness session_model_override_reuses_only_the_same_identity_and_resolves_every_mismatch \
@@ -277,6 +280,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness acp_session_load_preserves_the_exact_mcp_projection \
     --harness acp_permission_tool_identity_normalization_is_exact
   run_kani awaken-protocol-managed \
+    --harness canonical_event_order_never_depends_on_wall_time \
     --solver kissat \
     --harness organization_bucket_refill_is_exact_and_bounded \
     --harness organization_bucket_saturated_refill_is_canonical_and_bounded \
@@ -491,6 +495,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     exit 1
   fi
   tlc_state_root="$formal_tmp_root/tlc-states"
+  python3 scripts/ci/check_formal_mutations.py --session-observation-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/run-ingress" \
     -config formal/tla/RunIngress.cfg formal/tla/RunIngress.tla

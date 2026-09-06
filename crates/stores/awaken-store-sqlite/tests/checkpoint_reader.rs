@@ -519,3 +519,44 @@ async fn open_wait_tracks_only_the_latest_run_across_reopen() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn recovery_time_preserves_sqlite_milliseconds_and_timezone() {
+    // D7 exact millisecond boundaries x UTC/offset spelling -> the same epoch
+    // value. Seed the existing SQL observation column after a real commit;
+    // reopening must read SQL truth, never a cached commit-clock value.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("precision.db");
+    let store = SqliteCommitCoordinator::open(path.to_str().unwrap()).unwrap();
+    let thread = ThreadId("precision".into());
+    let run = RunId("precision".into());
+    store
+        .commit(ThreadCommit {
+            thread_id: thread.clone(),
+            run: RunDisposition::running(run.clone()),
+            messages: vec![],
+            state: vec![],
+            events: vec![],
+        })
+        .await
+        .unwrap();
+    drop(store);
+    let sql = rusqlite::Connection::open(&path).unwrap();
+    for fraction in [0, 1, 999] {
+        for (hour, offset) in [("00", "Z"), ("08", "+08:00")] {
+            let observation = format!("1970-01-01T{hour}:00:01.{fraction:03}{offset}");
+            sql.execute(
+                "UPDATE runtime_commit SET committed_at = ?1",
+                [&observation],
+            )
+            .unwrap();
+            let reopened = SqliteCommitCoordinator::open(path.to_str().unwrap()).unwrap();
+            let snapshot = reopened.recovery_snapshot(&thread, &run).await.unwrap();
+            assert_eq!(
+                snapshot.commit_timestamps.get(&1),
+                Some(&(1_000 + fraction)),
+                "D7 {observation}"
+            );
+        }
+    }
+}

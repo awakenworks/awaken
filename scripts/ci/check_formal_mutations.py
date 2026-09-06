@@ -327,6 +327,20 @@ class MutationOracleTests(unittest.TestCase):
                         check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", config,
                                                   [("mutant", config, "temporal:Releases")])
 
+    def test_action_mutation_requires_exact_named_property_and_exit(self) -> None:
+        # A1 exact named action violation + exit 13 => kill; A2 wrong name,
+        # generic temporal text, parser error or successful exit => not a kill.
+        green = subprocess.CompletedProcess([], 0, "Model checking completed. No error has been found.")
+        for code, output, accepted in [(13, "Action property Stable is violated.", True),
+            (13, "Action property Other is violated.", False), (13, "Temporal properties were violated.", False),
+            (1, "parse error", False), (0, "Action property Stable is violated.", False)]:
+            with self.subTest(code=code, output=output), patch("subprocess.run", side_effect=[green, subprocess.CompletedProcess([], code, output)]):
+                if accepted:
+                    check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "PROPERTY Stable", [("mutant", "PROPERTY Stable", "action:Stable")])
+                else:
+                    with self.assertRaises(SystemExit):
+                        check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "PROPERTY Stable", [("mutant", "PROPERTY Stable", "action:Stable")])
+
     def test_tlc_mutations_require_a_green_base_and_exact_invariant_failure(self) -> None:
         # TLC cause/effect table: baseline green x mutant exit x invariant text.
         # Only green+12+exact invariant passes. Infrastructure/parser failures,
@@ -397,7 +411,11 @@ def main() -> None:
     model_selection.add_argument("--credential-removal-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--verified-admission-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--session-network-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--session-observation-model-mutants", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
+    if arguments.session_observation_model_mutants is not None:
+        check_session_observation_model_mutants(arguments.session_observation_model_mutants)
+        return
     if arguments.realization_renewal_model_mutant is not None:
         check_realization_renewal_model_mutant(arguments.realization_renewal_model_mutant)
         return
@@ -716,6 +734,50 @@ def check_verified_admission_model_mutants(tlc_jar: Path) -> None:
     print("Verified admission mutation score: 9/9 killed (target freshness, exact executed release and bound image payload)")
 
 
+def check_session_observation_model_mutants(tlc_jar: Path) -> None:
+    # Decision-table mutation witnesses: M1 unchanged revision resamples time;
+    # M2 processed replay resamples; M3 cold recovery invents legacy time;
+    # M4 Stage's retired generation escapes into Publish. Every case must have
+    # a green baseline and fail its exact invariant/property, not parse/timeout.
+    root = (ROOT / "formal/tla/SessionRoot.tla").read_text()
+    config = (ROOT / "formal/tla/SessionRoot.cfg").read_text().split("PROPERTIES")[0]
+    config += "PROPERTIES NoRevisionChangePreservesTime\n"
+    anchor = "                              ELSE updatedAt"
+    assert root.count(anchor) == 1
+    mutant = root.replace(anchor, "                              ELSE IF updatedAt = UnknownTime THEN updatedAt ELSE IF now > updatedAt THEN now ELSE updatedAt")
+    check_tlc_model_mutations(tlc_jar, "SessionRoot", root, config,
+        [(mutant, config, "action:NoRevisionChangePreservesTime")], dependencies=("SessionRootKernel",))
+
+    event = (ROOT / "formal/tla/SessionEventProtocol.tla").read_text()
+    config = (ROOT / "formal/tla/SessionEventProtocol.cfg").read_text().replace("PROPERTY First", "PROPERTIES First")
+    anchor = "THEN now ELSE processedAt"
+    assert event.count(anchor) == 1
+    mutant = event.replace(anchor, 'THEN now ELSE IF eventPhase = "Processed" THEN now ELSE processedAt')
+    check_tlc_model_mutations(tlc_jar, "SessionEventProtocol", event, config,
+        [(mutant, config, "action:FirstProcessingTimeIsImmutable")],
+        dependencies=("SessionEventKernel", "SessionActivityKernel", "RunIngressKernel"))
+
+    history = (ROOT / "formal/tla/StoreHistory.tla").read_text()
+    config = (ROOT / "formal/tla/StoreHistory.cfg").read_text()
+    # Small mutation witness only; the unchanged canonical CFG still runs the
+    # complete two-identity, three-commit qualification in the strict gate.
+    for old, new in [("{t1, t2}", "{t1}"), ("{r1, r2}", "{r1}"), ("{o1, o2}", "{o1}"), ("{p1, p2}", "{p1}")]:
+        config = config.replace(old, new)
+    anchor = "recoveredPrefix' = history"
+    assert history.count(anchor) == 1
+    mutant = history.replace(anchor, "recoveredPrefix' = [index \\in 1..Len(history) |-> [history[index] EXCEPT !.observedAt = IF @ = UnknownTime THEN 0 ELSE @]]")
+    check_tlc_model_mutations(tlc_jar, "StoreHistory", history, config,
+        [(mutant, config, "RecoveryPreservesExactCommittedMetadata")])
+
+    driver = (ROOT / "formal/tla/SessionRealizationMutex.tla").read_text()
+    config = (ROOT / "formal/tla/SessionRealizationRenewal.cfg").read_text().replace("INVARIANTS Safety", "INVARIANTS PublicationExcludesRetiredGenerations")
+    anchor = '{"old", "new"} \\cap {"new"}'
+    assert driver.count(anchor) == 1
+    check_tlc_model_mutations(tlc_jar, "SessionRealizationMutex", driver, config,
+        [(driver.replace(anchor, '{"old", "new"}'), config, "PublicationExcludesRetiredGenerations")])
+    print("Session observation model mutation score: 4/4 killed")
+
+
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,
                               mutations: list[tuple[str, str, str]], *,
                               dependencies: tuple[str, ...] = ()) -> None:
@@ -738,6 +800,7 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
                 timeout=30, check=False,
             )
             temporal = invariant is not None and invariant.startswith("temporal:")
+            action = invariant is not None and invariant.startswith("action:")
             if temporal:
                 # TLC does not name a failed temporal property in its output.
                 # Restrict this oracle to one explicitly named CFG property.
@@ -745,12 +808,13 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
                               if line.strip().startswith(("PROPERTY ", "PROPERTIES "))]
                 if properties != [f"PROPERTIES {invariant.removeprefix('temporal:')}"]:
                     raise SystemExit("temporal mutation requires one exact named property")
-            expected_code = 0 if invariant is None else (13 if temporal else 12)
+            expected_code = 0 if invariant is None else (13 if temporal or action else 12)
             expected_text = ("Model checking completed. No error has been found." if invariant is None
+                             else f"Action property {invariant.removeprefix('action:')} is violated." if action
                              else "Temporal properties were violated." if temporal
                              else f"Invariant {invariant} is violated")
             if result.returncode != expected_code or expected_text not in result.stdout:
-                raise SystemExit(f"{name} {'baseline failed' if invariant is None else 'mutant was not killed correctly'}:\n{result.stdout}")
+                raise SystemExit(f"{name} {'baseline failed' if invariant is None else 'mutant was not killed correctly'} (exit={result.returncode}):\n{result.stdout}")
 
 
 if __name__ == "__main__":
