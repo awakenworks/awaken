@@ -599,9 +599,17 @@ exercises mounted Agent composition; it does not establish in-flight crash
 fencing or that a conflict's pending reclamation has eventually completed.
 The commit/ack fault matrix in `tests/writeback_faults.rs` adds 24 actual SQLite
 teardown interruption rows, including a committed prefix and exact reopen.
+Six further rows pause inside the actual SQLite transaction while its caller
+is cancelled, then retry before/after the background commit. Recovery now
+feeds captured bytes into the same reconciliation function without an
+intermediate plaintext directory; unusable-temp-location subprocess tests cover
+success and cancellation. Physical projection admission also tests parent
+aliases, Unicode normalization and exact no-edit path/ID/history preservation.
 The existing `MemoryCAS` model adds the copy-recovery configuration, with
 automatically rejected rebase, incomplete-scan-delete and replaced-root mutants.
-It explicitly separates acknowledgement loss from durable commit. Worker login heartbeat reordering runs
+It separates request admission, caller cancellation, late durable commit and
+acknowledgement loss; a fourth mutant must reject erasing an in-flight request
+on caller cancellation. Worker login heartbeat reordering runs
 against the production registry under Loom; the existing Kani lease kernel and
 TLA+ activation/projection/reclamation models retain their own boundaries. See
 [formal verification](../../formal/README.md) for the exact model scope.

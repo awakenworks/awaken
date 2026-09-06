@@ -583,36 +583,49 @@ def check_memory_copy_model_mutant(tlc_jar: Path) -> None:
     source = (ROOT / "formal/tla/MemoryCAS.tla").read_text(encoding="utf-8")
     original = """CopyRecover(w) == /\\ crashed[w]
                   /\\ crashed' = [crashed EXCEPT ![w] = FALSE]
-                  /\\ UNCHANGED <<vars, mounted, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck>>"""
+                  /\\ UNCHANGED <<vars, mounted, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck, requestVars>>"""
     mutant = """CopyRecover(w) == /\\ crashed[w]
                   /\\ crashed' = [crashed EXCEPT ![w] = FALSE]
                   /\\ expected' = [expected EXCEPT ![w] = generation]
                   /\\ UNCHANGED <<generation, value, writes, sourcePresent, targetPresent,
                                   targetIdentity, renameCommitted, headPresent, lastAction,
                                   lastBefore, lastAfter, lastPresentBefore, lastPresentAfter,
-                                  mounted, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck>>"""
+                                  mounted, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck, requestVars>>"""
     if source.count(original) != 1:
         raise SystemExit("Memory copy recovery mutation anchor drifted; review the model")
-    # C2: admit delete after an incomplete scan. The exact scan invariant must
+    # C2: admit a request after an incomplete scan. The exact scan invariant must
     # reject the old missing-root-as-empty behavior; a tool failure cannot pass.
-    delete_guard = """CopyDelete(w) == /\\ mounted[w] /\\ ~crashed[w]
-                 /\\ scanComplete[w]"""
-    if source.count(delete_guard) != 1:
+    scan_guard = "    /\\ scanComplete[w]"
+    if source.count(scan_guard) != 1:
         raise SystemExit("Memory copy scan mutation anchor drifted; review the model")
-    root_guard = "                 /\\ rootMatches[w]"
+    root_guard = "    /\\ rootMatches[w]"
     if source.count(root_guard) != 1:
         raise SystemExit("Memory copy root mutation anchor drifted; review the model")
+    # L7: caller cancellation must not erase the request already executing in
+    # SQLite. Check the action property, not a false claim that abort undoes SQL.
+    crash_original = """CopyCrash(w) == /\\ mounted[w] /\\ ~crashed[w]
+                /\\ crashed' = [crashed EXCEPT ![w] = TRUE]
+                /\\ pendingAck' = [pendingAck EXCEPT ![w] = FALSE]
+                /\\ UNCHANGED <<vars, mounted, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, requestVars>>"""
+    crash_mutant = crash_original.replace(
+        "/\\ pendingAck'", """/\\ inFlight' = [inFlight EXCEPT ![w] = "none"]
+                /\\ pendingAck'"""
+    ).replace("lastMutationRoot, requestVars>>", "lastMutationRoot, requestScan, requestRoot>>")
+    if source.count(crash_original) != 1:
+        raise SystemExit("Memory copy cancellation mutation anchor drifted; review the model")
     mutations = [
         (source.replace(original, mutant), "CopyRecoveryKeepsMaterializationBase"),
-        (source.replace(delete_guard, "CopyDelete(w) == /\\ mounted[w] /\\ ~crashed[w]"),
+        (source.replace(scan_guard, "    /\\ TRUE"),
          "CopyMutationRequiresCompleteScan"),
-        (source.replace(root_guard, "                 /\\ TRUE"),
+        (source.replace(root_guard, "    /\\ TRUE"),
          "CopyMutationRequiresOriginalRoot"),
     ]
     config = (ROOT / "formal/tla/MemoryCASCopy.cfg").read_text(encoding="utf-8")
     check_tlc_model_mutations(tlc_jar, "MemoryCAS", source, config,
-                              [(mutated, config, invariant) for mutated, invariant in mutations])
-    print("Memory copy mutation score: 3/3 killed (frozen base, complete scan, original root)")
+                              [(mutated, config, invariant) for mutated, invariant in mutations]
+                              + [(source.replace(crash_original, crash_mutant), config,
+                                  "action:CopyCrashKeepsInFlight")])
+    print("Memory copy mutation score: 4/4 killed (frozen base, complete scan, original root, in-flight cancellation)")
 
 
 def check_agent_input_model_mutant(tlc_jar: Path) -> None:

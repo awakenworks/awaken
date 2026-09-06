@@ -21,7 +21,7 @@ fn temporary_root() -> PathBuf {
 #[tokio::test]
 async fn ingress_and_recovery_reject_a_tree_that_cannot_be_harvested() {
     // B11 a logically valid head exceeds physical depth. Initial projection and
-    // recovered-file staging must BOTH reject, with no partial initial files or
+    // recovered-file admission must BOTH reject, with no partial initial files or
     // Repository mutation. Tests the production call paths, not just the budget
     // helper, so removing either admission call cannot leave this row green.
     let root = tempfile::tempdir().unwrap();
@@ -178,6 +178,159 @@ async fn materialization_never_silently_overwrites_filesystem_aliases() {
     assert_eq!(repository.snapshot_heads("s").await.unwrap(), heads);
     drop(repository);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn parent_alias_admission_preserves_exact_no_edit_heads_and_history() {
+    // A4 distinct parent spellings + FS alias => reject before file writes.
+    // A5 exact-preserving FS => mount/no-edit teardown preserves paths, IDs,
+    // hashes and history. A6 a shared EXACT parent is allowed. A7 normalization
+    // changes a name even without collision => fail closed, never implicit rename.
+    // Probe actual volume semantics, not target_os (macOS/Windows can be sensitive).
+    for (left, right) in [
+        ("A", "a"),
+        ("é", "e\u{301}"),
+        ("é", "é"),
+        ("shared", "shared"),
+    ] {
+        for nested in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let probe = root.path().join("probe");
+            std::fs::create_dir(&probe).unwrap();
+            std::fs::create_dir(probe.join(left)).unwrap();
+            let aliases = left != right && probe.join(right).exists();
+            if !probe.join(right).exists() {
+                std::fs::create_dir(probe.join(right)).unwrap();
+            }
+            let observed: std::collections::HashSet<_> = std::fs::read_dir(&probe)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            let exact = observed.contains(std::ffi::OsStr::new(left))
+                && observed.contains(std::ffi::OsStr::new(right));
+            let repository = Arc::new(
+                SqliteMemoryRepository::open(root.path().join("memory.sqlite").to_str().unwrap())
+                    .unwrap(),
+            );
+            let prefix = if nested { "/outer" } else { "" };
+            repository
+                .create("s", &format!("{prefix}/{left}/x.md"), "left")
+                .await
+                .unwrap();
+            repository
+                .create("s", &format!("{prefix}/{right}/y.md"), "right")
+                .await
+                .unwrap();
+            let heads = repository.snapshot_heads("s").await.unwrap();
+            let history = repository.list_versions("s").await.unwrap();
+            let mounter = MemoryStoreMounter::copy_only(repository.clone());
+            let result = mounter
+                .mount("s", &root.path().join("projection"), MountAccess::ReadWrite)
+                .await;
+            assert_eq!(result.is_ok(), !aliases && exact, "{left}/{right}/{nested}");
+            if let Ok(mount) = result {
+                mount.teardown().await.unwrap();
+                mount.teardown().await.unwrap();
+            }
+            assert_eq!(repository.snapshot_heads("s").await.unwrap(), heads);
+            assert_eq!(repository.list_versions("s").await.unwrap(), history);
+        }
+    }
+}
+
+#[tokio::test]
+async fn recovery_preserves_logical_names_without_host_rematerialization() {
+    // R1 captured paths may alias on this host but are distinct logical names:
+    // reconcile directly, retaining identity; input order cannot rename heads.
+    // R2 invalid UTF-8 is present-but-unpublished, not an implicit delete.
+    let root = tempfile::tempdir().unwrap();
+    let repository = Arc::new(
+        SqliteMemoryRepository::open(root.path().join("memory.sqlite").to_str().unwrap()).unwrap(),
+    );
+    let mut files = vec![];
+    for path in ["A/x.md", "a/y.md", "é/x.md", "e\u{301}/y.md", "binary.md"] {
+        repository
+            .create("s", &format!("/{path}"), "base")
+            .await
+            .unwrap();
+        files.push((
+            path.to_owned(),
+            if path == "binary.md" {
+                vec![255]
+            } else {
+                b"base".to_vec()
+            },
+        ));
+    }
+    let heads = repository.snapshot_heads("s").await.unwrap();
+    let history = repository.list_versions("s").await.unwrap();
+    let evidence = MemoryMaterializationEvidence::new(
+        "s",
+        "/workspace/memory",
+        heads
+            .iter()
+            .map(
+                |head| awaken_provisioning_contract::MemoryMaterializationHead {
+                    path: head.path.clone(),
+                    id: head.id.clone(),
+                    content_sha256: head.content_sha256.clone(),
+                },
+            )
+            .collect(),
+    )
+    .unwrap();
+    files.reverse();
+    MemoryStoreMounter::copy_only(repository.clone())
+        .reconcile_recovered_copy("s", &evidence, &files, MountAccess::ReadWrite)
+        .await
+        .unwrap();
+    assert_eq!(repository.snapshot_heads("s").await.unwrap(), heads);
+    assert_eq!(repository.list_versions("s").await.unwrap(), history);
+}
+
+#[tokio::test]
+async fn ambiguous_projection_shapes_reject_before_any_write_in_both_orders() {
+    // S1 duplicate file, S2 file is ancestor, S3 file replaces an ancestor;
+    // all entries preflight before an earlier valid edit can commit. Logical
+    // Repository may hold overlapping paths; a physical copy cannot.
+    for paths in [vec!["b", "b"], vec!["b", "b/c"], vec!["b/c", "b"]] {
+        let root = tempfile::tempdir().unwrap();
+        let repository = Arc::new(
+            SqliteMemoryRepository::open(root.path().join("memory.sqlite").to_str().unwrap())
+                .unwrap(),
+        );
+        repository.create("s", "/a", "base").await.unwrap();
+        let history = repository.list_versions("s").await.unwrap();
+        let heads = repository.snapshot_heads("s").await.unwrap();
+        let evidence =
+            MemoryMaterializationEvidence::new("s", "/workspace/memory", vec![]).unwrap();
+        let mut files = vec![("a".to_owned(), b"edit".to_vec())];
+        files.extend(paths.iter().map(|p| (p.to_string(), b"new".to_vec())));
+        assert!(
+            MemoryStoreMounter::copy_only(repository.clone())
+                .reconcile_recovered_copy("s", &evidence, &files, MountAccess::ReadWrite)
+                .await
+                .is_err()
+        );
+        assert_eq!(repository.snapshot_heads("s").await.unwrap(), heads);
+        assert_eq!(repository.list_versions("s").await.unwrap(), history);
+        if paths[0] != paths[1] {
+            for path in paths {
+                repository
+                    .create("s", &format!("/{path}"), "base")
+                    .await
+                    .unwrap();
+            }
+            let projection = root.path().join("projection");
+            std::fs::create_dir(&projection).unwrap();
+            assert!(
+                awaken_sandbox_memoryd::copy::materialize(&*repository, "s", &projection)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(std::fs::read_dir(&projection).unwrap().count(), 0);
+        }
+    }
 }
 
 #[cfg(unix)]

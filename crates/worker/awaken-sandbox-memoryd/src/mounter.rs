@@ -227,59 +227,19 @@ impl MemoryMounter for MemoryStoreMounter {
         if access != MountAccess::ReadWrite {
             return Ok(());
         }
-        static RECOVERY_SEQUENCE: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "awaken-memory-recovery-{}-{}",
-            std::process::id(),
-            RECOVERY_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&root).map_err(sandbox_err)?;
-        let result = async {
-            let paths = files
-                .iter()
-                .map(|(relative, _)| {
-                    copy::relative_memory_path(&format!("/{relative}")).map_err(|error| {
-                        sandbox_err(format!("unsafe recovered Memory copy path: {error}"))
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            copy::validate_copy_entries(
-                paths
-                    .iter()
-                    .zip(files)
-                    .map(|(path, (_, bytes))| (path.as_path(), bytes.len())),
-            )
-            .map_err(sandbox_err)?;
-            for ((_, bytes), path) in files.iter().zip(paths) {
-                let destination = root.join(path);
-                if let Some(parent) = destination.parent() {
-                    std::fs::create_dir_all(parent).map_err(sandbox_err)?;
-                }
-                use std::io::Write as _;
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(destination)
-                    .and_then(|mut file| file.write_all(bytes))
-                    .map_err(sandbox_err)?;
-            }
-            let mut snapshot = copy::CopySnapshot::from_materialization_heads(&evidence.heads)
-                .map_err(sandbox_err)?;
-            let report = copy::harvest(&*self.fs, operation_reference, &root, &mut snapshot)
+        let mut snapshot =
+            copy::CopySnapshot::from_materialization_heads(&evidence.heads).map_err(sandbox_err)?;
+        let report =
+            copy::harvest_recovered_files(&*self.fs, operation_reference, files, &mut snapshot)
                 .await
                 .map_err(sandbox_err)?;
-            if !report.conflicts.is_empty() {
-                return Err(sandbox_err(format!(
-                    "recovered Memory copy preserved {} concurrent durable head conflict(s)",
-                    report.conflicts.len()
-                )));
-            }
-            Ok(())
+        if !report.conflicts.is_empty() {
+            return Err(sandbox_err(format!(
+                "recovered Memory copy preserved {} concurrent durable head conflict(s)",
+                report.conflicts.len()
+            )));
         }
-        .await;
-        let _ = std::fs::remove_dir_all(root);
-        result
+        Ok(())
     }
 }
 

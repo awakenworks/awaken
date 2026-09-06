@@ -2234,6 +2234,7 @@ dependencies = [
  "fuser",
  "libc",
  "nix 0.29.0",
+ "rusqlite",
  "tempfile",
  "thiserror",
  "tokio",

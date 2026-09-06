@@ -471,13 +471,18 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   sequence-fenced credential observations that cannot roll back after rotation.
   The `MemoryCASCopy.cfg` configuration reuses the same Repository transitions
   for two copy projections, frozen materialization heads, update/delete races,
-  handle loss and restart before acknowledgement. It checks that recovery never
+  handle loss and restart before acknowledgement. A request can now remain
+  in flight after caller cancellation and commit through the same Repository
+  transitions; scan/root observations are captured at request admission rather
+  than incorrectly re-read at commit. It checks that recovery never
   refreshes a stale base and identical retries never add a generation. Production
   SQLite tests in `awaken-sandbox-memoryd/tests/copy_lifecycle.rs` cover both
   ordered linearizations and barrier-released teardown. `tests/writeback_faults.rs`
   adds 24 actual SQLite teardown rows for create/update/delete, before/after
   commit, error/cancellation, and with/without a committed independent prefix,
-  followed by same-handle retry and durable reopen. This is bounded model-linked
+  followed by same-handle retry and durable reopen. Six additional rows pause
+  an actual SQLite transaction before commit using an AFTER trigger, abort its
+  caller and retry before/after its continuing blocking task commits. This is bounded model-linked
   safety evidence, not Rust refinement, process fencing, multi-file atomicity,
   or eventual recovery after loss of the physical tree.
   The model additionally gates copy mutation on a complete-scan observation and
@@ -485,9 +490,11 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   production tests distinguish a missing root from explicit unlink and reject
   invalid trees before write-back. Completeness of a quiescent OS scan is an
   external assumption, not proved filesystem atomicity. The strict gate mutates
-  recovery to refresh the base, deletion to ignore an incomplete scan, and
-  deletion to accept a substituted root; all three
-  must produce their exact invariant counterexamples, not a tool error.
+  recovery to refresh the base, admission to ignore an incomplete scan or a
+  substituted root, and cancellation to erase an in-flight request; all four
+  must produce their exact invariant/action-property counterexamples, not a
+  tool error. The model bounds each writer to one in-flight request and does
+  not model SQLite internals, power loss, multi-file atomicity or OS process death.
 - `AuditCommit.tla` and `ConfigActivation.tla` cover transactional durable audit,
   replay fencing, and generation-fenced publication installation.
 - `AcpBoundary.tla`, `CredentialEffectBoundary.tla`, and

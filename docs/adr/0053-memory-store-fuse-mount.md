@@ -246,8 +246,9 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   limit, and the total captured bytes cannot exceed the existing maximum heads
   per store multiplied by that content limit. The physical copy profile also
   bounds all entries (including empty directories/files) to 4,000 and relative
-  depth to 128; ingress and recovered-file staging preflight the same profile,
-  counting shared ancestors once. These physical limits do not change logical
+  depth to 128; ingress and recovered-file admission preflight the same profile,
+  counting shared ancestors once and rejecting duplicate/file-ancestor paths
+  in either order. These physical limits do not change logical
   Repository quotas. Successful preflight is not a
   multi-file transaction: a later CAS conflict can leave earlier independent
   files committed; exact retry and
@@ -269,20 +270,39 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   names, trailing dots/spaces, control bytes and other nonportable components
   reject on every OS. Device-name rules reuse the sandbox directory-name owner
   in `awaken-sandbox-fs`; no second Memory path authority is introduced. Files
-  use exclusive creation, so filesystem aliases or occupied destinations fail
-  rather than overwrite. Alias errors can leave a partial unpublished copy;
-  the mounter prepares a fresh projection on retry. Unicode/interior spaces
-  remain supported; filesystem-specific case and normalization behavior is not
-  approximated by lowercasing logical identities.
+  and distinct logical parents use exclusive creation, so aliases such as
+  `A/x.md` and `a/y.md` cannot silently merge directories. Admission reads the
+  completed projection through the canonical bounded reader and requires exact
+  paths and content hashes before returning the mount. Alias/round-trip errors
+  can leave a partial unpublished copy; the mounter prepares a fresh projection
+  on retry. Unicode/interior spaces are supported when the volume preserves
+  their exact spelling; lossy name normalization fails closed. Filesystem
+  semantics are not approximated by lowercasing logical identities.
+- **Recovery owns no second plaintext projection.** The mounter validates
+  persisted evidence and passes the complete captured file set directly to the
+  same per-file reconciliation function used by live harvest. There is no
+  recovery temp directory, rematerialization, second scan, or best-effort
+  cleanup path. Cancellation therefore cannot leave that redundant plaintext
+  copy behind, and recovery does not depend on TMPDIR permissions or the
+  recovering host's case/normalization semantics. This does not erase the
+  original Agent projection or protect bytes already in process memory.
 - **Failure-window evidence.** `tests/writeback_faults.rs` exercises actual
   copy teardown against SQLite for create/update/delete, failure/cancellation
   before or after commit, and with/without a preceding independent commit
   (24 decision-table rows). Same-handle retry and durable reopen must preserve
-  exact heads/history. `tests/copy_lifecycle.rs` covers permission-denied reads
+  exact heads/history. Six additional rows pause an actual SQLite transaction
+  inside an AFTER trigger, abort its caller while `spawn_blocking` continues,
+  and retry before/after the late commit. An independent reader sees only old
+  committed truth while paused; retry and reopened original evidence must add
+  exactly one version. A subprocess with unusable TMPDIR/TMP/TEMP verifies
+  byte-only recovery across success and cancellation on both sides of commit.
+  `tests/copy_lifecycle.rs` covers permission-denied reads
   and enumeration, root substitution, unsafe names and metadata overflow;
   permission cases require an unprivileged Unix runner. The shared reader also
-  tests an I/O error after partial bytes. These do not prove disk power-loss
-  durability or a background operation committing after its caller was aborted.
+  tests an I/O error after partial bytes. Parent aliases and no-edit exact
+  path/ID/history round trips use the executing volume's measured semantics.
+  These do not prove disk power-loss durability, abrupt Worker-death process
+  fencing, or execution on an OS other than the actual test runner.
 - **Workdir tier first, then the namespace splice.** The Workdir `LocalProvider`
   realizes the FUSE mount at the sandbox path with **no mount-namespace splice**
   (directly visible to rooted tools); this is the first integration target. The
