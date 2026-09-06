@@ -12,17 +12,21 @@ use awaken_runtime_contract::ContentBlock;
 use awaken_runtime_contract::tool::ToolCall;
 
 async fn demo_server() -> StdioTransport {
-    StdioTransport::connect(
-        env!("CARGO_BIN_EXE_awaken-mcp-stdio-demo"),
-        &[],
-        DEFAULT_TIMEOUT,
-    )
-    .await
-    .expect("spawn + handshake with the demo server")
+    let executable = std::env::var("CARGO_BIN_EXE_awaken-mcp-stdio-demo")
+        .expect("Cargo must provide the demo server path when this integration test runs");
+    StdioTransport::connect(&executable, &[], DEFAULT_TIMEOUT)
+        .await
+        .expect("spawn + handshake with the demo server")
 }
 
 #[tokio::test]
 async fn discovery_and_echo_round_trip_through_the_raw_tool_port() {
+    // Cause/effect graph: C1 Cargo checks this integration-test target without
+    // a runnable binary path; C2 Cargo executes the integration test with the
+    // exact demo binary path at runtime. E1 the target still type-checks; E2
+    // execution spawns that exact binary and completes a real protocol round trip.
+    // Coverage rationale: `cargo check --all-targets` covers C1/E1, while this
+    // test covers C2/E2; Cargo's runtime variable keeps both on one path.
     let transport: Arc<dyn McpToolTransport> = Arc::new(demo_server().await);
     let conn = connect_tools("demo", Arc::clone(&transport))
         .await

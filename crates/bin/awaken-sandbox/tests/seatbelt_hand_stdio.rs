@@ -7,6 +7,8 @@ use awaken_runtime_contract::llm::ToolCall;
 use awaken_sandbox_local::NamespaceProvider;
 use awaken_tool_relay::{RemoteToolExecutor, wire::HandResult};
 
+mod binary_support;
+
 #[tokio::test]
 async fn seatbelt_hand_reads_the_session_mount_when_the_host_mnt_exists() {
     // C1 Seatbelt has no mount namespace; C2 macOS may expose a host /mnt;
@@ -46,7 +48,8 @@ async fn seatbelt_hand_reads_the_session_mount_when_the_host_mnt_exists() {
         deny_tool_egress: false,
     };
     let sandbox = provider.create_sandbox(&spec).await.expect("namespace");
-    let mut command = pc::Command::new([env!("CARGO_BIN_EXE_awaken-sandbox"), "hand", "--stdio"]);
+    let binary = binary_support::awaken_sandbox();
+    let mut command = pc::Command::new([binary.as_str(), "hand", "--stdio"]);
     command.cwd = "/workspace".into();
     let (process, channel) = sandbox.spawn_agent(command).await.expect("spawn Hand");
     let executor = RemoteToolExecutor::new(channel);

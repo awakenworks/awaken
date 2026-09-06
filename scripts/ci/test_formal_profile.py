@@ -156,6 +156,28 @@ class ProfileTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 guardrail_results(candidate, {"run.safe": coverage["obligations"][0]})
 
+    def test_absent_guardrail_profiles_preserve_legacy_qualification(self):
+        # Cause/effect graph: C1 promotion field is absent or an empty list;
+        # C2 promotion field has the wrong type. E1 legacy feature requirements
+        # remain valid without inventing guardrail diagnostics. E2 malformed
+        # opt-in configuration fails before feature requirement indexing.
+        #
+        # | Rule | C1 | C2 | Effect |
+        # |---|---|---|---|
+        # | L1 | T | F | qualify with empty guardrails |
+        # | L2 | F | T | reject malformed configuration |
+        for declaration in (None, []):
+            features, coverage = fixture()
+            if declaration is not None:
+                features["guardrail_promotions"] = declaration
+            with self.subTest(declaration=declaration):
+                self.assertEqual(profile_result(features, coverage)["guardrails"], {}, "L1/E1")
+
+        features, coverage = fixture()
+        features["guardrail_promotions"] = {}
+        with self.assertRaises(ValueError):
+            profile_result(features, coverage)
+
     def test_live_checker_and_release_consume_the_same_qualification(self):
         # One real ledger is consumed through the CLI and release imports.
         # R1 their denominator, numerator and exact gaps agree, with no mocked

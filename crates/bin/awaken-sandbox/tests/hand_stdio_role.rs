@@ -8,6 +8,8 @@ use awaken_tool_relay::{RemoteToolExecutor, wire::HandResult};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::process::Command;
 
+mod binary_support;
+
 struct ProcessChannel {
     read: tokio::process::ChildStdout,
     write: tokio::process::ChildStdin,
@@ -52,7 +54,7 @@ async fn hand_stdio_executes_a_real_tool_over_the_child_process_channel() {
     let ledger =
         std::env::temp_dir().join(format!("awaken-hand-stdio-role-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&ledger);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_awaken-sandbox"))
+    let mut child = Command::new(binary_support::awaken_sandbox())
         .args(["hand", "--stdio"])
         .env("AWAKEN_HAND_LEDGER_DIR", &ledger)
         .stdin(Stdio::piped())

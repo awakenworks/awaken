@@ -7,9 +7,11 @@
 
 use std::process::Command;
 
+mod binary_support;
+
 /// The binary under test, built by cargo for this integration target.
 fn awaken_sandbox() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_awaken-sandbox"))
+    Command::new(binary_support::awaken_sandbox())
 }
 
 /// Run the binary and return (success, combined stderr+stdout).
@@ -25,6 +27,11 @@ fn run(args: &[&str]) -> (bool, String) {
 
 #[test]
 fn an_unknown_role_fails_and_names_the_valid_roles() {
+    // Harness causes/effects: H1 Cargo checks this target without a runnable
+    // path -> it compiles; H2 Cargo runs it with the runtime path -> the exact
+    // package binary is spawned. The workspace all-target check covers H1 and
+    // every process-level test in this directory exercises H2 through the one
+    // shared lookup.
     // Cause/effect graph: C1=known closed role, C2=unknown or retired role.
     // Effects: E1=dispatch to its sole owner; E2=non-zero with only canonical
     // roles. Decision R1(C1)->E1 is covered by the role tests; R2(C2)->E2 is
