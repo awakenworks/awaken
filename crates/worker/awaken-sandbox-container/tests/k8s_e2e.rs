@@ -12,6 +12,8 @@
 
 mod common;
 mod k8s_common;
+#[path = "common/process.rs"]
+mod process_lifecycle;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -771,8 +773,9 @@ async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
     let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
+    let runtime = Arc::new(runtime);
     let image = fixture_image();
-    let provider = ContainerProvider::new(Arc::new(runtime), image.clone());
+    let provider = ContainerProvider::new(runtime.clone(), image.clone());
 
     let sandbox = provider
         .create_container(&spec(&scope, image))
@@ -798,6 +801,7 @@ async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
     let got = exchange(&sandbox, agent_argv())
         .await
         .expect("exchange ACP frames over the Kubernetes exec channel");
+    process_lifecycle::verify_wait_cancellation_and_signal(runtime.as_ref(), &pod).await;
     pc::Sandbox::dispose(&sandbox)
         .await
         .expect("KRP1 E3 production exact disposal removes the Pod");

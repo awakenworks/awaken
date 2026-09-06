@@ -81,21 +81,7 @@ impl pc::ProcessHandle for PodmanExecProcess {
     }
 
     async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
-        let mut state = self.state.lock().await;
-        if let Some(status) = &state.status {
-            return Ok(status.clone());
-        }
-        let child = state
-            .child
-            .as_mut()
-            .ok_or_else(|| pc::SandboxError::new("podman exec process is not attached"))?;
-        let status = child
-            .wait()
-            .await
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        let status = Self::exit_status(status);
-        state.status = Some(status.clone());
-        Ok(status)
+        awaken_local_process::wait_for_process_exit(self).await
     }
 
     async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {

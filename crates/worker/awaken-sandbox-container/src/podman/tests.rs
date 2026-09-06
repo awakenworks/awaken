@@ -873,6 +873,59 @@ async fn exec_process_poll_reports_running_then_terminal() {
 }
 
 #[tokio::test]
+async fn exec_pending_wait_keeps_poll_and_signal_available() {
+    // P5 actual local CLI child waits for stdin; wait is polled before another
+    // caller polls/signals. Pending wait must not hold the child mutex. P6 drop
+    // that waiter, deliver input to the same child, and retain exact exit 7.
+    // This uses the existing scripted CLI boundary: true accepts the signal
+    // command, it does not attest actual container-side signal delivery (KRP2
+    // and real Podman lifecycle tests own that proof). Pipe input fixes liveness
+    // without a sleep guess, and kill_on_drop bounds a failing fixture.
+    let mut child = OsCommand::new("sh")
+        .args(["-c", "read input; exit 7"])
+        .stdin(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let process = exec_process(Some(child), "true");
+    let mut waiting = Box::pin(process.wait());
+    std::future::poll_fn(|cx| {
+        assert!(waiting.as_mut().poll(cx).is_pending(), "P5 wait entered");
+        std::task::Poll::Ready(())
+    })
+    .await;
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), process.poll())
+            .await
+            .expect("P5 poll remains available")
+            .unwrap(),
+        None
+    );
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        process.signal(pc::Signal::Term),
+    )
+    .await
+    .expect("P5 signal preflight remains available")
+    .unwrap();
+    drop(waiting);
+    tokio::io::AsyncWriteExt::write_all(&mut input, b"finish\n")
+        .await
+        .unwrap();
+    assert_eq!(
+        process.wait().await.unwrap().code,
+        Some(7),
+        "P6 original exit"
+    );
+    assert_eq!(
+        process.poll().await.unwrap().unwrap().code,
+        Some(7),
+        "P6 stable observation"
+    );
+}
+
+#[tokio::test]
 async fn detached_exec_process_fails_closed_and_signal_propagates_status() {
     // Cause/effect graph: C1 process handle attached/detached; C2 signal CLI
     // exits zero/non-zero/cannot spawn. Effects: E1 detached handles reject

@@ -8,6 +8,8 @@
 mod common;
 #[path = "common/disposal.rs"]
 mod disposal;
+#[path = "common/process.rs"]
+mod process_lifecycle;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -239,6 +241,7 @@ async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
     recovered.signal(pc::Signal::Term).await.unwrap();
     assert!(recovered.wait().await.unwrap().code.is_some());
     assert!(rt.process("wrong-container", &public_id).await.is_err());
+    process_lifecycle::verify_wait_cancellation_and_signal(&rt, &id).await;
 
     let empty = pc::MaterializedCommand::new(Vec::<String>::new());
     assert!(rt.spawn(&id, empty.clone()).await.is_err());
