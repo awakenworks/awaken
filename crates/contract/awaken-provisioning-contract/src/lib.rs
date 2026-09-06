@@ -31,6 +31,7 @@
 
 mod admission;
 mod approval;
+mod execution_authority;
 mod execution_policy;
 mod lease;
 mod prepare;
@@ -42,6 +43,7 @@ pub use awaken_sandbox_control::SandboxControlServiceKind;
 
 pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness};
 pub use approval::{ApprovalDecision, ApprovalPolicy, SandboxAction, decide as approval_decide};
+pub use execution_authority::CurrentExecutionAuthority;
 pub use execution_policy::{
     SandboxExecutionPolicy, SandboxExecutionPolicyError, SandboxExecutionPolicyId,
     SandboxExecutionPolicyRef, SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion,

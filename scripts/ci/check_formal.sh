@@ -883,6 +883,12 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/session-realization-authority" \
     -config formal/tla/SessionRealizationAuthority.cfg formal/tla/SessionRealizationAuthority.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/worker-authority-exit" \
+    -config formal/tla/WorkerAuthorityExit.cfg formal/tla/WorkerAuthorityExit.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/worker-execution-authority" \
+    -config formal/tla/WorkerExecutionAuthority.cfg formal/tla/WorkerExecutionAuthority.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/credential-rotation-workflow" \
     -config formal/tla/CredentialRotationWorkflow.cfg \
     formal/tla/CredentialRotationWorkflow.tla

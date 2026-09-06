@@ -15,13 +15,7 @@ use std::{
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Session's adapter must invoke the effect exactly once while holding the
-/// SAME synchronous authority guard used to revoke or replace its generation.
-/// The remaining lifetime must come from the current lease, not a copied
-/// creation fence. No callback on denial; no async work under that guard.
-pub trait CurrentExecutionAuthority: Send + Sync {
-    fn with_current(&self, effect: &mut dyn FnMut(Duration) -> io::Result<()>) -> io::Result<()>;
-}
+use pc::CurrentExecutionAuthority;
 
 #[derive(Default)]
 struct LiveExecution {

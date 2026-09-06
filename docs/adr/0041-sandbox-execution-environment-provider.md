@@ -751,9 +751,59 @@ The authority model includes two slot allocations and one ready peer, checking
 cohort closure and peer progress under weak scheduling fairness. Host tests
 cover both owner locks, same-lease/lease-free ABA, blocked peers, failed cleanup,
 and the Worker handler's split close/interruption/retirement sequence. Actual
-late admission of new Sessions after Worker authority loss, the production
-provider callback and its cutoff refresh remain explicit composition work;
-these are not implied by the selected-cohort proof.
+late admission is now fenced by the Worker root composition described below;
+the production provider callback and its cutoff refresh remain explicit
+composition work and are not implied by the selected-cohort proof.
+
+Worker heartbeat supervision now has one revocation exit for ordinary proof
+loss and dependency unwind. The heartbeat future is consumed before invoking
+the existing cohort-close/drain/retire sequence; the task cannot report normal
+completion while that sequence is pending. This remains in the same heartbeat
+task during graceful drain, without another monitor or lease projection.
+`WorkerAuthorityExit` composes the existing cohort model; barrier tests check
+normal return, unwind, pending cleanup and explicit abort, and a real Worker
+HTTP fixture injects a post-Ready provider-probe panic. Explicit task abort,
+process death and panic-abort builds are not unwind recovery; physical cutoff
+and final shutdown ownership remain separate requirements.
+
+Worker heartbeat timing and Session installation now consume one guarded
+`WorkerAuthorityProof` per registration, replacing the heartbeat loop's private
+receipt variables rather than copying their authority into a Host cache. The
+registry and existing `AuthorityLeaseTiming` remain the durable owner and timing
+policy. `CurrentExecutionAuthority` moved unchanged to the neutral provisioning
+contract; the Local provider and the Worker implement/consume this same port.
+The Worker injects its proof before enabling dispatch, including the AIO build
+path. Direct unregistered Hosts retain their existing Session authority owner;
+absence of a Worker proof does not qualify process-tree supervision.
+
+Static ownership is Worker receipt -> neutral synchronous port -> Host Session
+slot mutation, with physical providers depending only on the port. Dynamic
+order is request-start anchor -> current Applied receipt -> guarded Resource
+preparation or complete projection publication. Root close precedes cohort
+selection and all asynchronous drain waits. Both Session renewal delivery
+entrances also check that root. An expired initial response cannot start claim
+polling; a fresh renewal cannot revive an expired/closed old Worker proof.
+Graceful drain keeps the proof while existing runs finish, then closes it before
+the heartbeat task is aborted. No timer, lease store, mode selector or shadow
+Session registry is added. Linux uses the same suspend-inclusive BOOTTIME source
+as the execution cutoff, retaining submillisecond precision; other platforms
+retain their existing Instant timing and do not gain a supervision claim.
+
+Adjacent cause/effect tests cover the initial/renewal latency boundary,
+irreversible close, clock regression, Linux suspend, callback error/unwind,
+root-lock contention, late complete projection with/without Resources, both
+renewal entrances, and cancellation during a real gated Resource read. A real
+HTTP Worker fixture rejects an aged first receipt before dispatch. The bounded
+`WorkerExecutionAuthority` model composes the existing Session slot/cleanup
+kernel with one root receipt, one outstanding response and a finite boot clock.
+It checks late responses, fresh admission, generation replacement and renewal;
+six guard mutants plus admission/renewal reachability witnesses run in CI.
+Its atomic callback abstraction does not prove arbitrary callback duration,
+physical GO/cutoff refresh, OS clock correctness, Rust refinement or cleanup
+liveness. Binding the intersection of this root proof and the exact current
+Session/environment to physical launch remains required before capability
+activation; managed Git, reboot recovery and real cross-platform/cloud tests
+also remain outside this slice's completion claim.
 
 Native Linux readiness now executes the same `bubblewrap_argv` profile as a
 real Namespace launch, including PID/IPC/UTS/network namespaces and parent-death

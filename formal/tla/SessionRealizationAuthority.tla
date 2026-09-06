@@ -124,9 +124,10 @@ FinishPeer ==
                   badGrant, badCleanup, granted, cleaned, slotIdentity, selectedSlot,
                   peerLive, workerClosed>>
 
-Next == SendRenewal \/ ApplyRenewal \/ Replace \/ ReleaseOwner \/ Grant
-        \/ RecreateClosedSlot \/ CloseWorker \/ FinishPeer
+SessionAndCleanupNext == SendRenewal \/ ApplyRenewal \/ Replace \/ ReleaseOwner \/ Grant
+        \/ RecreateClosedSlot \/ FinishPeer
         \/ (\E c \in Callers : BeginRevoke(c) \/ CancelCleanup(c) \/ FinishCleanup(c))
+Next == SessionAndCleanupNext \/ CloseWorker
 Spec == Init /\ [][Next]_vars /\ WF_vars(FinishPeer)
 
 TypeOK == /\ projection \in {"Live", "Closed"} /\ lease \in Snapshots

@@ -8,12 +8,16 @@ use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_session_executor::SharedHost;
 use awaken_worker_contract::{RegistryMutation, WorkerIdentity};
 use awaken_coordinator_client::WorkerControlClient;
+use futures_util::FutureExt as _;
 
 use crate::credential_liveness::WorkerObservationCache;
 
 mod environment_evidence;
 
 pub(crate) use environment_evidence::proof_is_fresh as environment_proof_is_fresh;
+mod authority;
+pub(crate) use authority::ProofStarted;
+pub(crate) use authority::WorkerAuthorityProof;
 
 const SESSION_REALIZATION_LEASE_TTL_MS: u64 = 20_000;
 
@@ -100,6 +104,7 @@ pub enum WorkerShutdown {
 
 #[derive(Clone)]
 pub(crate) struct WorkerSupervisor {
+    pub(crate) authority: Arc<WorkerAuthorityProof>,
     pub(crate) host: Arc<SharedHost>,
     pub(crate) control: WorkerControlClient,
     pub(crate) identity: WorkerIdentity,
@@ -259,7 +264,6 @@ pub(crate) fn new_incarnation_id() -> Result<String, getrandom::Error> {
 pub(crate) fn spawn_heartbeat(
     lifecycle: Arc<WorkerSupervisor>,
     sequence: u64,
-    last_proof: Instant,
     timing: AuthorityLeaseTiming,
     environment_proof_started: Instant,
 ) -> tokio::task::JoinHandle<()> {
@@ -267,6 +271,7 @@ pub(crate) fn spawn_heartbeat(
         // Independent, single-flight lanes under the same incarnation owner.
         // Neither a slow security probe nor a registry retry can extend the
         // other's proof. Losing either proof irreversibly drains both lanes.
+        supervise_worker_authority(async {
         tokio::select! {
             biased;
             () = async {
@@ -280,31 +285,54 @@ pub(crate) fn spawn_heartbeat(
                     std::future::pending::<()>().await;
                 }
             } => {}
-            () = renew_registry_authority(&lifecycle, sequence, last_proof, timing) => {}
+            () = renew_registry_authority(&lifecycle, sequence) => {}
         }
-        revoke_worker_session_authority(&lifecycle).await;
+        }, || revoke_worker_session_authority(&lifecycle)).await;
     })
 }
 
-async fn renew_registry_authority(
-    lifecycle: &WorkerSupervisor,
-    mut sequence: u64,
-    mut last_proof: Instant,
-    mut timing: AuthorityLeaseTiming,
-) {
-    awaken_observability::set_worker_authority_proof_remaining(
-        timing.remaining_proof_after(Instant::now().saturating_duration_since(last_proof)),
-    );
-    let mut next_attempt = last_proof + timing.renew_interval();
+/// One exit edge for normal proof loss and unwinding dependency failures. This
+/// stays in the heartbeat task, so it also supervises authority during graceful
+/// drain. It never restarts the failed loop or creates a second monitor task.
+/// Explicit owner abort/process death is outside unwind handling; the physical
+/// execution cutoff and final shutdown owner retain those responsibilities.
+async fn supervise_worker_authority<Revoke, Revocation>(
+    heartbeat: impl std::future::Future<Output = ()>,
+    revoke: Revoke,
+) where
+    Revoke: FnOnce() -> Revocation,
+    Revocation: std::future::Future<Output = ()>,
+{
+    if std::panic::AssertUnwindSafe(heartbeat)
+        .catch_unwind()
+        .await
+        .is_err()
+    {
+        awaken_observability::record_worker_authority_loss("heartbeat_panicked");
+        tracing::error!("worker heartbeat panicked; revoking Session authority before task exit");
+    }
+    // The heartbeat future has been dropped before revocation. Borrowed
+    // provider/transport state is never reused after an unwind.
+    revoke().await;
+}
+
+async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u64) {
+    let Ok((receipt, remaining)) = lifecycle.authority.snapshot() else {
+        return;
+    };
+    awaken_observability::set_worker_authority_proof_remaining(remaining);
+    let mut next_attempt = receipt.started.scheduled + receipt.timing.renew_interval();
     let mut next_regular = next_attempt;
     let mut admission_suspended = false;
     let mut consecutive_failures = 0_u64;
     loop {
         tokio::time::sleep_until(tokio::time::Instant::from_std(next_attempt)).await;
-        let attempt_started = Instant::now();
+        let Ok(attempt) = ProofStarted::now() else {
+            break;
+        };
+        let attempt_started = attempt.scheduled;
         let scheduling_lag = attempt_started.saturating_duration_since(next_attempt);
-        let proof_deadline = last_proof + timing.proof_window();
-        if attempt_started >= proof_deadline {
+        let Ok((receipt, _)) = lifecycle.authority.snapshot() else {
             awaken_observability::record_worker_authority_loss("proof_expired");
             tracing::error!(
                 sequence,
@@ -312,11 +340,14 @@ async fn renew_registry_authority(
                 "worker registry authority proof expired; draining locally"
             );
             break;
+        };
+        let timing = receipt.timing;
+        {
         }
         let ready = lifecycle.host.pool_can_resume_work().await;
         let heartbeat_timeout = timing
             .request_timeout()
-            .min(proof_deadline.saturating_duration_since(Instant::now()));
+            .min(lifecycle.authority.remaining());
         let heartbeat = lifecycle.observations.snapshot().into_heartbeat(
             sequence,
             ready,
@@ -343,12 +374,15 @@ async fn renew_registry_authority(
                     .lease_ttl_ms
                     .expect("WorkerControlClient validates applied heartbeat TTL");
                 let previous_ttl = timing.lease_ttl().as_millis() as u64;
-                timing = AuthorityLeaseTiming::from_ttl_ms(receipt_ttl);
+                let timing = AuthorityLeaseTiming::from_ttl_ms(receipt_ttl);
                 // The Coordinator applied the renewal at an unknown instant
                 // between request start and response receipt. Request start is
                 // the conservative local lower bound; response latency must
                 // never mint extra local authority.
-                last_proof = attempt_started;
+                if lifecycle.authority.apply(attempt, timing).is_err() {
+                    awaken_observability::record_worker_authority_loss("proof_expired");
+                    break;
+                }
                 consecutive_failures = 0;
                 if admission_suspended {
                     if lifecycle.host.resume_pool_admission().await {
@@ -363,11 +397,11 @@ async fn renew_registry_authority(
                     admission_suspended = false;
                 }
                 if receipt_ttl == previous_ttl {
-                    while next_regular <= last_proof {
+                    while next_regular <= attempt_started {
                         next_regular += timing.renew_interval();
                     }
                 } else {
-                    next_regular = last_proof + timing.renew_interval();
+                    next_regular = attempt_started + timing.renew_interval();
                 }
                 next_attempt = next_regular;
                 awaken_observability::record_worker_authority_heartbeat(
@@ -378,9 +412,7 @@ async fn renew_registry_authority(
                     },
                     Instant::now().duration_since(attempt_started),
                     scheduling_lag,
-                    timing.remaining_proof_after(
-                        Instant::now().saturating_duration_since(last_proof),
-                    ),
+                    lifecycle.authority.remaining(),
                 );
             }
             Ok(Ok(receipt)) => {
@@ -388,7 +420,7 @@ async fn renew_registry_authority(
                     "rejected",
                     Instant::now().duration_since(attempt_started),
                     scheduling_lag,
-                    proof_deadline.saturating_duration_since(Instant::now()),
+                    lifecycle.authority.remaining(),
                 );
                 awaken_observability::record_worker_authority_loss("registry_rejected");
                 tracing::error!(mutation = ?receipt.mutation, "worker heartbeat explicitly lost authority; draining locally");
@@ -397,7 +429,7 @@ async fn renew_registry_authority(
             Ok(Err(error)) => {
                 consecutive_failures = consecutive_failures.saturating_add(1);
                 let now = Instant::now();
-                let remaining = proof_deadline.saturating_duration_since(now);
+                let remaining = lifecycle.authority.remaining();
                 tracing::warn!(
                     error = %error,
                     consecutive_failures,
@@ -415,7 +447,6 @@ async fn renew_registry_authority(
                     lifecycle,
                     &mut admission_suspended,
                     timing,
-                    proof_deadline,
                 )
                 .await
                 else {
@@ -426,7 +457,7 @@ async fn renew_registry_authority(
             Err(_) => {
                 consecutive_failures = consecutive_failures.saturating_add(1);
                 let now = Instant::now();
-                let remaining = proof_deadline.saturating_duration_since(now);
+                let remaining = lifecycle.authority.remaining();
                 tracing::warn!(
                     consecutive_failures,
                     proof_remaining_ms = remaining.as_millis(),
@@ -443,7 +474,6 @@ async fn renew_registry_authority(
                     lifecycle,
                     &mut admission_suspended,
                     timing,
-                    proof_deadline,
                 )
                 .await
                 else {
@@ -462,14 +492,13 @@ async fn pause_authority_admission_for_retry(
     lifecycle: &WorkerSupervisor,
     admission_suspended: &mut bool,
     timing: AuthorityLeaseTiming,
-    proof_deadline: Instant,
 ) -> Option<Instant> {
     if !*admission_suspended {
         lifecycle.host.suspend_pool_admission().await;
         *admission_suspended = true;
     }
     let now = Instant::now();
-    let remaining = proof_deadline.saturating_duration_since(now);
+    let remaining = lifecycle.authority.remaining();
     if remaining.is_zero() {
         awaken_observability::record_worker_authority_loss("proof_expired");
         None
@@ -608,6 +637,9 @@ pub(crate) fn spawn_environment_warmup_reconciliation(
 }
 
 async fn revoke_worker_session_authority(lifecycle: &WorkerSupervisor) {
+    // Root guard closes before selecting slots or awaiting any drain/owner lock.
+    // A late/new Session cannot install authority outside this selected cohort.
+    lifecycle.authority.close();
     awaken_observability::set_worker_authority_proof_remaining(std::time::Duration::ZERO);
     let revocation = lifecycle.host.begin_session_realization_revocation();
     lifecycle.host.begin_pool_drain().await;
@@ -644,7 +676,106 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use super::supervise_session_realization_reconciliation;
+    use super::{supervise_session_realization_reconciliation, supervise_worker_authority};
+
+    #[tokio::test]
+    async fn heartbeat_exit_owns_one_revocation_before_completion_even_after_unwind() {
+        // Cause/effect graph: C1 heartbeat returns normally or unwinds after a
+        // dependency await; C2 cleanup finishes or the owner cancels its wait;
+        // C3 explicit owner abort occurs before heartbeat exit instead.
+        // E1 release heartbeat-owned temporaries before revocation; E2 invoke
+        // the SAME revocation exactly once; E3 never complete while revocation
+        // is pending; E4 cancellation cannot manufacture a completed receipt.
+        // | rule | heartbeat | owner action | effect |
+        // | H1-H2 | return/panic | finish cleanup | E1+E2+E3, then completion |
+        // | H3-H4 | return/panic | cancel cleanup | E1+E2+E4, closure retained |
+        // | H5-H6 | still pending | abort heartbeat | no invented revoke/receipt |
+        // H5-H6 explicitly bound this unwind guarantee: process death/abort
+        // requires physical cutoff and the outer shutdown owner, not catch_unwind.
+        struct DropMark(Arc<AtomicBool>);
+        impl Drop for DropMark {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        for panics in [false, true] {
+            for action in ["finish", "cancel-cleanup", "abort-heartbeat"] {
+                let dropped = Arc::new(AtomicBool::new(false));
+                let calls = Arc::new(AtomicUsize::new(0));
+                let closed = Arc::new(AtomicBool::new(false));
+                let completed = Arc::new(AtomicBool::new(false));
+                let (started, observed) = tokio::sync::oneshot::channel();
+                let (exit, exit_wait) = tokio::sync::oneshot::channel();
+                let (closing, close_observed) = tokio::sync::oneshot::channel();
+                let (finish, finish_wait) = tokio::sync::oneshot::channel();
+                let heartbeat_guard = DropMark(dropped.clone());
+                let task = tokio::spawn(supervise_worker_authority(
+                    async move {
+                        let _guard = heartbeat_guard;
+                        started.send(()).unwrap();
+                        exit_wait.await.unwrap();
+                        assert!(!panics, "injected heartbeat dependency panic");
+                    },
+                    {
+                        let dropped = dropped.clone();
+                        let calls = calls.clone();
+                        let closed = closed.clone();
+                        let completed = completed.clone();
+                        move || async move {
+                            assert!(dropped.load(Ordering::SeqCst), "E1");
+                            assert_eq!(calls.fetch_add(1, Ordering::SeqCst), 0, "E2");
+                            closed.store(true, Ordering::SeqCst);
+                            closing.send(()).unwrap();
+                            finish_wait.await.unwrap();
+                            completed.store(true, Ordering::SeqCst);
+                        }
+                    },
+                ));
+                observed.await.unwrap();
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+                if action == "abort-heartbeat" {
+                    task.abort();
+                    assert!(task.await.unwrap_err().is_cancelled(), "H5-H6");
+                    assert!(dropped.load(Ordering::SeqCst));
+                    assert!(!closed.load(Ordering::SeqCst));
+                    assert!(!completed.load(Ordering::SeqCst));
+                    assert_eq!(calls.load(Ordering::SeqCst), 0);
+                    continue;
+                }
+                exit.send(()).unwrap();
+                close_observed.await.unwrap();
+                assert!(!task.is_finished(), "E3");
+                assert!(closed.load(Ordering::SeqCst));
+                assert!(!completed.load(Ordering::SeqCst));
+                if action == "cancel-cleanup" {
+                    task.abort();
+                    assert!(task.await.unwrap_err().is_cancelled(), "E4");
+                    assert!(!completed.load(Ordering::SeqCst));
+                    assert!(closed.load(Ordering::SeqCst));
+                } else {
+                    finish.send(()).unwrap();
+                    task.await.unwrap();
+                    assert!(completed.load(Ordering::SeqCst));
+                }
+                assert_eq!(calls.load(Ordering::SeqCst), 1, "E2");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn revocation_unwind_is_not_retried_or_reported_as_completed() {
+        // H7: revocation itself unwinds after closing admission (cause).
+        // It must escape to the outer Worker owner, not restart heartbeat,
+        // retry destructive cleanup, or turn the panic into normal completion.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let task = tokio::spawn(supervise_worker_authority(async {}, move || async move {
+            observed.fetch_add(1, Ordering::SeqCst);
+            panic!("injected revocation panic");
+        }));
+        assert!(task.await.unwrap_err().is_panic());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 
     struct ProbeProvider {
         mode: u8,

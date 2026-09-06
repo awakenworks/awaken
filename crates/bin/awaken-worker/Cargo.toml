@@ -48,6 +48,7 @@ awaken-credential-materializer.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-sandbox-container.workspace = true
 awaken-tool-relay.workspace = true
+awaken-local-process.workspace = true
 awaken-session-contract.workspace = true
 awaken-worker-transport-security.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "fs"] }
@@ -63,6 +64,7 @@ awaken-protocol-acp = { workspace = true }
 awaken-run-executor-acp = { workspace = true }
 awaken-provisioning-contract = { workspace = true }
 async-trait = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getrandom = "0.2"
 serde.workspace = true
 toml.workspace = true

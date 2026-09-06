@@ -1,6 +1,6 @@
 use super::*;
-use awaken_provisioning_contract::Sandbox as _;
-use awaken_sandbox_local::{CurrentExecutionAuthority, LocalProvider};
+use awaken_provisioning_contract::{CurrentExecutionAuthority, Sandbox as _};
+use awaken_sandbox_local::LocalProvider;
 use std::sync::{Arc, Mutex};
 
 struct Authority(

@@ -934,8 +934,6 @@ pub use awaken_local_process::LocalProcess;
 pub use blob_cache::{BlobLru, WorkspaceBlobCache};
 pub(crate) use git_transport::{git_bytes, provision_repo_at, push_repo_to_at, run_git};
 pub use namespace::{NamespaceProvider, NamespaceSandbox, bubblewrap_argv, sandbox_exec_argv};
-#[cfg(target_os = "linux")]
-pub use provider::execution::CurrentExecutionAuthority;
 pub use provider::{LocalProvider, LocalSandbox};
 pub use repo_bundle::{clone_repo_bundle, push_repo_bundle};
 

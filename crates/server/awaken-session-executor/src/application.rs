@@ -6,6 +6,7 @@
 //! and are installed into the same Session slot for the Native/ACP backend path.
 
 mod agent_filesystem_context;
+mod execution_authority;
 mod realization_control_deadline;
 mod realization_renewal;
 
@@ -954,16 +955,20 @@ impl crate::SharedHost {
         });
     }
 
+    #[cfg(test)]
     pub(crate) fn install_session_realization_lease(
         &self,
         session_id: &str,
         lease: awaken_session_contract::SessionRealizationLease,
-    ) {
-        let changed = self.session_slots.update(session_id, |slot| {
-            slot.install_realization_lease(lease);
-            slot.realization_changed.clone()
-        });
+    ) -> Result<(), crate::HostError> {
+        let changed = self.authorize_worker_effect(|| {
+            Ok(self.session_slots.update(session_id, |slot| {
+                slot.install_realization_lease(lease);
+                slot.realization_changed.clone()
+            }))
+        })?;
         changed.notify_waiters();
+        Ok(())
     }
 
     /// Close only the failed local projection of one exact realization
@@ -1550,38 +1555,38 @@ impl crate::SharedHost {
         if let Some(preparation) = &preparation {
             preparation.validate()?;
         }
-        self.retain_session_publication(thread, publication.as_ref())?;
-        self.install_session_environment_owner_projection(
-            thread,
-            &projection.workspace_id,
-            &projection.environment,
-        )?;
-        self.project_session_init(thread, &init)?;
-        self.install_session_request_context(thread, projection.request_context.clone());
-        self.session_slots.update(thread, |slot| {
-            if let Some(preparation) = &preparation {
-                preparation.finish(slot)?;
-            }
-            if let Some(baseline) = baseline_to_install {
-                slot.baseline = Some(baseline);
-            }
-            // The complete frozen projection is the cold Worker's first
-            // observation of Session admission. Publish the existing execution
-            // marker in the same atomic slot update as its baseline and
-            // transition; local admission may set it earlier, while revocation
-            // remains authorized to clear it with the rest of live execution
-            // state.
-            slot.session_dispatch = true;
-            slot.has_mcp_projection = has_mcp_projection;
-            slot.resource_transition = Some(resource_transition);
-            Ok::<_, crate::HostError>(())
-        })?;
-        if preparation.is_none()
-            && let Some(lease) = realization_lease
-        {
-            self.install_session_realization_lease(thread, lease);
-        }
-        Ok(())
+        self.authorize_worker_effect(|| {
+            self.retain_session_publication(thread, publication.as_ref())?;
+            self.install_session_environment_owner_projection(
+                thread,
+                &projection.workspace_id,
+                &projection.environment,
+            )?;
+            self.project_session_init(thread, &init)?;
+            self.install_session_request_context(thread, projection.request_context.clone());
+            self.session_slots.update(thread, |slot| {
+                if let Some(preparation) = &preparation {
+                    preparation.finish(slot)?;
+                } else if let Some(lease) = realization_lease {
+                    slot.install_realization_lease(lease);
+                    slot.realization_changed.notify_waiters();
+                }
+                if let Some(baseline) = baseline_to_install {
+                    slot.baseline = Some(baseline);
+                }
+                // The complete frozen projection is the cold Worker's first
+                // observation of Session admission. Publish the existing execution
+                // marker in the same atomic slot update as its baseline and
+                // transition; local admission may set it earlier, while revocation
+                // remains authorized to clear it with the rest of live execution
+                // state.
+                slot.session_dispatch = true;
+                slot.has_mcp_projection = has_mcp_projection;
+                slot.resource_transition = Some(resource_transition);
+                Ok::<_, crate::HostError>(())
+            })?;
+            Ok(())
+        })
     }
 
     /// Install one aggregate-frozen terminal assignment without entering the
