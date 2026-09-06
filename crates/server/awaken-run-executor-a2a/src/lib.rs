@@ -1539,7 +1539,18 @@ mod tests {
         let mut unknown = valid.clone();
         unknown["unexpected"] = serde_json::Value::Bool(true);
         assert!(decode_task_reference(&unknown).is_err(), "unknown field");
-        assert!(ensure_endpoint(&reference, "http://other.invalid").is_err());
+        assert!(matches!(
+            task_reference_decision(false, false),
+            TaskReferenceDecision::Fresh
+        ));
+        assert!(matches!(
+            task_reference_decision(true, true),
+            TaskReferenceDecision::Reattach
+        ));
+        assert!(matches!(
+            task_reference_decision(true, false),
+            TaskReferenceDecision::RejectEndpointMismatch
+        ));
 
         assert_eq!(
             resume_text(&ResumeResult::Input("input".into())).unwrap(),

@@ -53,31 +53,26 @@ impl RunExecutor for A2aRunExecutor {
         };
         let endpoint = endpoint_of(candidate)?;
 
-        let restored = match restored_task_reference(&context, &activation) {
-            Ok(restored) => restored,
+        let route = match restored_task_route(&context, &activation, &endpoint) {
+            Ok(route) => route,
             Err(error) => {
                 return finish_invalid_task_reference(&context, &activation, error).await;
             }
         };
-        if let Some(reference) = &restored
-            && let Err(error) = ensure_endpoint(reference, &endpoint)
-        {
-            return finish_invalid_task_reference(&context, &activation, error).await;
-        }
         verify_attempt_ownership(context.ownership.as_deref()).await?;
         let transport = self
             .transport_resolver
             .resolve(candidate, &context)
             .await
             .map_err(Error::Execution)?;
-        let task = match restored {
-            Some(reference) => {
+        let task = match route {
+            TaskReferenceRoute::Reattach(reference) => {
                 verify_attempt_ownership(context.ownership.as_deref()).await?;
                 get_task(transport.as_ref(), &reference.task_id)
                     .await
                     .map_err(|error| Error::Execution(error.to_string()))?
             }
-            None => {
+            TaskReferenceRoute::Fresh => {
                 let normalized = awaken_runtime_contract::NormalizedModelInput::new(
                     &activation.snapshot.resolved_spec.instructions,
                     &context.request_context,
@@ -168,9 +163,11 @@ impl RunAttemptExecutor for A2aRunExecutor {
         let continuation_is_bound = (|| {
             let candidate = remote_candidate_of(activation).ok()?;
             let endpoint = endpoint_of(candidate).ok()?;
-            let reference = restored_task_reference(context, activation).ok()??;
-            ensure_endpoint(&reference, &endpoint).ok()?;
-            Some(())
+            matches!(
+                restored_task_route(context, activation, &endpoint).ok()?,
+                TaskReferenceRoute::Reattach(_)
+            )
+            .then_some(())
         })()
         .is_some();
         if continuation_is_bound {
@@ -198,9 +195,9 @@ impl RunAttemptExecutor for A2aRunExecutor {
             .map_err(|error| Error::Execution(format!("invalid A2A resume: {error}")))?;
         let candidate = remote_candidate_of(&activation)?;
         let endpoint = endpoint_of(candidate)?;
-        let reference = match restored_task_reference(&context, &activation) {
-            Ok(Some(reference)) => reference,
-            Ok(None) => {
+        let reference = match restored_task_route(&context, &activation, &endpoint) {
+            Ok(TaskReferenceRoute::Reattach(reference)) => reference,
+            Ok(TaskReferenceRoute::Fresh) => {
                 return finish_invalid_task_reference(
                     &context,
                     &activation,
@@ -212,9 +209,6 @@ impl RunAttemptExecutor for A2aRunExecutor {
                 return finish_invalid_task_reference(&context, &activation, error).await;
             }
         };
-        if let Err(error) = ensure_endpoint(&reference, &endpoint) {
-            return finish_invalid_task_reference(&context, &activation, error).await;
-        }
         let text = resume_text(&command.result)?;
         verify_attempt_ownership(context.ownership.as_deref()).await?;
         let transport = self
@@ -252,10 +246,10 @@ impl RunAttemptExecutor for A2aRunExecutor {
     async fn cancel(&self, activation: RunActivation, context: RuntimeRunContext) -> Result<()> {
         let candidate = remote_candidate_of(&activation)?;
         let endpoint = endpoint_of(candidate)?;
-        let Some(reference) = restored_task_reference(&context, &activation)? else {
-            return Ok(());
+        let reference = match restored_task_route(&context, &activation, &endpoint)? {
+            TaskReferenceRoute::Fresh => return Ok(()),
+            TaskReferenceRoute::Reattach(reference) => reference,
         };
-        ensure_endpoint(&reference, &endpoint)?;
         verify_attempt_ownership(context.ownership.as_deref()).await?;
         let transport = self
             .transport_resolver
