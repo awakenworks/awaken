@@ -202,4 +202,20 @@ mod kani_proofs {
             has_reference && !endpoint_matches
         );
     }
+
+    #[kani::proof]
+    fn terminal_task_reference_command_is_exact_run_scoped_removal() {
+        // Cause graph: C1 a Run reaches a committed terminal boundary.
+        // Effect E1 the sole A2A task-reference key is removed in Run scope
+        // under its declared Disjoint merge policy; no Set or second key is
+        // admitted. There is one unconditional rule C1 -> E1, so a multi-row
+        // decision table would add no information.
+        let command = clear_task_reference_state();
+
+        assert_eq!(command.scope, Scope::Run);
+        assert_eq!(command.merge, MergePolicy::Disjoint);
+        assert_eq!(command.key.0, A2A_TASK_STATE_KEY);
+        assert!(command.run_id.is_none());
+        assert!(matches!(command.action, StateAction::Remove));
+    }
 }
