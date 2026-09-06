@@ -60,25 +60,26 @@ impl SqliteWorkQueue {
         if active > 0 {
             return Ok(None);
         }
-        let selected: Option<(String, String)> = tx
+        let selected: Option<(String, String, i64)> = tx
             .query_row(
-                "SELECT work_id, data_type FROM work_queue_item \
+                "SELECT work_id, data_type, lease_epoch FROM work_queue_item \
                  WHERE environment_id = ?1 AND state = 'queued' ORDER BY seq ASC LIMIT 1",
                 params![env_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(storage)?;
-        let Some((wid, data_type)) = selected else {
+        let Some((wid, data_type, current_epoch)) = selected else {
             return Ok(None);
         };
+        let (next_epoch, _) = lease_epoch(current_epoch, true)?;
         let sessions_token =
             (mint_session_access && data_type == "session").then(issue_session_token);
         let token_hash = sessions_token.as_ref().map(session_token_sha256);
         tx.execute(
             "UPDATE work_queue_item \
              SET state = 'active', started_at = ?1, lease_owner = ?2, \
-                 lease_epoch = lease_epoch + 1, lease_expires_ms = ?3, \
+                 lease_epoch = ?7, lease_expires_ms = ?3, \
                  lease_refreshed_ms = ?4, latest_heartbeat_at = NULL, \
                  session_token_sha256 = ?5 WHERE work_id = ?6",
             params![
@@ -88,6 +89,7 @@ impl SqliteWorkQueue {
                 db_millis(now_ms),
                 token_hash,
                 wid,
+                next_epoch,
             ],
         )
         .map_err(storage)?;
@@ -287,24 +289,25 @@ impl PostgresWorkQueue {
         if active > 0 {
             return Ok(None);
         }
-        let selected: Option<(String, String)> = sqlx::query_as(
-            "SELECT work_id, data_type FROM work_queue_item \
+        let selected: Option<(String, String, i64)> = sqlx::query_as(
+            "SELECT work_id, data_type, lease_epoch FROM work_queue_item \
              WHERE environment_id = $1 AND state = 'queued' ORDER BY seq ASC LIMIT 1",
         )
         .bind(env_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(storage)?;
-        let Some((wid, data_type)) = selected else {
+        let Some((wid, data_type, current_epoch)) = selected else {
             return Ok(None);
         };
+        let (next_epoch, _) = lease_epoch(current_epoch, true)?;
         let sessions_token =
             (mint_session_access && data_type == "session").then(issue_session_token);
         let token_hash = sessions_token.as_ref().map(session_token_sha256);
         sqlx::query(
             "UPDATE work_queue_item \
              SET state = 'active', started_at = $1, lease_owner = $2, \
-                 lease_epoch = lease_epoch + 1, lease_expires_ms = $3, \
+                 lease_epoch = $7, lease_expires_ms = $3, \
                  lease_refreshed_ms = $4, latest_heartbeat_at = NULL, \
                  session_token_sha256 = $5 WHERE work_id = $6",
         )
@@ -314,6 +317,7 @@ impl PostgresWorkQueue {
         .bind(db_millis(now_ms))
         .bind(token_hash)
         .bind(&wid)
+        .bind(next_epoch)
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
@@ -490,5 +494,103 @@ impl PostgresWorkQueue {
             .await?
             .map(WorkMutationResult::accepted)
             .unwrap_or(WorkMutationResult::NotFound))
+    }
+}
+
+#[cfg(test)]
+mod epoch_tests {
+    use super::*;
+
+    // E2 queued/MAX -> Storage, no REAL promotion/wrap;
+    // E3 MAX-1 -> exact MAX and one token. Negative epochs are forbidden by the
+    // real schema and covered as corrupt numeric inputs by mutation's proof.
+    // Exercise public claim_with_session_access, not just the numeric helper.
+    // Rejected transactions retain queued state, epoch, and absent bearer hash.
+    #[tokio::test]
+    async fn sqlite_session_claim_fences_epoch_exhaustion() {
+        let queue = SqliteWorkQueue::open_in_memory().unwrap();
+        for epoch in [i64::MAX, i64::MAX - 1] {
+            let env = format!("epoch-{epoch}");
+            let work = queue.enqueue_session(&env, "session").await.unwrap();
+            let work_for_sql = work.clone();
+            queue
+                .with_connection(move |conn| {
+                    conn.execute(
+                        "UPDATE work_queue_item SET lease_epoch = ?1 WHERE work_id = ?2",
+                        params![epoch, work_for_sql],
+                    )
+                    .map_err(storage)?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            let outcome = queue
+                .claim_with_session_access(&env, "worker", "poller", 0, None)
+                .await;
+            if epoch == i64::MAX - 1 {
+                assert!(outcome.unwrap().unwrap().sessions_token.is_some(), "E3");
+            } else {
+                assert!(matches!(outcome, Err(WorkQueueError::Storage(_))), "E1/E2");
+            }
+            let row: (String, i64, Option<String>) = queue.with_connection(move |conn| {
+                conn.query_row("SELECT state, lease_epoch, session_token_sha256 FROM work_queue_item WHERE work_id = ?1",
+                    [work], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(storage)
+            }).await.unwrap();
+            if epoch == i64::MAX - 1 {
+                assert_eq!((row.0.as_str(), row.1), ("active", i64::MAX));
+                assert!(row.2.is_some());
+            } else {
+                assert_eq!(row, ("queued".into(), epoch, None));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn postgres_session_claim_fences_epoch_exhaustion() {
+        use sqlx::Executor;
+        let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+            return;
+        };
+        let admin = PgPool::connect(&url)
+            .await
+            .expect("explicit database must be reachable");
+        admin.execute("DROP SCHEMA IF EXISTS t_work_epoch_admission CASCADE; CREATE SCHEMA t_work_epoch_admission").await.unwrap();
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    conn.execute("SET search_path = t_work_epoch_admission")
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .unwrap();
+        let queue = PostgresWorkQueue::with_pool(pool.clone()).await.unwrap();
+        for epoch in [i64::MAX, i64::MAX - 1] {
+            let env = format!("epoch-{epoch}");
+            let work = queue.enqueue_session(&env, "session").await.unwrap();
+            sqlx::query("UPDATE work_queue_item SET lease_epoch = $1 WHERE work_id = $2")
+                .bind(epoch)
+                .bind(&work)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let outcome = queue
+                .claim_with_session_access(&env, "worker", "poller", 0, None)
+                .await;
+            if epoch == i64::MAX - 1 {
+                assert!(outcome.unwrap().unwrap().sessions_token.is_some(), "E3");
+            } else {
+                assert!(matches!(outcome, Err(WorkQueueError::Storage(_))), "E1/E2");
+            }
+            let row: (String, i64, Option<String>) = sqlx::query_as("SELECT state, lease_epoch, session_token_sha256 FROM work_queue_item WHERE work_id = $1").bind(&work).fetch_one(&pool).await.unwrap();
+            if epoch == i64::MAX - 1 {
+                assert_eq!((row.0.as_str(), row.1), ("active", i64::MAX));
+                assert!(row.2.is_some());
+            } else {
+                assert_eq!(row, ("queued".into(), epoch, None));
+            }
+        }
     }
 }

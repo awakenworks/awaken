@@ -7,7 +7,7 @@ CONSTANTS MaxRevision, Writers, SerializeAdmissions
 \* represents the memory mutex, SQLite IMMEDIATE transaction, or PostgreSQL
 \* transaction-scoped aggregate advisory lock (including an absent row).
 \* C1 concurrent absence reads; C2 same/different content; C3 invalid, successor,
-\* stale/exhausted revision; C4 abort. R1 positive exact replay -> no write;
+\* stale/exhausted revision; C4 abort; C5 commit response lost. R1 positive exact replay -> no write;
 \* R2 exact successor -> one write; R3 reject -> no mutation; R4 abort -> no write.
 \* SerializeAdmissions=FALSE is the missing-row-lock regression mutant.
 \* This abstract protocol is NOT a proof of SQL/JSON or the async driver.
@@ -68,17 +68,35 @@ Commit(w) ==
                /\ writes' = [writes EXCEPT ![attempted[w]] = @ + 1]
           ELSE UNCHANGED <<current, content, writes>>
     /\ owner' = IF SerializeAdmissions THEN 0 ELSE owner
-    /\ phase' = [phase EXCEPT ![w] = "idle"]
+    /\ phase' = [phase EXCEPT ![w] = "unacknowledged"]
     /\ UNCHANGED <<attempted, proposed, observed, observedContent>>
 
 Abort(w) ==
-    /\ phase[w] # "idle"
+    /\ phase[w] \in {"read", "applied", "replayed", "rejected"}
     /\ phase' = [phase EXCEPT ![w] = "idle"]
     /\ owner' = IF SerializeAdmissions THEN 0 ELSE owner
     /\ UNCHANGED <<current, content, attempted, proposed, observed,
                    observedContent, writes, before, result, lastAttempt>>
 
+\* Losing an acknowledgement does not undo durable truth. Retry freezes the
+\* same intent and re-observes current truth; it must not invent a new revision.
+Retry(w) ==
+    /\ phase[w] = "unacknowledged"
+    /\ ~SerializeAdmissions \/ owner = 0
+    /\ owner' = IF SerializeAdmissions THEN w ELSE owner
+    /\ observed' = [observed EXCEPT ![w] = current]
+    /\ observedContent' = [observedContent EXCEPT ![w] = content]
+    /\ phase' = [phase EXCEPT ![w] = "read"]
+    /\ UNCHANGED <<current, content, attempted, proposed, writes, before, result, lastAttempt>>
+
+Acknowledge(w) ==
+    /\ phase[w] = "unacknowledged"
+    /\ phase' = [phase EXCEPT ![w] = "idle"]
+    /\ UNCHANGED <<current, content, attempted, proposed, observed, observedContent,
+                   owner, writes, before, result, lastAttempt>>
+
 Next == \E w \in Writers: Read(w) \/ Decide(w) \/ Commit(w) \/ Abort(w)
+                           \/ Retry(w) \/ Acknowledge(w)
 
 TypeOK == /\ current \in 0..MaxRevision
           /\ content \in {0, 1}
@@ -86,7 +104,7 @@ TypeOK == /\ current \in 0..MaxRevision
           /\ proposed \in [Writers -> {0, 1}]
           /\ observed \in [Writers -> 0..MaxRevision]
           /\ observedContent \in [Writers -> {0, 1}]
-          /\ phase \in [Writers -> {"idle", "read", "applied", "replayed", "rejected"}]
+          /\ phase \in [Writers -> {"idle", "read", "applied", "replayed", "rejected", "unacknowledged"}]
           /\ owner \in Writers \cup {0}
           /\ writes \in [1..MaxRevision -> Nat]
           /\ before \in 0..MaxRevision

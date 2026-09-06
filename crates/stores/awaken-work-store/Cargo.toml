@@ -23,6 +23,7 @@ loom = []
 awaken-session-contract = { workspace = true }
 awaken-agent-contract.workspace = true
 awaken-sqlite-pool.workspace = true
+awaken-sql-storage.workspace = true
 # Reuse the platform's canonical OS CSPRNG seam; WorkStore owns no parallel
 # token directory or IAM policy, only one lease-bound opaque secret digest.
 awaken-iam-core.workspace = true

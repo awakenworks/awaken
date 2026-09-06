@@ -12,6 +12,7 @@ import _crate_boundary_workspace
 
 ROOT = Path(__file__).resolve().parents[2]
 RULES = {
+    "crates/stores/awaken-work-store/src/session_access.rs": ("lease_epoch + 1",),
     "crates/server/awaken-dispatch/src/postgres.rs": (" as i64", " as u64", ".max(0)"),
     "crates/server/awaken-dispatch/src/sqlite.rs": (" as i64", " as u64", ".max(0)"),
     "crates/server/awaken-worker-registry/src/postgres.rs": (" as i64", " as u64"),
@@ -134,6 +135,18 @@ def self_test() -> int:
     assert any("awaken-store-sqlite/src/lib.rs" in path for path in sources)
     with tempfile.TemporaryDirectory() as directory:
         fixture = Path(directory)
+        # X5: a second SQL increment bypasses the proved numeric transition.
+        # Green fixture -> introduce the exact old bypass -> one semantic
+        # rejection -> restore -> green; no unrelated error counts as a kill.
+        claim_path = fixture / "crates/stores/awaken-work-store/src/session_access.rs"
+        claim_path.parent.mkdir(parents=True)
+        claim_path.write_text("lease_epoch = ?7", encoding="utf-8")
+        assert violations(fixture) == []
+        claim_path.write_text("lease_epoch = lease_epoch + 1", encoding="utf-8")
+        errors = violations(fixture)
+        assert len(errors) == 1 and "forbidden authority arithmetic" in errors[0], "X5"
+        claim_path.write_text("lease_epoch = ?7", encoding="utf-8")
+        assert violations(fixture) == []
         sql_crate = fixture / "crates" / "sql-authority"
         sql_crate.joinpath("src").mkdir(parents=True)
         sql_crate.joinpath("Cargo.toml").write_text(

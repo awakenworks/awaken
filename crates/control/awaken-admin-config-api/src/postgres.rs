@@ -20,10 +20,11 @@ use sqlx::types::Json;
 use tokio::runtime::{Builder, Handle, Runtime};
 
 use awaken_config_resolver::{
-    AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError,
+    AgentInputAdmission, AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError,
     ConfigRepositoryError, InferenceProfile, InferenceProfileStore, WebhookAuthoringPatch,
     WebhookAuthoringState, WebhookDeliveryOutcome, WebhookDeliveryState, WebhookEndpointDef,
-    WebhookMutationIntent, WebhookStore, validate_agent_input_revision,
+    WebhookMutationIntent, WebhookStore, agent_input_storage_key, agent_input_workspace_prefix,
+    plan_agent_input_write, validate_stored_agent_inputs,
 };
 use awaken_sql_storage::block_on_owned_runtime as block;
 
@@ -268,7 +269,8 @@ impl AgentInputBindingRepository for PostgresAdminStore {
         workspace_id: &str,
         config: AgentInputConfig,
     ) -> Result<(), AgentInputRepositoryError> {
-        let key = format!("{workspace_id}\u{1f}{}", config.agent_id);
+        let key = agent_input_storage_key(workspace_id, &config.agent_id)?;
+        let workspace_id = workspace_id.to_owned();
         let pool = self.pool.clone();
         block(&self.handle, move || async move {
             let mut tx = pool
@@ -293,20 +295,35 @@ impl AgentInputBindingRepository for PostgresAdminStore {
                     Ok::<_, AgentInputRepositoryError>(value)
                 })
                 .transpose()?;
-            if !validate_agent_input_revision(current.as_ref(), &config)? {
+            let AgentInputAdmission::Write(plan) =
+                plan_agent_input_write(&workspace_id, current.as_ref(), &config)?
+            else {
                 return Ok(());
-            }
-            let data = serde_json::to_value(&config)
+            };
+            let data = serde_json::to_value(plan.config())
                 .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
-            sqlx::query(&format!(
-                "INSERT INTO {NS}_agent_resource (agent_id, data) VALUES ($1, $2) \
-                 ON CONFLICT (agent_id) DO UPDATE SET data = excluded.data"
-            ))
-            .bind(key)
-            .bind(Json(data))
-            .execute(&mut *tx)
-            .await
-            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+            let statement = match plan.expected_revision() {
+                None => format!(
+                    "INSERT INTO {NS}_agent_resource (agent_id, data) \
+                                SELECT $1, $2 WHERE $3::bigint IS NULL ON CONFLICT(agent_id) DO NOTHING"
+                ),
+                Some(_) => format!(
+                    "UPDATE {NS}_agent_resource SET data = $2 \
+                                   WHERE agent_id = $1 AND (data->>'revision')::bigint = $3"
+                ),
+            };
+            let changed = sqlx::query(&statement)
+                .bind(plan.storage_key())
+                .bind(Json(data))
+                .bind(plan.expected_revision())
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+            if changed.rows_affected() != 1 {
+                return Err(AgentInputRepositoryError::Storage(
+                    "Agent input plan lost its commit predicate".into(),
+                ));
+            }
             tx.commit()
                 .await
                 .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))
@@ -317,15 +334,18 @@ impl AgentInputBindingRepository for PostgresAdminStore {
         workspace_id: &str,
         agent_id: &str,
     ) -> Result<Option<AgentInputConfig>, AgentInputRepositoryError> {
-        let key = format!("{workspace_id}\u{1f}{agent_id}");
+        let key = agent_input_storage_key(workspace_id, agent_id)?;
         self.get_json("agent_resource", "agent_id", &key)
-            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?
+            .map(|config| validate_stored_agent_inputs(workspace_id, &key, config))
+            .transpose()
     }
     fn list_agent_inputs(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<AgentInputConfig>, AgentInputRepositoryError> {
-        let prefix = format!("{workspace_id}\u{1f}");
+        let prefix = agent_input_workspace_prefix(workspace_id)?;
+        let workspace_id = workspace_id.to_owned();
         let pool = self.pool.clone();
         block(&self.handle, move || async move {
             let rows = sqlx::query(&format!(
@@ -335,15 +355,22 @@ impl AgentInputBindingRepository for PostgresAdminStore {
             .await
             .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
             rows.into_iter()
-                .filter_map(|row| {
-                    let key = row.try_get::<String, _>("agent_id").ok()?;
-                    key.starts_with(&prefix).then_some(row)
+                .map(|row| {
+                    let key = row
+                        .try_get::<String, _>("agent_id")
+                        .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+                    Ok((key, row))
+                })
+                .filter(|row: &Result<_, AgentInputRepositoryError>| {
+                    row.as_ref()
+                        .map_or(true, |(key, _)| key.starts_with(&prefix))
                 })
                 .map(|row| {
+                    let (key, row) = row?;
                     let Json(config): Json<AgentInputConfig> = row
                         .try_get("data")
                         .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
-                    Ok(config)
+                    validate_stored_agent_inputs(&workspace_id, &key, config)
                 })
                 .collect()
         })

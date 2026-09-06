@@ -203,6 +203,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-config-resolver \
     --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence \
     --harness agent_input_revision_decision_is_exact_non_wrapping_and_replay_first
+  run_kani awaken-work-store \
+    --harness work_lease_epoch_is_exact_nonnegative_and_nonwrapping
   run_kani awaken-agent-config \
     --harness processing_geography_requires_exact_evidence_from_every_candidate \
     --harness publication_revision_decision_is_target_safe_fail_closed_and_replay_first
