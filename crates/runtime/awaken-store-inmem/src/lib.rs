@@ -27,7 +27,8 @@ use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error, OperationCoordinator,
 };
 use awaken_agent_contract::thread::commit::operation::{
-    CommitOperation, CommitOperationId, CommitReceipt,
+    CommitOperation, CommitOperationId, CommitReceipt, admit_commit_operation_append,
+    replay_commit_operation_receipt, require_commit_operation_identity,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -163,7 +164,10 @@ impl MemoryCommitCoordinator {
             .state
             .lock()
             .map_err(|_| Error::Rejected("commit store poisoned".to_string()))?;
-        inspect_operation_locked(&state, operation)
+        match inspect_operation_locked(&state, operation)? {
+            OperationInspection::Replay(receipt) => Ok(Some(receipt)),
+            OperationInspection::Append { .. } => Ok(None),
+        }
     }
 }
 
@@ -199,15 +203,12 @@ impl MemoryCommitCoordinator {
             .state
             .lock()
             .map_err(|_| Error::Rejected("commit store poisoned".to_string()))?;
-        if let Some(receipt) = inspect_operation_locked(&state, &operation)? {
-            return Ok(receipt);
-        }
+        let thread_version = match inspect_operation_locked(&state, &operation)? {
+            OperationInspection::Replay(receipt) => return Ok(receipt),
+            OperationInspection::Append { thread_version } => thread_version,
+        };
         let operation_id = operation.operation_id;
         let payload_hash = operation.payload_hash;
-        let expected_thread_version = operation.expected_thread_version;
-        let thread_version = expected_thread_version
-            .checked_add(1)
-            .ok_or_else(|| Error::Rejected("Thread version overflow".to_string()))?;
         let commit = operation.commit;
         let record = apply_commit_locked(&mut state, commit, committed_at_unix_ms)?;
         let receipt = CommitReceipt {
@@ -238,34 +239,25 @@ impl OperationCoordinator for MemoryCommitCoordinator {
     }
 }
 
+enum OperationInspection {
+    Replay(CommitReceipt),
+    Append { thread_version: u64 },
+}
+
 fn inspect_operation_locked(
     state: &CommitState,
     operation: &CommitOperation,
-) -> Result<Option<CommitReceipt>, Error> {
-    if operation.operation_id.run_id != *operation.commit.run_id() {
-        return Err(Error::Rejected(
-            "commit operation run_id does not match ThreadCommit run_id".to_string(),
-        ));
-    }
-    if let Some(existing) = state.receipts.get(&operation.operation_id) {
-        if existing.payload_hash != operation.payload_hash {
-            return Err(Error::Rejected(format!(
-                "commit operation {}:{} was reused with another payload",
-                operation.operation_id.run_id.0, operation.operation_id.ordinal
-            )));
-        }
-        let mut duplicate = existing.clone();
-        duplicate.duplicate = true;
-        return Ok(Some(duplicate));
+) -> Result<OperationInspection, Error> {
+    require_commit_operation_identity(operation)
+        .map_err(|error| Error::Rejected(error.to_string()))?;
+    if let Some(receipt) =
+        replay_commit_operation_receipt(operation, state.receipts.get(&operation.operation_id))
+            .map_err(|error| Error::Rejected(error.to_string()))?
+    {
+        return Ok(OperationInspection::Replay(receipt));
     }
     let thread = state.threads.get(&operation.commit.thread_id);
     let current_thread_version = thread.map_or(0, |thread| thread.run_facts.len() as u64);
-    if current_thread_version != operation.expected_thread_version {
-        return Err(Error::Rejected(format!(
-            "thread version conflict: expected {}, current {}",
-            operation.expected_thread_version, current_thread_version
-        )));
-    }
     let current_run_ordinal = thread.map_or(0, |thread| {
         thread
             .run_facts
@@ -273,14 +265,11 @@ fn inspect_operation_locked(
             .filter(|fact| fact.run_id == operation.operation_id.run_id)
             .count() as u64
     });
-    if current_run_ordinal != operation.operation_id.ordinal {
-        return Err(Error::Rejected(format!(
-            "commit operation ordinal conflict: expected {}, current {}",
-            operation.operation_id.ordinal, current_run_ordinal
-        )));
-    }
+    let thread_version =
+        admit_commit_operation_append(operation, current_thread_version, current_run_ordinal)
+            .map_err(|error| Error::Rejected(error.to_string()))?;
     validate_transition_locked(state, &operation.commit)?;
-    Ok(None)
+    Ok(OperationInspection::Append { thread_version })
 }
 
 fn validate_transition_locked(state: &CommitState, commit: &ThreadCommit) -> Result<(), Error> {
