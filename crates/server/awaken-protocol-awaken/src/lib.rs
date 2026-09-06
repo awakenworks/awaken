@@ -9,6 +9,7 @@ mod dream_policies;
 mod event_admissions;
 mod file_outputs;
 mod live_inbox;
+mod memory_copy_conflicts;
 mod profiled_sessions;
 mod resource_manifests;
 mod sandbox_policies;
@@ -23,6 +24,7 @@ pub use file_outputs::{
     file_output_capture_router,
 };
 pub use live_inbox::live_inbox_router;
+pub use memory_copy_conflicts::memory_copy_conflicts_router;
 pub use profiled_sessions::{
     ProfiledSessionCreate, ProfiledSessionCreated, ProfiledSessionMcpAttachment,
     ProfiledSessionMode, ProfiledSessionRelease, ProfiledSessionReleased,

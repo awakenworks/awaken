@@ -690,6 +690,27 @@ def check_memory_copy_model_mutant(tlc_jar: Path) -> None:
                                   (source.replace(location_guard, "IF"), config,
                                   "action:CopyUpdateRequiresOriginalLocation")])
     print("Memory copy mutation score: 5/5 killed (frozen base, complete scan, original root, in-flight cancellation, original location)")
+    # RC-M: fail the exact invariant/action, not just any nonzero TLC exit.
+    retention_config = (ROOT / "formal/tla/MemoryCASRetention.cfg").read_text(encoding="utf-8")
+    retention_mutants = []
+    for original, replacement, invariant in [
+        (r"/\ w \in retSaved /\ w \notin retCancelled",
+         r"/\ w \in retSeen /\ w \notin retCancelled",
+         "RetAcknowledgementRequiresDurability"),
+        (r"/\ w \in retAck /\ w \notin retCancelled",
+         r"/\ w \in retSeen /\ w \notin retCancelled",
+         "RetDisposalRequiresDurability"),
+        (r"/\ UNCHANGED <<copyVars, retSeen, retInFlight, retSaved, retDisposed>>",
+         r"/\ retInFlight' = retInFlight \ {w}" + "\n"
+         + r"    /\ UNCHANGED <<copyVars, retSeen, retSaved, retDisposed>>",
+         "RetCancellationPreservesRequest"),
+    ]:
+        if source.count(original) != 1:
+            raise SystemExit(f"Memory retention mutation anchor drifted: {invariant}")
+        retention_mutants.append((source.replace(original, replacement), retention_config, invariant))
+    check_tlc_model_mutations(tlc_jar, "MemoryCAS", source, retention_config,
+                              retention_mutants, action_properties={"RetCancellationPreservesRequest"})
+    print("Memory retention mutation score: 3/3 killed (durable ack, disposal, late commit)")
 
 
 def check_agent_input_model_mutant(tlc_jar: Path) -> None:

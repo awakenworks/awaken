@@ -460,6 +460,27 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     .unwrap();
 
     let snapshot = client.snapshot_heads(&rw).await.expect("M1");
+    // RC-W1 Run RW is still NOT terminal retention authority.
+    let proposed = awaken_resource_contract::MemoryCopyConflict {
+        path: "/new.md".into(),
+        base: None,
+        content: Some("candidate".into()),
+    };
+    assert!(
+        client
+            .preserve_copy_conflict(&rw, &proposed)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("403")
+    );
+    assert!(
+        repository
+            .list_copy_conflicts("memory-rw")
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(snapshot.len(), 1, "M1");
     let created = client.create(&rw, "/new.md", "v1").await.expect("M2");
     let updated = client
@@ -656,6 +677,27 @@ async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root()
         .await
         .expect("R1/E1 exact snapshot");
     assert_eq!(heads.len(), 1, "R1/E1");
+    // RC-W2 realization authority may read but cannot retain candidates.
+    let proposed = awaken_resource_contract::MemoryCopyConflict {
+        path: "/new.md".into(),
+        base: None,
+        content: Some("candidate".into()),
+    };
+    assert!(
+        client
+            .preserve_copy_conflict(&reference, &proposed)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("403")
+    );
+    assert!(
+        repository
+            .list_copy_conflicts("memory-realization")
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     let write_error = client
         .create(&reference, "/must-not-exist.md", "forbidden")
@@ -904,6 +946,64 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         moved_history
     );
 
+    // RC-W3 terminal exact original path/id/hash => one durable candidate on
+    // repeated/concurrent requests. RC-W4 altered path/id/hash or omitted base
+    // for an original path => 403 before persistence. Heads/history stay exact.
+    let proposed = awaken_resource_contract::MemoryCopyConflict {
+        path: note_a.path.clone(),
+        base: Some(awaken_resource_contract::MemoryCopyBase {
+            id: note_a.id.clone(),
+            content_sha256: note_a.content_sha256.clone(),
+        }),
+        content: Some("losing proposal".into()),
+    };
+    let (first, retry) = tokio::join!(
+        client.preserve_copy_conflict(&reference, &proposed),
+        client.preserve_copy_conflict(&reference, &proposed),
+    );
+    first.unwrap();
+    retry.unwrap();
+    assert_eq!(
+        repository
+            .list_copy_conflicts("memory-terminal")
+            .await
+            .unwrap(),
+        vec![proposed.clone()]
+    );
+    for axis in ["path", "id", "sha", "base"] {
+        let mut bad = proposed.clone();
+        match axis {
+            "path" => bad.path = "/elsewhere".into(),
+            "id" => bad.base.as_mut().unwrap().id = "foreign".into(),
+            "sha" => bad.base.as_mut().unwrap().content_sha256 = "b".repeat(64),
+            _ => bad.base = None,
+        }
+        assert!(
+            client
+                .preserve_copy_conflict(&reference, &bad)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("403"),
+            "RC-W4 {axis}"
+        );
+    }
+    assert_eq!(
+        repository.snapshot_heads("memory-terminal").await.unwrap(),
+        moved_heads
+    );
+    assert_eq!(
+        repository.list_versions("memory-terminal").await.unwrap(),
+        moved_history
+    );
+    assert_eq!(
+        repository
+            .list_copy_conflicts("memory-terminal")
+            .await
+            .unwrap(),
+        vec![proposed.clone()]
+    );
+
     let conflict_c = repository
         .update(
             "memory-terminal",
@@ -1116,6 +1216,30 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
     )
     .unwrap();
     let altered_reference = terminal_memory_materialization_reference(&altered_intent).unwrap();
+    // RC-W5 availability/ownership are checked even for an already-retained
+    // exact replay: foreign worker, expired current lease, successor generation,
+    // or altered materialization may never obtain a successful cleanup ack.
+    for (denied_client, denied_reference) in [
+        (&foreign_client, &reference),
+        (&expired_current_client, &expired_reference),
+        (&successor_client, &successor_reference),
+        (&client, &altered_reference),
+    ] {
+        assert!(
+            denied_client
+                .preserve_copy_conflict(denied_reference, &proposed)
+                .await
+                .is_err(),
+            "RC-W5"
+        );
+    }
+    assert_eq!(
+        repository
+            .list_copy_conflicts("memory-terminal")
+            .await
+            .unwrap(),
+        vec![proposed]
+    );
     assert!(
         client
             .create(&altered_reference, "/root-mismatch.md", "must-not-exist")

@@ -45,6 +45,50 @@ pub use awaken_resource_contract::memory_sha256_hex as sha256_hex;
     feature = "sqlite",
     feature = "postgres"
 ))]
+pub(crate) fn validate_copy_conflict(
+    candidate: &awaken_resource_contract::MemoryCopyConflict,
+) -> Result<(), MemErr> {
+    validate_path(&candidate.path)?;
+    if let Some(content) = &candidate.content {
+        validate_size(content)?;
+    }
+    if candidate.base.as_ref().is_some_and(|base| {
+        base.id.is_empty()
+            || base.id.len() > MAX_PATH_BYTES
+            || base.content_sha256.len() != 64
+            || !base
+                .content_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+    }) || (candidate.base.is_none() && candidate.content.is_none())
+    {
+        return Err(MemErr::Storage("invalid Memory copy proposal base".into()));
+    }
+    Ok(())
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn decode_copy_conflict(
+    id: &str,
+    encoded: &str,
+) -> Result<awaken_resource_contract::MemoryCopyConflict, MemErr> {
+    let candidate = serde_json::from_str(encoded)
+        .map_err(|_| MemErr::Storage("invalid stored Memory copy proposal".into()))?;
+    validate_copy_conflict(&candidate)?;
+    if candidate.id() != id {
+        return Err(MemErr::Storage(
+            "stored Memory copy proposal identity mismatch".into(),
+        ));
+    }
+    Ok(candidate)
+}
+
+#[cfg(any(
+    test,
+    feature = "test-support",
+    feature = "sqlite",
+    feature = "postgres"
+))]
 pub(crate) fn now_nanos() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -165,6 +209,8 @@ struct InMemoryState {
     // store id → (path → record)
     records: BTreeMap<String, BTreeMap<String, Record>>,
     versions: BTreeMap<String, Vec<MemoryVersion>>,
+    copy_conflicts:
+        BTreeMap<String, BTreeMap<String, awaken_resource_contract::MemoryCopyConflict>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -208,6 +254,44 @@ impl VolatileMemoryRepository {
 #[async_trait]
 #[cfg(any(test, feature = "test-support"))]
 impl MemoryRepository for VolatileMemoryRepository {
+    async fn preserve_copy_conflict(
+        &self,
+        store: &str,
+        candidate: &awaken_resource_contract::MemoryCopyConflict,
+    ) -> Result<(), MemErr> {
+        validate_copy_conflict(candidate)?;
+        let mut state = self.inner.lock().unwrap();
+        let candidates = state.copy_conflicts.entry(store.to_owned()).or_default();
+        let id = candidate.id();
+        if let Some(existing) = candidates.get(&id) {
+            return if existing == candidate {
+                Ok(())
+            } else {
+                Err(MemErr::Storage(
+                    "Memory copy proposal identity mismatch".into(),
+                ))
+            };
+        }
+        if candidates.len() >= MAX_MEMORIES_PER_STORE {
+            return Err(MemErr::AtCapacity);
+        }
+        candidates.insert(id, candidate.clone());
+        Ok(())
+    }
+
+    async fn list_copy_conflicts(
+        &self,
+        store: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .copy_conflicts
+            .get(store)
+            .map(|values| values.values().cloned().collect())
+            .unwrap_or_default())
+    }
     async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
         let guard = self.inner.lock().unwrap();
         Ok(guard
@@ -500,9 +584,14 @@ impl MemoryRepository for VolatileMemoryRepository {
             .versions
             .remove(store)
             .map_or(0, |versions| versions.len() as u64);
+        let copy_conflicts_deleted = state
+            .copy_conflicts
+            .remove(store)
+            .map_or(0, |values| values.len() as u64);
         Ok(MemoryPurgeSummary {
             heads_deleted,
             versions_deleted,
+            copy_conflicts_deleted,
         })
     }
 }
@@ -600,6 +689,31 @@ impl VolatileMemoryRepository {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    #[cfg(any(feature = "sqlite", feature = "postgres"))]
+    #[test]
+    fn stored_copy_candidate_requires_exact_identity_and_valid_content() {
+        // RC-CODEC exact id+valid payload => readable; altered content, id,
+        // malformed JSON or invalid domain path => fail closed, never present
+        // corrupted content as a durable conflict receipt.
+        let candidate = awaken_resource_contract::MemoryCopyConflict {
+            path: "/note.md".into(),
+            base: None,
+            content: Some("exact".into()),
+        };
+        let encoded = serde_json::to_string(&candidate).unwrap();
+        assert_eq!(
+            decode_copy_conflict(&candidate.id(), &encoded).unwrap(),
+            candidate
+        );
+        assert!(decode_copy_conflict("foreign-id", &encoded).is_err());
+        for encoded in [
+            encoded.replace("exact", "altered"),
+            "{broken".into(),
+            encoded.replace("/note.md", "../escape"),
+        ] {
+            assert!(decode_copy_conflict(&candidate.id(), &encoded).is_err());
+        }
+    }
     use crate::conformance::{
         atomic_head_update_conformance, concurrent_cas_one_winner, concurrent_create_one_winner,
         conformance, extended_conformance, ids_stay_monotonic_across_delete, not_found_paths,
@@ -688,6 +802,7 @@ pub(crate) mod tests {
             MemoryPurgeSummary {
                 heads_deleted: 1,
                 versions_deleted: 2,
+                copy_conflicts_deleted: 0,
             }
         );
         assert!(fs.list("purge", "/").await.unwrap().is_empty());
@@ -697,6 +812,7 @@ pub(crate) mod tests {
             MemoryPurgeSummary {
                 heads_deleted: 0,
                 versions_deleted: 0,
+                copy_conflicts_deleted: 0,
             }
         );
     }

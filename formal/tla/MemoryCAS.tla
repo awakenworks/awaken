@@ -119,10 +119,14 @@ AbsentDeleteIsIdempotent == lastAction = "absent_delete" => (~lastPresentBefore 
 \* This is safety checking, not a proof of eventual recovery or Rust refinement.
 VARIABLES mounted, crashed, materializationBase, scanComplete, lastMutationScan,
           rootMatches, lastMutationRoot, pendingAck, inFlight, requestScan, requestRoot
+VARIABLES retSeen, retInFlight, retSaved, retAck, retDisposed, retCancelled, retCrashedOnce
+retVars == <<retSeen, retInFlight, retSaved, retAck, retDisposed, retCancelled, retCrashedOnce>>
 requestVars == <<inFlight, requestScan, requestRoot>>
 copyVars == <<vars, mounted, crashed, materializationBase, scanComplete, lastMutationScan,
               rootMatches, lastMutationRoot, pendingAck, requestVars>>
 CopyInit == /\ Init
+            /\ retSeen = {} /\ retInFlight = {} /\ retSaved = {}
+            /\ retAck = {} /\ retDisposed = {} /\ retCancelled = {} /\ retCrashedOnce = {}
             /\ mounted = [w \in Writers |-> FALSE]
             /\ crashed = [w \in Writers |-> FALSE]
             /\ materializationBase = [w \in Writers |-> 0]
@@ -245,7 +249,63 @@ CopyCrashKeepsInFlight ==
     [][\A w \in Writers: (~crashed[w] /\ crashed'[w]) => inFlight' = inFlight]_copyVars
 CopyUpdateRequiresOriginalLocation ==
     [][(~sourcePresent /\ lastAction' \in {"cas", "idempotent_write"}) => FALSE]_copyVars
-CopySpec == CopyInit /\ [][CopyNext]_copyVars
+CopySpec == CopyInit /\ [][CopyNext /\ UNCHANGED retVars]_<<copyVars, retVars>>
 \* The original Repository configuration keeps projection history inert.
-Spec == CopyInit /\ [][Next /\ UNCHANGED <<mounted, crashed, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck, requestVars>>]_copyVars
+Spec == CopyInit /\ [][Next /\ UNCHANGED <<mounted, crashed, materializationBase, scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck, requestVars, retVars>>]_<<copyVars, retVars>>
+
+\* Terminal retention composes the SAME CAS authority with one losing proposal
+\* per writer. Atomic retained-row commit is independent of its caller and ack.
+\* RC-F tests inject both sides of this commit; RC-W tests own lease/base access.
+\* Scope: finite writers, one caller crash each. Fairness below explicitly
+\* assumes eventual storage service and recovery scheduling, not real cloud
+\* availability or OS quiescence. A permanent outage need not terminate.
+RetSeen(w) ==
+    /\ expected[w] # generation /\ w \notin retSeen
+    /\ retSeen' = retSeen \cup {w}
+    /\ UNCHANGED <<copyVars, retInFlight, retSaved, retAck, retDisposed, retCancelled, retCrashedOnce>>
+RetStart(w) ==
+    /\ w \in retSeen /\ w \notin retCancelled /\ w \notin retDisposed
+    /\ retInFlight' = retInFlight \cup {w}
+    /\ UNCHANGED <<copyVars, retSeen, retSaved, retAck, retDisposed, retCancelled, retCrashedOnce>>
+RetCommit(w) ==
+    /\ w \in retInFlight
+    /\ retSaved' = retSaved \cup {w}
+    /\ retInFlight' = retInFlight \ {w}
+    /\ UNCHANGED <<copyVars, retSeen, retAck, retDisposed, retCancelled, retCrashedOnce>>
+RetAcknowledge(w) ==
+    /\ w \in retSaved /\ w \notin retCancelled
+    /\ retAck' = retAck \cup {w}
+    /\ UNCHANGED <<copyVars, retSeen, retInFlight, retSaved, retDisposed, retCancelled, retCrashedOnce>>
+RetDispose(w) ==
+    /\ w \in retAck /\ w \notin retCancelled
+    /\ retDisposed' = retDisposed \cup {w}
+    /\ UNCHANGED <<copyVars, retSeen, retInFlight, retSaved, retAck, retCancelled, retCrashedOnce>>
+RetCrash(w) ==
+    /\ w \notin retCrashedOnce
+    /\ retCancelled' = retCancelled \cup {w} /\ retCrashedOnce' = retCrashedOnce \cup {w}
+    /\ retAck' = retAck \ {w}
+    /\ UNCHANGED <<copyVars, retSeen, retInFlight, retSaved, retDisposed>>
+RetRecover(w) ==
+    /\ w \in retCancelled
+    /\ retCancelled' = retCancelled \ {w}
+    /\ UNCHANGED <<copyVars, retSeen, retInFlight, retSaved, retAck, retDisposed, retCrashedOnce>>
+RetNext ==
+    (\E w \in Writers: RetSeen(w) \/ RetStart(w) \/ RetCommit(w)
+        \/ RetAcknowledge(w) \/ RetDispose(w) \/ RetCrash(w) \/ RetRecover(w))
+    \/ ((\E w \in Writers: CAS(w)) /\ UNCHANGED <<mounted, crashed, materializationBase,
+        scanComplete, lastMutationScan, rootMatches, lastMutationRoot, pendingAck, requestVars, retVars>>)
+RetTypeOK == TypeOK /\ \A subset \in {retSeen, retInFlight, retSaved, retAck,
+    retDisposed, retCancelled, retCrashedOnce}: subset \subseteq Writers
+RetAcknowledgementRequiresDurability == retAck \subseteq retSaved
+RetDisposalRequiresDurability == retDisposed \subseteq retSaved
+RetCommitPreservesHead ==
+    [][retSaved' # retSaved => UNCHANGED <<generation, value, headPresent>>]_<<copyVars, retVars>>
+RetCancellationPreservesRequest ==
+    [][retCrashedOnce' # retCrashedOnce => retInFlight' = retInFlight]_<<copyVars, retVars>>
+RetEventuallyDisposed == \A w \in Writers: (w \in retSeen) ~> (w \in retDisposed)
+RetSpec == CopyInit /\ [][RetNext]_<<copyVars, retVars>>
+    /\ \A w \in Writers:
+        WF_<<copyVars, retVars>>(RetStart(w)) /\ WF_<<copyVars, retVars>>(RetCommit(w))
+        /\ WF_<<copyVars, retVars>>(RetAcknowledge(w)) /\ WF_<<copyVars, retVars>>(RetDispose(w))
+        /\ WF_<<copyVars, retVars>>(RetRecover(w))
 =============================================================================

@@ -298,6 +298,12 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
         action_for(&put, "/v1/awaken/memory-stores/mem_1/dream-policy"),
         Some(WORKSPACE_WRITE)
     );
+    // RC-IAM the retained-content read reuses the existing scoped resource
+    // family; moving out of vendor routes must not become unprotected access.
+    assert_eq!(
+        action_for(&get, "/v1/awaken/memory-stores/mem_1/copy-conflicts"),
+        Some(WORKSPACE_READ)
+    );
     // An unknown bounded family still fails closed.
     assert_eq!(action_for(&get, "/v1/unknown"), None);
 }

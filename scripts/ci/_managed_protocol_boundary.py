@@ -12,6 +12,7 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
     {
         ("GET", "/v1/awaken/memory-stores/{}/dream-policy"),
         ("GET", "/v1/awaken/files/output-capture"),
+        ("GET", "/v1/awaken/memory-stores/{}/copy-conflicts"),
         ("PUT", "/v1/awaken/memory-stores/{}/dream-policy"),
         ("GET", "/v1/awaken/sessions/{}/live-inbox"),
         ("POST", "/v1/awaken/sessions"),

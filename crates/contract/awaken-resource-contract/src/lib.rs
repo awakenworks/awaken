@@ -26,6 +26,8 @@ mod execution;
 mod input;
 mod lifecycle;
 mod memory_application;
+mod memory_copy;
+pub use memory_copy::{MemoryCopyBase, MemoryCopyConflict};
 mod registry;
 
 pub use artifact_capture::{
@@ -775,6 +777,7 @@ pub struct MemoryVersion {
 pub struct MemoryPurgeSummary {
     pub heads_deleted: u64,
     pub versions_deleted: u64,
+    pub copy_conflicts_deleted: u64,
 }
 
 /// A [`MemoryRepository`] failure.
@@ -824,6 +827,26 @@ pub fn validate_path_len(path: &str) -> Result<(), MemErr> {
 /// versions, runtime recall/extraction, and mounted content on one source of truth.
 #[async_trait]
 pub trait MemoryRepository: Send + Sync {
+    /// Durably retain a losing copy proposal without changing live heads or
+    /// successful version history. Exact retries must be idempotent. Failure
+    /// MUST block source disposal. Unsupported adapters fail closed.
+    async fn preserve_copy_conflict(
+        &self,
+        store: &str,
+        candidate: &MemoryCopyConflict,
+    ) -> Result<(), MemErr> {
+        let _ = (store, candidate);
+        Err(MemErr::Storage(
+            "Memory copy conflict retention is unsupported".into(),
+        ))
+    }
+    /// Read retained proposals under the store's ordinary read authorization.
+    async fn list_copy_conflicts(&self, store: &str) -> Result<Vec<MemoryCopyConflict>, MemErr> {
+        let _ = store;
+        Err(MemErr::Storage(
+            "Memory copy conflict listing is unsupported".into(),
+        ))
+    }
     /// Atomically read every current file head, including content, from one
     /// store. The returned vector is path-ordered. This is the canonical frozen
     /// input primitive for operations such as Dream; callers must

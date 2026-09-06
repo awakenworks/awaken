@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { toFile } from '@anthropic-ai/sdk';
 import { allowManagedToolBoundaries, waitForValue } from '../harness.mjs';
+import { sqliteScalar } from '../sqlite.mjs';
 
 export async function installHostResourceFixture(root, temp, data, runtime) {
   const { ACP_RUNTIME_IMAGE_CONTRACT } = await import('../acp_runtime_profiles.mjs');
@@ -203,6 +204,48 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
   await restart({ crash: true });
   contention = randomUUID();
   await Promise.all(cases.map(execute));
+  // R7 terminal truth belongs to the Session repository, not DELETE returning
+  // 200 or the winning Memory head. Capture each exact physical output locator
+  // before release. A hidden Session compacts to its original tombstone only
+  // after verified cleanup completes (admits_tombstone is checked in the SAME
+  // mutation transaction); require that terminal receipt and actual removal.
+  const aggregate = (id) => {
+    const row = sqliteScalar(path.join(temp, 'data', 'sessions.db'),
+      'SELECT aggregate_json FROM managed_session WHERE session_id = ?', id);
+    assert.equal(typeof row, 'string', 'R7 original Session row remains the authority');
+    const envelope = JSON.parse(row);
+    assert.equal(envelope.format, 'awaken.session.v1');
+    return envelope.aggregate;
+  };
+  const outputs = cases.map(({ session }) => {
+    const handle = JSON.parse(aggregate(session.id).environment.binding);
+    const logical = handle.payload.previous.outputs_path;
+    assert.equal(typeof logical, 'string');
+    // The handle's output path is LOGICAL, not a host path. Resolve the one
+    // retained provider marker by physical incarnation; do not duplicate the
+    // provider's portable sandbox-id hashing algorithm in this oracle.
+    const suffix = '.awaken-realization.json';
+    // The registered Worker may place Session roots below its own namespace,
+    // not directly below the configured base. Search ONLY this test's owned
+    // temporary tree, without following directory symlinks.
+    const pending = [temp];
+    const markers = [];
+    while (pending.length) {
+      const directory = pending.pop();
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const location = path.join(directory, entry.name);
+        if (entry.isDirectory()) pending.push(location);
+        else if (entry.isFile() && entry.name.startsWith('.') && entry.name.endsWith(suffix)
+          && JSON.parse(fs.readFileSync(location, 'utf8')).physical_incarnation
+            === handle.payload.physical_incarnation) markers.push(location);
+      }
+    }
+    assert.equal(markers.length, 1, 'R7 one exact physical-generation marker');
+    const leaf = path.basename(markers[0]).slice(1, -suffix.length);
+    const output = path.join(path.dirname(markers[0]), leaf, logical.replace(/^\/+/, ''));
+    assert.ok(fs.existsSync(output), `R7 exact physical projection exists before cleanup: ${output}`);
+    return output;
+  });
   await Promise.all(cases.map(({ session }) => client.beta.sessions.delete(session.id, { betas })));
   const content = () => client.get(`/v1/memory_stores/${memory.id}/memories?view=full`, { headers: memoryHeaders });
   const complete = (page) => cases.every(({ name, expected }) =>
@@ -228,10 +271,37 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
     }
   };
   await assertSharedTruth();
+  // R8 same-base different proposal => preserve losing content+original base
+  // in Memory, NOT Files and NOT a new winning version. The candidate survives
+  // a Worker restart after the physical Session projections are reclaimed.
+  const winner = shared.data.find((entry) => entry.path === '/shared-z-conflict.md');
+  const loser = cases.find(({ expected }) => expected !== winner.content);
+  assert.ok(loser);
+  const proposals = () => client.get(
+    `/v1/awaken/memory-stores/${memory.id}/copy-conflicts?view=full`, { headers: memoryHeaders });
+  const retained = await waitForValue(proposals,
+    (page) => page.data.length === 1 && page.data[0].content === loser.expected,
+    'R8 exact losing proposal persisted', { timeoutMs: 20_000 });
+  const original = sharedHeads.find((entry) => entry.path === '/shared-z-conflict.md');
+  assert.equal(retained.data[0].path, original.path);
+  assert.equal(retained.data[0].base.id, original.id);
+  assert.equal(retained.data[0].base.content_sha256, original.content_sha256);
+  const retired = () => cases.every(({ session }) => Number(sqliteScalar(
+    path.join(temp, 'data', 'sessions.db'),
+    `SELECT COUNT(*) FROM managed_session_tombstone t
+     WHERE t.session_id = ? AND t.deleted_revision > 0
+     AND NOT EXISTS (SELECT 1 FROM managed_session s WHERE s.session_id = t.session_id)`,
+    session.id,
+  )) === 1);
+  await waitForValue(async () => retired(), Boolean,
+    'R7 both verified cleanups committed their canonical delete tombstones', { timeoutMs: 30_000 });
+  for (const output of outputs) assert.ok(!fs.existsSync(output), 'R7 exact physical output projection removed');
   assert.equal(git(['rev-parse', 'HEAD'], remote), remoteHead, 'R2 no implicit Git publication');
   assert.equal(git(['ls-tree', '-r', '--name-only', 'HEAD'], remote), 'README.md\nsrc/.keep');
   await restart();
   await waitForValue(content, complete, 'R3 actual Worker restart retains both writes', { timeoutMs: 20_000 });
   await assertSharedTruth();
+  assert.deepEqual((await proposals()).data, retained.data, 'R8 retained candidate survives restart');
+  assert.ok(retired(), 'R7 completed cleanup tombstones survive restart without resurrection');
   console.log(`AGENT RESOURCE PASS: ${runtime}, ${native ? 'default/nested Native tool cwd' : 'two ACP cwd views'}, File/Memory/Repository, same-path convergence/conflict, restart`);
 }

@@ -233,11 +233,15 @@ impl MemoryMounter for MemoryStoreMounter {
             copy::harvest_recovered_files(&*self.fs, operation_reference, files, &mut snapshot)
                 .await
                 .map_err(sandbox_err)?;
-        if !report.conflicts.is_empty() {
-            return Err(sandbox_err(format!(
-                "recovered Memory copy preserved {} concurrent durable head conflict(s)",
-                report.conflicts.len()
-            )));
+        // Terminal replay alone may retire a copy after preserving every losing
+        // proposal in its original Memory aggregate. Live harvest still reports
+        // conflicts. An unsupported, denied or failed durable write remains an
+        // error; neither head overwrite nor a transient report permits disposal.
+        for conflict in report.conflicts {
+            self.fs
+                .preserve_copy_conflict(operation_reference, &conflict.candidate)
+                .await
+                .map_err(sandbox_err)?;
         }
         Ok(())
     }
@@ -423,23 +427,22 @@ mod tests {
                 .as_deref(),
             Some("new")
         );
-        // M2 stale recovery evidence + conflicting edit => explicit conflict,
+        // M2 stale recovery evidence + conflicting edit => durable candidate,
         // never overwrite the committed head. M3 read-only => no writes even
         // with stale evidence. M4 traversal => reject before any store effects.
         let stale = [("note.md".into(), b"stale overwrite".to_vec())];
-        let error = mounter
+        mounter
             .reconcile_recovered_copy("s", &evidence, &stale, MountAccess::ReadWrite)
             .await
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("concurrent durable head conflict")
-        );
+            .unwrap();
+        let retained = durable.list_copy_conflicts("s").await.unwrap();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].content.as_deref(), Some("stale overwrite"));
         mounter
             .reconcile_recovered_copy("s", &evidence, &stale, MountAccess::ReadOnly)
             .await
             .unwrap();
+        assert_eq!(durable.list_copy_conflicts("s").await.unwrap(), retained);
         let error = mounter
             .reconcile_recovered_copy(
                 "s",

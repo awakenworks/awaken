@@ -480,9 +480,10 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   ordered linearizations and barrier-released teardown. `tests/writeback_faults.rs`
   adds 24 actual SQLite teardown rows for create/update/delete, before/after
   commit, error/cancellation, and with/without a committed independent prefix,
-  followed by same-handle retry and durable reopen. Six additional rows pause
+  followed by same-handle retry and durable reopen. Eight additional rows pause
   an actual SQLite transaction before commit using an AFTER trigger, abort its
-  caller and retry before/after its continuing blocking task commits. This is bounded model-linked
+  caller and retry before/after its continuing blocking task commits, including
+  retained conflict candidates. This is bounded model-linked
   safety evidence, not Rust refinement, process fencing, multi-file atomicity,
   or eventual recovery after loss of the physical tree.
   The model additionally gates copy mutation on a complete-scan observation and
@@ -496,6 +497,15 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   must produce their exact invariant/action-property counterexamples, not a
   tool error. The model bounds each writer to one in-flight request and does
   not model SQLite internals, power loss, multi-file atomicity or OS process death.
+  `MemoryCASRetention.cfg` extends this same model with retained proposals:
+  acknowledgement/disposal require durability, and caller cancellation cannot
+  erase the in-flight save. Three further mutations must fail those exact
+  properties. It also checks eventual disposal with two writers, one caller
+  crash each, eventual storage service and fair retry/recovery scheduling.
+  That conditional bounded liveness is NOT proof under permanent cloud outage
+  or arbitrary crashes. Twelve before/after-save error/cancellation rows,
+  real SQLite/PG conformance, and terminal-only HTTP authorization are the
+  corresponding implementation checks.
   Copy location is checked inside the same repository transaction, before the
   same-content retry shortcut. Ordinary API/open-FUSE-fd updates still follow
   their ID. The shared Memory conformance suite covers SQLite/Postgres/volatile

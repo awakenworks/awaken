@@ -133,11 +133,18 @@ pub(crate) fn selected_memory_store_bundle(
 pub(crate) fn converged_memory_store_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         CONVERGED_BUNDLE_ID,
-        vec![Migration::new(
-            1,
-            "seal the converged memory-store migration history",
-            "SELECT 1",
-        )?],
+        vec![
+            Migration::new(
+                1,
+                "seal the converged memory-store migration history",
+                "SELECT 1",
+            )?,
+            Migration::new(
+                2,
+                "retain losing copy proposals within the Memory aggregate",
+                include_str!("migrations/V0002__copy_conflicts.sql").trim(),
+            )?,
+        ],
     )
 }
 
@@ -280,6 +287,18 @@ mod tests {
                 &converged_memory_store_bundle().expect("converged"),
             )
             .expect("S1 convergence");
+        // S4 both published histories converge on the SAME proposal table.
+        // No previously successful version is reclassified as a conflict.
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM memory_store_copy_conflicts",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
         let columns = connection
             .prepare("PRAGMA table_info(memory_store_versions)")
             .expect("columns")

@@ -298,6 +298,63 @@ fn append_version(
 
 #[async_trait::async_trait]
 impl MemoryRepository for SqliteMemoryRepository {
+    async fn preserve_copy_conflict(
+        &self,
+        store: &str,
+        candidate: &awaken_resource_contract::MemoryCopyConflict,
+    ) -> Result<(), MemErr> {
+        crate::repository::validate_copy_conflict(candidate)?;
+        let store = store.to_owned();
+        let id = candidate.id();
+        let encoded = serde_json::to_string(candidate).map_err(mem_err)?;
+        with_conn_mem(&self.conn, move |conn| {
+            // Reserve the SQLite write transaction BEFORE observing absence or
+            // capacity, including independent connections after Worker restart.
+            let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate).map_err(mem_err)?;
+            let existing: Option<String> = tx.query_row(
+                &format!("SELECT candidate_json FROM {NS}_copy_conflicts WHERE store_id = ?1 AND id = ?2"),
+                params![store, id], |row| row.get(0),
+            ).optional().map_err(mem_err)?;
+            if let Some(existing) = existing {
+                return if existing == encoded { Ok(()) } else {
+                    Err(mem_err("Memory copy proposal identity mismatch"))
+                };
+            }
+            let count: i64 = tx.query_row(
+                &format!("SELECT COUNT(*) FROM {NS}_copy_conflicts WHERE store_id = ?1"),
+                [&store], |row| row.get(0),
+            ).map_err(mem_err)?;
+            if count >= crate::MAX_MEMORIES_PER_STORE as i64 { return Err(MemErr::AtCapacity); }
+            tx.execute(
+                &format!("INSERT INTO {NS}_copy_conflicts (store_id, id, candidate_json) VALUES (?1, ?2, ?3)"),
+                params![store, id, encoded],
+            ).map_err(mem_err)?;
+            tx.commit().map_err(mem_err)
+        }).await
+    }
+
+    async fn list_copy_conflicts(
+        &self,
+        store: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
+        let store = store.to_owned();
+        with_conn_mem(&self.conn, move |conn| {
+            let mut query = conn
+                .prepare(&format!(
+                    "SELECT id, candidate_json FROM {NS}_copy_conflicts WHERE store_id = ?1 ORDER BY id"
+                ))
+                .map_err(mem_err)?;
+            query
+                .query_map([store], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .map_err(mem_err)?
+                .map(|row| {
+                    let (id, encoded) = row.map_err(mem_err)?;
+                    crate::repository::decode_copy_conflict(&id, &encoded)
+                })
+                .collect()
+        })
+        .await
+    }
     async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
         let store = store.to_string();
         with_conn_mem(&self.conn, move |conn| {
@@ -828,6 +885,12 @@ impl MemoryRepository for SqliteMemoryRepository {
         let store = store.to_string();
         with_conn_mem(&self.conn, move |conn| {
             let tx = conn.unchecked_transaction().map_err(mem_err)?;
+            let copy_conflicts_deleted = tx
+                .execute(
+                    &format!("DELETE FROM {NS}_copy_conflicts WHERE store_id = ?1"),
+                    params![store],
+                )
+                .map_err(mem_err)? as u64;
             let versions_deleted = tx
                 .execute(
                     &format!("DELETE FROM {NS}_versions WHERE store_id = ?1"),
@@ -844,6 +907,7 @@ impl MemoryRepository for SqliteMemoryRepository {
             Ok(MemoryPurgeSummary {
                 heads_deleted,
                 versions_deleted,
+                copy_conflicts_deleted,
             })
         })
         .await

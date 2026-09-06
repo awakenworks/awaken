@@ -7,6 +7,166 @@ use awaken_resource_contract::{
 };
 use std::sync::Arc;
 
+pub(crate) async fn copy_conflict_conformance(fs: &dyn MemoryRepository) {
+    use awaken_resource_contract::{MemoryCopyBase, MemoryCopyConflict};
+    // Retention decision table RC: valid={create,update,delete,empty}; same
+    // candidate={new,retry,concurrent}; store={same,other}. RC1 stores exactly
+    // one proposal per identity/store; RC2 changes neither heads nor versions;
+    // RC3 invalid path/base/delete-without-base/size => reject with no writes;
+    // RC4 existing whole-store purge removes proposals too and is idempotent.
+    let store = "copy-conflict-conformance";
+    let base = MemoryCopyBase {
+        id: "original-id".into(),
+        content_sha256: sha256_hex("base"),
+    };
+    let candidates = [
+        MemoryCopyConflict {
+            path: "/a".into(),
+            base: None,
+            content: Some("created".into()),
+        },
+        MemoryCopyConflict {
+            path: "/a".into(),
+            base: Some(base.clone()),
+            content: Some("updated".into()),
+        },
+        MemoryCopyConflict {
+            path: "/a".into(),
+            base: Some(base.clone()),
+            content: None,
+        },
+        MemoryCopyConflict {
+            path: "/a".into(),
+            base: Some(base),
+            content: Some(String::new()),
+        },
+    ];
+    let mut expected = candidates.to_vec();
+    expected.sort_by_key(MemoryCopyConflict::id);
+    for candidate in &candidates {
+        let (a, b) = tokio::join!(
+            fs.preserve_copy_conflict(store, candidate),
+            fs.preserve_copy_conflict(store, candidate)
+        );
+        a.unwrap();
+        b.unwrap();
+        fs.preserve_copy_conflict(store, candidate).await.unwrap();
+    }
+    assert_eq!(
+        fs.list_copy_conflicts(store).await.unwrap(),
+        expected,
+        "RC1"
+    );
+    assert!(fs.snapshot_heads(store).await.unwrap().is_empty(), "RC2");
+    assert!(fs.list_versions(store).await.unwrap().is_empty(), "RC2");
+    assert!(
+        fs.list_copy_conflicts("copy-other")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    fs.preserve_copy_conflict("copy-other", &candidates[0])
+        .await
+        .unwrap();
+    for candidate in [
+        MemoryCopyConflict {
+            path: "../escape".into(),
+            ..candidates[0].clone()
+        },
+        MemoryCopyConflict {
+            base: None,
+            content: None,
+            ..candidates[0].clone()
+        },
+        MemoryCopyConflict {
+            base: Some(MemoryCopyBase {
+                id: "".into(),
+                content_sha256: "invalid".into(),
+            }),
+            ..candidates[0].clone()
+        },
+        MemoryCopyConflict {
+            content: Some("x".repeat(MAX_MEMORY_BYTES + 1)),
+            ..candidates[0].clone()
+        },
+    ] {
+        assert!(
+            fs.preserve_copy_conflict(store, &candidate).await.is_err(),
+            "RC3"
+        );
+        assert_eq!(fs.list_copy_conflicts(store).await.unwrap(), expected);
+    }
+    assert_eq!(
+        fs.purge_store(store).await.unwrap().copy_conflicts_deleted,
+        4,
+        "RC4"
+    );
+    assert_eq!(
+        fs.purge_store(store).await.unwrap().copy_conflicts_deleted,
+        0
+    );
+    assert!(fs.list_copy_conflicts(store).await.unwrap().is_empty());
+    assert_eq!(
+        fs.list_copy_conflicts("copy-other").await.unwrap(),
+        vec![candidates[0].clone()]
+    );
+    fs.purge_store("copy-other").await.unwrap();
+    // RC5 capacity admission is store-serialized: a new identity at capacity
+    // fails, but an exact retry succeeds. RC6 two distinct proposals competing
+    // for the last slot => exactly one commit and one AtCapacity, never an
+    // overshoot. Purge releases the same capacity. All backends share this row.
+    for index in 0..awaken_resource_contract::MAX_MEMORIES_PER_STORE - 1 {
+        let candidate = MemoryCopyConflict {
+            path: format!("/capacity-{index}"),
+            ..candidates[0].clone()
+        };
+        fs.preserve_copy_conflict(store, &candidate).await.unwrap();
+    }
+    let contenders = ["/last-slot-a", "/last-slot-b"].map(|path| MemoryCopyConflict {
+        path: path.into(),
+        ..candidates[0].clone()
+    });
+    let (first, second) = tokio::join!(
+        fs.preserve_copy_conflict(store, &contenders[0]),
+        fs.preserve_copy_conflict(store, &contenders[1]),
+    );
+    assert!(
+        matches!(
+            (&first, &second),
+            (Ok(()), Err(MemErr::AtCapacity)) | (Err(MemErr::AtCapacity), Ok(()))
+        ),
+        "RC6: {first:?}, {second:?}"
+    );
+    let retained = fs.list_copy_conflicts(store).await.unwrap();
+    assert_eq!(
+        retained.len(),
+        awaken_resource_contract::MAX_MEMORIES_PER_STORE
+    );
+    assert_eq!(retained.contains(&contenders[0]), first.is_ok());
+    assert_eq!(retained.contains(&contenders[1]), second.is_ok());
+    assert!(matches!(
+        fs.preserve_copy_conflict(store, &candidates[0]).await,
+        Err(MemErr::AtCapacity)
+    ));
+    fs.preserve_copy_conflict(
+        store,
+        &MemoryCopyConflict {
+            path: "/capacity-0".into(),
+            ..candidates[0].clone()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        fs.purge_store(store).await.unwrap().copy_conflicts_deleted,
+        awaken_resource_contract::MAX_MEMORIES_PER_STORE as u64
+    );
+    fs.preserve_copy_conflict(store, &candidates[0])
+        .await
+        .unwrap();
+    fs.purge_store(store).await.unwrap();
+}
+
 pub(crate) async fn materialized_path_cas(fs: &dyn MemoryRepository) {
     // Cause/effect table MP: P=original path, I=original identity, H=base hash,
     // E=candidate already current. MP1 P+I+H => update; MP2 P+I+!H+E => replay;
@@ -179,6 +339,7 @@ pub(crate) async fn ids_stay_monotonic_across_delete(fs: &dyn MemoryRepository) 
 
 /// Run the same conformance suite over any `MemoryRepository` backend.
 pub(crate) async fn conformance(fs: &dyn MemoryRepository) {
+    copy_conflict_conformance(fs).await;
     let store = "memstore_1";
 
     // create → version 1, sha set, content round-trips.

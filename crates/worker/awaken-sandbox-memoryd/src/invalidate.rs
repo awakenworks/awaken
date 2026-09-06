@@ -75,6 +75,21 @@ impl InvalidatingMemoryRepository {
 
 #[async_trait::async_trait]
 impl MemoryRepository for InvalidatingMemoryRepository {
+    async fn preserve_copy_conflict(
+        &self,
+        store: &str,
+        candidate: &awaken_resource_contract::MemoryCopyConflict,
+    ) -> Result<(), MemErr> {
+        // Retaining a losing proposal changes no mounted head or FUSE cache.
+        self.inner.preserve_copy_conflict(store, candidate).await
+    }
+
+    async fn list_copy_conflicts(
+        &self,
+        store: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
+        self.inner.list_copy_conflicts(store).await
+    }
     async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
         self.inner.snapshot_heads(store).await
     }
