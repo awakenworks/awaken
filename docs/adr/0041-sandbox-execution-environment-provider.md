@@ -715,6 +715,25 @@ the model establish the still-pending production Session binding, reboot recover
 or real cloud/vendor-credential closure. Worker capability activation remains
 fail-closed until that complete composition is installed and verified.
 
+The Session slot now distinguishes uninstalled, live and closed realization
+authority in one projection. Closing hides the lease and cancels Resource
+preparation under the synchronous slot mutex before either asynchronous owner
+lock is awaited. Cleanup retains an exact closed-lease CAS, so a replacement
+installed during that wait cannot be interrupted or retired by the old caller.
+Cancellation does not reopen the projection. A retained physical owner preserves
+closed authority through revocation reset; MCP cannot substitute an old direct
+assertion when the root is explicitly closed. Both renewal delivery entrances
+use the same slot-local response application method. A delayed response cannot
+recreate absence, overwrite a later snapshot or reopen the closed generation.
+The existing phase model still owns scheduler fairness; the bounded
+`SessionRealizationAuthority` model separately checks exact response, closure and
+cleanup interleavings with two callers. Its mutation checks include positive
+grant/cleanup reachability. Executable Host barriers cover both owner locks,
+single/Worker-wide revocation, cancellation and generation replacement. This
+does not prove removed/recreated-slot ABA, Worker-wide atomic closure, or install
+the still-pending provider callback: those remain explicit composition work,
+not consequences of the model's synchronous mutex assumption.
+
 Native Linux readiness now executes the same `bubblewrap_argv` profile as a
 real Namespace launch, including PID/IPC/UTS/network namespaces and parent-death
 linkage. A user-namespace-only probe is insufficient. Each observation is fresh,

@@ -918,7 +918,7 @@ mod tests {
         assert!(host.thread_resource_manifest(thread).is_none(), "M1");
         assert_eq!(
             host.session_slots
-                .read(thread, |slot| slot.realization_lease.clone())
+                .read(thread, |slot| slot.realization_authority.lease().cloned())
                 .flatten(),
             Some(lease.clone()),
             "M1 lease still advances"
@@ -1212,8 +1212,8 @@ mod tests {
         assert_eq!(
             host.session_slots
                 .read(thread, |slot| slot
-                    .realization_lease
-                    .as_ref()
+                    .realization_authority
+                    .lease()
                     .map(|lease| lease.expires_at_unix_ms))
                 .flatten(),
             Some(renewed_expiry),

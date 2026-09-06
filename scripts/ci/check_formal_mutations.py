@@ -889,6 +889,28 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "SessionRealizationMutex", source, config,
         [(mutant, config, "temporal:EveryAcquiredSlotEventuallyReleases")])
     print("Realization renewal mutation score: 1/1 killed (continuous-renewal livelock)")
+    # Authority A1-A8: remove each decisive guard separately; exact named
+    # invariants, not parser/runtime errors, must reject the counterexample.
+    # Two inverted reachability witnesses require actual grant and cleanup.
+    source = (ROOT / "formal/tla/SessionRealizationAuthority.tla").read_text()
+    config = (ROOT / "formal/tla/SessionRealizationAuthority.cfg").read_text()
+    anchors = [
+        ('IF projection = "Live" /\\ lease = request', 'IF lease = request',
+         "ClosedGenerationCannotRenew"),
+        ('Grant ==\n  /\\ projection = "Live"', 'Grant ==\n  /\\ TRUE',
+         "NoGrantAfterClose"),
+        ('admitted == projection = "Closed" /\\ lease = cleanup[c]',
+         'admitted == TRUE', "OldCleanupCannotTouchReplacement"),
+    ]
+    mutations = []
+    for guard, broken, invariant in anchors:
+        if source.count(guard) != 1:
+            raise SystemExit("Session authority mutation anchor drifted")
+        mutations.append((source.replace(guard, broken), config, invariant))
+    for invariant in ("NoGrantReached", "NoCleanupReached"):
+        mutations.append((source, config + "\nINVARIANT " + invariant + "\n", invariant))
+    check_tlc_model_mutations(tlc_jar, "SessionRealizationAuthority", source, config, mutations)
+    print("Session authority: 3/3 guard mutants killed; grant/cleanup reachability witnessed")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:

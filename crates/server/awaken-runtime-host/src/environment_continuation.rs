@@ -50,7 +50,7 @@ impl ManagedHost {
         let current = self
             .host
             .session_slots
-            .read(thread, |slot| slot.realization_lease.clone())
+            .read(thread, |slot| slot.realization_authority.lease().cloned())
             .flatten()
             .ok_or_else(|| {
                 RunError::unavailable_classified(
@@ -82,7 +82,7 @@ impl ManagedHost {
         let current = self
             .host
             .session_slots
-            .read(thread, |slot| slot.realization_lease.clone())
+            .read(thread, |slot| slot.realization_authority.lease().cloned())
             .flatten()
             .ok_or_else(|| {
                 RunError::unavailable_classified(
@@ -122,7 +122,7 @@ impl ManagedHost {
         let current = self
             .host
             .session_slots
-            .read(thread, |slot| slot.realization_lease.clone())
+            .read(thread, |slot| slot.realization_authority.lease().cloned())
             .flatten()
             .ok_or_else(|| {
                 RunError::unavailable_classified(

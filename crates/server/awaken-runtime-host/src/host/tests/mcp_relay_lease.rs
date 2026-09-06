@@ -78,7 +78,10 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         );
     }
     host.session_slots.update(session, |slot| {
-        slot.realization_lease.as_mut().unwrap().expires_at_unix_ms = 1;
+        let mut expired = lease.clone();
+        expired.expires_at_unix_ms = 1;
+        slot.realization_authority =
+            crate::session_slot::SessionRealizationAuthority::Live(expired);
     });
     assert_eq!(
         invoke(url.clone()).await.unwrap().status(),
