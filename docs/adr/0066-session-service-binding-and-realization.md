@@ -76,6 +76,16 @@ stale owner/incarnation/epoch fails closed. Independent Sessions are scheduled
 earliest-expiry first with a fixed per-Worker concurrency bound. More cloud
 Workers multiply capacity, but never remove this local backpressure.
 
+When initial MCP Stage overlaps that heartbeat, activation may promote its
+durable claim to the newer expiry. The lease-only Runtime port has updated
+Session authority, not the exact staged MCP receipt. Activation therefore
+returns the existing Stage directive only when the publication generation set
+is a renewed successor of the received set. Runtime renews the same staged
+projection through its existing immutable-binding check; the next matching
+receipt permits Publish. No renewal means direct Publish. This catch-up belongs
+to the initial phase driver, not the steady-state heartbeat, and never adds a
+credential resolver, connection, Resource preparation, or recovery authority.
+
 ## 2026-08-12 amendment
 
 Session creation no longer waits for Worker-authored input. The complete

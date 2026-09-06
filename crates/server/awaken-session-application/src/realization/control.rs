@@ -418,9 +418,10 @@ impl SessionApplication {
         }
         // A heartbeat may have extended the aggregate lease while the Runtime
         // was staging a previously admitted request. Promote the newly Active
-        // durable claim to that current lease before publication. The Runtime's
-        // lease-only port already updated the same resident projection, so no
-        // second Stage or credential materialization is required.
+        // durable claim to that current lease. The Runtime's lease-only port
+        // updates Session authority, not the exact MCP projection/receipt.
+        // Publication must therefore wait for the existing renewal Stage below
+        // whenever this promotion advances beyond the admitted Stage receipt.
         let current_lease = session
             .realization
             .clone()
@@ -456,6 +457,9 @@ impl SessionApplication {
                 error => unavailable(error),
             })?;
         let publish = Self::publication_generations(&session)?;
+        if generation_set_is_renewed_successor(&publish, &receipt_generations) {
+            return self.next_action(owner_scope, &session, false, false).await;
+        }
         let drain = Self::draining_generations(&session)?;
         self.realization_directive(
             owner_scope,

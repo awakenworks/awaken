@@ -11835,8 +11835,8 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
     }
 }
 
-#[test]
-fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
+#[tokio::test]
+async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
     use crate::session_slot::{McpGenerationProjection, McpProjectionState};
     use awaken_session_contract::{
         McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
@@ -11849,7 +11849,11 @@ fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
      * C3=>E1+E2 closes renewal during first Stage; R2 C1+C2(Active)+C3=>E1+E2
      * covers steady renewal; R3 no matching projection=>no-op. Conflicting
      * bindings and non-monotonic expiry are rejected by the aggregate N2–N5
-     * table and this adapter's shared conflict gate. */
+     * table and this adapter's shared conflict gate. R4 a Session-only lease
+     * extension followed by publication of a longer MCP ref must fail: the
+     * exact staged receipt is still old. R5 after the ordinary renewal Stage,
+     * exact publication succeeds; neither phase creates a second projection.
+     * This is the Runtime half of Session activation's F1/F2 catch-up table. */
     for (rule, state) in [
         ("R1", McpProjectionState::Staged),
         ("R2", McpProjectionState::Active),
@@ -11897,6 +11901,21 @@ fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
         let mut renewed = request;
         renewed.generation.lease_expires_at_unix_ms = u64::MAX;
         renewed.stage_idempotency_key = "renew-max".into();
+        host.install_session_realization_lease(
+            &old_generation.session_id,
+            awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: old_generation.runtime_incarnation.clone(),
+                epoch: old_generation.lease_epoch,
+                expires_at_unix_ms: u64::MAX,
+            },
+        );
+        assert!(
+            host.publish_mcp_projection(&renewed.generation)
+                .await
+                .is_err(),
+            "R4 Session renewal alone is not an exact MCP receipt"
+        );
         let receipt = host
             .renew_mcp_projection(&renewed)
             .expect(rule)
@@ -11913,6 +11932,14 @@ fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
                 .read(&renewed.generation.session_id, |slot| slot.mcp.len()),
             Some(1),
             "{rule}/E2"
+        );
+        host.publish_mcp_projection(&renewed.generation)
+            .await
+            .expect("R5 exact renewed projection publishes");
+        assert_eq!(
+            host.mcp_projection(&renewed.generation).unwrap().state,
+            McpProjectionState::Active,
+            "R5"
         );
     }
 
