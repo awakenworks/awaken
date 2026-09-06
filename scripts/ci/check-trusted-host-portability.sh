@@ -73,8 +73,9 @@ done
 # and not a successful skip on hosts lacking Namespace support. Other OS rows
 # still run Native Local contracts above; no cross-OS Namespace claim is made.
 if [[ "$(uname -s)" == "Linux" ]]; then
-  cargo test -p awaken-sandbox --features hand --test namespace_hand_stdio \
-    namespace_owner_sigkill_terminates_descendants_in_separate_process_groups -- --exact
+  # Both kernel owner-death and real Hand path/tool behavior are mandatory;
+  # selecting only the crash test would omit the Native resource path contract.
+  cargo test -p awaken-sandbox --features hand --test namespace_hand_stdio
   CODEX_ACP_PROFILE=native-fixture AWAKEN_ACP_RUNTIME=native \
     node e2e/codex_acp_live_e2e.mjs
 elif [[ "$(uname -s)" == "Darwin" ]]; then
