@@ -64,7 +64,7 @@ struct SchemeMaterializer;
 
 struct ExternalCredentialResolver;
 
-struct UnusedContainerProvider;
+pub(crate) struct UnusedContainerProvider;
 
 struct CheckpointContainerProvider;
 

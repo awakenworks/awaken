@@ -296,15 +296,23 @@ pub(crate) fn spawn_heartbeat(
                         break;
                     }
                     Err(_) => {
-                        awaken_observability::record_worker_authority_loss(
-                            "environment_probe_timeout",
-                        );
-                        tracing::error!(
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        tracing::warn!(
                             timeout_ms = probe_timeout.as_millis(),
-                            "worker sandbox evidence probe timed out; draining locally"
+                            "worker sandbox evidence probe timed out; claim admission paused and retrying"
                         );
-                        revoke_worker_session_authority(&lifecycle).await;
-                        break;
+                        let Some(retry) = pause_authority_admission_for_retry(
+                            &lifecycle,
+                            &mut admission_suspended,
+                            timing,
+                            proof_deadline,
+                        )
+                        .await
+                        else {
+                            break;
+                        };
+                        next_attempt = retry;
+                        continue;
                     }
                 }
             }
@@ -398,10 +406,6 @@ pub(crate) fn spawn_heartbeat(
                 }
                 Ok(Err(error)) => {
                     consecutive_failures = consecutive_failures.saturating_add(1);
-                    if !admission_suspended {
-                        lifecycle.host.suspend_pool_admission().await;
-                        admission_suspended = true;
-                    }
                     let now = Instant::now();
                     let remaining = proof_deadline.saturating_duration_since(now);
                     tracing::warn!(
@@ -417,19 +421,20 @@ pub(crate) fn spawn_heartbeat(
                         scheduling_lag,
                         remaining,
                     );
-                    if remaining.is_zero() {
-                        awaken_observability::record_worker_authority_loss("proof_expired");
-                        revoke_worker_session_authority(&lifecycle).await;
+                    let Some(retry) = pause_authority_admission_for_retry(
+                        &lifecycle,
+                        &mut admission_suspended,
+                        timing,
+                        proof_deadline,
+                    )
+                    .await
+                    else {
                         break;
-                    }
-                    next_attempt = now + timing.retry_delay().min(remaining);
+                    };
+                    next_attempt = retry;
                 }
                 Err(_) => {
                     consecutive_failures = consecutive_failures.saturating_add(1);
-                    if !admission_suspended {
-                        lifecycle.host.suspend_pool_admission().await;
-                        admission_suspended = true;
-                    }
                     let now = Instant::now();
                     let remaining = proof_deadline.saturating_duration_since(now);
                     tracing::warn!(
@@ -444,16 +449,45 @@ pub(crate) fn spawn_heartbeat(
                         scheduling_lag,
                         remaining,
                     );
-                    if remaining.is_zero() {
-                        awaken_observability::record_worker_authority_loss("proof_expired");
-                        revoke_worker_session_authority(&lifecycle).await;
+                    let Some(retry) = pause_authority_admission_for_retry(
+                        &lifecycle,
+                        &mut admission_suspended,
+                        timing,
+                        proof_deadline,
+                    )
+                    .await
+                    else {
                         break;
-                    }
-                    next_attempt = now + timing.retry_delay().min(remaining);
+                    };
+                    next_attempt = retry;
                 }
             }
         }
     })
+}
+
+// An unavailable response is not evidence of authority loss. Reuse the same
+// temporary admission gate for Registry I/O and Sandbox probe timeouts. Neither
+// a retry nor a successful probe advances the last durable Registry proof.
+async fn pause_authority_admission_for_retry(
+    lifecycle: &WorkerSupervisor,
+    admission_suspended: &mut bool,
+    timing: AuthorityLeaseTiming,
+    proof_deadline: Instant,
+) -> Option<Instant> {
+    if !*admission_suspended {
+        lifecycle.host.suspend_pool_admission().await;
+        *admission_suspended = true;
+    }
+    let now = Instant::now();
+    let remaining = proof_deadline.saturating_duration_since(now);
+    if remaining.is_zero() {
+        awaken_observability::record_worker_authority_loss("proof_expired");
+        revoke_worker_session_authority(lifecycle).await;
+        None
+    } else {
+        Some(now + timing.retry_delay().min(remaining))
+    }
 }
 
 /// Keep due-only lease renewal and cold terminal recovery under one
@@ -618,6 +652,143 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::supervise_session_realization_reconciliation;
+
+    struct ProbeProvider {
+        mode: u8,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_sandbox_container::ContainerEnvironmentProvider for ProbeProvider {
+        async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            match (self.mode, call) {
+                (1, 0) | (2, _) => std::future::pending().await,
+                (3, _) => Err(awaken_provisioning_contract::SandboxError(
+                    "evidence lost".into(),
+                )),
+                _ => Ok(()),
+            }
+        }
+
+        async fn create_environment(
+            &self,
+            spec: &awaken_provisioning_contract::SandboxSpec,
+        ) -> Result<
+            Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            crate::tests::UnusedContainerProvider
+                .create_environment(spec)
+                .await
+        }
+
+        async fn adopt_environment(
+            &self,
+            adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        ) -> Result<
+            Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            crate::tests::UnusedContainerProvider
+                .adopt_environment(adoption)
+                .await
+        }
+    }
+
+    #[tokio::test]
+    async fn sandbox_probe_timeout_retries_only_inside_the_existing_authority_window() {
+        // Causes: P0 ready; P1 first probe times out then recovers; P2 all probes
+        // time out; P3 provider explicitly rejects its evidence. Effects: P0/P1
+        // heartbeat with the SAME incarnation and first sequence, no supervisor
+        // exit; P2 stops at the ORIGINAL proof deadline without a heartbeat;
+        // P3 stops immediately without retry. Timeouts must neither mint a new
+        // proof nor become evidence of physical termination. Pool suspension's
+        // in-flight preservation and absorbing drain are owned by its own tests.
+        use super::*;
+        use axum::{Json, Router, routing::post};
+        use std::time::Duration;
+        for mode in [0, 1, 2, 3] {
+            let (sender, mut received) = tokio::sync::mpsc::channel(4);
+            let router = Router::new().route(
+                "/v1/worker/heartbeat",
+                post(move |Json(body): Json<serde_json::Value>| {
+                    let sender = sender.clone();
+                    async move {
+                        sender.send(body).await.unwrap();
+                        Json(serde_json::json!({"mutation":"applied", "lease_ttl_ms":6000}))
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            let provider = Arc::new(ProbeProvider {
+                mode,
+                calls: AtomicUsize::new(0),
+            });
+            let identity = WorkerIdentity::new("probe-worker", "same-incarnation", 1);
+            let lifecycle = Arc::new(WorkerSupervisor {
+                host: Arc::new(SharedHost::new(
+                    Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
+                    "none",
+                )),
+                control: WorkerControlClient::new(
+                    awaken_worker_transport_security::WorkerUpstream::new(format!(
+                        "http://{address}"
+                    )),
+                ),
+                identity: identity.clone(),
+                credential_observation_resolver: None,
+                acp_capability_observation_source: None,
+                session_environment_provider: Some(provider.clone()),
+                observations: Arc::new(WorkerObservationCache::default()),
+                observation_ttl: Duration::from_secs(6),
+                warm_environments: Default::default(),
+            });
+            let task = spawn_heartbeat(
+                lifecycle,
+                1,
+                Instant::now(),
+                AuthorityLeaseTiming::from_ttl_ms(6000),
+            );
+            if mode < 2 {
+                let heartbeat = tokio::time::timeout(Duration::from_secs(5), received.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    heartbeat["identity"],
+                    serde_json::to_value(identity).unwrap()
+                );
+                assert_eq!(heartbeat["heartbeat"]["sequence"], 1);
+                assert_eq!(
+                    provider.calls.load(Ordering::SeqCst),
+                    if mode == 1 { 2 } else { 1 }
+                );
+                assert!(!task.is_finished(), "P0/P1 preserve the live supervisor");
+                task.abort();
+                let _ = task.await;
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), task)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    received.try_recv().is_err(),
+                    "P2/P3 never mint a heartbeat proof"
+                );
+                assert_eq!(
+                    provider.calls.load(Ordering::SeqCst),
+                    if mode == 2 { 2 } else { 1 }
+                );
+            }
+            server.abort();
+            let _ = server.await;
+        }
+    }
 
     #[tokio::test(start_paused = true)]
     async fn effectful_reconciliation_outlives_poll_budget_and_remains_single_flight() {
