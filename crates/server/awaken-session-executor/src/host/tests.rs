@@ -1,4 +1,5 @@
 use super::*;
+mod resource_staging_lease;
 use crate::config::block_text;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;

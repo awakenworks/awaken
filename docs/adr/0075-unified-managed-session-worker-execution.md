@@ -149,6 +149,33 @@ over a newer projection; the durable Work/Run fences remain mandatory for its
 execution. This uses the same slot and cleanup path, with no grace period or
 additional lease registry.
 
+After complete Resource/layout preflight, the same slot exposes the assigned
+realization lease **before** the first awaited Resource/Skill read. A scoped
+preparation cancellation signal carries no lease or execution authority: the
+existing lease-only scheduler renews the slot, and baseline/runtime/admission
+remain unpublished until preparation succeeds. The read lifetime follows the
+current same-generation expiry, not the original response's deadline. Explicit
+ownership loss (including Worker-wide revocation) cancels preparation before
+waiting for its realization lock; interruption/retirement still rechecks the
+exact assertion after taking the existing owner locks. Resource cache writes
+check preparation authority atomically with their slot publication. Final
+projection publication rechecks the scoped preparation and preserves a renewed
+expiry. Failure/drop removes only a newly introduced unpublished lease, never a
+replacement owner; an existing resident lease remains available to its normal
+fenced cleanup path. No grace period, second renewal loop, or recovery queue is
+introduced.
+
+The attached cause/effect tables in `host/tests/resource_staging_lease.rs` and
+`awaken-dispatch/tests/any_store/resolution_failure.rs` cover the read/renewal
+and terminal-commit failure boundaries. `SessionRealizationMutex` checks the
+bounded preparation/renewal/cancellation ordering; `SessionRunProtocolResolution`
+uses the existing Run/Session/Work kernels for conflict exclusion and committed
+child-Run settlement under fair observation/storage progress. Mutation checks
+reject a hidden preparation lease, cancelled publication, and conflict execution;
+a settlement reachability witness prevents vacuous success. These are bounded
+model checks plus executable tests, not a Rust-to-model refinement proof or a
+guarantee of progress during a permanent Control/database outage.
+
 The Coordinator's `Dispatch` projection is not a Worker realization receipt.
 Before any external attempt observes a pending Resource generation, the Session
 aggregate may revise that generation in place; the Coordinator may therefore

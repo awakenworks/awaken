@@ -306,12 +306,20 @@ def main() -> None:
     model_selection = parser.add_mutually_exclusive_group()
     model_selection.add_argument("--memory-copy-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--agent-input-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--resource-preparation-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--resolution-failure-model-mutant", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
     if arguments.memory_copy_model_mutant is not None:
         check_memory_copy_model_mutant(arguments.memory_copy_model_mutant)
         return
     if arguments.agent_input_model_mutant is not None:
         check_agent_input_model_mutant(arguments.agent_input_model_mutant)
+        return
+    if arguments.resource_preparation_model_mutant is not None:
+        check_resource_preparation_model_mutant(arguments.resource_preparation_model_mutant)
+        return
+    if arguments.resolution_failure_model_mutant is not None:
+        check_resolution_failure_model_mutant(arguments.resolution_failure_model_mutant)
         return
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(MutationOracleTests)
     if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
@@ -412,14 +420,54 @@ def check_agent_input_model_mutant(tlc_jar: Path) -> None:
     print("Agent input mutation score: 1/1 killed (missing-row admission lock)")
 
 
+def check_resource_preparation_model_mutant(tlc_jar: Path) -> None:
+    # P1 omit early lease visibility (the reproduced bug); P2 let a cancelled
+    # preparation publish. Both must violate the named authority invariant,
+    # not fail due to syntax, timeout, or infrastructure. Reuse the model/oracle.
+    source = (ROOT / "formal/tla/SessionRealizationMutex.tla").read_text(encoding="utf-8")
+    config = (ROOT / "formal/tla/SessionRealizationMutex.cfg").read_text(encoding="utf-8")
+    config = config.replace("MaxCompleted = 3", "MaxCompleted = 1").replace("MaxRenewals = 6", "MaxRenewals = 1")
+    visible = "  /\\ leaseVisible' = [leaseVisible EXCEPT ![session] = TRUE]"
+    publish = '  /\\ phase[session] = "PreparingResources"\n  /\\ leaseVisible[session]'
+    if source.count(visible) != 1 or source.count(publish) != 1:
+        raise SystemExit("Resource preparation mutation anchor drifted; review the model")
+    mutants = [
+        source.replace(visible, visible.replace("TRUE", "FALSE")),
+        source.replace(publish, '  /\\ phase[session] \\in {"PreparingResources", "CancellingResources"}'),
+    ]
+    check_tlc_model_mutations(tlc_jar, "SessionRealizationMutex", source, config,
+        [(mutant, config, "ResourcesHaveRenewableAuthority") for mutant in mutants])
+    print("Resource preparation mutation score: 2/2 killed (hidden lease, cancelled publication)")
+
+
+def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
+    # R1 remove the conflict execution gate -> exact safety violation. R2 the
+    # original model must REACH a settled conflict, guarding against a vacuous
+    # green configuration (e.g. no live Work lease can ever be acquired).
+    source = (ROOT / "formal/tla/SessionRunProtocol.tla").read_text(encoding="utf-8")
+    config = (ROOT / "formal/tla/SessionRunProtocolResolution.cfg").read_text(encoding="utf-8")
+    anchor = "    /\\ run \\notin ConflictedRuns\n"
+    if source.count(anchor) != 1:
+        raise SystemExit("Resolution conflict mutation anchor drifted; review the model")
+    witness = config.replace("INVARIANTS Safety ConflictedRunsNeverExecute", "INVARIANTS Safety NoConflictedRunHasSettled")
+    check_tlc_model_mutations(tlc_jar, "SessionRunProtocol", source, config, [
+        (source.replace(anchor, ""), config, "ConflictedRunsNeverExecute"),
+        (source, witness, "NoConflictedRunHasSettled"),
+    ], dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
+    print("Resolution conflict: execution mutant killed; terminal settlement reachability witnessed")
+
+
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,
-                              mutations: list[tuple[str, str, str]]) -> None:
+                              mutations: list[tuple[str, str, str]], *,
+                              dependencies: tuple[str, ...] = ()) -> None:
     # One TLC invocation/oracle for every model mutation family. Validate both
     # the process result and semantic outcome; always establish the green base.
     cases = [(source, config, None), *mutations]
     for model_text, config_text, invariant in cases:
         with tempfile.TemporaryDirectory(prefix="awaken-tlc-mutant-") as temp:
             directory = Path(temp)
+            for dependency in dependencies:
+                shutil.copy2(ROOT / f"formal/tla/{dependency}.tla", directory)
             model = directory / f"{name}.tla"
             model.write_text(model_text, encoding="utf-8")
             config_path = directory / f"{name}.cfg"
