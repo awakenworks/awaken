@@ -609,6 +609,7 @@ pub(crate) fn spawn_environment_warmup_reconciliation(
 
 async fn revoke_worker_session_authority(lifecycle: &WorkerSupervisor) {
     awaken_observability::set_worker_authority_proof_remaining(std::time::Duration::ZERO);
+    let revocation = lifecycle.host.begin_session_realization_revocation();
     lifecycle.host.begin_pool_drain().await;
     // Fail closed without racing terminal sandbox disposal against in-flight
     // native tools. Cancellation stops each process group (including descendant
@@ -619,7 +620,11 @@ async fn revoke_worker_session_authority(lifecycle: &WorkerSupervisor) {
         .host
         .drain_runtime(std::time::Duration::from_secs(20))
         .await;
-    if let Err(error) = lifecycle.host.revoke_all_session_realizations().await {
+    if let Err(error) = lifecycle
+        .host
+        .finish_session_realization_revocation(revocation)
+        .await
+    {
         eprintln!("Session realization revocation remains incomplete: {error}");
     }
 }

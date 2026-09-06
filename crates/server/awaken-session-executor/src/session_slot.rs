@@ -535,7 +535,68 @@ impl SessionRuntimeSlot {
 #[derive(Clone, Default)]
 pub(crate) struct SessionRuntimeSlots(Arc<Mutex<HashMap<String, SessionRuntimeSlot>>>);
 
+/// Ephemeral cleanup selection, captured at the close edge. Existing lock Arcs
+/// identify the slot allocation; equal Session ids and leases cannot defeat
+/// this identity after removal/recreation. No second generation counter exists.
+pub(crate) struct SessionRealizationRevocationSelection {
+    pub realization: Arc<tokio::sync::Mutex<()>>,
+    pub lifecycle: Arc<tokio::sync::Mutex<()>>,
+    authority: SessionRealizationAuthority,
+}
+
+impl SessionRealizationRevocationSelection {
+    fn close(
+        slot: &mut SessionRuntimeSlot,
+        expected: Option<&awaken_session_contract::SessionRealizationLease>,
+    ) -> Option<Self> {
+        slot.close_realization_authority(expected).then(|| Self {
+            realization: slot.realization.clone(),
+            lifecycle: slot.lifecycle.clone(),
+            authority: slot.realization_authority.clone(),
+        })
+    }
+
+    pub(crate) fn matches(&self, slot: &SessionRuntimeSlot) -> bool {
+        Arc::ptr_eq(&self.realization, &slot.realization)
+            && Arc::ptr_eq(&self.lifecycle, &slot.lifecycle)
+            && self.authority == slot.realization_authority
+    }
+}
+
 impl SessionRuntimeSlots {
+    pub(crate) fn close_realization(
+        &self,
+        session: &str,
+        expected: Option<(&awaken_session_contract::SessionRealizationLease, &Arc<tokio::sync::Mutex<()>>)>,
+    ) -> Option<SessionRealizationRevocationSelection> {
+        self.modify(session, |slot| {
+            if expected.is_some_and(|(_, realization)| !Arc::ptr_eq(&slot.realization, realization)) {
+                return None;
+            }
+            SessionRealizationRevocationSelection::close(slot, expected.map(|(lease, _)| lease))
+        })
+        .flatten()
+    }
+
+    /// One linearization point closes every currently installed projection
+    /// before any caller may wait for an async lifecycle lock or drain.
+    pub(crate) fn close_all_realizations(
+        &self,
+    ) -> Vec<(String, SessionRealizationRevocationSelection)> {
+        self.0
+            .lock()
+            .expect("session runtime slots mutex poisoned")
+            .iter_mut()
+            .map(|(id, slot)| {
+                (
+                    id.clone(),
+                    SessionRealizationRevocationSelection::close(slot, None)
+                        .expect("unconditional close always selects the current slot"),
+                )
+            })
+            .collect()
+    }
+
     pub(crate) fn close_mcp_realization_admission(
         &self,
         session: &str,

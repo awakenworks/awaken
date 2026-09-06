@@ -21,6 +21,7 @@ mod acp_tool_export;
 mod agent_catalog;
 mod agent_runner;
 mod application;
+pub use application::SessionRealizationRevocation;
 mod authority;
 mod background;
 mod background_task;

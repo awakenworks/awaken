@@ -1,5 +1,226 @@
 use super::*;
 
+// B1-B4: after the synchronous close, remove/recreate the SAME Session id with
+// the SAME closed lease (or Closed(None)); its new owner lock may even be held.
+// Effects: stale cleanup neither waits on new locks nor consumes the replacement
+// claim/slot; its own later selection remains usable. Cross both captured owner
+// locks with leased/uninstalled projections. Equality of lease bytes alone is
+// deliberately insufficient here; real production slot allocations own the ABA.
+#[tokio::test]
+async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
+    for lifecycle in [false, true] {
+        for leased in [false, true] {
+            let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+            let lease = awaken_session_contract::SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "worker/1".into(),
+                epoch: 1,
+                expires_at_unix_ms: u64::MAX,
+            };
+            host.session_slots.update(SESSION, |slot| {
+                if leased {
+                    slot.install_realization_lease(lease.clone());
+                }
+            });
+            let lock = host
+                .session_slots
+                .read(SESSION, |slot| {
+                    if lifecycle {
+                        slot.lifecycle.clone()
+                    } else {
+                        slot.realization.clone()
+                    }
+                })
+                .unwrap();
+            let held = lock.lock().await;
+            let selection = host.begin_session_realization_revocation();
+            host.session_slots.remove(SESSION);
+            let claim = awaken_dispatch::RunClaim {
+                run_id: RunId("replacement".into()),
+                owner: "worker".into(),
+                epoch: 2,
+            };
+            host.session_slots.update(SESSION, |slot| {
+                if leased {
+                    slot.install_realization_lease(lease.clone());
+                }
+                slot.dispatch_claim = Some(claim.clone());
+            });
+            let replacement = host.begin_session_realization_revocation();
+            let replacement_lock = host
+                .session_slots
+                .read(SESSION, |slot| slot.lifecycle.clone())
+                .unwrap();
+            let replacement_held = replacement_lock.lock().await;
+            drop(held);
+            assert_eq!(
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    host.finish_session_realization_revocation(selection)
+                )
+                .await
+                .unwrap()
+                .unwrap(),
+                0,
+                "old selection does not enter replacement locks or cleanup"
+            );
+            assert_eq!(
+                host.session_slots
+                    .read(SESSION, |slot| slot.dispatch_claim.clone()),
+                Some(Some(claim))
+            );
+            drop(replacement_held);
+            assert_eq!(
+                host.finish_session_realization_revocation(replacement)
+                    .await
+                    .unwrap(),
+                1,
+                "replacement retains its own cleanup capability"
+            );
+        }
+    }
+}
+
+// W1-W3: all slots are closed atomically BEFORE drain/lock waits. One Session
+// holds its realization lock while another is free; independent cleanup must
+// progress regardless of HashMap order. Caller cancellation retains the closed
+// pending owner and a fresh selection finishes it. Empty retry is a no-op.
+#[tokio::test]
+async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup() {
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let mut cancellations = Vec::new();
+    for session in ["held", "free"] {
+        host.session_slots.update(session, |slot| {
+            slot.install_realization_lease(awaken_session_contract::SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "worker/1".into(),
+                epoch: 1,
+                expires_at_unix_ms: u64::MAX,
+            });
+            let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
+            slot.resource_preparation = Some(cancellation.clone());
+            cancellations.push(cancellation);
+        });
+    }
+    // Observe the existing catalog order without inserting/removing keys.
+    // Hold its FIRST selection so a serial-cleanup mutant cannot pass merely
+    // because the free Session happened to be enumerated first.
+    let ids = host.session_slots.session_ids();
+    let held_session = &ids[0];
+    let free_session = &ids[1];
+    let held_lock = host.session_slots.realization_lock(held_session);
+    let held = held_lock.lock().await;
+    let revocation = host.begin_session_realization_revocation();
+    assert!(
+        host.session_slots.realization_leases().is_empty(),
+        "W1 before any await"
+    );
+    assert!(
+        cancellations.iter().all(|c| c.is_cancelled()),
+        "W1 cancels all preparation"
+    );
+    let task_host = host.clone();
+    let cleanup = tokio::spawn(async move {
+        task_host
+            .finish_session_realization_revocation(revocation)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while host.session_slots.contains(free_session) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("W2 one held lock cannot block unrelated cleanup");
+    assert!(
+        !cleanup.is_finished(),
+        "W2 pending owner is not a completion receipt"
+    );
+    cleanup.abort();
+    assert!(cleanup.await.unwrap_err().is_cancelled());
+    assert!(
+        host.session_slots
+            .read(held_session, |slot| slot.realization_authority.is_closed())
+            .unwrap(),
+        "W3"
+    );
+    drop(held);
+    assert_eq!(
+        host.revoke_all_session_realizations().await.unwrap(),
+        1,
+        "W3 retry"
+    );
+    assert_eq!(
+        host.revoke_all_session_realizations().await.unwrap(),
+        0,
+        "W3 empty"
+    );
+}
+
+// W4: one selected Session has no adopted physical owner and must return a
+// retryable error; another is cleanable. Effects: retain the exact failed owner
+// and its closed authority, finish the independent cleanup, then report error.
+// Repeating the failed batch cannot manufacture a successful cleanup receipt.
+#[tokio::test]
+async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
+    use crate::session_slot::{
+        BoundSessionEnvironmentIdentity, SessionEnvironmentOwner, SessionEnvironmentPreparation,
+    };
+    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    for id in ["left", "right"] {
+        host.session_slots.update(id, |_| ());
+    }
+    // As in W2, make the first selected slot fail, independently of the
+    // HashMap seed. A short-circuit implementation must leave the peer behind.
+    let ids = host.session_slots.session_ids();
+    let unknown = &ids[0];
+    let free = &ids[1];
+    host.session_slots.update(unknown, |slot| {
+        slot.environment_owner =
+            SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
+                identity: BoundSessionEnvironmentIdentity::Durable {
+                    effect_id: "unadopted-effect".into(),
+                    generation: awaken_session_contract::SandboxGeneration::new(
+                        unknown,
+                        1,
+                        u64::MAX,
+                        "environment",
+                        "image",
+                    ),
+                },
+                binding: "unadopted-binding".into(),
+            });
+    });
+    for _ in 0..2 {
+        let error = host
+            .revoke_all_session_realizations()
+            .await
+            .expect_err("W4 unknown is not complete");
+        assert_eq!(
+            error.code,
+            "session_environment_revocation_pending_adoption"
+        );
+        assert!(
+            !host.session_slots.contains(free),
+            "W4 independent cleanup completed"
+        );
+        assert!(
+            host.session_slots
+                .read(unknown, |slot| {
+                    slot.realization_authority.is_closed()
+                        && matches!(
+                            slot.environment_owner,
+                            SessionEnvironmentOwner::Preparing(
+                                SessionEnvironmentPreparation::AwaitingAdoption { .. }
+                            )
+                        )
+                })
+                .unwrap(),
+            "W4 retry owner remains closed and available"
+        );
+    }
+}
+
 // Authority decision table A1-A8. Causes: C1 realization/lifecycle owner lock
 // is held; C2 a successful renewal reply is in flight; C3 exact/Worker-wide
 // revocation closes A; C4 cleanup is cancelled or B replaces A before unlock.
