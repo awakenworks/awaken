@@ -900,10 +900,10 @@ mod tests {
             "processed-first-replay-terminal",
             "processed",
             serde_json::json!([
-            {"before": pending, "after": first, "now":100},
-            {"before": first, "after": replayed, "now":200},
-            {"before": replayed, "after": rejected, "now":300},
-            {"before": terminal_pending, "after": state(&batch, 1), "now":400}]),
+            {"rule": "first", "before": pending, "after": first, "now":100},
+            {"rule": "replay", "before": first, "after": replayed, "now":200},
+            {"rule": "reject", "before": replayed, "after": rejected, "now":300},
+            {"rule": "terminal", "before": terminal_pending, "after": state(&batch, 1), "now":400}]),
         );
         assert_eq!(batch.events[0].processed_at_unix_ms, Some(100));
         assert_eq!(batch.events[1].processed_at_unix_ms, Some(400));

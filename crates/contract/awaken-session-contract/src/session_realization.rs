@@ -1106,6 +1106,13 @@ pub async fn drive_session_realization(
             .await;
             return Err(error.into());
         }
+        #[cfg(feature = "test-support")]
+        crate::realization_observation::checkpoint(
+            "projection",
+            session_id,
+            serde_json::json!({"lease": directive.lease, "action": directive.action}),
+        )
+        .await;
         match directive.action.clone() {
             SessionRealizationAction::Stage {
                 prepare_session,
@@ -1142,6 +1149,9 @@ pub async fn drive_session_realization(
                     .await;
                     return Err(error.into());
                 }
+                #[cfg(feature = "test-support")]
+                crate::realization_observation::checkpoint("stage", session_id,
+                    serde_json::json!({"lease": directive.lease, "generations": receipts.iter().map(|r| &r.generation).collect::<Vec<_>>()})).await;
                 directive = match control
                     .activate_session_realization(ActivateSessionRealization {
                         session_id: session_id.to_string(),
@@ -1165,9 +1175,23 @@ pub async fn drive_session_realization(
                 let effect = async {
                     for generation in &publish {
                         publish_mcp_projection(mcp, generation).await?;
+                        #[cfg(feature = "test-support")]
+                        crate::realization_observation::checkpoint(
+                            "publish-one",
+                            session_id,
+                            serde_json::json!({"generation": generation}),
+                        )
+                        .await;
                     }
                     for generation in &drain {
                         drain_mcp_projection(mcp, generation).await?;
+                        #[cfg(feature = "test-support")]
+                        crate::realization_observation::checkpoint(
+                            "drain-one",
+                            session_id,
+                            serde_json::json!({"generation": generation}),
+                        )
+                        .await;
                     }
                     Ok::<(), RunError>(())
                 }
@@ -1185,6 +1209,9 @@ pub async fn drive_session_realization(
                     .await;
                     return Err(error.into());
                 }
+                #[cfg(feature = "test-support")]
+                crate::realization_observation::checkpoint("published", session_id,
+                    serde_json::json!({"lease": directive.lease, "published": publish, "drained": drain})).await;
                 directive = control
                     .acknowledge_session_realization(AcknowledgeSessionRealization {
                         session_id: session_id.to_string(),
@@ -1194,12 +1221,28 @@ pub async fn drive_session_realization(
                     })
                     .await?;
             }
-            SessionRealizationAction::Complete => return Ok(()),
+            SessionRealizationAction::Complete => {
+                #[cfg(feature = "test-support")]
+                crate::realization_observation::checkpoint(
+                    "complete",
+                    session_id,
+                    serde_json::json!({"lease": directive.lease}),
+                )
+                .await;
+                return Ok(());
+            }
         }
         // A Control transition may complete on the final permitted action. Do
         // not require a redundant fifth loop iteration merely to observe the
         // terminal directive after a same-epoch renewal catch-up.
         if matches!(directive.action, SessionRealizationAction::Complete) {
+            #[cfg(feature = "test-support")]
+            crate::realization_observation::checkpoint(
+                "complete",
+                session_id,
+                serde_json::json!({"lease": directive.lease}),
+            )
+            .await;
             return Ok(());
         }
         // A lease extension can require any number of monotonic Stage/Activate

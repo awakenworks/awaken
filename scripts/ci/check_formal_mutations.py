@@ -355,12 +355,12 @@ class MutationOracleTests(unittest.TestCase):
             # Q5 a present name with another family's relation cannot count as
             # the required producer. Q6 a valid partial run must still fail the
             # complete gate, even when the output directory already exists.
-            document = {"schema_version": 1, "projection_id": "session-observations-v1", "name": "binding-apply", "family": "processed", "steps": [{}]}
+            document = {"schema_version": 2, "projection_id": "session-observations-v2", "name": "binding-apply", "family": "processed", "steps": [{}]}
             write_json(raw / "binding-apply.json", document)
             with self.assertRaisesRegex(ValueError, "scenario/family drift"):
                 render_observations(raw, output, ROOT, manifest, False)
             document["family"] = "root"
-            document["steps"] = [{"before": {"exists": True, "revision": 1, "created": 100, "updated": 100}, "after": {"exists": True, "revision": 2, "created": 100, "updated": 200}, "now": 200}]
+            document["steps"] = [{"rule": "binding-apply", "before": {"exists": True, "revision": 1, "created": 100, "updated": 100}, "after": {"exists": True, "revision": 2, "created": 100, "updated": 200}, "now": 200}]
             write_json(raw / "binding-apply.json", document)
             with self.assertRaisesRegex(ValueError, "coverage is incomplete"):
                 render_observations(raw, output, ROOT, manifest, True)
@@ -883,7 +883,122 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
             definition = manifest["session_observations"]["families"][family]
             check_tlc_model_mutations(tlc_jar, module, baseline, config,
                 [(mutant, config, "constant:TraceRefines")], dependencies=(definition["model"], *definition["dependencies"]))
+    check_observation_rule_mutants(trace_dir, manifest)
+    check_realization_trace_mutants(tlc_jar, trace_dir, manifest)
     print("Production observation trace mutation score: 4/4 killed")
+
+
+def check_observation_rule_mutants(trace_dir: Path, manifest: dict) -> None:
+    from copy import deepcopy
+    from render_runtime_refinement_traces import render_observations
+    killed = 0
+    # Q7 causes: every emitted decision rule independently absent, duplicated,
+    # renamed, or replaced with another partition while retaining its label.
+    # Effect: coverage rejects before TLC. All originals first render green.
+    for name in manifest["session_observations"]["required_scenarios"]:
+        original = json.loads((trace_dir / f"{name}.json").read_text())
+        with tempfile.TemporaryDirectory() as temp:
+            raw, output = Path(temp) / "raw", Path(temp) / "out"
+            raw.mkdir()
+            path = raw / f"{name}.json"
+            write_json(path, original)
+            render_observations(raw, output, ROOT, manifest, False)
+            for index in range(len(original["steps"])):
+                for fault in ["delete", "duplicate", "rename"]:
+                    doc = deepcopy(original)
+                    if fault == "delete": del doc["steps"][index]
+                    elif fault == "duplicate": doc["steps"].append(doc["steps"][index])
+                    else: doc["steps"][index]["rule"] = "unknown-rule"
+                    write_json(path, doc)
+                    try:
+                        render_observations(raw, output, ROOT, manifest, False)
+                    except ValueError as error:
+                        if not any(text in str(error) for text in ["empty observation", "rule coverage drift"]): raise
+                        killed += 1
+                    else: raise SystemExit(f"coverage mutant survived: {name}/{index}/{fault}")
+            if name in {"publication-cardinality-renewal", "binding-clock-cases", "store-torn-prefix", "realization-http-crashes"}:
+                for index in range(len(original["steps"])):
+                    doc = deepcopy(original)
+                    doc["steps"][index] = deepcopy(original["steps"][(index + 1) % len(original["steps"])])
+                    doc["steps"][index]["rule"] = original["steps"][index]["rule"]
+                    write_json(path, doc)
+                    try: render_observations(raw, output, ROOT, manifest, False)
+                    except ValueError as error:
+                        if "rule conditions drift" not in str(error): raise
+                        killed += 1
+                    else: raise SystemExit(f"relabeled partition survived: {name}/{index}")
+    print(f"Observation rule coverage mutations: {killed}/{killed} killed")
+
+
+def check_realization_trace_mutants(tlc_jar: Path, trace_dir: Path, manifest: dict) -> None:
+    from copy import deepcopy
+    from render_runtime_refinement_traces import render_observations, module_name
+    name = "realization-http-crashes"
+    original = json.loads((trace_dir / f"{name}.json").read_text())
+    # Q8 independently falsify continuity, execution identity, generation
+    # authority, effect-before-ACK, crash cut and terminal/cardinality. Preserve
+    # all rule IDs. Renumber order mutants so sequence checks cannot mask the
+    # missing phase/effect guard. The canonical TLC relation must refute each.
+    faults = ["delete-event", "duplicate-event", "swap", "foreign-session", "epoch",
+              "incarnation", "expiry", "early-ack", "missing-publication",
+              "retired-publication", "truncate", "wrong-cut", "wrong-count", "stale-restart", "directive-authority", "reported-publication"]
+    with tempfile.TemporaryDirectory() as temp:
+        raw, output = Path(temp) / "raw", Path(temp) / "out"
+        raw.mkdir()
+        path = raw / f"{name}.json"
+        write_json(path, original)
+        render_observations(raw, output, ROOT, manifest, False)
+        module = module_name(name)
+        baseline = (output / f"{module}.tla").read_text()
+        config = (output / f"{module}.cfg").read_text()
+        mutants = []
+        for fault in faults:
+            doc = deepcopy(original)
+            step = next(s for s in doc["steps"] if s["rule"] == "published-2")
+            events = step["trace"]
+            publish = next(i for i, e in enumerate(events) if e["point"] == "publish-one")
+            crash = next(i for i, e in enumerate(events) if e["point"] == "crash")
+            if fault == "delete-event": del events[publish]
+            elif fault == "duplicate-event": events.insert(publish, deepcopy(events[publish]))
+            elif fault == "swap": events[publish - 1], events[publish] = events[publish], events[publish - 1]
+            elif fault == "foreign-session": events[publish]["session"] = "foreign-session"
+            elif fault in {"epoch", "incarnation", "expiry"}:
+                g = events[publish]["data"]["generation"]
+                if fault == "epoch": g["lease_epoch"] += 1
+                elif fault == "incarnation": g["runtime_incarnation"] = "foreign-process"
+                else: g["lease_expires_at_unix_ms"] += 999999999
+            elif fault == "early-ack":
+                ack = next(i for i, e in enumerate(events) if e["point"] == "ack-after")
+                events.insert(publish, events.pop(ack))
+            elif fault == "missing-publication": del events[publish]; events[:] = [dict(e, sequence=i) for i, e in enumerate(events)]
+            elif fault == "retired-publication":
+                old = next(e for e in events if e["point"] == "drain-one")["data"]["generation"]
+                events[publish]["data"]["generation"] = deepcopy(old)
+            elif fault == "truncate": events.pop()
+            elif fault == "wrong-cut":
+                events[crash - 1]["point"] = "complete"
+            elif fault == "wrong-count":
+                for event in events:
+                    if "attachments" in event["data"]:
+                        event["data"]["attachments"] = []
+            elif fault == "directive-authority":
+                event = next(e for e in events if e["point"] == "projection")
+                event["data"]["lease"]["epoch"] += 1
+            elif fault == "reported-publication":
+                event = next(e for e in events if e["point"] == "published")
+                event["data"]["published"] = []
+            elif fault == "stale-restart":
+                recovered = next(e for e in events[crash + 1:] if e["point"] == "publish-one")
+                recovered["data"]["generation"] = deepcopy(events[publish]["data"]["generation"])
+            if fault in {"duplicate-event", "swap", "early-ack"}:
+                events[:] = [dict(e, sequence=i) for i, e in enumerate(events)]
+            write_json(path, doc)
+            render_observations(raw, output, ROOT, manifest, False)
+            mutant = (output / f"{module}.tla").read_text()
+            if mutant == baseline: raise SystemExit(f"ineffective trace mutant: {fault}")
+            mutants.append((mutant, config, "constant:TraceRefines"))
+        check_tlc_model_mutations(tlc_jar, module, baseline, config, mutants, dependencies=("SessionRealizationMutex",))
+    print(f"Continuous realization trace mutations: {len(faults)}/{len(faults)} killed")
 
 
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,

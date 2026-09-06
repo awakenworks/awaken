@@ -221,29 +221,46 @@ legacy unknown metadata, crash-discarded caches and exact recovered prefixes.
 Stage receipt partition. Existing TLAPS root-kernel proofs do not automatically
 prove these new TLC observer axes.
 
-The existing Rust-to-TLA runner also consumes `session-observations-v1` from
-`runtime-refinement-manifest.json`. Binding receipt application/replay/rejection,
-root crash/lost-ACK recovery, processed Events, MCP publication, and filesystem
-prefix recovery emit actual durable observations. The renderer calls the same
-relations used by the four existing models; it does not generate another model
-of their behavior. The manifest binds each required scenario to its producer
-and model family; a fresh-run check rejects missing or misclassified traces.
-An injective increasing map makes real millisecond observations representable
-by TLC without conflating values: equality, ordering and max are preserved and
-reflected. Raw Rust observations remain unchanged.
-Four corrupted production traces must fail the exact TLC relation, independently
-of the existing model mutations. This establishes correspondence for those
-executed paths and fields, not universal Rust implementation refinement.
+The existing Rust-to-TLA runner consumes `session-observations-v2` from
+`runtime-refinement-manifest.json`. The manifest requires every named decision
+rule, not merely each scenario file. Measured cardinality, predecessor sets,
+lease expiries, clock partitions and crash boundaries bind the relevant labels
+to actual conditions. Deleting, duplicating, renaming or relabeling these rules
+must fail the same gate. Independent root/Event/store observations still call
+their existing model relations; they are not presented as continuous executions.
+An injective increasing map preserves and reflects time equality/order/max,
+without changing raw observations or conflating unknown metadata.
 
-The shared realization driver is additionally killed after physical publication,
-both before and after the ACK root CAS. Its file-backed external-port fixture
-checks ordering and idempotent generation identity. The separate Managed MCP
-HTTP E2E now uses SIGKILL and the real MCP adapter to check cold republishing,
-HTTP idempotency and non-resurrection of removed generations. Neither fixture
-asserts exactly-once execution by arbitrary external providers. The existing
-release matrix runs the same Rust suite and HTTP scenario on Linux and both
-native macOS runners before packaging. A configured gate is not a macOS execution
-receipt; current-source native run evidence must still be obtained.
+For MCP recovery, the existing Managed HTTP scenario now owns all physical crash
+evidence. A `test-support` observation port in Session contract connects the
+canonical application root boundaries and shared realization driver to a
+scenario-host file adapter. Production admission, Runtime synchronization and
+HTTP MCP effects remain the existing implementations. The weaker file-effect
+publication fixture has been removed. Newline-committed observations and atomic
+fault markers let the parent SIGKILL the real server at a precise phase.
+
+Thirteen reachable rules cross one/two attachments with Stage, first Publish,
+first Drain, all effects before ACK, and ACK before response; retirement to zero
+attachments covers the last three applicable points. Each restarts the actual
+server, checks durable identity/ACK, idempotent HTTP replay and recovered tool
+use. Independent fixtures isolate each rule from other Sessions' background I/O.
+The comments beside the cases own the cause/effect design and constraints.
+
+`SessionRealizationMutex.RealizationTraceIsRefinement` checks the continuous
+observed sequence from Begin through one crash to recovered completion: execution
+identity, revision/time monotonicity, legal adjacent phases, generation authority,
+physical effects before ACK and terminal cardinality. The existing fair scheduler
+model remains the exhaustive bounded interleaving owner. Four independent-family
+trace corruptions and sixteen continuous-trace corruptions must fail the exact
+TLC relation after a green baseline; parser/tool failures never count as kills.
+These are finite observed-path checks plus bounded model checking, not a universal
+Rust refinement theorem, external exactly-once guarantee, or power-loss proof.
+
+PR, release and strict formal qualification reuse
+`check-reliability.sh --session-observations`. The PR/release matrices schedule
+Linux and native ARM/Intel macOS execution before merge/packaging. A configured
+matrix is not an execution receipt: current-source native macOS results must
+still be obtained on those runners.
 
 
 Executable decision tables remain beside their tests: application-root crashes,

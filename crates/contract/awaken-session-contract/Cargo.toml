@@ -33,6 +33,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 http = "1"
 
+[features]
+# Process observation is installed only by the executable scenario harness.
+test-support = []
+
 [dev-dependencies]
 awaken-reliability-testkit.workspace = true
 # The work-queue port's in-memory impl is exercised by `#[tokio::test]`s.

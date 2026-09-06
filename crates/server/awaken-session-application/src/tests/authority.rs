@@ -6025,6 +6025,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
             Some(&before),
             Some(&after),
             now,
+            ["legacy", "equal", "backward"][index],
         ));
         clock.set(now + 1);
         sink.persist(receipt(&id, "sandbox-clock", None))

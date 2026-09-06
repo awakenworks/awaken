@@ -8,10 +8,21 @@ source scripts/ci/_provider_environment.sh
 awaken_configure_cargo_target "$PWD"
 awaken_unset_ambient_api_keys
 
+# One native Session observation composition, reused by PR, release and formal
+# qualification. The formal caller supplies a fresh output directory.
+if [ "${1:-}" = "--session-observations" ]; then
+  cargo test --locked --features awaken-store-sqlite/test-support \
+    -p awaken-session-contract -p awaken-session-application \
+    -p awaken-store-inmem -p awaken-store-fs -p awaken-store-sqlite -p awaken-protocol-managed
+  cargo test --locked -p awaken-coordinator --lib runtime_authority::tests
+  pnpm -C e2e exec tsx managed_mcp_recovery_e2e.ts
+  exit 0
+fi
+
 mode="${1:---quick}"
 case "$mode" in
   --quick|--full|--require-tools) ;;
-  *) echo "usage: scripts/ci/check-reliability.sh [--quick|--full|--require-tools]" >&2; exit 2 ;;
+  *) echo "usage: scripts/ci/check-reliability.sh [--quick|--full|--require-tools|--session-observations]" >&2; exit 2 ;;
 esac
 
 # cargo-mutants restores the source tree, but an interrupted or timestamp-close
@@ -38,7 +49,6 @@ fi
 cargo test -p awaken-store-sqlite --features test-support --test failure_atomicity
 cargo test -p awaken-session-store --test process_crash_outbox
 cargo test -p awaken-session-application --lib tests::creation::time_assurance
-cargo test -p awaken-session-application --lib publication_ack_process_crashes_recover_through_the_shared_driver
 cargo test -p awaken-credential-store --features sqlite,sealed-aead,test-support \
   --test process_crash_creation --test process_crash_managed_creation
 cargo test -p awaken-config-store --test process_crash_audit

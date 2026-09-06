@@ -277,8 +277,7 @@ async fn every_torn_envelope_prefix_preserves_committed_time_and_facts() {
         std::fs::write(target.path().join("commits.ndjson"), &all[..end]).unwrap();
         let recovered = FsCommitCoordinator::open(target.path()).await.unwrap();
         let snapshot = recovered.recovery_snapshot(&thread, &second).await.unwrap();
-        let step =
-            serde_json::json!({"recovered": observations(&snapshot), "committed": committed});
+        let step = serde_json::json!({"rule": if end == all.len() { "complete" } else { "partial" }, "recovered": observations(&snapshot), "committed": committed});
         // Coalesce identical observed prefixes; every byte-cut still executes
         // the full Rust snapshot oracle below.
         if !observed.contains(&step) {

@@ -96,9 +96,7 @@ python3 scripts/ci/render_runtime_refinement_traces.py \
 
 # Actual application/driver/store observations refine the SAME relations used
 # by the Session/Store models below. Missing scenarios fail before TLC runs.
-AWAKEN_OBSERVATION_TRACE_DIR="$observation_trace_dir" cargo test -p awaken-session-application --lib
-AWAKEN_OBSERVATION_TRACE_DIR="$observation_trace_dir" cargo test -p awaken-session-contract --lib processed_time_is_first_observation_and_legacy_is_unknown
-AWAKEN_OBSERVATION_TRACE_DIR="$observation_trace_dir" cargo test -p awaken-store-fs --test recovery every_torn_envelope_prefix_preserves_committed_time_and_facts
+AWAKEN_OBSERVATION_TRACE_DIR="$observation_trace_dir" scripts/ci/check-reliability.sh --session-observations
 python3 scripts/ci/render_runtime_refinement_traces.py --projection session-observations \
   "$observation_trace_dir" "$observation_rendered_dir" --require-complete-transition-coverage
 

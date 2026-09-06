@@ -2,6 +2,12 @@
   "version": 1,
   "exclusions": [
     {
+      "path": "crates/contract/awaken-session-contract/src/realization_observation.rs",
+      "boundary": "test_support_observation_port",
+      "reason": "The parent module exports this port only under the test-support feature. It forwards checkpoints to the scenario executable without owning product transitions or persistence; the scenario adapter and real HTTP crash tests validate observation behavior. This exclusion is not a production proof claim.",
+      "evidence": ["crates/contract/awaken-session-contract/src/lib.rs", "crates/devtools/awaken-scenario-host/src/realization_observation.rs", "e2e/managed_mcp_recovery_e2e.ts"]
+    },
+    {
       "path": "crates/bin/awaken-cli/src/config/report.rs",
       "boundary": "presentation_only",
       "reason": "Formats an already-resolved deployment into redacted text or JSON; it owns no authorization, state transition, concurrency, or persistence decision.",

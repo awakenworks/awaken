@@ -109,7 +109,7 @@ tower = { version = "0.5", features = ["util"] }
 
 awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-resource-application.workspace = true
-awaken-session-contract.workspace = true
+awaken-session-contract = { workspace = true, features = ["test-support"] }
 awaken-dream-application.workspace = true
 awaken-coordinator = { workspace = true, features = ["test-support"] }
 # Reuse the production worker lifecycle/registration/heartbeat/dispatch wiring in

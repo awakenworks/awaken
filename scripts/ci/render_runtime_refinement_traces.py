@@ -205,7 +205,7 @@ def observation_value(value: Any, *, as_set: bool = False) -> str:
         body = ", ".join(observation_value(item) for item in value)
         return "{" + body + "}" if as_set else "<<" + body + ">>"
     if isinstance(value, dict) and value and all(re.fullmatch(r"[a-z][a-z_]*", key) for key in value):
-        return "[" + ", ".join(f"{key} |-> {observation_value(item)}" for key, item in value.items()) + "]"
+        return "[" + ", ".join(f"{key} |-> {observation_value(item, as_set=key in {'active', 'acked', 'known', 'staged', 'published', 'drained', 'expectstage', 'expectpub', 'expectdrain', 'reportedpub', 'reporteddrain'})}" for key, item in value.items()) + "]"
     raise ValueError(f"unsupported observation value: {value!r}")
 
 
@@ -217,7 +217,7 @@ def normalize_observation_times(steps: list[dict[str, Any]]) -> list[dict[str, A
     entire scenario therefore preserves AND reflects their truth, including
     deliberately corrupted timestamps. Revision/cursor fields are unchanged.
     """
-    time_keys = {"now", "created", "updated", "time"}
+    time_keys = {"now", "created", "updated", "time", "expiry", "authoritytime"}
     times: set[int] = set()
 
     def visit(value: Any, mapping: dict[int, int] | None = None, key: str = "") -> Any:
@@ -236,6 +236,88 @@ def normalize_observation_times(steps: list[dict[str, Any]]) -> list[dict[str, A
 
     visit(steps)
     return visit(steps, {time: rank for rank, time in enumerate(sorted(times), 1)})
+
+
+def project_realization_trace(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project recorded roots and completed adapter calls, never decide transitions.
+
+    Forward-filled fields mean 'last observed durable root'; effect sets are
+    folds of completed calls in this process. Only the model admits ordering,
+    authority, publication, ACK or terminal states. Raw sequence/session IDs
+    remain intact, so deletion and cross-execution splicing are detectable.
+    """
+    state: dict[str, Any] = {}
+    trace = []
+    def key(g: dict[str, Any]) -> str:
+        return json.dumps([g["attachment_id"], g["generation"]], separators=(",", ":"))
+    for event in events:
+        if set(event) != {"sequence", "session", "point", "data"}:
+            raise ValueError("realization event schema drift")
+        data, point = event["data"], event["point"]
+        if "attachments" in data:
+            lease = data["lease"] or {"owner": "none", "runtime_incarnation": "none", "epoch": 0, "expires_at_unix_ms": 0}
+            state.update(revision=data["revision"], created=data["created"], updated=data["updated"],
+                owner=lease["owner"], incarnation=lease["runtime_incarnation"], epoch=lease["epoch"], expiry=lease["expires_at_unix_ms"],
+                active=sorted(a["key"] for a in data["attachments"] if a["state"] == "active"),
+                acked=sorted(a["key"] for a in data["attachments"] if a["state"] == "active" and a["ack"]),
+                known=sorted(a["key"] for a in data["attachments"]))
+        if not state:
+            raise ValueError("realization trace must begin with an observed root")
+        for field in ("staged", "published", "drained", "expectstage", "expectpub", "expectdrain"):
+            state.setdefault(field, [])
+        state.setdefault("action", "none")
+        effects = data.get("generations", [data["generation"]] if "generation" in data else [])
+        projected_effects = [{"key": key(g), "session": g["session_id"], "incarnation": g["runtime_incarnation"],
+            "epoch": g["lease_epoch"], "expiry": g["lease_expires_at_unix_ms"]} for g in effects]
+        if point == "projection":
+            action = data["action"]
+            state["action"] = action["phase"]
+            state["expectstage"] = sorted(key(r["generation"]) for r in action.get("mcp_stages", []))
+            state["expectpub"] = sorted(key(g) for g in action.get("publish", []))
+            state["expectdrain"] = sorted(key(g) for g in action.get("drain", []))
+        for event_point, field in [("stage", "staged"), ("publish-one", "published"), ("drain-one", "drained")]:
+            if point == event_point:
+                state[field] = sorted(set(state[field]) | {g["key"] for g in projected_effects})
+        if point == "crash":
+            for field in ("staged", "published", "drained", "expectstage", "expectpub", "expectdrain"):
+                state[field] = []
+            state["action"] = "none"
+        authority = data.get("lease")
+        trace.append(dict(state, sequence=event["sequence"], session=event["session"], event=point, effects=projected_effects,
+            hasauthority=authority is not None,
+            authorityowner=authority["owner"] if authority else "none",
+            authorityincarnation=authority["runtime_incarnation"] if authority else "none",
+            authorityepoch=authority["epoch"] if authority else 0,
+            authoritytime=authority["expires_at_unix_ms"] if authority else 0,
+            reportedpub=[key(g) for g in data.get("published", [])],
+            reporteddrain=[key(g) for g in data.get("drained", [])]))
+    return trace
+
+
+def validate_observation_rule(name: str, step: dict[str, Any]) -> None:
+    """Bind partition labels to raw measured conditions; model owns outcomes."""
+    rule = step["rule"]
+    if name == "publication-cardinality-renewal":
+        match = re.fullmatch(r"count-(\d+)-predecessor-(true|false)-renewed-(true|false)", rule)
+        count, predecessor, renewed = match.groups()
+        cause = step["cause"]
+        if (len(step["active"]) != int(count)
+                or bool(set(step["staged"]) - set(step["active"])) != (predecessor == "true")
+                or (cause["expiry_after"] > cause["expiry_before"]) != (renewed == "true")
+                or cause["expiry_after"] < cause["expiry_before"]):
+            raise ValueError("observation rule conditions drift")
+    elif name == "realization-http-crashes":
+        if rule != f'{step["cut"]}-{step["count"]}':
+            raise ValueError("observation rule conditions drift")
+    elif name == "binding-clock-cases":
+        before, now = step["before"]["updated"], step["now"]
+        actual = "legacy" if before is None else "equal" if before == now else "backward" if before > now else "forward"
+        if actual != rule:
+            raise ValueError("observation rule conditions drift")
+    elif name == "store-torn-prefix":
+        actual = "partial" if len(step["recovered"]) < len(step["committed"]) else "complete"
+        if actual != rule:
+            raise ValueError("observation rule conditions drift")
 
 
 def render_observations(trace_dir: Path, output: Path, repository: Path, manifest: dict[str, Any], require_complete: bool) -> int:
@@ -262,9 +344,19 @@ def render_observations(trace_dir: Path, output: Path, repository: Path, manifes
         steps = document["steps"]
         if not steps:
             raise ValueError(f"empty observation scenario: {name}")
+        rules = [step.get("rule") for step in steps]
+        required = scenario["rules"]
+        if len(rules) != len(set(rules)) or set(rules) != set(required):
+            raise ValueError(f"observation rule coverage drift in {name}: expected={required}, actual={rules}")
+        for step in steps:
+            validate_observation_rule(name, step)
+        if family == "publication":
+            steps = [{key: value for key, value in step.items() if key != "cause"} for step in steps]
+        if family == "realization":
+            steps = [dict(step, trace=project_realization_trace(step["trace"])) for step in steps]
         expressions = []
         for step in normalize_observation_times(steps):
-            if set(step) != set(arguments):
+            if set(step) != set(arguments) | {"rule"}:
                 raise ValueError(f"observation fields drift in {name}")
             values = [observation_value(step[key], as_set=family == "publication") for key in arguments]
             expressions.append(definition["operator"] + "(" + ", ".join(values) + ")")
@@ -286,7 +378,7 @@ def render_observations(trace_dir: Path, output: Path, repository: Path, manifes
         families.add(family)
     missing = sorted(set(profile["required_scenarios"]) - seen)
     missing_families = sorted(set(profile["families"]) - families)
-    report = {"projection_id": profile["projection_id"], "scenarios": sorted(seen), "missing": missing, "missing_families": missing_families, "complete": not missing and not missing_families}
+    report = {"projection_id": profile["projection_id"], "scenarios": sorted(seen), "rules": {name: profile["required_scenarios"][name]["rules"] for name in sorted(seen)}, "missing": missing, "missing_families": missing_families, "complete": not missing and not missing_families}
     (output / "session-observation-coverage.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"session observation coverage: {len(seen)} scenarios, missing={missing}, missing_families={missing_families}")
     if not seen or require_complete and (missing or missing_families):

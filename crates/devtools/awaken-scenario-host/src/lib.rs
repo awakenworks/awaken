@@ -14,6 +14,7 @@ mod dream;
 mod model_publication;
 mod model_routing;
 mod models;
+pub mod realization_observation;
 mod scenario_platform;
 mod web;
 mod worker;
