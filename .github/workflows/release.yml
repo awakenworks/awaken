@@ -388,6 +388,9 @@ jobs:
           test "${#checksums[@]}" -eq 1
           sha256sum -c "${checksums[0]}"
           archive="${checksums[0]%.sha256}"
+          python3 ../scripts/release/verification_manifest.py validate \
+            --artifact "$archive" --manifest "$archive.verification.json" \
+            --expected-profile "$AWAKEN_RELEASE_PROFILE" --require-proof-execution
           tar -xzf "$archive"
           package_root="${archive%.tar.gz}"
           cp "$package_root/awaken" ../deploy/images/management/.awaken-management.bin
@@ -495,6 +498,21 @@ jobs:
           cd dist
           sha256sum install.sh > install.sh.sha256
           sha256sum install.ps1 > install.ps1.sha256
+      - name: Validate every packaged proof manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          shopt -s nullglob
+          archives=(awaken-v*.tar.gz awaken-v*.zip)
+          manifests=(awaken-v*.verification.json)
+          test "${#archives[@]}" -gt 0
+          test "${#archives[@]}" -eq "${#manifests[@]}"
+          for archive in "${archives[@]}"; do
+            python3 ../scripts/release/verification_manifest.py validate \
+              --artifact "$archive" --manifest "$archive.verification.json" \
+              --expected-profile "$AWAKEN_RELEASE_PROFILE" --require-proof-execution
+          done
       - name: Attest the release archives
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:

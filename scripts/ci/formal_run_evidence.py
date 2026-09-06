@@ -71,12 +71,17 @@ def source_snapshot(repository: Path) -> dict:
     }
 
 
+def committed_file_digest(repository: Path, relative: str, revision: str = "HEAD") -> str:
+    # One Git-byte authority for runner, ledger and proof-input identities.
+    # Callers qualifying a release must first validate the clean source receipt;
+    # this function by itself does not reject dirty or unauthenticated checkouts.
+    blob = subprocess.check_output(["git", "show", revision + ":" + relative], cwd=repository)
+    return digest_bytes(blob)
+
+
 def runner_identity(repository: Path) -> dict:
     path = "scripts/ci/check_formal.sh"
-    # The quality runner and Windows packaging may check out different EOLs.
-    # Bind the exact Git blob; source_snapshot separately rejects real edits.
-    blob = subprocess.check_output(["git", "show", "HEAD:" + path], cwd=repository)
-    return {"path": path, "digest": digest_bytes(blob)}
+    return {"path": path, "digest": committed_file_digest(repository, path)}
 
 
 def begin_record(repository: Path, strict: bool, now: int) -> dict:

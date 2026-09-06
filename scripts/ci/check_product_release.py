@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -25,6 +27,17 @@ TARGETS = (
     "x86_64-apple-darwin",
     "x86_64-pc-windows-msvc",
 )
+
+
+def shell_step(workflow: str, name: str) -> str:
+    """Read one literal Bash step in the canonical workflow's bounded layout."""
+    marker = "      - name: " + name + "\n"
+    if workflow.count(marker) != 1:
+        raise ValueError(f"expected exactly one release step {name!r}")
+    block = workflow.split(marker, 1)[1].split("      - name:", 1)[0]
+    if "        shell: bash\n" not in block or block.count("        run: |\n") != 1:
+        raise ValueError(f"release step {name!r} must be one literal Bash block")
+    return textwrap.dedent(block.split("        run: |\n", 1)[1])
 
 
 def validate(
@@ -88,6 +101,27 @@ def validate(
         failures.append(
             "expected one canonical release workflow, got " + ", ".join(release_workflows)
         )
+
+    # R8: both consumers must execute the one validator with exact requested
+    # profile and completed proof execution. Comments, a command after extract,
+    # or a missing strict flag cannot satisfy this binding audit. Actual shell
+    # decision-table tests live beside the production manifest validator.
+    selection = ["python3", "../scripts/release/verification_manifest.py", "validate",
+                 "--artifact", "$archive", "--manifest", "$archive.verification.json",
+                 "--expected-profile", "$AWAKEN_RELEASE_PROFILE", "--require-proof-execution"]
+    for name in ("Stage the exact packaged binary", "Validate every packaged proof manifest"):
+        try:
+            script = shell_step(workflow, name)
+            commands = [shlex.split(line, comments=True) for line in script.replace("\\\n", " ").splitlines()]
+            if commands.count(selection) != 1 or ["set", "-euo", "pipefail"] not in commands:
+                raise ValueError(f"{name}: missing exact fail-closed manifest validation")
+            if name.startswith("Stage") and commands.index(selection) >= commands.index(["tar", "-xzf", "$archive"]):
+                raise ValueError("Management package extraction precedes proof validation")
+        except ValueError as error:
+            failures.append(str(error))
+    if "      - name: Validate every packaged proof manifest\n" in workflow and "      - name: Attest the release archives\n" in workflow:
+        if workflow.index("      - name: Validate every packaged proof manifest\n") >= workflow.index("      - name: Attest the release archives\n"):
+            failures.append("release attestation precedes proof validation")
 
     required_installer = (
         "usage: install.sh vMAJOR.MINOR.PATCH",
@@ -197,6 +231,26 @@ def current_inputs() -> tuple[str, str, str, str, str, str, str, str, tuple[str,
 
 
 class ProductReleaseCheckerTests(unittest.TestCase):
+    def test_proof_consumer_binding_decision_table(self) -> None:
+        # R8: independently remove each consumer's required proof flag, turn its
+        # exact invocation into a comment, or move validation after extraction.
+        # A valid baseline is mandatory; checking a marker somewhere in another
+        # job must not hide the missing edge at this particular consumer.
+        inputs = current_inputs()
+        self.assertEqual(validate(*inputs), [])
+        for name in ("Stage the exact packaged binary", "Validate every packaged proof manifest"):
+            marker = "      - name: " + name + "\n"
+            start, rest = inputs[0].split(marker, 1)
+            block, end = rest.split("      - name:", 1)
+            for changed in (block.replace("--require-proof-execution", ""),
+                            block.replace("python3 ../scripts/release/verification_manifest.py validate", "# omitted validator")):
+                with self.subTest(step=name):
+                    self.assertTrue(validate(start + marker + changed + "      - name:" + end, *inputs[1:]))
+        workflow = inputs[0].replace('          tar -xzf "$archive"\n', "")
+        workflow = workflow.replace('          archive="${checksums[0]%.sha256}"\n',
+                                    '          archive="${checksums[0]%.sha256}"\n          tar -xzf "$archive"\n')
+        self.assertIn("Management package extraction precedes proof validation", validate(workflow, *inputs[1:]))
+
     def test_decision_table_rejects_each_release_authority_drift(self) -> None:
         # The validation comment above owns the cause/effect graph. These
         # mutations execute R1-R6: baseline, broken job edge, competing workflow,

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import re
 import subprocess
 import sys
@@ -19,7 +20,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts/ci"))
 from formal_profile import profile_result
-from formal_run_evidence import canonical_bytes, digest_bytes, digest_file, proof_toolchain, validate_record
+from formal_run_evidence import canonical_bytes, committed_file_digest, digest_bytes, digest_file, proof_toolchain, validate_record
 
 HEX64 = re.compile(r"[0-9a-f]{64}")
 PROFILES = {"standard", "awaken-verified-v1"}
@@ -71,6 +72,12 @@ def build_manifest(
     elif profile == "awaken-verified-v1":
         raise ContractError("Verified packaging requires completed strict formal execution evidence")
 
+    def source_digest(relative: str) -> str:
+        # Executed release receipts already require this exact clean Git tree.
+        # Hash its blobs, not OS-dependent checkout EOLs. Unexecuted local
+        # diagnostics still describe their actual working files, never a release.
+        return committed_file_digest(repository, relative, source_commit) if proof_run is not None else digest_file(repository / relative)
+
     proof_paths = sorted(
         {
             relative
@@ -82,7 +89,7 @@ def build_manifest(
         }
     )
     proof_inputs = [
-        {"path": relative, "digest": digest_file(repository / relative)}
+        {"path": relative, "digest": source_digest(relative)}
         for relative in proof_paths
     ]
     tcb = [
@@ -98,7 +105,8 @@ def build_manifest(
         if item["id"] != "external.llm_semantics"
     ]
     return {
-        "schema_version": 2,
+        "schema_version": 3,
+        "source_digest_basis": "git-blob" if proof_run is not None else "working-tree",
         "profile": profile,
         "source_commit": source_commit,
         "artifact": {
@@ -106,12 +114,10 @@ def build_manifest(
             "digest": digest_file(artifact),
         },
         "ledger_digests": {
-            "coverage": digest_file(repository / "formal/coverage.json"),
-            "features": digest_file(repository / "formal/features.json"),
-            "assumptions": digest_file(repository / "formal/assumptions.json"),
-            "proof_boundaries": digest_file(
-                repository / "formal/proof-boundaries.json"
-            ),
+            "coverage": source_digest("formal/coverage.json"),
+            "features": source_digest("formal/features.json"),
+            "assumptions": source_digest("formal/assumptions.json"),
+            "proof_boundaries": source_digest("formal/proof-boundaries.json"),
         },
         "profile_result": result,
         "proof_toolchain": proof_toolchain(repository),
@@ -212,14 +218,20 @@ def validate_manifest(
     *,
     repository: Path = ROOT,
     require_verified: bool = False,
+    expected_profile: str | None = None,
+    require_proof_execution: bool = False,
     tcb_evidence: dict | None = None,
     runtime_fingerprint: dict | None = None,
     now: int | None = None,
 ) -> None:
-    if manifest.get("schema_version") != 2:
+    if manifest.get("schema_version") != 3:
         raise ContractError("unsupported manifest schema")
     if manifest.get("profile") not in PROFILES:
         raise ContractError("unknown manifest profile")
+    if expected_profile is not None and (expected_profile not in PROFILES or manifest["profile"] != expected_profile):
+        raise ContractError("manifest does not match the requested release profile")
+    if require_proof_execution and manifest.get("proof_execution") is None:
+        raise ContractError("release consumption requires completed strict formal execution evidence")
     if manifest["artifact"]["name"] != artifact.name:
         raise ContractError("artifact name mismatch")
     if manifest["artifact"]["digest"] != digest_file(artifact):
@@ -248,6 +260,120 @@ def validate_manifest(
 
 
 class VerificationManifestTests(unittest.TestCase):
+    @staticmethod
+    def release_case(directory: Path) -> tuple[Path, Path, dict]:
+        # Reuse the receipt fixture and production archive builder. The bytes
+        # are deliberately synthetic; no real binary or proof tool is claimed.
+        from test_formal_run_evidence import prepare_source_fixture
+        from formal_run_evidence import begin_record, finish_record
+        from package import create_archive, write_checksum
+        row = dict(id="fixture.safe", formalizable=True, claim_scope="repository_safety",
+                   proof_grade="abstract_model_checked", bounds=["fixture only"], evidence=["formal/tla/Fixture.tla"])
+        feature = dict(id="fixture", criticality="P0", requirements=[dict(
+            kind="safety", repository_controlled=True, obligations=["fixture.safe"])])
+        root = directory / "source"
+        prepare_source_fixture(root, {
+            ".gitignore": "target/\ndist/\ndeploy/images/management/.awaken-management.bin\n",
+            "formal/coverage.json": json.dumps({"obligations": [row]}) + "\n",
+            "formal/features.json": json.dumps({"features": [feature]}) + "\n",
+            "formal/assumptions.json": '{"assumptions": []}\n',
+            "formal/proof-boundaries.json": '{"boundaries": []}\n',
+            "formal/tla/Fixture.tla": "---- MODULE Fixture ----\n====\n",
+            "scripts/ci/formal_profile.py": (ROOT / "scripts/ci/formal_profile.py").read_text(),
+            "scripts/release/verification_manifest.py": Path(__file__).read_text(),
+            "README.md": "fixture\n", "LICENSE": "fixture\n", "deploy/compose.yaml": "# fixture\n",
+        })
+        (root / "deploy/images/management").mkdir(parents=True)
+        binary = directory / "binary"
+        binary.write_bytes(b"synthetic binary")
+        artifact = create_archive(root, binary, binary, "x86_64-unknown-linux-gnu", "1.0.0", root / "dist", 100)
+        write_checksum(artifact)
+        receipt = finish_record(begin_record(root, True, 100), root, False, 110)
+        manifest = build_manifest(artifact, profile="standard", source_commit=source_commit(root),
+                                  repository=root, proof_run=receipt)
+        write_manifest(manifest, artifact.with_name(artifact.name + ".verification.json"))
+        return root, artifact, manifest
+
+    def test_release_source_hashes_are_git_normalized_but_real_changes_reject(self) -> None:
+        # E1 identical clean Git source + artifact + synthetic receipt across
+        # LF/CRLF checkouts => identical manifests. E2 a semantic source edit
+        # after conversion rejects, never normalized away. This is a packaging
+        # fixture, not evidence of any actual formal tool execution.
+        with tempfile.TemporaryDirectory() as temporary:
+            root, artifact, before = self.release_case(Path(temporary))
+            windows = Path(temporary) / "windows"
+            subprocess.run(["git", "clone", "--quiet", "--config", "core.autocrlf=true", str(root), str(windows)],
+                           check=True, capture_output=True)
+            model = windows / "formal/tla/Fixture.tla"
+            self.assertIn(b"\r\n", model.read_bytes())
+            after = build_manifest(artifact, profile="standard", source_commit=source_commit(windows),
+                                   repository=windows, proof_run=before["proof_execution"])
+            self.assertEqual(before, after)
+            validate_manifest(before, artifact, repository=windows)
+            model.write_bytes(model.read_bytes() + b"changed\r\n")
+            with self.assertRaisesRegex(ContractError, "clean release source"):
+                validate_manifest(before, artifact, repository=windows)
+
+    def test_release_consumption_requires_exact_profile_and_executed_proofs(self) -> None:
+        # R1 standard release with a valid receipt accepts without claiming a
+        # Verified runtime. R2 local diagnostic (null receipt), R3 other profile,
+        # R4 running/foreign receipt and R5 schema/digest/bounds tampering reject.
+        # Use real rebuild/receipt validation; no qualification mocks here.
+        with tempfile.TemporaryDirectory() as temporary:
+            root, artifact, manifest = self.release_case(Path(temporary))
+            validate_manifest(manifest, artifact, repository=root, expected_profile="standard", require_proof_execution=True)
+            diagnostic = build_manifest(artifact, profile="standard", source_commit=source_commit(root), repository=root)
+            validate_manifest(diagnostic, artifact, repository=root)
+            with self.assertRaisesRegex(ContractError, "execution evidence"):
+                validate_manifest(diagnostic, artifact, repository=root, require_proof_execution=True)
+            for profile in ("awaken-verified-v1", "unknown"):
+                with self.subTest(profile=profile), self.assertRaisesRegex(ContractError, "requested release profile"):
+                    validate_manifest(manifest, artifact, repository=root, expected_profile=profile, require_proof_execution=True)
+            mutations = [dict(manifest, schema_version=2), dict(manifest, source_digest_basis="working-tree"),
+                         dict(manifest, bounds=["invented"]), dict(manifest, proof_inputs_digest="sha256:" + "0" * 64),
+                         dict(manifest, proof_execution=dict(manifest["proof_execution"], status="running")),
+                         dict(manifest, proof_execution=dict(manifest["proof_execution"], runner={}))]
+            for index, changed in enumerate(mutations):
+                with self.subTest(rule=index), self.assertRaises(ContractError):
+                    validate_manifest(changed, artifact, repository=root, expected_profile="standard", require_proof_execution=True)
+
+    def test_actual_release_consumers_reject_before_extract_or_attest(self) -> None:
+        # C1 actual workflow shell, C2 matching profile/artifact/receipt, C3
+        # intact sidecar. R1 all true -> stage/validation succeeds; R2 missing
+        # or null/running evidence, R3 wrong profile, R4 changed archive,
+        # R5 orphan sidecar -> failure before extraction or final attestation.
+        # Execute only local validation/staging blocks, never registry writes.
+        from check_product_release import shell_step
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        for step in ("Stage the exact packaged binary", "Validate every packaged proof manifest"):
+            script = shell_step(workflow, step)
+            for fault in (None, "missing", "null", "running", "profile", "archive", "orphan"):
+                if step.startswith("Stage") and fault == "orphan":
+                    continue  # Final publication owns the entire sidecar set.
+                with self.subTest(step=step, fault=fault), tempfile.TemporaryDirectory() as temporary:
+                    root, artifact, manifest = self.release_case(Path(temporary))
+                    sidecar = artifact.with_name(artifact.name + ".verification.json")
+                    if fault == "missing":
+                        sidecar.unlink()
+                    elif fault in {"null", "running"}:
+                        manifest["proof_execution"] = None if fault == "null" else dict(manifest["proof_execution"], status="running")
+                        write_manifest(manifest, sidecar)
+                    elif fault == "archive":
+                        artifact.write_bytes(b"changed archive")
+                    elif fault == "orphan":
+                        write_manifest(manifest, artifact.parent / "awaken-v-orphan.verification.json")
+                    result = subprocess.run(["bash", "-c", script], cwd=root, capture_output=True, text=True, timeout=30,
+                                            env=dict(os.environ, AWAKEN_RELEASE_PROFILE="awaken-verified-v1" if fault == "profile" else "standard",
+                                                     PYTHONDONTWRITEBYTECODE="1"))
+                    staged = root / "deploy/images/management/.awaken-management.bin"
+                    if fault is None:
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        if step.startswith("Stage"):
+                            self.assertEqual(staged.read_bytes(), b"synthetic binary")
+                    else:
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertFalse(staged.exists())
+
     @staticmethod
     def tcb_case() -> tuple[dict, dict, dict]:
         contracts, observations, dependencies = [], [], []
@@ -396,7 +522,7 @@ class VerificationManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             artifact = Path(temporary) / "awaken.tar.gz"
             artifact.write_bytes(b"artifact")
-            manifest.update(schema_version=2, profile="awaken-verified-v1", profile_result={"eligible": True},
+            manifest.update(schema_version=3, profile="awaken-verified-v1", profile_result={"eligible": True},
                             artifact={"name": artifact.name, "digest": digest_file(artifact)})
             with patch(f"{__name__}.build_manifest", return_value=manifest):
                 validate_manifest(manifest, artifact, require_verified=True, tcb_evidence=evidence,
@@ -418,7 +544,7 @@ class VerificationManifestTests(unittest.TestCase):
             directory = Path(temporary)
             artifact = directory / "awaken.tar.gz"
             artifact.write_bytes(b"artifact")
-            manifest.update(schema_version=2, profile="awaken-verified-v1", profile_result={"eligible": True},
+            manifest.update(schema_version=3, profile="awaken-verified-v1", profile_result={"eligible": True},
                             artifact={"name": artifact.name, "digest": digest_file(artifact)})
             for name, value in (("manifest", manifest), ("evidence", evidence), ("target", target)):
                 (directory / (name + ".json")).write_bytes(canonical_bytes(value))
@@ -452,6 +578,8 @@ def main() -> int:
     validate.add_argument("--artifact", type=Path, required=True)
     validate.add_argument("--manifest", type=Path, required=True)
     validate.add_argument("--require-verified", action="store_true")
+    validate.add_argument("--expected-profile", choices=sorted(PROFILES))
+    validate.add_argument("--require-proof-execution", action="store_true")
     validate.add_argument("--tcb-evidence", type=Path)
     validate.add_argument("--runtime-fingerprint", type=Path,
                           help="independently authenticated target dependency versions/configuration digests")
@@ -479,6 +607,8 @@ def main() -> int:
         manifest,
         args.artifact,
         require_verified=args.require_verified,
+        expected_profile=args.expected_profile,
+        require_proof_execution=args.require_proof_execution,
         tcb_evidence=evidence,
         runtime_fingerprint=load_json(args.runtime_fingerprint) if args.runtime_fingerprint else None,
     )

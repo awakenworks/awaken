@@ -737,7 +737,7 @@ contract. The existing release artifact attestation signs the generated file
 with the other dist subjects. AWAKEN_RELEASE_PROFILE=awaken-verified-v1 turns
 package generation into the strong gate; ordinary releases use standard and
 carry the exact non-eligibility gap set without displaying a Verified identity.
-Manifest schema 2 additionally binds `proof_execution`, the completion receipt
+Manifest schema 3 additionally binds `proof_execution`, the completion receipt
 emitted by the one strict `check_formal.sh` invocation. It replaces any previous
 receipt with `running` before checks and publishes `passed` only after every
 tool stage succeeds. Packaging consumes the exact quality invocation artifact;
@@ -746,6 +746,19 @@ toolchain contracts, and dirty candidate trees. Standard local packages may
 explicitly carry null execution evidence. The receipt is CI testimony signed
 through the existing release attestation, not an independently checkable proof
 certificate; tool and runner trust remain explicit.
+Executed manifests hash the committed Git blobs for source ledgers and proof
+inputs, sharing the runner's source-identity mechanism. LF/CRLF checkouts of
+the same clean commit therefore reproduce the same manifest; semantic edits
+still invalidate the receipt. `source_digest_basis` distinguishes `git-blob`
+release identity from `working-tree` local diagnostics. Artifact hashes always
+cover exact physical archive bytes. Earlier manifest schemas are rejected.
+The Management package staging and final release jobs both invoke the canonical
+validator with `--expected-profile` and `--require-proof-execution` before
+extracting or attesting archives. Standard releases require executed proof
+evidence too; local diagnostic packages with null receipts cannot pass these
+consumer gates. Final archive/sidecar sets must be nonempty and paired. Tests
+execute these local workflow blocks using synthetic packages; they do not
+claim a successful registry publication or a live deployment attestation.
 The release-side validator offers `validate --require-verified --tcb-evidence
 evidence.json --runtime-fingerprint target.json`. The caller must independently
 authenticate both inputs. Evidence owns `observations`; the target snapshot owns
@@ -755,7 +768,8 @@ version/configuration must equal the target. Missing/unknown/duplicate dependenc
 IDs, unknown fields, malformed digests and invalid clocks fail closed; the
 maximum-age boundary is inclusive. This snapshot is not a second assumption
 ledger and cannot be derived from the evidence it is meant to check.
-`VerifiedProfileAdmission` checks the bounded point-in-time decision, including
+`VerifiedProfileAdmission` composes the bounded release prerequisite and
+point-in-time TCB decision, including artifact/profile/proof/source mismatch,
 per-dependency mismatch and expiry mutants; Python decision-table tests exercise
 the production validator and its CLI. Neither is universal implementation
 refinement. Authenticating the observer/actual deployment, preventing snapshot

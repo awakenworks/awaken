@@ -2,14 +2,18 @@
 EXTENDS Integers, TLC
 
 CONSTANT Dependencies
-VARIABLE snapshot, decision
-vars == <<snapshot, decision>>
+VARIABLE snapshot, release, decision
+vars == <<snapshot, release, decision>>
 
-\* Point-in-time abstraction of validate_tcb_evidence AFTER artifact/proof
-\* qualification. Target version/config values are normalized to 0; 1 means
+\* Point-in-time abstraction of release consumption followed by TCB admission.
+\* Target version/config values are normalized to 0; 1 means
 \* mismatch, not a real version or hash. complete abstracts exact, unique,
 \* nonempty IDs and closed shapes; hashes abstracts syntactic validity only.
-\* Bounds: two dependencies, match/mismatch, clock/observation -1..3, max age 1.
+\* Bounds: two dependencies, match/mismatch, clock/observation -1..3, max age 1;
+\* four Boolean release identity/receipt projections. Release consumers require
+\* exact artifact, requested profile, completed strict execution, and source /
+\* ledger / proof identities. This models the release flags enabled, not local
+\* diagnostic validation. Authenticated CI transport/signatures remain TCB.
 \* Trusted caller authenticates a frozen snapshot. No Python refinement,
 \* signature authentication, continuous revocation or unconditional liveness
 \* is claimed. The decision never authorizes future changed runtime snapshots.
@@ -21,8 +25,21 @@ Snapshots == [complete : BOOLEAN,
               now : -1..3,
               observed : [Dependencies -> -1..3]]
 
+Releases == [artifactMatches : BOOLEAN, profileMatches : BOOLEAN,
+             proofComplete : BOOLEAN, sourceMatches : BOOLEAN]
+
 Init == /\ snapshot \in Snapshots
-        /\ decision = "Pending"
+        /\ release \in Releases
+        /\ decision = "ReleasePending"
+
+ReleaseAdmissible == /\ release.artifactMatches
+                     /\ release.profileMatches
+                     /\ release.proofComplete
+                     /\ release.sourceMatches
+
+ValidateRelease == /\ decision = "ReleasePending"
+                   /\ decision' = IF ReleaseAdmissible THEN "ReleaseAccepted" ELSE "ReleaseRejected"
+                   /\ UNCHANGED <<snapshot, release>>
 
 \* Cause/effect rules: R1 all guards -> Accept, including age = 1.
 \* R2 any identity/contract/hash/version/config mismatch -> Reject.
@@ -39,13 +56,17 @@ Admissible == /\ snapshot.complete
                     /\ snapshot.observed[d] <= snapshot.now
                     /\ snapshot.now - snapshot.observed[d] <= 1
 
-Decide == /\ decision = "Pending"
+Decide == /\ decision = "ReleaseAccepted"
           /\ decision' = IF Admissible THEN "Accepted" ELSE "Rejected"
-          /\ UNCHANGED snapshot
-Next == Decide \/ UNCHANGED vars
+          /\ UNCHANGED <<snapshot, release>>
+Next == ValidateRelease \/ Decide \/ UNCHANGED vars
 
 TypeOK == /\ snapshot \in Snapshots
-          /\ decision \in {"Pending", "Accepted", "Rejected"}
+          /\ release \in Releases
+          /\ decision \in {"ReleasePending", "ReleaseAccepted", "ReleaseRejected", "Accepted", "Rejected"}
+ReleaseConsumptionHasExactExecutedEvidence == decision \in {"ReleaseAccepted", "Accepted", "Rejected"} =>
+    /\ release.artifactMatches /\ release.profileMatches
+    /\ release.proofComplete /\ release.sourceMatches
 AcceptedHasExactFingerprint == decision = "Accepted" =>
     \A d \in Dependencies :
         /\ snapshot.versions[d] = 0

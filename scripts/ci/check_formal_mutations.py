@@ -624,7 +624,7 @@ def check_credential_removal_model_mutant(tlc_jar: Path) -> None:
 
 
 def check_verified_admission_model_mutants(tlc_jar: Path) -> None:
-    # R2/R3: omit one target binding or expiry guard. Only the named safety
+    # R2/R3/R8: omit one target binding, expiry or release guard. Only the named safety
     # violation after a green baseline counts; tool errors never count as kills.
     source = (ROOT / "formal/tla/VerifiedProfileAdmission.tla").read_text()
     config = (ROOT / "formal/tla/VerifiedProfileAdmission.cfg").read_text()
@@ -633,12 +633,17 @@ def check_verified_admission_model_mutants(tlc_jar: Path) -> None:
         (r"              /\ \A d \in Dependencies : snapshot.versions[d] = 0", "AcceptedHasExactFingerprint"),
         (r"              /\ \A d \in Dependencies : snapshot.configurations[d] = 0", "AcceptedHasExactFingerprint"),
         (r"                    /\ snapshot.now - snapshot.observed[d] <= 1", "AcceptedHasFreshEvidence"),
+        ("ReleaseAdmissible == /\\ release.artifactMatches", "ReleaseConsumptionHasExactExecutedEvidence"),
+        (r"                     /\ release.profileMatches", "ReleaseConsumptionHasExactExecutedEvidence"),
+        (r"                     /\ release.proofComplete", "ReleaseConsumptionHasExactExecutedEvidence"),
+        (r"                     /\ release.sourceMatches", "ReleaseConsumptionHasExactExecutedEvidence"),
     ):
         if source.count(guard) != 1:
             raise SystemExit("Verified admission mutation anchor drifted; review the model")
-        mutations.append((source.replace(guard, ""), config, invariant))
+        replacement = "ReleaseAdmissible == /\\ TRUE" if guard.startswith("ReleaseAdmissible ==") else ""
+        mutations.append((source.replace(guard, replacement), config, invariant))
     check_tlc_model_mutations(tlc_jar, "VerifiedProfileAdmission", source, config, mutations)
-    print("Verified admission mutation score: 3/3 killed (version, configuration, expiry)")
+    print("Verified admission mutation score: 7/7 killed (target freshness and exact executed release)")
 
 
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,
