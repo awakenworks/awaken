@@ -170,7 +170,7 @@ pub fn awaken_protocol_acp::SupervisePolicy::default() -> Self
 pub struct awaken_protocol_acp::Supervisor
 impl awaken_protocol_acp::Supervisor
 pub async fn awaken_protocol_acp::Supervisor::reap(&dyn awaken_provisioning_contract::sandbox::runtime::ProcessHandle, core::time::Duration) -> core::result::Result<bool, awaken_protocol_acp::AcpError>
-pub async fn awaken_protocol_acp::Supervisor::reap_after_terminal(&dyn awaken_provisioning_contract::sandbox::runtime::ProcessHandle, core::time::Duration) -> core::result::Result<bool, awaken_protocol_acp::AcpError>
+pub async fn awaken_protocol_acp::Supervisor::reap_after_terminal(&mut dyn awaken_agent_channel::AgentChannel, &dyn awaken_provisioning_contract::sandbox::runtime::ProcessHandle, core::time::Duration) -> core::result::Result<bool, awaken_protocol_acp::AcpError>
 pub async fn awaken_protocol_acp::Supervisor::supervise(&mut dyn awaken_agent_channel::AgentChannel, &dyn awaken_provisioning_contract::sandbox::runtime::ProcessHandle, &str, &mut dyn awaken_protocol_acp::RunFactAppender, impl core::future::future::Future<Output = ()>, &mut tokio::sync::mpsc::bounded::Receiver<awaken_protocol_acp::Injection>, awaken_protocol_acp::SupervisePolicy, awaken_protocol_acp::Codec, core::option::Option<awaken_protocol_acp::LaunchSink<'_>>) -> core::result::Result<awaken_protocol_acp::TerminationReason, awaken_protocol_acp::AcpError>
 pub async fn awaken_protocol_acp::Supervisor::supervise_with_config(&mut dyn awaken_agent_channel::AgentChannel, &dyn awaken_provisioning_contract::sandbox::runtime::ProcessHandle, &str, &mut dyn awaken_protocol_acp::RunFactAppender, impl core::future::future::Future<Output = ()>, &mut tokio::sync::mpsc::bounded::Receiver<awaken_protocol_acp::Injection>, awaken_protocol_acp::SupervisePolicy, awaken_protocol_acp::Codec, &mut awaken_protocol_acp::TurnConfig<'_>, core::option::Option<awaken_protocol_acp::LaunchSink<'_>>) -> core::result::Result<awaken_protocol_acp::TerminationReason, awaken_protocol_acp::AcpError>
 pub struct awaken_protocol_acp::TurnConfig<'a>
@@ -178,12 +178,14 @@ pub awaken_protocol_acp::TurnConfig::auth_method_id: core::option::Option<alloc:
 pub awaken_protocol_acp::TurnConfig::expected_capability: core::option::Option<awaken_protocol_acp::AcpCapabilityExpectation>
 pub awaken_protocol_acp::TurnConfig::handshake_step_deadline: core::time::Duration
 pub awaken_protocol_acp::TurnConfig::mcp_servers: alloc::vec::Vec<awaken_protocol_acp::SessionMcpServer>
+pub awaken_protocol_acp::TurnConfig::permission_settle_deadline: core::time::Duration
 pub awaken_protocol_acp::TurnConfig::resolver: &'a dyn awaken_protocol_acp::PermissionResolver
 pub awaken_protocol_acp::TurnConfig::session_config_options: alloc::vec::Vec<awaken_protocol_acp::SessionConfigOptionSelection>
 pub awaken_protocol_acp::TurnConfig::session_cwd: core::option::Option<alloc::string::String>
 pub awaken_protocol_acp::TurnConfig::session_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_acp::TurnConfig::session_mode: core::option::Option<alloc::string::String>
 pub awaken_protocol_acp::TurnConfig::session_model: core::option::Option<alloc::string::String>
+pub awaken_protocol_acp::TurnConfig::tool_aliases: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 impl<'a> awaken_protocol_acp::TurnConfig<'a>
 pub fn awaken_protocol_acp::TurnConfig<'a>::new(&'a dyn awaken_protocol_acp::PermissionResolver) -> Self
 pub trait awaken_protocol_acp::LaunchObserver: core::marker::Send + core::marker::Sync

@@ -474,7 +474,7 @@ pub(super) async fn acquire_pod_cleanup_gate_with_authorization(
         }
     }
     let uid = uid.expect("cleanup admission proved Pod UID is present");
-    match pod_cleanup_authorization_admission(observed_authorization.as_ref(), &authorization)? {
+    match pod_cleanup_authorization_admission(observed_authorization.as_ref(), authorization)? {
         PodCleanupAuthorizationAdmission::Resume => {
             return Ok(PendingPodCleanup {
                 pod: observed.clone(),
