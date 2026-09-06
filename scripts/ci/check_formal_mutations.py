@@ -476,6 +476,8 @@ def main() -> None:
     model_selection.add_argument("--session-observation-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--session-observation-trace-mutants", type=Path, metavar="TLC_JAR")
     parser.add_argument("--observation-trace-dir", type=Path)
+
+    model_selection.add_argument("--cowork-lifecycle-model-mutants", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
     if arguments.session_observation_trace_mutants is not None:
         if arguments.observation_trace_dir is None:
@@ -484,6 +486,9 @@ def main() -> None:
         return
     if arguments.session_observation_model_mutants is not None:
         check_session_observation_model_mutants(arguments.session_observation_model_mutants)
+        return
+    if arguments.cowork_lifecycle_model_mutants is not None:
+        check_cowork_lifecycle_model_mutants(arguments.cowork_lifecycle_model_mutants)
         return
     if arguments.realization_renewal_model_mutant is not None:
         check_realization_renewal_model_mutant(arguments.realization_renewal_model_mutant)
@@ -886,6 +891,36 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
     check_observation_rule_mutants(trace_dir, manifest)
     check_realization_trace_mutants(tlc_jar, trace_dir, manifest)
     print("Production observation trace mutation score: 4/4 killed")
+
+def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
+    # C1 restore timeout-as-observer-drop; C2 TERM-as-ACK; C3 crash-as-ACK;
+    # C4 first-target-as-complete-fanout. Each mutant must fail its independent
+    # invariant after a green baseline, never a syntax/build/infrastructure error.
+    source = (ROOT / "formal/tla/AcpBoundary.tla").read_text()
+    config = (ROOT / "formal/tla/AcpBoundary.cfg").read_text()
+    timeout = source[source.index("CleanupTimeout =="):source.index("ObserveExit(code) ==")]
+    mutant_timeout = timeout.replace("killSent, observing, ack", "killSent, ack") + "  /\\ observing' = FALSE\n"
+    check_tlc_model_mutations(tlc_jar, "AcpBoundary", source, config, [
+        (source.replace(timeout, mutant_timeout), config.replace("INVARIANTS Safety", "INVARIANTS CleanupObserverRetained Safety"), "CleanupObserverRetained"),
+        (source.replace("/\\ exitCode # 0 /\\ observing /\\ ~ack", "/\\ termSent /\\ observing /\\ ~ack"), config.replace("INVARIANTS Safety", "INVARIANTS NoFabricatedQuiescence Safety"), "NoFabricatedQuiescence"),
+    ])
+    source = (ROOT / "formal/tla/SessionThreadToolComposition.tla").read_text()
+    config = (ROOT / "formal/tla/SessionThreadToolComposition.cfg").read_text()
+    crash = source[source.index("CrashChild(run) =="):source.index("ObserveProcessQuiescence(run) ==")]
+    mutant = crash.replace("UNCHANGED <<toolState, physicalRuns, invokedAttempt>>", "UNCHANGED <<toolState, invokedAttempt>>\n    /\\ physicalRuns' = physicalRuns \\ {run}")
+    check_tlc_model_mutations(tlc_jar, "SessionThreadToolComposition", source, config, [
+        (source.replace(crash, mutant), config.replace("    Safety", "    CrashDoesNotProveQuiescence\n    Safety"), "CrashDoesNotProveQuiescence"),
+    ], dependencies=("ThreadCommitProjection",))
+    source = (ROOT / "formal/tla/ManagedCredentialRollout.tla").read_text()
+    # Safety mutation does not assume eventual provider availability. The full
+    # temporal configuration is separately selected by the strict gate.
+    config = "SPECIFICATION Spec\nCONSTANT MaxRevision = 3\nINVARIANTS AdoptionCoversEveryNamedFence RolloutSafety\nCHECK_DEADLOCK FALSE\n"
+    guard = r"\A target \in Targets: serviceRevision[target] >= deliveryEvent.revision"
+    mutant = source.replace(guard, "serviceRevision[1] >= deliveryEvent.revision", 1)
+    check_tlc_model_mutations(tlc_jar, "ManagedCredentialRollout", source, config, [
+        (mutant, config, "AdoptionCoversEveryNamedFence"),
+    ])
+    print("Cowork lifecycle mutation score: 4/4 killed (timeout, signal, crash, partial adoption)")
 
 
 def check_observation_rule_mutants(trace_dir: Path, manifest: dict) -> None:

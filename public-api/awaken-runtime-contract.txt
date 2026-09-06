@@ -1134,6 +1134,7 @@ pub struct awaken_runtime_contract::resolved::AcpExecutionProfile
 pub awaken_runtime_contract::resolved::AcpExecutionProfile::capability_adapter_version: alloc::string::String
 pub awaken_runtime_contract::resolved::AcpExecutionProfile::capability_fingerprint: alloc::string::String
 pub awaken_runtime_contract::resolved::AcpExecutionProfile::session_configuration: awaken_agent_contract::acp::AcpSessionConfiguration
+pub awaken_runtime_contract::resolved::AcpExecutionProfile::supports_tool_aliases: bool
 pub struct awaken_runtime_contract::resolved::AcpMcpServer
 pub awaken_runtime_contract::resolved::AcpMcpServer::name: alloc::string::String
 pub awaken_runtime_contract::resolved::AcpMcpServer::transport: awaken_runtime_contract::resolved::AcpMcpTransport
@@ -1204,6 +1205,7 @@ pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::provisioning(&
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(awaken_runtime_contract::resolved::ModelBinding, awaken_credential_contract::CredentialRef, awaken_runtime_contract::resolved::BackendModelSelection, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, awaken_agent_contract::acp::AcpSessionConfiguration) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_from_parts(awaken_runtime_contract::resolved::ModelBinding, awaken_runtime_contract::resolved::ModelProvisioning) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::with_acp_tool_alias_support(self, bool) -> Self
 impl awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, awaken_runtime_contract::resolved::InferenceEndpoint) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider_with_acp(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::AcpExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
@@ -1287,6 +1289,7 @@ pub awaken_runtime_contract::resolved::ToolModelProjection::prompt: core::option
 pub awaken_runtime_contract::resolved::ToolModelProjection::tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub struct awaken_runtime_contract::resolved::ToolPresentation
 impl awaken_runtime_contract::resolved::ToolPresentation
+pub fn awaken_runtime_contract::resolved::ToolPresentation::acp_aliases(&self) -> core::result::Result<alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>, alloc::string::String>
 pub fn awaken_runtime_contract::resolved::ToolPresentation::discovery(&self) -> &awaken_runtime_contract::resolved::ToolDiscoverySettings
 pub fn awaken_runtime_contract::resolved::ToolPresentation::exposure(&self, &str) -> awaken_runtime_contract::resolved::ToolExposure
 pub fn awaken_runtime_contract::resolved::ToolPresentation::from_overrides(impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, awaken_runtime_contract::resolved::ToolPresentationOverride)>) -> Self
@@ -1378,6 +1381,10 @@ impl awaken_runtime_contract::resume::ResumeCommand
 pub fn awaken_runtime_contract::resume::ResumeCommand::from_ticket(&awaken_agent_contract::agent::awaiting::ResumeTicket, awaken_runtime_contract::resume::ResumeResult, u64) -> Self
 pub fn awaken_runtime_contract::resume::ResumeCommand::with_context_messages(self, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> Self
 pub fn awaken_runtime_contract::resume::ResumeCommand::with_operation_id(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub trait awaken_runtime_contract::resume::OwnedToolContinuation: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::resume::OwnedToolContinuation::owns_tool(&self, &str) -> bool
+pub fn awaken_runtime_contract::resume::OwnedToolContinuation::recover<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::resume::OwnedToolContinuation::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::resume::validate_resume(&awaken_agent_contract::agent::awaiting::ResumeTicket, &awaken_runtime_contract::resume::ResumeCommand) -> core::result::Result<(), awaken_runtime_contract::resume::ResumeError>
 pub mod awaken_runtime_contract::runtime_context
 pub enum awaken_runtime_contract::runtime_context::AttemptOwnershipError
@@ -1386,6 +1393,10 @@ pub awaken_runtime_contract::runtime_context::AttemptOwnershipError::Unavailable
 pub enum awaken_runtime_contract::runtime_context::TranscriptContextDestination
 pub awaken_runtime_contract::runtime_context::TranscriptContextDestination::DurableThreadTruth
 pub awaken_runtime_contract::runtime_context::TranscriptContextDestination::ModelRequest
+pub struct awaken_runtime_contract::runtime_context::AttemptQuiescence
+impl awaken_runtime_contract::runtime_context::AttemptQuiescence
+pub fn awaken_runtime_contract::runtime_context::AttemptQuiescence::can_acknowledge_return(&self) -> bool
+pub fn awaken_runtime_contract::runtime_context::AttemptQuiescence::mark_uncertain(&self)
 pub struct awaken_runtime_contract::runtime_context::CaptureContext
 pub awaken_runtime_contract::runtime_context::CaptureContext::decision: awaken_runtime_contract::capture::CaptureDecision
 pub awaken_runtime_contract::runtime_context::CaptureContext::sink: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>>
@@ -1418,6 +1429,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_executor:
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_request_gate: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelRequestGate>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::ownership: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::physical_quiescence: awaken_runtime_contract::runtime_context::AttemptQuiescence
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::provider_server_tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ProviderServerTool>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::request_context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
@@ -1784,6 +1796,7 @@ pub fn awaken_runtime_contract::tool_batch::ToolBatchId::as_str(&self) -> &str
 pub struct awaken_runtime_contract::tool_batch::ToolWait
 pub awaken_runtime_contract::tool_batch::ToolWait::correlation_id: alloc::string::String
 pub awaken_runtime_contract::tool_batch::ToolWait::kind: awaken_runtime_contract::tool_batch::ToolWaitKind
+pub fn awaken_runtime_contract::tool_batch::store_from_run_commands(alloc::vec::Vec<awaken_agent_contract::agent::state::Command>, &awaken_agent_contract::agent::run::Id) -> awaken_agent_contract::agent::state::Store
 pub mod awaken_runtime_contract::tool_discovery
 pub struct awaken_runtime_contract::tool_discovery::ToolSearchInput
 pub awaken_runtime_contract::tool_discovery::ToolSearchInput::max_results: core::option::Option<awaken_runtime_contract::tool_discovery::ToolSearchLimit>
@@ -1796,6 +1809,15 @@ pub fn awaken_runtime_contract::tool_discovery::ToolSearchLimit::new(u8) -> core
 impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::tool_discovery::ToolSearchLimit
 pub fn awaken_runtime_contract::tool_discovery::ToolSearchLimit::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_runtime_contract::tool_discovery::ToolSearchLimitError(_)
+pub mod awaken_runtime_contract::tool_export
+pub struct awaken_runtime_contract::tool_export::AcpToolExport
+pub awaken_runtime_contract::tool_export::AcpToolExport::server: awaken_runtime_contract::resolved::AcpMcpServer
+impl awaken_runtime_contract::tool_export::AcpToolExport
+pub fn awaken_runtime_contract::tool_export::AcpToolExport::new(awaken_runtime_contract::resolved::AcpMcpServer, impl core::marker::Send + core::marker::Sync + 'static) -> Self
+pub trait awaken_runtime_contract::tool_export::AcpToolExporter: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::tool_export::AcpToolExporter::export<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool_export::AcpToolExport, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::tool_export::AcpToolExporter::export_channel_set<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::resolved::AcpMcpServer, alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>, alloc::boxed::Box<(dyn tokio::io::async_read::AsyncRead + core::marker::Unpin + core::marker::Send)>, alloc::boxed::Box<(dyn tokio::io::async_write::AsyncWrite + core::marker::Unpin + core::marker::Send)>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool_export::AcpToolExport, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::tool_export::AcpToolExporter::export_set<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool_export::AcpToolExport, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub enum awaken_runtime_contract::AttemptCredentialBindingError
 pub awaken_runtime_contract::AttemptCredentialBindingError::Admission(awaken_credential_contract::CredentialAdmissionError)
 pub awaken_runtime_contract::AttemptCredentialBindingError::DuplicateCandidate
@@ -2391,6 +2413,7 @@ pub awaken_runtime_contract::RuntimeRunContext::model_executor: core::option::Op
 pub awaken_runtime_contract::RuntimeRunContext::model_request_gate: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelRequestGate>>
 pub awaken_runtime_contract::RuntimeRunContext::ownership: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>>
 pub awaken_runtime_contract::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
+pub awaken_runtime_contract::RuntimeRunContext::physical_quiescence: awaken_runtime_contract::runtime_context::AttemptQuiescence
 pub awaken_runtime_contract::RuntimeRunContext::provider_server_tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ProviderServerTool>
 pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>>
 pub awaken_runtime_contract::RuntimeRunContext::request_context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>

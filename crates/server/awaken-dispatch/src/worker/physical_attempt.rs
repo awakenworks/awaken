@@ -10,7 +10,9 @@ use std::sync::Arc;
 use super::DispatchWorker;
 use crate::Error;
 use crate::clock::Clock;
-use crate::dispatch::{AttemptAdmission, Claimed, Dispatch, RunClaim, SettleOutcome};
+use crate::dispatch::{
+    AttemptAdmission, Claimed, Dispatch, DispatchError, RunClaim, SettleOutcome,
+};
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{AttemptRecoveryMode, LiveInput};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -29,9 +31,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// The durable claim remains the mutation fence. Its embedded physical slot
     /// adds only the missing quiescence fact: a successor claim may exist, but it
     /// waits here until the predecessor future has actually returned. If
-    /// cooperative cancellation cannot make the future return within the safety
-    /// margin, this function deliberately leaves the slot occupied; recovery is
-    /// blocked until the old Worker acknowledges return. An authoritative
+    /// cooperative cancellation exceeds the lease request budget, this drive
+    /// keeps observing the same future with the slot occupied. Only actual
+    /// return without nested uncertainty acknowledges quiescence; a request
+    /// timeout is not a cleanup deadline. An authoritative
     /// provider terminal receipt may prove a remote model request stopped;
     /// process/Pod termination proves only process-bound tool/Sandbox work.
     pub(super) async fn run_physical_attempt<T, E, F, Fut>(
@@ -105,7 +108,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
 
         if cancellation.is_cancelled() {
-            let _ = self.store.finish_attempt(&claim).await?;
+            let _ = self.finish_observed_attempt(&claim, &timing).await?;
             return Err(Error::Execution(
                 awaken_runtime_contract::execution::Error::Execution(
                     "dispatch authority was lost before physical attempt start".to_string(),
@@ -113,33 +116,43 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             ));
         }
 
+        let mut attempt_context = context.clone();
+        attempt_context.physical_quiescence = Default::default();
+        let quiescence = attempt_context.physical_quiescence.clone();
         let attempt = self.runtime.begin_active_attempt(
             &claim.run_id,
             thread_id,
-            context.clone(),
+            attempt_context,
             live_input,
         );
         let operation = operation(attempt.context().clone());
         tokio::pin!(operation);
         let result = tokio::select! {
-            result = &mut operation => Some(result),
+            result = &mut operation => result,
             _ = cancellation.cancelled() => {
-                tokio::time::timeout(timing.request_timeout(), &mut operation)
-                    .await
-                    .ok()
+                match tokio::time::timeout(timing.request_timeout(), &mut operation).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        // The executor owns process termination and its grace
+                        // periods. Dropping it here could preempt TERM -> KILL
+                        // and lose the only late-return ACK observer. Retain this
+                        // structured drive (and Thread lock), never spawn an
+                        // untracked cleanup task or manufacture a receipt.
+                        tracing::warn!(run_id = %claim.run_id.0, owner = %claim.owner,
+                            lease_epoch = claim.epoch, phase = "physical_quiescence",
+                            "Physical attempt cleanup exceeded lease request budget; awaiting actual return");
+                        operation.await
+                    }
+                }
             }
         };
-        let Some(result) = result else {
-            // No ACK: retaining the occupied slot is intentional. Lease expiry
-            // alone cannot prove an opaque provider or Sandbox has stopped.
-            return Err(Error::Execution(
-                awaken_runtime_contract::execution::Error::Execution(
-                    "physical Run attempt did not quiesce within the authority safety margin"
-                        .to_string(),
-                ),
-            ));
-        };
-        if self.store.finish_attempt(&claim).await? != SettleOutcome::Applied {
+        if !quiescence.can_acknowledge_return() {
+            tracing::warn!(run_id = %claim.run_id.0, owner = %claim.owner,
+                lease_epoch = claim.epoch, phase = "physical_quiescence",
+                "Executor returned without physical termination evidence; retaining attempt slot");
+            return Ok(result);
+        }
+        if self.finish_observed_attempt(&claim, &timing).await? != SettleOutcome::Applied {
             return Err(Error::Execution(
                 awaken_runtime_contract::execution::Error::Execution(
                     "physical Run attempt quiescence acknowledgement was fenced".to_string(),
@@ -147,5 +160,30 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             ));
         }
         Ok(result)
+    }
+
+    async fn finish_observed_attempt(
+        &self,
+        claim: &RunClaim,
+        timing: &AuthorityLeaseTiming,
+    ) -> Result<SettleOutcome, Error> {
+        loop {
+            match tokio::time::timeout(timing.request_timeout(), self.store.finish_attempt(claim))
+                .await
+            {
+                Ok(Ok(outcome)) => return Ok(outcome),
+                Ok(Err(DispatchError::Unavailable(_))) | Err(_) => {
+                    // Actual return is already known; retry only its exact,
+                    // idempotent ACK. A lost response may have cleared the slot.
+                    // Claim loss cannot invalidate evidence about this old slot,
+                    // and a successor slot is fenced by the existing store.
+                    tracing::warn!(run_id = %claim.run_id.0, owner = %claim.owner,
+                        lease_epoch = claim.epoch, phase = "physical_quiescence_ack",
+                        "Physical attempt ACK unavailable; retaining observed return for retry");
+                    tokio::time::sleep(timing.retry_delay()).await;
+                }
+                Ok(Err(error)) => return Err(error.into()),
+            }
+        }
     }
 }

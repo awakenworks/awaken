@@ -100,18 +100,44 @@ It grants no commit, checkpoint, or settlement authority.
 claim A -> begin A -> external future A
 lease A expires -> claim B
 begin B -> Blocked
-future A returns -> finish A
+future A returns with no abandoned nested effect -> finish A
 begin B -> Applied -> external future B
 ```
 
-Only explicit return from the owned executor Future acknowledges quiescence.
-Cooperative cancellation may cause that return; dropping or aborting the Future
-does not prove an opaque remote request stopped. Task abort, process crash, Lease
+Explicit executor return can acknowledge quiescence only when no nested effect
+was abandoned and process cleanup succeeded. The attempt-local
+`RuntimeRunContext.physical_quiescence` latch propagates uncertainty from Native
+tool cancellation and ACP cleanup failure; it can veto an ACK but
+cannot clear the Dispatch slot. Inline children share this latch; a separately
+admitted attempt receives a fresh one. No second durable authority is introduced.
+
+Cancellation that exceeds the lease request budget keeps observing the same
+owned executor Future with its Thread lock held. The budget emits a diagnostic;
+it does not preempt the executor's TERM-to-KILL cleanup or discard a late ACK.
+After observed return, unavailable or timed-out `finish_attempt` requests retry
+the same claim without rerunning the executor. This also covers a committed ACK
+whose response was lost: the existing empty-slot transition is idempotent, while
+a different successor slot remains fenced. Permanent rejection still fails.
+Process death before a successful ACK remains an explicit recovery boundary.
+Cooperative cancellation may cause a verified return; dropping or aborting a
+nested Future does not prove an opaque remote request stopped. Task abort, process crash, Lease
 expiry, and heartbeat expiry therefore leave the slot occupied. Recovery waits
 for an explicit old-worker ACK, or for a future authority command backed by an
 authoritative provider terminal receipt. Process/Pod termination can prove only
 process-bound tool/Sandbox work. This chooses safety over availability when
 external work cannot be proven stopped.
+
+Consequently, interruption of a Native opaque tool can admit cancellation intent
+yet remain unable to finish or resume the same Thread after abandoning that
+effect. The current ordinary-tool ports do not supply a terminal-receipt recovery
+command. Native inference is a separate branch: `LlmExecutor` returns response
+data, and the Runtime must admit and invoke any proposed tool afterward. Its
+closed provider-owned capabilities are search/fetch, not arbitrary mutation.
+Discarding that response ends the local attempt without leaving an invoked
+Awaken tool behind, so pure-inference cancellation can finish and resume. This
+does not establish that provider computation or billing stopped on disconnect.
+Adding a provider-owned mutation capability must revisit this boundary. ACP's
+fixed business outcome likewise does not imply successful process cleanup.
 
 One continuation case is stronger than terminal receipt: an A2A executor may
 recover a complete committed `TaskReference` whose endpoint matches the frozen
@@ -159,7 +185,8 @@ every local or remote durable executor call
   -> begin exact physical slot
   -> or, only for a proved committed continuation, atomically hand off that slot
   -> model/tool/Sandbox future returns
-  -> finish exact physical slot
+  -> if nested effects and cleanup are known complete, finish exact physical slot
+     otherwise retain it and report physical-quiescence uncertainty
   -> then settle/relinquish may remove or release the row
 ```
 

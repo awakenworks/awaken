@@ -12,8 +12,7 @@ use awaken_resource_contract::{
     FileCatalog, FileCatalogError, FileRecord, FileStore, MAX_MANAGED_FILE_SIZE_BYTES,
     MAX_WORKSPACE_FILE_BYTES, ReplaceArtifactCapture, ReplaceArtifactCaptureOutcome, ResourceKind,
     ResourcePurgeError, ResourcePurgeIntent, ResourceReclamationRepository, ResourceReference,
-    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
-    content_id,
+    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget, content_id,
 };
 
 /// Complete logical-File creation command. Public uploads, generated outputs,

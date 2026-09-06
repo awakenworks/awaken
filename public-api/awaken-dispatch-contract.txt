@@ -22,6 +22,7 @@ pub use awaken_dispatch_contract::RegistryError
 pub use awaken_dispatch_contract::RegistryMutation
 pub use awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY
 pub use awaken_dispatch_contract::SessionRunReplacement
+pub use awaken_dispatch_contract::TRUSTED_HOST_SANDBOX_BACKEND
 pub use awaken_dispatch_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY
 pub use awaken_dispatch_contract::WorkerAcpCapabilityObservation
 pub use awaken_dispatch_contract::WorkerAcpCapabilityRequirement

@@ -85,6 +85,14 @@ cargo test -p awaken-ext-background-task --features loom --lib supervisor::loom_
 # Exercise its aggregate projection and real post-concurrency-admission check.
 cargo test -p awaken-ext-background-task --test state_machine execution_admission
 cargo test -p awaken-session-executor --lib background_task::ownership::tests
+# Async return/cleanup is not covered by the scalar physical-slot proof.
+cargo test -p awaken-dispatch --features test-support --test pool_memory
+cargo test -p awaken-dispatch --features test-support --test lease_semantics
+cargo test -p awaken-session-executor --lib durable_interrupt_returns_after_intent
+cargo test -p awaken-run-executor-acp --lib terminal_business_outcome
+cargo test -p awaken-protocol-managed --features test-support --lib rollout
+cargo test -p awaken-credential-vault --lib managed_update_atomically
+
 # Credential cleanup depends on complete envelope/pair projections.
 # Exercise SQLite and the canonical in-memory fixture without
 # making this SQLite-only formal stage silently skip an optional PostgreSQL.
@@ -517,6 +525,8 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   python3 scripts/ci/check_formal_mutations.py --session-observation-model-mutants "$tla_jar"
   AWAKEN_FORMAL_MUTATION_EVIDENCE_DIR="$formal_artifact_dir/observation-mutations" \
     python3 scripts/ci/check_formal_mutations.py --session-observation-trace-mutants "$tla_jar" --observation-trace-dir "$observation_trace_dir"
+
+  python3 scripts/ci/check_formal_mutations.py --cowork-lifecycle-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/run-ingress" \
     -config formal/tla/RunIngress.cfg formal/tla/RunIngress.tla

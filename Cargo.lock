@@ -853,11 +853,13 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-credential-contract",
+ "awaken-reliability-testkit",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "tracing",
  "url",
  "uuid",
 ]
@@ -1757,6 +1759,7 @@ dependencies = [
  "awaken-observability",
  "awaken-protocol-awaken",
  "awaken-provisioning-contract",
+ "awaken-reliability-testkit",
  "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-store",
@@ -1852,7 +1855,9 @@ dependencies = [
 name = "awaken-reliability-testkit"
 version = "1.0.0"
 dependencies = [
+
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

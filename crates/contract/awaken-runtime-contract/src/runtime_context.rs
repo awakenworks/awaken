@@ -298,6 +298,9 @@ pub struct RuntimeRunContext {
     pub reader: Option<Arc<dyn CommittedThreadView>>,
     /// Cooperative cancellation observed at step boundaries.
     pub cancellation: Option<CancellationToken>,
+    /// A dropped external-call future or failed process cleanup cannot prove
+    /// quiescence merely by returning a logical Run outcome.
+    pub physical_quiescence: AttemptQuiescence,
     /// Cooperative pause observed at safe loop boundaries (ADR-0054). When set and
     /// requested, the next boundary awaits the run (`AwaitReason::ManualPause`)
     /// instead of continuing — an operator pause, never a mid-step freeze. Absent
@@ -786,6 +789,52 @@ mod child_run_tests {
                 .expect("second child cancellation token")
                 .is_cancelled(),
             "parent cancellation must reach every child"
+        );
+    }
+}
+
+/// Attempt-local evidence limitation, shared by context clones. The Dispatch
+/// physical slot is the durable authority. This monotonic latch can only veto
+/// a return ACK; it cannot release a slot or assert provider termination.
+#[derive(Clone, Default)]
+pub struct AttemptQuiescence {
+    uncertain: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AttemptQuiescence {
+    pub fn mark_uncertain(&self) {
+        self.uncertain
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[must_use]
+    pub fn can_acknowledge_return(&self) -> bool {
+        !self.uncertain.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+#[cfg(test)]
+mod quiescence_tests {
+    use super::*;
+
+    #[test]
+    fn uncertainty_is_shared_with_inline_children_and_never_cleared_by_return() {
+        // Q1 fresh attempt -> return can ACK. Q2 an inline child's discarded
+        // effect -> every context clone vetoes ACK. Q3 duplicate reports ->
+        // stutter. Q4 separately constructed attempt -> independent evidence.
+        // This verifies handle propagation, not arbitrary scheduler interleavings.
+        let root = RuntimeRunContext::new();
+        assert!(root.physical_quiescence.can_acknowledge_return(), "Q1");
+        let child = root.for_child_run();
+        child.physical_quiescence.mark_uncertain();
+        child.physical_quiescence.mark_uncertain();
+        drop(child);
+        assert!(!root.physical_quiescence.can_acknowledge_return(), "Q2/Q3");
+        assert!(
+            RuntimeRunContext::new()
+                .physical_quiescence
+                .can_acknowledge_return(),
+            "Q4"
         );
     }
 }

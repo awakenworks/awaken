@@ -2709,7 +2709,11 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     // a gate hang; E1 is that C2 returns while C1 remains blocked; E2 is the
     // existing pool drainer committing one Cancelled terminal fact under the new
     // claim epoch. Constraint: the caller may wake the pool but must never become
-    // a synchronous dispatch driver.
+    // a synchronous dispatch driver. This is the pure Native inference branch:
+    // LlmExecutor yields response data, not an invoked Awaken tool. Discarding
+    // that response cannot authorize a later tool call. Opaque tool abandonment
+    // is separately fenced by lease_semantics::native_cancelled_external_future.
+    // No claim is made that disconnect terminates provider-side computation.
     //
     // | Rule | Runtime | durable Run | Provider | interrupt | Effects |
     // |---|---|---|---|---|---|
@@ -2728,7 +2732,7 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
             }),
             "scripted",
         )
-        .with_dispatch_store(dispatch),
+        .with_dispatch_store(dispatch.clone()),
     );
     let _managed = install_test_dispatch_runtime(&host);
     host.ensure_dispatch_pool();
@@ -2755,6 +2759,16 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
         matches!(result.state, RunState::Ended(EndCause::Cancelled)),
         "R1/E2: {:?}",
         result.state
+    );
+    use awaken_dispatch::DispatchQueue as _;
+    assert!(
+        dispatch
+            .list_dispatches()
+            .await
+            .unwrap()
+            .iter()
+            .all(|row| !row.physical_attempt_active),
+        "pure inference cancellation leaves no tool effect to fence"
     );
     gate.notify_waiters();
 }

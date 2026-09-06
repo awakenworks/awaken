@@ -60,7 +60,9 @@ impl ClaimFencedArtifactPublisher {
         let guard = match fence {
             Some(ArtifactPublicationFence::SessionMaterialization(_))
             | Some(ArtifactPublicationFence::RepositoryPublication { .. }) => {
-                return Err(ArtifactPublicationError::new("Session Resource materialization cannot publish Artifacts"));
+                return Err(ArtifactPublicationError::new(
+                    "Session Resource materialization cannot publish Artifacts",
+                ));
             }
             Some(ArtifactPublicationFence::Run(claim)) => {
                 if idempotency_scope.is_some() {

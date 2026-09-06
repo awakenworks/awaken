@@ -579,7 +579,9 @@ async fn authorize_artifact_effect(
     let mut run_guard = None;
     match fence {
         ArtifactPublicationFence::SessionMaterialization(_)
-        | ArtifactPublicationFence::RepositoryPublication { .. } => return Err(StatusCode::FORBIDDEN),
+        | ArtifactPublicationFence::RepositoryPublication { .. } => {
+            return Err(StatusCode::FORBIDDEN);
+        }
         ArtifactPublicationFence::Run(claim) => {
             if idempotency_scope.is_some() {
                 return Err(StatusCode::BAD_REQUEST);
