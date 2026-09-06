@@ -1,7 +1,46 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import http from 'node:http';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fake_anthropic_fixture.mjs';
+
+test('fragmented HTTP input preserves UTF-8 before parsing the inference request', { timeout:10_000 }, async () => {
+  // W17-W19: ASCII/multibyte input x aligned/split UTF-8 code points -> the same
+  // exact parsed request. Each internal byte boundary of 2/3/4-byte characters
+  // is selected, including JSON-escaped quotes and a long approval payload.
+  // The behavior sees original bytes decoded once; U+FFFD substitution fails.
+  // Socket fragmentation is exercised through the existing HTTP entry, not a
+  // second test decoder. Yield between chunks so the server reads the prefix.
+  const seen = [];
+  const upstream = await startFakeAnthropic('fixture-key', {
+    behavior:body => { seen.push(body); return {text:'done'}; },
+  });
+  try {
+    for (const character of ['A', 'é', '引', '🙂']) {
+      const input = {model:'fixture-model', messages:[{role:'user', content:
+        'approval "\\"\n' + character + ' long'.repeat(5000)}]};
+      const bytes = Buffer.from(JSON.stringify(input));
+      const start = bytes.indexOf(Buffer.from(character));
+      assert.ok(start >= 0);
+      for (let cut = 1; cut <= Buffer.byteLength(character); cut++) {
+        await new Promise((resolve, reject) => {
+          const req = http.request(`${upstream.url}/v1/messages`, {
+            method:'POST', headers:{'x-api-key':'fixture-key','content-type':'application/json'}, // awaken-allow: secret -- loopback-only synthetic fixture credential
+          }, res => {
+            res.resume();
+            res.on('end', () => res.statusCode === 200 ? resolve() : reject(new Error(`HTTP ${res.statusCode}`)));
+            res.on('error', reject);
+          });
+          req.on('error', reject);
+          req.write(bytes.subarray(0, start + cut));
+          setTimeout(() => req.end(bytes.subarray(start + cut)), 20);
+        });
+        assert.deepEqual(seen.at(-1), input, `${character}: split after byte ${cut}`);
+      }
+    }
+    assert.equal(seen.length, 10);
+  } finally { await upstream.close(); }
+});
 
 test('held inference observes cancellation without blocking another request', { timeout:10_000 }, async () => {
   // W12/W13: JSON/SSE x held reply + another request -> independent completion
