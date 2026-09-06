@@ -353,6 +353,12 @@ both checker and package selection. Scenario traces retain their model/theorem
 grade and cannot claim universal implementation refinement. Formal mutation
 oracles require a green complete fixture, the specific semantic rejection, and
 a restored green fixture; infrastructure failure is not mutation evidence.
+Kani linkage uses exact proof definitions with the existing Rust syntax lexer
+and exact literal package/harness selections from the canonical runner. A shell
+comment, function-name prefix, wrong Cargo package or duplicate selection earns
+no credit. Cargo manifests own package identity. This is a static binding audit,
+not a proof of arbitrary shell control flow, macro expansion or proof execution;
+the actual strict invocation and its reports remain mandatory.
 
 The existing strict formal runner emits one invocation receipt into quality's
 existing artifact directory. Its start and completion bind the same source tree

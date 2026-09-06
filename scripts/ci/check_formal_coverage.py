@@ -5,8 +5,11 @@ import argparse
 import json
 import pathlib
 import re
+import shlex
 import sys
+import tomllib
 
+from _crate_boundary_workspace import rust_syntax
 from formal_profile import PROOF_GRADES, profile_result, validate_proof_grade
 
 
@@ -51,6 +54,53 @@ minimum = float(data["minimum_ratio"])
 obligations = data["obligations"]
 profile = data.get("verified_profile")
 formal_gate = (ROOT / "scripts/ci/check_formal.sh").read_text(encoding="utf-8")
+# Inventory the existing runner's literal selections, not arbitrary shell text.
+# This checks its declared package/name bindings; execution is still witnessed
+# by the strict runner receipt, not by this static parser.
+gate_harnesses: dict[str, list[str]] = {}
+for line in formal_gate.replace("\\\n", " ").splitlines():
+    if not line.lstrip().startswith("run_kani "):
+        continue
+    tokens = shlex.split(line, comments=True)
+    if len(tokens) < 4 or re.fullmatch(r"[a-z0-9_-]+", tokens[1]) is None:
+        fail("strict CI Kani selection must name a literal package and exact harnesses")
+    index = 2
+    while index < len(tokens):
+        flag = tokens[index]
+        if flag == "--no-default-features":
+            index += 1
+            continue
+        if index + 1 >= len(tokens):
+            fail("strict CI Kani selection must name a literal package and exact harnesses")
+        value = tokens[index + 1]
+        if flag == "--harness" and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            gate_harnesses.setdefault(value, []).append(tokens[1])
+        elif flag not in {"--features", "--solver"} or re.fullmatch(r"[A-Za-z0-9_,.-]+", value) is None:
+            fail("strict CI Kani selection must name a literal package and exact harnesses")
+        index += 2
+
+source_harnesses: dict[str, list[str]] = {}
+source_packages: dict[str, str] = {}
+proof_pattern = re.compile(
+    r"#\[kani::proof\]\s*(?:#\[[^\]]+\]\s*)*fn\s+([A-Za-z_][A-Za-z0-9_]*)"
+)
+for path in (ROOT / "crates").glob("**/*.rs"):
+    source = path.read_text(encoding="utf-8")
+    if "#[kani::proof]" not in source:
+        continue
+    relative = path.relative_to(ROOT).as_posix()
+    # Reuse the existing Rust lexer: comments, doc examples and string literals
+    # cannot create a definition, and a function-name prefix is not an identity.
+    harnesses = proof_pattern.findall(rust_syntax(source))
+    if not harnesses:
+        continue
+    manifest = next((parent / "Cargo.toml" for parent in path.parents
+                     if parent != ROOT and (parent / "Cargo.toml").is_file()), None)
+    if manifest is None:
+        fail(f"Kani source has no Cargo package: {relative}")
+    source_packages[relative] = tomllib.loads(manifest.read_text())["package"]["name"]
+    for harness in harnesses:
+        source_harnesses.setdefault(harness, []).append(relative)
 if not 0.0 < minimum <= 1.0:
     fail(f"minimum_ratio must be in (0, 1], got {minimum}")
 if not obligations:
@@ -133,16 +183,15 @@ for obligation in obligations:
         fail(f"{obligation_id} contains duplicate proof harnesses")
     if harnesses:
         ledger_harnesses.update(harnesses)
-        source = "\n".join(
-            (ROOT / relative).read_text(encoding="utf-8")
-            for relative in evidence
-            if relative.startswith("crates/") and relative.endswith(".rs")
-        )
         for harness in harnesses:
-            if f"fn {harness}" not in source:
-                fail(f"{obligation_id} names missing Kani harness {harness}")
-            if f"--harness {harness}" not in formal_gate:
+            definitions = source_harnesses.get(harness, [])
+            if len(definitions) != 1 or definitions[0] not in evidence:
+                fail(f"{obligation_id} Kani harness {harness} is not a unique proof definition in its evidence")
+            selected = gate_harnesses.get(harness, [])
+            if not selected:
                 fail(f"{obligation_id} Kani harness {harness} is absent from strict CI")
+            if selected != [source_packages[definitions[0]]]:
+                fail(f"{obligation_id} Kani harness {harness} is selected from wrong package or more than once")
 
     if status == "model_linked":
         if not has_formal_model:
@@ -177,17 +226,8 @@ for obligation in obligations:
         ):
             fail(f"{obligation_id} test support is not a production entrypoint: {relative}")
 
-source_harnesses: dict[str, list[str]] = {}
-proof_pattern = re.compile(
-    r"#\[kani::proof\]\s*(?:#\[[^\]]+\]\s*)*fn\s+([A-Za-z_][A-Za-z0-9_]*)"
-)
-for path in (ROOT / "crates").glob("**/*.rs"):
-    relative = path.relative_to(ROOT).as_posix()
-    for harness in proof_pattern.findall(path.read_text(encoding="utf-8")):
-        source_harnesses.setdefault(harness, []).append(relative)
-
 for harness, paths in sorted(source_harnesses.items()):
-    if f"--harness {harness}" not in formal_gate:
+    if harness not in gate_harnesses:
         fail(
             f"source Kani harness {harness} in {', '.join(paths)} is absent from strict CI"
         )
@@ -195,6 +235,8 @@ for harness, paths in sorted(source_harnesses.items()):
         fail(
             f"source Kani harness {harness} in {', '.join(paths)} is absent from the obligation ledger"
         )
+for harness in sorted(set(gate_harnesses) - set(source_harnesses)):
+    fail(f"strict CI selects nonexistent Kani harness {harness}")
 
 formalizable = [item for item in obligations if item["formalizable"]]
 linked = [

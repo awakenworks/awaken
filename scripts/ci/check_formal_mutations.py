@@ -99,6 +99,50 @@ def mutate_downgraded_claim(case_root: Path) -> None:
               expected=f"{row['id']} production-kernel grade has no Kani harness")
 
 
+def mutate_commented_harness(case_root: Path) -> None:
+    # H1: exact source proof and ledger survive, but its runner argument becomes
+    # a shell comment. Text presence is not execution selection; reject it.
+    gate = case_root / "scripts/ci/check_formal.sh"
+    source = gate.read_text()
+    harness = "work_lease_epoch_is_exact_nonnegative_and_nonwrapping"
+    source = source.replace(f"--harness {harness}", f"--harness removed_{harness}", 1)
+    gate.write_text(source + f"\n# --harness {harness}\n")
+    must_fail(case_root, "check_formal_coverage.py", "comment-only Kani selection",
+              expected=f"Kani harness {harness} is absent from strict CI")
+
+
+def mutate_wrong_harness_package(case_root: Path) -> None:
+    # H2: unchanged exact harness name under a different package must not earn
+    # proof credit. Package ownership comes from Cargo, not directory spelling.
+    gate = case_root / "scripts/ci/check_formal.sh"
+    gate.write_text(gate.read_text().replace("run_kani awaken-work-store", "run_kani awaken-config-resolver", 1))
+    must_fail(case_root, "check_formal_coverage.py", "Kani selection in wrong package",
+              expected="Kani harness work_lease_epoch_is_exact_nonnegative_and_nonwrapping is selected from wrong package")
+
+
+def mutate_harness_name_prefix(case_root: Path) -> None:
+    # H3: adding a short name that is merely a prefix of a real proof, plus a
+    # comment mentioning that name, cannot manufacture a proof definition.
+    path = case_root / "formal/coverage.json"
+    ledger = json.loads(path.read_text())
+    row = next(item for item in ledger["obligations"] if item["id"] == "work.persisted_epoch_is_exact_nonnegative_and_nonwrapping")
+    row["proof_harnesses"].append("work_lease_epoch")
+    write_json(path, ledger)
+    gate = case_root / "scripts/ci/check_formal.sh"
+    gate.write_text(gate.read_text() + "\n# --harness work_lease_epoch\n")
+    must_fail(case_root, "check_formal_coverage.py", "prefix is not a proof definition",
+              expected="Kani harness work_lease_epoch is not a unique proof definition in its evidence")
+
+
+def mutate_duplicate_harness_selection(case_root: Path) -> None:
+    # H4: repeating one proof invocation cannot satisfy a second proof identity
+    # or obscure an ambiguous runner binding. One source has one exact selection.
+    gate = case_root / "scripts/ci/check_formal.sh"
+    gate.write_text(gate.read_text() + "\nrun_kani awaken-work-store --harness work_lease_epoch_is_exact_nonnegative_and_nonwrapping\n")
+    must_fail(case_root, "check_formal_coverage.py", "duplicate Kani selection",
+              expected="Kani harness work_lease_epoch_is_exact_nonnegative_and_nonwrapping is selected from wrong package or more than once")
+
+
 def mutate_unchecked_model(case_root: Path) -> None:
     gate = case_root / "scripts" / "ci" / "check_formal.sh"
     source = gate.read_text()
@@ -337,6 +381,10 @@ def main() -> None:
     # mutant may introduce a second ledger or a test-only acceptance path.
     mutations = (
         mutate_removed_harness,
+        mutate_commented_harness,
+        mutate_wrong_harness_package,
+        mutate_harness_name_prefix,
+        mutate_duplicate_harness_selection,
         mutate_downgraded_claim,
         mutate_unchecked_model,
         mutate_missing_proof_grade,
