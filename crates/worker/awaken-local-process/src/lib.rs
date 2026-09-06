@@ -26,6 +26,9 @@ pub async fn wait_for_process_exit(
     }
 }
 
+#[cfg(target_os = "linux")]
+pub mod cgroup;
+
 /// Configure a command so the child becomes leader of a private process group.
 fn configure_process_group(command: &mut Command) {
     #[cfg(not(unix))]
