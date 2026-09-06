@@ -643,12 +643,43 @@ pub fn request_scope(workspace_id: &str) -> ScopeRef {
 /// Map a session/protocol route to its action: reads (`GET`/`HEAD`) →
 /// `agent.read`, every mutation → `agent.write`. Both live under the `agent.*`
 /// namespace granted to a runtime-capable role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionActionClass {
+    Read,
+    Write,
+}
+
+const fn session_action_class(exact_get: bool, exact_head: bool) -> SessionActionClass {
+    if exact_get || exact_head {
+        SessionActionClass::Read
+    } else {
+        SessionActionClass::Write
+    }
+}
+
 #[must_use]
 pub fn session_action(method: &str) -> ActionKey {
-    match method {
-        "GET" | "HEAD" => ActionKey(format!("{AGENT_NAMESPACE}.read")),
-        _ => ActionKey(format!("{AGENT_NAMESPACE}.write")),
+    match session_action_class(method == "GET", method == "HEAD") {
+        SessionActionClass::Read => ActionKey(format!("{AGENT_NAMESPACE}.read")),
+        SessionActionClass::Write => ActionKey(format!("{AGENT_NAMESPACE}.write")),
     }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn session_method_mapping_is_total_and_read_only_for_exact_safe_methods() {
+    // Closed classifier domain after exact string comparisons: every possible
+    // GET/HEAD equality result maps to one action class, and Read is equivalent
+    // to either exact safe-method match. String equality and ActionKey assembly
+    // remain outside this finite kernel.
+    let exact_get = kani::any::<bool>();
+    let exact_head = kani::any::<bool>();
+    let class = session_action_class(exact_get, exact_head);
+    assert_eq!(class == SessionActionClass::Read, exact_get || exact_head);
+    assert!(matches!(
+        class,
+        SessionActionClass::Read | SessionActionClass::Write
+    ));
 }
 
 /// The tenancy the ingress resolved for a request, stamped into the request
@@ -867,9 +898,16 @@ mod tests {
 
     #[test]
     fn session_action_maps_reads_and_writes() {
+        // Causes: C1 exact uppercase GET; C2 exact uppercase HEAD; C3 every
+        // other method spelling. Effects: E1 select the weaker read authority;
+        // E2 fail safe to write authority. Constraint: exact GET and HEAD are
+        // mutually exclusive for one input. Decision table: M1=100=>E1,
+        // M2=010=>E1, M3=001=>E2. The property test exercises arbitrary C3.
         assert_eq!(session_action("GET").0, "agent.read");
+        assert_eq!(session_action("HEAD").0, "agent.read");
         assert_eq!(session_action("POST").0, "agent.write");
         assert_eq!(session_action("DELETE").0, "agent.write");
+        assert_eq!(session_action("get").0, "agent.write");
     }
 
     // --- guard middleware (session-axis, deployment-form-independent) ---------
