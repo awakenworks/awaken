@@ -24,6 +24,19 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- BackgroundTask's detached context now supplies the existing Runtime ownership
+  verifier at the common post-concurrency-admission effect boundary. It reads
+  live local committed state and consumes the aggregate's exact request/policy/
+  fence, current lease, phase and remote-target decision. Launch and continuation
+  share one context constructor and receive the complete authoritative aggregate
+  instead of independently assembled execution coordinates. Kani checks the
+  admission decision for every phase pair and u64 clock/deadline; aggregate tests
+  cover identity axes, and blocked-admission tests check start/poll/cancel after
+  cancellation, reclaim, terminal commit, expiry or process replacement. Remote
+  Worker projections remain unsupported authority, as already required at startup.
+  This closes pre-effect stale-read admission, not the database-read/network-effect
+  atomicity gap, in-flight revocation, third-party receipt fencing or universal
+  driver refinement. The whole BackgroundTask obligations retain abstract grades.
 - BackgroundTask's one process-local slot now carries owner/epoch in Active as
   well as Waiting/Completed. Exact-fence wait, completion, cancellation and
   retirement reject delayed callbacks; only a higher committed epoch replaces

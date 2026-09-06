@@ -52,6 +52,7 @@ pub awaken_ext_background_task::BackgroundTask::lifecycle: awaken_ext_background
 pub awaken_ext_background_task::BackgroundTask::origin: awaken_ext_background_task::BackgroundTaskOrigin
 pub awaken_ext_background_task::BackgroundTask::revision: u64
 impl awaken_ext_background_task::BackgroundTask
+pub fn awaken_ext_background_task::BackgroundTask::admits_execution_of(&self, &Self, u64) -> bool
 pub fn awaken_ext_background_task::BackgroundTask::attempt(&self) -> core::option::Option<&awaken_ext_background_task::TaskAttempt>
 pub fn awaken_ext_background_task::BackgroundTask::finish(&mut self, &awaken_ext_background_task::TaskFence, awaken_ext_background_task::BackgroundTaskEnd) -> core::result::Result<(), awaken_ext_background_task::BackgroundTaskError>
 pub fn awaken_ext_background_task::BackgroundTask::heartbeat(&mut self, &awaken_ext_background_task::TaskFence, u64, u64) -> core::result::Result<(), awaken_ext_background_task::BackgroundTaskError>

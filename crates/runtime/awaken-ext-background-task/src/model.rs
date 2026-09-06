@@ -173,17 +173,18 @@ impl BackgroundTaskLifecycle {
         }
     }
 
-    fn has_remote_continuation(&self) -> bool {
-        matches!(
-            self,
+    fn remote_wait(&self) -> Option<&BackgroundWait> {
+        match self {
             Self::Waiting {
-                wait: BackgroundWait::Remote(_),
-                ..
-            } | Self::Cancelling {
-                wait: Some(BackgroundWait::Remote(_)),
+                wait: wait @ BackgroundWait::Remote(_),
                 ..
             }
-        )
+            | Self::Cancelling {
+                wait: Some(wait @ BackgroundWait::Remote(_)),
+                ..
+            } => Some(wait),
+            _ => None,
+        }
     }
 }
 
@@ -215,6 +216,25 @@ const fn cancellation_wins_completion(phase: TaskPhase, indeterminate: bool) -> 
     // Intent dominates a known racing result, but cannot certify that an
     // unobserved remote effect stopped. Preserve the uncertainty for recovery.
     matches!(phase, TaskPhase::Cancelling) && !indeterminate
+}
+
+const fn execution_is_admitted(
+    current: TaskPhase,
+    expected: TaskPhase,
+    identity_matches: bool,
+    lease_expires_at_ms: u64,
+    now_ms: u64,
+    exact_remote_target: bool,
+) -> bool {
+    if !identity_matches || now_ms >= lease_expires_at_ms {
+        return false;
+    }
+    match (expected, current) {
+        (TaskPhase::Running, TaskPhase::Running) => true,
+        (TaskPhase::Waiting, TaskPhase::Waiting | TaskPhase::Cancelling)
+        | (TaskPhase::Cancelling, TaskPhase::Cancelling) => exact_remote_target,
+        _ => false,
+    }
 }
 
 const fn expired_attempt_is_reconnectable(
@@ -320,6 +340,33 @@ impl BackgroundTask {
         self.id == other.id && self.origin == other.origin && self.invocation == other.invocation
     }
 
+    /// Admit an external execution against freshly read committed truth. The
+    /// expected snapshot freezes request, policy, fence and (for continuation)
+    /// remote identity. A heartbeat may renew the current lease and cancellation
+    /// may narrow Waiting to Cancelling, but neither authorizes another start.
+    /// This is a read decision, not a permit that fences a third-party effect.
+    #[must_use]
+    pub fn admits_execution_of(&self, expected: &Self, now_ms: u64) -> bool {
+        let (Some(current), Some(claim)) = (self.attempt(), expected.attempt()) else {
+            return false;
+        };
+        let exact_remote_target = self
+            .lifecycle
+            .remote_wait()
+            .zip(expected.lifecycle.remote_wait())
+            .is_some_and(|(current, expected)| same_wait_target(current, expected));
+        execution_is_admitted(
+            self.lifecycle.phase(),
+            expected.lifecycle.phase(),
+            self.same_request_as(expected)
+                && current.owns(&claim.fence())
+                && current.policy == claim.policy,
+            current.lease_expires_at_ms,
+            now_ms,
+            exact_remote_target,
+        )
+    }
+
     pub fn start(
         &mut self,
         worker_id: impl Into<String>,
@@ -363,7 +410,7 @@ impl BackgroundTask {
         let expires = now_ms
             .checked_add(lease_ms)
             .ok_or(BackgroundTaskError::ClockOverflow)?;
-        let remote_reconnectable = self.lifecycle.has_remote_continuation();
+        let remote_reconnectable = self.lifecycle.remote_wait().is_some();
         let cancelling = matches!(self.lifecycle, BackgroundTaskLifecycle::Cancelling { .. });
         let (epoch, policy) = match &self.lifecycle {
             BackgroundTaskLifecycle::Running { attempt }
@@ -688,6 +735,46 @@ pub enum BackgroundTaskError {
     RevisionOverflow,
     #[error("background task persisted state violates its aggregate invariants")]
     InvalidPersistedState,
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn background_execution_admission_is_exact_fenced_live_and_phase_monotone() {
+    // All pairs of five phases, both identity/remote predicates and all u64
+    // times/deadlines. R1 mismatch or now>=deadline -> reject; R2 Running may
+    // start only while still Running; R3 Waiting may observe Waiting/Cancelling
+    // with the exact remote target; R4 Cancelling may only continue Cancelling.
+    // Requested/Ended and local waits cannot execute. This proves the production
+    // decision, not heap identity projection, clock truth or an atomic DB/effect.
+    let phases = [
+        TaskPhase::Requested,
+        TaskPhase::Running,
+        TaskPhase::Waiting,
+        TaskPhase::Cancelling,
+        TaskPhase::Ended,
+    ];
+    let current: usize = kani::any();
+    let expected: usize = kani::any();
+    kani::assume(current < 5 && expected < 5);
+    let identity: bool = kani::any();
+    let remote: bool = kani::any();
+    let expires: u64 = kani::any();
+    let now: u64 = kani::any();
+    let admitted = execution_is_admitted(
+        phases[current],
+        phases[expected],
+        identity,
+        expires,
+        now,
+        remote,
+    );
+    let phase_allowed = (expected == 1 && current == 1)
+        || (remote && expected == 2 && (current == 2 || current == 3))
+        || (remote && expected == 3 && current == 3);
+    assert_eq!(
+        admitted,
+        identity && u128::from(now) < u128::from(expires) && phase_allowed
+    );
 }
 
 #[cfg(kani)]

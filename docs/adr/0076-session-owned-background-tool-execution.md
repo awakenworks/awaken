@@ -127,6 +127,22 @@ replacement, completion/wait and duplicate-ack interleavings. It does not prove
 Tokio cancellation internals, caller freshness, database commits or all async
 driver traces; execution still requires canonical Runtime admission.
 
+Detached start/poll/cancel now bind the existing `AttemptOwnershipVerifier` to
+the BackgroundTask snapshot, not to the already-ended foreground Run. Runtime
+checks it after acquiring the shared concurrency permit. The Host reads fresh
+local committed state and calls the aggregate's one execution-admission kernel:
+request, policy and owner/epoch must match; the current lease must be live;
+Running may only start while still Running; remote Waiting may continue as
+Waiting/Cancelling; remote Cancelling cannot widen back to Waiting. Continuation
+must retain the exact adapter owner/binding/task id (poll delay may change).
+Missing/malformed/unavailable state and a replaced process slot reject execution.
+The existing Worker-placement rejection is retained and the verifier defensively
+rejects remote recovery projections as authority. Kani checks the finite phase
+decision with all u64 deadlines/times, and real admission-wait tests invalidate
+the claim before each of start/poll/cancel. This is not an atomic database/network
+fence: revocation after the final read, in-flight external effects, remote receipt
+enforcement and full driver-to-model refinement remain explicit proof boundaries.
+
 ### D4: existing Thread persistence is the sole durable authority
 
 There is no `background_task_item` table, BackgroundTask repository/service, or

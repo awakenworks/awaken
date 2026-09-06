@@ -34,6 +34,125 @@ fn replay_policy() -> TaskExecutionPolicy {
     }
 }
 
+fn execution_task(phase: usize) -> BackgroundTask {
+    let mut task = task();
+    if phase == 0 {
+        return task;
+    }
+    let fence = task.start("worker", 0, 10, replay_policy()).unwrap();
+    if matches!(phase, 2 | 3) {
+        task.wait(
+            &fence,
+            BackgroundWait::Remote(ToolTaskHandle {
+                owner: "adapter".into(),
+                binding: "binding".into(),
+                task_id: "remote".into(),
+                poll_interval_ms: Some(1),
+            }),
+        )
+        .unwrap();
+    }
+    if matches!(phase, 5 | 6) {
+        task.wait(&fence, BackgroundWait::ExternalInput).unwrap();
+    }
+    if matches!(phase, 3 | 6) {
+        task.request_cancel().unwrap();
+    }
+    if phase == 4 {
+        task.finish(&fence, BackgroundTaskEnd::Cancelled).unwrap();
+    }
+    task
+}
+
+#[test]
+fn execution_admission_is_phase_monotone_and_lease_bounded() {
+    // Causes: expected/current Requested, Running, remote Waiting/Cancelling,
+    // Ended, local Waiting/Cancelling; clock before/equal/after deadline/MAX.
+    // R1 only Running->Running starts; R2 remote Waiting->Waiting/Cancelling
+    // observes the same task; R3 remote Cancelling->Cancelling continues cancel;
+    // R4 all other pairs or now>=deadline reject. 7*7*4 = 196 rules. Rejection
+    // and admission are read-only; a later heartbeat can renew the same claim.
+    for expected_phase in 0..7 {
+        for current_phase in 0..7 {
+            for now in [9, 10, 11, u64::MAX] {
+                let expected = execution_task(expected_phase);
+                let current = execution_task(current_phase);
+                let allowed_phase = (expected_phase == 1 && current_phase == 1)
+                    || (expected_phase == 2 && matches!(current_phase, 2 | 3))
+                    || (expected_phase == 3 && current_phase == 3);
+                let before = current.clone();
+                assert_eq!(
+                    current.admits_execution_of(&expected, now),
+                    now < 10 && allowed_phase,
+                    "expected={expected_phase} current={current_phase} now={now}"
+                );
+                assert_eq!(current, before);
+            }
+        }
+    }
+    let expected = execution_task(2);
+    let mut renewed = expected.clone();
+    renewed
+        .heartbeat(&expected.attempt().unwrap().fence(), 9, 10)
+        .unwrap();
+    assert!(renewed.admits_execution_of(&expected, 10));
+}
+
+#[test]
+fn execution_admission_preserves_frozen_identity_and_remote_target() {
+    // Each identity axis is an independent cause: task/thread/run/operation,
+    // call/tool/arguments, worker/epoch, recovery/concurrency, remote
+    // owner/binding/task. R1 any one mismatch -> reject; R2 only recommended poll
+    // delay changes -> admit (not remote identity). R3 unchanged -> admit.
+    // Mutations target both expected and current snapshots to expose asymmetric
+    // comparisons; neither comparison may mutate committed state.
+    for mutate_expected in [false, true] {
+        for axis in 0..16 {
+            let mut expected = execution_task(2);
+            let mut current = expected.clone();
+            let target = if mutate_expected {
+                &mut expected
+            } else {
+                &mut current
+            };
+            match axis {
+                0 => target.id = BackgroundTaskId::new("other").unwrap(),
+                1 => target.origin.thread_id = ThreadId("other".into()),
+                2 => target.origin.run_id = RunId("other".into()),
+                3 => target.origin.operation_id = "other".into(),
+                4 => target.invocation.call.call_id = "other".into(),
+                5 => target.invocation.call.tool_id = "other".into(),
+                6 => target.invocation.call.arguments = serde_json::json!({"command":"other"}),
+                _ => {
+                    let BackgroundTaskLifecycle::Waiting {
+                        attempt,
+                        wait: BackgroundWait::Remote(handle),
+                    } = &mut target.lifecycle
+                    else {
+                        unreachable!()
+                    };
+                    match axis {
+                        7 => attempt.worker_id = "other".into(),
+                        8 => attempt.epoch = 2,
+                        9 => attempt.policy.recovery = ToolRecoveryPolicy::default(),
+                        10 => attempt.policy.concurrency = ToolConcurrency::Serial,
+                        11 => handle.owner = "other".into(),
+                        12 => handle.binding = "other".into(),
+                        13 => handle.task_id = "other".into(),
+                        14 => handle.poll_interval_ms = Some(99),
+                        _ => {}
+                    }
+                }
+            }
+            assert_eq!(
+                current.admits_execution_of(&expected, 9),
+                axis >= 14,
+                "axis={axis} mutate_expected={mutate_expected}"
+            );
+        }
+    }
+}
+
 #[test]
 fn cancellation_preserves_unknown_outcomes_and_rejected_finishes_are_atomic() {
     // C1 cancel intent; C2 observed Completed/Failed/Cancelled/Indeterminate;
