@@ -309,7 +309,7 @@ async fn read_file_content(
                 identity,
                 intent.lease(),
                 now_ms,
-                SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
+                SessionWorkerEffectTemporalRule::SessionRoot,
             )
             .await
             .rejection_status()

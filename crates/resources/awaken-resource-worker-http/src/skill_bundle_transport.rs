@@ -162,7 +162,7 @@ async fn read_skill_bundle(
                 identity,
                 intent.lease(),
                 now_ms,
-                SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
+                SessionWorkerEffectTemporalRule::SessionRoot,
             )
             .await
             .rejection_status()
