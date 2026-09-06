@@ -16,56 +16,106 @@ fn command(role: &str, socket: &std::path::Path) -> tokio::process::Command {
     command
 }
 
+fn spawn_channel(
+    role: &str,
+    socket: &std::path::Path,
+    socket_stdio: bool,
+) -> (
+    tokio::process::Child,
+    Box<dyn tokio::io::AsyncWrite + Unpin>,
+    Box<dyn tokio::io::AsyncRead + Unpin>,
+) {
+    if socket_stdio {
+        use std::os::fd::OwnedFd;
+        let pair = || {
+            let (parent, child) = std::os::unix::net::UnixStream::pair().unwrap();
+            parent.set_nonblocking(true).unwrap();
+            (
+                tokio::net::UnixStream::from_std(parent).unwrap(),
+                Stdio::from(OwnedFd::from(child)),
+            )
+        };
+        let (input, child_input) = pair();
+        let (output, child_output) = pair();
+        let child = command(role, socket)
+            .stdin(child_input)
+            .stdout(child_output)
+            .spawn()
+            .unwrap();
+        (child, Box::new(input), Box::new(output))
+    } else {
+        let mut child = command(role, socket).spawn().unwrap();
+        let input = child.stdin.take().unwrap();
+        let output = child.stdout.take().unwrap();
+        (child, Box::new(input), Box::new(output))
+    }
+}
+
 #[tokio::test]
 async fn real_process_half_close_drains_the_reverse_response_and_exits() {
-    // Causes: C1 two real role processes with pipes (not duplex substitutes);
-    // C2 client stdin EOF; C3 host responds only after observing request EOF.
-    // Decision R1 C1+C2 -> exact request + physical host stdout EOF;
-    // R2 C3 + host stdin EOF -> exact response + both processes exit successfully.
-    // Constraint: a shutdown() that leaves fd 1 open must fail R1; timeout is a
-    // failure, with kill-on-drop limited to these two owned test children.
-    let root = tempfile::tempdir().unwrap();
-    let socket = root.path().join("mcp.sock");
-    let mut host = command("channel-listen", &socket).spawn().unwrap();
-    let mut output = host.stdout.take().unwrap();
-    let mut ready = vec![0; awaken_connection_plan::socket_stdio::READY.len()];
-    tokio::time::timeout(Duration::from_secs(3), output.read_exact(&mut ready))
+    // Causes: C1 listener stdio pipe/socket; C2 connector stdio pipe/socket;
+    // C3 client stdin EOF; C4 host replies only after request EOF.
+    // Decision table: R1 pipe/pipe, R2 pipe/socket (container + SDK),
+    // R3 socket/pipe, R4 socket/socket. Every C1/C2 pair with C3 must deliver
+    // exact request + physical host stdout EOF; C4 + host stdin EOF delivers
+    // exact response + both successful process exits + owned socket removal.
+    // A socket-shaped listener alone cannot certify the SDK connector role.
+    // This single matrix owns the former duplicate pipe/socket roundtrips;
+    // timeout is failure and kill-on-drop covers only these owned children.
+    for (rule, host_socket, client_socket) in [
+        ("R1", false, false),
+        ("R2", false, true),
+        ("R3", true, false),
+        ("R4", true, true),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("mcp.sock");
+        let (host, mut host_input, mut host_output) =
+            spawn_channel("channel-listen", &socket, host_socket);
+        let mut ready = vec![0; awaken_connection_plan::socket_stdio::READY.len()];
+        tokio::time::timeout(Duration::from_secs(3), host_output.read_exact(&mut ready))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ready, awaken_connection_plan::socket_stdio::READY, "{rule}");
+        let (client, mut client_input, mut client_output) =
+            spawn_channel("channel-connect", &socket, client_socket);
+        client_input.write_all(b"request\0\n").await.unwrap();
+        client_input.shutdown().await.unwrap();
+        drop(client_input);
+        let mut request = Vec::new();
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            host_output.read_to_end(&mut request),
+        )
+        .await
+        .expect("physical stdout EOF")
+        .unwrap();
+        assert_eq!(request, b"request\0\n", "{rule}");
+        host_input.write_all(b"response\0\n").await.unwrap();
+        host_input.shutdown().await.unwrap();
+        drop(host_input);
+        let mut response = Vec::new();
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            client_output.read_to_end(&mut response),
+        )
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(ready, awaken_connection_plan::socket_stdio::READY);
-    let mut client = command("channel-connect", &socket).spawn().unwrap();
-    let mut input = client.stdin.take().unwrap();
-    input.write_all(b"request\0\n").await.unwrap();
-    drop(input);
-    let mut request = Vec::new();
-    tokio::time::timeout(Duration::from_secs(3), output.read_to_end(&mut request))
-        .await
-        .expect("R1 physical stdout EOF")
-        .unwrap();
-    assert_eq!(request, b"request\0\n");
-    let mut input = host.stdin.take().unwrap();
-    input.write_all(b"response\0\n").await.unwrap();
-    drop(input);
-    let mut response = Vec::new();
-    tokio::time::timeout(
-        Duration::from_secs(3),
-        client.stdout.take().unwrap().read_to_end(&mut response),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(response, b"response\0\n");
-    for mut child in [host, client] {
-        assert!(
-            tokio::time::timeout(Duration::from_secs(3), child.wait())
-                .await
-                .unwrap()
-                .unwrap()
-                .success()
-        );
+        assert_eq!(response, b"response\0\n", "{rule}");
+        for mut child in [host, client] {
+            assert!(
+                tokio::time::timeout(Duration::from_secs(3), child.wait())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .success(),
+                "{rule}"
+            );
+        }
+        assert!(!socket.exists(), "{rule}");
     }
-    assert!(!socket.exists());
 }
 
 #[tokio::test]
@@ -104,60 +154,4 @@ async fn real_listener_exits_on_host_eof_or_term_without_a_client() {
         );
         assert!(!socket.exists());
     }
-}
-
-#[tokio::test]
-async fn socket_pair_stdio_preserves_the_same_half_close_contract() {
-    // R5 Node/libuv-shaped child stdio (Unix socket pairs, not FIFO pipes) ->
-    // identical readiness, exact bytes, half-close/reply, process exit and unlink.
-    // This row prevents container exec pipe tests from falsely certifying the
-    // connector process that the Claude SDK launches inside the container.
-    use std::os::fd::OwnedFd;
-    let pair = || {
-        let (parent, child) = std::os::unix::net::UnixStream::pair().unwrap();
-        parent.set_nonblocking(true).unwrap();
-        (
-            tokio::net::UnixStream::from_std(parent).unwrap(),
-            Stdio::from(OwnedFd::from(child)),
-        )
-    };
-    let (mut input, child_input) = pair();
-    let (mut output, child_output) = pair();
-    let root = tempfile::tempdir().unwrap();
-    let socket = root.path().join("mcp.sock");
-    let mut child = command("channel-listen", &socket)
-        .stdin(child_input)
-        .stdout(child_output)
-        .spawn()
-        .unwrap();
-    let mut ready = vec![0; awaken_connection_plan::socket_stdio::READY.len()];
-    tokio::time::timeout(Duration::from_secs(3), output.read_exact(&mut ready))
-        .await
-        .unwrap()
-        .unwrap();
-    let mut client = tokio::net::UnixStream::connect(&socket).await.unwrap();
-    client.write_all(b"request").await.unwrap();
-    client.shutdown().await.unwrap();
-    let mut request = vec![];
-    tokio::time::timeout(Duration::from_secs(3), output.read_to_end(&mut request))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(request, b"request");
-    input.write_all(b"response").await.unwrap();
-    input.shutdown().await.unwrap();
-    let mut response = vec![];
-    tokio::time::timeout(Duration::from_secs(3), client.read_to_end(&mut response))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(response, b"response");
-    assert!(
-        tokio::time::timeout(Duration::from_secs(3), child.wait())
-            .await
-            .unwrap()
-            .unwrap()
-            .success()
-    );
-    assert!(!socket.exists());
 }
