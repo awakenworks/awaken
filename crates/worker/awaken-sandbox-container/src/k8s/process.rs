@@ -131,20 +131,7 @@ impl pc::ProcessHandle for K8sExecProcess {
     }
 
     async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
-        let mut state = self.state.lock().await;
-        if let Some(status) = &state.status {
-            return Ok(status.clone());
-        }
-        let completion = state
-            .completion
-            .take()
-            .ok_or_else(|| pc::SandboxError::new("k8s exec completion is unavailable"))?;
-        let status = completion
-            .await
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        let status = k8s_exit_status(status);
-        state.status = Some(status.clone());
-        Ok(status)
+        awaken_local_process::wait_for_process_exit(self).await
     }
 
     async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {

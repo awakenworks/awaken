@@ -1,5 +1,6 @@
-//! One local child-process lifecycle adapter shared by trusted subprocess and
-//! Local/Namespace sandbox launches.
+//! Process waiting policy plus the local child-process lifecycle adapter.
+//! Local/Namespace and container exec handles share cancellation-safe waiting;
+//! trusted subprocess and Local/Namespace launches share the OS child adapter.
 //!
 //! Protocol supervisors own *when* to terminate. This adapter owns the
 //! OS-specific termination boundary: Unix targets the private process group;
@@ -9,6 +10,21 @@ use async_trait::async_trait;
 use awaken_provisioning_contract::{ExitStatus, ProcessHandle, SandboxError, Signal};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+
+/// Await a process through its provider-owned, nonblocking status port.
+/// Poll remains the sole exit observer: dropping a waiter neither consumes a
+/// completion handle nor holds a lifecycle lock needed by another poll/signal.
+/// Status errors remain unknown; this adapter never synthesizes physical exit.
+pub async fn wait_for_process_exit(
+    process: &dyn ProcessHandle,
+) -> Result<ExitStatus, SandboxError> {
+    loop {
+        if let Some(status) = process.poll().await? {
+            return Ok(status);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
 
 /// Configure a command so the child becomes leader of a private process group.
 pub fn configure_process_group(command: &mut Command) {
@@ -97,15 +113,7 @@ impl ProcessHandle for LocalProcess {
     }
 
     async fn wait(&self) -> Result<ExitStatus, SandboxError> {
-        loop {
-            if let Some(status) = self.poll().await? {
-                return Ok(status);
-            }
-            // A waiter must not prevent poll/cancel from acquiring the child.
-            // Polling also makes cancellation of this future leave ownership
-            // with the same handle; no detached reaper or second exit ledger.
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        wait_for_process_exit(self).await
     }
 
     async fn poll(&self) -> Result<Option<ExitStatus>, SandboxError> {
@@ -224,6 +232,51 @@ mod tests {
             .expect("leader settles")
             .expect("wait succeeds");
         wait_for_marker(&marker, "child").await;
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn waiting_keeps_local_poll_and_signal_available_after_cancellation() {
+        // L1 a private local child waits on its owned stdin; L2 wait is actually
+        // polled before a concurrent poll; L3 that waiter is cancelled; L4 a new
+        // waiter and TERM race. Effects: poll returns None without waiting for
+        // exit, cancellation preserves the child, TERM ends it, both subsequent
+        // observers retain the exact OS status. Local/Namespace/trusted ACP all
+        // reuse this adapter, without another monitor or exit-status registry.
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "read input"])
+            .stdin(Stdio::piped())
+            .kill_on_drop(true);
+        configure_process_group(&mut command);
+        let mut child = command.spawn().unwrap();
+        let _input = child.stdin.take().unwrap();
+        let process = LocalProcess::spawned(child);
+        let mut waiting = Box::pin(process.wait());
+        std::future::poll_fn(|cx| {
+            assert!(waiting.as_mut().poll(cx).is_pending(), "L2 wait entered");
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), process.poll())
+                .await
+                .expect("L2 poll does not wait for child exit")
+                .unwrap(),
+            None
+        );
+        drop(waiting);
+        assert_eq!(process.poll().await.unwrap(), None, "L3 still observable");
+        let (status, signal) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(process.wait(), process.signal(Signal::Term))
+        })
+        .await
+        .expect("L4 wait/signal make progress");
+        signal.unwrap();
+        let status = status.unwrap();
+        assert!(status.signaled, "L4 actual OS signal exit");
+        assert_eq!(process.poll().await.unwrap(), Some(status.clone()));
+        assert_eq!(process.wait().await.unwrap(), status);
     }
 
     #[tokio::test]
