@@ -6,6 +6,8 @@
 //! that gives each fleet process its own unique claim owner.
 
 mod harness;
+#[path = "any_store/resolution_failure.rs"]
+mod resolution_failure;
 
 use std::sync::Arc;
 

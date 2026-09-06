@@ -688,6 +688,7 @@ impl crate::host::SharedHost {
 
     /// Replace the complete set of standard mounted MemoryStore bindings. No
     /// automatic recall/extraction binding is inferred from collection order.
+    #[cfg(test)]
     pub(crate) fn register_thread_memory_bindings(
         &self,
         thread: &str,

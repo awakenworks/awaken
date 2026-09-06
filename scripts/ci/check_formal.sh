@@ -690,6 +690,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/session-realization-mutex" \
     -config formal/tla/SessionRealizationMutex.cfg \
     formal/tla/SessionRealizationMutex.tla
+  python3 scripts/ci/check_formal_mutations.py --resource-preparation-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/credential-rotation-workflow" \
     -config formal/tla/CredentialRotationWorkflow.cfg \
@@ -718,6 +719,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -workers auto \
     -metadir "$tlc_state_root/session-run-protocol" \
     -config formal/tla/SessionRunProtocol.cfg formal/tla/SessionRunProtocol.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-run-resolution" \
+    -config formal/tla/SessionRunProtocolResolution.cfg formal/tla/SessionRunProtocol.tla
+  python3 scripts/ci/check_formal_mutations.py --resolution-failure-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -workers auto \
     -metadir "$tlc_state_root/session-thread-tool-composition" \

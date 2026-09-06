@@ -665,6 +665,7 @@ impl SharedHost {
     /// Stage a thread's resources (mounts + prompt fragments); consumed by
     /// `sandbox_spec` and injected into the run's system prompt. From `prepare_session`.
     /// REPLACES the Thread's set (correct at create time, before its first Run).
+    #[cfg(test)]
     pub(crate) fn register_thread_resources(&self, thread: &str, staged: StagedResources) {
         self.session_slots
             .update(thread, |slot| slot.resources = staged);

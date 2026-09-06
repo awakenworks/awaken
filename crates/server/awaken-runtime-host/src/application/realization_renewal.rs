@@ -11,6 +11,151 @@ use std::sync::Arc;
 /// local backpressure or allowing one Worker to overload Control.
 pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS: usize = 8;
 
+/// Scoped preparation, not another lease manager. The existing scheduler sees
+/// the canonical slot before Resource I/O; this guard only bounds that I/O's
+/// lifetime and removes a newly introduced, unpublished lease on failure/drop.
+pub(super) struct ResourcePreparation<'a> {
+    host: &'a crate::SharedHost,
+    session: &'a str,
+    asserted: awaken_session_contract::SessionRealizationLease,
+    cancellation: Arc<awaken_runtime_contract::CancellationToken>,
+    introduced_lease: bool,
+}
+
+impl<'a> ResourcePreparation<'a> {
+    pub(super) fn begin(
+        host: &'a crate::SharedHost,
+        session: &'a str,
+        asserted: awaken_session_contract::SessionRealizationLease,
+    ) -> Result<Self, crate::HostError> {
+        let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
+        let (introduced_lease, changed) = host.session_slots.update(session, |slot| {
+            if slot.resource_preparation.is_some() {
+                return Err(crate::HostError::internal(
+                    "Resource preparation already holds its projection lock",
+                ));
+            }
+            let introduced = slot.realization_lease.is_none();
+            slot.install_realization_lease(asserted.clone());
+            slot.resource_preparation = Some(cancellation.clone());
+            Ok((introduced, slot.realization_changed.clone()))
+        })?;
+        changed.notify_waiters();
+        let preparation = Self {
+            host,
+            session,
+            asserted,
+            cancellation,
+            introduced_lease,
+        };
+        preparation.validate()?;
+        Ok(preparation)
+    }
+
+    fn authorized(&self, slot: &crate::session_slot::SessionRuntimeSlot) -> bool {
+        slot.resource_preparation
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &self.cancellation))
+            && slot.resource_preparation_authorized(
+                &self.asserted,
+                crate::terminal_repository_publication::runtime_unix_now_ms(),
+            )
+    }
+
+    fn ended() -> crate::HostError {
+        crate::HostError::internal(
+            "Session realization authority ended during Resource preparation",
+        )
+    }
+
+    pub(super) fn validate(&self) -> Result<(), crate::HostError> {
+        if self
+            .host
+            .session_slots
+            .read(self.session, |slot| self.authorized(slot))
+            .unwrap_or(false)
+        {
+            Ok(())
+        } else {
+            Err(Self::ended())
+        }
+    }
+
+    pub(super) fn finish(
+        &self,
+        slot: &mut crate::session_slot::SessionRuntimeSlot,
+    ) -> Result<(), crate::HostError> {
+        if !self.authorized(slot) {
+            return Err(Self::ended());
+        }
+        slot.resource_preparation = None;
+        Ok(())
+    }
+
+    pub(super) async fn authority_ended(&self) -> crate::HostError {
+        loop {
+            let Some(changed) = self
+                .host
+                .session_slots
+                .read(self.session, |slot| slot.realization_changed.clone())
+            else {
+                return Self::ended();
+            };
+            // Register before reading the lease to avoid a lost renewal wakeup.
+            let notified = changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let expiry = self
+                .host
+                .session_slots
+                .read(self.session, |slot| {
+                    self.authorized(slot).then(|| {
+                        slot.realization_lease
+                            .as_ref()
+                            .expect("authorized lease")
+                            .expires_at_unix_ms
+                    })
+                })
+                .flatten();
+            let Some(expiry) = expiry else {
+                return Self::ended();
+            };
+            let remaining = expiry
+                .saturating_sub(crate::terminal_repository_publication::runtime_unix_now_ms());
+            tokio::select! {
+                () = self.cancellation.cancelled() => return Self::ended(),
+                () = tokio::time::sleep(std::time::Duration::from_millis(remaining)) => {},
+                () = &mut notified => {},
+            }
+        }
+    }
+}
+
+impl Drop for ResourcePreparation<'_> {
+    fn drop(&mut self) {
+        self.host.session_slots.modify(self.session, |slot| {
+            if slot
+                .resource_preparation
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &self.cancellation))
+            {
+                slot.resource_preparation = None;
+                if self.introduced_lease
+                    && slot.realization_lease.as_ref().is_some_and(|current| {
+                        awaken_session_contract::realization_lease_generation_authorizes(
+                            current,
+                            &self.asserted,
+                        )
+                    })
+                {
+                    slot.realization_lease = None;
+                    slot.realization_changed.notify_waiters();
+                }
+            }
+        });
+    }
+}
+
 impl crate::SharedHost {
     async fn reconcile_one_session_realization(
         &self,
