@@ -1488,21 +1488,12 @@ impl SharedHost {
         } else {
             None
         };
-        let acp = self
-            .acp
-            .as_ref()
-            .map(|acp| acp.child_executor_factory(sandbox.clone()));
+        let adapters = self.child_execution_adapters(thread, sandbox.clone());
         let service = HostRunDelegationService::new(
             self.llm.clone(),
             sandbox,
             parent_snapshot,
-            crate::agent_runner::ChildExecutionAdapters {
-                acp,
-                remote: self.remote_attempt_executor.clone(),
-                remote_credentials: self.remote_credential_realization.clone(),
-                web_search: Some(self.web_search_plugin(thread, None)),
-                web_fetch: Some(self.web_fetch_plugin(thread, None)),
-            },
+            adapters,
             Some(publication_source),
             workspace,
         )
