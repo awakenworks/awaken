@@ -189,6 +189,7 @@ thiserror = "2"
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 tokio-util = "0.7"
+yamux = "0.14"
 url = "2.5"
 genai = { git = "https://github.com/awakenworks/rust-genai.git", rev = "da7b568fb413b3197acc13c93f334884f97c81ad" }
 axum = "0.8"
