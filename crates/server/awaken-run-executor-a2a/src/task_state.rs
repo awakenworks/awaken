@@ -36,6 +36,21 @@ pub(super) enum TaskReferenceDecision {
     RejectEndpointMismatch,
 }
 
+#[must_use]
+const fn task_reference_admitted(
+    endpoint_present: bool,
+    task_id_present: bool,
+    context_id_present: bool,
+    task_id_matches: bool,
+    continuation_context_matches: bool,
+) -> bool {
+    endpoint_present
+        && task_id_present
+        && context_id_present
+        && task_id_matches
+        && continuation_context_matches
+}
+
 pub(super) fn task_reference_decision(
     has_reference: bool,
     endpoint_matches: bool,
@@ -56,7 +71,16 @@ impl TaskReference {
         }
     }
 
-    fn validate(self) -> Result<Self> {
+    fn validate(&self) -> Result<()> {
+        if task_reference_admitted(
+            !self.endpoint.is_empty(),
+            !self.task_id.is_empty(),
+            !self.context_id.is_empty(),
+            true,
+            true,
+        ) {
+            return Ok(());
+        }
         let missing = [
             ("endpoint", self.endpoint.as_str()),
             ("task_id", self.task_id.as_str()),
@@ -65,13 +89,55 @@ impl TaskReference {
         .into_iter()
         .find(|(_, value)| value.is_empty())
         .map(|(name, _)| name);
-        match missing {
-            Some(name) => Err(Error::Execution(format!(
-                "durable A2A task is missing {name}"
-            ))),
-            None => Ok(self),
-        }
+        Err(Error::Execution(format!(
+            "durable A2A task is missing {}",
+            missing.expect("admission rejects only an absent reference field")
+        )))
     }
+}
+
+pub(super) fn continued_task_reference(
+    endpoint: &str,
+    previous: &TaskReference,
+    task: &Task,
+) -> Result<TaskReference> {
+    let reference = TaskReference::from_task(endpoint, task);
+    if task_reference_admitted(
+        !reference.endpoint.is_empty(),
+        !reference.task_id.is_empty(),
+        !reference.context_id.is_empty(),
+        true,
+        reference.context_id == previous.context_id,
+    ) {
+        return Ok(reference);
+    }
+    reference.validate()?;
+    Err(Error::Execution(format!(
+        "A2A continuation changed context from {:?} to {:?}",
+        previous.context_id, reference.context_id
+    )))
+}
+
+pub(super) fn validate_reattached_task(reference: &TaskReference, task: &Task) -> Result<()> {
+    if task_reference_admitted(
+        !reference.endpoint.is_empty(),
+        !task.id.is_empty(),
+        !task.context_id.is_empty(),
+        task.id == reference.task_id,
+        task.context_id == reference.context_id,
+    ) {
+        return Ok(());
+    }
+    reference.validate()?;
+    if task.id.is_empty() || task.context_id.is_empty() {
+        return Err(Error::Execution(
+            "reattached A2A task is missing its task or context identity".to_string(),
+        ));
+    }
+    Err(Error::Execution(format!(
+        "reattached A2A task identity changed from {:?}/{:?} to {:?}/{:?}",
+        reference.task_id, reference.context_id, task.id, task.context_id
+    )))
 }
 
 fn task_reference_cell() -> StateCell<TaskReference> {
@@ -85,10 +151,11 @@ pub(super) fn task_reference_state(reference: &TaskReference) -> Result<StateCom
 }
 
 pub(super) fn decode_task_reference(value: &serde_json::Value) -> Result<TaskReference> {
-    task_reference_cell()
+    let reference = task_reference_cell()
         .decode(value)
-        .map_err(|error| Error::Execution(error.to_string()))?
-        .validate()
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    reference.validate()?;
+    Ok(reference)
 }
 
 pub(super) fn clear_task_reference_state() -> StateCommand {
@@ -217,5 +284,43 @@ mod kani_proofs {
         assert_eq!(command.key.0, A2A_TASK_STATE_KEY);
         assert!(command.run_id.is_none());
         assert!(matches!(command.action, StateAction::Remove));
+    }
+
+    #[kani::proof]
+    fn task_reference_admission_requires_complete_fields_and_required_identity_matches() {
+        // Causes: C1 endpoint present; C2 task id present; C3 context id
+        // present; C4 task identity matches when reattaching; C5 continuation
+        // context matches the committed reference.
+        // Effect E1 admits replacement of the durable task reference; E2
+        // rejects it without replacing committed state.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // |---|---|---|---|---|---|---|
+        // | R1 | yes | yes | yes | yes | yes | E1 |
+        // | R2 | no  | * | * | * | * | E2 |
+        // | R3 | * | no  | * | * | * | E2 |
+        // | R4 | * | * | no  | * | * | E2 |
+        // | R5 | * | * | * | no  | * | E2 |
+        // | R6 | * | * | * | * | no  | E2 |
+        let endpoint_present: bool = kani::any();
+        let task_id_present: bool = kani::any();
+        let context_id_present: bool = kani::any();
+        let task_id_matches: bool = kani::any();
+        let continuation_context_matches: bool = kani::any();
+
+        assert_eq!(
+            task_reference_admitted(
+                endpoint_present,
+                task_id_present,
+                context_id_present,
+                task_id_matches,
+                continuation_context_matches,
+            ),
+            endpoint_present
+                && task_id_present
+                && context_id_present
+                && task_id_matches
+                && continuation_context_matches
+        );
     }
 }

@@ -1345,6 +1345,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resume_rejects_context_rebinding_without_replacing_the_committed_reference() {
+        // Causes: C1 the committed task reference owns context ctx-original;
+        // C2 resume sends to that context; C3 the remote response instead names
+        // ctx-rebound. Effects: E1 reject the response; E2 leave the committed
+        // task/context reference unchanged. The positive C1+C2+matching row is
+        // covered by `replacement_executor_resumes_input_on_the_committed_context`.
+        //
+        // | Rule | committed context | response context | Effects |
+        // |---|---|---|---|
+        // | R1 | ctx-original | ctx-original | admit replacement |
+        // | R2 | ctx-original | ctx-rebound | E1+E2 |
+        let transport = Arc::new(ScriptedTransport::new(vec![
+            response(
+                r#"{"task":{"kind":"task","id":"remote-input","contextId":"ctx-original","status":{"state":"input-required"}}}"#,
+            ),
+            response(
+                r#"{"task":{"kind":"task","id":"remote-rebound","contextId":"ctx-rebound","status":{"state":"completed"}}}"#,
+            ),
+        ]));
+        let rec = Arc::new(Rec::default());
+        let activation = activation("a2a:http://remote.invalid");
+        let context = || {
+            RuntimeRunContext::new()
+                .with_commit(rec.clone())
+                .with_reader(rec.clone())
+        };
+
+        assert_eq!(
+            scripted_executor(transport.clone())
+                .execute(activation.clone(), context())
+                .await
+                .unwrap(),
+            RunState::Awaiting
+        );
+        let ticket = rec
+            .resume_ticket(&activation.run_id)
+            .expect("durable ticket");
+        let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input("answer".into()), 0);
+        let error = scripted_executor(transport)
+            .resume(activation.clone(), command, context())
+            .await
+            .expect_err("a remote response cannot rebind the committed context");
+        assert!(error.to_string().contains("changed context"), "R2/E1");
+
+        let reference = restored_task_reference(&context(), &activation)
+            .expect("decode committed reference")
+            .expect("reference remains committed");
+        assert_eq!(reference.task_id, "remote-input", "R2/E2");
+        assert_eq!(reference.context_id, "ctx-original", "R2/E2");
+    }
+
+    #[tokio::test]
     async fn durable_cancel_addresses_the_committed_remote_task() {
         let active = r#"{"kind":"task","id":"remote-cancel","contextId":"ctx-cancel","status":{"state":"input-required"}}"#;
         let transport = Arc::new(ScriptedTransport::new(vec![
@@ -1385,6 +1437,60 @@ mod tests {
                 "/v1/a2a/tasks/remote-cancel",
                 "/v1/a2a/tasks/remote-cancel:cancel"
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_rejects_a_fetch_response_for_another_task_before_remote_abort() {
+        // Causes: C1 task remote-pinned is committed; C2 cancellation fetches
+        // that exact id; C3 the peer responds with active task remote-other.
+        // Effects: E1 reject the mismatched response; E2 never issue a cancel
+        // for either id. The matching active row is covered by
+        // `durable_cancel_addresses_the_committed_remote_task`.
+        //
+        // | Rule | requested id | response id | Effects |
+        // |---|---|---|---|
+        // | R1 | remote-pinned | remote-pinned | cancel remote-pinned |
+        // | R2 | remote-pinned | remote-other | E1+E2 |
+        let transport = Arc::new(ScriptedTransport::new(vec![
+            response(
+                r#"{"task":{"kind":"task","id":"remote-pinned","contextId":"ctx-pinned","status":{"state":"input-required"}}}"#,
+            ),
+            response(
+                r#"{"kind":"task","id":"remote-other","contextId":"ctx-pinned","status":{"state":"working"}}"#,
+            ),
+        ]));
+        let rec = Arc::new(Rec::default());
+        let activation = activation("a2a:http://remote.invalid");
+        let context = || {
+            RuntimeRunContext::new()
+                .with_commit(rec.clone())
+                .with_reader(rec.clone())
+        };
+        assert_eq!(
+            scripted_executor(transport.clone())
+                .execute(activation.clone(), context())
+                .await
+                .unwrap(),
+            RunState::Awaiting
+        );
+
+        let error = scripted_executor(transport.clone())
+            .cancel(activation, context())
+            .await
+            .expect_err("mismatched task identity must fail closed");
+        assert!(error.to_string().contains("identity changed"), "R2/E1");
+        let paths = transport
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, path, _)| path.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec!["/v1/a2a/message:send", "/v1/a2a/tasks/remote-pinned"],
+            "R2/E2"
         );
     }
 
