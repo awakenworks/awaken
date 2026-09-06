@@ -76,6 +76,7 @@ rustix = { version = "1", features = ["stdio"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 awaken-local-process.workspace = true
+awaken-sandbox-local.workspace = true
 
 [dev-dependencies]
 awaken-agent-channel.workspace = true
@@ -84,7 +85,9 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-
 awaken-tool-relay = { workspace = true, features = ["test-support"] }
 # hand-role integration test: drive the real hand with a real ToolCall over a socket.
 awaken-provisioning-contract = { workspace = true }
-awaken-sandbox-local = { workspace = true }
+# Real scoped Git fixtures use local bare endpoints; production still requires
+# admitted HTTPS/Gateway transport (this feature is dev-only).
+awaken-sandbox-local = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 
 [lints]

@@ -113,6 +113,8 @@ pub struct LocalProvider {
     base: PathBuf,
     inherit_agent_stderr: bool,
     trusted_host_access: bool,
+    #[cfg(target_os = "linux")]
+    execution_deployment: Option<execution::LocalExecutionDeployment>,
     /// In-memory blob seed for `File`/`Resource` mounts (keyed by id).
     blobs: HashMap<String, Vec<u8>>,
     /// Optional content-addressed store consulted after the seed map (Slice 4).
@@ -132,6 +134,8 @@ impl LocalProvider {
             base: base.into(),
             inherit_agent_stderr: false,
             trusted_host_access: false,
+            #[cfg(target_os = "linux")]
+            execution_deployment: None,
             blobs: HashMap::new(),
             file_store: None,
             secret_broker: Arc::new(std::sync::RwLock::new(None)),
@@ -152,6 +156,44 @@ impl LocalProvider {
     #[must_use]
     pub fn has_trusted_host_access(&self) -> bool {
         self.trusted_host_access
+    }
+
+    /// Install immutable optional execution hardening before provider use.
+    /// This does not qualify `process_tree_supervision`: distributed lease and
+    /// selected-provider failure qualification remain required. Only fenced realizations
+    /// are eligible, and their launches deny until the Session owner binds them.
+    #[cfg(target_os = "linux")]
+    pub fn install_execution_deployment(
+        &mut self,
+        deployment: execution::LocalExecutionDeployment,
+    ) -> Result<(), pc::SandboxError> {
+        if !self.trusted_host_access {
+            return Err(err("execution deployment requires TrustedHost"));
+        }
+        if self.execution_deployment.is_some() {
+            return Err(err("execution deployment is already installed"));
+        }
+        self.execution_deployment = Some(deployment);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn execution_deployment(&self) -> Option<&execution::LocalExecutionDeployment> {
+        self.execution_deployment.as_ref()
+    }
+
+    fn select_execution_boundary(&self, sandbox: &LocalSandbox) -> Result<(), pc::SandboxError> {
+        #[cfg(target_os = "linux")]
+        if let Some(deployment) = &self.execution_deployment {
+            if sandbox.realization.current().is_none() {
+                return Err(err(
+                    "execution deployment requires a current fenced realization",
+                ));
+            }
+            return sandbox.select_execution_boundary(deployment);
+        }
+        let _ = sandbox;
+        Ok(())
     }
 
     pub(super) fn prepare(&self, spec: &pc::SandboxSpec) -> Result<(), pc::SandboxError> {
@@ -298,6 +340,11 @@ impl LocalProvider {
         // Fail closed against our capabilities (isolation, ro, egress secrets, …).
         self.prepare(spec)?;
 
+        #[cfg(target_os = "linux")]
+        if self.execution_deployment.is_some() && effect_fence.is_none() {
+            return Err(err("execution deployment requires fenced creation"));
+        }
+
         let mut sandbox = self.build(&spec.scope, &spec.outputs_path);
         let realization_fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
         let mut realization_guard = match effect_fence {
@@ -368,6 +415,7 @@ impl LocalProvider {
                 }
             };
             *sandbox.memory_mounts.lock().await = memory_mounts;
+            self.select_execution_boundary(&sandbox)?;
             return Ok(sandbox);
         }
         // A retry must shred credential bytes left by the previous interrupted
@@ -497,6 +545,7 @@ impl LocalProvider {
                 return Err(cause);
             }
         };
+        self.select_execution_boundary(&sandbox)?;
         Ok(sandbox)
     }
 
@@ -533,6 +582,10 @@ impl LocalProvider {
     ) -> Result<LocalSandbox, pc::SandboxError> {
         if handle.restoration().is_none() {
             return self.adopt_sandbox_inner(Some(spec), handle, None).await;
+        }
+        #[cfg(target_os = "linux")]
+        if self.execution_deployment.is_some() {
+            return Err(err("scoped restored realization is not qualified"));
         }
         self.prepare(spec)?;
         if handle.sandbox_id != spec.scope {
@@ -649,6 +702,7 @@ impl LocalProvider {
         };
         sandbox.realized = realized;
         sandbox.realization = crate::realization_marker::LiveRealization::Current(realization);
+        self.select_execution_boundary(&sandbox)?;
         *sandbox
             .terminal_removal
             .lock()
@@ -674,6 +728,15 @@ impl LocalProvider {
         effect_fence: Option<&pc::SandboxEffectFence>,
     ) -> Result<LocalSandbox, pc::SandboxError> {
         let payload = handle.local_payload()?;
+        #[cfg(target_os = "linux")]
+        if self.execution_deployment.is_some() && spec.is_none() {
+            return Err(err(
+                "execution deployment requires the frozen adoption spec",
+            ));
+        }
+        if let Some(spec) = spec {
+            self.prepare(spec)?;
+        }
         if let Some(spec) = spec
             && (handle.realization_fingerprint()
                 != Some(&pc::SandboxRealizationFingerprint::from_spec(spec))
@@ -703,6 +766,7 @@ impl LocalProvider {
             Some((evidence, _)) => crate::realization_marker::LiveRealization::Current(evidence),
             None => crate::realization_marker::LiveRealization::LegacyAdopted,
         };
+        self.select_execution_boundary(&sandbox)?;
         Self::project_durable_handle_fields(&mut sandbox, payload)?;
         if let Some(spec) = spec {
             sandbox.secret_paths = spec
@@ -908,9 +972,13 @@ impl LocalProvider {
 
 #[async_trait]
 impl pc::SandboxProvider for LocalProvider {
-    /// Workdir isolation has no external daemon or kernel feature to attest;
-    /// construction already owns and validates its filesystem root.
+    /// Ordinary Workdir owns its filesystem root; a configured execution
+    /// boundary additionally attests the actual installed physical mechanism.
     async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        #[cfg(target_os = "linux")]
+        if let Some(execution) = &self.execution_deployment {
+            return execution.probe_ready().await;
+        }
         Ok(())
     }
 
@@ -1432,6 +1500,21 @@ impl pc::RepositoryRealizer for LocalSandbox {
     ) -> Result<(), pc::SandboxError> {
         self.require_root_identity()?;
         plan.validate_mount_path()?;
+        #[cfg(target_os = "linux")]
+        if let Some(outcome) = self.scoped_repository(plan, None, credential).await? {
+            match outcome {
+                crate::repository_effect::Outcome::Realized => {
+                    self.reserve_owned_path(&plan.mount_path);
+                    return Ok(());
+                }
+                crate::repository_effect::Outcome::Unavailable(error) => return Err(err(error)),
+                _ => {
+                    return Err(err(
+                        "repository realization returned another operation's receipt",
+                    ));
+                }
+            }
+        }
         provision_repo_at(
             &self.root,
             &plan.mount_path,
@@ -1455,6 +1538,31 @@ impl pc::RepositoryRealizer for LocalSandbox {
             .map_err(pc::RepositoryPublicationError::Unavailable)?;
         plan.validate_mount_path()
             .map_err(pc::RepositoryPublicationError::Unavailable)?;
+        #[cfg(target_os = "linux")]
+        if let Some(outcome) = self
+            .scoped_repository(plan, Some(expectation), credential)
+            .await
+            .map_err(pc::RepositoryPublicationError::Unavailable)?
+        {
+            use crate::repository_effect::Outcome;
+            return match outcome {
+                Outcome::Published(receipt)
+                    if receipt == pc::RepositoryPublicationReceipt::new(plan, expectation) =>
+                {
+                    Ok(receipt)
+                }
+                Outcome::Rejected(rejection) => {
+                    rejection.verify(expectation)?;
+                    Err(pc::RepositoryPublicationError::Rejected(rejection))
+                }
+                Outcome::Unavailable(error) => {
+                    Err(pc::RepositoryPublicationError::Unavailable(err(error)))
+                }
+                _ => Err(pc::RepositoryPublicationError::Unavailable(err(
+                    "repository publication returned another operation's receipt",
+                ))),
+            };
+        }
         push_repo_to_at(&self.root, &plan.mount_path, plan, expectation, credential)
     }
 }

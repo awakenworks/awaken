@@ -215,6 +215,21 @@ impl SessionEnvironmentOwner {
         matches!(self, Self::Resident(_))
     }
 
+    /// Execution may prepare the enrolled candidate or use the published owner,
+    /// never a detached/retiring owner retained only for terminal cleanup.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn execution_environment(
+        &self,
+    ) -> Option<&Arc<crate::session_environment::SessionEnvironment>> {
+        match self {
+            Self::Resident(owned) => Some(&owned.environment),
+            Self::Preparing(SessionEnvironmentPreparation::Candidate(candidate)) => {
+                Some(&candidate.environment)
+            }
+            _ => None,
+        }
+    }
+
     /// Project the single activity-generation key for this exact Resident Arc.
     /// Managed durable Sessions use the aggregate's Sandbox generation; legacy
     /// direct Sessions retain their existing physical-sandbox key. Checking both

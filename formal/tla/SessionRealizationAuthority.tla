@@ -99,11 +99,13 @@ Grant ==
 
 (* Same closed lease bytes, but an independently allocated slot/owner lock.
    Old waiters keep their original locks; they never lock the replacement. *)
-RecreateClosedSlot ==
-  /\ slotIdentity = 1 /\ projection = "Closed" /\ slotIdentity' = 2
+RecreateSlot ==
+  /\ slotIdentity = 1 /\ slotIdentity' = 2
   /\ UNCHANGED <<projection, lease, request, cleanup, ownerLocked, closedGenerations,
                   badGrant, badCleanup, granted, cleaned, selectedSlot,
                   peerLive, peerCleaned, workerClosed>>
+
+RecreateClosedSlot == projection = "Closed" /\ RecreateSlot
 
 (* The Worker captures all current selections under ONE mutex before any
    drain/async owner-lock wait. Peer cleanup has no dependency on ownerLocked. *)

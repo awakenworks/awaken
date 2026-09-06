@@ -599,6 +599,9 @@ impl WorkerNodeBuilder {
 
     /// Validate the immutable topology without registering or starting work.
     pub fn build(mut self) -> Result<WorkerNode, WorkerNodeBuildError> {
+        self.deployment
+            .validate_local_execution()
+            .map_err(WorkerNodeBuildError)?;
         awaken_credential_materializer::reject_ambient_api_key_environment()
             .map_err(|error| WorkerNodeBuildError(error.to_string()))?;
         if self.credential_materializer.is_some() && self.brokered_acp_model_access.is_some() {

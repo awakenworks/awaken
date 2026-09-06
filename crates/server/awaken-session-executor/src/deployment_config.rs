@@ -247,6 +247,9 @@ pub struct SandboxSettings {
     /// Workers advertise the matching backend only when this operator-owned
     /// switch is enabled; hosted installations therefore fail closed by default.
     pub trusted_host_enabled: bool,
+    /// Opt into the installed Linux process boundary for TrustedHost execution.
+    /// Startup must probe and install it; this is not a capability attestation.
+    pub trusted_host_scoped_execution: bool,
     /// Permit an unavailable Namespace provider to degrade to unsandboxed Workdir.
     pub allow_local_fallback: bool,
     /// Startup and steady-state target of ready, never-used containers per exact
@@ -308,6 +311,7 @@ impl Default for SandboxSettings {
     fn default() -> Self {
         Self {
             trusted_host_enabled: false,
+            trusted_host_scoped_execution: false,
             allow_local_fallback: false,
             warm_pool_size: 0,
             warm_pool_total_size: 16,
@@ -496,6 +500,20 @@ const fn sandbox_support_projection(
 }
 
 impl DeploymentConfig {
+    /// One configuration admission rule, reused by Worker and direct Host
+    /// construction. The capability projection remains independently qualified.
+    pub fn validate_local_execution(&self) -> Result<(), String> {
+        if self.sandbox.trusted_host_scoped_execution
+            && (!cfg!(target_os = "linux") || !self.trusted_host_enabled())
+        {
+            return Err(
+                "TrustedHost scoped execution requires Linux and an enabled TrustedHost backend"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Whether this installation may realize the exact host-identity boundary.
     /// Selecting the Local tier is itself an explicit operator choice; other
     /// tiers require the independent opt-in so a cloud Worker cannot inherit
@@ -1032,6 +1050,38 @@ mod tests {
     #[test]
     fn a_direct_ingress_never_requires_persistence() {
         assert!(base().durable_needs_persistence_error(false).is_none());
+    }
+
+    #[test]
+    fn local_execution_selection_has_one_platform_and_authorization_table() {
+        // E1 disabled -> existing behavior on every platform/tier. E2 enabled
+        // -> Linux AND (Local tier OR explicit TrustedHost opt-in). E3 selection
+        // never manufactures full process_tree_supervision capability evidence.
+        // Pure configuration has no timing state; launch/exit concurrency is
+        // owned by LocalProcessLifecycle and SessionExecutionBinding.
+        for enabled in [false, true] {
+            for trusted in [false, true] {
+                for tier in [
+                    SandboxTier::Local,
+                    SandboxTier::Namespace,
+                    SandboxTier::Docker,
+                ] {
+                    let mut config = base();
+                    config.sandbox_tier = tier;
+                    config.sandbox.trusted_host_enabled = trusted;
+                    config.sandbox.trusted_host_scoped_execution = enabled;
+                    let allowed = !enabled
+                        || (cfg!(target_os = "linux") && (tier == SandboxTier::Local || trusted));
+                    assert_eq!(config.validate_local_execution().is_ok(), allowed);
+                    assert!(!config.sandbox_support().0.process_tree_supervision);
+                    assert!(
+                        config
+                            .trusted_host_support()
+                            .is_none_or(|caps| !caps.process_tree_supervision)
+                    );
+                }
+            }
+        }
     }
 
     #[test]

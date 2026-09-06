@@ -341,6 +341,9 @@ impl crate::host::SharedHost {
         self,
         hand_factory: Option<Arc<dyn crate::HandExecutorFactory>>,
     ) -> Self {
+        self.deployment
+            .validate_local_execution()
+            .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
         if self.session_provider_explicit && !self.deployment.trusted_host_enabled() {
             return self;
         }
@@ -399,6 +402,18 @@ impl crate::host::SharedHost {
                     namespace_hand_bin.clone(),
                     std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
                 );
+        }
+        #[cfg(target_os = "linux")]
+        if deployment.sandbox.trusted_host_scoped_execution {
+            let execution =
+                awaken_sandbox_local::LocalExecutionDeployment::discover(namespace_hand_path)
+                    .unwrap_or_else(|error| panic!("configure TrustedHost execution: {error}"));
+            host.backend_owned_session_provider
+                .as_mut()
+                .expect("TrustedHost provider installed")
+                .install_scoped_execution(execution)
+                .await
+                .unwrap_or_else(|error| panic!("configure TrustedHost execution: {error}"));
         }
         // An explicit primary provider does not configure the independent,
         // operator-enabled TrustedHost backend. Preserve the primary while
@@ -718,37 +733,66 @@ mod tests {
         // S3 must install ONE mandatory Hand on the trusted provider, retaining
         // primary capabilities and any existing provider root. No tool launch
         // is needed: real CLI/Hand/resource execution lives in the E2E gate.
-        for prior_acp in [false, true] {
-            for explicit_primary in [false, true] {
-                let base = tempfile::tempdir().unwrap();
-                let mut deployment = crate::DeploymentConfig::ephemeral();
-                deployment.sandbox_tier = crate::SandboxTier::Local;
-                deployment.sandbox_dir = Some(base.path().into());
-                let mut host = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment);
-                if prior_acp {
-                    host = host.with_projected_acp(
-                        *awaken_run_executor_acp::acp_cli("claude").unwrap(),
-                        Arc::new(FixedModel),
-                        None,
-                    );
-                }
-                host.session_provider_explicit = explicit_primary;
-                let capabilities = host.session_provider.capabilities();
-                let host = host
-                    .with_session_environment_from_deployment(Some(Arc::new(NoHandFactory)))
-                    .await;
-                assert_eq!(host.session_provider.capabilities(), capabilities);
-                assert!(matches!(
-                    host.backend_owned_session_provider,
-                    Some(
-                        crate::session_environment::SessionEnvironmentProvider::Workdir {
-                            hand: Some(_),
-                            ..
+        // S7 scoped={off,on Linux} crosses both startup orderings, probes the
+        // real binary, preserves root relocation and is idempotent on reentry.
+        let modes: &[bool] = if cfg!(target_os = "linux") {
+            &[false, true]
+        } else {
+            &[false]
+        };
+        for &scoped in modes {
+            for prior_acp in [false, true] {
+                for explicit_primary in [false, true] {
+                    let base = tempfile::tempdir().unwrap();
+                    let mut deployment = crate::DeploymentConfig::ephemeral();
+                    deployment.sandbox_tier = crate::SandboxTier::Local;
+                    deployment.sandbox_dir = Some(base.path().into());
+                    deployment.sandbox.trusted_host_scoped_execution = scoped;
+                    let mut host =
+                        SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment);
+                    if prior_acp {
+                        host = host.with_projected_acp(
+                            *awaken_run_executor_acp::acp_cli("claude").unwrap(),
+                            Arc::new(FixedModel),
+                            None,
+                        );
+                    }
+                    host.session_provider_explicit = explicit_primary;
+                    let capabilities = host.session_provider.capabilities();
+                    let host = host
+                        .with_session_environment_from_deployment(Some(Arc::new(NoHandFactory)))
+                        .await;
+                    let host = host
+                        .with_session_environment_from_deployment(Some(Arc::new(NoHandFactory)))
+                        .await;
+                    #[cfg(target_os = "linux")]
+                    {
+                        let provider = host.backend_owned_session_provider.as_ref().unwrap();
+                        for provider in [provider, &provider.at_root(base.path().join("relocated"))]
+                        {
+                            let crate::session_environment::SessionEnvironmentProvider::Workdir {
+                                provider,
+                                ..
+                            } = provider
+                            else {
+                                panic!("expected TrustedHost")
+                            };
+                            assert_eq!(provider.execution_deployment().is_some(), scoped);
                         }
-                    )
-                ));
-                assert!(host.session_provider_explicit);
-                assert_eq!(host.acp.is_some(), prior_acp);
+                    }
+                    assert_eq!(host.session_provider.capabilities(), capabilities);
+                    assert!(matches!(
+                        host.backend_owned_session_provider,
+                        Some(
+                            crate::session_environment::SessionEnvironmentProvider::Workdir {
+                                hand: Some(_),
+                                ..
+                            }
+                        )
+                    ));
+                    assert!(host.session_provider_explicit);
+                    assert_eq!(host.acp.is_some(), prior_acp);
+                }
             }
         }
     }

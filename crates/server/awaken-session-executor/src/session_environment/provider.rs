@@ -132,6 +132,34 @@ impl SessionEnvironmentProvider {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn install_scoped_execution(
+        &mut self,
+        execution: awaken_sandbox_local::LocalExecutionDeployment,
+    ) -> Result<(), pc::SandboxError> {
+        let Self::Workdir { provider, .. } = self else {
+            return Err(pc::SandboxError::new(
+                "scoped host execution requires Workdir provider",
+            ));
+        };
+        if !provider.has_trusted_host_access() {
+            return Err(pc::SandboxError::new(
+                "scoped host execution requires TrustedHost authorization",
+            ));
+        }
+        if let Some(current) = provider.execution_deployment() {
+            return if current == &execution {
+                pc::SandboxProvider::probe_ready(provider).await
+            } else {
+                Err(pc::SandboxError::new(
+                    "scoped execution deployment changed after installation",
+                ))
+            };
+        }
+        execution.probe_ready().await?;
+        provider.install_execution_deployment(execution)
+    }
+
     pub(crate) fn namespace_with_agent_stderr(
         base: impl Into<std::path::PathBuf>,
         inherit: bool,
@@ -219,6 +247,18 @@ impl SessionEnvironmentProvider {
                 };
                 if let Self::Workdir { hand: target, .. } = &mut relocated {
                     *target = hand.clone();
+                }
+                #[cfg(target_os = "linux")]
+                if let (
+                    Some(execution),
+                    Self::Workdir {
+                        provider: target, ..
+                    },
+                ) = (provider.execution_deployment(), &mut relocated)
+                {
+                    target
+                        .install_execution_deployment(execution.clone())
+                        .expect("root relocation preserves an already-admitted deployment");
                 }
                 relocated
             }
@@ -939,4 +979,84 @@ fn container_spec(
         }
     }
     Ok(spec)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod execution_installation_tests {
+    use super::*;
+    use awaken_sandbox_local::LocalExecutionDeployment as Deployment;
+
+    #[tokio::test]
+    async fn failed_probe_cannot_install_and_reentry_cannot_replace_configuration() {
+        // I1 unauthorized Workdir -> reject before probe. I2 authorized but
+        // failed probe -> no installed config or filesystem effect. I3 different
+        // reentry -> reject before replacement; I4 same reentry re-probes, so
+        // retained configuration is not a cached readiness/authority receipt.
+        // I5 a different provider kind rejects before probe. Negative control:
+        // removing the first-install probe must make I2 fail, linking the Rust
+        // admission gate to OnlyProbedDeploymentSelected in the existing model.
+        let root = tempfile::tempdir().unwrap();
+        let deployment =
+            Deployment::new("/missing-launcher".into(), "/missing-helper".into()).unwrap();
+        let mut namespace = SessionEnvironmentProvider::namespace_with_agent_stderr(
+            root.path(),
+            false,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            "/missing-helper",
+            std::time::Duration::from_secs(1),
+        );
+        assert!(
+            namespace
+                .install_scoped_execution(deployment.clone())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("requires Workdir provider")
+        );
+        let mut untrusted = SessionEnvironmentProvider::workdir(root.path());
+        assert!(
+            untrusted
+                .install_scoped_execution(deployment.clone())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("TrustedHost authorization")
+        );
+        let mut owner =
+            SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(root.path(), false);
+        assert!(
+            owner
+                .install_scoped_execution(deployment.clone())
+                .await
+                .is_err()
+        );
+        let SessionEnvironmentProvider::Workdir { provider, .. } = &mut owner else {
+            unreachable!()
+        };
+        assert!(provider.execution_deployment().is_none());
+        provider
+            .install_execution_deployment(deployment.clone())
+            .unwrap();
+        let different =
+            Deployment::new("/another-launcher".into(), "/another-helper".into()).unwrap();
+        assert!(
+            owner
+                .install_scoped_execution(different)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("changed after installation")
+        );
+        assert!(
+            owner
+                .install_scoped_execution(deployment.clone())
+                .await
+                .is_err()
+        );
+        let SessionEnvironmentProvider::Workdir { provider, .. } = &owner else {
+            unreachable!()
+        };
+        assert_eq!(provider.execution_deployment(), Some(&deployment));
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
 }
