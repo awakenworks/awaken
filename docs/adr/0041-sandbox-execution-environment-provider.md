@@ -170,6 +170,15 @@ adapters**. The neutral seam is realized as the crate
   content/error only; artifacts and telemetry are downstream projections, never a
   commit path. Enforcer: the `HandOutput`/`RawTool` boundary in
   `awaken-sandbox-local`; artifacts do not flow through `CommitCoordinator`.
+- Local rooted tools and out-of-process Hand tools share `HandToolContext` for
+  logical path projection and directory-capability confinement. Local no longer
+  keeps a per-tool JSON path rewriter. Absolute `/workspace`, `/mnt`, and
+  `/outputs`, plus the relative `outputs` alias, are trusted provider mappings;
+  both output aliases resolve to the configured output directory. Relative
+  parents survive normalization until resolution against the actual workdir:
+  an explicitly authorized sibling mount is valid, an ungranted escape is not.
+  A nested projection does not add authority beyond its already-owned parent.
+  The content-only adapter remains solely the G13 output boundary.
 - **G2 — one-way dependency.** `agents` → contract ← providers; `runtime`-core
   does not depend on the contract. Enforcer: `check_crate_boundaries.py`,
   the metadata-derived crate boundary checker.
@@ -550,7 +559,7 @@ The three provider choices have deliberately different guarantees:
 |---|---|---|---|
 | Namespace | stable sandbox-absolute path | excluded by OS namespace/Seatbelt capability | only capabilities attested by that provider |
 | Container | stable sandbox-absolute path | excluded except declared mounts/broker routes | provider capability admission is mandatory |
-| TrustedHost/Workdir | provider-owned host directory; ACP prompts use cwd-relative paths while Native Hand keeps logical paths | explicitly available to local Native tools and BackendOwned ACP | no isolation claim; read-only is advisory; no network, allowlist, or resource-limit enforcement |
+| TrustedHost/Workdir | provider-owned host directory; installed Native Hand and ACP prompts use cwd-relative paths; typed Hand tools also accept logical roots | explicitly available to local Native tools and BackendOwned ACP | no isolation claim; read-only is advisory; no network, allowlist, or resource-limit enforcement |
 
 Workdir is therefore a convenience and ownership boundary, not a cloud security
 boundary. A network policy, read-only mount flag, or resource request must never
@@ -573,8 +582,29 @@ through the existing Namespace renderer, which translates it for Seatbelt.
 The Hand no longer guesses a sibling mount from cwd or infers a mount namespace
 from Linux. Network/resident Hand deployments retain their `/mnt` contract.
 This changes only the projection input, not the Hand protocol, resource ledger,
-or TrustedHost isolation guarantees. Native Workdir supervision remains the
-separate uninstalled integration described below.
+or TrustedHost isolation guarantees.
+
+TrustedHost now reuses the same Session-owned `SessionHandExecutor` as Namespace
+and Container. Startup verifies the release companion's `hand --check` and
+installs one lazy Hand factory into the existing trusted Workdir provider,
+including a provider previously created by ACP startup. Its command passes both
+`--mount-root` and `--workspace-root` as absolute argv values from that provider;
+the Hand consumes them through the canonical `HandToolContext`, not a shell
+rewrite. Creation/adoption retain configuration without starting a process.
+First Native dispatch opens the existing Hand channel; failed launch or unknown
+reap never falls back to Worker-local tools. Idle retirement, projection fencing,
+retry and terminal close reuse the existing lifecycle. Workdir and Namespace
+directory disposal require a Hand stop receipt; only Container disposal itself
+owns a physical execution-substrate teardown. Unconfigured weaker Local
+embeddings keep their explicit rooted tool path, not a failure fallback.
+
+Native prompts are relative to the Hand's initial `/workspace`; the configured
+ACP working directory affects only ACP. Bash may subsequently change its own
+cwd and must resolve the supplied paths from their stated reference directory.
+No physical host prefix is injected into model prompts. This is Native process
+wiring, not process-tree supervision: ordinary process reap does not prove tree
+absence. Scoped launch, live lease propagation and durable process participants
+remain the required activation boundary described below.
 
 Dynamic behavior is fail-closed. Create validates policy existence, enabled
 state, cross-field rules, and Environment compatibility before persistence. At

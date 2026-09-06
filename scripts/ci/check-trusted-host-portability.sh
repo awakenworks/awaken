@@ -36,6 +36,8 @@ cargo test -p awaken-runtime-host --lib local_and_namespace_restart_replay_exact
 cargo test -p awaken-runtime-host --lib resident_and_cold_terminal_memory_use_one_terminal_v2_authority
 cargo test -p awaken-runtime-host --lib \
   trusted_host_filesystem_view_maps_workspace_relative_cwd_once
+cargo test -p awaken-runtime-host --lib trusted_host_installed_hand
+cargo test -p awaken-runtime-host --lib workdir_unknown_hand_reap
 cargo test -p awaken-runtime-host --lib \
   configured_working_directory_drives_process_and_acp_from_one_view
 cargo test -p awaken-runtime-host --lib \
@@ -52,6 +54,10 @@ cargo test -p awaken-local-process --lib
 # Run the actual Hand binary with an explicit resource root and a nested cwd,
 # not just a renderer/unit fixture. Non-Linux builds exercise native path parsing.
 cargo test -p awaken-sandbox --features hand --lib --test hand_stdio_role
+# These startup rows require the just-built release companion. The thin scoped
+# qualification above intentionally does not provide Hand, and must not race
+# companion validation or turn an absent executable into a successful skip.
+cargo test -p awaken-runtime-host --lib acp_backend::tests -- --include-ignored
 cargo test -p awaken-sandbox-fs --lib
 cargo test -p awaken-sandbox-memoryd --lib
 cargo test -p awaken-sandbox-memoryd --test copy_lifecycle
@@ -68,6 +74,8 @@ for runtime in codex claude; do
   CODEX_ACP_PROFILE=host-fixture AWAKEN_ACP_RUNTIME="$runtime" \
     node e2e/codex_acp_live_e2e.mjs
 done
+CODEX_ACP_PROFILE=native-host-fixture AWAKEN_ACP_RUNTIME=native \
+  node e2e/codex_acp_live_e2e.mjs
 
 # Native Namespace is an explicit Linux substrate gate, not an ACP cwd option
 # and not a successful skip on hosts lacking Namespace support. Other OS rows

@@ -145,7 +145,7 @@ impl SessionEnvironment {
         &self,
     ) -> Result<Vec<CapturedArtifact>, pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => capture_sandbox_artifacts(sandbox.as_ref()).await,
+            Self::Workdir { sandbox, .. } => capture_sandbox_artifacts(sandbox.as_ref()).await,
             Self::Namespace { sandbox, .. } => capture_sandbox_artifacts(sandbox.as_ref()).await,
             Self::Container { sandbox, .. } => sandbox
                 .read_files(sandbox.outputs_path())
@@ -195,7 +195,7 @@ impl SessionEnvironment {
         root: FileReadRoot,
     ) -> Result<Vec<(String, Vec<u8>)>, pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => sandbox.list_files(root.local_logical()),
+            Self::Workdir { sandbox, .. } => sandbox.list_files(root.local_logical()),
             Self::Namespace { sandbox, .. } => sandbox.list_files(root.local_logical()),
             Self::Container { sandbox, .. } => {
                 let root = match root {
@@ -220,7 +220,7 @@ impl SessionEnvironment {
         subdir: &str,
     ) -> Result<Vec<DiscoveredSkillFile>, pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => sandbox.scan_skill_dir(subdir),
+            Self::Workdir { sandbox, .. } => sandbox.scan_skill_dir(subdir),
             Self::Namespace { sandbox, .. } => sandbox.scan_skill_dir(subdir),
             Self::Container { skills, .. } => skills.get(subdir),
         }
@@ -237,7 +237,7 @@ impl SessionEnvironment {
             Self::Container {
                 sandbox, skills, ..
             } => skills.refresh(sandbox.as_ref()).await,
-            Self::Workdir(_) | Self::Namespace { .. } => Ok(()),
+            Self::Workdir { .. } | Self::Namespace { .. } => Ok(()),
         }
     }
 
@@ -247,7 +247,7 @@ impl SessionEnvironment {
         contents: &[u8],
     ) -> Result<(), pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => sandbox.materialize_inline(logical, contents),
+            Self::Workdir { sandbox, .. } => sandbox.materialize_inline(logical, contents),
             Self::Namespace { sandbox, .. } => sandbox.materialize_inline(logical, contents),
             Self::Container { sandbox, .. } => {
                 container_files::write(sandbox.as_ref(), logical, contents).await
@@ -261,7 +261,7 @@ impl SessionEnvironment {
         files: &[(String, Vec<u8>, bool)],
     ) -> Result<(), pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => sandbox.materialize_read_only_tree(subdir, files),
+            Self::Workdir { sandbox, .. } => sandbox.materialize_read_only_tree(subdir, files),
             Self::Namespace { sandbox, .. } => sandbox.materialize_read_only_tree(subdir, files),
             Self::Container { sandbox, .. } => {
                 container_files::materialize_read_only_tree(sandbox.as_ref(), subdir, files).await
@@ -288,7 +288,7 @@ impl SessionEnvironment {
         &self,
         requirements: &[pc::MountRequirement],
     ) -> Result<(), pc::SandboxError> {
-        if matches!(self, Self::Namespace { .. } | Self::Workdir(_)) {
+        if matches!(self, Self::Namespace { .. } | Self::Workdir { .. }) {
             let sandbox = self.sandbox();
             for requirement in requirements {
                 let retained = sandbox.realized().iter().any(|realized| {
@@ -323,7 +323,7 @@ impl SessionEnvironment {
         contents: &[u8],
     ) -> Result<(), pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => sandbox.materialize_inline(logical, contents),
+            Self::Workdir { sandbox, .. } => sandbox.materialize_inline(logical, contents),
             Self::Namespace { sandbox, .. } => sandbox.materialize_inline(logical, contents),
             Self::Container { sandbox, .. } => {
                 let path = container_files::logical_path(logical)?;
@@ -342,7 +342,7 @@ impl SessionEnvironment {
         logical: &str,
     ) -> Result<(), pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => sandbox.remove_inline(logical),
+            Self::Workdir { sandbox, .. } => sandbox.remove_inline(logical),
             Self::Namespace { sandbox, .. } => sandbox.remove_mount(logical),
             Self::Container { sandbox, .. } => {
                 if awaken_sandbox_container::live_input_relative_path(logical).is_some() {

@@ -22,7 +22,10 @@ pub(crate) struct EnvironmentQuiescenceProof;
 
 /// One realized sandbox shared by every Run attempt in a Session.
 pub(crate) enum SessionEnvironment {
-    Workdir(Arc<LocalSandbox>),
+    Workdir {
+        sandbox: Arc<LocalSandbox>,
+        hand: Option<Arc<SessionHandExecutor>>,
+    },
     Namespace {
         sandbox: Arc<NamespaceSandbox>,
         hand: Arc<SessionHandExecutor>,
@@ -42,7 +45,7 @@ impl SessionEnvironment {
         has_acp: bool,
         has_native: bool,
     ) -> Result<crate::managed_resource_projection::AgentPathView, &'static str> {
-        if matches!(self, Self::Workdir(_)) && has_acp && has_native {
+        if matches!(self, Self::Workdir { .. }) && has_acp && has_native {
             return Err(
                 "TrustedHost fallback candidates cannot mix ACP and Native filesystem clients",
             );
@@ -63,7 +66,14 @@ impl SessionEnvironment {
         client: super::AgentFilesystemClient,
     ) -> super::AgentFilesystemView {
         match self {
-            Self::Workdir(sandbox) => {
+            Self::Workdir { sandbox, hand } => {
+                // working_directory is an ACP session option. The Native Hand
+                // starts at WorkspaceLayout::ROOT; its Bash tool may cd later,
+                // but that must not rewrite the frozen prompt's reference cwd.
+                let working_directory = match client {
+                    super::AgentFilesystemClient::NativeTools => None,
+                    super::AgentFilesystemClient::AcpProcess => working_directory,
+                };
                 let logical_cwd = working_directory.map_or_else(
                     || pc::WorkspaceLayout::ROOT.to_string(),
                     |relative| {
@@ -92,10 +102,11 @@ impl SessionEnvironment {
                         },
                     ),
                     prompt_paths: match client {
-                        super::AgentFilesystemClient::NativeTools => {
+                        super::AgentFilesystemClient::NativeTools if hand.is_none() => {
                             crate::managed_resource_projection::AgentPathView::sandbox_absolute()
                         }
-                        super::AgentFilesystemClient::AcpProcess => {
+                        super::AgentFilesystemClient::AcpProcess
+                        | super::AgentFilesystemClient::NativeTools => {
                             crate::managed_resource_projection::AgentPathView::workdir_relative(
                                 logical_cwd,
                             )
@@ -126,7 +137,25 @@ impl SessionEnvironment {
 
     #[must_use]
     pub(crate) fn workdir(sandbox: LocalSandbox) -> Self {
-        Self::Workdir(Arc::new(sandbox))
+        Self::Workdir {
+            sandbox: Arc::new(sandbox),
+            hand: None,
+        }
+    }
+
+    pub(super) fn with_workdir_hand(
+        mut self,
+        config: Option<&super::provider::WorkdirHandConfig>,
+    ) -> Self {
+        if let (Self::Workdir { sandbox, hand }, Some(config)) = (&mut self, config) {
+            *hand = Some(Arc::new(SessionHandExecutor::workdir(
+                sandbox.clone(),
+                config.factory.clone(),
+                &config.binary,
+                config.idle_after,
+            )));
+        }
+        self
     }
 
     #[must_use]
@@ -184,7 +213,7 @@ impl SessionEnvironment {
     /// environment rather than a process default that may select another tier.
     pub(crate) fn capabilities(&self) -> pc::SandboxCapabilities {
         match self {
-            Self::Workdir(_) => awaken_sandbox_local::LocalProvider::capabilities(),
+            Self::Workdir { .. } => awaken_sandbox_local::LocalProvider::capabilities(),
             Self::Namespace { .. } => awaken_sandbox_local::NamespaceProvider::capabilities(),
             Self::Container { capabilities, .. } => capabilities.clone(),
         }
@@ -198,7 +227,7 @@ impl SessionEnvironment {
         next: &[pc::MountRequirement],
     ) -> Result<(), pc::SandboxError> {
         let capabilities = self.capabilities();
-        if matches!(self, Self::Workdir(sandbox) if sandbox.has_trusted_host_access()) {
+        if matches!(self, Self::Workdir { sandbox, .. } if sandbox.has_trusted_host_access()) {
             pc::validate_trusted_host_mount_requirements(next, &capabilities)
         } else {
             pc::validate_mount_requirements(next, &capabilities)
@@ -222,31 +251,41 @@ impl SessionEnvironment {
         &self,
     ) -> Result<Option<HandProjectionUpdate<'_>>, pc::SandboxError> {
         match self {
-            Self::Namespace { hand, .. } | Self::Container { hand, .. } => {
-                hand.begin_projection_update().await.map(Some)
+            Self::Workdir {
+                hand: Some(hand), ..
             }
-            Self::Workdir(_) => Ok(None),
+            | Self::Namespace { hand, .. }
+            | Self::Container { hand, .. } => hand.begin_projection_update().await.map(Some),
+            Self::Workdir { hand: None, .. } => Ok(None),
         }
     }
 
     /// Executable Hand for this realized environment. Namespace and Container
     /// execute through one sandbox-resident channel; only the explicitly weaker
-    /// Workdir tier uses host-side rooted tools.
+    /// Only an explicitly weaker Workdir embedding uses host-side rooted tools;
+    /// an installed TrustedHost Hand never falls back to that path.
     pub(crate) fn tool_executor(&self) -> Arc<dyn ToolExecutor> {
         match self {
-            Self::Namespace { hand, .. } | Self::Container { hand, .. } => hand.clone(),
-            Self::Workdir(_) => Arc::new(RawToolRegistry::new(self.rooted_tools())),
+            Self::Workdir {
+                hand: Some(hand), ..
+            }
+            | Self::Namespace { hand, .. }
+            | Self::Container { hand, .. } => hand.clone(),
+            Self::Workdir { hand: None, .. } => Arc::new(RawToolRegistry::new(self.rooted_tools())),
         }
     }
 
     pub(crate) fn rooted_tools(&self) -> Vec<Arc<dyn RawTool>> {
         match self {
-            Self::Workdir(sandbox) => sandbox.rooted_tools(),
+            Self::Workdir {
+                sandbox,
+                hand: None,
+            } => sandbox.rooted_tools(),
             // Descriptors remain the canonical built-in set; execution is forced
             // through this environment's bound Hand in `SessionCtx`.
-            Self::Namespace { .. } | Self::Container { .. } => {
-                awaken_ext_builtin_tools::all_hand_tools()
-            }
+            Self::Workdir { hand: Some(_), .. }
+            | Self::Namespace { .. }
+            | Self::Container { .. } => awaken_ext_builtin_tools::all_hand_tools(),
         }
     }
 
@@ -257,10 +296,12 @@ impl SessionEnvironment {
         &self,
     ) -> Result<EnvironmentStopProof, pc::SandboxError> {
         match self {
-            Self::Namespace { hand, .. } | Self::Container { hand, .. } => {
-                hand.stop().await.map(EnvironmentStopProof::Hand)
+            Self::Workdir {
+                hand: Some(hand), ..
             }
-            Self::Workdir(_) => Ok(EnvironmentStopProof::NoBoundProcesses),
+            | Self::Namespace { hand, .. }
+            | Self::Container { hand, .. } => hand.stop().await.map(EnvironmentStopProof::Hand),
+            Self::Workdir { hand: None, .. } => Ok(EnvironmentStopProof::NoBoundProcesses),
         }
     }
 
@@ -269,10 +310,15 @@ impl SessionEnvironment {
         command: pc::Command,
     ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannelType>), pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => sandbox.spawn_agent(command).await,
-            Self::Namespace { hand, .. } | Self::Container { hand, .. } => {
-                hand.launcher().spawn_agent(command).await
+            Self::Workdir {
+                sandbox,
+                hand: None,
+            } => sandbox.spawn_agent(command).await,
+            Self::Workdir {
+                hand: Some(hand), ..
             }
+            | Self::Namespace { hand, .. }
+            | Self::Container { hand, .. } => hand.launcher().spawn_agent(command).await,
         }
     }
 }

@@ -13,7 +13,7 @@ impl pc::RepositoryRealizer for SessionEnvironment {
         credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<(), pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => {
+            Self::Workdir { sandbox, .. } => {
                 pc::RepositoryRealizer::realize_repository(sandbox.as_ref(), plan, credential).await
             }
             Self::Namespace { sandbox, .. } => sandbox.provision_repo(plan, credential),
@@ -36,7 +36,7 @@ impl pc::RepositoryRealizer for SessionEnvironment {
         credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
         match self {
-            Self::Workdir(sandbox) => {
+            Self::Workdir { sandbox, .. } => {
                 pc::RepositoryRealizer::publish_repository(
                     sandbox.as_ref(),
                     plan,

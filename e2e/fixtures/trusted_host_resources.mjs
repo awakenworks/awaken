@@ -38,7 +38,7 @@ export async function installHostResourceFixture(root, temp, data, runtime) {
   return { ...process.env, PATH: [bin, process.env.PATH].join(path.delimiter) };
 }
 
-export async function verifyAgentResources({ client, request, temp, runtime, restart, nativeModel }) {
+export async function verifyAgentResources({ client, request, temp, runtime, restart, nativeModel, nativeIsolation = 'namespace' }) {
   // Cause/effect graph:
   // C1 API binds trusted_host version 1; C2 cwd={default,repo/src};
   // C3 File+Memory+Repository; C4 two Sessions share a MemoryStore and host
@@ -58,6 +58,8 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
   // bytes at shared paths. Concurrent release => one version per path; conflict
   // never overwrites its winner, including after restart/reclamation retry.
   const native = runtime === 'native';
+  assert.ok(['namespace', 'workdir'].includes(nativeIsolation));
+  const trustedHost = !native || nativeIsolation === 'workdir';
   assert.equal(native, typeof nativeModel === 'string', 'Native needs an explicit published model');
   const betas = ['managed-agents-2026-04-01'];
   const memoryHeaders = { 'anthropic-beta': 'agent-memory-2026-07-22' };
@@ -67,16 +69,16 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
     return result.value;
   };
   await api('POST', '/v1/awaken/sandbox-execution-policies', {
-    id: 'resource-host', config: native
-      ? { isolation: 'namespace' }
-      : { isolation: 'workdir', host_access: 'trusted_host' },
+    id: 'resource-host', config: trustedHost
+      ? { isolation: 'workdir', host_access: 'trusted_host' }
+      : { isolation: 'namespace' },
   }, 201);
   const environment = await api('POST', '/v1/awaken/environments', {
     command_id: 'resource-host-create', name: 'Resource host',
     config: { type: 'self_hosted' }, sandbox_policy: { policy_id: 'resource-host', version: 1 },
   }, 201);
   assert.deepEqual(environment.sandbox_policy, { policy_id: 'resource-host', version: 1 });
-  if (!native) await api('POST', '/v1/awaken/environments', {
+  if (trustedHost) await api('POST', '/v1/awaken/environments', {
     command_id: 'reject-cloud-host', name: 'Rejected cloud',
     config: { type: 'cloud', networking: { type: 'unrestricted' }, packages: {} },
     sandbox_policy: { policy_id: 'resource-host', version: 1 },
@@ -153,7 +155,7 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
       betas, events: [{ type: 'user.message', content: [{ type: 'text', text:
         `AWK_RESOURCE_MISSION\nAWK_RESULT=result-${name}\nAWK_ATTEMPT=${attempt}\nRead the uploaded File using its mounted path, seed.md in Memory, and README.md in the mounted Repository. Their exact bytes are independent secrets not supplied in this user message. Obtain the Repository HEAD using git rev-parse HEAD. Construct exactly five lines: File bytes, Memory seed bytes, Repository README bytes, the HEAD hash, and this message's AWK_ATTEMPT value, joined by LF with NO trailing newline. Write this combined text into result-${name}.md inside Memory, result-${name}.txt inside Repository, and result.txt inside the injected outputs directory. Run git add -N result-${name}.txt and save git diff -- result-${name}.txt into repository.patch in the outputs directory. Do not publish to the remote. Reply RESOURCE_OK followed by the File bytes, a space, and this message's AWK_ATTEMPT value. Use the injected paths relative to your current working directory.`
         + (previous ? `\nAWK_PREVIOUS=${previous}\nBefore overwriting anything, verify that the existing Memory and Repository result files both still contain the same four resource lines followed by AWK_PREVIOUS. Stop with an error if either prior edit was lost during Worker replacement.` : '')
-        + (native ? `\nAWK_TOOL_CWD=/workspace${name === 'nested' ? '/repo/src' : ''}` : '')
+        + (native ? `\nAWK_TOOL_CWD=${trustedHost ? '.' : '/workspace'}${name === 'nested' ? '/repo/src' : ''}` : '')
         + (contention ? `\nAWK_CONTEND=${contention}\nBefore editing shared paths, verify shared-a-identical.md and shared-z-conflict.md in Memory both equal seed.md exactly. Write seed.md bytes followed by LF and AWK_CONTEND (no final newline) to shared-a-identical.md. Write the five-line combined result text to shared-z-conflict.md. These are intentional same-base concurrent edits; do not retry by reading a newer durable base.` : ''),
       }] }],
     });

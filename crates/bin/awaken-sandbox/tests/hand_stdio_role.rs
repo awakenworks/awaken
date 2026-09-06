@@ -98,6 +98,10 @@ async fn explicit_mount_projection_survives_nested_cwd_and_separate_resource_roo
     // changes; P6 outside absolute path => denied. A decoy cwd-sibling mount
     // detects the former heuristic. These are real Hand process/protocol/path
     // tests, NOT Memory harvest, Repository publication or credential proofs.
+    // P7 explicit workspace + nested cwd => logical /workspace and cwd-relative
+    // reads reach one tree; Bash inherits the exact physical cwd. This is the
+    // same CLI consumed by TrustedHost's Session-owned Hand, without a mount
+    // namespace or host-root symlinks.
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().canonicalize().unwrap();
     let cwd = root.join("workspace/深层 working dir/nested");
@@ -120,9 +124,12 @@ async fn explicit_mount_projection_survives_nested_cwd_and_separate_resource_roo
     std::fs::create_dir_all(mount.join("session/outputs")).unwrap();
     let outside = root.join("outside-secret.txt");
     std::fs::write(&outside, "not-authorized").unwrap();
+    std::fs::write(cwd.join("native.txt"), "workspace-bytes").unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_awaken-sandbox"))
         .args(["hand", "--stdio", "--mount-root"])
         .arg(&mount)
+        .arg("--workspace-root")
+        .arg(root.join("workspace"))
         .current_dir(&cwd)
         .env("AWAKEN_HAND_LEDGER_DIR", root.join("ledger"))
         .stdin(Stdio::piped())
@@ -135,6 +142,42 @@ async fn explicit_mount_projection_survives_nested_cwd_and_separate_resource_roo
         read: child.stdout.take().unwrap(),
         write: child.stdin.take().unwrap(),
     });
+    for file_path in [
+        "native.txt",
+        "/workspace/深层 working dir/nested/native.txt",
+    ] {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            executor.call_hand(&ToolCall {
+                call_id: format!("workspace-{file_path}"),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({"file_path": file_path}),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(result, HandResult::Ok { ref output }
+            if !output.is_error && output.text().contains("workspace-bytes")),
+            "{result:?}"
+        );
+    }
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        executor.call_hand(&ToolCall {
+            call_id: "physical-bash-cwd".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({"command": "pwd; cat native.txt"}),
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(result, HandResult::Ok { ref output }
+        if !output.is_error && output.text().contains("workspace-bytes")
+            && output.text().contains("深层 working dir/nested")),
+        "{result:?}"
+    );
     for (relative, expected) in resources {
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(10),

@@ -10,7 +10,10 @@ use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
 /// Creates/adopts the one Session environment while auxiliary housekeeping Runs
 /// may continue using their deliberately-fresh LocalProvider.
 pub(crate) enum SessionEnvironmentProvider {
-    Workdir(LocalProvider),
+    Workdir {
+        provider: LocalProvider,
+        hand: Option<WorkdirHandConfig>,
+    },
     Namespace {
         provider: NamespaceProvider,
         hand_factory: Arc<dyn HandExecutorFactory>,
@@ -26,6 +29,13 @@ pub(crate) enum SessionEnvironmentProvider {
         hand_idle_after: std::time::Duration,
         hand_residency: ContainerHandResidency,
     },
+}
+
+#[derive(Clone)]
+pub(crate) struct WorkdirHandConfig {
+    pub(super) factory: Arc<dyn HandExecutorFactory>,
+    pub(super) binary: String,
+    pub(super) idle_after: std::time::Duration,
 }
 
 pub(crate) struct SessionEnvironmentAdoptionLayout {
@@ -69,33 +79,57 @@ impl SessionEnvironmentProvider {
     }
 
     pub(crate) fn supports_host_identity(&self) -> bool {
-        matches!(self, Self::Workdir(provider) if provider.has_trusted_host_access())
+        matches!(self, Self::Workdir { provider, .. } if provider.has_trusted_host_access())
     }
 
     pub(crate) fn capabilities(&self) -> pc::SandboxCapabilities {
         match self {
-            Self::Workdir(provider) => pc::SandboxProvider::capabilities(provider),
+            Self::Workdir { provider, .. } => pc::SandboxProvider::capabilities(provider),
             Self::Namespace { provider, .. } => pc::SandboxProvider::capabilities(provider),
             Self::Container { provider, .. } => provider.sandbox_capabilities(),
         }
     }
 
     pub(crate) fn workdir(base: impl Into<std::path::PathBuf>) -> Self {
-        Self::Workdir(LocalProvider::new(base))
+        Self::Workdir {
+            provider: LocalProvider::new(base),
+            hand: None,
+        }
     }
 
     pub(crate) fn workdir_with_agent_stderr(
         base: impl Into<std::path::PathBuf>,
         inherit: bool,
     ) -> Self {
-        Self::Workdir(LocalProvider::new(base).with_agent_stderr(inherit))
+        Self::Workdir {
+            provider: LocalProvider::new(base).with_agent_stderr(inherit),
+            hand: None,
+        }
     }
 
     pub(crate) fn trusted_host_workdir_with_agent_stderr(
         base: impl Into<std::path::PathBuf>,
         inherit: bool,
     ) -> Self {
-        Self::Workdir(LocalProvider::trusted_host(base).with_agent_stderr(inherit))
+        Self::Workdir {
+            provider: LocalProvider::trusted_host(base).with_agent_stderr(inherit),
+            hand: None,
+        }
+    }
+
+    pub(crate) fn install_workdir_hand(
+        &mut self,
+        factory: Arc<dyn HandExecutorFactory>,
+        binary: String,
+        idle_after: std::time::Duration,
+    ) {
+        if let Self::Workdir { hand, .. } = self {
+            *hand = Some(WorkdirHandConfig {
+                factory,
+                binary,
+                idle_after,
+            });
+        }
     }
 
     pub(crate) fn namespace_with_agent_stderr(
@@ -174,15 +208,19 @@ impl SessionEnvironmentProvider {
     pub(crate) fn at_root(&self, base: impl Into<std::path::PathBuf>) -> Self {
         let base = base.into();
         match self {
-            Self::Workdir(provider) => {
-                if provider.has_trusted_host_access() {
+            Self::Workdir { provider, hand } => {
+                let mut relocated = if provider.has_trusted_host_access() {
                     Self::trusted_host_workdir_with_agent_stderr(
                         base,
                         provider.inherits_agent_stderr(),
                     )
                 } else {
                     Self::workdir_with_agent_stderr(base, provider.inherits_agent_stderr())
+                };
+                if let Self::Workdir { hand: target, .. } = &mut relocated {
+                    *target = hand.clone();
                 }
+                relocated
             }
             Self::Namespace {
                 provider,
@@ -218,7 +256,7 @@ impl SessionEnvironmentProvider {
 
     pub(crate) fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
         match self {
-            Self::Workdir(provider) => provider.install_memory_mounter(mounter),
+            Self::Workdir { provider, .. } => provider.install_memory_mounter(mounter),
             Self::Namespace { provider, .. } => provider.install_memory_mounter(mounter),
             Self::Container { provider, .. } => provider.install_memory_mounter(mounter),
         }
@@ -226,7 +264,7 @@ impl SessionEnvironmentProvider {
 
     pub(crate) fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
         match self {
-            Self::Workdir(provider) => provider.install_secret_broker(broker),
+            Self::Workdir { provider, .. } => provider.install_secret_broker(broker),
             Self::Namespace { provider, .. } => provider.install_secret_broker(broker),
             Self::Container { provider, .. } => provider.install_secret_broker(broker),
         }
@@ -249,7 +287,7 @@ impl SessionEnvironmentProvider {
         spec: &pc::SandboxSpec,
     ) -> Result<pc::SandboxSpec, pc::SandboxError> {
         match self {
-            Self::Workdir(_) => Ok(spec.clone()),
+            Self::Workdir { .. } => Ok(spec.clone()),
             Self::Namespace { .. } => {
                 let mut spec = spec.clone();
                 spec.isolation = pc::IsolationClass::Namespace;
@@ -273,7 +311,7 @@ impl SessionEnvironmentProvider {
     ) -> Result<SessionEnvironmentAdoptionLayout, pc::SandboxError> {
         let mut spec = self.effective_spec(spec)?;
         match self {
-            Self::Workdir(_) => {
+            Self::Workdir { .. } => {
                 let payload = handle.local_payload()?;
                 spec.outputs_path.clone_from(&payload.outputs_path);
                 spec.env.clone_from(&payload.base_env);
@@ -319,15 +357,16 @@ impl SessionEnvironmentProvider {
         intent: awaken_sandbox_container::ContainerRealizationIntent,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         match self {
-            Self::Workdir(provider) => match effect_fence {
+            Self::Workdir { provider, hand } => match effect_fence {
                 Some(effect_fence) => provider
                     .create_sandbox_for_effect(spec, effect_fence, source_handle)
                     .await
-                    .map(SessionEnvironment::workdir),
-                None => provider
-                    .create_sandbox(spec)
-                    .await
-                    .map(SessionEnvironment::workdir),
+                    .map(|sandbox| {
+                        SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
+                    }),
+                None => provider.create_sandbox(spec).await.map(|sandbox| {
+                    SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
+                }),
             },
             Self::Namespace {
                 provider,
@@ -479,7 +518,7 @@ impl SessionEnvironmentProvider {
         retained: Option<&super::SessionEnvironment>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         match self {
-            Self::Workdir(provider) => pc::SandboxProvider::observe(provider, handle).await,
+            Self::Workdir { provider, .. } => pc::SandboxProvider::observe(provider, handle).await,
             Self::Namespace { provider, .. } => {
                 pc::SandboxProvider::observe(provider, handle).await
             }
@@ -505,7 +544,7 @@ impl SessionEnvironmentProvider {
         effect_fence: &pc::SandboxEffectFence,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         match self {
-            Self::Workdir(provider) => {
+            Self::Workdir { provider, .. } => {
                 pc::SandboxProvider::observe_for_effect(provider, spec, handle, effect_fence).await
             }
             Self::Namespace { provider, .. } => {
@@ -537,10 +576,10 @@ impl SessionEnvironmentProvider {
             pc::SandboxObservation::DefinitivelyUnavailable {
                 physical_incarnation,
             } => match self {
-                Self::Workdir(_) | Self::Namespace { .. } if physical_incarnation.is_none() => {
+                Self::Workdir { .. } | Self::Namespace { .. } if physical_incarnation.is_none() => {
                     Ok(())
                 }
-                Self::Workdir(_) | Self::Namespace { .. } => Err(pc::SandboxError::new(
+                Self::Workdir { .. } | Self::Namespace { .. } => Err(pc::SandboxError::new(
                     "filesystem sandbox absence carried a foreign physical incarnation",
                 )),
                 Self::Container { .. } => {
@@ -561,7 +600,7 @@ impl SessionEnvironmentProvider {
                 physical_incarnation,
             } => {
                 let expected = match self {
-                    Self::Workdir(_) | Self::Namespace { .. } => {
+                    Self::Workdir { .. } | Self::Namespace { .. } => {
                         handle.filesystem_physical_incarnation()?.ok_or_else(|| {
                             pc::SandboxError::new(
                                 "legacy filesystem handle has no physical incarnation",
@@ -673,15 +712,19 @@ impl SessionEnvironmentProvider {
         effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         match self {
-            Self::Workdir(provider) => match effect_fence {
+            Self::Workdir { provider, hand } => match effect_fence {
                 Some(effect_fence) => provider
                     .adopt_sandbox_for_effect(spec, handle, effect_fence)
                     .await
-                    .map(SessionEnvironment::workdir),
+                    .map(|sandbox| {
+                        SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
+                    }),
                 None => provider
                     .adopt_sandbox_with_spec(spec, handle)
                     .await
-                    .map(SessionEnvironment::workdir),
+                    .map(|sandbox| {
+                        SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
+                    }),
             },
             Self::Namespace {
                 provider,
@@ -747,7 +790,7 @@ impl SessionEnvironmentProvider {
         store: &dyn pc::SandboxCheckpointStore,
     ) -> Result<pc::SandboxHandle, pc::SandboxError> {
         match self {
-            Self::Workdir(provider) => {
+            Self::Workdir { provider, .. } => {
                 let restored = pc::SandboxProvider::restore(provider, spec, request, store).await?;
                 let handle = restored.target().handle();
                 request.verify_handle(spec, &handle)?;
@@ -784,7 +827,7 @@ impl SessionEnvironmentProvider {
         terminal_effect_fence: &pc::SandboxEffectFence,
     ) -> Result<Option<SessionEnvironment>, pc::SandboxError> {
         match self {
-            Self::Workdir(provider) => provider
+            Self::Workdir { provider, hand } => provider
                 .prepare_terminal_sandbox_for_effect(
                     spec,
                     handle,
@@ -792,7 +835,11 @@ impl SessionEnvironmentProvider {
                     terminal_effect_fence,
                 )
                 .await
-                .map(|sandbox| sandbox.map(SessionEnvironment::workdir)),
+                .map(|sandbox| {
+                    sandbox.map(|sandbox| {
+                        SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
+                    })
+                }),
             Self::Namespace {
                 provider,
                 hand_factory,
@@ -859,7 +906,7 @@ impl SessionEnvironmentProvider {
         authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), pc::SandboxError> {
         match self {
-            Self::Workdir(provider) => {
+            Self::Workdir { provider, .. } => {
                 pc::SandboxProvider::dispose_restored(provider, spec, request, authorization).await
             }
             Self::Namespace { .. } => Err(pc::SandboxError::new(

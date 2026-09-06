@@ -461,10 +461,14 @@ export const BEHAVIORS = {
       const cwd = field('TOOL_CWD');
       const quoted = (value) => `'${value.replaceAll("'", "'\\''")}'`;
       const relative = (logical) => {
-        if (!logical?.startsWith('/') || logical.includes('{{awaken.')) {
-          throw new Error('Native resource path must be rendered sandbox-absolute');
+        if (!logical || logical.includes('{{awaken.')) {
+          throw new Error('Native resource path must be fully rendered');
         }
-        return quoted(path.posix.relative(cwd, logical) || '.');
+        // One model fixture consumes both supported prompt views. Resolve
+        // relative paths against the Hand's initial logical workspace BEFORE
+        // changing Bash cwd; no fixture-side physical path enters the prompt.
+        return quoted(path.posix.relative(path.posix.resolve('/workspace', cwd),
+          path.posix.resolve('/workspace', logical.replaceAll('\\', '/'))) || '.');
       };
       const file = relative(/A file is mounted read-only at `([^`]+)`/u.exec(instructions)?.[1]);
       const repository = relative(/A git repository is checked out at `([^`]+)`/u.exec(instructions)?.[1]);
@@ -477,8 +481,10 @@ export const BEHAVIORS = {
       const contention = /^AWK_CONTEND=(.+)$/mu.exec(mission)?.[1];
       return tool(`resources-${field('ATTEMPT')}`, 'bash', { command: [
         'set -eu',
+        'initial_cwd=$PWD',
         `cd ${quoted(cwd)}`,
-        `test "$PWD" = ${quoted(cwd)}`,
+        cwd.startsWith('/') ? `test "$PWD" = ${quoted(cwd)}`
+          : `test "$PWD" = "$initial_cwd"${quoted(path.posix.normalize(cwd) === '.' ? '' : `/${path.posix.normalize(cwd)}`)}`,
         `test -d ${workspace}`,
         `file=${file}; repository=${repository}; memory=${memory}; outputs=${outputs}; result=${result}; attempt=${attempt}`,
         'file_bytes=$(cat "$file"); memory_bytes=$(cat "$memory/seed.md"); repo_bytes=$(cat "$repository/README.md"); head=$(git -C "$repository" rev-parse HEAD)',
