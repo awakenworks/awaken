@@ -475,7 +475,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-run-executor-a2a \
     --harness remote_task_reference_route_is_total_and_fail_closed \
     --harness terminal_task_reference_command_is_exact_run_scoped_removal \
-    --harness task_reference_admission_requires_complete_fields_and_required_identity_matches
+    --harness task_reference_admission_requires_complete_fields_and_required_identity_matches \
+    --harness a2a_message_identity_rejects_only_resume_without_committed_correlation
   run_kani awaken-worker-contract \
     --harness accepted_version_is_inside_worker_range \
     --harness non_ready_worker_never_accepts_work \
