@@ -995,15 +995,28 @@ impl crate::SharedHost {
         generation: &awaken_session_contract::McpGenerationRef,
         now_unix_ms: u64,
     ) -> bool {
-        if awaken_session_contract::realization_lease_is_live_at(
-            generation.lease_expires_at_unix_ms,
-            now_unix_ms,
-        ) {
-            return true;
-        }
+        self.mcp_generation_root_authority_at(generation, now_unix_ms)
+            // Direct realizer callers can present a live Control assertion
+            // before installing a complete local Session projection. A relay
+            // capability, by contrast, always requires the current root.
+            .unwrap_or_else(|| {
+                awaken_session_contract::realization_lease_is_live_at(
+                    generation.lease_expires_at_unix_ms,
+                    now_unix_ms,
+                )
+            })
+    }
+
+    /// One root-authority decision shared by effect admission and the relay.
+    /// Absence is explicit: it is never a live lease or proof of renewal.
+    pub(crate) fn mcp_generation_root_authority_at(
+        &self,
+        generation: &awaken_session_contract::McpGenerationRef,
+        now_unix_ms: u64,
+    ) -> Option<bool> {
         self.session_slots
             .read(&generation.session_id, |slot| {
-                slot.realization_lease.as_ref().is_some_and(|current| {
+                slot.realization_lease.as_ref().map(|current| {
                     current.runtime_incarnation == generation.runtime_incarnation
                         && current.epoch == generation.lease_epoch
                         && current.expires_at_unix_ms >= generation.lease_expires_at_unix_ms
@@ -1013,7 +1026,7 @@ impl crate::SharedHost {
                         )
                 })
             })
-            .unwrap_or(false)
+            .flatten()
     }
 
     /// Drive the one aggregate-owned terminal cleanup projection for a claimed

@@ -36,7 +36,7 @@ struct Route {
     /// Opaque sandbox-held capability. It is scoped by the surrounding route
     /// key and never persisted as Session desired state.
     capability: String,
-    lease_expires_at_unix_ms: u64,
+    generation: awaken_session_contract::McpGenerationRef,
     /// The existing MCP activity primitive, retained by this unique route
     /// owner so already-cloned Axum handlers cannot outlive generation drain.
     call_fence: awaken_ext_mcp::transport::McpCallFence,
@@ -44,6 +44,24 @@ struct Route {
 
 type RouteKey = (String, String, u64);
 type Routes = Arc<Mutex<HashMap<RouteKey, Route>>>;
+type GenerationAuthority =
+    Arc<dyn Fn(&awaken_session_contract::McpGenerationRef, u64) -> bool + Send + Sync>;
+
+#[derive(Clone)]
+struct RelayState {
+    routes: Routes,
+    authority: GenerationAuthority,
+}
+
+impl RelayState {
+    fn admits(&self, route: &Route, capability: &str) -> bool {
+        route.capability == capability
+            && (self.authority)(
+                &route.generation,
+                crate::terminal_repository_publication::runtime_unix_now_ms(),
+            )
+    }
+}
 
 /// A running loopback MCP relay: its routing table plus the address it serves on. Cloneable
 /// (shares the table); the served task lives for the process.
@@ -51,24 +69,60 @@ type Routes = Arc<Mutex<HashMap<RouteKey, Route>>>;
 pub(crate) struct McpRelay {
     routes: Routes,
     addr: SocketAddr,
+    #[cfg(test)]
+    state: RelayState,
 }
 
 impl McpRelay {
     /// Bind an ephemeral loopback port and serve the forwarding router in the background.
+    pub(crate) async fn for_host(
+        host: std::sync::Weak<crate::SharedHost>,
+    ) -> std::io::Result<Self> {
+        Self::start_with_authority(Arc::new(move |generation, now| {
+            host.upgrade().is_some_and(|host| {
+                host.mcp_generation_root_authority_at(generation, now)
+                    .unwrap_or(false)
+            })
+        }))
+        .await
+    }
+
+    /// Protocol-only fixtures have no Session application. Production always
+    /// uses for_host and the existing root-lease decision, never a route clock.
+    #[cfg(test)]
     pub(crate) async fn start() -> std::io::Result<Self> {
+        Self::start_with_authority(Arc::new(|generation, now| {
+            awaken_session_contract::realization_lease_is_live_at(
+                generation.lease_expires_at_unix_ms,
+                now,
+            )
+        }))
+        .await
+    }
+
+    async fn start_with_authority(authority: GenerationAuthority) -> std::io::Result<Self> {
         let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
+        let state = RelayState {
+            routes: routes.clone(),
+            authority,
+        };
         let app = axum::Router::new()
             .route(
                 "/{session}/{attachment}/{generation}/{capability}",
                 axum::routing::any(forward),
             )
-            .with_state(routes.clone());
+            .with_state(state.clone());
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        Ok(Self { routes, addr })
+        Ok(Self {
+            routes,
+            addr,
+            #[cfg(test)]
+            state,
+        })
     }
 
     /// Install one exact-generation route. Replaying the same generation
@@ -107,7 +161,7 @@ impl McpRelay {
                 bearer: server.bearer().cloned(),
                 refresh: server.refresh(),
                 capability: uuid::Uuid::new_v4().simple().to_string(),
-                lease_expires_at_unix_ms: generation.lease_expires_at_unix_ms,
+                generation: generation.clone(),
                 call_fence: awaken_ext_mcp::transport::McpCallFence::open(),
             },
         );
@@ -132,7 +186,7 @@ impl McpRelay {
         route.url = url.to_string();
         route.bearer = server.bearer().cloned();
         route.refresh = server.refresh();
-        route.lease_expires_at_unix_ms = generation.lease_expires_at_unix_ms;
+        route.generation = generation.clone();
         true
     }
 
@@ -202,24 +256,16 @@ fn route_key(generation: &awaken_session_contract::McpGenerationRef) -> RouteKey
 /// workload-supplied `Authorization` is dropped; all other headers + the body pass
 /// through. An unknown route or an upstream error fails closed (never opens unauthenticated).
 async fn forward(
-    State(routes): State<Routes>,
+    State(state): State<RelayState>,
     Path((session, attachment, generation, capability)): Path<(String, String, u64, String)>,
     req: Request,
 ) -> Response {
     let route_key = (session, attachment, generation);
+    let routes = &state.routes;
     let Some(route) = routes.lock().unwrap().get(&route_key).cloned() else {
         return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
     };
-    let now_unix_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default();
-    if route.capability != capability
-        || !awaken_session_contract::realization_lease_is_live_at(
-            route.lease_expires_at_unix_ms,
-            now_unix_ms,
-        )
-    {
+    if !state.admits(&route, &capability) {
         return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
     }
     let Some(call) = route.call_fence.try_enter() else {
@@ -264,6 +310,11 @@ async fn forward(
         }
         request
     };
+    // Body buffering may outlive ownership. Recheck the same root decision at
+    // the outbound boundary; the existing call fence still owns cancellation.
+    if !state.admits(&route, &capability) {
+        return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
+    }
     let first_send = tokio::select! {
         biased;
         _ = call.cancelled() => {
@@ -296,17 +347,18 @@ async fn forward(
             result = refresh.0.refresh(&challenge) => result,
         };
         if let Some(awaken_ext_mcp::Credential::Bearer(bearer)) = refreshed_credential {
+            // The Session slot owns authority. Never enter that owner while
+            // holding the route map mutex; refresh must not introduce a lock
+            // order dependency between the two projections.
+            if !state.admits(&route, &capability) {
+                return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
+            }
             let refreshed = {
                 let mut routes = routes.lock().unwrap();
                 let Some(current) = routes.get_mut(&route_key) else {
                     return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
                 };
-                if current.capability != capability
-                    || !awaken_session_contract::realization_lease_is_live_at(
-                        current.lease_expires_at_unix_ms,
-                        now_unix_ms,
-                    )
-                {
+                if current.capability != capability || current.generation != route.generation {
                     return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
                 }
                 current.bearer = Some(awaken_agent_contract::RedactedString::from(bearer));
@@ -318,6 +370,9 @@ async fn forward(
                 // replay. Return its original upstream challenge unchanged.
                 let _ = refreshed;
             } else {
+                if !state.admits(&refreshed, &capability) {
+                    return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
+                }
                 let retry_send = tokio::select! {
                     biased;
                     _ = call.cancelled() => {
@@ -497,7 +552,7 @@ mod tests {
             Body::from_stream(stream)
         };
         let accepted = tokio::spawn(forward(
-            State(relay.routes.clone()),
+            State(relay.state.clone()),
             Path((
                 generation.session_id.clone(),
                 generation.attachment_id.0.clone(),
@@ -513,7 +568,7 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(!close.is_finished(), "A2/E2");
         let rejected = forward(
-            State(relay.routes.clone()),
+            State(relay.state.clone()),
             Path((
                 generation.session_id.clone(),
                 generation.attachment_id.0.clone(),
@@ -690,6 +745,7 @@ mod tests {
                 .unwrap()
                 .get(&route_key(&renewed))
                 .unwrap()
+                .generation
                 .lease_expires_at_unix_ms,
             u64::MAX,
             "V4 extended expiry"
@@ -824,6 +880,100 @@ mod tests {
                 .map(awaken_agent_contract::RedactedString::expose_secret),
             Some("current-token")
         );
+    }
+
+    // Boundary decision table: C1 admission initially has authority; C2 body
+    // buffering revokes it; C3 credential refresh revokes it after a 401.
+    // B1=C1+C2 => 404, zero upstream calls; B2=C1+C3 => 404, one challenged
+    // call and no retry or credential write. C2/C3 are exclusive injection
+    // points; ordinary refresh and effectful non-replay have sibling tests.
+    // Every authority callback also asserts the route mutex is unlocked, so
+    // Session-authority reads cannot create a route -> Session lock order.
+    #[tokio::test]
+    async fn relay_rechecks_authority_after_body_and_credential_io() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        struct RevokeOnRefresh(Arc<AtomicBool>);
+        #[async_trait::async_trait]
+        impl awaken_ext_mcp::CredentialRefresher for RevokeOnRefresh {
+            async fn refresh(&self, _: &awaken_ext_mcp::AuthChallenge) -> Option<Credential> {
+                self.0.store(false, Ordering::SeqCst);
+                Some(Credential::Bearer("new-token".into()))
+            }
+        }
+
+        for during_body in [true, false] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let counter = calls.clone();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let app = axum::Router::new().route(
+                "/",
+                axum::routing::post(move || {
+                    let counter = counter.clone();
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::UNAUTHORIZED
+                    }
+                }),
+            );
+            let upstream = tokio::spawn(async move { axum::serve(listener, app).await });
+            let live = Arc::new(AtomicBool::new(true));
+            let relay = McpRelay::start().await.unwrap();
+            let generation = generation("boundary", "browser", 1);
+            let mut material = http_material(
+                "browser",
+                format!("http://{addr}/"),
+                Some("old-token".into()),
+            );
+            let crate::mcp::McpTransportMaterialKind::Http { refresh, .. } =
+                &mut material.transport
+            else {
+                unreachable!()
+            };
+            *refresh = Some(Box::new(crate::mcp::McpRefreshMaterial(Arc::new(
+                RevokeOnRefresh(live.clone()),
+            ))));
+            relay.set_route(&generation, &material);
+            let key = route_key(&generation);
+            let capability = relay.routes.lock().unwrap()[&key].capability.clone();
+            let mut state = relay.state.clone();
+            let routes = relay.routes.clone();
+            let authority = live.clone();
+            state.authority = Arc::new(move |_, _| {
+                assert!(
+                    routes.try_lock().is_ok(),
+                    "authority is read outside route mutex"
+                );
+                authority.load(Ordering::SeqCst)
+            });
+            let body = Body::from_stream(futures_util::stream::once(async move {
+                if during_body {
+                    live.store(false, Ordering::SeqCst);
+                }
+                Ok::<_, std::io::Error>(axum::body::Bytes::from_static(
+                    br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+                ))
+            }));
+            let response = forward(
+                State(state),
+                Path((key.0.clone(), key.1.clone(), key.2, capability)),
+                Request::builder().method("POST").body(body).unwrap(),
+            )
+            .await;
+            upstream.abort();
+            let _ = upstream.await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            assert_eq!(calls.load(Ordering::SeqCst), usize::from(!during_body));
+            assert_eq!(
+                relay.routes.lock().unwrap()[&key]
+                    .bearer
+                    .as_ref()
+                    .unwrap()
+                    .expose_secret(),
+                "old-token"
+            );
+        }
     }
 
     #[tokio::test]
