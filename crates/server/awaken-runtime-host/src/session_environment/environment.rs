@@ -136,7 +136,15 @@ impl SessionEnvironment {
         hand_bin: impl Into<String>,
         hand_idle_after: std::time::Duration,
     ) -> Self {
-        let sandbox = Arc::new(sandbox);
+        Self::namespace_shared(Arc::new(sandbox), hand_factory, hand_bin, hand_idle_after)
+    }
+
+    pub(super) fn namespace_shared(
+        sandbox: Arc<NamespaceSandbox>,
+        hand_factory: Arc<dyn HandExecutorFactory>,
+        hand_bin: impl Into<String>,
+        hand_idle_after: std::time::Duration,
+    ) -> Self {
         let hand = Arc::new(SessionHandExecutor::namespace(
             sandbox.clone(),
             hand_factory,

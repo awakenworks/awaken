@@ -698,7 +698,7 @@ impl SessionEnvironmentOwner {
     }
     /// Move only an exact durable owner revoked by realization loss back to
     /// its canonical adoption phase. The physical Sandbox remains untouched;
-    /// provider adoption must construct the fresh Hand wrapper. LegacyDirect
+    /// the retained physical owner supplies the fresh Hand wrapper. LegacyDirect
     /// retirement is owned by the separate typed physical-rebuild path.
     pub(super) fn prepare_retiring_realization_adoption(
         &mut self,

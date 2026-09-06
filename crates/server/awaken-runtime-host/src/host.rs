@@ -131,6 +131,10 @@ pub use types::{
     HostOutcomeReport, HostResume,
 };
 pub(crate) use worker_resolver::HostWorkerResolver;
+#[cfg(test)]
+pub(crate) use worker_resolver::test_support::{
+    eager_environment, empty_frozen_projection_for_snapshot, managed_test_host, test_activation,
+};
 
 /// One injected transport adapter encodes both ordinary Run-scoped and
 /// terminal Session-scoped Memory operations. The generic Resource ports stay

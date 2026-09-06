@@ -638,8 +638,8 @@ impl SharedHost {
         // Realization revocation permanently closed the old process-level Hand,
         // but a durable owner still names the physical Sandbox. Retain its exact
         // fence through typed observation; only Ready may move it back to
-        // AwaitingAdoption so canonical provider adoption constructs a fresh
-        // wrapper over the same handle and root. LegacyDirect is deliberately
+        // AwaitingAdoption so the canonical constructors bind a fresh Hand
+        // around the same physical owner, handle and root. LegacyDirect is
         // excluded: its claimed recovery owns physical disposal and same-id
         // creation instead.
         let revoked_durable = self
@@ -690,15 +690,14 @@ impl SharedHost {
                 "Session Environment adoption effect already committed another binding",
             ));
         }
-        let retained = if revoked_durable.is_none() {
-            resident.as_deref().or_else(|| {
-                candidate
-                    .as_ref()
-                    .map(|candidate| candidate.environment.as_ref())
-            })
-        } else {
-            None
-        };
+        // A revoked Hand is unusable, but its retained physical Sandbox still
+        // owns the original create attempt. Borrow that proof for observation;
+        // do not turn a warm rebind into an unprovable cold adoption.
+        let retained = resident.as_deref().or_else(|| {
+            candidate
+                .as_ref()
+                .map(|candidate| candidate.environment.as_ref())
+        });
         let observation = match effect.provider_fence.as_ref() {
             Some(effect_fence) => {
                 provider
@@ -723,19 +722,16 @@ impl SharedHost {
         // the exact Arc/identity and performs only Resource reconciliation, with
         // zero Candidate, binding persistence, or publication; E2 C2 reuses its
         // Arc and retries only the existing persistence/publication edge; E3 C3
-        // adopts once and enters that same edge; E4 C4 adopts the same physical
-        // handle through a fresh wrapper/Hand. A foreign binding or handle has
-        // already failed validation above and reaches no rule.
+        // adopts once and enters that same edge; E4 C4 retains the exact physical
+        // owner and publishes a fresh wrapper/Hand through the same edge. A
+        // foreign binding or handle already failed validation above and reaches
+        // no rule.
         match observation {
             awaken_provisioning_contract::SandboxObservation::Ready => {
-                if let Some(retiring) = revoked_durable {
-                    self.session_slots.update(thread, |slot| {
-                        slot.environment_owner
-                            .prepare_retiring_realization_adoption(&retiring)
-                    })?;
-                    // Validation captured the old Arc before the exact phase
-                    // transition. Its Hand is closed, so Ready must flow through
-                    // canonical provider adoption rather than reuse that Arc.
+                if revoked_durable.is_some() {
+                    // Keep the Retiring owner in its slot until a fresh wrapper
+                    // exists. Failure/cancellation must preserve the only local
+                    // create-attempt and cleanup participants for a later retry.
                     resident = None;
                 }
                 let environment = match (resident, candidate) {
@@ -750,21 +746,29 @@ impl SharedHost {
                         .await?
                     }
                     (None, None) => {
-                        let environment = Arc::new(
-                            provider
-                            .adopt_effective_for_effect(
-                                &spec,
-                                &handle,
-                                effect.provider_fence.as_ref(),
-                            )
-                            .await
-                            .map_err(|error| {
-                                HostError::unavailable_classified(
-                                    "session_environment_adoption_indeterminate",
-                                    error.to_string(),
+                        let rebound = match revoked_durable.as_ref() {
+                            Some(retiring) => provider
+                                .rebind_retained(&handle, &retiring.owned.environment())
+                                .await,
+                            None => provider
+                                .adopt_effective_for_effect(
+                                    &spec, &handle, effect.provider_fence.as_ref(),
                                 )
-                            })?,
-                        );
+                                .await,
+                        };
+                        let environment = Arc::new(rebound.map_err(|error| {
+                            HostError::unavailable_classified(
+                                "session_environment_adoption_indeterminate", error.to_string(),
+                            )
+                        })?);
+                        if let Some(retiring) = revoked_durable.as_ref() {
+                            // No await separates this exact phase transition
+                            // from staging the replacement Candidate below.
+                            self.session_slots.update(thread, |slot| {
+                                slot.environment_owner
+                                    .prepare_retiring_realization_adoption(retiring)
+                            })?;
+                        }
                         self.publish_session_environment_under_lifecycle(
                             thread,
                             environment,
