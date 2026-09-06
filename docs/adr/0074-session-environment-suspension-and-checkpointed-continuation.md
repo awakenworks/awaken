@@ -550,6 +550,18 @@ for exact-realization verification only; filesystem discovery and a separate
 Session-to-PVC table are forbidden. Hibernated state continues to replace the
 live binding with the existing opaque `SandboxCheckpointRef`.
 
+Standalone CLI and Worker configuration may select this same policy with
+`[k8s_continuation_volume]`, a required nonempty `size`, and optional
+`storage_class_name`. Both decode the existing `K8sContinuationVolume` type and
+use its shared validation before constructing a provider; unknown policy keys
+reject. Omission keeps the previous ephemeral-root default and therefore cannot
+satisfy a retained Managed Session. The setting flows through `SandboxSettings`
+to the existing K8s provider, whose observed capabilities are used for admission.
+Configuration is not evidence that a StorageClass or network policy exists;
+Kubernetes still admits the quantity/class and the runtime attests enforcement.
+There is no standalone-specific PVC allocator, association table, or cleanup
+path, and this setting does not provide portable checkpoint-byte restoration.
+
 The PVC is created and digest-verified before the Pod, carries no Pod or Worker
 owner reference, and is mounted at each canonical writable root through a
 distinct pre-created subpath. A Worker crash therefore leaves Pod and PVC
