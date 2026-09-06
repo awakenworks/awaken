@@ -11,9 +11,9 @@ use crate::codec::decode_publication_value;
 use crate::schema::{BUNDLE_ID, converged_config_bundle, selected_config_bundle};
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
-    ConfigWrite, DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
-    PublicationRevisionDecision, ScopedConfigRegistry, StoredPublication,
-    publication_revision_decision,
+    ConfigWrite, DEFAULT_SCOPE, ManagementAuditAdmission, ManagementAuditEntry,
+    ManagementAuditRecord, ManagementEffect, PublicationRevisionDecision, ScopedConfigRegistry,
+    StoredPublication, publication_revision_decision,
 };
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in, so the
@@ -234,33 +234,29 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         audit: &ManagementAuditRecord,
         effect: Option<&ManagementEffect>,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
-        let audit_key = format!("{}:{}", audit.tool, audit.call_id);
+        let audit_key = &audit.call_id;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let existing = sqlx::query(&format!(
             "SELECT record, business_committed FROM {NS}_management_audit \
-             WHERE scope_id = $1 AND call_id = $2 FOR UPDATE"
+             WHERE scope_id = $1 AND call_id = $2 AND tool = $3 FOR UPDATE"
         ))
         .bind(&scope.0)
-        .bind(&audit_key)
+        .bind(audit_key)
+        .bind(&audit.tool)
         .fetch_optional(&mut *tx)
         .await
         .map_err(reject)?;
-        let replayed = if let Some(row) = existing {
-            let Json(existing): Json<ManagementAuditRecord> =
-                row.try_get("record").map_err(reject)?;
-            if existing != *audit {
-                return Err(ConfigStoreError(
-                    "stable audit call id was reused with different content".into(),
-                ));
-            }
-            let committed: i64 = row.try_get("business_committed").map_err(reject)?;
-            committed != 0
-        } else {
-            return Err(ConfigStoreError(
-                "audited config transaction requires a pre-recorded management audit".into(),
-            ));
-        };
-        if replayed {
+        let existing = existing
+            .map(|row| {
+                let Json(record): Json<ManagementAuditRecord> =
+                    row.try_get("record").map_err(reject)?;
+                let state: i64 = row.try_get("business_committed").map_err(reject)?;
+                Ok::<_, ConfigStoreError>((record, state))
+            })
+            .transpose()?;
+        if audit.admit_write(existing.as_ref().map(|(record, state)| (record, *state)))?
+            == ManagementAuditAdmission::Replay
+        {
             return Ok(AuditedConfigWrite::Replayed);
         }
         let current = sqlx::query(&format!(
@@ -338,10 +334,11 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         }
         sqlx::query(&format!(
             "UPDATE {NS}_management_audit SET business_committed = 1 \
-             WHERE scope_id = $1 AND call_id = $2"
+             WHERE scope_id = $1 AND call_id = $2 AND tool = $3"
         ))
         .bind(&scope.0)
-        .bind(&audit_key)
+        .bind(audit_key)
+        .bind(&audit.tool)
         .execute(&mut *tx)
         .await
         .map_err(reject)?;
@@ -400,13 +397,14 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         scope: &ScopeId,
         audit: &ManagementAuditRecord,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
-        let audit_key = format!("{}:{}", audit.tool, audit.call_id);
+        let audit_key = &audit.call_id;
         let inserted = sqlx::query(&format!(
-            "INSERT INTO {NS}_management_audit (scope_id, call_id, record) VALUES ($1, $2, $3) \
-             ON CONFLICT (scope_id, call_id) DO NOTHING RETURNING call_id"
+            "INSERT INTO {NS}_management_audit (scope_id, call_id, tool, record) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (scope_id, tool, call_id) DO NOTHING RETURNING call_id"
         ))
         .bind(&scope.0)
-        .bind(&audit_key)
+        .bind(audit_key)
+        .bind(&audit.tool)
         .bind(Json(audit))
         .fetch_optional(&self.pool)
         .await
@@ -415,21 +413,17 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             return Ok(AuditedConfigWrite::Applied);
         }
         let row = sqlx::query(&format!(
-            "SELECT record FROM {NS}_management_audit WHERE scope_id = $1 AND call_id = $2"
+            "SELECT record FROM {NS}_management_audit WHERE scope_id = $1 AND call_id = $2 AND tool = $3"
         ))
         .bind(&scope.0)
-        .bind(&audit_key)
+        .bind(audit_key)
+        .bind(&audit.tool)
         .fetch_one(&self.pool)
         .await
         .map_err(reject)?;
         let Json(existing): Json<ManagementAuditRecord> = row.try_get("record").map_err(reject)?;
-        if existing == *audit {
-            Ok(AuditedConfigWrite::Replayed)
-        } else {
-            Err(ConfigStoreError(
-                "stable audit call id was reused with different content".into(),
-            ))
-        }
+        audit.admit_write(Some((&existing, 0)))?;
+        Ok(AuditedConfigWrite::Replayed)
     }
 
     async fn get_management_audit_scoped(
@@ -438,13 +432,14 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         tool: &str,
         call_id: &str,
     ) -> Result<Option<ManagementAuditEntry>, ConfigStoreError> {
-        let audit_key = format!("{tool}:{call_id}");
+        let audit_key = call_id;
         let row = sqlx::query(&format!(
             "SELECT record, business_committed FROM {NS}_management_audit \
-             WHERE scope_id = $1 AND call_id = $2"
+             WHERE scope_id = $1 AND call_id = $2 AND tool = $3"
         ))
         .bind(&scope.0)
-        .bind(&audit_key)
+        .bind(audit_key)
+        .bind(tool)
         .fetch_optional(&self.pool)
         .await
         .map_err(reject)?;
@@ -452,10 +447,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             let Json(record): Json<ManagementAuditRecord> =
                 row.try_get("record").map_err(reject)?;
             let business_committed: i64 = row.try_get("business_committed").map_err(reject)?;
-            Ok(ManagementAuditEntry {
-                record,
-                business_committed: business_committed != 0,
-            })
+            ManagementAuditEntry::from_stored(record, business_committed)
         })
         .transpose()
     }
@@ -466,13 +458,14 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         tool: &str,
         call_id: &str,
     ) -> Result<(), ConfigStoreError> {
-        let audit_key = format!("{tool}:{call_id}");
+        let audit_key = call_id;
         let changed = sqlx::query(&format!(
             "UPDATE {NS}_management_audit SET business_committed = 1 \
-             WHERE scope_id = $1 AND call_id = $2"
+             WHERE scope_id = $1 AND call_id = $2 AND tool = $3"
         ))
         .bind(&scope.0)
-        .bind(&audit_key)
+        .bind(audit_key)
+        .bind(tool)
         .execute(&self.pool)
         .await
         .map_err(reject)?;

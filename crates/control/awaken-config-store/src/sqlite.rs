@@ -10,9 +10,9 @@ use crate::codec::decode_publication;
 use crate::schema::{BUNDLE_ID, converged_config_bundle, selected_config_bundle};
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
-    ConfigWrite, DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
-    PublicationRevisionDecision, ScopedConfigRegistry, StoredPublication,
-    publication_revision_decision,
+    ConfigWrite, DEFAULT_SCOPE, ManagementAuditAdmission, ManagementAuditEntry,
+    ManagementAuditRecord, ManagementEffect, PublicationRevisionDecision, ScopedConfigRegistry,
+    StoredPublication, publication_revision_decision,
 };
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in.
@@ -218,8 +218,9 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         let config = config.clone();
         let id = config.id.clone();
         let scope = scope.0.clone();
-        let call_id = format!("{}:{}", audit.tool, audit.call_id);
-        let audit_data = serde_json::to_string(audit).map_err(reject)?;
+        let call_id = audit.call_id.clone();
+        let tool = audit.tool.clone();
+        let audit = audit.clone();
         let effect = effect.cloned();
         self.with_conn(move |conn, p| {
             let tx = conn.transaction().map_err(reject)?;
@@ -227,26 +228,23 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 .query_row(
                     &format!(
                         "SELECT record, business_committed FROM {p}_management_audit \
-                         WHERE scope_id = ?1 AND call_id = ?2"
+                         WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
                     ),
-                    params![scope, call_id],
+                    params![scope, call_id, tool],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
                 .map_err(reject)?;
-            let replayed = if let Some((existing, committed)) = existing {
-                if existing != audit_data {
-                    return Err(ConfigStoreError(
-                        "stable audit call id was reused with different content".into(),
-                    ));
-                }
-                committed != 0
-            } else {
-                return Err(ConfigStoreError(
-                    "audited config transaction requires a pre-recorded management audit".into(),
-                ));
-            };
-            if replayed {
+            let existing = existing
+                .map(|(record, state)| {
+                    serde_json::from_str::<ManagementAuditRecord>(&record)
+                        .map(|record| (record, state))
+                        .map_err(reject)
+                })
+                .transpose()?;
+            if audit.admit_write(existing.as_ref().map(|(record, state)| (record, *state)))?
+                == ManagementAuditAdmission::Replay
+            {
                 tx.commit().map_err(reject)?;
                 return Ok(AuditedConfigWrite::Replayed);
             }
@@ -320,9 +318,9 @@ impl ScopedConfigRegistry for SqliteConfigStore {
             tx.execute(
                 &format!(
                     "UPDATE {p}_management_audit SET business_committed = 1 \
-                     WHERE scope_id = ?1 AND call_id = ?2"
+                     WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
                 ),
-                params![scope, call_id],
+                params![scope, call_id, tool],
             )
             .map_err(reject)?;
             tx.commit().map_err(reject)?;
@@ -396,36 +394,37 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         audit: &ManagementAuditRecord,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
         let scope = scope.0.clone();
-        let call_id = format!("{}:{}", audit.tool, audit.call_id);
-        let data = serde_json::to_string(audit).map_err(reject)?;
+        let audit = audit.clone();
+        let data = serde_json::to_string(&audit).map_err(reject)?;
         self.with_conn(move |conn, p| {
-            let existing: Option<String> = conn
+            // The unique tuple arbitrates across connections, not a process-local
+            // read-before-insert race. Exact retry compares domain data, not JSON text.
+            let inserted = conn
+                .execute(
+                    &format!(
+                        "INSERT INTO {p}_management_audit (scope_id, tool, call_id, record) \
+                     VALUES (?1, ?2, ?3, ?4) \
+                     ON CONFLICT (scope_id, tool, call_id) DO NOTHING"
+                    ),
+                    params![scope, audit.tool, audit.call_id, data],
+                )
+                .map_err(reject)?;
+            if inserted == 1 {
+                return Ok(AuditedConfigWrite::Applied);
+            }
+            let existing: String = conn
                 .query_row(
                     &format!(
-                        "SELECT record FROM {p}_management_audit WHERE scope_id = ?1 AND call_id = ?2"
+                        "SELECT record FROM {p}_management_audit \
+                     WHERE scope_id = ?1 AND tool = ?2 AND call_id = ?3"
                     ),
-                    params![scope, call_id],
+                    params![scope, audit.tool, audit.call_id],
                     |row| row.get(0),
                 )
-                .optional()
                 .map_err(reject)?;
-            if let Some(existing) = existing {
-                return if existing == data {
-                    Ok(AuditedConfigWrite::Replayed)
-                } else {
-                    Err(ConfigStoreError(
-                        "stable audit call id was reused with different content".into(),
-                    ))
-                };
-            }
-            conn.execute(
-                &format!(
-                    "INSERT INTO {p}_management_audit (scope_id, call_id, record, business_committed) VALUES (?1, ?2, ?3, 0)"
-                ),
-                params![scope, call_id, data],
-            )
-            .map_err(reject)?;
-            Ok(AuditedConfigWrite::Applied)
+            let existing = serde_json::from_str(&existing).map_err(reject)?;
+            audit.admit_write(Some((&existing, 0)))?;
+            Ok(AuditedConfigWrite::Replayed)
         })
         .await
     }
@@ -437,24 +436,25 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         call_id: &str,
     ) -> Result<Option<ManagementAuditEntry>, ConfigStoreError> {
         let scope = scope.0.clone();
-        let audit_key = format!("{tool}:{call_id}");
+        let audit_key = call_id.to_owned();
+        let tool = tool.to_owned();
         self.with_conn(move |conn, p| {
             let row: Option<(String, i64)> = conn
                 .query_row(
                     &format!(
                         "SELECT record, business_committed FROM {p}_management_audit \
-                         WHERE scope_id = ?1 AND call_id = ?2"
+                         WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
                     ),
-                    params![scope, audit_key],
+                    params![scope, audit_key, tool],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
                 .map_err(reject)?;
             row.map(|(record, business_committed)| {
-                Ok(ManagementAuditEntry {
-                    record: serde_json::from_str(&record).map_err(reject)?,
-                    business_committed: business_committed != 0,
-                })
+                ManagementAuditEntry::from_stored(
+                    serde_json::from_str(&record).map_err(reject)?,
+                    business_committed,
+                )
             })
             .transpose()
         })
@@ -468,15 +468,16 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         call_id: &str,
     ) -> Result<(), ConfigStoreError> {
         let scope = scope.0.clone();
-        let audit_key = format!("{tool}:{call_id}");
+        let audit_key = call_id.to_owned();
+        let tool = tool.to_owned();
         self.with_conn(move |conn, p| {
             let changed = conn
                 .execute(
                     &format!(
                         "UPDATE {p}_management_audit SET business_committed = 1 \
-                         WHERE scope_id = ?1 AND call_id = ?2"
+                         WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
                     ),
-                    params![scope, audit_key],
+                    params![scope, audit_key, tool],
                 )
                 .map_err(reject)?;
             if changed != 1 {

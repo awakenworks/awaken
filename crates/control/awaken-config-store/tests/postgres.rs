@@ -16,6 +16,119 @@ use std::sync::Arc;
 #[path = "support/revision_cas.rs"]
 mod revision_cas;
 
+#[path = "support/audit_identity.rs"]
+mod audit_identity;
+
+#[tokio::test]
+async fn postgres_audit_identity_decision_table() {
+    let Some(pool) = schema_pool("t_config_audit_identity").await else {
+        return;
+    };
+    audit_identity::decision_table(
+        &PostgresConfigStore::with_pool(pool).await.unwrap(),
+        &agent_config(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn postgres_audit_identity_migration_preserves_truth_or_rolls_back() {
+    // M1 pending/committed history -> preserve tuple/state/timestamp and reopen.
+    // M2 corrupt signed state, malformed or duplicate record -> roll back and
+    // omit V11 receipt. M3 index/record drift and corrupt states -> DB rejection.
+    for (schema, state, valid_record, duplicate) in [
+        ("t_audit_migrate_pending", 0_i64, true, false),
+        ("t_audit_migrate_committed", 1, true, false),
+        ("t_audit_migrate_bad_state", 2, true, false),
+        ("t_audit_migrate_bad_record", 0, false, false),
+        ("t_audit_migrate_duplicate", 0, true, true),
+    ] {
+        let Some(pool) = schema_pool(schema).await else {
+            return;
+        };
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+            pool.clone(),
+            "config",
+        )
+        .unwrap()
+        .run_bundle(&audit_identity::compact_history())
+        .await
+        .unwrap();
+        let audit = ManagementAuditRecord {
+            tool: "http:POST:a".into(),
+            call_id: "b:调用".into(),
+            summary: "body_sha256=one".into(),
+        };
+        let record = if valid_record {
+            serde_json::to_value(&audit).unwrap()
+        } else {
+            serde_json::json!({})
+        };
+        sqlx::query("INSERT INTO config_management_audit(scope_id,call_id,record,business_committed,created_at) VALUES('ws','http:POST:a:b:调用',$1,$2,'2026-01-01 00:00:00+00')")
+            .bind(&record).bind(state).execute(&pool).await.unwrap();
+        if duplicate {
+            sqlx::query("INSERT INTO config_management_audit(scope_id,call_id,record) VALUES('ws','other-legacy-key',$1)").bind(&record).execute(&pool).await.unwrap();
+        }
+        let result = PostgresConfigStore::with_pool(pool.clone()).await;
+        if state == 2 || !valid_record || duplicate {
+            assert!(result.is_err(), "M2");
+            let row: (String, serde_json::Value, i64) = sqlx::query_as(
+                "SELECT call_id,record,business_committed FROM config_management_audit WHERE call_id='http:POST:a:b:调用'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(row, ("http:POST:a:b:调用".into(), record, state));
+            let rows: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM config_management_audit")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(rows.0, 1 + i64::from(duplicate));
+            let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM config_schema_migrations WHERE bundle_id='awaken.config' AND version=11").fetch_one(&pool).await.unwrap();
+            assert_eq!(count.0, 0);
+            let shadow: (bool,) = sqlx::query_as(
+                "SELECT to_regclass('config_management_audit_identity') IS NOT NULL",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(!shadow.0);
+            continue;
+        }
+        let store = result.unwrap();
+        let scope = ScopeId::from("ws");
+        let entry = store
+            .get_management_audit_scoped(&scope, &audit.tool, &audit.call_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.record, audit);
+        assert_eq!(entry.business_committed, state == 1);
+        assert_eq!(
+            store
+                .record_management_audit_scoped(&scope, &audit)
+                .await
+                .unwrap(),
+            AuditedConfigWrite::Replayed
+        );
+        let timestamp: (bool,) = sqlx::query_as("SELECT created_at = '2026-01-01 00:00:00+00'::timestamptz FROM config_management_audit").fetch_one(&pool).await.unwrap();
+        assert!(timestamp.0, "M1");
+        for sql in [
+            "UPDATE config_management_audit SET tool='wrong'",
+            "UPDATE config_management_audit SET call_id='wrong'",
+            "UPDATE config_management_audit SET business_committed=-1",
+            "UPDATE config_management_audit SET record='{}'",
+        ] {
+            assert!(pool.execute(sql).await.is_err(), "M3 {sql}");
+        }
+        drop(store);
+        PostgresConfigStore::with_existing_pool(pool.clone())
+            .await
+            .unwrap();
+        PostgresConfigStore::with_pool(pool).await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn postgres_config_cas_missing_row_and_revision_decision_table() {
     let Some(pool) = schema_pool("t_config_cas_table").await else {
@@ -319,62 +432,11 @@ async fn postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fence
 
 #[tokio::test]
 async fn postgres_audit_begin_serializes_concurrent_exact_and_conflicting_requests() {
-    // Concurrent begin decision table:
-    // | rule | same scoped call id | record content | outcomes |
-    // | B1   | yes                 | exact same     | one Applied + one Replayed |
-    // | B2   | yes                 | different      | one Applied + one conflict error |
-    // The ON CONFLICT audit-begin port is the only INSERT owner; the final
-    // config/effect transaction requires the winning pending row.
     let Some(pool) = schema_pool("t_config_audit_begin_race").await else {
         return;
     };
-    let store = Arc::new(PostgresConfigStore::with_pool(pool).await.expect("store"));
-    let scope = ScopeId::from("audit-race");
-    let exact = ManagementAuditRecord {
-        tool: "admin_patch_agent".into(),
-        call_id: "same".into(),
-        summary: "same request".into(),
-    };
-    let (left, right) = tokio::join!(
-        store.record_management_audit_scoped(&scope, &exact),
-        store.record_management_audit_scoped(&scope, &exact),
-    );
-    let mut exact_outcomes = vec![left.unwrap(), right.unwrap()];
-    exact_outcomes.sort_by_key(|outcome| match outcome {
-        AuditedConfigWrite::Applied => 0,
-        AuditedConfigWrite::Replayed => 1,
-        AuditedConfigWrite::Conflict { .. } => 2,
-    });
-    assert_eq!(
-        exact_outcomes,
-        vec![AuditedConfigWrite::Applied, AuditedConfigWrite::Replayed],
-        "B1"
-    );
-
-    let first = ManagementAuditRecord {
-        call_id: "different".into(),
-        summary: "first request".into(),
-        ..exact.clone()
-    };
-    let second = ManagementAuditRecord {
-        summary: "second request".into(),
-        ..first.clone()
-    };
-    let (left, right) = tokio::join!(
-        store.record_management_audit_scoped(&scope, &first),
-        store.record_management_audit_scoped(&scope, &second),
-    );
-    assert_eq!(
-        usize::from(matches!(left, Ok(AuditedConfigWrite::Applied)))
-            + usize::from(matches!(right, Ok(AuditedConfigWrite::Applied))),
-        1,
-        "B2 one winner"
-    );
-    assert_eq!(
-        usize::from(left.is_err()) + usize::from(right.is_err()),
-        1,
-        "B2"
-    );
+    let store = PostgresConfigStore::with_pool(pool).await.expect("store");
+    audit_identity::concurrent_begin(&store, &store).await;
 }
 
 async fn schema_pool(schema: &'static str) -> Option<PgPool> {

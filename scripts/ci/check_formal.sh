@@ -66,6 +66,12 @@ cargo test -p awaken-ext-background-task --features loom --lib supervisor::loom_
 # Exercise its aggregate projection and real post-concurrency-admission check.
 cargo test -p awaken-ext-background-task --test state_machine execution_admission
 cargo test -p awaken-session-executor --lib background_task::ownership::tests
+# The audit scalar proof assumes exact SQL tuple selection and record equality.
+# Keep the production projection and SQLite conformance/migration tests beside it;
+# live PostgreSQL parity belongs to the existing required database gate.
+cargo test -p awaken-agent-config --lib audit_admission_tests
+cargo test -p awaken-config-store --features test-support --lib audit_identity
+cargo test -p awaken-config-store --features test-support --test integration audit_identity
 
 AWAKEN_FORMAL_TRACE_DIR="$rust_trace_dir" \
   cargo test -p awaken-runtime --test formal_refinement
@@ -214,6 +220,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-work-store \
     --harness work_lease_epoch_is_exact_nonnegative_and_nonwrapping
   run_kani awaken-agent-config \
+    --harness management_audit_admission_requires_exact_intent_and_closed_state \
     --harness processing_geography_requires_exact_evidence_from_every_candidate \
     --harness publication_revision_decision_is_target_safe_fail_closed_and_replay_first
   run_kani awaken-credential-contract \
@@ -633,6 +640,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/audit-commit" \
     -config formal/tla/AuditCommit.cfg formal/tla/AuditCommit.tla
+  python3 scripts/ci/check_formal_mutations.py --audit-commit-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/config-activation" \
     -config formal/tla/ConfigActivation.cfg formal/tla/ConfigActivation.tla
