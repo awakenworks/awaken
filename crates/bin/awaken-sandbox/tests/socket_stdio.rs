@@ -22,8 +22,8 @@ fn spawn_channel(
     socket_stdio: bool,
 ) -> (
     tokio::process::Child,
-    Box<dyn tokio::io::AsyncWrite + Unpin>,
-    Box<dyn tokio::io::AsyncRead + Unpin>,
+    Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+    Box<dyn tokio::io::AsyncRead + Unpin + Send>,
 ) {
     if socket_stdio {
         use std::os::fd::OwnedFd;
@@ -52,16 +52,14 @@ fn spawn_channel(
 }
 
 #[tokio::test]
-async fn real_process_half_close_drains_the_reverse_response_and_exits() {
-    // Causes: C1 listener stdio pipe/socket; C2 connector stdio pipe/socket;
-    // C3 client stdin EOF; C4 host replies only after request EOF.
-    // Decision table: R1 pipe/pipe, R2 pipe/socket (container + SDK),
-    // R3 socket/pipe, R4 socket/socket. Every C1/C2 pair with C3 must deliver
-    // exact request + physical host stdout EOF; C4 + host stdin EOF delivers
-    // exact response + both successful process exits + owned socket removal.
-    // A socket-shaped listener alone cannot certify the SDK connector role.
-    // This single matrix owns the former duplicate pipe/socket roundtrips;
-    // timeout is failure and kill-on-drop covers only these owned children.
+async fn real_process_half_close_drains_each_response_and_all_roles_exit() {
+    // C1 listener pipe/socket; C2 connector pipe/socket; C3 request EOF;
+    // C4 reply after request EOF; C5 second SDK connector; C6 physical lease end.
+    // Matrix R1 pipe/pipe, R2 pipe/socket (container + SDK), R3 socket/pipe,
+    // R4 socket/socket: each C1/C2 pair preserves per-client request/reply bytes
+    // and EOF; C5 still connects; C6 alone exits the listener and removes its
+    // socket. A socket-shaped listener cannot certify the SDK connector role.
+    // Timeout is failure; kill-on-drop is limited to these owned children.
     for (rule, host_socket, client_socket) in [
         ("R1", false, false),
         ("R2", false, true),
@@ -70,7 +68,7 @@ async fn real_process_half_close_drains_the_reverse_response_and_exits() {
     ] {
         let root = tempfile::tempdir().unwrap();
         let socket = root.path().join("mcp.sock");
-        let (host, mut host_input, mut host_output) =
+        let (mut host, host_input, mut host_output) =
             spawn_channel("channel-listen", &socket, host_socket);
         let mut ready = vec![0; awaken_connection_plan::socket_stdio::READY.len()];
         tokio::time::timeout(Duration::from_secs(3), host_output.read_exact(&mut ready))
@@ -78,42 +76,59 @@ async fn real_process_half_close_drains_the_reverse_response_and_exits() {
             .unwrap()
             .unwrap();
         assert_eq!(ready, awaken_connection_plan::socket_stdio::READY, "{rule}");
-        let (client, mut client_input, mut client_output) =
-            spawn_channel("channel-connect", &socket, client_socket);
-        client_input.write_all(b"request\0\n").await.unwrap();
-        client_input.shutdown().await.unwrap();
-        drop(client_input);
-        let mut request = Vec::new();
-        tokio::time::timeout(
-            Duration::from_secs(3),
-            host_output.read_to_end(&mut request),
-        )
-        .await
-        .expect("physical stdout EOF")
-        .unwrap();
-        assert_eq!(request, b"request\0\n", "{rule}");
-        host_input.write_all(b"response\0\n").await.unwrap();
-        host_input.shutdown().await.unwrap();
-        drop(host_input);
-        let mut response = Vec::new();
-        tokio::time::timeout(
-            Duration::from_secs(3),
-            client_output.read_to_end(&mut response),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(response, b"response\0\n", "{rule}");
-        for mut child in [host, client] {
+        let mut export = awaken_connection_plan::MultiplexedChannel::server(
+            awaken_agent_channel::SplitChannel::new(host_output, host_input),
+        );
+        for _ in 0..2 {
+            let (mut client, mut client_input, mut client_output) =
+                spawn_channel("channel-connect", &socket, client_socket);
+            client_input.write_all(b"request\0\n").await.unwrap();
+            client_input.shutdown().await.unwrap();
+            drop(client_input);
+            let mut peer = tokio::time::timeout(Duration::from_secs(3), export.accept())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let mut request = Vec::new();
+            tokio::time::timeout(Duration::from_secs(3), peer.read_to_end(&mut request))
+                .await
+                .expect("per-client request EOF")
+                .unwrap();
+            assert_eq!(request, b"request\0\n", "{rule}");
+            peer.write_all(b"response\0\n").await.unwrap();
+            peer.shutdown().await.unwrap();
+            let mut response = Vec::new();
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                client_output.read_to_end(&mut response),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(response, b"response\0\n", "{rule}");
             assert!(
-                tokio::time::timeout(Duration::from_secs(3), child.wait())
+                tokio::time::timeout(Duration::from_secs(3), client.wait())
                     .await
                     .unwrap()
                     .unwrap()
                     .success(),
                 "{rule}"
             );
+            assert!(
+                host.try_wait().unwrap().is_none(),
+                "{rule} listener survives client EOF"
+            );
         }
+        drop(export);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), host.wait())
+                .await
+                .unwrap()
+                .unwrap()
+                .success(),
+            "{rule}"
+        );
         assert!(!socket.exists(), "{rule}");
     }
 }

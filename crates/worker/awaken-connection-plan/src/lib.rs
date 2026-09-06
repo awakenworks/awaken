@@ -10,7 +10,9 @@
 //! topology is not modeled until a broker transport ships — a variant with no
 //! producer would only mislead.)
 mod factory;
+mod multiplex;
 mod plan;
+pub use multiplex::MultiplexedChannel;
 pub mod socket_stdio;
 
 pub use factory::{
