@@ -475,9 +475,14 @@ read-only file. New/reused image paths share one exact binary/manifest/OCI-label
 check instead of independently deciding payload equivalence, and the reused
 signature must name the source workflow commit. The signed image digest binds
 the included file; no second proof manifest or qualification policy is created.
-The model's optional image-path projection checks payload equivalence before
-TCB admission, while actual shell tests cover wrong/missing payload, stale copy
-output and inspection cleanup. These are bounded model/adapter checks, not
+Both branches now converge after digest resolution: authenticate reused images,
+pull the immutable subject, compare its payload, run E2E on that subject, then
+sign/promote new images. A good local staging-tag check is never transferred to
+the registry digest. The model's optional image-path projection distinguishes
+wrong payload, a good check of another subject, and exact-subject evidence before
+TCB admission. Actual shell tests cover wrong/missing payload, stale copy output,
+inspection cleanup, changed push payload, malformed digest, pull/signature/E2E
+failure and check-before-sign ordering. These are bounded model/adapter checks, not
 signature verification proofs or a live runtime Verified identity.
 
 The generated release manifest extends the existing signed release provenance;
