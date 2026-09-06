@@ -39,7 +39,8 @@ include!("commit_epoch.rs");
 mod credential_admission;
 pub use credential_admission::{
     DispatchCredentialAdmissionError, can_admit_attempt_credentials,
-    compile_attempt_credential_bindings, worker_credential_realization_capabilities,
+    compile_attempt_credential_bindings, verify_attempt_credential_bindings,
+    worker_credential_realization_capabilities,
 };
 
 /// Admission or durable-store failure classified by what the caller may safely
@@ -1508,6 +1509,88 @@ mod tests {
             compile_attempt_credential_bindings(&model_c, &installed, 13, 10),
             Ok(Vec::new()),
             "S3 selected host candidate needs no credential binding"
+        );
+    }
+
+    /// Claimed-binding revalidation cause/effect graph: C1 immutable dispatch,
+    /// C2 installed capabilities, C3 claim epoch, and C4 the complete ordered
+    /// persisted bindings all match the canonical compiler. E1 only C1-C4
+    /// admits execution; changing any binding coordinate, cardinality, or order
+    /// produces E2 fail-closed. The compiler error remains E3 rather than being
+    /// hidden as a wire mismatch.
+    ///
+    /// | Rule | C1/C2 | C3 | C4 | Effect |
+    /// |---|---|---|---|---|
+    /// | V1 | exact | exact | exact | E1 admit |
+    /// | V2 | exact | changed | stale bindings | E2 reject |
+    /// | V3 | exact | exact | field/cardinality/order changed | E2 reject |
+    /// | V4 | compiler rejects | any | any | E3 preserve compiler error |
+    #[test]
+    fn claimed_binding_revalidation_requires_the_exact_compiled_claim_set() {
+        let selected = holder(PlaintextBoundary::Worker, "worker-a");
+        let primary =
+            provider_candidate("provider-a", "model-a", "genai", "credential-a", &selected);
+        let fallback =
+            provider_candidate("provider-b", "model-b", "genai", "credential-b", &selected);
+        let request = request_with_candidates(primary, vec![fallback], Some(selected.clone()));
+        let installed = capabilities(&selected, CredentialRealizationKind::WorkerProviderAdapter);
+        let exact = compile_attempt_credential_bindings(&request, &installed, 7, 10)
+            .expect("V1 exact claim compiles");
+        assert_eq!(
+            verify_attempt_credential_bindings(&request, &installed, 7, 10, &exact),
+            Ok(()),
+            "V1/E1"
+        );
+
+        let mut mutations = Vec::new();
+        let mut changed = exact.clone();
+        changed[0].claim_epoch = 8;
+        mutations.push(("epoch", changed));
+        let mut changed = exact.clone();
+        changed[0].credential.revision += 1;
+        mutations.push(("credential", changed));
+        let mut changed = exact.clone();
+        changed[0].selected_plaintext_holder =
+            holder(PlaintextBoundary::Worker, "worker-substitution");
+        mutations.push(("holder", changed));
+        let mut changed = exact.clone();
+        changed[0].selected_realization_kind = CredentialRealizationKind::WorkerRelay;
+        mutations.push(("mechanism", changed));
+        let mut changed = exact.clone();
+        changed[0].candidate_fingerprint = CandidateFingerprint("sha256:substituted".into());
+        mutations.push(("candidate", changed));
+        let mut changed = exact.clone();
+        changed.pop();
+        mutations.push(("missing", changed));
+        let mut changed = exact.clone();
+        changed.push(exact[0].clone());
+        mutations.push(("extra", changed));
+        let mut changed = exact.clone();
+        changed.swap(0, 1);
+        mutations.push(("order", changed));
+        for (case, changed) in mutations {
+            assert_eq!(
+                verify_attempt_credential_bindings(&request, &installed, 7, 10, &changed),
+                Err(DispatchCredentialAdmissionError::ClaimedBindingMismatch),
+                "V3/E2 {case}"
+            );
+        }
+        assert_eq!(
+            verify_attempt_credential_bindings(&request, &installed, 8, 10, &exact),
+            Err(DispatchCredentialAdmissionError::ClaimedBindingMismatch),
+            "V2/E2"
+        );
+
+        let mut unsupported = installed;
+        unsupported.holders.clear();
+        assert!(
+            matches!(
+                verify_attempt_credential_bindings(&request, &unsupported, 7, 10, &exact),
+                Err(DispatchCredentialAdmissionError::Attempt(
+                    AttemptCredentialBindingError::Admission(_)
+                ))
+            ),
+            "V4/E3"
         );
     }
 

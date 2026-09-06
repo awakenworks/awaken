@@ -26,6 +26,8 @@ pub enum DispatchCredentialAdmissionError {
     UnsupportedSessionMcpHolder,
     #[error("Session MCP credential admission failed: {0}")]
     SessionAdmission(awaken_runtime_contract::CredentialAdmissionError),
+    #[error("claimed credential bindings differ from the exact dispatch claim decision")]
+    ClaimedBindingMismatch,
 }
 
 pub fn worker_credential_realization_capabilities(
@@ -184,6 +186,24 @@ pub fn compile_attempt_credential_bindings(
         }
     }
     Ok(bindings)
+}
+
+/// Recompute the one canonical claim decision and require the persisted wire
+/// projection to match it exactly. This is the Worker-side trust-boundary check:
+/// it neither searches for a holder nor repairs a stale binding.
+pub fn verify_attempt_credential_bindings(
+    request: &RunDispatch,
+    installed: &CredentialRealizationCapabilities,
+    claim_epoch: u64,
+    now_unix_ms: u64,
+    claimed: &[AttemptCredentialBinding],
+) -> Result<(), DispatchCredentialAdmissionError> {
+    let expected =
+        compile_attempt_credential_bindings(request, installed, claim_epoch, now_unix_ms)?;
+    if claimed != expected {
+        return Err(DispatchCredentialAdmissionError::ClaimedBindingMismatch);
+    }
+    Ok(())
 }
 
 /// Read-only eligibility check for a scheduler selecting among multiple rows.
