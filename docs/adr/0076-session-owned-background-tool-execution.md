@@ -84,8 +84,15 @@ facts into the first attempt before the foreground commit;
 Start, reclaim, heartbeat, wait, cancel, and finish are atomic transitions: an
 error leaves the value unchanged. Expired non-replayable ownership returns the explicit
 `TaskClaim::EndedIndeterminate` decision, rather than mutating and returning an
-error that a caller might discard. Cancellation wins over a racing completion,
-and terminal states are absorbing.
+error that a caller might discard. Cancellation wins over a known racing
+completion, but an `Indeterminate` observation remains `Indeterminate`: cancel
+intent is not evidence that a remote effect stopped. Terminal states are absorbing.
+After lease loss, cancellation with no queryable remote handle becomes
+`Indeterminate` even for a replay-safe tool: replay safety does not prove
+termination and cannot authorize replay of cancelled work. With a durable handle,
+reclaim retains `Cancelling` and its exact handle for the replacement Host to
+cancel/query after commit. The plugin commits this one aggregate decision; it
+must not append a second local `finish(Cancelled)` transition.
 
 MCP Tasks and any future durable ordinary-tool protocol are optional executor
 enhancements, not another lifecycle. Generic Runtime task ports start, poll,
@@ -104,6 +111,37 @@ the exact handle is committed as `Waiting` or `Cancelling`, reclaim reconnects
 to that task id without replaying creation, retains the lifecycle phase, and
 transfers authority by a strictly increasing epoch. A stale executor cannot
 poll, cancel, heartbeat, or publish completion.
+
+The process supervisor has one atomic Active/Waiting/Completed slot per task.
+Every phase, including a resumed Active poll, retains the exact attempt fence.
+Wait, completion and cancellation reject either owner or epoch mismatch. A
+strictly newer committed registration supersedes the old slot without signalling
+cancellation: ownership loss must not cancel a shared remote operation.
+Equal/older registrations cannot restart an effect. Reconciliation
+may retire a candidate only if its observed fence still identifies the slot and
+the committed snapshot has a strictly newer epoch. An older Run snapshot must
+retain a newer completion. Terminal cleanup is a separate observation of
+absorbing durable Ended truth, not an unfenced stale-callback cleanup operation.
+Loom instruments the production slot mutex for selected two-thread callback,
+replacement, completion/wait and duplicate-ack interleavings. It does not prove
+Tokio cancellation internals, caller freshness, database commits or all async
+driver traces; execution still requires canonical Runtime admission.
+
+Detached start/poll/cancel now bind the existing `AttemptOwnershipVerifier` to
+the BackgroundTask snapshot, not to the already-ended foreground Run. Runtime
+checks it after acquiring the shared concurrency permit. The Host reads fresh
+local committed state and calls the aggregate's one execution-admission kernel:
+request, policy and owner/epoch must match; the current lease must be live;
+Running may only start while still Running; remote Waiting may continue as
+Waiting/Cancelling; remote Cancelling cannot widen back to Waiting. Continuation
+must retain the exact adapter owner/binding/task id (poll delay may change).
+Missing/malformed/unavailable state and a replaced process slot reject execution.
+The existing Worker-placement rejection is retained and the verifier defensively
+rejects remote recovery projections as authority. Kani checks the finite phase
+decision with all u64 deadlines/times, and real admission-wait tests invalidate
+the claim before each of start/poll/cancel. This is not an atomic database/network
+fence: revocation after the final read, in-flight external effects, remote receipt
+enforcement and full driver-to-model refinement remain explicit proof boundaries.
 
 ### D4: existing Thread persistence is the sole durable authority
 

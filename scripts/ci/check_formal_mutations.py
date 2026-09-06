@@ -353,6 +353,7 @@ def main() -> None:
     model_selection.add_argument("--resource-preparation-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--resolution-failure-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--config-cas-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--background-completion-model-mutant", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
     if arguments.memory_copy_model_mutant is not None:
         check_memory_copy_model_mutant(arguments.memory_copy_model_mutant)
@@ -368,6 +369,9 @@ def main() -> None:
         return
     if arguments.config_cas_model_mutant is not None:
         check_config_cas_model_mutant(arguments.config_cas_model_mutant)
+        return
+    if arguments.background_completion_model_mutant is not None:
+        check_background_completion_model_mutant(arguments.background_completion_model_mutant)
         return
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(MutationOracleTests)
     if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
@@ -525,6 +529,21 @@ def check_config_cas_model_mutant(tlc_jar: Path) -> None:
         (source.replace(guard, "expected[w] = generation"), config, "TypeOK"),
     ])
     print("Config CAS mutation score: 2/2 killed (absent-row predicate, exhaustion)")
+
+
+def check_background_completion_model_mutant(tlc_jar: Path) -> None:
+    # C1 remove only the uncertainty guard from canonical settlement. E1 the
+    # exact unknown-retention invariant fails. Use the same green-base/semantic
+    # oracle as other models; an infrastructure failure is never a killed bug.
+    source = (ROOT / "formal/tla/BackgroundTask.tla").read_text(encoding="utf-8")
+    config = (ROOT / "formal/tla/BackgroundTask.cfg").read_text(encoding="utf-8")
+    guard = 'p = "Cancelling" /\\ reason # "Indeterminate"'
+    if source.count(guard) != 1:
+        raise SystemExit("Background completion mutation anchor drifted; review the model")
+    check_tlc_model_mutations(tlc_jar, "BackgroundTask", source, config, [
+        (source.replace(guard, 'p = "Cancelling"'), config, "CompletionProjectionRetainsUnknown"),
+    ])
+    print("Background completion mutation score: 1/1 killed (unknown is not cancelled)")
 
 
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,

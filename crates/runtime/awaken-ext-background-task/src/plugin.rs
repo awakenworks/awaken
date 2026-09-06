@@ -10,8 +10,8 @@ use std::sync::Arc;
 use crate::BACKGROUND_TASK_STATE_PREFIX;
 use crate::tools::{CancelBackgroundTask, GetBackgroundTask, ListBackgroundTasks, RunInBackground};
 use crate::{
-    BackgroundTaskError, BackgroundTaskLifecycle, BackgroundTaskSupervisor, TaskClaim,
-    task_state_cell, tasks_from_state,
+    BackgroundTaskError, BackgroundTaskLifecycle, BackgroundTaskSupervisor, task_state_cell,
+    tasks_from_state,
 };
 
 pub const BACKGROUND_TASK_PLUGIN_ID: &str = "background_task";
@@ -143,6 +143,10 @@ impl PhaseHook for ReconcileBackgroundTasks {
         };
         let mut commands = Vec::new();
         for mut task in tasks {
+            if task.lifecycle.is_terminal() {
+                self.supervisor.retire_terminal(&task.id);
+                continue;
+            }
             if let Some(completion) = self.supervisor.completion(&task.id) {
                 match task.finish(&completion.fence, completion.end) {
                     Ok(()) => {
@@ -152,11 +156,14 @@ impl PhaseHook for ReconcileBackgroundTasks {
                         continue;
                     }
                     Err(BackgroundTaskError::StaleFence) => {
-                        // Another worker epoch is now durable. Retire only the
-                        // stale process projection and continue reconciling the
-                        // authoritative attempt; otherwise stale completion
-                        // would permanently suppress its post-commit launch.
-                        self.supervisor.retire(&task.id);
+                        // This Run snapshot may be older OR newer than the
+                        // process candidate. The supervisor retires only an
+                        // exact observed slot below the committed epoch; an old
+                        // snapshot must not discard a newer completion.
+                        if let Some(attempt) = task.attempt() {
+                            self.supervisor
+                                .retire(&task.id, &completion.fence, &attempt.fence());
+                        }
                     }
                     Err(_) => continue,
                 }
@@ -180,19 +187,22 @@ impl PhaseHook for ReconcileBackgroundTasks {
                         continue;
                     }
                     Err(BackgroundTaskError::StaleFence) => {
-                        self.supervisor.retire(&task.id);
+                        if let Some(attempt) = task.attempt() {
+                            self.supervisor
+                                .retire(&task.id, &candidate.fence, &attempt.fence());
+                        }
                     }
                     Err(_) => continue,
                 }
             }
-            if matches!(task.lifecycle, BackgroundTaskLifecycle::Cancelling { .. }) {
-                self.supervisor.cancel(&task.id);
-            }
             let Some(attempt) = task.attempt() else {
                 continue;
             };
+            if matches!(task.lifecycle, BackgroundTaskLifecycle::Cancelling { .. }) {
+                self.supervisor.cancel(&task.id, &attempt.fence());
+            }
             if attempt.worker_id == self.supervisor.worker_id()
-                && self.supervisor.is_active(&task.id)
+                && self.supervisor.is_active(&task.id, &attempt.fence())
             {
                 continue;
             }
@@ -200,21 +210,16 @@ impl PhaseHook for ReconcileBackgroundTasks {
             if attempt.lease_expires_at_ms > now {
                 continue;
             }
-            let was_cancelling =
-                matches!(task.lifecycle, BackgroundTaskLifecycle::Cancelling { .. });
-            let Ok(claim) = task.reclaim(
+            let Ok(_) = task.reclaim(
                 self.supervisor.worker_id(),
                 now,
                 BackgroundTaskSupervisor::lease_ms(),
             ) else {
                 continue;
             };
-            if let TaskClaim::Acquired(fence) = claim
-                && was_cancelling
-                && task.request_cancel().is_ok()
-            {
-                let _ = task.finish(&fence, crate::BackgroundTaskEnd::Cancelled);
-            }
+            // The aggregate owns recovery and cancellation outcomes. In
+            // particular, remote Cancelling retains its exact handle for the
+            // post-commit Host observer; no local shortcut certifies termination.
             if let Ok(command) = task_state_cell(&task.id).write(&task) {
                 commands.push(command);
             }

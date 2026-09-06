@@ -58,6 +58,14 @@ cargo test -p awaken-worker-registry --features loom --lib loom_tests
 # Reclaim, release and observation share the same implementation used outside
 # the Loom proof build; only the mutex implementation is substituted.
 cargo test -p awaken-work-store --features loom --lib lease_book::loom_tests
+# Exercise the production BackgroundTask projection under callback/replacement
+# races. Only its single mutex is instrumented; durable commits remain outside
+# this bounded lock-interleaving claim.
+cargo test -p awaken-ext-background-task --features loom --lib supervisor::loom_tests
+# The Kani predicate below is not sufficient evidence of the async wiring.
+# Exercise its aggregate projection and real post-concurrency-admission check.
+cargo test -p awaken-ext-background-task --test state_machine execution_admission
+cargo test -p awaken-session-executor --lib background_task::ownership::tests
 
 AWAKEN_FORMAL_TRACE_DIR="$rust_trace_dir" \
   cargo test -p awaken-runtime --test formal_refinement
@@ -295,8 +303,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness applying_a_grade_obeys_decision_and_budget \
     --harness terminal_outcomes_are_absorbing
   run_kani awaken-ext-background-task \
+    --harness background_execution_admission_is_exact_fenced_live_and_phase_monotone \
     --harness cancellation_is_monotone_and_terminal_states_are_absorbing \
-    --harness never_replay_recovery_requires_a_durable_remote_continuation
+    --harness never_replay_recovery_requires_a_durable_remote_continuation \
+    --harness expired_background_recovery_is_exact_nonwrapping_and_never_invents_termination
   run_kani awaken-runtime \
     --harness circuit_admission_is_capacity_bounded_nonwrapping_and_rejection_stutters \
     --harness circuit_completion_requires_exact_phase_and_generation_for_every_outcome
@@ -580,6 +590,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/background-task" \
     -config formal/tla/BackgroundTask.cfg formal/tla/BackgroundTask.tla
+  python3 scripts/ci/check_formal_mutations.py --background-completion-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/sandbox-control-publication" \
     -config formal/tla/SandboxControlPublication.cfg \
