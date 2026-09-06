@@ -234,7 +234,7 @@ impl SessionRuntime for ManagedHost {
                 "cannot renew a Session realization lease that is not installed",
             )
         };
-        self.host
+        self.host.authorize_worker_effect(|| Ok(self.host
             .session_slots
             .modify(thread, |slot| {
                 let current = slot.realization_authority.lease().cloned().ok_or_else(missing)?;
@@ -246,7 +246,8 @@ impl SessionRuntime for ManagedHost {
                 }
                 Ok(())
             })
-            .unwrap_or_else(|| Err(missing()))
+            .unwrap_or_else(|| Err(missing()))))
+            .map_err(|error| RunError::classified("worker_execution_authority_denied", error.to_string()))?
     }
 
     async fn invalidate_session_realization_lease(

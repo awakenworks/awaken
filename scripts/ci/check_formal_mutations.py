@@ -965,6 +965,36 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "WorkerAuthorityExit", source, config, mutations,
                               dependencies=("SessionRealizationAuthority",))
     print("Worker authority exit: 3/3 mutants killed; panic/completion reachability witnessed")
+    # W1-W7 and A1-A6: one root proof, request-start latency, irreversible
+    # closure and atomic Session installation. Each removed guard must produce
+    # the exact semantic counterexample; admission/renewal witnesses exclude
+    # configurations that deny every useful action.
+    source = (ROOT / "formal/tla/WorkerExecutionAuthority.tla").read_text()
+    config = (ROOT / "formal/tla/WorkerExecutionAuthority.cfg").read_text()
+    header = config.split("INVARIANTS\n", 1)[0]
+    mutations = []
+    for anchor, broken, invariant in [
+        ('(rootPhase = "Starting" \\/ RootCurrent)',
+         '(rootPhase # "Closed")', "ReceiptNeverRevivesExpiredProof"),
+        ('(rootPhase = "Starting" \\/ RootCurrent)',
+         'TRUE', "ClosedRootNeverReopens"),
+        ("/\\ bootNow < heartbeatRequest + 2", "/\\ TRUE",
+         "ReceiptNeverRevivesExpiredProof"),
+        ("InstallReplacement ==\n  /\\ RootCurrent /\\ Replace",
+         "InstallReplacement ==\n  /\\ Replace", "SessionInstallationRequiresCurrentRoot"),
+        ("FreshAdmission ==\n  /\\ RootCurrent /\\ admissions < 2",
+         "FreshAdmission ==\n  /\\ admissions < 2", "SessionInstallationRequiresCurrentRoot"),
+        ("RenewProjection ==\n  /\\ RootCurrent /\\ ApplyRenewal",
+         "RenewProjection ==\n  /\\ ApplyRenewal", "SessionInstallationRequiresCurrentRoot"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit("Worker execution authority mutation anchor drifted")
+        mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
+    for witness in ("NoAdmissionReached", "NoRenewedRootReached"):
+        mutations.append((source, header + "INVARIANTS " + witness, witness))
+    check_tlc_model_mutations(tlc_jar, "WorkerExecutionAuthority", source, config, mutations,
+                              dependencies=("SessionRealizationAuthority",))
+    print("Worker execution authority: 6/6 mutants killed; admission/renewal reachability witnessed")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:

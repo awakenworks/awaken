@@ -447,6 +447,7 @@ impl SharedHost {
             client_tools: HashSet::new(),
             local_workspace: local_workspace.clone(),
             session_slots: session_slots.clone(),
+            execution_authority: None,
             skills,
             // Subagents share the parent's sandbox by default (`默认共用`).
             skill_fork_placement: crate::skills::SkillForkPlacement::SharedSession,

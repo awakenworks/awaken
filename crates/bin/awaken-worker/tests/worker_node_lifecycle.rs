@@ -757,6 +757,51 @@ async fn provider_evidence_drift_drains_the_incarnation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expired_initial_heartbeat_cannot_start_dispatch() {
+    // W15 real HTTP startup: registry applies sequence 1, but delays its response
+    // beyond the request-anchored proof window. E1 reject before enabling claim
+    // polling; E2 deregister exactly once; E3 no periodic heartbeat or warmup.
+    let upstream = FakeWorkerUpstream::start_with_expired_initial_receipt();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        lifecycle_worker(
+            WorkerUpstream::new(upstream.url()).with_worker_id("expired-initial-receipt"),
+        )
+        .with_deployment_config(local_coordinator_deployment())
+        .with_manifest(manifest())
+        .without_admin_surface()
+        .build()
+        .unwrap()
+        .run_until(std::future::pending()),
+    )
+    .await
+    .unwrap();
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("authority is not current"),
+        "E1"
+    );
+    assert_eq!(upstream.heartbeat_sequences(), vec![1], "E3");
+    let requests = upstream.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|path| path.as_str() == "/v1/worker/deregister")
+            .count(),
+        1,
+        "E2"
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|path| path.contains("/dispatch/") || path.contains("/warmups")),
+        "E1/E3"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stalled_provider_probe_does_not_block_renewal_but_expires() {
     // Cause/effect rule P4: startup evidence succeeds, then the same provider
     // probe never returns. Registry renewal progresses independently while the

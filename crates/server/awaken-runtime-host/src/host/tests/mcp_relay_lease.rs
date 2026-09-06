@@ -17,7 +17,8 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         epoch: 2,
         expires_at_unix_ms: u64::MAX,
     };
-    host.install_session_realization_lease(session, lease.clone());
+    host.install_session_realization_lease(session, lease.clone())
+        .unwrap();
     let relay = crate::mcp_relay::McpRelay::for_host(Arc::downgrade(&host))
         .await
         .unwrap();
@@ -93,7 +94,8 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
     live.lease_expires_at_unix_ms = u64::MAX;
     assert!(relay.stage_route(&live, &material));
     for remove in [false, true] {
-        host.install_session_realization_lease(session, lease.clone());
+        host.install_session_realization_lease(session, lease.clone())
+            .unwrap();
         if remove {
             host.session_slots.remove(session);
         } else {

@@ -169,6 +169,10 @@ pub struct SharedHost {
     /// Process-local projections materialized for prepared Sessions. The private
     /// slot makes their lifecycle atomic while the durable manifest stays authoritative.
     pub(crate) session_slots: crate::session_slot::SessionRuntimeSlots,
+    /// Worker-owned registry proof. Direct Hosts have no Worker registration;
+    /// every registered Worker installs this before enabling dispatch.
+    pub(crate) execution_authority:
+        Option<Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>>,
     /// The host DEFAULT executor: used by auxiliary sub-agents (judge, compactor,
     /// memory) and by an explicitly local deployment with no
     /// [`InferenceExecutorMaterializer`]. Once a materializer is installed, a rejected
