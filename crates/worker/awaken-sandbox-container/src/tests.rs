@@ -36,6 +36,7 @@ pub(crate) fn disposal_authorization(
 
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
         environment: None,
@@ -4378,6 +4379,7 @@ async fn durable_writable_secret_waits_for_explicit_environment_disposal() {
     let provider =
         ContainerProvider::new(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "credential-refresh".into(),
         isolation: pc::IsolationClass::Container,
         environment: None,
@@ -4629,6 +4631,7 @@ impl pc::BlobSource for OneBlob {
 
 fn file_mount_spec(scope: &str, source: pc::MountSource, required: bool) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
         environment: None,

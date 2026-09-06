@@ -505,6 +505,16 @@ impl DeploymentConfig {
         self.sandbox_tier == SandboxTier::Local || self.sandbox.trusted_host_enabled
     }
 
+    /// Exact additional backend projection from the same provider installed by
+    /// Host. Never derive it from the primary Namespace/Container capability.
+    #[must_use]
+    pub fn trusted_host_support(
+        &self,
+    ) -> Option<awaken_provisioning_contract::SandboxCapabilities> {
+        self.trusted_host_enabled()
+            .then(awaken_sandbox_local::LocalProvider::capabilities)
+    }
+
     /// Project the configured Sandbox adapter into the exact secret-free support
     /// a Worker may advertise before provider construction. Runtime Host owns this
     /// mapping because it also owns tier realization; Worker manifest derivation
@@ -527,6 +537,7 @@ impl DeploymentConfig {
             SandboxTier::Local => awaken_sandbox_local::LocalProvider::capabilities(),
             SandboxTier::Docker | SandboxTier::Podman | SandboxTier::K8s => {
                 SandboxCapabilities {
+                    process_tree_supervision: false,
                     isolation: IsolationClass::Container,
                     tool_transparent: true,
                     path_fidelity: true,

@@ -107,6 +107,7 @@ impl RawTool for SandboxEcho {
 
         let provider = LocalProvider::new(self.base.join(format!("sbx-{n}")));
         let spec = pc::SandboxSpec {
+            process_tree_supervision: false,
             scope: format!("hand-{n}"),
             isolation: pc::IsolationClass::Workdir,
             mounts: Vec::new(),

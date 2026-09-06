@@ -229,7 +229,11 @@ pub fn remote_worker_placement(
             // floor. Its Workdir does not claim path/read-only/network/limit
             // guarantees; the backend id below prevents a stronger isolated
             // provider from being substituted and losing host identity.
-            awaken_provisioning_contract::SandboxRequirements::default()
+            awaken_provisioning_contract::SandboxRequirements {
+                process_tree_supervision: environment
+                    .is_some_and(|environment| environment.sandbox.process_tree_supervision),
+                ..Default::default()
+            }
         } else {
             environment.map_or_else(
                 || {

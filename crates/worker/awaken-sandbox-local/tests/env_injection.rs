@@ -53,6 +53,7 @@ async fn bwrap_works() -> bool {
 
 fn spec(scope: &str, isolation: pc::IsolationClass) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation,
         mounts: Vec::new(),

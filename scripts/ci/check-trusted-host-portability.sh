@@ -9,7 +9,7 @@ awaken_configure_cargo_target "$PWD"
 awaken_unset_ambient_api_keys
 
 # Gate selection table: default preserves the cross-platform contract;
-# --linux-supervision additionally REQUIRES user systemd/cgroup-v2 execution.
+# --linux-supervision additionally REQUIRES real Linux PID namespaces/pidfd.
 # Unknown/multiple arguments or a non-Linux supervision request fail before
 # any tests. This is substrate qualification, not a production capability bit.
 linux_supervision=false
@@ -21,8 +21,7 @@ elif [[ "$#" != 0 ]]; then
   exit 2
 fi
 if [[ "$linux_supervision" == true ]]; then
-  cargo test -p awaken-sandbox --test linux_cgroup \
-    linux_systemd_process_scope_contract -- --ignored --exact
+  cargo test -p awaken-sandbox --test linux_scoped
 fi
 
 # Cause/effect matrix: provider={Workdir,sandbox-absolute}, cwd={default,nested},
@@ -37,6 +36,8 @@ cargo test -p awaken-session-executor --lib local_and_namespace_restart_replay_e
 cargo test -p awaken-session-executor --lib resident_and_cold_terminal_memory_use_one_terminal_v2_authority
 cargo test -p awaken-session-executor --lib \
   trusted_host_filesystem_view_maps_workspace_relative_cwd_once
+cargo test -p awaken-session-executor --lib trusted_host_installed_hand
+cargo test -p awaken-session-executor --lib workdir_unknown_hand_reap
 cargo test -p awaken-session-executor --lib \
   configured_working_directory_drives_process_and_acp_from_one_view
 cargo test -p awaken-session-executor --lib \
@@ -50,6 +51,13 @@ cargo test -p awaken-worker-contract --lib
 cargo test -p awaken-cli --lib acp_local_credentials
 cargo test -p awaken-sandbox-local --lib
 cargo test -p awaken-local-process --lib
+# Run the actual Hand binary with an explicit resource root and a nested cwd,
+# not just a renderer/unit fixture. Non-Linux builds exercise native path parsing.
+cargo test -p awaken-sandbox --features hand --lib --test hand_stdio_role
+# These startup rows require the just-built release companion. The thin scoped
+# qualification above intentionally does not provide Hand, and must not race
+# companion validation or turn an absent executable into a successful skip.
+cargo test -p awaken-session-executor --lib acp_backend::tests -- --include-ignored
 cargo test -p awaken-sandbox-fs --lib
 cargo test -p awaken-sandbox-memoryd --lib
 cargo test -p awaken-sandbox-memoryd --test copy_lifecycle
@@ -66,13 +74,19 @@ for runtime in codex claude; do
   CODEX_ACP_PROFILE=host-fixture AWAKEN_ACP_RUNTIME="$runtime" \
     node e2e/codex_acp_live_e2e.mjs
 done
+CODEX_ACP_PROFILE=native-host-fixture AWAKEN_ACP_RUNTIME=native \
+  node e2e/codex_acp_live_e2e.mjs
 
 # Native Namespace is an explicit Linux substrate gate, not an ACP cwd option
 # and not a successful skip on hosts lacking Namespace support. Other OS rows
 # still run Native Local contracts above; no cross-OS Namespace claim is made.
 if [[ "$(uname -s)" == "Linux" ]]; then
-  cargo test -p awaken-sandbox --features hand --test namespace_hand_stdio \
-    namespace_owner_sigkill_terminates_descendants_in_separate_process_groups -- --exact
+  # Both kernel owner-death and real Hand path/tool behavior are mandatory;
+  # selecting only the crash test would omit the Native resource path contract.
+  cargo test -p awaken-sandbox --features hand --test namespace_hand_stdio
   CODEX_ACP_PROFILE=native-fixture AWAKEN_ACP_RUNTIME=native \
     node e2e/codex_acp_live_e2e.mjs
+elif [[ "$(uname -s)" == "Darwin" ]]; then
+  # The real Seatbelt row is required on macOS, not an unavailable-success skip.
+  cargo test -p awaken-sandbox --features hand --test seatbelt_hand_stdio
 fi

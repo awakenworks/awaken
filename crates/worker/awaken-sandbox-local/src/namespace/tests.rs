@@ -42,6 +42,7 @@ fn input<'a>(
 
 fn ns_spec(scope: &str, mounts: Vec<pc::MountRequirement>) -> pc::SandboxSpec {
     pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: scope.into(),
         isolation: pc::IsolationClass::Namespace,
         mounts,
@@ -58,6 +59,49 @@ fn ns_spec(scope: &str, mounts: Vec<pc::MountRequirement>) -> pc::SandboxSpec {
         command: Vec::new(),
         deny_tool_egress: false,
     }
+}
+
+#[tokio::test]
+async fn hand_mount_argument_uses_the_canonical_seatbelt_projection() {
+    // Projection decision table (platform-independent renderer contract):
+    // M1 exact /mnt => physical mount root; M2 descendant => same suffix;
+    // M3 /mnt-lookalike => unchanged; M4 key=/mnt => same projection;
+    // M5 workspace/output paths => existing mappings remain unchanged.
+    // The macOS process test separately verifies actual Seatbelt enforcement.
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path());
+    let sandbox = provider
+        .create_sandbox(&ns_spec("hand-mount-projection", vec![]))
+        .await
+        .unwrap();
+    let mount = sandbox.root.root().join("mnt");
+    for (logical, expected) in [
+        ("/mnt".to_string(), mount.to_string_lossy().into_owned()),
+        (
+            "/mnt/session/目录 x".into(),
+            format!("{}/session/目录 x", mount.display()),
+        ),
+        ("/mnt-lookalike".into(), "/mnt-lookalike".into()),
+        (
+            "--mount-root=/mnt".into(),
+            format!("--mount-root={}", mount.display()),
+        ),
+        (
+            "/workspace".into(),
+            sandbox.host_workspace.to_string_lossy().into_owned(),
+        ),
+        (
+            sandbox.outputs_path.clone(),
+            sandbox.host_outputs.to_string_lossy().into_owned(),
+        ),
+    ] {
+        assert_eq!(
+            sandbox.translate_macos_argument(&logical),
+            expected,
+            "{logical}"
+        );
+    }
+    sandbox.dispose().await.unwrap();
 }
 
 #[tokio::test]

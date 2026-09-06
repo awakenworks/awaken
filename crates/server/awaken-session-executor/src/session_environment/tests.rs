@@ -39,17 +39,17 @@ struct FakeContainer {
     shared: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
 }
 
-struct DoneProcess {
+pub(super) struct DoneProcess {
     id: String,
     code: i32,
 }
 
-struct UnreapableProcess;
+pub(super) struct UnreapableProcess;
 
 struct SlowReapProcess;
 
 impl DoneProcess {
-    fn success(id: impl Into<String>) -> Self {
+    pub(super) fn success(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             code: 0,
@@ -66,7 +66,7 @@ impl DoneProcess {
 
 struct FakeHandExecutorFactory;
 
-struct FakeHandExecutor;
+pub(super) struct FakeHandExecutor;
 
 impl HandExecutorFactory for FakeHandExecutorFactory {
     fn bind(
@@ -260,6 +260,10 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
             .iter()
             .any(|part| part == "bundle" || part.contains("bundle create"));
         if command.argv.iter().any(|part| part == "--stdio") {
+            // P7 Container already exposes /mnt: preserve its deployed Hand
+            // CLI rather than requiring the new local projection option. All
+            // cold/reacquired container Hand cases share this contract oracle.
+            assert_eq!(&command.argv[1..], &["hand", "--stdio"]);
             let spawn = self
                 .hand_spawns
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -445,8 +449,9 @@ impl pc::Sandbox for FakeContainer {
     }
 }
 
-fn spec() -> SandboxSpec {
+pub(super) fn spec() -> SandboxSpec {
     SandboxSpec {
+        process_tree_supervision: false,
         scope: "session-env".into(),
         isolation: IsolationClass::Workdir,
         mounts: Vec::new(),
@@ -490,6 +495,98 @@ fn current_fake_container_handle(spec: &pc::SandboxSpec) -> pc::SandboxHandle {
             owned_paths,
         },
     )
+}
+
+#[tokio::test]
+async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_failure() {
+    // Causes: H1 trusted provider; H2 installed Hand missing at dispatch;
+    // H3 concurrent first calls; H4 provider relocated/adopted. Effects:
+    // E1 create remains lazy; E2 all calls fail, no in-process file effect;
+    // E3 the same mandatory Hand config survives reconstruction; E4 ordinary
+    // weaker Local without a Hand uses its explicit rooted executor (not a fallback).
+    // Decision rules: H1+H2+H3 => E1+E2; +H4 => E3+E2; no Hand configured => E4.
+    let base = tempfile::tempdir().unwrap();
+    let mut provider =
+        SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false);
+    provider.install_workdir_hand(
+        Arc::new(FakeHandExecutorFactory),
+        base.path()
+            .join("missing-hand")
+            .to_string_lossy()
+            .into_owned(),
+        std::time::Duration::ZERO,
+    );
+    let create_fence =
+        pc::SandboxEffectFence::new("create-hand", "owner", "runtime", 1, u64::MAX).unwrap();
+    let environment = provider
+        .create_effective_for_effect(
+            &spec(),
+            Some(&create_fence),
+            None,
+            None,
+            awaken_sandbox_container::ContainerRealizationIntent::Create,
+        )
+        .await
+        .unwrap();
+    let executor = environment.tool_executor();
+    let call = ToolCall {
+        call_id: "no-fallback".into(),
+        tool_id: "write".into(),
+        arguments: serde_json::json!({"path": "/workspace/must-not-exist", "content": "forbidden"}),
+    };
+    let (first, second) = tokio::join!(executor.invoke(&call), executor.invoke(&call));
+    assert!(first.is_err() && second.is_err());
+    let SessionEnvironment::Workdir {
+        sandbox,
+        hand: Some(hand),
+    } = &environment
+    else {
+        panic!("installed Hand")
+    };
+    assert!(
+        !sandbox
+            .workspace_path()
+            .join("workspace/must-not-exist")
+            .exists()
+    );
+    assert!(!hand.has_tracked_binding().await);
+    // Hand commands always start at /workspace; an ACP-only configured cwd
+    // cannot become a different Native prompt path by accident.
+    assert_eq!(
+        environment
+            .agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::NativeTools)
+            .prompt_paths,
+        crate::managed_resource_projection::AgentPathView::workdir_relative("/workspace")
+    );
+    let handle = environment.handle();
+    drop(executor);
+    drop(environment);
+    let adopted = provider
+        .adopt_effective_for_effect(&spec(), &handle, Some(&create_fence))
+        .await
+        .unwrap();
+    assert!(adopted.tool_executor().invoke(&call).await.is_err());
+    adopted.stop_bound_processes().await.unwrap();
+    let terminal =
+        pc::SandboxEffectFence::new("terminal-hand", "owner", "runtime", 1, u64::MAX).unwrap();
+    let prepared = adopted
+        .prepare_disposal_for_effect(&terminal)
+        .await
+        .unwrap();
+    adopted
+        .dispose_for_effect(&restart_disposal_authorization(prepared, "hand-adoption"))
+        .await
+        .unwrap();
+    let relocated = provider.at_root(base.path().join("relocated"));
+    let environment = relocated.create(&spec()).await.unwrap();
+    assert!(environment.tool_executor().invoke(&call).await.is_err());
+    environment.dispose().await.unwrap();
+    let plain = SessionEnvironmentProvider::workdir(base.path().join("plain"))
+        .create(&spec())
+        .await
+        .unwrap();
+    assert!(!plain.tool_executor().invoke(&call).await.unwrap().is_error);
+    plain.dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -2607,7 +2704,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             created.agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
         drop(created);
         let unfenced = match &fuse_provider {
-            SessionEnvironmentProvider::Workdir(provider) => {
+            SessionEnvironmentProvider::Workdir { provider, .. } => {
                 provider.adopt_sandbox(&fuse_handle).await.map(|_| ())
             }
             SessionEnvironmentProvider::Namespace { provider, .. } => {
@@ -3027,7 +3124,10 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
     let second = tempfile::tempdir().unwrap();
 
     let workdir = SessionEnvironmentProvider::workdir(first.path()).at_root(second.path());
-    assert!(matches!(workdir, SessionEnvironmentProvider::Workdir(_)));
+    assert!(matches!(
+        workdir,
+        SessionEnvironmentProvider::Workdir { .. }
+    ));
 
     let namespace = SessionEnvironmentProvider::namespace_with_agent_stderr(
         first.path(),

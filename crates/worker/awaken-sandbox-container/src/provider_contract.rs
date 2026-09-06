@@ -234,6 +234,7 @@ mod realization_context_tests {
         // parallel identity. Phase-specific physical fingerprints remain typed
         // arguments on the runtime ports and are covered by the provider test.
         let spec = pc::SandboxSpec {
+            process_tree_supervision: false,
             scope: "session-a".into(),
             isolation: pc::IsolationClass::Container,
             environment: None,
@@ -419,19 +420,7 @@ impl<'a> ContainerObservationExpectation<'a> {
 #[async_trait]
 pub trait ContainerEnvironmentProvider: Send + Sync {
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
-        pc::SandboxCapabilities {
-            isolation: pc::IsolationClass::Workdir,
-            tool_transparent: false,
-            path_fidelity: false,
-            enforced_readonly: false,
-            network_isolation: false,
-            enforced_network_allowlist: false,
-            secret_egress_substitution: false,
-            resource_limits: false,
-            custom_rootfs: false,
-            package_provisioning: false,
-            control_services: Default::default(),
-        }
+        pc::SandboxCapabilities::default()
     }
 
     fn checkpoint_formats(&self) -> Vec<String> {

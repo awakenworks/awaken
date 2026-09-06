@@ -612,6 +612,14 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
     # empty observation without an accepted stop cannot publish quiescence.
     scope_config = (ROOT / "formal/tla/LocalProcessScope.cfg").read_text(encoding="utf-8")
     scope_replacements = [
+        # B27 revoke after admission/before GO: removing the final authority
+        # check must violate the grant receipt, not an unrelated type property.
+        ("/\\ ~authorityHeld /\\ authorityLive\n  /\\ authorityHeld' = TRUE",
+         "/\\ ~authorityHeld\n  /\\ authorityHeld' = TRUE", "ScopeGrantWasAuthorized"),
+        # G5 a separate thread revokes between check and GO if it does not
+        # contend on the SAME guard. No-await alone cannot kill this mutant.
+        ("/\\ ~authorityHeld /\\ authorityLive /\\ authorityLive' = FALSE",
+         "/\\ authorityLive /\\ authorityLive' = FALSE", "ScopeGrantWasAuthorized"),
         ("/\\ ~scopePermit /\\ scopeClosed' = TRUE", "/\\ scopeClosed' = TRUE",
          "ScopeCloseExcludesLaunch"),
         ("/\\ scopeClosed /\\ scopeKillAccepted /\\ ~leaderAlive /\\ ~descendantAlive",
@@ -636,7 +644,83 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
         scope_mutations.append((source.replace(original, replacement), scope_config, property_name))
     check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, scope_config, scope_mutations,
                               action_properties={"CrashPreservesOSProcesses"})
-    print("Local scope mutation score: 6/6 killed (launch/close, descendants, accepted stop, early exec, early release, cancelled GO)")
+    print("Local scope mutation score: 8/8 killed (final authority, revoke/grant exclusion, launch/close, descendants, accepted stop, early exec, early release, cancelled GO)")
+    # NS decision table: NS1 workload exits before namespace init => no receipt;
+    # NS2 init teardown leaves a detached member => not quiescent; NS3 exec after
+    # helper/control/deadline loss => reject. NS4 each failure link must eventually
+    # begin teardown, given kernel progress. Mutants remove one cause at a time.
+    # Safety/action failures require the exact name. For liveness TLC supplies
+    # no name, so each mutant CFG selects ONLY the one named temporal property.
+    boundary_config = (ROOT / "formal/tla/LocalProcessBoundary.cfg").read_text(encoding="utf-8")
+    boundary_replacements = [
+        ('((~scopeReceipt /\\ scopeReceipt\') => initState \\in {"absent", "exited"})',
+         "TRUE", "BoundaryReceiptObservesInit"),
+        ("/\\ leaderAlive' = FALSE /\\ descendantAlive' = FALSE\n  /\\ helperAlive' = FALSE",
+         "/\\ leaderAlive' = FALSE /\\ UNCHANGED descendantAlive\n  /\\ helperAlive' = FALSE",
+         "BoundaryExitedHasNoMembers"),
+        ("((~workloadStarted /\\ workloadStarted') => BoundaryRunnable)",
+         "TRUE", "BoundaryExecRequiresLiveCutoff"),
+    ]
+    boundary_mutations = []
+    for original, replacement, property_name in boundary_replacements:
+        if source.count(original) != 1:
+            raise SystemExit(f"Local boundary mutation anchor drifted: {property_name}")
+        boundary_mutations.append((source.replace(original, replacement), boundary_config, property_name))
+    temporal_config = boundary_config.split("PROPERTIES\n", 1)[0]
+    temporal_config += "PROPERTIES BoundaryFailureEventuallyTerminates\n"
+    for cause in ["phase = \"crashed\"", "~helperAlive", "~controlLive", "~deadlineLive"]:
+        original = ('initState = "live" /\\ (phase = "crashed" \\/ ~helperAlive \\/ ~controlLive\n'
+                    '    \\/ ~deadlineLive \\/ scopeKillAccepted \\/ launchStage = "cancelled"\n'
+                    '    \\/ (workloadStarted /\\ ~leaderAlive))')
+        # Preserve the property antecedent; weaken only the transition guard,
+        # otherwise the obligation would disappear along with the implementation.
+        replacement = original.replace(cause, "FALSE")
+        guard = '/\\ BoundaryStopRequired /\\ initState\' = "stopping"'
+        if source.count(guard) != 1:
+            raise SystemExit("Local boundary stop mutation anchor drifted")
+        mutant = source.replace(guard, f'/\\ ({replacement}) /\\ initState\' = "stopping"')
+        boundary_mutations.append((mutant, temporal_config, "temporal:BoundaryFailureEventuallyTerminates"))
+    check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, boundary_config,
+                              boundary_mutations,
+                              action_properties={"BoundaryExecRequiresLiveCutoff"})
+    print("Local boundary mutation score: 7/7 killed (init receipt, detached member, expired exec, owner/helper/control/deadline links)")
+    # R1 no held current authority at write => unauthorized frame; R2 stale
+    # frame overwrites cutoff => shortening; R3 late frame bypasses expiry =>
+    # resurrection; R4 receive-time arithmetic => minted transit time; R5 a
+    # stalled prefix suppresses clock progress => lost cutoff. Isolate each
+    # named property so unrelated type/invariant failures cannot count as kills.
+    renewal_config = (ROOT / "formal/tla/LocalProcessRenewal.cfg").read_text(encoding="utf-8")
+    renewal_header = renewal_config.split("INVARIANTS\n", 1)[0]
+    renewal_replacements = [
+        ('/\\ workloadStarted /\\ authorityHeld /\\ controlLive',
+         '/\\ workloadStarted /\\ controlLive',
+         "RenewalWritesRequireCurrentAuthority", False),
+        ("IF Head(cutoffQueue) > cutoff THEN Head(cutoffQueue) ELSE cutoff",
+         "Head(cutoffQueue)", "RenewalCutoffNeverDecreases", True),
+        ('/\\ initState = "live" /\\ helperAlive /\\ controlLive /\\ deadlineLive\n  /\\ cutoffQueue',
+         '/\\ initState = "live" /\\ helperAlive /\\ controlLive\n  /\\ cutoffQueue',
+         "RenewalCannotResurrect", True),
+        ("IF Head(cutoffQueue) > cutoff THEN Head(cutoffQueue) ELSE cutoff",
+         "IF Head(cutoffQueue) > cutoff THEN Head(cutoffQueue) + cutoffClock ELSE cutoff",
+         "RenewalCannotMintTransitTime", True),
+        ("/\\ cutoffClock < 4 /\\ cutoffClock' = cutoffClock + 1",
+         "/\\ ~cutoffPartial /\\ cutoffClock < 4 /\\ cutoffClock' = cutoffClock + 1",
+         "temporal:RenewalPartialCannotStallClock", False),
+    ]
+    renewal_mutations = []
+    actions = set()
+    for original, replacement, property_name, action in renewal_replacements:
+        if source.count(original) != 1:
+            raise SystemExit(f"Local renewal mutation anchor drifted: {property_name}")
+        if action:
+            actions.add(property_name)
+        keyword = "PROPERTIES" if action or property_name.startswith("temporal:") else "INVARIANTS"
+        selected = property_name.removeprefix("temporal:")
+        selected_config = renewal_header + f"{keyword} {selected}\n"
+        renewal_mutations.append((source.replace(original, replacement), selected_config, property_name))
+    check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, renewal_config,
+                              renewal_mutations, action_properties=actions)
+    print("Local renewal mutation score: 5/5 killed (current grant, stale cutoff, resurrection, transit time, partial stall)")
 
 
 def check_memory_copy_model_mutant(tlc_jar: Path) -> None:

@@ -67,7 +67,10 @@ pub enum HandBind {
     /// Serve one hand session directly over this process's stdin/stdout. Container
     /// Session environments use this with their attached exec channel, avoiding a
     /// second network or rendezvous transport inside the same sandbox.
-    Stdio,
+    Stdio {
+        mount_root: std::path::PathBuf,
+        workspace_root: Option<std::path::PathBuf>,
+    },
     /// A unix socket at a filesystem path (works under `--network none`; the ONLY
     /// transport across a network-denied sandbox boundary — C5).
     Unix(String),
@@ -94,35 +97,22 @@ const SESSION_MOUNT_ROOT: &str = "/mnt";
 /// and run outputs are projected below `/mnt`; the Namespace/Container boundary
 /// owns that tree, so allowing it here does not widen access to host paths.
 fn sandbox_hand_tools() -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
-    let logical = std::path::PathBuf::from(SESSION_MOUNT_ROOT);
-    let physical = select_physical_mount_root(
-        logical,
-        std::env::current_dir().ok(),
-        cfg!(target_os = "linux"),
-    );
-    sandbox_hand_tools_at(physical)
-}
-
-fn select_physical_mount_root(
-    logical: std::path::PathBuf,
-    workdir: Option<std::path::PathBuf>,
-    has_mount_namespace: bool,
-) -> std::path::PathBuf {
-    if has_mount_namespace && logical.exists() {
-        return logical;
-    }
-    workdir
-        .and_then(|workdir| workdir.parent().map(|root| root.join("mnt")))
-        .filter(|candidate| candidate.exists())
-        .unwrap_or(logical)
+    // Network/resident deployments expose their mount namespace at /mnt.
+    // Local stdio embeddings supply an explicit physical projection instead;
+    // neither the OS name nor cwd tells us which isolation boundary is active.
+    sandbox_hand_tools_at(SESSION_MOUNT_ROOT, None)
 }
 
 fn sandbox_hand_tools_at(
     physical_mount_root: impl Into<std::path::PathBuf>,
+    physical_workspace_root: Option<std::path::PathBuf>,
 ) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
-    all_hand_tools_in(
-        HandToolContext::default().with_path_projection(SESSION_MOUNT_ROOT, physical_mount_root),
-    )
+    let mut context =
+        HandToolContext::default().with_path_projection(SESSION_MOUNT_ROOT, physical_mount_root);
+    if let Some(workspace) = physical_workspace_root {
+        context = context.with_path_projection("/workspace", workspace);
+    }
+    all_hand_tools_in(context)
 }
 
 fn operation_ledger_root(configured: Option<std::ffi::OsString>) -> std::path::PathBuf {
@@ -162,7 +152,26 @@ fn open_operation_ledger() -> Result<Arc<dyn HandOperationLedger>, String> {
 /// `--dial <addr>` (hand dials the brain rendezvous), or `--nats <url> [--subject <s>]`.
 pub fn parse_hand_args(args: &[String]) -> Result<HandBind, String> {
     match args {
-        [flag] if flag == "--stdio" => Ok(HandBind::Stdio),
+        [flag, rest @ ..] if flag == "--stdio" => {
+            let mut mount_root = None;
+            let mut workspace_root = None;
+            if rest.len() % 2 != 0 {
+                return Err("hand --stdio path options require a value".into());
+            }
+            for option in rest.chunks_exact(2) {
+                let slot = match option[0].as_str() {
+                    "--mount-root" => &mut mount_root,
+                    "--workspace-root" => &mut workspace_root,
+                    _ => return Err("unknown hand --stdio option".into()),
+                };
+                let path = std::path::PathBuf::from(&option[1]);
+                if slot.is_some() || !path.is_absolute() || option[1].contains('\0') {
+                    return Err("hand path roots require one absolute path each".into());
+                }
+                *slot = Some(path);
+            }
+            Ok(HandBind::Stdio { mount_root: mount_root.unwrap_or_else(|| SESSION_MOUNT_ROOT.into()), workspace_root })
+        }
         [flag, path, ..] if flag == "--unix" => Ok(HandBind::Unix(path.clone())),
         [flag, addr, ..] if flag == "--listen" => Ok(HandBind::Tcp(addr.clone())),
         [flag, addr, ..] if flag == "--dial" => Ok(HandBind::Dial(addr.clone())),
@@ -171,7 +180,7 @@ pub fn parse_hand_args(args: &[String]) -> Result<HandBind, String> {
             subject: subject_flag(rest).unwrap_or_else(|| DEFAULT_NATS_SUBJECT.to_string()),
         }),
         _ => Err(
-            "hand requires `--stdio`, `--unix <path>`, `--listen <addr>`, `--dial <addr>`, \
+            "hand requires `--stdio [--mount-root <absolute-path>] [--workspace-root <absolute-path>]`, `--unix <path>`, `--listen <addr>`, `--dial <addr>`, \
                   or `--nats <url> [--subject <s>]`"
                 .into(),
         ),
@@ -199,12 +208,16 @@ pub async fn serve_with_operation_ledger(
     ledger: Arc<dyn HandOperationLedger>,
 ) -> Result<(), String> {
     match bind {
-        HandBind::Stdio => {
+        HandBind::Stdio {
+            mount_root,
+            workspace_root,
+        } => {
             let channel = StdioChannel {
                 read: tokio::io::stdin(),
                 write: tokio::io::stdout(),
             };
-            let session = HandSession::new(sandbox_hand_tools(), ledger);
+            let session =
+                HandSession::new(sandbox_hand_tools_at(mount_root, workspace_root), ledger);
             serve_hand(channel, session)
                 .await
                 .map_err(|error| format!("hand stdio: {error}"))
@@ -384,7 +397,7 @@ mod tests {
         // transports changed by resident Hand placement; NATS has its live test.
         assert!(matches!(
             parse_hand_args(&["--stdio".into()]).unwrap(),
-            HandBind::Stdio
+            HandBind::Stdio { mount_root, workspace_root: None } if mount_root == std::path::Path::new("/mnt")
         ));
         assert!(matches!(
             parse_hand_args(&["--unix".into(), "/rv/hand.sock".into()]).unwrap(),
@@ -548,7 +561,7 @@ mod tests {
         let outside_file = outside.path().join("private.txt");
         std::fs::write(&outside_file, "must stay hidden").unwrap();
 
-        let read = sandbox_hand_tools_at(mount.path())
+        let read = sandbox_hand_tools_at(mount.path(), None)
             .into_iter()
             .find(|tool| tool.id() == "read")
             .expect("read tool");
@@ -576,25 +589,66 @@ mod tests {
     }
 
     #[test]
-    fn seatbelt_uses_the_session_mount_instead_of_the_host_mnt_directory() {
-        // C1: macOS Seatbelt has no mount namespace; C2: the host may still have
-        // a real /mnt directory; C3: the Session root has its own sibling mnt.
-        // C1+C2+C3 must select the Session tree. Linux's mount namespace keeps
-        // the logical root because the bind is visible there.
-        let session = tempfile::tempdir().unwrap();
-        let workdir = session.path().join("workspace");
-        let session_mnt = session.path().join("mnt");
-        let host_mnt = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(&workdir).unwrap();
-        std::fs::create_dir_all(&session_mnt).unwrap();
-
-        assert_eq!(
-            select_physical_mount_root(host_mnt.path().into(), Some(workdir.clone()), false),
-            session_mnt,
-        );
-        assert_eq!(
-            select_physical_mount_root(host_mnt.path().into(), Some(workdir), true),
-            host_mnt.path(),
-        );
+    fn stdio_mount_projection_is_explicit_and_never_guessed_from_cwd_or_os() {
+        // P1 omitted option => logical /mnt (existing namespace wire);
+        // P2 explicit native absolute path, including spaces/Unicode => exact
+        // projection without requiring existence or cwd shape; P3 relative,
+        // empty, NUL, missing, duplicate or unknown option => reject, not guess.
+        let root = tempfile::tempdir().unwrap().path().join("目录 with spaces");
+        let args = [
+            "--stdio".into(),
+            "--mount-root".into(),
+            root.to_string_lossy().into_owned(),
+        ];
+        assert!(matches!(parse_hand_args(&args).unwrap(),
+            HandBind::Stdio { mount_root, workspace_root: None } if mount_root == root));
+        // P7 both roots in either order => one exact mapping per option;
+        // P8 workspace-only => preserve the namespace /mnt default. The two
+        // options share P3's validation, not separate permissive parsers.
+        let workspace = root.join("workspace");
+        for roots in [
+            [("--mount-root", &root), ("--workspace-root", &workspace)],
+            [("--workspace-root", &workspace), ("--mount-root", &root)],
+        ] {
+            let mut args = vec!["--stdio".to_string()];
+            for (flag, path) in roots {
+                args.extend([flag.into(), path.to_string_lossy().into_owned()]);
+            }
+            assert!(matches!(parse_hand_args(&args).unwrap(),
+                HandBind::Stdio { mount_root, workspace_root: Some(actual) }
+                if mount_root == root && actual == workspace));
+        }
+        assert!(matches!(parse_hand_args(&[
+            "--stdio".into(), "--workspace-root".into(), workspace.to_string_lossy().into_owned()
+        ]).unwrap(), HandBind::Stdio { mount_root, workspace_root: Some(actual) }
+            if mount_root == std::path::Path::new("/mnt") && actual == workspace));
+        for flag in ["--mount-root", "--workspace-root"] {
+            for invalid in ["", "relative/path", "bad\0path"] {
+                assert!(parse_hand_args(&["--stdio".into(), flag.into(), invalid.into()]).is_err());
+            }
+            let exact_root = root.to_string_lossy().into_owned();
+            assert!(parse_hand_args(&["--stdio".into(), flag.into()]).is_err());
+            assert!(
+                parse_hand_args(&[
+                    "--stdio".into(),
+                    flag.into(),
+                    exact_root.clone(),
+                    flag.into(),
+                    exact_root
+                ])
+                .is_err()
+            );
+        }
+        for tail in [
+            vec!["--mount-root"],
+            vec!["--unknown", "/mnt"],
+            vec!["--mount-root", "/mnt", "--mount-root", "/mnt"],
+        ] {
+            let args: Vec<String> = std::iter::once("--stdio")
+                .chain(tail)
+                .map(String::from)
+                .collect();
+            assert!(parse_hand_args(&args).is_err());
+        }
     }
 }

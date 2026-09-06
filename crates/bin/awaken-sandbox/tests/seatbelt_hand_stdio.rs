@@ -14,13 +14,15 @@ async fn seatbelt_hand_reads_the_session_mount_when_the_host_mnt_exists() {
     // C1 Seatbelt has no mount namespace; C2 macOS may expose a host /mnt;
     // C3 the provider materializes the Managed File below the Session root.
     // C1+C2+C3 must make the logical Managed path read the Session bytes.
+    // C4 unavailable Seatbelt => qualification fails, never a successful skip.
     let base = tempfile::tempdir().expect("sandbox root");
     let provider = NamespaceProvider::new(base.path());
-    if provider.probe_ready().await.is_err() {
-        eprintln!("skipping: Seatbelt/sandbox-exec unavailable");
-        return;
-    }
+    provider
+        .probe_ready()
+        .await
+        .expect("macOS qualification requires Seatbelt/sandbox-exec");
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "seatbelt-hand-path-contract".into(),
         isolation: pc::IsolationClass::Namespace,
         mounts: vec![pc::MountRequirement {
@@ -49,7 +51,13 @@ async fn seatbelt_hand_reads_the_session_mount_when_the_host_mnt_exists() {
     };
     let sandbox = provider.create_sandbox(&spec).await.expect("namespace");
     let binary = binary_support::awaken_sandbox();
-    let mut command = pc::Command::new([binary.as_str(), "hand", "--stdio"]);
+    let mut command = pc::Command::new([
+        binary.as_str(),
+        "hand",
+        "--stdio",
+        "--mount-root",
+        "/mnt",
+    ]);
     command.cwd = "/workspace".into();
     let (process, channel) = sandbox.spawn_agent(command).await.expect("spawn Hand");
     let executor = RemoteToolExecutor::new(channel);

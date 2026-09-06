@@ -295,7 +295,8 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         capabilities.insert(capability);
     }
     let mut sandbox_backends = BTreeSet::from([backend.to_string()]);
-    if inputs.deployment.trusted_host_enabled() {
+    let trusted_host_sandbox = inputs.deployment.trusted_host_support();
+    if trusted_host_sandbox.is_some() {
         sandbox_backends.insert(awaken_worker_contract::TRUSTED_HOST_SANDBOX_BACKEND.to_string());
     }
     WorkerManifest {
@@ -303,6 +304,7 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         capabilities,
         zone: inputs.config.zone.clone(),
         sandbox,
+        trusted_host_sandbox,
         sandbox_tool_recovery: inputs
             .deployment
             .sandbox

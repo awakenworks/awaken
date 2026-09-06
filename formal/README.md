@@ -611,20 +611,45 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   linked to the real process tests, not a Rust refinement, unbounded liveness
   proof, process-tree quiescence certificate or Windows Job Object guarantee.
   The `LocalProcessScope.cfg` configuration reuses this model for one Linux
-  cgroup owner: launch admission excludes close; accepted KILL is not observed
+  process-scope owner: launch admission excludes close; accepted KILL is not observed
   emptiness; leader exit cannot substitute for descendant exit; owner crash
   still preserves OS processes in the model. The same configuration now models
   bootstrap join, ACK, atomic GO/admission release, execution and cancellation;
   execution requires membership and GO, and cancellation cannot invent GO.
-  Six additional mutations must violate the exact admission, subtree-empty,
-  accepted-stop, premature-exec, premature-release and cancelled-GO invariants.
-  The private socket/OS lifetime of a cancelled trusted helper is abstracted;
-  this does not certify its immediate exit or permanent scope emptiness after
-  cancellation. A single admitted owner, correct peer/identity checking and
-  absence of external cgroup migration remain assumptions. The real
-  `awaken-sandbox` delegated-systemd test invokes the production bootstrap and
-  exercises descriptor identity/ABA and owner SIGKILL independently; neither
-  model nor test proves production Worker/Session wiring or unbounded liveness.
+  Final provider authorization is checked after ACK under the same synchronous
+  guard retained through the nonblocking GO write. Acquisition and GO are
+  separate model steps: a cross-thread revoker must contend on that guard.
+  Backpressure releases it and requires fresh authorization. Revocation after
+  GO does not undo a workload already authorized. Eight additional mutations
+  must violate the exact final-authority, revoke/grant-exclusion, admission,
+  subtree-empty, accepted-stop, premature-exec, premature-release and
+  cancelled-GO invariants. Wall-clock lease expiry and a concrete Session
+  authorization adapter are not proved by this model.
+  `LocalProcessBoundary.cfg` composes that same admission/GO model with the
+  systemd-free Linux helper, inherited control channel, fixed execution cutoff
+  and namespace init states (absent/live/stopping/exited). Owner/helper death,
+  disconnect and expiry request teardown; accepted termination is not observed
+  init exit. Only init exit can authorize a tree-empty observation. The model
+  preserves processes at the instant of owner crash and checks subsequent
+  termination under explicit weak fairness of kernel progress. Seven exact
+  mutations remove the init receipt guard, preserve a detached member, permit
+  expired execution, or sever one of the four failure links. The deadline is
+  finite-state and irreversible in that configuration.
+  `LocalProcessRenewal.cfg` composes the same boundary and current-authority
+  lock with cutoff values 1..3, clock 0..4, one queued frame and a stalled
+  proper prefix. A complete live update preserves the exact absolute cutoff;
+  stale frames cannot shorten it, expired frames cannot resurrect execution,
+  and stalled input cannot stop clock progress. Its five exact mutants remove
+  current authorization, overwrite with a stale cutoff, bypass expiry, add
+  receive-time latency, or stop clock progress during a partial frame.
+  These are bounded safety/liveness checks with explicit clock/kernel fairness,
+  not a business lease model, Rust refinement, real elapsed-time bound, kernel
+  implementation, hostile-host safety or production Session integration proof.
+  `awaken-sandbox/tests/linux_scoped.rs` independently tests actual
+  loader-time containment, binary stdio, private descriptor ownership, detached
+  trees, owner/helper SIGKILL, cutoff, authorized/denied/stale cutoff updates,
+  owner SIGSTOP after renewal and unaffected neighboring execution.
+  The old delegated-systemd adapter/test is removed, not an alternative mode.
 - `WorkerReplacement.tla` composes authored route resolution, dispatch-time
   candidate pinning, worker claims, credential materialization, execution and
   settlement with concurrent route change, rotation, revocation, worker crash,

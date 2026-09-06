@@ -44,6 +44,7 @@ async fn full_lifecycle_harvests_memory_collects_outputs_then_shreds_and_reaps()
         .with_blob("broker://key", b"sk-secret".to_vec());
 
     let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
         scope: "t-life".into(),
         isolation: pc::IsolationClass::Workdir,
         mounts: vec![

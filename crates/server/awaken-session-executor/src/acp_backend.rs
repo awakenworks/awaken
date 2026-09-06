@@ -341,20 +341,24 @@ impl crate::host::SharedHost {
         self,
         hand_factory: Option<Arc<dyn crate::HandExecutorFactory>>,
     ) -> Self {
-        if self.session_provider_explicit {
+        if self.session_provider_explicit && !self.deployment.trusted_host_enabled() {
             return self;
         }
         let deployment = self.deployment.clone();
         let base = session_sandbox_base(&deployment);
-        let tier = crate::resolve_sandbox_tier(
-            deployment.sandbox_tier,
-            deployment.sandbox.allow_local_fallback,
-            &base,
-        )
-        .await
-        .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
+        let tier = if self.session_provider_explicit {
+            deployment.sandbox_tier
+        } else {
+            crate::resolve_sandbox_tier(
+                deployment.sandbox_tier,
+                deployment.sandbox.allow_local_fallback,
+                &base,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"))
+        };
         let mut host = self;
-        // Namespace runs the same Hand binary as Container, but from the local
+        // Namespace and TrustedHost run the same Hand binary as Container, from the local
         // installation rather than from the image filesystem. Production bundles
         // install both executables as siblings; keeping this resolution at the
         // composition root prevents provider-specific host paths crossing inward.
@@ -364,7 +368,14 @@ impl crate::host::SharedHost {
             .unwrap_or_else(|| {
                 std::path::PathBuf::from(format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX))
             });
-        if tier == crate::SandboxTier::Namespace {
+        let trusted_hand_factory = deployment.trusted_host_enabled().then(|| {
+            hand_factory
+                .clone()
+                .expect("TrustedHost Native execution requires the installed Hand factory")
+        });
+        if (!host.session_provider_explicit && tier == crate::SandboxTier::Namespace)
+            || trusted_hand_factory.is_some()
+        {
             validate_namespace_hand_bin(&namespace_hand_path)
                 .await
                 .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
@@ -379,40 +390,56 @@ impl crate::host::SharedHost {
                     ),
             );
         }
-        host.session_provider = if let Some(provider) =
-            crate::session_environment::SessionEnvironmentProvider::for_host_tier(
-                tier,
-                base,
-                deployment.sandbox.inherit_agent_stderr,
-                hand_factory.clone(),
-                namespace_hand_bin,
-                std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
-            ) {
-            provider
-        } else {
-            let hand_factory = hand_factory.unwrap_or_else(|| {
-                panic!("container Session environments require a hand executor factory")
-            });
-            let realization_namespace =
-                awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
-                    "direct-host-installation",
-                    host.local_workspace(),
-                ])
-                .unwrap_or_else(|error| panic!("configure Session container identity: {error}"));
-            let components =
-                crate::container_environment::build_container_environment_for_realization(
-                    realization_namespace,
+        if let Some(factory) = trusted_hand_factory {
+            host.backend_owned_session_provider
+                .as_mut()
+                .expect("TrustedHost provider installed")
+                .install_workdir_hand(
+                    factory,
+                    namespace_hand_bin.clone(),
+                    std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
+                );
+        }
+        // An explicit primary provider does not configure the independent,
+        // operator-enabled TrustedHost backend. Preserve the primary while
+        // completing that secondary backend through the same startup path.
+        if !host.session_provider_explicit {
+            host.session_provider = if let Some(provider) =
+                crate::session_environment::SessionEnvironmentProvider::for_host_tier(
                     tier,
-                    deployment.container_image.as_deref(),
-                    &deployment.sandbox,
-                )
-                .await
-                .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
-            if let Some(initializer) = components.cache_volume_initializer {
-                host.cache_volume_prewarmer =
-                    crate::cache_volume::CacheVolumePrewarmer::new(initializer);
-            }
-            crate::session_environment::SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+                    base,
+                    deployment.sandbox.inherit_agent_stderr,
+                    hand_factory.clone(),
+                    namespace_hand_bin,
+                    std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
+                ) {
+                provider
+            } else {
+                let hand_factory = hand_factory.unwrap_or_else(|| {
+                    panic!("container Session environments require a hand executor factory")
+                });
+                let realization_namespace =
+                    awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
+                        "direct-host-installation",
+                        host.local_workspace(),
+                    ])
+                    .unwrap_or_else(|error| {
+                        panic!("configure Session container identity: {error}")
+                    });
+                let components =
+                    crate::container_environment::build_container_environment_for_realization(
+                        realization_namespace,
+                        tier,
+                        deployment.container_image.as_deref(),
+                        &deployment.sandbox,
+                    )
+                    .await
+                    .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
+                if let Some(initializer) = components.cache_volume_initializer {
+                    host.cache_volume_prewarmer =
+                        crate::cache_volume::CacheVolumePrewarmer::new(initializer);
+                }
+                crate::session_environment::SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
                 components.provider,
                 components.capacity,
                 components.extra_mounts,
@@ -421,8 +448,9 @@ impl crate::host::SharedHost {
                 std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
                 deployment.sandbox.container_hand_residency,
             )
-        };
-        host.session_provider_explicit = true;
+            };
+            host.session_provider_explicit = true;
+        }
         if let Some(mounter) = host.memory_mounter() {
             host.session_provider
                 .install_memory_mounter(mounter.clone());
@@ -664,6 +692,7 @@ mod tests {
     /// P1: Sandbox tier selection is caused by Deployment, not by ACP presence.
     /// A Native-only Worker must install the selected provider before serving.
     #[tokio::test]
+    #[ignore = "requires installed Hand companion; mandatory in trusted-host portability gate"]
     async fn native_only_deployment_selects_the_session_provider() {
         let mut deployment = crate::DeploymentConfig::ephemeral();
         deployment.sandbox_tier = crate::SandboxTier::Local;
@@ -679,6 +708,85 @@ mod tests {
         assert!(host.session_provider_explicit);
         assert_eq!(host.session_provider.capabilities(), expected);
         assert!(host.acp.is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires installed Hand companion; mandatory in trusted-host portability gate"]
+    async fn trusted_host_hand_startup_covers_prior_acp_and_explicit_primary_orderings() {
+        // Cause/effect table: S1 ACP provider absent/present; S2 primary
+        // implicit/explicit; S3 TrustedHost enabled. All four S1*S2 rules with
+        // S3 must install ONE mandatory Hand on the trusted provider, retaining
+        // primary capabilities and any existing provider root. No tool launch
+        // is needed: real CLI/Hand/resource execution lives in the E2E gate.
+        for prior_acp in [false, true] {
+            for explicit_primary in [false, true] {
+                let base = tempfile::tempdir().unwrap();
+                let mut deployment = crate::DeploymentConfig::ephemeral();
+                deployment.sandbox_tier = crate::SandboxTier::Local;
+                deployment.sandbox_dir = Some(base.path().into());
+                let mut host = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment);
+                if prior_acp {
+                    host = host.with_projected_acp(
+                        *awaken_run_executor_acp::acp_cli("claude").unwrap(),
+                        Arc::new(FixedModel),
+                        None,
+                    );
+                }
+                host.session_provider_explicit = explicit_primary;
+                let capabilities = host.session_provider.capabilities();
+                let host = host
+                    .with_session_environment_from_deployment(Some(Arc::new(NoHandFactory)))
+                    .await;
+                assert_eq!(host.session_provider.capabilities(), capabilities);
+                assert!(matches!(
+                    host.backend_owned_session_provider,
+                    Some(
+                        crate::session_environment::SessionEnvironmentProvider::Workdir {
+                            hand: Some(_),
+                            ..
+                        }
+                    )
+                ));
+                assert!(host.session_provider_explicit);
+                assert_eq!(host.acp.is_some(), prior_acp);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn trusted_host_startup_rejects_missing_factory_and_invalid_companion() {
+        // S4 enabled+no factory => fail before launching a companion. S5 missing
+        // or directory companion => fail; S6 executable without Hand --check
+        // support => fail. There is no successful Local executor substitution.
+        let failure = tokio::spawn(async {
+            let mut deployment = crate::DeploymentConfig::ephemeral();
+            deployment.sandbox_tier = crate::SandboxTier::Local;
+            SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
+                .with_session_environment_from_deployment(None)
+                .await;
+        })
+        .await
+        .unwrap_err();
+        assert!(failure.is_panic());
+        let message = failure.into_panic();
+        let message = message
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| message.downcast_ref::<&str>().copied())
+            .unwrap();
+        assert!(message.contains("requires the installed Hand factory"));
+        let root = tempfile::tempdir().unwrap();
+        assert!(
+            validate_namespace_hand_bin(&root.path().join("missing"))
+                .await
+                .is_err()
+        );
+        assert!(validate_namespace_hand_bin(root.path()).await.is_err());
+        assert!(
+            validate_namespace_hand_bin(&std::env::current_exe().unwrap())
+                .await
+                .is_err()
+        );
     }
 
     #[test]

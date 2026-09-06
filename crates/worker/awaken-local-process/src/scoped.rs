@@ -1,484 +1,345 @@
-//! Trusted Linux bootstrap for the existing local process owner.
-//!
-//! Admission -> sanitized helper -> exact cgroup join -> JOINED -> GO -> exec.
-//! No workload environment (including loader hooks) reaches the helper. A
-//! private peer-PID-checked abstract Unix socket carries transient materialized
-//! inputs, never a planning record, argv secret, file, or business-stdio frame.
-//! Cancellation before GO cannot run workload code. Cancellation may leave a
-//! briefly exiting trusted helper; it is not a durable subtree-empty receipt.
-//! External supervision and Session/realization fencing remain caller duties.
-
-use std::ffi::OsStr;
-use std::io;
-use std::os::linux::net::SocketAddrExt;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::{SocketAddr, UnixListener as StdListener};
-use std::os::unix::process::CommandExt;
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
-
-use awaken_provisioning_contract::{MaterializedCommand, Stdio};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixListener, UnixStream};
-use zeroize::Zeroizing;
+//! Systemd-free Linux execution ownership. Sanitized bubblewrap starts a
+//! trusted helper; an inherited private socket carries workload input and OS
+//! descriptors. Bootstrap frames and injected credentials use that private
+//! channel, not business stdio; workload output remains the caller's concern.
+//! Session admission, durable identity and recovery remain caller duties.
 
 use crate::LocalProcess;
-use crate::cgroup::{CgroupIdentity, LinuxProcessScope};
+use async_trait::async_trait;
+use awaken_provisioning_contract::{
+    ExitStatus, MaterializedCommand, ProcessHandle, SandboxError, Signal,
+};
+use rustix::process::{Pid, PidfdFlags, pidfd_open, pidfd_send_signal};
+use std::{
+    io,
+    os::fd::{AsFd, OwnedFd},
+    path::Path,
+    time::Duration,
+};
+use tokio::net::UnixStream;
+use tokio::net::unix::pipe::{Receiver, Sender};
 
-const MAX_FRAME: usize = 1024 * 1024;
-const MAX_ITEMS: usize = 4096;
+mod descriptor;
+mod grant;
+mod process_io;
+mod renewal;
+mod wire;
+pub use grant::ScopedLaunchGrant;
+pub use renewal::ScopedDeadlineGrant;
+
 const MAX_WAIT: Duration = Duration::from_secs(30);
-const JOINED: u8 = 1;
-const GO: u8 = 2;
-static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
+const MAX_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
 
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, "invalid scoped launch input")
 }
-
-fn deadline_error() -> io::Error {
-    io::Error::new(io::ErrorKind::TimedOut, "scoped launch handshake timed out")
+fn timed_out() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "scoped execution deadline exceeded",
+    )
+}
+fn boot_millis() -> io::Result<u64> {
+    let time = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let seconds = u64::try_from(time.tv_sec).map_err(|_| invalid())?;
+    seconds
+        .checked_mul(1000)
+        .and_then(|v| v.checked_add(time.tv_nsec as u64 / 1_000_000))
+        .ok_or_else(invalid)
 }
 
-fn address(name: &str) -> io::Result<SocketAddr> {
-    SocketAddr::from_abstract_name(name.as_bytes())
-}
-
-fn peer(stream: &UnixStream, expected: u32) -> io::Result<()> {
-    if expected == 0 || stream.peer_cred()?.pid().map(i64::from) != Some(i64::from(expected)) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "scoped launch peer identity mismatch",
-        ));
+/// Conservative OS cutoff derived by the caller from CURRENT remaining Session
+/// authority. BOOTTIME counts suspend; this is not a renewable business lease
+/// and cannot be persisted across host boots or used to authorize adoption.
+#[derive(Clone, Copy)]
+pub struct ExecutionDeadline(u64);
+impl ExecutionDeadline {
+    pub fn after(remaining: Duration) -> io::Result<Self> {
+        if remaining.is_zero() || remaining > MAX_WINDOW || remaining.as_millis() == 0 {
+            return Err(invalid());
+        }
+        Ok(Self(
+            boot_millis()?
+                .checked_add(remaining.as_millis() as u64)
+                .ok_or_else(invalid)?,
+        ))
     }
-    Ok(())
+    fn remaining(self) -> io::Result<Duration> {
+        let millis = self
+            .0
+            .checked_sub(boot_millis()?)
+            .filter(|v| *v > 0)
+            .ok_or_else(timed_out)?;
+        let remaining = Duration::from_millis(millis);
+        if remaining > MAX_WINDOW {
+            return Err(invalid());
+        }
+        Ok(remaining)
+    }
 }
 
-impl LocalProcess {
-    /// Launch a materialized command after joining this exact scope. `cwd` is
-    /// the physical cwd already resolved by the provider's existing path view;
-    /// this OS adapter must not re-project the command's logical cwd.
-    /// The provider must retain its realization/path authorization through this
-    /// call. A cwd pathname is not a pinned filesystem-generation identity.
-    ///
-    /// `helper` is an absolute trusted deployment path to awaken-sandbox, NOT
-    /// selected by workload input. Its own environment is empty and cwd is `/`.
-    /// `command.stdio` applies to all three business streams. Success means GO
-    /// was issued, not that exec or the ACP/Hand protocol became ready. There is
-    /// no await after issuing GO and before returning ownership to the caller.
-    /// The handshake timeout must be positive and no more than 30 seconds.
-    pub async fn spawn_scoped(
-        scope: &LinuxProcessScope,
+/// Physical evidence, NOT authority to adopt or stop an arbitrary host process.
+/// Durable recovery additionally needs the existing realization fence and boot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProcessNamespaceIdentity {
+    pub device: u64,
+    pub inode: u64,
+}
+
+pub struct ScopedProcess {
+    process: LocalProcess,
+    _namespace: OwnedFd,
+    init: OwnedFd,
+    control: UnixStream,
+    control_writer: std::sync::Mutex<()>,
+    io: process_io::ProcessIo,
+    identity: ProcessNamespaceIdentity,
+}
+
+impl ScopedProcess {
+    /// Caller holds the realization lock. The callback durably binds identity
+    /// BEFORE GO and commits GO under the SAME synchronous guard as revocation.
+    /// Inputs are trusted deployment/physical paths; no path is re-projected.
+    /// Callback must not panic. This is not an installed Worker capability.
+    pub async fn spawn_authorized(
+        launcher: &Path,
         helper: &Path,
         command: &MaterializedCommand,
         cwd: &Path,
+        deadline: ExecutionDeadline,
         timeout: Duration,
+        mut authorize: impl FnMut(ProcessNamespaceIdentity, ScopedLaunchGrant<'_>) -> io::Result<()>,
     ) -> io::Result<Self> {
-        if !helper.is_absolute() || timeout.is_zero() || timeout > MAX_WAIT {
+        if !launcher.is_absolute()
+            || !helper.is_absolute()
+            || timeout.is_zero()
+            || timeout > MAX_WAIT
+        {
             return Err(invalid());
         }
-        let frame = encode(scope.path(), scope.identity(), command, cwd)?;
+        deadline.remaining()?;
+        let frame = wire::encode(command, cwd, deadline.0)?;
         tokio::time::timeout(timeout, async {
-            let _permit = scope.launch_permit().await?;
-            let name = format!(
-                "awaken-scoped-{}-{}",
-                std::process::id(),
-                NEXT_SOCKET.fetch_add(1, Ordering::Relaxed)
-            );
-            let listener = StdListener::bind_addr(&address(&name)?)?;
-            listener.set_nonblocking(true)?;
-            let listener = UnixListener::from_std(listener)?;
-            let mut bootstrap = tokio::process::Command::new(helper);
+            let (mut control, inherited) = UnixStream::pair()?;
+            let inherited: OwnedFd = inherited.into_std()?.into();
+            let (io, handles) = process_io::ProcessIo::new(command.stdio)?;
+            let mut bootstrap = tokio::process::Command::new(launcher);
             bootstrap
-                .args(["scoped-exec", &name, &std::process::id().to_string()])
+                .args(crate::BUBBLEWRAP_PROCESS_BOUNDARY)
+                .args(["--dev-bind", "/", "/", "--proc", "/proc", "--"])
+                .arg(helper)
+                .arg("scoped-exec")
                 .env_clear()
                 .current_dir("/")
-                .stdin(stdio(command.stdio))
-                .stdout(stdio(command.stdio))
-                .stderr(stdio(command.stdio));
-            let process = Self::spawn(&mut bootstrap)?;
-            let (mut control, _) = listener.accept().await?;
-            peer(&control, process.id.parse().map_err(|_| invalid())?)?;
-            authorize(&mut control, &frame).await?;
-            Ok(process)
+                .stdin(inherited)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let process = LocalProcess::spawn(&mut bootstrap)?;
+            drop(bootstrap); // Close parent's duplicate inherited endpoint.
+            let mut descriptors = descriptor::receive(&control, 2).await?.into_iter();
+            let namespace = descriptors.next().ok_or_else(invalid)?;
+            let init = descriptors.next().ok_or_else(invalid)?;
+            if rustix::fs::fstatfs(&namespace)?.f_type != 0x6e736673 {
+                return Err(invalid());
+            }
+            let stat = rustix::fs::fstat(&namespace)?;
+            let identity = ProcessNamespaceIdentity {
+                device: stat.st_dev,
+                inode: stat.st_ino,
+            };
+            descriptor::send(&control, &handles).await?;
+            drop(handles);
+            grant::authorize_checked(&mut control, &frame, |grant| authorize(identity, grant))
+                .await?;
+            // No await after GO: preserve the handle even if the callback
+            // reported an error after its irreversible commit.
+            Ok(Self {
+                process,
+                _namespace: namespace,
+                init,
+                control,
+                control_writer: std::sync::Mutex::new(()),
+                io,
+                identity,
+            })
         })
         .await
-        .map_err(|_| deadline_error())?
+        .map_err(|_| timed_out())?
     }
-}
+    pub fn identity(&self) -> ProcessNamespaceIdentity {
+        self.identity
+    }
 
-async fn authorize(control: &mut UnixStream, frame: &[u8]) -> io::Result<()> {
-    control.write_u32(frame.len() as u32).await?;
-    control.write_all(frame).await?;
-    if control.read_u8().await? != JOINED {
-        return Err(invalid());
-    }
-    // One-byte authorization: write_u8 cannot yield after writing a partial
-    // GO. No await after this write, including in the owning launch function.
-    control.write_u8(GO).await
-}
-
-fn stdio(mode: Stdio) -> std::process::Stdio {
-    match mode {
-        Stdio::Inherit => std::process::Stdio::inherit(),
-        Stdio::Piped => std::process::Stdio::piped(),
-        Stdio::Null => std::process::Stdio::null(),
-    }
-}
-
-/// Called only by the trusted binary role, never the multi-Session Worker.
-/// Returns only on failure; successful exec preserves PID, cwd and stdio but
-/// closes the control socket via CLOEXEC. Even an abandoned caller is bounded.
-pub async fn bootstrap(socket: &str, parent: u32) -> io::Error {
-    match tokio::time::timeout(MAX_WAIT, bootstrap_inner(socket, parent)).await {
-        Ok(Err(error)) => error,
-        Err(_) => deadline_error(),
-        Ok(Ok(())) => io::Error::other("scoped exec unexpectedly returned"),
-    }
-}
-
-async fn bootstrap_inner(socket: &str, parent: u32) -> io::Result<()> {
-    let mut control = UnixStream::connect_addr(&address(socket)?.into()).await?;
-    peer(&control, parent)?;
-    let size = control.read_u32().await? as usize;
-    if size == 0 || size > MAX_FRAME {
-        return Err(invalid());
-    }
-    let mut frame = Zeroizing::new(vec![0; size]);
-    control.read_exact(&mut frame).await?;
-    let (scope, identity, mut workload) = decode(&frame)?;
-    scope.enter_current_process(identity)?;
-    await_grant(&mut control).await?;
-    Err(workload.exec())
-}
-
-async fn await_grant(control: &mut UnixStream) -> io::Result<()> {
-    control.write_u8(JOINED).await?;
-    if control.read_u8().await? != GO {
-        return Err(invalid());
-    }
-    Ok(())
-}
-
-// A bounded private OS handoff, intentionally NOT serde on MaterializedCommand:
-// that domain/planning type must remain non-serializable. Decode borrows the
-// zeroizing frame; only the final OS Command owns copies for exec. No Debug,
-// persistence, log, or error includes any payload field.
-fn encode(
-    path: &Path,
-    identity: CgroupIdentity,
-    command: &MaterializedCommand,
-    cwd: &Path,
-) -> io::Result<Zeroizing<Vec<u8>>> {
-    if !cwd.is_absolute() || command.argv.is_empty() || command.argv[0].is_empty() {
-        return Err(invalid());
-    }
-    // Avoid realloc leaving earlier plaintext copies in the allocator.
-    let mut frame = Zeroizing::new(Vec::with_capacity(MAX_FRAME));
-    frame.extend_from_slice(b"AWSC1");
-    field(&mut frame, path.as_os_str().as_bytes())?;
-    frame.extend_from_slice(&identity.device.to_be_bytes());
-    frame.extend_from_slice(&identity.inode.to_be_bytes());
-    field(&mut frame, cwd.as_os_str().as_bytes())?;
-    count(&mut frame, command.argv.len())?;
-    for arg in &command.argv {
-        field(&mut frame, arg.as_bytes())?;
-    }
-    count(&mut frame, command.env.len())?;
-    for env in &command.env {
-        if env.name.is_empty() || env.name.contains('=') {
+    /// Request a conservative cutoff extension under CURRENT Session authority.
+    /// Derive the deadline and commit INSIDE the caller's existing authorization
+    /// lock. A send receipt is not a helper ACK, business renewal or stop proof.
+    /// Denial does not revoke an older still-valid cutoff; explicit revocation
+    /// must also force-stop the scope. Backpressure is bounded and reauthorizes.
+    pub async fn refresh_deadline_authorized(
+        &self,
+        timeout: Duration,
+        mut authorize: impl FnMut(ScopedDeadlineGrant<'_>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if timeout.is_zero() || timeout > MAX_WAIT {
             return Err(invalid());
         }
-        field(&mut frame, env.name.as_bytes())?;
-        field(&mut frame, env.value.expose().as_bytes())?;
-    }
-    Ok(frame)
-}
-
-fn count(frame: &mut Vec<u8>, size: usize) -> io::Result<()> {
-    if size > MAX_ITEMS || frame.len() + 4 > MAX_FRAME {
-        return Err(invalid());
-    }
-    frame.extend_from_slice(&(size as u32).to_be_bytes());
-    Ok(())
-}
-
-fn field(frame: &mut Vec<u8>, bytes: &[u8]) -> io::Result<()> {
-    if bytes.contains(&0) || bytes.len() > MAX_FRAME || frame.len() + 4 + bytes.len() > MAX_FRAME {
-        return Err(invalid());
-    }
-    frame.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-    frame.extend_from_slice(bytes);
-    Ok(())
-}
-
-struct Input<'a>(&'a [u8]);
-
-impl<'a> Input<'a> {
-    fn take(&mut self, count: usize) -> io::Result<&'a [u8]> {
-        if count > self.0.len() {
-            return Err(invalid());
-        }
-        let (value, rest) = self.0.split_at(count);
-        self.0 = rest;
-        Ok(value)
-    }
-
-    fn u32(&mut self) -> io::Result<usize> {
-        Ok(u32::from_be_bytes(self.take(4)?.try_into().map_err(|_| invalid())?) as usize)
-    }
-
-    fn u64(&mut self) -> io::Result<u64> {
-        Ok(u64::from_be_bytes(
-            self.take(8)?.try_into().map_err(|_| invalid())?,
-        ))
-    }
-
-    fn field(&mut self) -> io::Result<&'a OsStr> {
-        let size = self.u32()?;
-        let value = self.take(size)?;
-        if value.contains(&0) {
-            return Err(invalid());
-        }
-        Ok(OsStr::from_bytes(value))
-    }
-
-    fn count(&mut self) -> io::Result<usize> {
-        let size = self.u32()?;
-        if size > MAX_ITEMS {
-            return Err(invalid());
-        }
-        Ok(size)
-    }
-}
-
-fn parse(frame: &[u8]) -> io::Result<(&Path, CgroupIdentity, std::process::Command)> {
-    if frame.len() > MAX_FRAME {
-        return Err(invalid());
-    }
-    let mut input = Input(frame);
-    if input.take(5)? != b"AWSC1" {
-        return Err(invalid());
-    }
-    let path = Path::new(input.field()?);
-    let identity = CgroupIdentity {
-        device: input.u64()?,
-        inode: input.u64()?,
-    };
-    let cwd = Path::new(input.field()?);
-    let argc = input.count()?;
-    if !path.is_absolute() || !cwd.is_absolute() || argc == 0 {
-        return Err(invalid());
-    }
-    let program = input.field()?;
-    if program.is_empty() {
-        return Err(invalid());
-    }
-    let mut command = std::process::Command::new(program);
-    command.env_clear().current_dir(cwd);
-    for _ in 1..argc {
-        command.arg(input.field()?);
-    }
-    for _ in 0..input.count()? {
-        let name = input.field()?;
-        if name.is_empty() || name.as_bytes().contains(&b'=') {
-            return Err(invalid());
-        }
-        command.env(name, input.field()?);
-    }
-    if !input.0.is_empty() {
-        return Err(invalid());
-    }
-    Ok((path, identity, command))
-}
-
-fn decode(frame: &[u8]) -> io::Result<(LinuxProcessScope, CgroupIdentity, std::process::Command)> {
-    let (path, identity, command) = parse(frame)?;
-    Ok((LinuxProcessScope::open(path)?, identity, command))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use awaken_provisioning_contract::{MaterializedEnvValue, MaterializedEnvVar};
-
-    fn identity() -> CgroupIdentity {
-        CgroupIdentity {
-            device: 17,
-            inode: 42,
-        }
-    }
-
-    fn fixture() -> MaterializedCommand {
-        let mut command = MaterializedCommand::new(["/bin/echo", "", "a b\n$(not-a-shell)"]);
-        command.env.push(MaterializedEnvVar {
-            name: "PRIVATE_VALUE".into(),
-            value: MaterializedEnvValue::Secret("test-only-secret".to_owned().into()),
-        });
-        command
-    }
-
-    #[test]
-    fn private_handoff_roundtrips_exact_fields_and_rejects_malformed_input() {
-        // Cause/effect decision table (no kernel prerequisites):
-        // B1 valid absolute paths + argv/env => byte-exact cwd, args, env;
-        // B2 truncation, trailing data, wrong version, NUL, bad count => reject;
-        // B3 relative cwd, empty program, invalid env key, size overflow => reject
-        // before any spawn/control write. Shell metacharacters are data (B1).
-        // Physical cwd may contain non-UTF8 bytes on Linux, unlike planning text.
-        let cwd = Path::new(OsStr::from_bytes(b"/tmp/space \xff"));
-        let command = fixture();
-        let frame = encode(Path::new("/scope"), identity(), &command, cwd).unwrap();
-        let (path, actual, decoded) = parse(&frame).unwrap();
-        assert_eq!(path, Path::new("/scope"));
-        assert_eq!(actual, identity());
-        assert_eq!(decoded.get_current_dir(), Some(cwd));
-        assert_eq!(decoded.get_program(), OsStr::new("/bin/echo"));
-        assert_eq!(
-            decoded.get_args().collect::<Vec<_>>(),
-            [OsStr::new(""), OsStr::new("a b\n$(not-a-shell)")]
-        );
-        assert_eq!(
-            decoded.get_envs().collect::<Vec<_>>(),
-            [(
-                OsStr::new("PRIVATE_VALUE"),
-                Some(OsStr::new("test-only-secret"))
-            )]
-        );
-        for end in 0..frame.len() {
-            assert!(parse(&frame[..end]).is_err(), "B2 truncated at {end}");
-        }
-        let mut malformed = frame.to_vec();
-        malformed.push(1);
-        assert!(parse(&malformed).is_err());
-        malformed = frame.to_vec();
-        malformed[0] = b'X';
-        assert!(parse(&malformed).is_err());
-        malformed = frame.to_vec();
-        malformed[10] = 0;
-        assert!(parse(&malformed).is_err());
-        assert!(Input(&u32::MAX.to_be_bytes()).count().is_err());
-        assert!(
-            encode(
-                Path::new("/scope"),
-                identity(),
-                &command,
-                Path::new("relative")
-            )
-            .is_err()
-        );
-        for argv in [
-            vec![],
-            vec!["".into()],
-            vec!["nul\0argument".into()],
-            vec!["x".repeat(MAX_FRAME)],
-        ] {
-            let command = MaterializedCommand::new(argv);
-            assert!(encode(Path::new("/scope"), identity(), &command, cwd).is_err());
-        }
-        for name in ["", "bad=key", "bad\0key"] {
-            let mut command = fixture();
-            command.env[0].name = name.into();
-            assert!(encode(Path::new("/scope"), identity(), &command, cwd).is_err());
-        }
-        assert!(decode(&frame).is_err(), "lookalike path is not a cgroup");
-    }
-
-    #[tokio::test]
-    async fn private_control_requires_exact_peer_and_join_ack_before_go() {
-        // B4 exact live peer + JOINED => exactly one GO; B5 wrong peer => deny
-        // before secret delivery; B6 wrong ACK/disconnect => no GO; B7 caller
-        // cancellation while awaiting ACK => EOF, never a workload grant.
-        for ack in [Some(JOINED), Some(99), None] {
-            let (mut parent, mut child) = UnixStream::pair().unwrap();
-            peer(&parent, std::process::id()).unwrap();
-            assert_eq!(
-                peer(&parent, 0).unwrap_err().kind(),
-                io::ErrorKind::PermissionDenied
-            );
-            assert!(peer(&parent, std::process::id() + 1).is_err());
-            let task = tokio::spawn(async move { authorize(&mut parent, b"fixture").await });
-            assert_eq!(child.read_u32().await.unwrap(), 7);
-            let mut bytes = [0; 7];
-            child.read_exact(&mut bytes).await.unwrap();
-            if let Some(ack) = ack {
-                child.write_u8(ack).await.unwrap();
-                if ack == JOINED {
-                    assert_eq!(child.read_u8().await.unwrap(), GO);
-                    assert!(task.await.unwrap().is_ok());
-                } else {
-                    assert!(task.await.unwrap().is_err());
-                    assert!(child.read_u8().await.is_err());
+        tokio::time::timeout(
+            timeout,
+            grant::commit_checked(&self.control, |committed| {
+                if self.tree_exited()? {
+                    return Err(io::ErrorKind::BrokenPipe.into());
                 }
-            } else {
-                drop(child);
-                assert!(task.await.unwrap().is_err());
-            }
-        }
-        let (mut parent, mut child) = UnixStream::pair().unwrap();
-        let task = tokio::spawn(async move { authorize(&mut parent, b"fixture").await });
-        assert_eq!(child.read_u32().await.unwrap(), 7);
-        let mut bytes = [0; 7];
-        child.read_exact(&mut bytes).await.unwrap();
-        task.abort();
-        assert!(task.await.unwrap_err().is_cancelled());
-        assert!(child.read_u8().await.is_err());
+                authorize(ScopedDeadlineGrant::new(
+                    &self.control,
+                    &self.control_writer,
+                    committed,
+                ))
+            }),
+        )
+        .await
+        .map_err(|_| timed_out())?
+    }
+    pub fn take_stdin(&mut self) -> Option<Sender> {
+        self.io.stdin.take()
+    }
+    pub fn take_stdout(&mut self) -> Option<Receiver> {
+        self.io.stdout.take()
+    }
+    pub fn take_stderr(&mut self) -> Option<Receiver> {
+        self.io.stderr.take()
     }
 
-    #[tokio::test]
-    async fn joined_bootstrap_requires_go_and_never_treats_disconnect_as_grant() {
-        // B22 helper has joined + correct GO => exec may proceed; wrong GO or
-        // owner disconnect AFTER JOINED => error, not exec authorization. The
-        // paired-socket test pins the production child-side grant gate itself;
-        // Linux integration separately qualifies the preceding actual join.
-        for grant in [Some(GO), Some(JOINED), None] {
-            let (mut parent, mut child) = UnixStream::pair().unwrap();
-            let task = tokio::spawn(async move { await_grant(&mut child).await });
-            assert_eq!(parent.read_u8().await.unwrap(), JOINED);
-            if let Some(grant) = grant {
-                parent.write_u8(grant).await.unwrap();
+    /// init exit, not leader exit, is the namespace termination observation.
+    /// Uninterruptible I/O may delay it: timeout must not become a stop receipt.
+    fn tree_exited(&self) -> io::Result<bool> {
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        let mut fds = [PollFd::new(&self.init, PollFlags::IN)];
+        poll(
+            &mut fds,
+            Some(&Timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            }),
+        )?;
+        let observed = fds[0].revents();
+        if observed.intersects(PollFlags::NVAL | PollFlags::ERR) {
+            return Err(invalid());
+        }
+        Ok(observed.intersects(PollFlags::IN | PollFlags::HUP))
+    }
+}
+
+impl Drop for ScopedProcess {
+    fn drop(&mut self) {
+        // Exact pidfd stop request only, never an observed/durable empty receipt.
+        let _ = pidfd_send_signal(&self.init, rustix::process::Signal::KILL);
+    }
+}
+
+#[async_trait]
+impl ProcessHandle for ScopedProcess {
+    fn id(&self) -> &str {
+        self.process.id()
+    }
+    async fn wait(&self) -> Result<ExitStatus, SandboxError> {
+        loop {
+            if let Some(status) = self.poll().await? {
+                return Ok(status);
             }
-            drop(parent);
-            assert_eq!(task.await.unwrap().is_ok(), grant == Some(GO));
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
+    async fn poll(&self) -> Result<Option<ExitStatus>, SandboxError> {
+        let status = self.process.poll().await?;
+        if self
+            .tree_exited()
+            .map_err(|e| SandboxError::new(e.to_string()))?
+        {
+            Ok(status)
+        } else {
+            Ok(None)
+        }
+    }
+    async fn signal(&self, signal: Signal) -> Result<(), SandboxError> {
+        if matches!(signal, Signal::Term | Signal::Int) {
+            // Preserve the ProcessHandle signal contract: graceful requests go
+            // through the trusted helper to the workload's private group. The
+            // helper never targets a host PID. Force-stop targets init instead.
+            if self
+                .tree_exited()
+                .map_err(|e| SandboxError::new(e.to_string()))?
+            {
+                return Ok(());
+            }
+            let byte = match signal {
+                Signal::Term => grant::TERMINATE,
+                Signal::Int => grant::INTERRUPT,
+                Signal::Kill => unreachable!(),
+            };
+            return match grant::send_signal(&self.control, &self.control_writer, byte).await {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    // The helper can exit between the first poll and delivery.
+                    // Only an exact init-exit observation makes that idempotent;
+                    // a broken channel alone remains an unknown/error outcome.
+                    if self
+                        .tree_exited()
+                        .map_err(|e| SandboxError::new(e.to_string()))?
+                    {
+                        Ok(())
+                    } else {
+                        Err(SandboxError::new(error.to_string()))
+                    }
+                }
+            };
+        }
+        match pidfd_send_signal(&self.init, rustix::process::Signal::KILL) {
+            Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+            Err(error) => Err(SandboxError::new(error.to_string())),
+        }
+    }
+}
 
-    #[tokio::test]
-    async fn bootstrap_rejects_bad_frames_without_joining_or_acknowledging() {
-        // B23 exact parent but zero/oversized/truncated/invalid frame => bounded
-        // rejection before opening or joining a scope; no JOINED, no plaintext
-        // diagnostic. This drives the actual bootstrap receive path, not just
-        // the parser. All inputs are invalid before any membership operation.
-        for (size, payload) in [
-            (0, &b""[..]),
-            (MAX_FRAME as u32 + 1, &b""[..]),
-            (32, &b"test-only-secret"[..]),
-            (5, &b"WRONG"[..]),
-        ] {
-            let name = format!(
-                "awaken-frame-test-{}-{}",
-                std::process::id(),
-                NEXT_SOCKET.fetch_add(1, Ordering::Relaxed)
-            );
-            let listener = StdListener::bind_addr(&address(&name).unwrap()).unwrap();
-            listener.set_nonblocking(true).unwrap();
-            let listener = UnixListener::from_std(listener).unwrap();
-            let task = tokio::spawn(async move { bootstrap(&name, std::process::id()).await });
-            let (mut control, _) = listener.accept().await.unwrap();
-            control.write_u32(size).await.unwrap();
-            control.write_all(payload).await.unwrap();
-            control.shutdown().await.unwrap();
-            let error = tokio::time::timeout(Duration::from_secs(1), task)
-                .await
-                .unwrap()
-                .unwrap();
-            assert!(!error.to_string().contains("test-only-secret"));
-            assert!(matches!(
-                error.kind(),
-                io::ErrorKind::InvalidInput | io::ErrorKind::UnexpectedEof
-            ));
-            assert!(control.read_u8().await.is_err());
+/// Trusted binary role only. stdin is the private inherited socket; the final
+/// workload receives explicit replacement stdio. No unsafe FD constructor.
+pub async fn bootstrap() -> io::Result<ExitStatus> {
+    if std::process::id() != 2 || rustix::process::getppid() != Pid::from_raw(1) {
+        return Err(invalid());
+    }
+    let inherited = std::io::stdin().as_fd().try_clone_to_owned()?;
+    let stream = std::os::unix::net::UnixStream::from(inherited);
+    stream.set_nonblocking(true)?;
+    let mut control = UnixStream::from_std(stream)?;
+    let (mut deadline, process) = tokio::time::timeout(MAX_WAIT, async {
+        let namespace: OwnedFd = std::fs::File::open("/proc/self/ns/pid")?.into();
+        let init = pidfd_open(Pid::from_raw(1).ok_or_else(invalid)?, PidfdFlags::empty())?;
+        descriptor::send(&control, &[namespace, init]).await?;
+        let mut stdio = descriptor::receive(&control, 3).await?.into_iter();
+        let (deadline, mut command) = wire::receive(&mut control).await?;
+        let deadline = ExecutionDeadline(deadline);
+        deadline.remaining()?;
+        command.stdin(stdio.next().ok_or_else(invalid)?);
+        command.stdout(stdio.next().ok_or_else(invalid)?);
+        command.stderr(stdio.next().ok_or_else(invalid)?);
+        grant::await_grant(&mut control).await?;
+        deadline.remaining()?;
+        let process = LocalProcess::spawn(&mut command.into())?;
+        Ok::<_, io::Error>((deadline, process))
+    })
+    .await
+    .map_err(|_| timed_out())??;
+    loop {
+        let message = tokio::select! {
+            status = process.wait() => return status.map_err(|_| invalid()),
+            message = renewal::receive_before_cutoff(&mut control, deadline) => message?,
+        };
+        match message {
+            renewal::ControlMessage::Signal(signal) => {
+                process.signal(signal).await.map_err(|_| invalid())?;
+            }
+            renewal::ControlMessage::Deadline(incoming) => {
+                deadline.0 = renewal::apply_deadline(deadline.0, incoming, boot_millis()?)?;
+            }
         }
     }
 }

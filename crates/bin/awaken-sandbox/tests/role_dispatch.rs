@@ -80,9 +80,10 @@ fn socket_roles_reject_unavailable_or_invalid_configuration() {
 
 #[test]
 fn scoped_exec_role_fails_closed_on_invalid_or_unsupported_requests() {
-    // B20 Linux malformed args => usage failure without a workload or socket;
+    // B20 Linux malformed args => usage; valid syntax outside the required
+    // namespace => redacted InvalidInput, without a workload or private socket;
     // B21 non-Linux => explicit unsupported role, never an unscoped fallback.
-    // Valid Linux role execution belongs to the mandatory systemd qualification.
+    // Valid Linux execution belongs to the mandatory PID-namespace qualification.
     for args in [
         vec!["scoped-exec"],
         vec!["scoped-exec", "socket", "invalid-pid"],
@@ -91,11 +92,18 @@ fn scoped_exec_role_fails_closed_on_invalid_or_unsupported_requests() {
         assert!(!ok);
         #[cfg(target_os = "linux")]
         assert!(
-            text.contains("usage: awaken-sandbox scoped-exec"),
+            if args.len() == 1 {
+                text.contains("scoped-exec failed: InvalidInput")
+            } else {
+                text.contains("usage: awaken-sandbox scoped-exec")
+            },
             "B20: {text}"
         );
         #[cfg(not(target_os = "linux"))]
-        assert!(text.contains("requires Linux cgroup v2"), "B21: {text}");
+        assert!(
+            text.contains("requires a Linux PID namespace"),
+            "B21: {text}"
+        );
     }
 }
 

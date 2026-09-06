@@ -170,6 +170,15 @@ adapters**. The neutral seam is realized as the crate
   content/error only; artifacts and telemetry are downstream projections, never a
   commit path. Enforcer: the `HandOutput`/`RawTool` boundary in
   `awaken-sandbox-local`; artifacts do not flow through `CommitCoordinator`.
+- Local rooted tools and out-of-process Hand tools share `HandToolContext` for
+  logical path projection and directory-capability confinement. Local no longer
+  keeps a per-tool JSON path rewriter. Absolute `/workspace`, `/mnt`, and
+  `/outputs`, plus the relative `outputs` alias, are trusted provider mappings;
+  both output aliases resolve to the configured output directory. Relative
+  parents survive normalization until resolution against the actual workdir:
+  an explicitly authorized sibling mount is valid, an ungranted escape is not.
+  A nested projection does not add authority beyond its already-owned parent.
+  The content-only adapter remains solely the G13 output boundary.
 - **G2 — one-way dependency.** `agents` → contract ← providers; `runtime`-core
   does not depend on the contract. Enforcer: `check_crate_boundaries.py`,
   the metadata-derived crate boundary checker.
@@ -550,7 +559,7 @@ The three provider choices have deliberately different guarantees:
 |---|---|---|---|
 | Namespace | stable sandbox-absolute path | excluded by OS namespace/Seatbelt capability | only capabilities attested by that provider |
 | Container | stable sandbox-absolute path | excluded except declared mounts/broker routes | provider capability admission is mandatory |
-| TrustedHost/Workdir | provider-owned host directory; ACP prompts use cwd-relative paths while Native Hand keeps logical paths | explicitly available to local Native tools and BackendOwned ACP | no isolation claim; read-only is advisory; no network, allowlist, or resource-limit enforcement |
+| TrustedHost/Workdir | provider-owned host directory; installed Native Hand and ACP prompts use cwd-relative paths; typed Hand tools also accept logical roots | explicitly available to local Native tools and BackendOwned ACP | no isolation claim; read-only is advisory; no network, allowlist, or resource-limit enforcement |
 
 Workdir is therefore a convenience and ownership boundary, not a cloud security
 boundary. A network policy, read-only mount flag, or resource request must never
@@ -565,6 +574,37 @@ the existing executable Environment projection carries the policy body;
 `SessionEnvironmentProvider` selector chooses Workdir, Namespace, or Container;
 Native and ACP reuse the resulting `SessionEnvironment`. No `LocalEnvironment`,
 credential store, mount registry, or alternate executor is introduced.
+
+Stdio Hand path projection is explicit: `hand --stdio --mount-root <absolute-path>`
+uses the provider's physical managed-resource root. Existing namespace callers
+may omit the option and retain `/mnt`; the RuntimeHost passes `/mnt` explicitly
+through the existing Namespace renderer, which translates it for Seatbelt.
+The Hand no longer guesses a sibling mount from cwd or infers a mount namespace
+from Linux. Network/resident Hand deployments retain their `/mnt` contract.
+This changes only the projection input, not the Hand protocol, resource ledger,
+or TrustedHost isolation guarantees.
+
+TrustedHost now reuses the same Session-owned `SessionHandExecutor` as Namespace
+and Container. Startup verifies the release companion's `hand --check` and
+installs one lazy Hand factory into the existing trusted Workdir provider,
+including a provider previously created by ACP startup. Its command passes both
+`--mount-root` and `--workspace-root` as absolute argv values from that provider;
+the Hand consumes them through the canonical `HandToolContext`, not a shell
+rewrite. Creation/adoption retain configuration without starting a process.
+First Native dispatch opens the existing Hand channel; failed launch or unknown
+reap never falls back to Worker-local tools. Idle retirement, projection fencing,
+retry and terminal close reuse the existing lifecycle. Workdir and Namespace
+directory disposal require a Hand stop receipt; only Container disposal itself
+owns a physical execution-substrate teardown. Unconfigured weaker Local
+embeddings keep their explicit rooted tool path, not a failure fallback.
+
+Native prompts are relative to the Hand's initial `/workspace`; the configured
+ACP working directory affects only ACP. Bash may subsequently change its own
+cwd and must resolve the supplied paths from their stated reference directory.
+No physical host prefix is injected into model prompts. This is Native process
+wiring, not process-tree supervision: ordinary process reap does not prove tree
+absence. Scoped launch, live lease propagation and durable process participants
+remain the required activation boundary described below.
 
 Dynamic behavior is fail-closed. Create validates policy existence, enabled
 state, cross-field rules, and Environment compatibility before persistence. At
@@ -614,3 +654,44 @@ POST /v1/awaken/environments
 Namespace and Container use the same two commands with `isolation` set to
 `namespace` or `container` and `host_access` omitted. There is no run-level
 string that can bypass the Environment revision or Worker claim fence.
+
+The same policy body now accepts `process_tree_supervision: true` as an
+independent hard requirement. Omission retains the legacy wire/fingerprint;
+an overlay cannot weaken an already-required guarantee. The requirement is
+frozen into the effective SandboxSpec, realization/capacity identity, Worker
+placement, and terminal cleanup including final Dispose. Consent to weaker
+isolation cannot waive this or any other non-isolation requirement: policy
+selection uses the same canonical capability predicate as direct selection.
+
+An additional TrustedHost backend has its own optional
+`WorkerManifest.trusted_host_sandbox` capability profile. The existing
+`sandbox` field continues to describe only the primary backend. Legacy absence
+means unenforced Workdir capabilities, never permission to borrow the primary
+Namespace/Container guarantees. The backend identity set still owns operator
+opt-in; a profile alone cannot select or install a backend.
+
+This requirement is currently fail-closed, not an enabled production mode:
+all built-in providers still report supervision as false, and Worker assembly
+rejects an explicit manifest claiming it. The systemd-free Linux namespace and trusted
+bootstrap adapters are qualified separately (ADR-0038). Full activation still
+requires current Session lease propagation through launch, Native execution
+under that same boundary, and process identity/stop evidence integrated into
+the existing realization marker before adoption, checkpoint and resource
+cleanup. No process database, second lifecycle or manual per-Session cgroup/PID
+configuration is introduced.
+
+Native Linux readiness now executes the same `bubblewrap_argv` profile as a
+real Namespace launch, including PID/IPC/UTS/network namespaces and parent-death
+linkage. A user-namespace-only probe is insufficient. Each observation is fresh,
+bounded, and retains only operator PATH for launcher lookup, not ambient
+credentials or loader hooks; a previously successful
+probe cannot mask policy revocation, and a failed probe cannot permanently mask
+subsequent installation. Probe failure is unavailable, not a fallback launch or
+a quiescence receipt. This improves the existing Namespace readiness path; it
+does not yet install TrustedHost process-tree supervision.
+
+The systemd-free integration must reuse this launch authority. Its TrustedHost
+host-view qualification must separately check host identity and access: an
+unprivileged user/PID namespace can retain absolute filesystem paths while
+changing supplementary-group visibility and host PID semantics. A successful
+Namespace readiness probe is therefore not a TrustedHost compatibility result.

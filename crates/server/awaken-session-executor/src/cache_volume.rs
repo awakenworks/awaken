@@ -128,6 +128,7 @@ impl CacheVolumeInitializer for SandboxCacheVolumeInitializer {
             awaken_agent_contract::stable_fingerprint(&(volume.key.as_str(), &volume.location));
         let marker = format!("/cache/.awaken/{fingerprint}.ready");
         let spec = pc::SandboxSpec {
+            process_tree_supervision: false,
             scope: format!("cache-init-{}", &fingerprint[..24]),
             isolation: pc::IsolationClass::Container,
             mounts: vec![pc::MountRequirement {
@@ -687,6 +688,7 @@ mod tests {
         let fingerprint =
             awaken_agent_contract::stable_fingerprint(&(warmup.key.as_str(), &warmup.location));
         let session_spec = pc::SandboxSpec {
+            process_tree_supervision: false,
             scope: format!("cache-reader-{}", std::process::id()),
             isolation: pc::IsolationClass::Container,
             mounts: vec![pc::MountRequirement {

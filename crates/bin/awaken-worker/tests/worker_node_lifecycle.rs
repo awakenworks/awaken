@@ -159,6 +159,7 @@ impl awaken_session_executor::HandExecutorFactory for NoHandFactory {
 impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionProvider {
     fn sandbox_capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
         awaken_provisioning_contract::SandboxCapabilities {
+            process_tree_supervision: false,
             isolation: awaken_provisioning_contract::IsolationClass::Container,
             tool_transparent: true,
             path_fidelity: true,
