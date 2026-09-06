@@ -614,6 +614,42 @@ against the production registry under Loom; the existing Kani lease kernel and
 TLA+ activation/projection/reclamation models retain their own boundaries. See
 [formal verification](../../formal/README.md) for the exact model scope.
 
+The local `ProcessHandle` construction boundary is now `LocalProcess::spawn` in
+`awaken-local-process`. Existing ACP, Workdir and Namespace launchers keep their
+argv, cwd, environment/credential projection and channel ownership unchanged;
+they no longer separately configure, spawn, and wrap a raw child. Spawn enforces
+the private Unix process group and direct-child `kill_on_drop` policy before
+returning any handle. Mutable one-shot stdin/stdout extraction cannot expose or
+replace the owned child. This also closes the normal-drop direct-child orphan window in the
+Local/Namespace launchers that previously omitted `kill_on_drop`.
+
+The lifecycle sequence is `project command -> spawn -> detach configured pipes
+-> share handle -> poll/wait/signal`. Waiting releases the child mutex before
+backoff; cancelling a waiter does not relinquish process ownership. A final
+handle Drop requests direct-child termination, whereas abrupt Worker death does
+not run Drop. Neither successful signal delivery nor a cached leader exit is a
+whole-tree termination receipt. `ProcessHandle` explicitly documents that limit;
+no process exit ledger, credential store or parallel cleanup machine is added.
+
+The cause/effect rows next to the Rust tests cover executable failure, overridden
+caller group/drop settings, cwd with spaces/Unicode, literal environment values,
+one-shot pipes and stdout EOF after Drop while detached stdin remains open.
+`LocalProcessLifecycle.tla` independently explores two waiters, cancellation,
+signals, OS exit, normal Drop and Worker crash. Its four negative mutations must
+fail the exact spawn, parked-lock, cancelled-lock and false-crash-cleanup checks.
+This is bounded model checking, not Rust refinement or an OS containment proof.
+
+The Linux portability gate also exercises the existing Namespace PID isolation
+and `--die-with-parent` boundary without changing either mechanism. A separate
+provider-owner process launches a three-node Bash tree; both descendants use
+`setsid`, report their distinct process-group/session identities, verify the
+managed File mount, and hold live sockets. The test SIGKILLs the owner (no Rust
+Drop or graceful disposal), then requires all sockets to close before the fixture
+backstop. Removing `--unshare-pid` must make that exact termination oracle time
+out; restoring it restores the passing result. This is real Linux Namespace
+substrate evidence, not a TrustedHost guarantee, full Worker/Coordinator failover
+test, or authorization to reclaim a directory based only on leader exit.
+
 These gates do not yet establish a complete release matrix: in-flight ACP
 process fencing, a production-feature HTTPS resource composition, actual mixed
 cloud/local Worker placement and loss, and exhaustive Agent-level conflict

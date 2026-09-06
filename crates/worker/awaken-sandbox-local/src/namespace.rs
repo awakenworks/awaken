@@ -1766,7 +1766,6 @@ impl NamespaceSandbox {
     ) -> Result<(TokioCommand, process::LaunchInfo), pc::SandboxError> {
         let argv = self.render_argv(command)?;
         let mut cmd = TokioCommand::new(&argv[0]);
-        awaken_local_process::configure_process_group(&mut cmd);
         let launch_info = process::LaunchInfo::attach(&mut cmd)?;
         cmd.args(&argv[1..]);
         self.configure_command(&mut cmd, command)?;
@@ -1795,18 +1794,16 @@ impl NamespaceSandbox {
         cmd.stdin(ProcStdio::piped())
             .stdout(ProcStdio::piped())
             .stderr(stderr);
-        let mut child = cmd.spawn().map_err(err)?;
+        let mut process = LocalProcess::spawn(&mut cmd).map_err(err)?;
         drop(cmd); // Close the parent copy of bubblewrap's private report fd.
-        let stdin = child
-            .stdin
-            .take()
+        let stdin = process
+            .take_stdin()
             .ok_or_else(|| err("agent stdin was not piped"))?;
-        let stdout = child
-            .stdout
-            .take()
+        let stdout = process
+            .take_stdout()
             .ok_or_else(|| err("agent stdout was not piped"))?;
         let channel: Box<dyn AgentChannel> = Box::new(SplitChannel::new(stdout, stdin));
-        Ok((Box::new(launch_info.bind(child).await?), channel))
+        Ok((Box::new(launch_info.bind(process).await?), channel))
     }
 }
 

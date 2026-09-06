@@ -20,7 +20,7 @@ use std::process::Stdio as ProcStdio;
 
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, SplitChannel};
-use awaken_local_process::{LocalProcess, configure_process_group};
+use awaken_local_process::LocalProcess;
 use awaken_provisioning_contract as pc;
 use tokio::process::Command as TokioCommand;
 
@@ -1236,7 +1236,6 @@ impl LocalSandbox {
         .map_err(err)?;
 
         let mut cmd = TokioCommand::new(program);
-        configure_process_group(&mut cmd);
         cmd.args(&command.argv[1..]);
         cmd.current_dir(&host_cwd);
         cmd.env_clear();
@@ -1272,17 +1271,15 @@ impl LocalSandbox {
         cmd.stdin(ProcStdio::piped())
             .stdout(ProcStdio::piped())
             .stderr(stderr);
-        let mut child = cmd.spawn().map_err(err)?;
-        let stdin = child
-            .stdin
-            .take()
+        let mut process = LocalProcess::spawn(&mut cmd).map_err(err)?;
+        let stdin = process
+            .take_stdin()
             .ok_or_else(|| err("agent stdin was not piped"))?;
-        let stdout = child
-            .stdout
-            .take()
+        let stdout = process
+            .take_stdout()
             .ok_or_else(|| err("agent stdout was not piped"))?;
         let channel: Box<dyn AgentChannel> = Box::new(SplitChannel::new(stdout, stdin));
-        Ok((Box::new(LocalProcess::spawned(child)), channel))
+        Ok((Box::new(process), channel))
     }
 
     // --- Host-tier helpers (Workdir tier) -----------------------------------
@@ -1478,8 +1475,7 @@ impl pc::Sandbox for LocalSandbox {
         };
         cmd.stdout(out).stderr(e);
 
-        let child = cmd.spawn().map_err(err)?;
-        Ok(Box::new(LocalProcess::spawned(child)))
+        Ok(Box::new(LocalProcess::spawn(&mut cmd).map_err(err)?))
     }
 
     async fn checkpoint(
@@ -1615,7 +1611,9 @@ impl pc::Sandbox for LocalSandbox {
     }
 
     async fn renew_lease(&self) -> Result<(), pc::SandboxError> {
-        Ok(()) // no lease: a local sandbox dies with its owner.
+        // No provider lease. Worker death does not imply local descendants have
+        // stopped; this no-op must not be used as a quiescence acknowledgement.
+        Ok(())
     }
 
     async fn dispose(&self) -> Result<(), pc::SandboxError> {

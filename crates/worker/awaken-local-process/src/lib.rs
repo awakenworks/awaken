@@ -8,7 +8,7 @@
 
 use async_trait::async_trait;
 use awaken_provisioning_contract::{ExitStatus, ProcessHandle, SandboxError, Signal};
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 /// Await a process through its provider-owned, nonblocking status port.
@@ -27,7 +27,7 @@ pub async fn wait_for_process_exit(
 }
 
 /// Configure a command so the child becomes leader of a private process group.
-pub fn configure_process_group(command: &mut Command) {
+fn configure_process_group(command: &mut Command) {
     #[cfg(not(unix))]
     let _ = command;
     #[cfg(unix)]
@@ -49,19 +49,35 @@ pub struct LocalProcess {
 }
 
 impl LocalProcess {
-    /// Wrap a child spawned from a command prepared by
-    /// [`configure_process_group`].
-    #[must_use]
-    pub fn spawned(child: Child) -> Self {
+    /// Launch through the sole local ProcessHandle construction boundary.
+    /// Callers configure argv, cwd, environment and pipes, but cannot bypass or
+    /// subsequently overwrite the private process-group and drop policy.
+    ///
+    /// Drop requests direct-child termination; it is NOT an owner-crash or
+    /// whole-tree quiescence guarantee. In particular SIGKILL does not run Drop.
+    pub fn spawn(command: &mut Command) -> std::io::Result<Self> {
+        configure_process_group(command);
+        command.kill_on_drop(true);
+        let child = command.spawn()?;
         let pid = child.id();
-        Self {
+        Ok(Self {
             id: pid.map(|value| value.to_string()).unwrap_or_default(),
             #[cfg(unix)]
             process_group: pid.map(|value| nix::unistd::Pid::from_raw(value as i32)),
             #[cfg(unix)]
             graceful_group: None,
             child: Mutex::new(child),
-        }
+        })
+    }
+
+    /// Detach a configured pipe before sharing the lifecycle handle. There is
+    /// deliberately no raw Child accessor or constructor: ownership stays here.
+    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
+        self.child.get_mut().stdin.take()
+    }
+
+    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.child.get_mut().stdout.take()
     }
     /// Bind the private session group reported by an owned isolating launcher.
     /// The caller must obtain this identity from that launcher's private control
@@ -222,8 +238,7 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        configure_process_group(&mut command);
-        let process = LocalProcess::spawned(command.spawn().expect("spawn process group"));
+        let process = LocalProcess::spawn(&mut command).expect("spawn process group");
 
         wait_for_marker(&ready, "ready").await;
         process.signal(Signal::Term).await.expect("signal group");
@@ -248,10 +263,8 @@ mod tests {
             .args(["-c", "read input"])
             .stdin(Stdio::piped())
             .kill_on_drop(true);
-        configure_process_group(&mut command);
-        let mut child = command.spawn().unwrap();
-        let _input = child.stdin.take().unwrap();
-        let process = LocalProcess::spawned(child);
+        let mut process = LocalProcess::spawn(&mut command).unwrap();
+        let _input = process.take_stdin().unwrap();
         let mut waiting = Box::pin(process.wait());
         std::future::poll_fn(|cx| {
             assert!(waiting.as_mut().poll(cx).is_pending(), "L2 wait entered");
@@ -293,8 +306,7 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        configure_process_group(&mut command);
-        let process = LocalProcess::spawned(command.spawn().expect("spawn short-lived process"));
+        let process = LocalProcess::spawn(&mut command).expect("spawn short-lived process");
 
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
@@ -316,11 +328,123 @@ mod tests {
     #[test]
     #[ignore = "child participant, invoked by the cross-platform lifecycle matrix"]
     fn lifecycle_child() {
+        if std::env::var("AWAKEN_LIFECYCLE_CHILD").as_deref() == Ok("io") {
+            use std::io::{Read, Write};
+            assert_eq!(
+                std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
+                std::fs::canonicalize(std::env::var_os("AWAKEN_EXPECTED_CWD").unwrap()).unwrap()
+            );
+            assert_eq!(
+                std::env::var("AWAKEN_PROJECTED_VALUE").unwrap(),
+                "空 格 $ literal"
+            );
+            let mut input = [0_u8; 1];
+            std::io::stdin().read_exact(&mut input).unwrap();
+            assert_eq!(input, [42]);
+            println!("AWAKEN_CHILD_READY");
+            std::io::stdout().flush().unwrap();
+            // Parent deliberately keeps this pipe open during the Drop oracle.
+            // If that oracle fails, unwinding closes stdin and releases the
+            // participant instead of leaking an immortal test process.
+            std::io::copy(&mut std::io::stdin(), &mut std::io::sink()).unwrap();
+        }
         if std::env::var("AWAKEN_LIFECYCLE_CHILD").as_deref() == Ok("wait") {
             loop {
                 std::thread::sleep(Duration::from_secs(1));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn sole_spawn_preserves_projection_and_drop_terminates_the_owned_child() {
+        // Cause/effect decision table:
+        // S1 valid executable + cwd with spaces/Unicode + literal projected env
+        //    + piped IO => exact child observations and two one-shot pipe takes.
+        // S2 caller explicitly disables kill_on_drop + S1 + owner Drop while
+        //    the detached stdin is STILL open => child stdout reaches EOF.
+        // S3 missing executable => spawn error, no lifecycle handle fabricated.
+        // The child acknowledges projection before S2; it cannot voluntarily
+        // exit while stdin is held open. EOF detects an orphan regression without
+        // a PID scan, shell, credentials, or timing-based survival assertion.
+        // This proves graceful owner Drop only, NOT Worker SIGKILL or descendants.
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("work 空 格");
+        std::fs::create_dir(&cwd).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "tests::lifecycle_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .current_dir(&cwd)
+            .env("AWAKEN_LIFECYCLE_CHILD", "io")
+            .env("AWAKEN_EXPECTED_CWD", &cwd)
+            .env("AWAKEN_PROJECTED_VALUE", "空 格 $ literal")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(false);
+        let mut process = LocalProcess::spawn(&mut command).unwrap();
+        let mut stdin = process.take_stdin().unwrap();
+        let mut stdout = BufReader::new(process.take_stdout().unwrap());
+        assert!(process.take_stdin().is_none());
+        assert!(process.take_stdout().is_none());
+        stdin.write_all(&[42]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let mut line = String::new();
+                assert_ne!(
+                    stdout.read_line(&mut line).await.unwrap(),
+                    0,
+                    "child acknowledges projection"
+                );
+                if line.trim() == "AWAKEN_CHILD_READY" {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("child startup barrier");
+        drop(process);
+        let mut tail = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), stdout.read_to_end(&mut tail))
+            .await
+            .expect("Drop terminates child even with its stdin held open")
+            .unwrap();
+        drop(stdin);
+        assert!(
+            LocalProcess::spawn(&mut Command::new(root.path().join("missing-executable"))).is_err()
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sole_spawn_overrides_a_callers_shared_process_group() {
+        // S4 caller asks to join the parent's process group => spawn replaces it
+        // atomically with the child's private group. A forgotten or overwritten
+        // configure step must never signal the Worker/test runner's own group.
+        use std::os::unix::process::CommandExt;
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "tests::lifecycle_child", "--ignored"])
+            .env("AWAKEN_LIFECYCLE_CHILD", "wait")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+            .as_std_mut()
+            .process_group(nix::unistd::getpgrp().as_raw());
+        let process = LocalProcess::spawn(&mut command).unwrap();
+        let pid = nix::unistd::Pid::from_raw(process.id().parse().unwrap());
+        assert_eq!(nix::unistd::getpgid(Some(pid)).unwrap(), pid);
+        assert_ne!(pid, nix::unistd::getpgrp());
+        process.signal(Signal::Kill).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), process.wait())
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
@@ -340,10 +464,8 @@ mod tests {
                 )
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .kill_on_drop(true);
-            configure_process_group(&mut command);
-            let process = LocalProcess::spawned(command.spawn().unwrap());
+                .stderr(Stdio::null());
+            let process = LocalProcess::spawn(&mut command).unwrap();
             let campaign = async {
                 if order == 0 || order == 3 {
                     let waiting = process.wait();

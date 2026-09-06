@@ -77,6 +77,162 @@ fn disposal_authorization(prepared: &pc::SandboxEffectFence) -> pc::SandboxDispo
 }
 
 #[tokio::test]
+#[ignore = "provider-owner participant invoked by the abrupt-death test"]
+async fn namespace_owner_crash_participant() {
+    use tokio::io::AsyncReadExt;
+    let root = std::env::var_os("AWAKEN_NAMESPACE_CRASH_ROOT").expect("fixture root");
+    let port: u16 = std::env::var("AWAKEN_NAMESPACE_CRASH_PORT")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let provider = NamespaceProvider::new(std::path::PathBuf::from(root));
+    provider
+        .probe_ready()
+        .await
+        .expect("usable native Namespace is required");
+    let sandbox = provider
+        .create_sandbox_for_effect(&spec(), &effect_fence("namespace-crash"), None)
+        .await
+        .expect("create exact provider-owned Namespace");
+    // $0 carries this literal script to the next node without shell-generated
+    // quoting. Both descendants start a new session/process group. Their open
+    // sockets acknowledge that all three nodes are running inside the sandbox.
+    let script = r#"
+set -eu
+test "$(cat /mnt/session/uploads/file-1)" = namespace-hand-token
+case "$1" in
+  leader) setsid /bin/bash -c "$0" "$0" child & ;;
+  child) setsid /bin/bash -c "$0" "$0" grandchild & ;;
+esac
+exec 3<>/dev/tcp/127.0.0.1/$AWAKEN_NAMESPACE_CRASH_PORT
+read -r pid comm state ppid pgrp session rest < /proc/$$/stat
+printf '%s %s %s %s\n' "$1" "$pid" "$pgrp" "$session" >&3
+# A failing parent test closes its sockets; the timeout is an additional
+# fixture backstop, not the success oracle (which must finish within 5 s).
+read -r -t 30 -u 3 stop || true
+"#;
+    let mut command = pc::Command::new(["/bin/bash", "-c", script, script, "leader"]);
+    command.cwd = "/workspace".into();
+    command.stdio = pc::Stdio::Null;
+    command.env.push(pc::EnvVar {
+        name: "AWAKEN_NAMESPACE_CRASH_PORT".into(),
+        value: pc::EnvValue::Inline {
+            value: port.to_string(),
+        },
+        visibility: pc::EnvVisibility::Process,
+    });
+    let _process = sandbox.spawn(command).await.expect("launch native tree");
+    // The parent keeps stdin open until SIGKILL. EOF is only failure cleanup;
+    // the asserted path cannot use LocalProcess Drop or Sandbox::dispose.
+    let mut byte = [0_u8; 1];
+    let _ = tokio::io::stdin().read(&mut byte).await;
+}
+
+#[tokio::test]
+async fn namespace_owner_sigkill_terminates_descendants_in_separate_process_groups() {
+    /*
+     * Crash cause/effect table N1 (Linux native substrate, no successful skip):
+     * C1 production Namespace provider has usable bwrap/user/PID namespaces;
+     * C2 leader -> child -> grandchild each verifies the mounted File;
+     * C3 child and grandchild call setsid; C4 all nodes acknowledge live sockets;
+     * C5 parent kills the separate provider-owner process with SIGKILL, while
+     * keeping every control socket open. C1+C2+C3+C4+C5 => all sockets close
+     * within 5 s, before the 30 s fixture backstop. There is no graceful dispose,
+     * protocol cancellation, process-group-only kill or PID-scan oracle.
+     * !C1 => fail, not skip. Missing node/early exit/retained connection => fail.
+     * N2 removing only --unshare-pid must hit the exact 5 s termination timeout,
+     * not a startup/parse error; restoring the flag restores N1's passing result.
+     * Scope: real Namespace owner death and this detached three-node tree; not
+     * an Awaken cloud failover test or a TrustedHost/macOS/Windows guarantee.
+     */
+    use std::collections::BTreeSet;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Stdio;
+    use std::time::Duration;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+    let root = tempfile::tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut owner = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "namespace_owner_crash_participant",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("AWAKEN_NAMESPACE_CRASH_ROOT", root.path())
+        .env(
+            "AWAKEN_NAMESPACE_CRASH_PORT",
+            listener.local_addr().unwrap().port().to_string(),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut nodes = Vec::new();
+    let mut roles = BTreeSet::new();
+    let mut groups = BTreeSet::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for _ in 0..3 {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut role = String::new();
+            assert_ne!(stream.read_line(&mut role).await.unwrap(), 0);
+            let fields: Vec<_> = role.split_whitespace().collect();
+            assert_eq!(fields.len(), 4, "role, PID, process group, session");
+            assert!(roles.insert(fields[0].to_string()), "unique tree node");
+            let pid: u32 = fields[1].parse().unwrap();
+            let group: u32 = fields[2].parse().unwrap();
+            let session: u32 = fields[3].parse().unwrap();
+            if fields[0] != "leader" {
+                assert_eq!(pid, group, "setsid made a new process group");
+                assert_eq!(pid, session, "setsid made a new session");
+            }
+            assert!(
+                groups.insert(group),
+                "each node has a distinct process group"
+            );
+            nodes.push(stream);
+        }
+    })
+    .await
+    .expect("three live Namespace tree nodes");
+    assert_eq!(
+        roles,
+        BTreeSet::from(["leader".into(), "child".into(), "grandchild".into()])
+    );
+    assert!(
+        owner.try_wait().unwrap().is_none(),
+        "owner still alive before fault"
+    );
+    for node in &nodes {
+        assert_eq!(
+            node.get_ref().try_read(&mut [0_u8; 1]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "node is still connected before SIGKILL"
+        );
+    }
+    owner
+        .kill()
+        .await
+        .expect("SIGKILL provider owner, not graceful disposal");
+    assert_eq!(owner.wait().await.unwrap().signal(), Some(9));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for mut node in nodes {
+            let mut byte = [0_u8; 1];
+            match node.read(&mut byte).await {
+                Ok(0) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                result => panic!("node must close after owner SIGKILL: {result:?}"),
+            }
+        }
+    })
+    .await
+    .expect("PID namespace closes detached descendants after owner death");
+}
+
+#[tokio::test]
 async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
     /*
      * Path-contract cause/effect graph and decision table.

@@ -2,11 +2,12 @@ pub mod awaken_local_process
 pub struct awaken_local_process::LocalProcess
 impl awaken_local_process::LocalProcess
 pub async fn awaken_local_process::LocalProcess::bind_private_signal_group(&mut self, u32) -> core::result::Result<(), awaken_provisioning_contract::sandbox::foundation::SandboxError>
-pub fn awaken_local_process::LocalProcess::spawned(tokio::process::Child) -> Self
+pub fn awaken_local_process::LocalProcess::spawn(&mut tokio::process::Command) -> core::io::error::Result<Self>
+pub fn awaken_local_process::LocalProcess::take_stdin(&mut self) -> core::option::Option<tokio::process::ChildStdin>
+pub fn awaken_local_process::LocalProcess::take_stdout(&mut self) -> core::option::Option<tokio::process::ChildStdout>
 impl awaken_provisioning_contract::sandbox::runtime::ProcessHandle for awaken_local_process::LocalProcess
 pub fn awaken_local_process::LocalProcess::id(&self) -> &str
 pub fn awaken_local_process::LocalProcess::poll<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_provisioning_contract::sandbox::runtime::ExitStatus>, awaken_provisioning_contract::sandbox::foundation::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_local_process::LocalProcess::signal<'life0, 'async_trait>(&'life0 self, awaken_provisioning_contract::sandbox::runtime::Signal) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::sandbox::foundation::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_local_process::LocalProcess::wait<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::sandbox::runtime::ExitStatus, awaken_provisioning_contract::sandbox::foundation::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_local_process::configure_process_group(&mut tokio::process::Command)
 pub async fn awaken_local_process::wait_for_process_exit(&dyn awaken_provisioning_contract::sandbox::runtime::ProcessHandle) -> core::result::Result<awaken_provisioning_contract::sandbox::runtime::ExitStatus, awaken_provisioning_contract::sandbox::foundation::SandboxError>
