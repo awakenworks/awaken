@@ -8,7 +8,7 @@
 
 use async_trait::async_trait;
 use awaken_provisioning_contract::{ExitStatus, ProcessHandle, SandboxError, Signal};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 /// Await a process through its provider-owned, nonblocking status port.
@@ -28,6 +28,9 @@ pub async fn wait_for_process_exit(
 
 #[cfg(target_os = "linux")]
 pub mod cgroup;
+
+#[cfg(target_os = "linux")]
+pub mod scoped;
 
 /// Configure a command so the child becomes leader of a private process group.
 fn configure_process_group(command: &mut Command) {
@@ -115,6 +118,10 @@ impl LocalProcess {
         })
         .await
         .map_err(|_| SandboxError::new("private signal group setup timed out"))?
+    }
+
+    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.child.get_mut().stderr.take()
     }
 }
 

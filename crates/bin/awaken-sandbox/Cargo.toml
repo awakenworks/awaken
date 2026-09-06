@@ -74,6 +74,9 @@ zeroize = "1"
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["stdio"], optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+awaken-local-process.workspace = true
+
 [dev-dependencies]
 awaken-agent-channel.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }

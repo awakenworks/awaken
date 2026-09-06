@@ -1519,6 +1519,7 @@ dependencies = [
  "rustix 1.1.4",
  "tempfile",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -2082,6 +2083,7 @@ dependencies = [
  "awaken-agent-channel",
  "awaken-connection-plan",
  "awaken-ext-builtin-tools",
+ "awaken-local-process",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "awaken-sandbox-control",
