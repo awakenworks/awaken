@@ -84,8 +84,15 @@ facts into the first attempt before the foreground commit;
 Start, reclaim, heartbeat, wait, cancel, and finish are atomic transitions: an
 error leaves the value unchanged. Expired non-replayable ownership returns the explicit
 `TaskClaim::EndedIndeterminate` decision, rather than mutating and returning an
-error that a caller might discard. Cancellation wins over a racing completion,
-and terminal states are absorbing.
+error that a caller might discard. Cancellation wins over a known racing
+completion, but an `Indeterminate` observation remains `Indeterminate`: cancel
+intent is not evidence that a remote effect stopped. Terminal states are absorbing.
+After lease loss, cancellation with no queryable remote handle becomes
+`Indeterminate` even for a replay-safe tool: replay safety does not prove
+termination and cannot authorize replay of cancelled work. With a durable handle,
+reclaim retains `Cancelling` and its exact handle for the replacement Host to
+cancel/query after commit. The plugin commits this one aggregate decision; it
+must not append a second local `finish(Cancelled)` transition.
 
 MCP Tasks and any future durable ordinary-tool protocol are optional executor
 enhancements, not another lifecycle. Generic Runtime task ports start, poll,

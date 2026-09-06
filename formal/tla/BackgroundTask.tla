@@ -7,6 +7,11 @@ CONSTANTS Workers, Lease, MaxAttempts, MaxTime, MaxStateVersion,
 Phases == {"Requested", "Running", "Waiting", "Cancelling", "Ended"}
 Modes == {"Replay", "NeverReplay"}
 TerminalReasons == {"None", "Succeeded", "Failed", "Cancelled", "Indeterminate"}
+CompletionReasons == TerminalReasons \ {"None"}
+\* One settlement projection for direct and process-buffered observations.
+\* Cancellation intent cannot turn unknown remote termination into certainty.
+CompletionOutcome(p, reason) ==
+    IF p = "Cancelling" /\ reason # "Indeterminate" THEN "Cancelled" ELSE reason
 LivePhases == {"Running", "Waiting", "Cancelling"}
 ContinuationValues == {"None", "Local"} \cup RemoteIds
 PollDelays == {0} \cup PollIntervals
@@ -137,7 +142,7 @@ CancelLive ==
 ReclaimRecoverable(worker) ==
     /\ phase \in LivePhases
     /\ expires <= now
-    /\ \/ mode = "Replay"
+    /\ \/ mode = "Replay" /\ phase # "Cancelling"
        \/ continuation \in RemoteIds
     /\ epoch < MaxAttempts
     /\ worker \in Workers
@@ -152,7 +157,7 @@ ReclaimRecoverable(worker) ==
 ReclaimNeverReplay ==
     /\ phase \in LivePhases
     /\ expires <= now
-    /\ mode = "NeverReplay"
+    /\ (mode = "NeverReplay" \/ phase = "Cancelling")
     /\ continuation \notin RemoteIds
     /\ phase' = "Ended"
     /\ owner' = "None"
@@ -166,7 +171,7 @@ ReclaimNeverReplay ==
 ReclaimExhausted ==
     /\ phase \in LivePhases
     /\ expires <= now
-    /\ \/ mode = "Replay"
+    /\ \/ mode = "Replay" /\ phase # "Cancelling"
        \/ continuation \in RemoteIds
     /\ epoch >= MaxAttempts
     /\ phase' = "Ended"
@@ -184,10 +189,10 @@ Finish(worker, observedEpoch, reason) ==
     /\ phase \in LivePhases
     /\ worker = owner
     /\ observedEpoch = epoch
-    /\ reason \in {"Succeeded", "Failed"}
+    /\ reason \in CompletionReasons
     /\ phase' = "Ended"
     /\ owner' = "None"
-    /\ terminalReason' = IF phase = "Cancelling" THEN "Cancelled" ELSE reason
+    /\ terminalReason' = CompletionOutcome(phase, reason)
     /\ continuation' = "None"
     /\ pollInterval' = 0
     /\ continuationHistory' = "None"
@@ -209,7 +214,7 @@ RecordCompletion(worker, observedEpoch, reason) ==
     /\ phase \in LivePhases
     /\ worker = owner
     /\ observedEpoch = epoch
-    /\ reason \in {"Succeeded", "Failed"}
+    /\ reason \in CompletionReasons
     /\ completionReason = "None"
     /\ completionOwner' = worker
     /\ completionEpoch' = observedEpoch
@@ -234,9 +239,7 @@ FoldCompletion ==
           /\ completionEpoch = epoch
           THEN /\ phase' = "Ended"
                /\ owner' = "None"
-               /\ terminalReason' = IF phase = "Cancelling"
-                                       THEN "Cancelled"
-                                       ELSE completionReason
+               /\ terminalReason' = CompletionOutcome(phase, completionReason)
                /\ continuation' = "None"
                /\ pollInterval' = 0
                /\ continuationHistory' = "None"
@@ -266,12 +269,12 @@ TaskNext ==
     \/ ReclaimNeverReplay
     \/ ReclaimExhausted
     \/ \E worker \in Workers, observedEpoch \in 0..MaxAttempts,
-          reason \in {"Succeeded", "Failed"} :
+          reason \in CompletionReasons :
         Finish(worker, observedEpoch, reason)
     \/ \E worker \in Workers, observedEpoch \in 0..MaxAttempts :
         RejectStaleSettlement(worker, observedEpoch)
     \/ \E worker \in Workers, observedEpoch \in 0..MaxAttempts,
-          reason \in {"Succeeded", "Failed"} :
+          reason \in CompletionReasons :
         RecordCompletion(worker, observedEpoch, reason)
     \/ LoseCompletion
     \/ FoldCompletion
@@ -319,7 +322,7 @@ TypeOK ==
     /\ continuationHistory \in RemoteIds \cup {"None"}
     /\ completionOwner \in Workers \cup {"None"}
     /\ completionEpoch \in Nat
-    /\ completionReason \in {"None", "Succeeded", "Failed"}
+    /\ completionReason \in CompletionReasons \cup {"None"}
     /\ committedStateVersion \in 0..MaxStateVersion
     /\ localStateVersion \in 0..MaxStateVersion
     /\ observedStateVersion \in 0..MaxStateVersion
@@ -372,5 +375,20 @@ LocalProjectionNeverLeadsCommittedAuthority ==
 TerminalObservationUsesExactCommittedSnapshot ==
     observationSource = "CommittedAuthority" =>
         observedStateVersion = observedCommittedVersion
+
+\* Cause/effect rules: an exact unknown direct or buffered completion must
+\* end unknown even after CancelLive. Stale buffered completions remain inert.
+\* Check action outcomes, not merely a type invariant allowing both reasons.
+CompletionPreservesUncertainty ==
+    /\ [][ (\E worker \in Workers, e \in 1..MaxAttempts :
+              Finish(worker, e, "Indeterminate"))
+           => terminalReason' = "Indeterminate" ]_vars
+    /\ [][ (FoldCompletion /\ phase \in LivePhases
+           /\ completionOwner = owner /\ completionEpoch = epoch
+           /\ completionReason = "Indeterminate")
+           => terminalReason' = "Indeterminate" ]_vars
+
+CompletionProjectionRetainsUnknown ==
+    phase \in LivePhases => CompletionOutcome(phase, "Indeterminate") = "Indeterminate"
 
 =============================================================================

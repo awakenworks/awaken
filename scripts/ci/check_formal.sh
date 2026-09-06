@@ -296,7 +296,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_outcomes_are_absorbing
   run_kani awaken-ext-background-task \
     --harness cancellation_is_monotone_and_terminal_states_are_absorbing \
-    --harness never_replay_recovery_requires_a_durable_remote_continuation
+    --harness never_replay_recovery_requires_a_durable_remote_continuation \
+    --harness expired_background_recovery_is_exact_nonwrapping_and_never_invents_termination
   run_kani awaken-runtime \
     --harness circuit_admission_is_capacity_bounded_nonwrapping_and_rejection_stutters \
     --harness circuit_completion_requires_exact_phase_and_generation_for_every_outcome
@@ -580,6 +581,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/background-task" \
     -config formal/tla/BackgroundTask.cfg formal/tla/BackgroundTask.tla
+  python3 scripts/ci/check_formal_mutations.py --background-completion-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/sandbox-control-publication" \
     -config formal/tla/SandboxControlPublication.cfg \

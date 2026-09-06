@@ -83,6 +83,92 @@ async fn invoke(
 }
 
 #[tokio::test]
+async fn expired_cancellation_reconciliation_never_fabricates_remote_termination() {
+    // C1 committed remote handle vs no queryable handle; C2 Replay/NeverReplay;
+    // C3 durable Cancelling + expired owner, no process-local executor. R1 C1
+    // => one epoch transfer preserving exact remote handle and Cancelling, so
+    // the existing Host observer can cancel/query it after commit. R2 !C1 =>
+    // Indeterminate, never a fabricated Cancelled or replay of a cancelled task.
+    // C2 cannot override either rule; a replay policy is not termination proof.
+    let supervisor = Arc::new(BackgroundTaskSupervisor::new("replacement"));
+    let plugin = BackgroundTaskPlugin::with_supervisor(
+        BackgroundTaskConfig {
+            tools: BTreeSet::from(["bash".into()]),
+        },
+        supervisor,
+    );
+    let env = ResolvedExecutionEnv::merge(vec![(plugin.manifest(), plugin.resolve())]).unwrap();
+    let hook = env
+        .hooks_for(PhaseHookPoint::StepStart)
+        .into_iter()
+        .next()
+        .unwrap();
+    let ctx = PhaseContext {
+        run_id: RunId("reconcile".into()),
+        step: 0,
+        kind: PhaseKind::StepStart,
+    };
+    for remote in [false, true] {
+        for recovery in [
+            ToolRecoveryPolicy::default(),
+            ToolRecoveryPolicy::replay_safe(),
+        ] {
+            let mut task = background_task("expired-cancel");
+            let fence = task
+                .start(
+                    "old",
+                    0,
+                    1,
+                    TaskExecutionPolicy {
+                        recovery,
+                        concurrency: ToolConcurrency::Parallel,
+                    },
+                )
+                .unwrap();
+            let handle = awaken_runtime_contract::tool::ToolTaskHandle {
+                owner: "mcp".into(),
+                binding: "server@revision".into(),
+                task_id: "remote-task".into(),
+                poll_interval_ms: Some(100),
+            };
+            if remote {
+                task.wait(
+                    &fence,
+                    awaken_ext_background_task::BackgroundWait::Remote(handle.clone()),
+                )
+                .unwrap();
+            }
+            task.request_cancel().unwrap();
+            let mut state = Store::new();
+            state.apply(&task_state_cell(&task.id).write(&task).unwrap());
+            let reaction = hook.on_phase(&ctx, &[], &state).await;
+            assert_eq!(reaction.state.len(), 1);
+            state.apply(&reaction.state[0]);
+            let next = task_state_cell(&task.id).load(&state).unwrap().unwrap();
+            assert_eq!(next.revision, task.revision + 1, "one canonical transition");
+            if remote {
+                assert!(
+                    matches!(&next.lifecycle, BackgroundTaskLifecycle::Cancelling {
+                    attempt, wait: Some(awaken_ext_background_task::BackgroundWait::Remote(actual))
+                } if attempt.worker_id == "replacement" && attempt.epoch == 2 && actual == &handle),
+                    "R1"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        next.lifecycle,
+                        BackgroundTaskLifecycle::Ended {
+                            end: BackgroundTaskEnd::Indeterminate { .. }
+                        }
+                    ),
+                    "R2"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn tools_create_list_get_cancel_only_through_runtime_state_commands() {
     // End-to-end cause graph: wrapper invocation -> one StateCommand; Runtime
     // apply/replay -> list/get observe it; cancel -> one replacement command;
@@ -451,6 +537,31 @@ async fn completion_fold_retries_after_commit_loss_and_retires_only_after_durabl
     // process-local guard, never the Thread-state result.
     // Constraints: Thread State is the sole durable task/result authority and
     // the supervisor is only a retryable notification/dedup projection.
+    completion_fold_case(
+        false,
+        BackgroundTaskEnd::Completed {
+            content: vec![ContentBlock::text("result-reference")],
+            is_error: false,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn cancelling_unknown_completion_survives_commit_loss_without_false_cancellation() {
+    // R5 durable cancel intent + failed remote observation => Indeterminate,
+    // not Cancelled. R2-R4 also apply: dropped commit retries the same unknown
+    // result/message; post-commit retirement cannot erase that durable evidence.
+    completion_fold_case(
+        true,
+        BackgroundTaskEnd::Indeterminate {
+            message: "remote cancellation observation timed out".into(),
+        },
+    )
+    .await;
+}
+
+async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
     let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
     let plugin = BackgroundTaskPlugin::with_supervisor(
         BackgroundTaskConfig {
@@ -483,15 +594,15 @@ async fn completion_fold_retries_after_commit_loss_and_retires_only_after_durabl
             },
         )
         .expect("running claim");
+    if cancelling {
+        task.request_cancel().expect("durable cancellation intent");
+    }
     assert!(supervisor.register(&task.id).is_some());
     supervisor.complete(
         task.id.clone(),
         BackgroundTaskCompletion {
             fence,
-            end: BackgroundTaskEnd::Completed {
-                content: vec![ContentBlock::text("result-reference")],
-                is_error: false,
-            },
+            end: end.clone(),
         },
     );
     let mut durable = Store::new();
@@ -513,14 +624,10 @@ async fn completion_fold_retries_after_commit_loss_and_retires_only_after_durabl
         .load(&durable)
         .expect("typed durable task")
         .expect("task retained");
-    assert!(
-        matches!(
-            &ended.lifecycle,
-            BackgroundTaskLifecycle::Ended {
-                end: BackgroundTaskEnd::Completed { content, is_error: false }
-            } if content == &vec![ContentBlock::text("result-reference")]
-        ),
-        "R3 exact result retention"
+    assert_eq!(
+        ended.lifecycle,
+        BackgroundTaskLifecycle::Ended { end },
+        "R3/R5 exact result retention"
     );
 
     let retired = hook.on_phase(&ctx, &[], &durable).await;

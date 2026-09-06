@@ -10,8 +10,8 @@ use std::sync::Arc;
 use crate::BACKGROUND_TASK_STATE_PREFIX;
 use crate::tools::{CancelBackgroundTask, GetBackgroundTask, ListBackgroundTasks, RunInBackground};
 use crate::{
-    BackgroundTaskError, BackgroundTaskLifecycle, BackgroundTaskSupervisor, TaskClaim,
-    task_state_cell, tasks_from_state,
+    BackgroundTaskError, BackgroundTaskLifecycle, BackgroundTaskSupervisor, task_state_cell,
+    tasks_from_state,
 };
 
 pub const BACKGROUND_TASK_PLUGIN_ID: &str = "background_task";
@@ -200,21 +200,16 @@ impl PhaseHook for ReconcileBackgroundTasks {
             if attempt.lease_expires_at_ms > now {
                 continue;
             }
-            let was_cancelling =
-                matches!(task.lifecycle, BackgroundTaskLifecycle::Cancelling { .. });
-            let Ok(claim) = task.reclaim(
+            let Ok(_) = task.reclaim(
                 self.supervisor.worker_id(),
                 now,
                 BackgroundTaskSupervisor::lease_ms(),
             ) else {
                 continue;
             };
-            if let TaskClaim::Acquired(fence) = claim
-                && was_cancelling
-                && task.request_cancel().is_ok()
-            {
-                let _ = task.finish(&fence, crate::BackgroundTaskEnd::Cancelled);
-            }
+            // The aggregate owns recovery and cancellation outcomes. In
+            // particular, remote Cancelling retains its exact handle for the
+            // post-commit Host observer; no local shortcut certifies termination.
             if let Ok(command) = task_state_cell(&task.id).write(&task) {
                 commands.push(command);
             }

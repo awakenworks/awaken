@@ -24,6 +24,24 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- BackgroundTask settlement preserves `Indeterminate` after cancel intent;
+  neither a lost cancellation response nor a missing queryable handle proves
+  remote termination. Reclaim keeps remote `Cancelling` and its exact handle
+  for the post-commit Host observer; cancelled work without such a handle ends
+  unknown even if its original execution policy allowed replay. The plugin's
+  parallel post-reclaim `finish(Cancelled)` decision is removed: one aggregate
+  transition produces one staged revision. BackgroundTask.tla now includes all
+  completion variants and one canonical settlement projection; deleting its
+  uncertainty guard must fail the named invariant. Aggregate and plugin tests
+  cover unknown outcomes, stale fences, revision exhaustion and lost commits.
+  The previous remote-continuation production grade is corrected to abstract:
+  proving a reconnection predicate is not a proof that every wait/cancel/reclaim
+  transition preserves the full handle. The production expired-attempt kernel
+  is checked over all u64 epochs, u16 budgets and recovery/remote/cancel classes.
+  It returns one closed Acquire/Indeterminate/AttemptsExhausted decision, consumed
+  by aggregate materialization. Full-aggregate Kani experiments did not converge
+  and are not accepted evidence: recursive heap/payload framing, revision/clock
+  admission, async driver refinement and journey composition remain open.
 - WorkQueue ordinary/token-bearing claims and Session acquisition all consume
   the existing `lease_epoch` transition, now backed by shared `StoredU64` rather
   than parallel SQL increments. Kani checks its full signed input domain and
