@@ -48,6 +48,24 @@ pub enum McpHttpMethod {
     Other,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionlessHttpAction {
+    OpenEventStream,
+    DispatchPost,
+    AcknowledgeDelete,
+    RejectMethod,
+}
+
+#[must_use]
+const fn sessionless_http_action(method: McpHttpMethod) -> SessionlessHttpAction {
+    match method {
+        McpHttpMethod::Get => SessionlessHttpAction::OpenEventStream,
+        McpHttpMethod::Post => SessionlessHttpAction::DispatchPost,
+        McpHttpMethod::Delete => SessionlessHttpAction::AcknowledgeDelete,
+        McpHttpMethod::Other => SessionlessHttpAction::RejectMethod,
+    }
+}
+
 /// Transport-neutral reply body. Axum/Hyper wrappers only map this value onto
 /// their concrete response body.
 #[derive(Debug, Clone, PartialEq)]
@@ -142,11 +160,54 @@ where
     if let Some(reply) = validate_streamable_http_request(method, headers, origin_policy) {
         return reply;
     }
-    match method {
-        McpHttpMethod::Get => McpHttpReply::event_stream(),
-        McpHttpMethod::Delete => McpHttpReply::new(StatusCode::NO_CONTENT, McpHttpBody::Empty),
-        McpHttpMethod::Other => unreachable!("preflight rejects unsupported methods"),
-        McpHttpMethod::Post => handle_post(server, context, headers, body, notifications).await,
+    match sessionless_http_action(method) {
+        SessionlessHttpAction::OpenEventStream => McpHttpReply::event_stream(),
+        SessionlessHttpAction::AcknowledgeDelete => {
+            McpHttpReply::new(StatusCode::NO_CONTENT, McpHttpBody::Empty)
+        }
+        SessionlessHttpAction::RejectMethod => {
+            unreachable!("preflight rejects unsupported methods")
+        }
+        SessionlessHttpAction::DispatchPost => {
+            handle_post(server, context, headers, body, notifications).await
+        }
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn sessionless_http_lifecycle_routes_each_method_to_its_exact_action() {
+        // Cause graph: C1=GET, C2=POST, C3=DELETE, C4=unsupported method.
+        // Effects: E1=open the standing event stream, E2=select POST dispatch,
+        // E3=acknowledge stateless deletion, E4=retain preflight rejection.
+        // The closed method enum makes the causes mutually exclusive.
+        //
+        // | Rule | Method | Effect |
+        // |---|---|---|
+        // | R1 | GET | E1 |
+        // | R2 | POST | E2 |
+        // | R3 | DELETE | E3 |
+        // | R4 | Other | E4 |
+        let tag: u8 = kani::any();
+        let case = tag & 3;
+        let method = match case {
+            0 => McpHttpMethod::Get,
+            1 => McpHttpMethod::Post,
+            2 => McpHttpMethod::Delete,
+            _ => McpHttpMethod::Other,
+        };
+        let action = sessionless_http_action(method);
+
+        assert_eq!(action == SessionlessHttpAction::OpenEventStream, case == 0);
+        assert_eq!(action == SessionlessHttpAction::DispatchPost, case == 1);
+        assert_eq!(
+            action == SessionlessHttpAction::AcknowledgeDelete,
+            case == 2
+        );
+        assert_eq!(action == SessionlessHttpAction::RejectMethod, case == 3);
     }
 }
 
