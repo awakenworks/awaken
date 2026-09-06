@@ -903,6 +903,7 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "AcpBoundary", source, config, [
         (source.replace(timeout, mutant_timeout), config.replace("INVARIANTS Safety", "INVARIANTS CleanupObserverRetained Safety"), "CleanupObserverRetained"),
         (source.replace("/\\ exitCode # 0 /\\ observing /\\ ~ack", "/\\ termSent /\\ observing /\\ ~ack"), config.replace("INVARIANTS Safety", "INVARIANTS NoFabricatedQuiescence Safety"), "NoFabricatedQuiescence"),
+        (source.replace('/\\ wireOutcome = "Active" /\\ downlink > 0', '/\\ wireOutcome = "Active" /\\ downlink > 0 /\\ hostLeft = 0'), config.replace("INVARIANTS Safety", "INVARIANTS WireCanAdvance Safety"), "WireCanAdvance"),
     ])
     source = (ROOT / "formal/tla/SessionThreadToolComposition.tla").read_text()
     config = (ROOT / "formal/tla/SessionThreadToolComposition.cfg").read_text()
@@ -920,7 +921,7 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "ManagedCredentialRollout", source, config, [
         (mutant, config, "AdoptionCoversEveryNamedFence"),
     ])
-    print("Cowork lifecycle mutation score: 4/4 killed (timeout, signal, crash, partial adoption)")
+    print("Cowork lifecycle mutation score: 5/5 killed (timeout, signal, duplex, crash, partial adoption)")
 
 
 def check_observation_rule_mutants(trace_dir: Path, manifest: dict) -> None:

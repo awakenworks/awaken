@@ -816,7 +816,7 @@ async fn exec_poll_distinguishes_running_missing_and_finished_status() {
     let missing = exec_process(None);
     assert!(missing.poll().await.is_err());
     assert!(missing.wait().await.is_err());
-    assert_eq!(k8s_exit_status(None).code, Some(1));
+    assert_eq!(k8s_exit_status(None).code, None);
 }
 
 #[tokio::test]
@@ -1569,4 +1569,41 @@ fn build_pod_labels_the_egress_posture_for_a_networkpolicy() {
             .map(String::as_str),
         Some("restricted")
     );
+}
+
+#[tokio::test]
+async fn remote_completion_requires_explicit_process_exit_evidence() {
+    // D10 transport closes / drops its status sender / sends an unrecognized
+    // status => poll and wait fail without caching a fabricated exit code 1.
+    // D11 a Kubernetes Success or explicit numeric ExitCode => exact stable exit.
+    // Stream EOF is not physical quiescence; only a received exit can permit ACK.
+    for status in [
+        None,
+        Some(Status::default()),
+        Some(Status {
+            status: Some("Failure".into()),
+            ..Default::default()
+        }),
+    ] {
+        let process = exec_process(Some(tokio::spawn(async move { status })));
+        assert!(
+            process.wait().await.is_err(),
+            "D10 absent/malformed exit evidence"
+        );
+        assert!(
+            process.poll().await.is_err(),
+            "D10 repeated observer cannot fabricate exit"
+        );
+    }
+    for code in [0, 7, 137] {
+        let process = exec_process(Some(tokio::spawn(
+            async move { Some(success_status(code)) },
+        )));
+        assert_eq!(process.wait().await.unwrap().code, Some(code), "D11");
+        assert_eq!(
+            process.poll().await.unwrap().unwrap().code,
+            Some(code),
+            "D11 stable exact exit"
+        );
+    }
 }

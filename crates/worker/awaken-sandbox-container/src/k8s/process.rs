@@ -43,7 +43,7 @@ pub(super) fn k8s_exit_status(status: Option<Status>) -> pc::ExitStatus {
             })
         })
         .and_then(|message| message.parse::<i32>().ok())
-        .or(Some(if success { 0 } else { 1 }));
+        .or(success.then_some(0));
     pc::ExitStatus {
         code,
         signaled: false,
@@ -150,6 +150,11 @@ impl pc::ProcessHandle for K8sExecProcess {
             .await
             .map_err(|error| pc::SandboxError::new(error.to_string()))?;
         let status = k8s_exit_status(status);
+        if status.code.is_none() {
+            return Err(pc::SandboxError::new(
+                "Kubernetes exec ended without an observed exit status",
+            ));
+        }
         state.status = Some(status.clone());
         Ok(Some(status))
     }

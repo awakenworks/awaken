@@ -90,6 +90,9 @@ cargo test -p awaken-dispatch --features test-support --test pool_memory
 cargo test -p awaken-dispatch --features test-support --test lease_semantics
 cargo test -p awaken-session-executor --lib durable_interrupt_returns_after_intent
 cargo test -p awaken-run-executor-acp --lib terminal_business_outcome
+cargo test -p awaken-protocol-acp --features real-acp --lib
+cargo test -p awaken-sandbox-container --features k8s --lib remote_completion_requires_explicit_process_exit_evidence
+cargo test -p awaken-worker --lib lifecycle::tests
 cargo test -p awaken-protocol-managed --features test-support --lib rollout
 cargo test -p awaken-credential-vault --lib managed_update_atomically
 
@@ -302,6 +305,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-file-store --features object-store \
     --harness object_store_configuration_accepts_exactly_the_provider_compatible_shape
   run_kani awaken-protocol-acp --features real-acp \
+    --harness acp_read_ahead_admission_never_overflows_or_exceeds_either_bound \
     --harness permission_consensus_is_a_conservative_order_independent_semilattice \
     --harness acp_permission_projection_is_total_exact_and_non_widening \
     --harness acp_session_load_preserves_the_exact_mcp_projection \
