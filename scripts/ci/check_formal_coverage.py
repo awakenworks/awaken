@@ -47,6 +47,13 @@ parser.add_argument(
     action="store_true",
     help="require direct production proof/refinement for every P0 repository safety obligation",
 )
+parser.add_argument(
+    "--require-guardrail",
+    action="append",
+    default=[],
+    metavar="G<N>",
+    help="require one declared target guardrail to have no direct-proof gap; repeatable",
+)
 args = parser.parse_args()
 
 data = json.loads(LEDGER.read_text(encoding="utf-8"))
@@ -323,6 +330,7 @@ summary["verified_profile"] = {
     "directly_proved_or_refined": qualification["directly_proved_or_refined"],
     "eligible": qualification["eligible"],
     "gaps": verified_gaps,
+    "guardrails": qualification["guardrails"],
 }
 if args.json:
     print(json.dumps(summary, indent=2, sort_keys=True))
@@ -348,3 +356,13 @@ if args.require_verified_profile and verified_gaps:
         "P0 repository safety obligations lack direct production proof/refinement: "
         + ", ".join(verified_gaps)
     )
+for guardrail_id in args.require_guardrail:
+    guardrail = qualification["guardrails"].get(guardrail_id)
+    if guardrail is None:
+        fail(f"unknown target guardrail promotion profile {guardrail_id}")
+    if guardrail["gaps"]:
+        fail(
+            f"{guardrail_id} promotion blocked: {len(guardrail['gaps'])}/"
+            f"{guardrail['required_obligations']} obligations lack direct production "
+            "proof/refinement: " + ", ".join(guardrail["gaps"])
+        )

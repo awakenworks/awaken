@@ -56,6 +56,32 @@
     {"id":"assembly.binary_roles","requirement_area":"Unified binary/role subcommands","criticality":"P0","entrypoints":["awaken all-in-one","awaken control","awaken coordinator","awaken database migrate","awaken config","awaken doctor acp"],"requirements":[{"id":"role_assembly","kind":"safety","repository_controlled":true,"obligation_prefixes":["assembly_role","service_lifecycle"],"executable_evidence":[{"path":"crates/bin/awaken-cli/src/lib.rs","kind":"rust_test","name":"service_roles_expose_only_their_owned_api"},{"path":"e2e/service_roles_e2e.ts","kind":"e2e_scenario","name":"SERVICE ROLES E2E PASS"},{"path":"scripts/ci/check_formal_mutations.py","kind":"ci_checker","name":"check_verified_admission_model_mutants"},{"path":"scripts/ci/check_product_release.py","kind":"ci_checker","name":"validate"}],"evidence":["crates/server/awaken-service-lifecycle/src/lib.rs","crates/bin/awaken-cli/src/console.rs","scripts/release/verification_manifest.py"]}]},
     {"id":"architecture.package_split","requirement_area":"Runtime package split","criticality":"P1","entrypoints":["Cargo workspace"],"requirements":[{"id":"dependency_direction","kind":"safety","repository_controlled":true,"executable_evidence":[{"path":"scripts/ci/check_crate_boundaries.py","kind":"ci_checker","name":"main"}],"evidence":["docs/design/packaging-enforcement-matrix.md"]}]}
   ],
+  "guardrail_promotions": [
+    {
+      "id": "G42",
+      "requirements": [
+        {"feature":"control.agent_profiles","requirement":"immutable_profile"},
+        {"feature":"session.lifecycle","requirement":"session_state"},
+        {"feature":"session.managed_worker","requirement":"work_authority"},
+        {"feature":"worker.remote_execution","requirement":"remote_protocol"},
+        {"feature":"resource.files","requirement":"resource_lifecycle"},
+        {"feature":"protocol.mcp","requirement":"mcp_protocol"},
+        {"feature":"store.backends","requirement":"schema_and_adapter_conformance"}
+      ]
+    },
+    {
+      "id": "G43",
+      "requirements": [
+        {"feature":"credential.lifecycle","requirement":"credential_lifecycle"},
+        {"feature":"credential.plaintext_boundary","requirement":"exact_holder"},
+        {"feature":"runtime.permission","requirement":"authority_never_widens"},
+        {"feature":"model.routing","requirement":"exact_binding"},
+        {"feature":"worker.remote_execution","requirement":"remote_protocol"},
+        {"feature":"resource.files","requirement":"resource_lifecycle"},
+        {"feature":"protocol.mcp","requirement":"mcp_protocol"}
+      ]
+    }
+  ],
   "product_journeys": [
     {
       "id": "managed_execution",
