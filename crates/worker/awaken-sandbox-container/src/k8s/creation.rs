@@ -221,7 +221,7 @@ pub(super) async fn restore_or_adopt(
             realization::create_or_verify_with_status_exact(
                 &runtime.persistent_volume_claims(),
                 &claim,
-                restore::verify_claim_projection,
+                |expected, observed| restore::verify_claim_projection(expected, observed, None),
             )
             .await?,
         )
@@ -275,7 +275,7 @@ pub(super) async fn restore_or_adopt(
     let outcome = realization::create_or_verify_with_status_exact(
         &runtime.pods(),
         &pod,
-        restore::verify_pod_projection,
+        |expected, observed| restore::verify_pod_projection(expected, observed, None),
     )
     .await?;
     let name = outcome

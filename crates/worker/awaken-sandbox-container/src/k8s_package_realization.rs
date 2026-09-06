@@ -16,6 +16,7 @@ use k8s_openapi::api::core::v1::{ConfigMap, Pod, PodSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use serde::{Deserialize, Serialize};
 
+use crate::k8s::api_defaults::normalize_pod_spec;
 use crate::{RuntimeError, runtime::RuntimeError::Backend};
 
 pub const K8S_PACKAGE_REALIZATION_CONTRACT_VERSION: &str = "v1";
@@ -115,7 +116,7 @@ fn normalized_template(
         .as_ref()
         .and_then(|spec| spec.template.spec.clone())
         .ok_or_else(|| K8sPackageRealizationError::invalid("package Job has no Pod template"))?;
-    crate::k8s::realization::normalize_pod_spec(&mut template, false);
+    normalize_pod_spec(&mut template, false);
     let mut labels = job
         .spec
         .as_ref()
@@ -162,7 +163,7 @@ fn verify_job_pod(
         .spec
         .clone()
         .ok_or_else(|| K8sPackageRealizationError::invalid("package Job Pod has no spec"))?;
-    crate::k8s::realization::normalize_pod_spec(&mut actual_spec, true);
+    normalize_pod_spec(&mut actual_spec, true);
     if expected_labels != actual_labels || expected_spec != actual_spec {
         return Err(K8sPackageRealizationError::invalid(
             "package Job Pod differs from the exact Job template",
@@ -1214,7 +1215,7 @@ fn normalized_job_spec(job: &Job) -> Result<JobSpec, RuntimeError> {
             .labels,
     );
     if let Some(pod) = spec.template.spec.as_mut() {
-        crate::k8s::realization::normalize_pod_spec(pod, false);
+        normalize_pod_spec(pod, false);
     }
     Ok(spec)
 }

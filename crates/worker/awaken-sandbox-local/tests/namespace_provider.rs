@@ -195,10 +195,9 @@ async fn namespace_signals_reach_the_program_and_preserve_forced_cleanup() {
                 loop {
                     let files = sandbox.artifacts().await.unwrap();
                     if let Some(file) = files.iter().find(|file| file.path.ends_with("/ready.txt"))
+                        && sandbox.read_artifact(&file.id).await.unwrap() == b"ready"
                     {
-                        if sandbox.read_artifact(&file.id).await.unwrap() == b"ready" {
-                            break;
-                        }
+                        break;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }

@@ -242,7 +242,9 @@ impl LocalProvider {
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
+        authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), pc::SandboxError> {
+        authorization.validate()?;
         request.validate_for_spec(spec)?;
         let evidence = request.evidence(spec);
         let root = restoration_root(&self.base, &evidence)?;

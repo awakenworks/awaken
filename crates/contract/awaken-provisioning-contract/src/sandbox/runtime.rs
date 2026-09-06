@@ -1384,11 +1384,14 @@ pub trait SandboxProvider: Send + Sync {
     }
 
     /// Remove only the unpublished physical target named by one durable
-    /// restoring tuple. Provider-proved absence is an idempotent success.
+    /// restoring tuple using the aggregate preparation/successor authorization.
+    /// The tuple identifies the target; it does not authorize physical deletion.
+    /// Provider-proved absence is an idempotent success.
     async fn dispose_restored(
         &self,
         _spec: &SandboxSpec,
         _request: &SandboxRestoreRequest,
+        _authorization: &SandboxDisposalAuthorization,
     ) -> Result<(), SandboxError> {
         Err(SandboxError::new(
             "sandbox provider does not implement exact restored-target disposal",

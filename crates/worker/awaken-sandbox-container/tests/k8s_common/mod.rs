@@ -8,58 +8,9 @@ pub(crate) fn container_environment(image: String) -> pc::EnvironmentKind {
     pc::EnvironmentKind::Image { reference: image }
 }
 
-pub(crate) fn effect_fence(
-    scope: &str,
-    operation: &str,
-    owner: &str,
-    epoch: u64,
-) -> pc::SandboxEffectFence {
-    pc::SandboxEffectFence::new(
-        format!("{scope}:{operation}"),
-        owner,
-        format!("{owner}-runtime"),
-        epoch,
-        u64::MAX,
-    )
-    .expect("live fixture effect identity is valid")
-}
-
-pub(crate) fn disposal_authorization(
-    prepared: &pc::SandboxEffectFence,
-) -> pc::SandboxDisposalAuthorization {
-    disposal_authorization_successor(
-        prepared,
-        &prepared.owner,
-        &prepared.runtime_incarnation,
-        prepared.epoch,
-    )
-}
-
-pub(crate) fn disposal_authorization_successor(
-    prepared: &pc::SandboxEffectFence,
-    owner: &str,
-    runtime_incarnation: &str,
-    epoch: u64,
-) -> pc::SandboxDisposalAuthorization {
-    let preparation_fingerprint = format!("k8s-fixture-preparation:{}", prepared.operation_id);
-    let preparation =
-        pc::SandboxDisposalPreparation::new(prepared.clone(), preparation_fingerprint)
-            .expect("live fixture preparation is complete");
-    let operation_id = preparation
-        .operation_id()
-        .expect("live fixture disposal identity is stable");
-    let successor = pc::SandboxEffectFence::new(
-        operation_id,
-        owner,
-        runtime_incarnation,
-        epoch,
-        prepared.expires_at_unix_ms,
-    )
-    .expect("live fixture authorization successor is valid");
-    preparation
-        .authorize(successor)
-        .expect("live fixture authorization is aggregate-authorized")
-}
+#[path = "../common/disposal.rs"]
+pub(crate) mod disposal;
+pub(crate) use disposal::{disposal_authorization, effect_fence};
 
 pub(crate) fn spec_with_command(
     scope: &str,
@@ -91,4 +42,33 @@ pub(crate) fn container_id(handle: &pc::SandboxHandle) -> String {
         .expect("Kubernetes fixture emits a typed container handle")
         .container_id
         .clone()
+}
+
+/// Hold/release only a test-owned finalizer. Preserve production finalizers and
+/// fence the patch against concurrent metadata changes; this is never cleanup.
+#[allow(dead_code)] // This shared fixture module is compiled by multiple test binaries.
+pub(crate) async fn set_test_finalizer<K>(
+    api: &kube::Api<K>,
+    name: &str,
+    finalizer: &str,
+    hold: bool,
+) where
+    K: Clone + std::fmt::Debug + serde::de::DeserializeOwned + kube::Resource<DynamicType = ()>,
+{
+    let observed = api.get(name).await.expect("read test barrier object");
+    let mut finalizers = observed.meta().finalizers.clone().unwrap_or_default();
+    finalizers.retain(|value| value != finalizer);
+    if hold {
+        finalizers.push(finalizer.into());
+    }
+    api.patch(
+        name,
+        &kube::api::PatchParams::default(),
+        &kube::api::Patch::Merge(serde_json::json!({"metadata": {
+            "resourceVersion": observed.meta().resource_version,
+            "finalizers": finalizers
+        }})),
+    )
+    .await
+    .expect("patch test-owned deletion barrier");
 }

@@ -376,7 +376,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
+        authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), pc::SandboxError> {
+        authorization.validate()?;
         request.validate_for_spec(spec)?;
         pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())
             .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
@@ -385,7 +387,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         let evidence = request.evidence(spec);
         let scope = restoration_runtime_scope(&evidence)?;
         self.runtime
-            .dispose_restore_target(&scope, &plan, &plan_fingerprint, &evidence)
+            .dispose_restore_target(&scope, &plan, &plan_fingerprint, &evidence, authorization)
             .await
             .map_err(err)
     }

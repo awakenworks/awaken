@@ -747,6 +747,35 @@ target or fails closed. Namespace advertises no such substrate. No open provider
 advertises a checkpoint format or implements checkpoint-byte restoration;
 portable v3 bytes remain solely owned by the existing deployment decorator.
 
+Kubernetes projection verification shares its API-default normalization with
+package-image evidence and the operator control-container verifier. Restore
+compares the complete normalized container and Pod specifications, including
+init-container order, and reuses the canonical namespace-boundary predicate.
+Absent/empty resources and lists, omitted writable mount flags, zero probe
+initial delay and declared API defaults do not constitute drift; explicit
+resource, positive probe-delay or execution changes do.
+An omitted PVC StorageClass delegates class selection to Kubernetes, whereas a
+pinned class remains exact. The bound volume name is controller output; all other
+PVC specification fields and the existing realization/UID fences remain exact.
+These rules change neither the restore tuple nor cleanup authority: an absent
+source Pod with a live retained claim still fails the shared observation gate
+before any PVC deletion. Test decision tables belong beside the projection and
+live recovery tests, not in a second recovery implementation.
+
+Exact restore-target disposal carries the existing typed
+`SandboxDisposalAuthorization` from the Host terminal-cleanup owner through the
+Provider and runtime ports. The durable restore tuple identifies the target;
+it does not replace aggregate preparation and successor authority. All Local,
+Docker, Podman and Kubernetes implementations consume this required parameter.
+Kubernetes reuses `remove_exact_incarnation` and its Pod cleanup gate instead of
+creating another deletion path. Ordinary recovery rejects terminating objects;
+authorized cleanup may verify their unchanged projection and replay deletion.
+If only an already-terminating PVC remains, cleanup waits for its physical
+absence before acknowledgement. A live PVC without its source Pod still fails
+closed: claim-only unpublished-target cleanup needs a serialized recovery path
+before that crash cut can be claimed as live. It is not covered by successful
+Pod/PVC response-loss replay.
+
 The dynamic ordering is fixed:
 
 ```text

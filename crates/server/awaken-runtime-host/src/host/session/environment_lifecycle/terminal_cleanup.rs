@@ -374,7 +374,7 @@ impl SharedHost {
                     previous_resources.as_ref(),
                 );
                 provider
-                    .dispose_restored(&spec, expected)
+                    .dispose_restored(&spec, expected, &authorization)
                     .await
                     .map_err(|error| HostError::unavailable(error.to_string()))?;
                 // Keep the exact Restoring request as the response-loss fence.

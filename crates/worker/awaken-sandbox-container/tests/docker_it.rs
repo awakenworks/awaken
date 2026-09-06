@@ -6,6 +6,8 @@
 
 #[path = "common/restore.rs"]
 mod common;
+#[path = "common/disposal.rs"]
+mod disposal;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -89,6 +91,12 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
     let scope = format!("docker-restore-{}", std::process::id());
     let spec = common::exact_restore_spec(&scope);
     let request = common::exact_restore_request(&scope);
+    let authorization = disposal::disposal_authorization(&disposal::effect_fence(
+        &scope,
+        "restore-terminal",
+        "terminal-owner",
+        2,
+    ));
     let first = ContainerProvider::new(Arc::new(first_runtime), "busybox:latest")
         .acquire_restore_environment(&spec, &request)
         .await
@@ -140,11 +148,11 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
     );
     drop(recovered);
     retry
-        .dispose_restored_environment(&spec, &request)
+        .dispose_restored_environment(&spec, &request, &authorization)
         .await
         .expect("D4 provider exact terminal cleanup");
     retry
-        .dispose_restored_environment(&spec, &request)
+        .dispose_restored_environment(&spec, &request, &authorization)
         .await
         .expect("D4 provider absent replay");
     assert!(!staging_root.exists(), "D4/E4");

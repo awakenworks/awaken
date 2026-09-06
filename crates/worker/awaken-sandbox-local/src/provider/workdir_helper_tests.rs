@@ -1242,6 +1242,21 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
         .expect("R1 finish");
 }
 
+fn restored_disposal_authorization() -> pc::SandboxDisposalAuthorization {
+    // RD: all restore-target cleanup rules supply the existing caller-owned
+    // preparation/successor authorization; the provider must not synthesize it.
+    crate::test_disposal_authorization(
+        &pc::SandboxEffectFence::new(
+            "restore-terminal",
+            "terminal-owner",
+            "terminal-runtime",
+            2,
+            u64::MAX,
+        )
+        .unwrap(),
+    )
+}
+
 // Exact-restore fidelity table: C1=mutable nested file plus file/directory
 // modes; C2=checkpoint bytes are durable; C3=source disposal completed through
 // its existing owner; C4=the aggregate projects one exact restore request.
@@ -1252,6 +1267,8 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
 // cannot block extraction.
 #[tokio::test]
 async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
+    let restored_disposal = restored_disposal_authorization();
+
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
@@ -1318,10 +1335,10 @@ async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
         "directory mode is applied after child extraction"
     );
     drop(restored);
-    pc::SandboxProvider::dispose_restored(&provider, &spec, &request)
+    pc::SandboxProvider::dispose_restored(&provider, &spec, &request, &restored_disposal)
         .await
         .expect("R2 exact disposal");
-    pc::SandboxProvider::dispose_restored(&provider, &spec, &request)
+    pc::SandboxProvider::dispose_restored(&provider, &spec, &request, &restored_disposal)
         .await
         .expect("R2 disposal response-loss replay");
     assert!(!restored_root.exists(), "R2 only the exact target is gone");
@@ -1329,6 +1346,8 @@ async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
 
 #[tokio::test]
 async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
+    let restored_disposal = restored_disposal_authorization();
+
     // Exact-target cause/effect table. C1 the source reaches durable disposal
     // preparation P before physical Disposal; C2 the exact target is absent or
     // already bound; C3 the provider process wrapper is original/fresh; C4 a
@@ -1416,7 +1435,7 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     );
 
     let foreign = exact_restore_request(&spec, &checkpoint_request, &checkpoint, "foreign");
-    pc::SandboxProvider::dispose_restored(&fresh_provider, &spec, &foreign)
+    pc::SandboxProvider::dispose_restored(&fresh_provider, &spec, &foreign, &restored_disposal)
         .await
         .expect("T3 foreign target is provably absent");
     assert!(exact_root.is_dir(), "T3 exact target remains");
@@ -1437,10 +1456,10 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     assert!(exact_root.is_dir(), "T4 exact target remains");
 
     drop(recovered);
-    pc::SandboxProvider::dispose_restored(&fresh_provider, &spec, &request)
+    pc::SandboxProvider::dispose_restored(&fresh_provider, &spec, &request, &restored_disposal)
         .await
         .expect("T5 exact disposal");
-    pc::SandboxProvider::dispose_restored(&fresh_provider, &spec, &request)
+    pc::SandboxProvider::dispose_restored(&fresh_provider, &spec, &request, &restored_disposal)
         .await
         .expect("T5 disposal response-loss replay");
     assert!(!exact_root.exists(), "T5 exact target removed");
@@ -1448,6 +1467,8 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
 
 #[tokio::test]
 async fn exact_restore_materialization_response_loss_is_idempotent() {
+    let restored_disposal = restored_disposal_authorization();
+
     // Restore-materialization table. C1 the exact target is absent/recovered;
     // C2 the completed provider response is delivered/lost before aggregate
     // publication; C3 request admission is exact/malformed. M1 exact first
@@ -1522,10 +1543,10 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
         "M3 zero target write"
     );
     drop(replay);
-    pc::SandboxProvider::dispose_restored(&provider, &spec, &request)
+    pc::SandboxProvider::dispose_restored(&provider, &spec, &request, &restored_disposal)
         .await
         .expect("M1/M2 exact cleanup");
-    pc::SandboxProvider::dispose_restored(&provider, &spec, &request)
+    pc::SandboxProvider::dispose_restored(&provider, &spec, &request, &restored_disposal)
         .await
         .expect("M1/M2 cleanup response-loss replay");
 }
@@ -1539,6 +1560,8 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
 // an idempotent success. The durable checkpoint reference remains store-owned.
 #[tokio::test]
 async fn corrupt_checkpoint_is_rejected_before_restore() {
+    let restored_disposal = restored_disposal_authorization();
+
     let tmp = tempfile::tempdir().unwrap();
     let provider = LocalProvider::new(tmp.path());
     let spec = workdir_spec("checkpoint-session", false);
@@ -1590,10 +1613,10 @@ async fn corrupt_checkpoint_is_rejected_before_restore() {
         "F2 materialized bytes"
     );
     drop(recovered);
-    pc::SandboxProvider::dispose_restored(&provider, &spec, &request)
+    pc::SandboxProvider::dispose_restored(&provider, &spec, &request, &restored_disposal)
         .await
         .expect("F3 exact disposal");
-    pc::SandboxProvider::dispose_restored(&provider, &spec, &request)
+    pc::SandboxProvider::dispose_restored(&provider, &spec, &request, &restored_disposal)
         .await
         .expect("F3 disposal response-loss replay");
 }
