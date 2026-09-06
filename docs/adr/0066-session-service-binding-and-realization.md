@@ -86,6 +86,14 @@ receipt permits Publish. No renewal means direct Publish. This catch-up belongs
 to the initial phase driver, not the steady-state heartbeat, and never adds a
 credential resolver, connection, Resource preparation, or recovery authority.
 
+After a completed MCP drain, the process-local Removed tombstone owns no
+remaining effects. A currently authorized retry may discard that tombstone for
+an exact Stage replay or a strictly later lease with the same immutable binding,
+then run ordinary Stage again. This is recovery, not renewal of missing effects:
+the old receipt is not returned as fresh proof. Changed bindings, non-monotonic
+renewals, live/Staging/Draining effects and a closed quiescence fence remain
+protected by their existing checks.
+
 ## 2026-08-12 amendment
 
 Session creation no longer waits for Worker-authored input. The complete
