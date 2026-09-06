@@ -50,6 +50,11 @@ python3 scripts/ci/check_formal_web_surface.py
 python3 scripts/ci/check_proof_boundaries.py
 python3 scripts/ci/check_formal_mutations.py
 
+# The abstract network algebra is not Rust String/Vec refinement. Exercise the
+# actual owner and frozen SQLite root alongside its TLAPS/TLC checks below.
+cargo test -p awaken-session-contract --lib network_policy::tests
+cargo test -p awaken-session-application --lib profiled_session_creation_enforces_publication_and_upfront_inputs
+
 # Explore the production in-memory worker registry's lock interleavings. This
 # feature swaps only its mutex for Loom's instrumented mutex; the transition
 # kernel and directory methods remain the production code.
@@ -460,6 +465,7 @@ if [ -n "$tlapm_bin" ] && [ -x "$tlapm_bin" ]; then
   "$tlapm_bin" -I formal/tla formal/tla/WorkQueueProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/SessionActivityProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/SessionRootProof.tla
+  "$tlapm_bin" -I formal/tla formal/tla/SessionNetworkPolicyProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/LiveInboxProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/ServiceLifecycleProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/ObservationReconcileProof.tla
@@ -579,6 +585,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/tool-permission-policy" \
     -config formal/tla/ToolPermissionPolicy.cfg \
     formal/tla/ToolPermissionPolicy.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-network-policy" \
+    -config formal/tla/SessionNetworkPolicy.cfg formal/tla/SessionNetworkPolicy.tla
+  python3 scripts/ci/check_formal_mutations.py --session-network-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/circuit-breaker" \
     -config formal/tla/CircuitBreaker.cfg formal/tla/CircuitBreaker.tla

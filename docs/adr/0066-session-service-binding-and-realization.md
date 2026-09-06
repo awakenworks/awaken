@@ -34,6 +34,20 @@ both local and remote adapters.
 
 ## Durable structure
 
+Frozen network restrictions use `SessionNetworkPolicy` in the Session contract
+as their single algebra owner. `normalized` owns trimming, ASCII case folding,
+deduplication and blank removal; `safe_intersection` consumes that canonical
+form instead of repeating those rules. Profiled admission meets the Environment
+policy with the request restriction before layout validation and root creation.
+Two blank-only allowlists therefore freeze `None`, never `Allowlist([""])`.
+The Host still projects the frozen fact into the existing provisioning contract;
+it does not reconstruct or widen authority during realization or replay.
+
+The public enum and wire format remain unchanged. The abstract set algebra is
+proved in `SessionNetworkPolicyProof.tla`; production property tests and SQLite
+root readback cover the concrete regression. This is not universal Rust
+refinement, a DNS specification, or proof of provider network enforcement.
+
 ```text
 PersistedSession
 ├── revision

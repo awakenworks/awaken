@@ -501,6 +501,14 @@ delegation ownership, and terminal sealing.
 single-active invariant, lease authority, positive active epoch, and terminal
 lease clearing for every modeled transition.
 
+`SessionNetworkPolicyProof.tla` proves canonicalization idempotence and the
+non-widening, nonblank, commutative, idempotent and associative meet of arbitrary
+abstract host sets. The Session contract owns the sole production normalization
+path, with Unicode property tests and SQLite frozen-baseline readback. These
+tests and the finite TLC blank-host mutation oracle do not establish universal
+Rust String/Vec refinement or physical network enforcement; the obligation
+retains abstract-theorem grade.
+
 TLAPS results belong to the exact strict invocation, not a hand-maintained
 README counter. The canonical runner names the proof modules; its output records
 each module's discharged obligations. See the exact-SHA quality artifact and

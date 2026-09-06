@@ -1,5 +1,6 @@
 //! Immutable Session baseline and its consumed creation intent (ADR-0066 D1).
 
+use crate::SessionNetworkPolicy;
 use awaken_credential_contract::CredentialRealizationProfile;
 use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};
 
@@ -42,16 +43,6 @@ mod kani_proofs {
     }
 }
 
-/// Frozen network fact. This is Session state, not a provider request; the Host
-/// projects it to the provisioning contract at realization time.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-pub enum SessionNetworkPolicy {
-    Unrestricted,
-    Allowlist { hosts: Vec<String> },
-    None,
-}
-
 pub use awaken_provisioning_contract::{
     SandboxCheckpointExpiryBehavior as EnvironmentCheckpointExpiryBehavior,
     SandboxIdleRetentionMode as EnvironmentIdleRetentionMode,
@@ -66,68 +57,6 @@ pub use awaken_provisioning_contract::{
 pub enum SessionRuntimePlacement {
     Local,
     Worker,
-}
-
-impl SessionNetworkPolicy {
-    /// Whether the frozen Session policy restricts egress at all.
-    #[must_use]
-    pub fn is_restricted(&self) -> bool {
-        !matches!(self, Self::Unrestricted)
-    }
-
-    /// Canonical form used at every persistence/realization boundary. Host names
-    /// are trimmed, lower-cased and deduplicated; an empty allowlist is exactly
-    /// `None`, not a second spelling of closed networking.
-    #[must_use]
-    pub fn normalized(&self) -> Self {
-        match self {
-            Self::Unrestricted => Self::Unrestricted,
-            Self::None => Self::None,
-            Self::Allowlist { hosts } => {
-                let hosts = hosts
-                    .iter()
-                    .map(|host| host.trim().to_ascii_lowercase())
-                    .filter(|host| !host.is_empty())
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                if hosts.is_empty() {
-                    Self::None
-                } else {
-                    Self::Allowlist { hosts }
-                }
-            }
-        }
-    }
-
-    /// Safe meet for independently authored Session restrictions. The result
-    /// never widens either input and canonicalizes an empty intersection to
-    /// `None`.
-    #[must_use]
-    pub fn safe_intersection(&self, other: &Self) -> Self {
-        match (self, other) {
-            (Self::None, _) | (_, Self::None) => Self::None,
-            (Self::Unrestricted, policy) | (policy, Self::Unrestricted) => policy.normalized(),
-            (Self::Allowlist { hosts: left }, Self::Allowlist { hosts: right }) => {
-                let right = right
-                    .iter()
-                    .map(|host| host.trim().to_ascii_lowercase())
-                    .collect::<std::collections::BTreeSet<_>>();
-                let hosts = left
-                    .iter()
-                    .map(|host| host.trim().to_ascii_lowercase())
-                    .filter(|host| right.contains(host))
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                if hosts.is_empty() {
-                    Self::None
-                } else {
-                    Self::Allowlist { hosts }
-                }
-            }
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -801,64 +730,6 @@ mod tests {
             credential: None,
             origin,
         }
-    }
-
-    #[test]
-    fn network_safe_intersection_cases_follow_the_decision_table() {
-        // Cause graph:
-        // either None -> None; otherwise either Unrestricted -> canonicalized
-        // other side; otherwise intersect canonical host identities; an empty
-        // intersection -> None. No branch may widen either input.
-        //
-        // | Rule | Left | Right | Shared hosts | Effect |
-        // |---|---|---|---|---|
-        // | N1 | Unrestricted | Unrestricted | - | Unrestricted |
-        // | N2 | Unrestricted | Allowlist(B,a,A) | - | Allowlist(a,b) |
-        // | N3 | Allowlist(B,a,A) | Unrestricted | - | Allowlist(a,b) |
-        // | N4 | None | any | - | None |
-        // | N5 | Allowlist(API,db) | Allowlist(api,cache) | api | Allowlist(api) |
-        // | N6 | Allowlist(api) | Allowlist(db) | none | None |
-        let unrestricted = SessionNetworkPolicy::Unrestricted;
-        let mixed = SessionNetworkPolicy::Allowlist {
-            hosts: vec!["B.example".into(), "a.example".into(), "A.EXAMPLE".into()],
-        };
-        let canonical = SessionNetworkPolicy::Allowlist {
-            hosts: vec!["a.example".into(), "b.example".into()],
-        };
-        assert_eq!(
-            unrestricted.safe_intersection(&unrestricted),
-            SessionNetworkPolicy::Unrestricted,
-            "N1"
-        );
-        assert_eq!(unrestricted.safe_intersection(&mixed), canonical, "N2");
-        assert_eq!(mixed.safe_intersection(&unrestricted), canonical, "N3");
-        assert_eq!(
-            SessionNetworkPolicy::None.safe_intersection(&mixed),
-            SessionNetworkPolicy::None,
-            "N4"
-        );
-        assert_eq!(
-            SessionNetworkPolicy::Allowlist {
-                hosts: vec![" API.EXAMPLE ".into(), "db.example".into()],
-            }
-            .safe_intersection(&SessionNetworkPolicy::Allowlist {
-                hosts: vec!["api.example".into(), "cache.example".into()],
-            }),
-            SessionNetworkPolicy::Allowlist {
-                hosts: vec!["api.example".into()],
-            },
-            "N5"
-        );
-        assert_eq!(
-            SessionNetworkPolicy::Allowlist {
-                hosts: vec!["api.example".into()],
-            }
-            .safe_intersection(&SessionNetworkPolicy::Allowlist {
-                hosts: vec!["db.example".into()],
-            }),
-            SessionNetworkPolicy::None,
-            "N6"
-        );
     }
 
     #[test]
