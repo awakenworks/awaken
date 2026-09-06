@@ -684,6 +684,28 @@ vendor logins, macOS/Windows execution, and OS credential-manager/SSH integratio
 must be verified on their corresponding hosts; fixture or model success does
 not substitute for them.
 
+Linux supervision qualification now has an explicit
+`check-trusted-host-portability.sh --linux-supervision` gate. It requires a
+working user systemd manager and delegated cgroup v2; an unavailable substrate
+fails instead of becoming an ignored success. `awaken-local-process::cgroup`
+owns descriptor-pinned membership, launch admission and close/kill/empty
+observation. A missing/denied control operation or unknown populated state
+cannot become a stop receipt, and an old descriptor cannot target a replacement
+at the same pathname. The real test holds launch admission until the trusted
+bootstrap joins before workload exec, checks neighboring scopes and retry/ABA,
+and SIGKILLs a separate systemd-managed owner while detached descendants retain
+the external observer's stdout directly. Systemd's control-group teardown, not
+Rust Drop or a forwarding task's EOF, must end that tree.
+
+This is a Linux adapter foundation, NOT an installed Worker supervision mode.
+Ordinary `LocalProcess::spawn`, Workdir Native tools and Worker capability
+reporting are unchanged. Production integration must still bind this adapter
+to the existing physical realization/Session fence, keep one owner, implement
+the trusted bootstrap acknowledgement, and qualify external-supervisor loss.
+The adapter does not own a Session ledger or persist cleanup receipts; it
+cannot guarantee containment against actors authorized to migrate processes
+outside the delegated hierarchy or undo already-issued remote effects.
+
 Cross-compilation of `awaken-local-process --tests` and
 `awaken-sandbox-memoryd --lib` passes for `x86_64-pc-windows-gnu` and
 `x86_64-apple-darwin` (the latter selects Clang for its target C compiler).

@@ -10,6 +10,8 @@ ASSUME /\ Waiters # {} /\ NoLock \notin Waiters
 
 VARIABLES phase, privateGroup, dropPolicy, leaderAlive, descendantAlive,
           stopRequested, lock, waiter, observedExit, signalOutcome, signalAccepted
+VARIABLES scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt
+scopeVars == <<scopeClosed, scopePermit, scopeKillAccepted, scopeReceipt>>
 signalVars == <<signalOutcome, signalAccepted>>
 vars == <<phase, privateGroup, dropPolicy, leaderAlive, descendantAlive,
           stopRequested, lock, waiter, observedExit, signalVars>>
@@ -20,6 +22,8 @@ Init ==
   /\ stopRequested = FALSE /\ lock = NoLock
   /\ waiter = [w \in Waiters |-> "ready"] /\ observedExit = {}
   /\ signalOutcome = "none" /\ signalAccepted = FALSE
+  /\ scopeClosed = FALSE /\ scopePermit = FALSE
+  /\ scopeKillAccepted = FALSE /\ scopeReceipt = FALSE
 
 Spawn ==
   /\ phase = "new" /\ phase' = "owned"
@@ -127,5 +131,39 @@ SignalDenialIsNotAcknowledged == signalOutcome = "denied" => ~signalAccepted
 CrashPreservesOSProcesses == [][(phase = "owned" /\ phase' = "crashed")
                             => UNCHANGED <<leaderAlive, descendantAlive>>]_vars
 
-Spec == Init /\ [][Next]_vars
+Spec == Init /\ [][Next /\ UNCHANGED scopeVars]_<<vars, scopeVars>>
+
+\* Descriptor-pinned cgroup adapter: ONE owner, one launch admission and one
+\* bounded process tree. Membership-before-workload and no out-of-band migration
+\* are explicit launcher/kernel assumptions, not proved by this mutex model.
+\* There is no Session adoption, durable receipt or production Worker proof here.
+ScopeAcquire ==
+  /\ ~scopeClosed /\ ~scopePermit /\ phase = "new"
+  /\ scopePermit' = TRUE
+  /\ UNCHANGED <<vars, scopeClosed, scopeKillAccepted, scopeReceipt>>
+ScopeSpawn ==
+  /\ scopePermit /\ ~scopeClosed /\ Spawn
+  /\ UNCHANGED scopeVars
+ScopeRelease ==
+  /\ scopePermit /\ scopePermit' = FALSE
+  /\ UNCHANGED <<vars, scopeClosed, scopeKillAccepted, scopeReceipt>>
+ScopeClose ==
+  /\ ~scopePermit /\ scopeClosed' = TRUE
+  /\ UNCHANGED <<vars, scopePermit, scopeKillAccepted, scopeReceipt>>
+ScopeKill(accepted) ==
+  /\ scopeClosed /\ scopeKillAccepted' = (scopeKillAccepted \/ accepted)
+  /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeReceipt>>
+ScopeObserveEmpty ==
+  /\ scopeClosed /\ scopeKillAccepted /\ ~leaderAlive /\ ~descendantAlive
+  /\ scopeReceipt' = TRUE
+  /\ UNCHANGED <<vars, scopeClosed, scopePermit, scopeKillAccepted>>
+ScopeNext == ScopeAcquire \/ ScopeSpawn \/ ScopeRelease \/ ScopeClose
+  \/ (\E accepted \in BOOLEAN : ScopeKill(accepted)) \/ ScopeObserveEmpty
+  \/ ((Fork \/ LeaderExit \/ DescendantExit \/ Crash) /\ UNCHANGED scopeVars)
+ScopeTypeOK == TypeOK /\ scopeClosed \in BOOLEAN /\ scopePermit \in BOOLEAN
+  /\ scopeKillAccepted \in BOOLEAN /\ scopeReceipt \in BOOLEAN
+ScopeCloseExcludesLaunch == scopeClosed => ~scopePermit
+ScopeReceiptRequiresEmpty == scopeReceipt => ~leaderAlive /\ ~descendantAlive
+ScopeReceiptRequiresAcceptedStop == scopeReceipt => scopeClosed /\ scopeKillAccepted
+ScopeSpec == Init /\ [][ScopeNext]_<<vars, scopeVars>>
 =============================================================================
