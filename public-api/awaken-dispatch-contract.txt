@@ -42,6 +42,7 @@ pub use awaken_dispatch_contract::can_assign
 pub use awaken_dispatch_contract::can_claim
 pub use awaken_dispatch_contract::can_claim_locally
 pub use awaken_dispatch_contract::place_assignment
+pub use awaken_dispatch_contract::verify_attempt_credential_bindings
 pub use awaken_dispatch_contract::verify_credential_realization_receipt
 pub mod awaken_dispatch_contract::dispatch
 pub use awaken_dispatch_contract::dispatch::AttemptCredentialBinding
@@ -49,6 +50,7 @@ pub use awaken_dispatch_contract::dispatch::AttemptCredentialBindingError
 pub use awaken_dispatch_contract::dispatch::CandidateFingerprint
 pub use awaken_dispatch_contract::dispatch::CredentialRealizationReceipt
 pub use awaken_dispatch_contract::dispatch::CredentialReceiptError
+pub use awaken_dispatch_contract::dispatch::verify_attempt_credential_bindings
 pub use awaken_dispatch_contract::dispatch::verify_credential_realization_receipt
 pub enum awaken_dispatch_contract::dispatch::AttemptAdmission
 pub awaken_dispatch_contract::dispatch::AttemptAdmission::AlreadyApplied
@@ -67,6 +69,7 @@ pub awaken_dispatch_contract::dispatch::ContinuationAdmission::Root
 pub awaken_dispatch_contract::dispatch::ContinuationAdmission::SessionChild(awaken_dispatch_contract::dispatch::SessionChildAdmission)
 pub enum awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError
 pub awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError::Attempt(awaken_runtime_contract::credential::AttemptCredentialBindingError)
+pub awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError::ClaimedBindingMismatch
 pub awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError::InvalidSessionCredentialProjection(alloc::string::String)
 pub awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError::InvalidSessionMcpCredentialBinding
 pub awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError::InvalidSessionMcpCredentialUsage
@@ -266,6 +269,7 @@ pub fn awaken_dispatch_contract::dispatch::Outbox::stage_session_resume<'life0, 
 pub fn awaken_dispatch_contract::dispatch::can_admit_attempt_credentials(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> bool
 pub fn awaken_dispatch_contract::dispatch::compile_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_dispatch_contract::DispatchCredentialAdmissionError>
 pub const fn awaken_dispatch_contract::dispatch::session_run_replacement_candidate_is_safe(awaken_dispatch_contract::dispatch::DispatchState) -> bool
+pub fn awaken_dispatch_contract::dispatch::verify_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64, &[awaken_runtime_contract::credential::AttemptCredentialBinding]) -> core::result::Result<(), awaken_dispatch_contract::DispatchCredentialAdmissionError>
 pub fn awaken_dispatch_contract::dispatch::worker_credential_realization_capabilities(&awaken_worker_contract::registry::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, awaken_runtime_contract::credential::AttemptCredentialBindingError>
 pub mod awaken_dispatch_contract::operational
 pub enum awaken_dispatch_contract::operational::DispatchOperation
@@ -400,6 +404,7 @@ pub awaken_dispatch_contract::DispatchAdmissionShape::SessionRootAwaitingActivit
 pub awaken_dispatch_contract::DispatchAdmissionShape::SessionRootWithActivity
 pub enum awaken_dispatch_contract::DispatchCredentialAdmissionError
 pub awaken_dispatch_contract::DispatchCredentialAdmissionError::Attempt(awaken_runtime_contract::credential::AttemptCredentialBindingError)
+pub awaken_dispatch_contract::DispatchCredentialAdmissionError::ClaimedBindingMismatch
 pub awaken_dispatch_contract::DispatchCredentialAdmissionError::InvalidSessionCredentialProjection(alloc::string::String)
 pub awaken_dispatch_contract::DispatchCredentialAdmissionError::InvalidSessionMcpCredentialBinding
 pub awaken_dispatch_contract::DispatchCredentialAdmissionError::InvalidSessionMcpCredentialUsage
@@ -838,5 +843,6 @@ pub const fn awaken_dispatch_contract::finish_physical_attempt(awaken_dispatch_c
 pub const fn awaken_dispatch_contract::handoff_physical_attempt(bool, awaken_dispatch_contract::PhysicalAttemptSlot) -> awaken_dispatch_contract::PhysicalAttemptTransition
 pub fn awaken_dispatch_contract::retry_exhaustion_eligible(awaken_dispatch_contract::dispatch::DispatchState, core::option::Option<u64>, u64, u64, u64) -> bool
 pub const fn awaken_dispatch_contract::session_run_replacement_candidate_is_safe(awaken_dispatch_contract::dispatch::DispatchState) -> bool
+pub fn awaken_dispatch_contract::verify_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64, &[awaken_runtime_contract::credential::AttemptCredentialBinding]) -> core::result::Result<(), awaken_dispatch_contract::DispatchCredentialAdmissionError>
 pub fn awaken_dispatch_contract::worker_credential_realization_capabilities(&awaken_worker_contract::registry::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, awaken_runtime_contract::credential::AttemptCredentialBindingError>
 pub type awaken_dispatch_contract::ArtifactPublicationFence = awaken_dispatch_contract::ResourceOperationFence

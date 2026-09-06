@@ -976,6 +976,24 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 .await;
         }
 
+        // Recompute the exact binding set at the Worker boundary from the
+        // immutable dispatch, current claim epoch, and this Worker's installed
+        // capability evidence. A stale, substituted, widened, or reordered
+        // wire projection cannot reach model materialization. The compiler is
+        // the same authority used inside each queue claim transaction.
+        awaken_dispatch_contract::verify_attempt_credential_bindings(
+            &claimed.request,
+            &self.local_credential_capabilities,
+            claimed.lease.epoch,
+            now_ms,
+            &claimed.credential_bindings,
+        )
+        .map_err(|error| {
+            Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+                format!("claimed credential binding revalidation failed: {error}"),
+            ))
+        })?;
+
         // A native replacement attempt may execute only after its durable
         // reschedule receipt crossed the exact claim epoch. Committed terminal
         // recovery and opaque ACP terminalization returned above and therefore

@@ -1024,3 +1024,22 @@ remains `Forbidden`, and a later Session authority must project any Agent and
 Native/Resident-Hand Git configuration from the frozen pre-create environment
 in one place. It may reuse the fixed endpoint but must not infer holder,
 exposure, claim, verifier, or material authority from transport availability.
+
+## 2026-09-06 amendment: Worker revalidates the exact claimed binding set
+
+The queue claim transaction remains the only writer of
+`AttemptCredentialBinding`. A Worker receiving a claimed dispatch now calls the
+same `compile_attempt_credential_bindings` authority again with the immutable
+`RunDispatch`, the claim's current fencing epoch, its installed realization
+capabilities, and the current boundary clock. Execution proceeds only when the
+complete ordered result equals the persisted binding set. This catches a stale
+epoch, substituted candidate, credential revision, holder, mechanism,
+cardinality, order, expired envelope, or changed Worker capability before model
+materialization.
+
+This is a second validation of one decision, not a second selector. It adds no
+holder search, fallback, credential store, or wire authority. Cancellation,
+Session-reservation repair, committed-terminal settlement, and opaque ACP
+recovery do not enter credential/model execution and retain their existing
+paths. The direct Runtime path continues to compile its attempt binding from the
+same credential contract without a durable queue projection.
