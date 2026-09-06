@@ -697,6 +697,15 @@ remains unknown. Destructive preparation, Memory guard retirement/unmount,
 secret shredding and deletion cannot turn that uncertainty into a terminal
 receipt. Runtime-local weak process handles only deliver explicit stop/cutoff
 refresh requests; they are neither a durable registry nor a renewal scheduler.
+Refresh delivery errors re-poll the same exact process handle: an observed
+complete tree exit makes that renewal unnecessary, whereas a live tree or
+unknown poll remains an error regardless of transport error kind. This does
+not create a Session stop receipt or retire the durable participant. Linux
+provider barriers force exit between preflight and delivery, including denied
+authority and broken-channel negative controls. `LocalProcessRefresh` composes
+the existing kernel boundary to check error classification under exit races;
+mutants reject unconditional success, unconditional failure and leader-only
+evidence, with both result branches required to be reachable.
 Provider integration tests cover two live trees and actual owner SIGKILL;
 `LocalProcessRecovery` composes the existing bounded launch model with marker
 ordering and unknown-evidence rules. The Session Environment's existing stop
