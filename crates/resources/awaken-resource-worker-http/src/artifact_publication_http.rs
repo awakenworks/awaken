@@ -407,7 +407,7 @@ async fn authorize_terminal_artifact(
         worker,
         identity,
         &effect.lease,
-        SessionWorkerEffectTemporalRule::TerminalGeneration,
+        SessionWorkerEffectTemporalRule::SessionRoot,
     )
     .await?;
     let Some(control) = service.session_control.as_deref() else {

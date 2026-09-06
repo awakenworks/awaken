@@ -291,8 +291,8 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
 }
 
 /// Resource-staging authorization cause/effect graph: C1 the Session
-/// root is nonterminal; C2 the asserted realization lease exactly equals the
-/// current root; C3 revision, target kind, and full resolved input/Skill equal
+/// root is nonterminal; C2 the current live root lease authorizes the asserted
+/// owner/incarnation/epoch and monotonic expiry; C3 revision, target kind, and full resolved input/Skill equal
 /// the authoritative generation; C4 a replacement is pending. Effects: E1
 /// return the root-owned Workspace; E2 stale ownership; E3 invalid frozen
 /// input; E4 terminal denial. Pending is exclusive when present; otherwise the
@@ -306,13 +306,18 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
 /// | R3 | yes | yes | no | any | E3 |
 /// | R4 | no | any | any | any | E4 |
 /// | R5 | yes | yes | yes | no | E1 active rebuild target |
+/// Renewal regression: R6 same-generation shorter assertion (whether its old
+/// timestamp is live or expired) + live renewed root => E1 for every target;
+/// R7 missing/expired current root, foreign owner/incarnation/epoch, or an
+/// assertion beyond the root expiry => E2. A heartbeat may extend expiry while
+/// File/Skill/Memory preparation is in flight; that is not ownership loss.
 #[tokio::test]
 async fn resource_authority_is_the_exact_pending_session_generation() {
     let lease = awaken_session_contract::SessionRealizationLease {
         owner: "worker-resource-memory".into(),
         runtime_incarnation: "worker-resource-memory:1:boot".into(),
         epoch: 7,
-        expires_at_unix_ms: u64::MAX,
+        expires_at_unix_ms: u64::MAX - 1,
     };
     let input = awaken_session_contract::ResolvedInput {
         binding_id: awaken_resource_contract::BindingId::from("pending-memory"),
@@ -343,6 +348,8 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
         ("resource-memory-current", false, false),
         ("resource-memory-active", false, true),
         ("resource-memory-terminal", true, false),
+        ("resource-memory-expired", false, false),
+        ("resource-memory-unowned", false, false),
     ] {
         let mut session = persisted(
             session_id,
@@ -350,6 +357,11 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
             if terminal { "terminated" } else { "idle" },
         );
         session.realization = Some(lease.clone());
+        if session_id == "resource-memory-expired" {
+            session.realization.as_mut().unwrap().expires_at_unix_ms = 1;
+        } else if session_id == "resource-memory-unowned" {
+            session.realization = None;
+        }
         session
             .resources
             .prepare(session_id, desired.clone())
@@ -415,6 +427,58 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
                 .expect("R1/E1 exact non-Memory authority"),
             "workspace",
             "R1/E1"
+        );
+    }
+
+    for session_id in ["resource-memory-current", "resource-memory-active"] {
+        for asserted_expiry in [1, u64::MAX - 2] {
+            for target in [&exact, &exact_file, &exact_skill] {
+                let mut encoded = serde_json::to_value(target).unwrap();
+                encoded["session_id"] = session_id.into();
+                encoded["lease"]["expires_at_unix_ms"] = asserted_expiry.into();
+                let renewed_intent = serde_json::from_value(encoded).unwrap();
+                assert_eq!(
+                    application
+                        .authorize_resource_materialization_intent(&renewed_intent)
+                        .await
+                        .expect("R6 same-generation renewal keeps the target authorized"),
+                    "workspace",
+                );
+            }
+        }
+    }
+    for (field, value) in [
+        ("owner", serde_json::json!("another-worker")),
+        ("runtime_incarnation", serde_json::json!("another-boot")),
+        ("epoch", serde_json::json!(lease.epoch + 1)),
+        ("expires_at_unix_ms", serde_json::json!(u64::MAX)),
+    ] {
+        let mut encoded = serde_json::to_value(&exact).unwrap();
+        encoded["lease"][field] = value;
+        let denied = serde_json::from_value(encoded).unwrap();
+        assert!(
+            matches!(
+                application
+                    .authorize_resource_materialization_intent(&denied)
+                    .await,
+                Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership)
+            ),
+            "R7 rejects forged {field}"
+        );
+    }
+    for session_id in ["resource-memory-expired", "resource-memory-unowned"] {
+        let mut encoded = serde_json::to_value(&exact).unwrap();
+        encoded["session_id"] = session_id.into();
+        encoded["lease"]["expires_at_unix_ms"] = 1.into();
+        let denied = serde_json::from_value(encoded).unwrap();
+        assert!(
+            matches!(
+                application
+                    .authorize_resource_materialization_intent(&denied)
+                    .await,
+                Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership)
+            ),
+            "R7 root must still have a live owner: {session_id}"
         );
     }
 

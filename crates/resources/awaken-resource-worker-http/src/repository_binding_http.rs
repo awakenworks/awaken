@@ -615,7 +615,7 @@ async fn verify_terminal_repository_binding(
         identity,
         &lease,
         now_ms,
-        SessionWorkerEffectTemporalRule::TerminalGeneration,
+        SessionWorkerEffectTemporalRule::SessionRoot,
     )
     .await
     .rejection_status()

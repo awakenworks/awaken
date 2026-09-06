@@ -19,7 +19,16 @@ impl SessionApplication {
         if session.is_terminal() {
             return Err(SessionRealizationControlFailure::Terminal);
         }
-        if session.realization.as_ref() != Some(intent.lease()) {
+        // Reuse the Session lease authority: renewal extends one generation
+        // and must not invalidate an in-flight immutable Resource read. Exact
+        // equality here incorrectly turned every heartbeat into ownership loss.
+        if !session.realization.as_ref().is_some_and(|current| {
+            awaken_session_contract::realization_lease_authorizes(
+                current,
+                intent.lease(),
+                crate::activity::now_unix_ms(),
+            )
+        }) {
             return Err(SessionRealizationControlFailure::StaleOwnership);
         }
         // A pending replacement is exclusive: while it exists, the prior active
