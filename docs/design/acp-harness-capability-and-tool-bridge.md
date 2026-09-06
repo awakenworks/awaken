@@ -102,6 +102,22 @@ Managed external MCP attachment relays have their own authenticated route lifeti
 this Session tool transport change does not claim to make their loopback URLs
 reachable inside containers.
 
+The ACP wire also receives unsolicited notifications while sending requests.
+Its existing transport drains incoming bytes during a large outbound write and
+retains them for the original ordered projection loop. A frame is limited to
+16 MiB; read-ahead admits at most 256 frames and 16 MiB of complete frames, plus
+one bounded partial frame. Exceeding either limit is an explicit protocol error,
+never truncation, successful EOF or permission approval. Cancellation retains a
+partial UTF-8/JSON frame until the same reader resumes. The regression uses
+64-byte duplex capacity and opposing 64 KiB messages: earlier sequential
+write-then-read fixtures omitted this circular-wait condition. AcpBoundary adds
+its finite buffered-transport schedule, with a mutation restoring the old wait;
+Kani proves the actual buffer admission arithmetic, not async or kernel liveness.
+After a protocol outcome, the same supervisor drains trailing opaque output
+while its original TERM/KILL/exit observer runs. This permits Kubernetes to
+receive a status frame behind buffered stdout. Channel EOF is not an exit;
+missing or unrecognized Kubernetes status fails rather than fabricating code 1.
+
 ## Approval and replay safety
 
 The expected write path is:

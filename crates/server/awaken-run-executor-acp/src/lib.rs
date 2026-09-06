@@ -799,9 +799,13 @@ impl AcpRunExecutor {
 
         loop {
             if let Err(error) = verify_attempt_ownership(context.ownership.as_deref()).await {
-                if Supervisor::reap_after_terminal(session.process.as_ref(), self.policy.reap_grace)
-                    .await
-                    .is_err()
+                if Supervisor::reap_after_terminal(
+                    session.channel.as_mut(),
+                    session.process.as_ref(),
+                    self.policy.reap_grace,
+                )
+                .await
+                .is_err()
                 {
                     context.physical_quiescence.mark_uncertain();
                 }
@@ -887,7 +891,12 @@ impl AcpRunExecutor {
                 // rewrite a completed Step into a different result.
                 preserve_terminal_outcome(
                     outcome,
-                    Supervisor::reap_after_terminal(process.as_ref(), self.policy.reap_grace).await,
+                    Supervisor::reap_after_terminal(
+                        session.channel.as_mut(),
+                        process.as_ref(),
+                        self.policy.reap_grace,
+                    )
+                    .await,
                     process.id(),
                     &context.physical_quiescence,
                 )

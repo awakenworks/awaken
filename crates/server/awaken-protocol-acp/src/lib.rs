@@ -692,6 +692,23 @@ impl AcpBridge {
     }
 }
 
+/// After the protocol outcome is fixed, drain opaque trailing bytes so a
+/// bounded stdout pipe cannot prevent the transport's later exit-status frame.
+/// EOF/error here is never process termination: only the original cleanup future
+/// decides success, escalation and deadlines. No trailing fact is projected.
+async fn drain_during_cleanup<T>(
+    channel: &mut dyn AgentChannel,
+    cleanup: impl std::future::Future<Output = T>,
+) -> T {
+    tokio::pin!(cleanup);
+    let mut sink = tokio::io::sink();
+    tokio::select! {
+        biased;
+        result = &mut cleanup => result,
+        _ = tokio::io::copy(channel, &mut sink) => cleanup.await,
+    }
+}
+
 /// The supervisor: a consumer policy over the process/channel primitives — the
 /// session-runner shape. It drives a turn, bounds it with a hard deadline, honors
 /// mid-turn interrupts, and reaps the agent `SIGTERM`→(grace)→`SIGKILL` on exit.
@@ -705,17 +722,19 @@ impl Supervisor {
     /// the TERM -> KILL ladder. Cancellation and deadline paths continue to call
     /// [`Self::reap`] directly, so this never delays an explicit stop request.
     pub async fn reap_after_terminal(
+        channel: &mut dyn AgentChannel,
         process: &dyn pc::ProcessHandle,
         grace: std::time::Duration,
     ) -> Result<bool, AcpError> {
         let budget = grace
             .saturating_mul(4)
             .max(std::time::Duration::from_millis(1));
-        tokio::time::timeout(budget, Self::reap_after_terminal_inner(process, grace))
-            .await
-            .map_err(|_| {
-                AcpError::Io("terminal process cleanup exceeded its total deadline".into())
-            })?
+        drain_during_cleanup(
+            channel,
+            tokio::time::timeout(budget, Self::reap_after_terminal_inner(process, grace)),
+        )
+        .await
+        .map_err(|_| AcpError::Io("terminal process cleanup exceeded its total deadline".into()))?
     }
 
     async fn reap_after_terminal_inner(
@@ -838,15 +857,15 @@ impl Supervisor {
             biased;
             outcome = AcpBridge::run_turn_with_config(channel, prompt, sink, codec, config, launch_sink) => outcome,
             Some(Injection::Interrupt) = injections.recv() => {
-                Self::reap(process, policy.reap_grace).await?;
+                drain_during_cleanup(channel, Self::reap(process, policy.reap_grace)).await?;
                 Ok(TerminationReason::Cancelled)
             }
             () = cancel => {
-                Self::reap(process, policy.reap_grace).await?;
+                drain_during_cleanup(channel, Self::reap(process, policy.reap_grace)).await?;
                 Ok(TerminationReason::Cancelled)
             }
             () = deadline => {
-                Self::reap(process, policy.reap_grace).await?;
+                drain_during_cleanup(channel, Self::reap(process, policy.reap_grace)).await?;
                 Ok(TerminationReason::TimedOut)
             }
         }
@@ -876,9 +895,9 @@ mod tests {
 
     /// An in-memory sink that enforces monotonic seq and records the projected events.
     #[derive(Default)]
-    struct RecordingSink {
+    pub(super) struct RecordingSink {
         last: u64,
-        events: Vec<(u64, AcpProjectedEvent)>,
+        pub(super) events: Vec<(u64, AcpProjectedEvent)>,
         fail_at: Option<u64>,
     }
 
@@ -1354,7 +1373,9 @@ mod tests {
         }
 
         let signalled = Arc::new(Mutex::new(Vec::new()));
+        let (mut channel, _peer) = tokio::io::duplex(64);
         let killed = Supervisor::reap_after_terminal(
+            &mut channel,
             &NaturallyExiting {
                 polls: AtomicUsize::new(0),
                 signalled: signalled.clone(),
@@ -1573,3 +1594,7 @@ mod tests {
         agent.await.unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "tests/cleanup.rs"]
+mod cleanup_tests;
