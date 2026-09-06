@@ -52,6 +52,7 @@ pub awaken_ext_background_task::BackgroundTask::lifecycle: awaken_ext_background
 pub awaken_ext_background_task::BackgroundTask::origin: awaken_ext_background_task::BackgroundTaskOrigin
 pub awaken_ext_background_task::BackgroundTask::revision: u64
 impl awaken_ext_background_task::BackgroundTask
+pub fn awaken_ext_background_task::BackgroundTask::admits_execution_of(&self, &Self, u64) -> bool
 pub fn awaken_ext_background_task::BackgroundTask::attempt(&self) -> core::option::Option<&awaken_ext_background_task::TaskAttempt>
 pub fn awaken_ext_background_task::BackgroundTask::finish(&mut self, &awaken_ext_background_task::TaskFence, awaken_ext_background_task::BackgroundTaskEnd) -> core::result::Result<(), awaken_ext_background_task::BackgroundTaskError>
 pub fn awaken_ext_background_task::BackgroundTask::heartbeat(&mut self, &awaken_ext_background_task::TaskFence, u64, u64) -> core::result::Result<(), awaken_ext_background_task::BackgroundTaskError>
@@ -90,16 +91,17 @@ pub fn awaken_ext_background_task::BackgroundTaskPlugin::resolve(&self) -> awake
 pub fn awaken_ext_background_task::BackgroundTaskPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::contributions::Contributions, awaken_runtime_contract::plugin::contributions::PluginConfigError>
 pub struct awaken_ext_background_task::BackgroundTaskSupervisor
 impl awaken_ext_background_task::BackgroundTaskSupervisor
-pub fn awaken_ext_background_task::BackgroundTaskSupervisor::cancel(&self, &awaken_ext_background_task::BackgroundTaskId)
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::cancel(&self, &awaken_ext_background_task::BackgroundTaskId, &awaken_ext_background_task::TaskFence)
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::complete(&self, awaken_ext_background_task::BackgroundTaskId, awaken_ext_background_task::BackgroundTaskCompletion)
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::completion(&self, &awaken_ext_background_task::BackgroundTaskId) -> core::option::Option<awaken_ext_background_task::BackgroundTaskCompletion>
-pub fn awaken_ext_background_task::BackgroundTaskSupervisor::is_active(&self, &awaken_ext_background_task::BackgroundTaskId) -> bool
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::is_active(&self, &awaken_ext_background_task::BackgroundTaskId, &awaken_ext_background_task::TaskFence) -> bool
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::lease_ms() -> u64
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::now_ms() -> u64
-pub fn awaken_ext_background_task::BackgroundTaskSupervisor::register(&self, &awaken_ext_background_task::BackgroundTaskId) -> core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::register(&self, &awaken_ext_background_task::BackgroundTaskId, &awaken_ext_background_task::TaskFence) -> core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::resume_wait(&self, &awaken_ext_background_task::BackgroundTaskId, &awaken_ext_background_task::TaskFence) -> core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
-pub fn awaken_ext_background_task::BackgroundTaskSupervisor::retire(&self, &awaken_ext_background_task::BackgroundTaskId)
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::retire(&self, &awaken_ext_background_task::BackgroundTaskId, &awaken_ext_background_task::TaskFence, &awaken_ext_background_task::TaskFence)
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::retire_terminal(&self, &awaken_ext_background_task::BackgroundTaskId)
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::wait(&self, awaken_ext_background_task::BackgroundTaskId, awaken_ext_background_task::BackgroundTaskWaitCandidate)
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::wait_candidate(&self, &awaken_ext_background_task::BackgroundTaskId) -> core::option::Option<awaken_ext_background_task::BackgroundTaskWaitCandidate>
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::worker_id(&self) -> &str

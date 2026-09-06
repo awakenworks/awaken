@@ -13,9 +13,9 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::Store;
 use awaken_ext_background_task::{
-    BackgroundTaskCompletion, BackgroundTaskEnd, BackgroundTaskId, BackgroundTaskLifecycle,
-    BackgroundTaskSupervisor, BackgroundTaskWaitCandidate, BackgroundWait, TaskFence,
-    tasks_from_state,
+    BackgroundTask, BackgroundTaskCompletion, BackgroundTaskEnd, BackgroundTaskId,
+    BackgroundTaskLifecycle, BackgroundTaskSupervisor, BackgroundTaskWaitCandidate, BackgroundWait,
+    TaskFence, tasks_from_state,
 };
 use awaken_runtime::{PreparedToolExecutor, Runtime};
 use awaken_runtime_contract::ExecutableAgentSnapshot;
@@ -29,6 +29,8 @@ use awaken_session_contract::{RunErrorKind, SessionRunBackgroundApplication, sta
 
 use crate::background::{BackgroundRuns, BackgroundWorkClass};
 use crate::store::HostCommit;
+
+mod ownership;
 
 const OBSERVER_ID: &str = "awaken.background-task.executor.v1";
 const ATTENTION_RETRY_DELAYS: [Duration; 3] = [
@@ -258,20 +260,17 @@ impl BackgroundTaskTerminalObserver {
         Ok(BackgroundWait::Remote(handle.clone()))
     }
 
-    async fn launch(
-        &self,
-        task_id: BackgroundTaskId,
-        fence: TaskFence,
-        call: awaken_runtime_contract::tool::ToolCall,
-        thread_id: awaken_runtime_contract::ThreadId,
-        expected: awaken_ext_background_task::TaskExecutionPolicy,
-    ) {
-        let Some(cancellation) = self.supervisor.register(&task_id) else {
+    async fn launch(&self, task: BackgroundTask) {
+        let attempt = task.attempt().expect("committed Running attempt");
+        let fence = attempt.fence();
+        let expected = attempt.policy.clone();
+        let Some(cancellation) = self.supervisor.register(&task.id, &fence) else {
             return;
         };
-        let mut context = self.context.clone();
-        context.cancellation = Some(cancellation.clone());
-        context.terminal_observers.clear();
+        let context = self.execution_context(&task, cancellation);
+        let task_id = task.id;
+        let call = task.invocation.call;
+        let thread_id = task.origin.thread_id;
         let prepared =
             match PreparedToolExecutor::new(self.runtime.clone(), &self.snapshot, context) {
                 Ok(prepared) => Arc::new(prepared),
@@ -445,31 +444,35 @@ impl BackgroundTaskTerminalObserver {
             .await;
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn launch_remote(
-        &self,
-        task_id: BackgroundTaskId,
-        fence: TaskFence,
-        call: awaken_runtime_contract::tool::ToolCall,
-        thread_id: awaken_runtime_contract::ThreadId,
-        expected: awaken_ext_background_task::TaskExecutionPolicy,
-        continuation: ToolTaskHandle,
-        lease_expires_at_ms: u64,
-        cancelling: bool,
-    ) {
+    async fn launch_remote(&self, task: BackgroundTask) {
+        let (attempt, continuation, cancelling) = match &task.lifecycle {
+            BackgroundTaskLifecycle::Waiting {
+                attempt,
+                wait: BackgroundWait::Remote(handle),
+            } => (attempt, handle.clone(), false),
+            BackgroundTaskLifecycle::Cancelling {
+                attempt,
+                wait: Some(BackgroundWait::Remote(handle)),
+            } => (attempt, handle.clone(), true),
+            _ => unreachable!("committed remote continuation"),
+        };
+        let fence = attempt.fence();
+        let expected = attempt.policy.clone();
+        let lease_expires_at_ms = attempt.lease_expires_at_ms;
         let cancellation = self
             .supervisor
-            .resume_wait(&task_id, &fence)
-            .or_else(|| self.supervisor.register(&task_id));
+            .resume_wait(&task.id, &fence)
+            .or_else(|| self.supervisor.register(&task.id, &fence));
         let Some(cancellation) = cancellation else {
             if cancelling {
-                self.supervisor.cancel(&task_id);
+                self.supervisor.cancel(&task.id, &fence);
             }
             return;
         };
-        let mut context = self.context.clone();
-        context.cancellation = Some(cancellation.clone());
-        context.terminal_observers.clear();
+        let context = self.execution_context(&task, cancellation.clone());
+        let task_id = task.id;
+        let call = task.invocation.call;
+        let thread_id = task.origin.thread_id;
         let prepared =
             match PreparedToolExecutor::new(self.runtime.clone(), &self.snapshot, context) {
                 Ok(prepared) => Arc::new(prepared),
@@ -796,53 +799,24 @@ impl BackgroundTaskTerminalObserver {
                 BackgroundTaskLifecycle::Running { attempt }
                     if attempt.worker_id == self.supervisor.worker_id() =>
                 {
-                    self.launch(
-                        task.id,
-                        attempt.fence(),
-                        task.invocation.call,
-                        task.origin.thread_id,
-                        attempt.policy.clone(),
-                    )
-                    .await;
+                    self.launch(task).await;
                 }
                 BackgroundTaskLifecycle::Waiting {
                     attempt,
-                    wait: BackgroundWait::Remote(continuation),
-                } if attempt.worker_id == self.supervisor.worker_id() => {
-                    self.launch_remote(
-                        task.id,
-                        attempt.fence(),
-                        task.invocation.call,
-                        task.origin.thread_id,
-                        attempt.policy.clone(),
-                        continuation.clone(),
-                        attempt.lease_expires_at_ms,
-                        false,
-                    )
-                    .await;
+                    wait: BackgroundWait::Remote(_),
                 }
-                BackgroundTaskLifecycle::Cancelling {
+                | BackgroundTaskLifecycle::Cancelling {
                     attempt,
-                    wait: Some(BackgroundWait::Remote(continuation)),
+                    wait: Some(BackgroundWait::Remote(_)),
                 } if attempt.worker_id == self.supervisor.worker_id() => {
-                    self.launch_remote(
-                        task.id,
-                        attempt.fence(),
-                        task.invocation.call,
-                        task.origin.thread_id,
-                        attempt.policy.clone(),
-                        continuation.clone(),
-                        attempt.lease_expires_at_ms,
-                        true,
-                    )
-                    .await;
+                    self.launch_remote(task).await;
                 }
                 BackgroundTaskLifecycle::Cancelling { attempt, .. }
                     if attempt.worker_id == self.supervisor.worker_id() =>
                 {
-                    self.supervisor.cancel(&task.id);
+                    self.supervisor.cancel(&task.id, &attempt.fence());
                 }
-                BackgroundTaskLifecycle::Ended { .. } => self.supervisor.retire(&task.id),
+                BackgroundTaskLifecycle::Ended { .. } => self.supervisor.retire_terminal(&task.id),
                 _ => {}
             }
         }
@@ -1508,14 +1482,27 @@ mod tests {
             "C5/E5: detached execution reuses the canonical stable spill identity"
         );
         assert!(
-            supervisor.register(&task.id).is_none(),
+            supervisor.register(&task.id, &fence).is_none(),
             "completion remains a deduplication guard until durable Ended truth"
         );
     }
 
-    struct RemoteTaskTool {
-        starts: AtomicUsize,
-        polls: AtomicUsize,
+    #[derive(Default)]
+    pub(super) struct RemoteTaskTool {
+        pub(super) starts: AtomicUsize,
+        pub(super) polls: AtomicUsize,
+        pub(super) cancels: AtomicUsize,
+    }
+
+    impl RemoteTaskTool {
+        pub(super) fn handle() -> ToolTaskHandle {
+            ToolTaskHandle {
+                owner: "fixture-durable-adapter".into(),
+                binding: "remote".into(),
+                task_id: "remote-secret-id".into(),
+                poll_interval_ms: Some(1),
+            }
+        }
     }
 
     #[async_trait]
@@ -1530,12 +1517,7 @@ mod tests {
 
         async fn start_task(&self, _call: ToolCall) -> Result<ToolTaskStart, ToolError> {
             self.starts.fetch_add(1, Ordering::SeqCst);
-            Ok(ToolTaskStart::Pending(ToolTaskHandle {
-                owner: "fixture-durable-adapter".into(),
-                binding: "remote".into(),
-                task_id: "remote-secret-id".into(),
-                poll_interval_ms: Some(1),
-            }))
+            Ok(ToolTaskStart::Pending(Self::handle()))
         }
 
         async fn poll_task(
@@ -1550,6 +1532,30 @@ mod tests {
                 "remote complete",
             )))
         }
+
+        async fn cancel_task(
+            &self,
+            _call: &ToolCall,
+            task: &ToolTaskHandle,
+        ) -> Result<ToolTaskPoll, ToolError> {
+            assert_eq!(task.task_id, Self::handle().task_id);
+            self.cancels.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolTaskPoll::Cancelled)
+        }
+    }
+
+    pub(super) fn remote_snapshot() -> ExecutableAgentSnapshot {
+        let mut snapshot = snapshot();
+        snapshot.resolved_spec.tool_descriptors = vec![
+            ToolDescriptor::pinned(
+                "test",
+                "remote",
+                "Remote work.",
+                serde_json::json!({"type":"object"}),
+            )
+            .with_kind(awaken_runtime_contract::resolved::ToolKind::DetachedOnly),
+        ];
+        snapshot
     }
 
     #[tokio::test]
@@ -1568,10 +1574,7 @@ mod tests {
             },
             supervisor.clone(),
         ));
-        let remote = Arc::new(RemoteTaskTool {
-            starts: AtomicUsize::new(0),
-            polls: AtomicUsize::new(0),
-        });
+        let remote = Arc::new(RemoteTaskTool::default());
         let runtime = Arc::new(Runtime::new().with_plugin(plugin).with_tool(remote.clone()));
         let memory = awaken_store_inmem::MemoryCommitCoordinator::new();
         let commit = Arc::new(HostCommit::Local(Arc::new(
@@ -1580,19 +1583,9 @@ mod tests {
         let background = Arc::new(BackgroundRuns::new());
         let attention = Arc::new(RecordingAttentionApplication::accepting(0));
         let attention_port: Arc<dyn SessionRunBackgroundApplication> = attention.clone();
-        let mut remote_snapshot = snapshot();
-        remote_snapshot.resolved_spec.tool_descriptors = vec![
-            ToolDescriptor::pinned(
-                "test",
-                "remote",
-                "Remote work.",
-                serde_json::json!({"type":"object"}),
-            )
-            .with_kind(awaken_runtime_contract::resolved::ToolKind::DetachedOnly),
-        ];
         let observer = BackgroundTaskTerminalObserver::new(
             runtime,
-            remote_snapshot,
+            remote_snapshot(),
             RuntimeRunContext::new(),
             commit.clone(),
             background.clone(),

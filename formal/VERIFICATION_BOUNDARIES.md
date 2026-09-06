@@ -24,6 +24,47 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- BackgroundTask's detached context now supplies the existing Runtime ownership
+  verifier at the common post-concurrency-admission effect boundary. It reads
+  live local committed state and consumes the aggregate's exact request/policy/
+  fence, current lease, phase and remote-target decision. Launch and continuation
+  share one context constructor and receive the complete authoritative aggregate
+  instead of independently assembled execution coordinates. Kani checks the
+  admission decision for every phase pair and u64 clock/deadline; aggregate tests
+  cover identity axes, and blocked-admission tests check start/poll/cancel after
+  cancellation, reclaim, terminal commit, expiry or process replacement. Remote
+  Worker projections remain unsupported authority, as already required at startup.
+  This closes pre-effect stale-read admission, not the database-read/network-effect
+  atomicity gap, in-flight revocation, third-party receipt fencing or universal
+  driver refinement. The whole BackgroundTask obligations retain abstract grades.
+- BackgroundTask's one process-local slot now carries owner/epoch in Active as
+  well as Waiting/Completed. Exact-fence wait, completion, cancellation and
+  retirement reject delayed callbacks; only a higher committed epoch replaces
+  an existing slot without inventing cancellation intent. Retirement additionally
+  requires a newer committed epoch, so an older Run snapshot cannot discard a
+  newer completion. Three decision-table tests cover 81 combinations, and four
+  Loom checks exercise the production mutex under selected two-thread schedules.
+  The existing process-completion obligation remains abstract-model grade:
+  these checks do not prove all Tokio internals, committed-observer freshness,
+  same-epoch adapter callback semantics, database atomicity or journey refinement.
+- BackgroundTask settlement preserves `Indeterminate` after cancel intent;
+  neither a lost cancellation response nor a missing queryable handle proves
+  remote termination. Reclaim keeps remote `Cancelling` and its exact handle
+  for the post-commit Host observer; cancelled work without such a handle ends
+  unknown even if its original execution policy allowed replay. The plugin's
+  parallel post-reclaim `finish(Cancelled)` decision is removed: one aggregate
+  transition produces one staged revision. BackgroundTask.tla now includes all
+  completion variants and one canonical settlement projection; deleting its
+  uncertainty guard must fail the named invariant. Aggregate and plugin tests
+  cover unknown outcomes, stale fences, revision exhaustion and lost commits.
+  The previous remote-continuation production grade is corrected to abstract:
+  proving a reconnection predicate is not a proof that every wait/cancel/reclaim
+  transition preserves the full handle. The production expired-attempt kernel
+  is checked over all u64 epochs, u16 budgets and recovery/remote/cancel classes.
+  It returns one closed Acquire/Indeterminate/AttemptsExhausted decision, consumed
+  by aggregate materialization. Full-aggregate Kani experiments did not converge
+  and are not accepted evidence: recursive heap/payload framing, revision/clock
+  admission, async driver refinement and journey composition remain open.
 - WorkQueue ordinary/token-bearing claims and Session acquisition all consume
   the existing `lease_epoch` transition, now backed by shared `StoredU64` rather
   than parallel SQL increments. Kani checks its full signed input domain and

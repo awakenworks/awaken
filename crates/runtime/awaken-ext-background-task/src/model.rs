@@ -173,17 +173,18 @@ impl BackgroundTaskLifecycle {
         }
     }
 
-    fn has_remote_continuation(&self) -> bool {
-        matches!(
-            self,
+    fn remote_wait(&self) -> Option<&BackgroundWait> {
+        match self {
             Self::Waiting {
-                wait: BackgroundWait::Remote(_),
-                ..
-            } | Self::Cancelling {
-                wait: Some(BackgroundWait::Remote(_)),
+                wait: wait @ BackgroundWait::Remote(_),
                 ..
             }
-        )
+            | Self::Cancelling {
+                wait: Some(wait @ BackgroundWait::Remote(_)),
+                ..
+            } => Some(wait),
+            _ => None,
+        }
     }
 }
 
@@ -211,15 +212,68 @@ const fn cancel_decision(phase: TaskPhase) -> CancelDecision {
     }
 }
 
-const fn cancellation_wins_completion(phase: TaskPhase) -> bool {
-    matches!(phase, TaskPhase::Cancelling)
+const fn cancellation_wins_completion(phase: TaskPhase, indeterminate: bool) -> bool {
+    // Intent dominates a known racing result, but cannot certify that an
+    // unobserved remote effect stopped. Preserve the uncertainty for recovery.
+    matches!(phase, TaskPhase::Cancelling) && !indeterminate
+}
+
+const fn execution_is_admitted(
+    current: TaskPhase,
+    expected: TaskPhase,
+    identity_matches: bool,
+    lease_expires_at_ms: u64,
+    now_ms: u64,
+    exact_remote_target: bool,
+) -> bool {
+    if !identity_matches || now_ms >= lease_expires_at_ms {
+        return false;
+    }
+    match (expected, current) {
+        (TaskPhase::Running, TaskPhase::Running) => true,
+        (TaskPhase::Waiting, TaskPhase::Waiting | TaskPhase::Cancelling)
+        | (TaskPhase::Cancelling, TaskPhase::Cancelling) => exact_remote_target,
+        _ => false,
+    }
 }
 
 const fn expired_attempt_is_reconnectable(
     mode: ToolRecoveryMode,
     has_remote_continuation: bool,
+    cancelling: bool,
 ) -> bool {
-    !matches!(mode, ToolRecoveryMode::NeverReplay) || has_remote_continuation
+    has_remote_continuation || (!cancelling && !matches!(mode, ToolRecoveryMode::NeverReplay))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpiredRecoveryDecision {
+    Acquire(u64),
+    Indeterminate,
+    AttemptsExhausted,
+}
+
+/// Sole decision for an already-expired attempt. Timing admission and atomic
+/// revision replacement remain at the aggregate boundary; this kernel cannot
+/// manufacture a remote termination receipt or wrap an attempt epoch.
+const fn expired_recovery_decision(
+    mode: ToolRecoveryMode,
+    remote: bool,
+    cancelling: bool,
+    epoch: u64,
+    maximum: u16,
+) -> ExpiredRecoveryDecision {
+    if !expired_attempt_is_reconnectable(mode, remote, cancelling) {
+        ExpiredRecoveryDecision::Indeterminate
+    } else if epoch >= maximum as u64 {
+        if remote {
+            ExpiredRecoveryDecision::Indeterminate
+        } else {
+            ExpiredRecoveryDecision::AttemptsExhausted
+        }
+    } else {
+        // epoch < a u16 budget makes the successor representable in u64.
+        ExpiredRecoveryDecision::Acquire(epoch + 1)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -286,6 +340,33 @@ impl BackgroundTask {
         self.id == other.id && self.origin == other.origin && self.invocation == other.invocation
     }
 
+    /// Admit an external execution against freshly read committed truth. The
+    /// expected snapshot freezes request, policy, fence and (for continuation)
+    /// remote identity. A heartbeat may renew the current lease and cancellation
+    /// may narrow Waiting to Cancelling, but neither authorizes another start.
+    /// This is a read decision, not a permit that fences a third-party effect.
+    #[must_use]
+    pub fn admits_execution_of(&self, expected: &Self, now_ms: u64) -> bool {
+        let (Some(current), Some(claim)) = (self.attempt(), expected.attempt()) else {
+            return false;
+        };
+        let exact_remote_target = self
+            .lifecycle
+            .remote_wait()
+            .zip(expected.lifecycle.remote_wait())
+            .is_some_and(|(current, expected)| same_wait_target(current, expected));
+        execution_is_admitted(
+            self.lifecycle.phase(),
+            expected.lifecycle.phase(),
+            self.same_request_as(expected)
+                && current.owns(&claim.fence())
+                && current.policy == claim.policy,
+            current.lease_expires_at_ms,
+            now_ms,
+            exact_remote_target,
+        )
+    }
+
     pub fn start(
         &mut self,
         worker_id: impl Into<String>,
@@ -329,41 +410,40 @@ impl BackgroundTask {
         let expires = now_ms
             .checked_add(lease_ms)
             .ok_or(BackgroundTaskError::ClockOverflow)?;
-        let remote_reconnectable = self.lifecycle.has_remote_continuation();
+        let remote_reconnectable = self.lifecycle.remote_wait().is_some();
+        let cancelling = matches!(self.lifecycle, BackgroundTaskLifecycle::Cancelling { .. });
         let (epoch, policy) = match &self.lifecycle {
             BackgroundTaskLifecycle::Running { attempt }
             | BackgroundTaskLifecycle::Waiting { attempt, .. }
             | BackgroundTaskLifecycle::Cancelling { attempt, .. }
                 if attempt.lease_expires_at_ms <= now_ms =>
             {
-                if !expired_attempt_is_reconnectable(
+                match expired_recovery_decision(
                     attempt.policy.recovery.mode(),
                     remote_reconnectable,
+                    cancelling,
+                    attempt.epoch,
+                    attempt.policy.recovery.max_attempts().get(),
                 ) {
-                    self.end(BackgroundTaskEnd::Indeterminate {
-                        message: "worker lease expired after a non-replayable effect".into(),
-                    })?;
-                    return Ok(TaskClaim::EndedIndeterminate);
-                }
-                if attempt.epoch >= u64::from(attempt.policy.recovery.max_attempts().get()) {
-                    if remote_reconnectable {
+                    ExpiredRecoveryDecision::Indeterminate => {
+                        let message = if remote_reconnectable {
+                            "remote background task observation budget exhausted; remote outcome is unknown"
+                        } else {
+                            "worker lease expired without a safe recovery or cancellation observation"
+                        };
                         self.end(BackgroundTaskEnd::Indeterminate {
-                            message: "remote background task observation budget exhausted; remote outcome is unknown".into(),
+                            message: message.into(),
                         })?;
                         return Ok(TaskClaim::EndedIndeterminate);
                     }
-                    self.end(BackgroundTaskEnd::Failed {
-                        message: "background task recovery attempt budget exhausted".into(),
-                    })?;
-                    return Ok(TaskClaim::EndedAttemptsExhausted);
+                    ExpiredRecoveryDecision::AttemptsExhausted => {
+                        self.end(BackgroundTaskEnd::Failed {
+                            message: "background task recovery attempt budget exhausted".into(),
+                        })?;
+                        return Ok(TaskClaim::EndedAttemptsExhausted);
+                    }
+                    ExpiredRecoveryDecision::Acquire(epoch) => (epoch, attempt.policy.clone()),
                 }
-                (
-                    attempt
-                        .epoch
-                        .checked_add(1)
-                        .ok_or(BackgroundTaskError::EpochOverflow)?,
-                    attempt.policy.clone(),
-                )
             }
             BackgroundTaskLifecycle::Ended { .. } => return Err(BackgroundTaskError::Terminal),
             BackgroundTaskLifecycle::Requested => {
@@ -515,7 +595,10 @@ impl BackgroundTask {
             .attempt()
             .filter(|attempt| attempt.owns(fence))
             .ok_or(BackgroundTaskError::StaleFence)?;
-        let end = if cancellation_wins_completion(self.lifecycle.phase()) {
+        let end = if cancellation_wins_completion(
+            self.lifecycle.phase(),
+            matches!(end, BackgroundTaskEnd::Indeterminate { .. }),
+        ) {
             BackgroundTaskEnd::Cancelled
         } else {
             end
@@ -656,7 +739,50 @@ pub enum BackgroundTaskError {
 
 #[cfg(kani)]
 #[kani::proof]
+fn background_execution_admission_is_exact_fenced_live_and_phase_monotone() {
+    // All pairs of five phases, both identity/remote predicates and all u64
+    // times/deadlines. R1 mismatch or now>=deadline -> reject; R2 Running may
+    // start only while still Running; R3 Waiting may observe Waiting/Cancelling
+    // with the exact remote target; R4 Cancelling may only continue Cancelling.
+    // Requested/Ended and local waits cannot execute. This proves the production
+    // decision, not heap identity projection, clock truth or an atomic DB/effect.
+    let phases = [
+        TaskPhase::Requested,
+        TaskPhase::Running,
+        TaskPhase::Waiting,
+        TaskPhase::Cancelling,
+        TaskPhase::Ended,
+    ];
+    let current: usize = kani::any();
+    let expected: usize = kani::any();
+    kani::assume(current < 5 && expected < 5);
+    let identity: bool = kani::any();
+    let remote: bool = kani::any();
+    let expires: u64 = kani::any();
+    let now: u64 = kani::any();
+    let admitted = execution_is_admitted(
+        phases[current],
+        phases[expected],
+        identity,
+        expires,
+        now,
+        remote,
+    );
+    let phase_allowed = (expected == 1 && current == 1)
+        || (remote && expected == 2 && (current == 2 || current == 3))
+        || (remote && expected == 3 && current == 3);
+    assert_eq!(
+        admitted,
+        identity && u128::from(now) < u128::from(expires) && phase_allowed
+    );
+}
+
+#[cfg(kani)]
+#[kani::proof]
 fn cancellation_is_monotone_and_terminal_states_are_absorbing() {
+    // C1 every phase; C2 known/unknown completion. Cancel is a stutter for
+    // Cancelling/Ended, marks live tasks, ends Requested. Only known matching
+    // completion can be projected to Cancelled; unknown must stay unknown.
     let raw: u8 = kani::any();
     kani::assume(raw < 5);
     let phase = match raw {
@@ -679,15 +805,18 @@ fn cancellation_is_monotone_and_terminal_states_are_absorbing() {
         decision == CancelDecision::Stutter,
         matches!(phase, TaskPhase::Cancelling | TaskPhase::Ended)
     );
+    let indeterminate: bool = kani::any();
     assert_eq!(
-        cancellation_wins_completion(phase),
-        phase == TaskPhase::Cancelling
+        cancellation_wins_completion(phase, indeterminate),
+        phase == TaskPhase::Cancelling && !indeterminate
     );
 }
 
 #[cfg(kani)]
 #[kani::proof]
 fn never_replay_recovery_requires_a_durable_remote_continuation() {
+    // C1 recovery mode; C2 remote handle; C3 cancellation. Remote reconnects,
+    // local NeverReplay or local cancellation cannot replay an uncertain effect.
     let raw: u8 = kani::any();
     kani::assume(raw < 4);
     let mode = match raw {
@@ -697,14 +826,55 @@ fn never_replay_recovery_requires_a_durable_remote_continuation() {
         _ => ToolRecoveryMode::DurableRequest,
     };
     let has_remote_continuation: bool = kani::any();
+    let cancelling: bool = kani::any();
     assert_eq!(
-        expired_attempt_is_reconnectable(mode, has_remote_continuation),
-        mode != ToolRecoveryMode::NeverReplay || has_remote_continuation
+        expired_attempt_is_reconnectable(mode, has_remote_continuation, cancelling),
+        has_remote_continuation || (mode != ToolRecoveryMode::NeverReplay && !cancelling)
     );
     if mode == ToolRecoveryMode::NeverReplay {
         assert_eq!(
-            expired_attempt_is_reconnectable(mode, has_remote_continuation),
+            expired_attempt_is_reconnectable(mode, has_remote_continuation, cancelling),
             has_remote_continuation
         );
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn expired_background_recovery_is_exact_nonwrapping_and_never_invents_termination() {
+    // All u64 epochs, all u16 budgets (including defensively handled zero),
+    // all recovery modes and both remote/cancel facts. R1 non-remote cancellation
+    // or NeverReplay => unknown; R2 exhausted remote => unknown; R3 exhausted
+    // replayable local => Failed; R4 otherwise exact successor. Preconditions:
+    // caller has admitted expiry. Heap payload/frame, clock admission, aggregate
+    // revision atomicity and async commit refinement are not claimed here.
+    let raw: u8 = kani::any();
+    kani::assume(raw < 4);
+    let mode = match raw {
+        0 => ToolRecoveryMode::NeverReplay,
+        1 => ToolRecoveryMode::ReplaySafe,
+        2 => ToolRecoveryMode::Idempotent,
+        _ => ToolRecoveryMode::DurableRequest,
+    };
+    let remote: bool = kani::any();
+    let cancelling: bool = kani::any();
+    let epoch: u64 = kani::any();
+    let maximum: u16 = kani::any();
+    let decision = expired_recovery_decision(mode, remote, cancelling, epoch, maximum);
+    let unknown = (!remote && (raw == 0 || cancelling))
+        || (remote && u128::from(epoch) >= u128::from(maximum));
+    let exhausted = !remote && raw != 0 && !cancelling && u128::from(epoch) >= u128::from(maximum);
+    assert_eq!(decision == ExpiredRecoveryDecision::Indeterminate, unknown);
+    assert_eq!(
+        decision == ExpiredRecoveryDecision::AttemptsExhausted,
+        exhausted
+    );
+    match decision {
+        ExpiredRecoveryDecision::Acquire(next) => {
+            assert!(!unknown && !exhausted);
+            assert_eq!(u128::from(next), u128::from(epoch) + 1);
+            assert!(next <= u64::from(maximum));
+        }
+        _ => assert!(unknown || exhausted),
     }
 }
