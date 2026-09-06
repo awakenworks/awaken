@@ -1,4 +1,5 @@
 use super::*;
+mod mcp_relay_lease;
 mod resource_staging_lease;
 use crate::config::block_text;
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -10506,6 +10507,18 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let secure_managed =
         crate::ManagedHost::new(secure_acp_host.clone()).with_credentials(credentials, secrets);
     let secure_generation = generation("mcp-acp-secure");
+    // H20 performs an actual relay call, not just direct Stage admission.
+    // Mirror the production Control-installed root; an opaque capability must
+    // not turn a bare Stage assertion into ongoing execution authority.
+    secure_acp_host.install_session_realization_lease(
+        &secure_generation.session_id,
+        awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: secure_generation.runtime_incarnation.clone(),
+            epoch: secure_generation.lease_epoch,
+            expires_at_unix_ms: secure_generation.lease_expires_at_unix_ms,
+        },
+    );
     let secure_receipt = secure_managed
         .stage_mcp_attachment(request("mcp-acp-secure", "workspace-a", 1))
         .await
@@ -11859,12 +11872,14 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
 ///
 /// | Rule | C1 | C2 | C3 | C4 | Effect |
 /// |---|---|---|---|---|---|
-/// | A1 | yes | any | any | any | E1 |
+/// | A1 | yes | absent | absent | absent | E1 (direct assertion) |
 /// | A2 | no | yes | yes | yes | E1 |
 /// | A3 | no | no | any | yes | E2 |
 /// | A4 | no | yes | no | yes | E2 |
 /// | A5 | no | yes | yes | no | E2 |
 /// | A6 | no | absent | absent | absent | E2 |
+/// | A7 | yes | no | any | any | E2 (root overrides live assertion) |
+/// | A8 | yes | yes | no OR C4=no | any | E2 |
 #[test]
 fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_renewal() {
     let generation = awaken_session_contract::McpGenerationRef {
@@ -11881,7 +11896,7 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
         "A1/E1"
     );
 
-    let mut expired = generation;
+    let mut expired = generation.clone();
     expired.lease_expires_at_unix_ms = 90;
     for (rule, lease, expected) in [
         (
@@ -11927,6 +11942,7 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
         ("A6", None, false),
     ] {
         let host = SharedHost::new(Arc::new(OkModel), "stub");
+        let has_root = lease.is_some();
         if let Some(lease) = lease {
             host.install_session_realization_lease(&expired.session_id, lease);
         }
@@ -11935,6 +11951,13 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
             expected,
             "{rule}"
         );
+        if has_root {
+            assert_eq!(
+                host.mcp_generation_is_authorized_at(&generation, 100),
+                expected,
+                "A7/A8 {rule}: a future assertion cannot override the root"
+            );
+        }
     }
 }
 

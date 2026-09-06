@@ -34,8 +34,8 @@ mod recovery_backoff;
 
 use authority::{
     TerminalCleanupClaimConflict, TerminalCleanupClaimScope, TerminalCleanupRootClaim,
-    exact_generation_key, generation_set_is_renewed_successor,
-    terminal_cleanup_worker_requirements, verify_lease,
+    exact_generation_key, generation_set_authorizes, terminal_cleanup_worker_requirements,
+    verify_lease,
 };
 use control::RefreshedSessionRealizationControl;
 use recovery_backoff::{SessionRecoveryTrigger, next_session_recovery_delay};

@@ -90,22 +90,45 @@ stale owner/incarnation/epoch fails closed. Independent Sessions are scheduled
 earliest-expiry first with a fixed per-Worker concurrency bound. More cloud
 Workers multiply capacity, but never remove this local backpressure.
 
-When initial MCP Stage overlaps that heartbeat, activation may promote its
-durable claim to the newer expiry. The lease-only Runtime port has updated
-Session authority, not the exact staged MCP receipt. Activation therefore
-returns the existing Stage directive only when the publication generation set
-is a renewed successor of the received set. Runtime renews the same staged
-projection through its existing immutable-binding check; the next matching
-receipt permits Publish. No renewal means direct Publish. This catch-up belongs
-to the existing phase driver, not the steady-state heartbeat. When that Stage
-also prepared a pending Resource generation, activation validates the reported
-revision before expiry catch-up and retains that exact preparation in the retry
-directive. It must not project the older active manifest over the already-staged
-desired manifest. A matching renewed receipt then commits the prepared Resource
-generation; a mismatched revision is rejected without a root write. An MCP-only
-Stage does not acquire permission to consume a pending Resource mutation. This
-reuses idempotent preparation and adds no credential resolver, connection,
-Resource generation, or recovery authority; Runtime's no-rollback fence remains.
+When MCP Stage or publication overlaps a heartbeat, expiry advances but the
+completed physical effect does not change identity. Activation validates a
+bijection of receipt generations against current claims, reconstructs each
+admitted request at its asserted older expiry, and reuses the complete exact
+receipt verifier. Target, credential pin, holder, Stage key, realization id,
+incarnation, epoch and logical generation remain checked. Two expiry variants
+of one attachment cannot substitute for two attachments. The live root lease
+remains mandatory; a receipt never extends authority by itself.
+
+Activation commits any exactly reported pending Resource generation and then
+returns Publish for the actual staged receipt, not an invented newer-expiry
+receipt. Runtime already authorizes this immutable request through its live
+same-generation root lease. Acknowledgement accepts that completed generation
+under the same monotonic relation; drains retain exact matching. Response-loss
+replay preserves Idle/Running and does not repeat a root write. A different
+owner/epoch, a future expiry or changed binding fails closed. An MCP-only Stage
+cannot consume a pending Resource mutation, and a mismatched prepared revision
+commits nothing. No new scheduler, store, wire field or phase driver is added.
+
+WorkerRelay retains the immutable staged generation, not a second expiry
+authority. Its production admission reads the same Session slot root decision
+as MCP effect admission: a live same-incarnation/epoch root may authorize an
+older receipt, but an absent, expired or replaced root denies a relay request.
+The pre-existing direct realizer assertion contract does not become a relay
+fallback. Authority is checked before buffering, before outbound forwarding,
+and after credential refresh; Session authority is never read while holding
+the route map mutex. Exact route capability and the existing call fence still
+own replacement isolation, cancellation and drain. Auth-challenged effectful
+calls remain non-replayable. Host/relay fault tests cover these boundaries;
+the phase-driver model does not model HTTP streams or provider-side effects.
+
+The former expiry-equality catch-up branch could livelock under continuous
+successful renewal. The application test's A4 interleaves renewal before every
+phase response; F1-F6 retain the Resource 2-to-3 crossover cases. The existing
+SessionRealizationMutex model now permits an infinite renewal cycle and checks
+conditional release under weak phase fairness; its targeted configuration and
+old-branch mutation expose the non-releasing cycle. This is a bounded abstract
+model check plus executable application evidence, not Rust refinement or a
+guarantee of progress through permanently failing physical/Control operations.
 
 After a completed MCP drain, the process-local Removed tombstone owns no
 remaining effects. A currently authorized retry may discard that tombstone for

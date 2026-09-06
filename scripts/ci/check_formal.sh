@@ -741,6 +741,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     formal/tla/SessionRealizationMutex.tla
   python3 scripts/ci/check_formal_mutations.py --resource-preparation-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-realization-renewal" \
+    -config formal/tla/SessionRealizationRenewal.cfg formal/tla/SessionRealizationMutex.tla
+  python3 scripts/ci/check_formal_mutations.py --realization-renewal-model-mutant "$tla_jar"
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/credential-rotation-workflow" \
     -config formal/tla/CredentialRotationWorkflow.cfg \
     formal/tla/CredentialRotationWorkflow.tla

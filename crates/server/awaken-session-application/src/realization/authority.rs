@@ -152,20 +152,20 @@ pub(super) fn exact_generation_key(generation: &McpGenerationRef) -> String {
     awaken_session_contract::stable_fingerprint(generation)
 }
 
-pub(super) fn generation_set_is_renewed_successor(
+pub(super) fn generation_set_authorizes(
     current: &[McpGenerationRef],
     asserted: &[McpGenerationRef],
 ) -> bool {
+    // A bijection is required: two expiry variants of one generation cannot
+    // stand in for the receipt of another attachment.
+    let mut matched = BTreeSet::new();
     current.len() == asserted.len()
         && current.iter().all(|expected| {
-            asserted.iter().any(|actual| {
-                awaken_session_contract::realization_generation_authorizes(expected, actual)
-            })
-        })
-        && current.iter().any(|expected| {
-            asserted.iter().any(|actual| {
-                awaken_session_contract::realization_generation_authorizes(expected, actual)
-                    && expected.lease_expires_at_unix_ms > actual.lease_expires_at_unix_ms
-            })
+            asserted
+                .iter()
+                .position(|actual| {
+                    awaken_session_contract::realization_generation_authorizes(expected, actual)
+                })
+                .is_some_and(|index| matched.insert(index))
         })
 }

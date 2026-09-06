@@ -535,7 +535,9 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                 let relay = self
                     .host
                     .mcp_relay
-                    .get_or_try_init(crate::mcp_relay::McpRelay::start)
+                    .get_or_try_init(|| {
+                        crate::mcp_relay::McpRelay::for_host(Arc::downgrade(&self.host))
+                    })
                     .await
                     .map_err(|error| {
                         RunError::classified(

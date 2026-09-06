@@ -4196,8 +4196,8 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     // Cause/effect graph: C1 acknowledgement names the exact active
     // generation; C2 it names the same owner/incarnation/epoch under a
     // shorter expiry; C3 any immutable generation coordinate differs.
-    // Effects: E1 acknowledge and make the Session idle; E2 commit nothing
-    // and return the current Stage for canonical catch-up; E3 fail closed
+    // Effects: E1 acknowledge and make the Session idle; E2 acknowledge the
+    // completed effect under current live authority without restaging; E3 fail closed
     // without changing publication state.
     //
     // | Rule | exact | monotonic predecessor | replacement | Effect |
@@ -4211,7 +4211,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     );
     let environments = Arc::new(RecordingEnvironmentSource::default());
     let application = application(repo.clone(), environments);
-    let current_expiry = u64::MAX - 1;
+    let current_expiry = u64::MAX - 1_024;
 
     let fixture = |id: &str| {
         let mut session = persisted(id, false, "activating");
@@ -4262,6 +4262,339 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         (session, lease, generation_ref)
     };
 
+    // A4: a successful same-incarnation/epoch heartbeat occurs after EVERY
+    // directive is frozen and before its phase response. All effects and root CAS writes
+    // succeed; no immutable binding changes. Renewal must preserve authority
+    // without making completed work chase a moving expiry forever. Unlike the
+    // finite-renewal Host fixture, this interleaving never stops renewing to
+    // make progress possible. Eight rounds are a test failure bound, not a new
+    // production retry budget. The real application and SQLite root own both
+    // renewal and phase decisions; the existing no-op MCP adapter supplies only
+    // exact physical receipts.
+    let id = "ack-continuous-renewal";
+    let (continuous, _, _) = fixture(id);
+    create(repo.as_ref(), continuous).await;
+    let initial = repo.get(id).await.unwrap();
+    let owner = application.owner(id).await.unwrap();
+    let mut directive = awaken_session_contract::SessionRealizationDirective {
+        projection: application
+            .active_frozen_session_projection(owner.clone(), &initial, true)
+            .await
+            .unwrap(),
+        lease: initial.realization.clone().unwrap(),
+        action: awaken_session_contract::SessionRealizationAction::Stage {
+            prepare_session: false,
+            mcp_stages: vec![
+                crate::projection::stage_mcp_request(&owner, id, &initial.mcp.attachments[0])
+                    .unwrap(),
+            ],
+        },
+    };
+    let mut stages = 0;
+    let mut publications = 0;
+    for _ in 0..8 {
+        use awaken_session_contract::SessionRealizationAction as Action;
+        if matches!(directive.action, Action::Complete) {
+            break;
+        }
+        let current = repo.get(id).await.unwrap().realization.unwrap();
+        application
+            .renew_session_realization(awaken_session_contract::RenewSessionRealization {
+                session_id: id.into(),
+                requested_expires_at_unix_ms: current.expires_at_unix_ms + 1,
+                asserted_lease: current,
+            })
+            .await
+            .expect("A4 successful heartbeat before every phase response");
+        directive = match directive.action {
+            Action::Stage { mcp_stages, .. } => {
+                stages += 1;
+                let mut receipts = Vec::new();
+                for request in mcp_stages {
+                    receipts.push(NoopMcpRealizer.stage_mcp_attachment(request).await.unwrap());
+                }
+                application
+                    .activate_session_realization(
+                        awaken_session_contract::ActivateSessionRealization {
+                            session_id: id.into(),
+                            lease: directive.lease,
+                            prepared_resource_revision: None,
+                            mcp_receipts: receipts,
+                        },
+                    )
+                    .await
+                    .unwrap()
+            }
+            Action::Publish { publish, drain } => {
+                publications += 1;
+                application
+                    .acknowledge_session_realization(
+                        awaken_session_contract::AcknowledgeSessionRealization {
+                            session_id: id.into(),
+                            lease: directive.lease,
+                            published: publish,
+                            drained: drain,
+                        },
+                    )
+                    .await
+                    .unwrap()
+            }
+            Action::Complete => unreachable!(),
+        };
+    }
+    assert!(
+        matches!(
+            directive.action,
+            awaken_session_contract::SessionRealizationAction::Complete
+        ),
+        "A4 successful continuous renewal must not prevent publication; stages={stages}, publications={publications}"
+    );
+    assert_eq!(
+        (stages, publications),
+        (1, 1),
+        "A4 no repeated completed effects"
+    );
+
+    // A5: only monotonic expiry may differ. Mutate each immutable request or
+    // receipt coordinate independently; even a self-consistent fingerprint for
+    // a different target is not this generation's receipt. A6: equal-sized
+    // sets containing two expiry variants of attachment A must not substitute
+    // for A+B. Every rejection leaves the whole SQLite root unchanged.
+    for fault in [
+        "workspace",
+        "target",
+        "name",
+        "realization",
+        "stage-key",
+        "prompts",
+        "credential",
+        "holder",
+        "session",
+        "attachment",
+        "generation",
+        "incarnation",
+        "epoch",
+        "future-expiry",
+        "fingerprint",
+        "owner",
+        "expired-root",
+        "duplicate-expiry",
+    ] {
+        let id = format!("receipt-reject-{fault}");
+        let (mut original, mut lease, _) = fixture(&id);
+        if fault == "duplicate-expiry" {
+            let mut other = original.mcp.attachments[0].clone();
+            other.attachment_id = awaken_session_contract::McpAttachmentId("other".into());
+            other.name = "other".into();
+            original.mcp.attachments.push(other);
+        }
+        let mut request =
+            crate::projection::stage_mcp_request("workspace", &id, &original.mcp.attachments[0])
+                .unwrap();
+        request.generation.lease_expires_at_unix_ms -= 1;
+        match fault {
+            "workspace" => request.workspace_id = "foreign".into(),
+            "target" => {
+                request.target =
+                    McpTarget::parse_http("https://different.example.test/mcp").unwrap()
+            }
+            "name" => request.name = "other".into(),
+            "realization" => request.realization_id = "other".into(),
+            "stage-key" => request.stage_idempotency_key = "other".into(),
+            "prompts" => request.prompts_as_skills = true,
+            "holder" => {
+                request.selected_plaintext_holder =
+                    Some(awaken_runtime_contract::PlaintextHolder::new(
+                        awaken_runtime_contract::PlaintextBoundary::Worker,
+                        "foreign",
+                    ))
+            }
+            "credential" => {
+                use awaken_runtime_contract::{
+                    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource,
+                    CredentialRef, CredentialUsage, ModelExposurePolicy, PlaintextBoundary,
+                    PlaintextHolder,
+                };
+                request.credential = Some(CredentialAccess::new(
+                    CredentialRef {
+                        id: "foreign".into(),
+                        revision: 1,
+                    },
+                    CredentialMaterialSource::ControlPlaneReference,
+                    CredentialUsage::HttpHeader {
+                        name: "authorization".into(),
+                        scheme: Some("Bearer".into()),
+                    },
+                    CredentialExecutionPolicy::exact(
+                        PlaintextHolder::new(PlaintextBoundary::Worker, "foreign"),
+                        ModelExposurePolicy::VirtualOnly,
+                    ),
+                ));
+            }
+            "session" => request.generation.session_id = "foreign".into(),
+            "attachment" => {
+                request.generation.attachment_id =
+                    awaken_session_contract::McpAttachmentId("foreign".into())
+            }
+            "generation" => {
+                request.generation.generation = awaken_session_contract::McpGeneration(2)
+            }
+            "incarnation" => request.generation.runtime_incarnation = "replacement".into(),
+            "epoch" => request.generation.lease_epoch += 1,
+            "future-expiry" => request.generation.lease_expires_at_unix_ms = current_expiry + 1,
+            "owner" => lease.owner = "foreign".into(),
+            "expired-root" => original.realization.as_mut().unwrap().expires_at_unix_ms = 1,
+            _ => {}
+        }
+        let mut receipt = NoopMcpRealizer
+            .stage_mcp_attachment(request.clone())
+            .await
+            .unwrap();
+        if fault == "fingerprint" {
+            receipt.receipt_fingerprint = "forged".into();
+        }
+        let mut receipts = vec![receipt];
+        if fault == "duplicate-expiry" {
+            request.generation.lease_expires_at_unix_ms -= 1;
+            receipts.push(NoopMcpRealizer.stage_mcp_attachment(request).await.unwrap());
+        }
+        create(repo.as_ref(), original).await;
+        let before = repo.get(&id).await.unwrap();
+        assert!(
+            application
+                .activate_session_realization(awaken_session_contract::ActivateSessionRealization {
+                    session_id: id.clone(),
+                    lease,
+                    prepared_resource_revision: None,
+                    mcp_receipts: receipts,
+                })
+                .await
+                .is_err(),
+            "A5/A6 {fault} rejected"
+        );
+        assert_eq!(
+            repo.get(&id).await.unwrap(),
+            before,
+            "A5/A6 {fault} no mutation"
+        );
+    }
+
+    // A7: publication acknowledgements may outlive their old expiry only while
+    // current same-owner authority is live. Owner/epoch/generation changes,
+    // future assertions and duplicate-expiry substitutions remain forbidden.
+    for fault in [
+        "session",
+        "attachment",
+        "generation",
+        "incarnation",
+        "epoch",
+        "future-expiry",
+        "owner",
+        "duplicate-expiry",
+    ] {
+        let id = format!("ack-reject-{fault}");
+        let (mut original, mut lease, mut generation) = fixture(&id);
+        generation.lease_expires_at_unix_ms -= 1;
+        match fault {
+            "session" => generation.session_id = "foreign".into(),
+            "attachment" => {
+                generation.attachment_id =
+                    awaken_session_contract::McpAttachmentId("foreign".into())
+            }
+            "generation" => generation.generation = awaken_session_contract::McpGeneration(2),
+            "incarnation" => generation.runtime_incarnation = "replacement".into(),
+            "epoch" => generation.lease_epoch += 1,
+            "future-expiry" => generation.lease_expires_at_unix_ms = current_expiry + 1,
+            "owner" => lease.owner = "foreign".into(),
+            "duplicate-expiry" => {
+                let mut other = original.mcp.attachments[0].clone();
+                other.attachment_id = awaken_session_contract::McpAttachmentId("other".into());
+                other.name = "other".into();
+                original.mcp.attachments.push(other);
+            }
+            _ => unreachable!(),
+        }
+        let mut published = vec![generation.clone()];
+        if fault == "duplicate-expiry" {
+            generation.lease_expires_at_unix_ms -= 1;
+            published.push(generation);
+        }
+        create(repo.as_ref(), original).await;
+        let before = repo.get(&id).await.unwrap();
+        assert!(
+            application
+                .acknowledge_session_realization(
+                    awaken_session_contract::AcknowledgeSessionRealization {
+                        session_id: id.clone(),
+                        lease,
+                        published,
+                        drained: Vec::new(),
+                    }
+                )
+                .await
+                .is_err(),
+            "A7 {fault} rejected"
+        );
+        assert_eq!(
+            repo.get(&id).await.unwrap(),
+            before,
+            "A7 {fault} no mutation"
+        );
+    }
+
+    // A8: lost-ack replay after the asserted expiry has elapsed must read
+    // committed truth without another write, both Idle and Running. A current
+    // root lease still proves authority; duplicate expiry aliases remain invalid
+    // even on this no-write replay edge.
+    for running in [false, true] {
+        let id = format!("ack-replay-{running}");
+        let (mut original, mut lease, mut generation) = fixture(&id);
+        original.execution = if running {
+            SessionExecutionState::Running
+        } else {
+            SessionExecutionState::Idle
+        };
+        original.mcp.attachments[0].publication_acknowledged = true;
+        lease.expires_at_unix_ms = 1;
+        generation.lease_expires_at_unix_ms = 1;
+        create(repo.as_ref(), original).await;
+        let before = repo.get(&id).await.unwrap();
+        let command = awaken_session_contract::AcknowledgeSessionRealization {
+            session_id: id.clone(),
+            lease,
+            published: vec![generation.clone()],
+            drained: Vec::new(),
+        };
+        let replay = application
+            .acknowledge_session_realization(command.clone())
+            .await
+            .unwrap();
+        assert!(matches!(
+            replay.action,
+            awaken_session_contract::SessionRealizationAction::Complete
+        ));
+        assert_eq!(
+            repo.get(&id).await.unwrap(),
+            before,
+            "A8 no duplicate write or activity transition"
+        );
+        let mut duplicate = command;
+        generation.lease_expires_at_unix_ms = 2;
+        duplicate.published.push(generation);
+        assert!(
+            application
+                .acknowledge_session_realization(duplicate)
+                .await
+                .is_err(),
+            "A8 duplicate alias rejected on replay"
+        );
+        assert_eq!(
+            repo.get(&id).await.unwrap(),
+            before,
+            "A8 rejection leaves root unchanged"
+        );
+    }
+
     let (exact, exact_lease, exact_generation) = fixture("ack-exact");
     create(repo.as_ref(), exact).await;
     let exact_result =
@@ -4309,14 +4642,14 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     assert!(
         matches!(
             renewed_result.action,
-            awaken_session_contract::SessionRealizationAction::Stage { .. }
+            awaken_session_contract::SessionRealizationAction::Complete
         ),
         "A2/E2"
     );
     let renewed_truth = repo.get("ack-renewed").await.unwrap();
-    assert_eq!(renewed_truth.execution.as_str(), "activating", "A2/E2");
+    assert_eq!(renewed_truth.execution.as_str(), "idle", "A2/E2");
     assert!(
-        !renewed_truth.mcp.attachments[0].publication_acknowledged,
+        renewed_truth.mcp.attachments[0].publication_acknowledged,
         "A2/E2"
     );
 
