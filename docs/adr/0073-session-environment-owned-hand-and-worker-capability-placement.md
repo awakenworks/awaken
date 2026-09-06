@@ -204,8 +204,15 @@ handshake failure. A cross-process recovered ACP claim has no sound way to prove
 whether its prompt or an MCP effect was dispatched, so the current claim owner
 commits the existing `EndCause::Indeterminate` and settles the dispatch without
 relaunching the prompt. No `AcpAttemptStage`, parallel protocol journal or new
-terminal variant is introduced. A future resumable ACP path must be explicitly
-capability-gated by an official idempotent receipt.
+terminal variant is introduced. If that exact Run ends before its input Message
+is committed, the existing Session Event-batch coordinator anchors the accepted
+User receipt at the Run's durable terminal cursor, as it already does for a
+pre-input cancellation. Processing this receipt records the unknown outcome;
+it neither creates a Message nor converts Indeterminate to success. Other Runs,
+nonterminal states and System messages cannot supply this fallback. The existing
+terminal cleanup still requires physical quiescence and its aggregate authority.
+A future resumable ACP path must be explicitly capability-gated by an official
+idempotent receipt.
 
 The default container realization remains attached exec. Resident selection is
 admissible only when the provider truthfully exposes a reopenable channel and a

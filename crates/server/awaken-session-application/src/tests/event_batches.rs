@@ -608,22 +608,35 @@ fn running_session_with_activity(session_id: &str, epoch: u64) -> PersistedSessi
 }
 
 #[tokio::test]
-async fn cancelled_user_run_anchors_its_receipt_without_inventing_a_message() {
-    // Cause/effect graph: C1 an accepted User command owns exact Run R; C2
-    // interruption ends R as Cancelled before its input Message commits; C3 the
-    // same shape ends for another cause. Effects: E1 C1+C2 anchors the receipt at
-    // R's terminal store cursor and completes the FIFO; E2 no Message is invented;
-    // E3 C1+C3 remains pending/fail-closed because only cancellation explains the
-    // absent Message. Constraint: the retained Session command and Runtime Run
-    // snapshot remain the only authorities; no abandonment ledger is introduced.
-    // Decision table: U1=C1+C2 -> E1+E2; U2=C1+C3 -> E2+E3.
+async fn unreplayed_user_run_anchors_its_receipt_without_inventing_a_message() {
+    // Cause/effect graph: C1 accepted User command owns exact Run R; C2 R
+    // commits Cancelled before input, or Indeterminate after opaque ACP claim
+    // recovery (ADR-0073); C3 another terminal cause lacks the input Message.
+    // E1 freeze R's existing terminal cursor and advance the receipt/FIFO;
+    // E2 never invent a Message or replay a prompt; E3 preserve R's end cause,
+    // including unknown outcome; E4 remain pending for unexplained missing input.
+    // Decision table: U1 Cancelled / U2 Indeterminate => E1+E2+E3;
+    // U3 NaturalEnd/MaxSteps/Stopped/Error => E2+E3+E4. Warm and reconstructed
+    // application retries reuse the same root and Runtime; no new outcome store.
     for (session_id, end, should_complete) in [
         ("cancelled-user-receipt", EndCause::Cancelled, true),
-        ("noncancelled-user-receipt", EndCause::NaturalEnd, false),
+        ("indeterminate-user-receipt", EndCause::Indeterminate, true),
+        ("natural-user-receipt", EndCause::NaturalEnd, false),
+        ("maxsteps-user-receipt", EndCause::MaxSteps, false),
+        (
+            "stopped-user-receipt",
+            EndCause::Stopped("budget".into()),
+            false,
+        ),
+        (
+            "error-user-receipt",
+            EndCause::Error(awaken_agent_contract::agent::run::Failure::CapabilityBound),
+            false,
+        ),
     ] {
         let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                .expect("U1-U2 repository"),
+                .expect("U1-U3 repository"),
         );
         let session = planned_session(
             session_id,
@@ -641,8 +654,8 @@ async fn cancelled_user_run_anchors_its_receipt_without_inventing_a_message() {
             .states
             .lock()
             .unwrap()
-            .insert(run_id.0.clone(), RunState::Ended(end));
-        *runtime.latest_run.lock().unwrap() = Some(run_id);
+            .insert(run_id.0.clone(), RunState::Ended(end.clone()));
+        *runtime.latest_run.lock().unwrap() = Some(run_id.clone());
         let app = application_with_runtime(
             runtime.clone(),
             repository.clone(),
@@ -650,18 +663,162 @@ async fn cancelled_user_run_anchors_its_receipt_without_inventing_a_message() {
         );
 
         let result = app.drive_session_event_batches(session_id, None).await;
-        assert_eq!(result.is_ok(), should_complete, "U1-U2 reconciliation");
-        let persisted = repository.get(session_id).await.expect("U1-U2 root");
+        assert_eq!(result.is_ok(), should_complete, "U1-U3 reconciliation");
+        let persisted = repository.get(session_id).await.expect("U1-U3 root");
         let entry = &persisted.event_batches[0].events[0];
-        assert_eq!(entry.processed, should_complete, "U1/E1 or U2/E3");
+        assert_eq!(entry.processed, should_complete, "U1-U2/E1 or U3/E4");
         assert_eq!(
             entry
                 .projection_anchor
                 .map(|anchor| anchor.source_commit_cursor),
             should_complete.then_some(1),
-            "U1/E1 exact Run cursor; U2/E3 no guessed anchor",
+            "U1-U2/E1 exact Run cursor; U3/E4 no guessed anchor",
         );
-        assert!(runtime.committed.lock().unwrap().is_empty(), "U1-U2/E2");
+        assert!(runtime.committed.lock().unwrap().is_empty(), "U1-U3/E2");
+        let recovered = application_with_runtime(
+            runtime.clone(),
+            repository.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        assert_eq!(
+            recovered
+                .drive_session_event_batches(session_id, None)
+                .await
+                .is_ok(),
+            should_complete
+        );
+        assert_eq!(
+            repository.get(session_id).await.unwrap().event_batches,
+            persisted.event_batches,
+            "retry preserves the exact root receipt and anchor"
+        );
+        assert_eq!(
+            runtime.states.lock().unwrap().get(&run_id.0),
+            Some(&RunState::Ended(end)),
+            "U1-U3/E3 processed receipt never changes the unknown or failed outcome"
+        );
+        assert!(
+            runtime.reserved.lock().unwrap().is_empty(),
+            "U1-U3/E2 no admission replay"
+        );
+        assert!(
+            runtime.activated.lock().unwrap().is_empty(),
+            "U1-U3/E2 no prompt replay"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unreplayed_receipt_requires_its_exact_terminal_user_run() {
+    // Public reconciliation decision table: A1 exact R Indeterminate and no
+    // Message => User anchors at terminal cursor; A2 another Run Indeterminate
+    // but R Running/Awaiting => User stays pending without its Message;
+    // A3 R Awaiting/Indeterminate with committed input => exact Message cursor
+    // wins over the later store cursor; Running still waits. A4 the paired
+    // System Message is absent => System remains pending in every row. This
+    // exercises the public coordinator without widening production visibility.
+    for state in [
+        RunState::Running,
+        RunState::Awaiting,
+        RunState::Ended(EndCause::Indeterminate),
+    ] {
+        for committed_input in [false, true] {
+            let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            );
+            let session_id = "exact-anchor-session";
+            let session = planned_session(
+                session_id,
+                vec![
+                    SessionEventInput::UserMessage {
+                        content: vec![ContentBlock::text("accepted input")],
+                    },
+                    SessionEventInput::SystemMessage {
+                        content: vec![ContentBlock::text("paired system input")],
+                    },
+                ],
+            );
+            let (run_id, message_id) = match &session.event_batches[0].events[0].event {
+                SessionEventCommand::UserMessage {
+                    run_id,
+                    operation_id,
+                    ..
+                } => (
+                    run_id.clone(),
+                    MessageId::session_event_input(session_id, operation_id),
+                ),
+                _ => unreachable!("one retained User owner"),
+            };
+            create(repository.as_ref(), session).await;
+            let runtime = Arc::new(EventBatchRuntime::default());
+            let other_id = RunId("other-indeterminate-run".into());
+            runtime
+                .states
+                .lock()
+                .unwrap()
+                .insert(other_id.0.clone(), RunState::Ended(EndCause::Indeterminate));
+            runtime
+                .states
+                .lock()
+                .unwrap()
+                .insert(run_id.0.clone(), state.clone());
+            *runtime.latest_run.lock().unwrap() = Some(other_id);
+            if committed_input {
+                let mut messages = runtime.committed.lock().unwrap();
+                messages.push(Message::new(
+                    message_id,
+                    Role::User,
+                    vec![ContentBlock::text("accepted input")],
+                ));
+                messages.push(Message::new(
+                    MessageId::session_system(session_id, "later-unrelated"),
+                    Role::System,
+                    vec![ContentBlock::text("later unrelated commit")],
+                ));
+            }
+            let before = runtime.committed.lock().unwrap().clone();
+            let app = application_with_runtime(
+                runtime.clone(),
+                repository.clone(),
+                Arc::new(RecordingEnvironmentSource::default()),
+            );
+            let result = app.drive_session_event_batches(session_id, None).await;
+            assert_eq!(
+                result.is_ok(),
+                state != RunState::Awaiting || committed_input,
+                "only Awaiting without its input Message reports missing recovery evidence"
+            );
+            let persisted = repository.get(session_id).await.unwrap();
+            let processed = state != RunState::Running
+                && (committed_input || state == RunState::Ended(EndCause::Indeterminate));
+            let entries = &persisted.event_batches[0].events;
+            assert_eq!(
+                entries[0].processed, processed,
+                "A1-A3 exact User state/input"
+            );
+            assert_eq!(
+                entries[0].projection_anchor.map(|a| a.source_commit_cursor),
+                processed.then_some(1),
+                "A1/A3 terminal or original Message, never later cursor 2"
+            );
+            assert!(
+                !entries[1].processed,
+                "A4 System requires its own committed Message"
+            );
+            assert_eq!(
+                *runtime.committed.lock().unwrap(),
+                before,
+                "A1-A4 no invented transcript"
+            );
+            assert!(
+                runtime.reserved.lock().unwrap().is_empty(),
+                "A1-A4 no admission replay"
+            );
+            assert!(
+                runtime.activated.lock().unwrap().is_empty(),
+                "A1-A4 no prompt replay"
+            );
+        }
     }
 }
 

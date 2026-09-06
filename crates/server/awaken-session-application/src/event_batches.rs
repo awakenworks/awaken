@@ -113,7 +113,7 @@ impl SessionApplication {
         run_id: &awaken_agent_contract::agent::run::Id,
         message_id: &MessageId,
     ) -> Result<SessionEventProjectionAnchor, RunError> {
-        self.message_projection_anchor_with_cancelled_fallback(
+        self.message_projection_anchor_with_unreplayed_fallback(
             session_id, thread_id, run_id, message_id, false,
         )
         .await
@@ -121,27 +121,29 @@ impl SessionApplication {
 
     /// Anchor an accepted User receipt to its committed Message, or to the exact
     /// cancelled Run when interruption won before that Message entered the
-    /// transcript. The latter terminal coordinate completes the retained command
-    /// without inventing transcript content and lets the existing FIFO advance.
+    /// transcript, or the exact Indeterminate Run committed by opaque executor
+    /// recovery (ADR-0073). Both forbid replay. The terminal coordinate completes
+    /// the retained command without inventing transcript content or success;
+    /// Runtime retains the original end cause while the existing FIFO advances.
     async fn user_message_projection_anchor(
         &self,
         session_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
         message_id: &MessageId,
     ) -> Result<SessionEventProjectionAnchor, RunError> {
-        self.message_projection_anchor_with_cancelled_fallback(
+        self.message_projection_anchor_with_unreplayed_fallback(
             session_id, session_id, run_id, message_id, true,
         )
         .await
     }
 
-    async fn message_projection_anchor_with_cancelled_fallback(
+    async fn message_projection_anchor_with_unreplayed_fallback(
         &self,
         session_id: &str,
         thread_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
         message_id: &MessageId,
-        cancelled_run_may_anchor: bool,
+        unreplayed_run_may_anchor: bool,
     ) -> Result<SessionEventProjectionAnchor, RunError> {
         let snapshot = self
             .runtime()
@@ -169,11 +171,14 @@ impl SessionApplication {
         if let Some(anchor) = message_anchor {
             return Ok(anchor);
         }
-        if cancelled_run_may_anchor
-            && snapshot
-                .runs
-                .iter()
-                .any(|run| &run.id == run_id && run.state == RunState::Ended(EndCause::Cancelled))
+        if unreplayed_run_may_anchor
+            && snapshot.runs.iter().any(|run| {
+                &run.id == run_id
+                    && matches!(
+                        run.state,
+                        RunState::Ended(EndCause::Cancelled | EndCause::Indeterminate)
+                    )
+            })
         {
             return Ok(SessionEventProjectionAnchor {
                 source_commit_cursor: snapshot.store_cursor,
