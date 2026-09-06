@@ -36,7 +36,11 @@ The release-built Management image carries its original archive verification
 manifest at `/usr/share/awaken/verification.json`, read-only to the application
 user. The one release workflow validates that manifest before staging and
 compares both its bytes and the packaged executable against new and reused
-images before promotion. Image signing binds those included bytes; consumers
+images before promotion. Both image paths pull and check the final immutable
+digest and run E2E against that same subject. New images are uploaded to staging
+before this check; a failed check leaves an unsigned staging image, never a
+promoted release. A prior check of a mutable staging tag cannot authorize signing
+another push result. Image signing binds those included bytes; consumers
 must still authenticate the exact image digest and signing workflow identity.
 The file is evidence of the release profile and its declared proof boundaries,
 not a runtime Verified badge. Deployment TCB authentication, freshness/check-use

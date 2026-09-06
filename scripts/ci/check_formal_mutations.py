@@ -661,12 +661,16 @@ def check_verified_admission_model_mutants(tlc_jar: Path) -> None:
             raise SystemExit("Verified admission mutation anchor drifted; review the model")
         replacement = "ReleaseAdmissible == /\\ TRUE" if guard.startswith("ReleaseAdmissible ==") else ""
         mutations.append((source.replace(guard, replacement), config, invariant))
-    image_guard = r"IF ~release.imageRequired \/ release.imageMatches"
+    image_guard = r'IF ~release.imageRequired \/ release.imageEvidence = "ExactSubject"'
     if source.count(image_guard) != 1:
         raise SystemExit("Image payload mutation anchor drifted; review the model")
     mutations.append((source.replace(image_guard, "IF TRUE"), config, "ImageConsumptionHasExactPayload"))
+    # I3: a good payload checked under another image identity is not evidence
+    # for the promoted subject. Omitting only that binding must expose it.
+    mutations.append((source.replace(image_guard, r'IF ~release.imageRequired \/ release.imageEvidence # "Mismatch"'),
+                      config, "ImageConsumptionBindsCheckedSubject"))
     check_tlc_model_mutations(tlc_jar, "VerifiedProfileAdmission", source, config, mutations)
-    print("Verified admission mutation score: 8/8 killed (target freshness, exact executed release and image payload)")
+    print("Verified admission mutation score: 9/9 killed (target freshness, exact executed release and bound image payload)")
 
 
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,

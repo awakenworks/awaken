@@ -435,16 +435,7 @@ jobs:
           inspect_error="$RUNNER_TEMP/awaken-management-inspect.stderr"
           if inspect_output="$(docker buildx imagetools inspect "$RELEASE_TAG" 2>"$inspect_error")"; then
             digest="$(printf '%s\n' "$inspect_output" | sed -n 's/^Digest:[[:space:]]*//p' | head -n 1)"
-            test -n "$digest"
-            image="${MANAGEMENT_IMAGE_REPOSITORY}@${digest}"
-            cosign verify \
-              --certificate-identity "$CERTIFICATE_IDENTITY" \
-              --certificate-oidc-issuer "$SIGSTORE_OIDC_ISSUER" \
-              --certificate-github-workflow-sha "$SOURCE_REVISION" \
-              "$image" > "$RUNNER_TEMP/awaken-management-signature.json"
-            docker pull "$image"
-            verify_management_payload "$image"
-            AWAKEN_MANAGEMENT_IMAGE="$image" scripts/e2e/management_image_e2e.sh
+            publish=0
           else
             if ! grep -Eqi 'manifest unknown|name unknown|not found' "$inspect_error"; then
               cat "$inspect_error" >&2
@@ -458,13 +449,27 @@ jobs:
               --tag "$STAGING_TAG" \
               --file deploy/images/management/Dockerfile \
               deploy/images/management
-            verify_management_payload "$STAGING_TAG"
-            AWAKEN_MANAGEMENT_IMAGE="$STAGING_TAG" scripts/e2e/management_image_e2e.sh
             push_output="$(docker push "$STAGING_TAG")"
             printf '%s\n' "$push_output"
             digest="$(printf '%s\n' "$push_output" | sed -n 's/^.*digest: \(sha256:[0-9a-f]\{64\}\).*$/\1/p' | tail -n 1)"
-            test -n "$digest"
-            image="${MANAGEMENT_IMAGE_REPOSITORY}@${digest}"
+            publish=1
+          fi
+          # Both paths inspect and execute the exact immutable image that will
+          # be attested. A successful check of a mutable staging tag is not
+          # evidence about a later push result or signature subject.
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          image="${MANAGEMENT_IMAGE_REPOSITORY}@${digest}"
+          if test "$publish" -eq 0; then
+            cosign verify \
+              --certificate-identity "$CERTIFICATE_IDENTITY" \
+              --certificate-oidc-issuer "$SIGSTORE_OIDC_ISSUER" \
+              --certificate-github-workflow-sha "$SOURCE_REVISION" \
+              "$image" > "$RUNNER_TEMP/awaken-management-signature.json"
+          fi
+          docker pull "$image"
+          verify_management_payload "$image"
+          AWAKEN_MANAGEMENT_IMAGE="$image" scripts/e2e/management_image_e2e.sh
+          if test "$publish" -eq 1; then
             cosign sign --yes "$image"
             docker buildx imagetools create --prefer-index=false --tag "$RELEASE_TAG" "$image"
           fi

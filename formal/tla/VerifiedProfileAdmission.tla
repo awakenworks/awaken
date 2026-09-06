@@ -10,8 +10,11 @@ vars == <<snapshot, release, decision>>
 \* mismatch, not a real version or hash. complete abstracts exact, unique,
 \* nonempty IDs and closed shapes; hashes abstracts syntactic validity only.
 \* Bounds: two dependencies, match/mismatch, clock/observation -1..3, max age 1;
-\* four Boolean release identity/receipt projections and two image-path bits.
-\* imageMatches projects exact binary/manifest bytes and OCI labels; this does
+\* four Boolean release identity/receipt projections, an optional image path,
+\* and three image-evidence partitions. Mismatch means wrong payload/labels;
+\* OtherSubject means a successful check bound to a different image (e.g. the
+\* old mutable staging tag). ExactSubject binds the checked payload to the
+\* immutable digest consumed, executed, signed and promoted. This does
 \* not prove Docker/signatures or substitute a second generated manifest.
 \* Release consumers require
 \* exact artifact, requested profile, completed strict execution, and source /
@@ -30,7 +33,8 @@ Snapshots == [complete : BOOLEAN,
 
 Releases == [artifactMatches : BOOLEAN, profileMatches : BOOLEAN,
              proofComplete : BOOLEAN, sourceMatches : BOOLEAN,
-             imageRequired : BOOLEAN, imageMatches : BOOLEAN]
+             imageRequired : BOOLEAN,
+             imageEvidence : {"Mismatch", "OtherSubject", "ExactSubject"}]
 
 Init == /\ snapshot \in Snapshots
         /\ release \in Releases
@@ -46,10 +50,11 @@ ValidateRelease == /\ decision = "ReleasePending"
                    /\ UNCHANGED <<snapshot, release>>
 
 \* I1 canonical archive path skips image validation, not release validation.
-\* I2 either image build/reuse path needs the same exact payload comparison.
-\* I3 mismatch/missing payload rejects before any TCB/profile admission.
+\* I2 either build/reuse path needs the same exact payload comparison bound to
+\* the consumed immutable image. I3 mismatch/missing payload or another checked
+\* subject rejects before signing, promotion or TCB/profile admission.
 ValidatePayload == /\ decision = "ReleaseAccepted"
-                   /\ decision' = IF ~release.imageRequired \/ release.imageMatches
+                   /\ decision' = IF ~release.imageRequired \/ release.imageEvidence = "ExactSubject"
                                    THEN "PayloadAccepted" ELSE "PayloadRejected"
                    /\ UNCHANGED <<snapshot, release>>
 
@@ -80,7 +85,9 @@ ReleaseConsumptionHasExactExecutedEvidence == decision \in {"ReleaseAccepted", "
     /\ release.artifactMatches /\ release.profileMatches
     /\ release.proofComplete /\ release.sourceMatches
 ImageConsumptionHasExactPayload == decision \in {"PayloadAccepted", "Accepted", "Rejected"} =>
-    ~release.imageRequired \/ release.imageMatches
+    ~release.imageRequired \/ release.imageEvidence # "Mismatch"
+ImageConsumptionBindsCheckedSubject == decision \in {"PayloadAccepted", "Accepted", "Rejected"} =>
+    ~release.imageRequired \/ release.imageEvidence # "OtherSubject"
 AcceptedHasExactFingerprint == decision = "Accepted" =>
     \A d \in Dependencies :
         /\ snapshot.versions[d] = 0
