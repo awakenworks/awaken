@@ -13,6 +13,47 @@ use sqlx::Executor;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::sync::Arc;
 
+#[path = "support/revision_cas.rs"]
+mod revision_cas;
+
+#[tokio::test]
+async fn postgres_config_cas_missing_row_and_revision_decision_table() {
+    let Some(pool) = schema_pool("t_config_cas_table").await else {
+        return;
+    };
+    let store = Arc::new(PostgresConfigStore::with_pool(pool).await.unwrap());
+    revision_cas::decision_table(store.as_ref()).await;
+    revision_cas::concurrent_writers(store).await;
+}
+
+#[tokio::test]
+async fn postgres_config_cas_exhaustion_preserves_reopenable_truth() {
+    let Some(pool) = schema_pool("t_config_cas_exhausted").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool.clone()).await.unwrap();
+    let scope = ScopeId::from("exhausted");
+    let config = agent_config();
+    store.put_config_scoped(&scope, &config).await.unwrap();
+    sqlx::query("UPDATE config_agent SET generation = $1 WHERE scope_id = $2 AND id = $3")
+        .bind(i64::MAX)
+        .bind(&scope.0)
+        .bind(&config.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    revision_cas::exhausted(&store, &config).await;
+    drop(store);
+    let reopened = PostgresConfigStore::with_existing_pool(pool).await.unwrap();
+    let row = reopened
+        .get_config_revision_scoped(&scope, &config.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.revision, i64::MAX as u64);
+    assert_eq!(row.config, config);
+}
+
 fn compile(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
@@ -340,6 +381,10 @@ async fn schema_pool(schema: &'static str) -> Option<PgPool> {
     let admin = match PgPool::connect(&database_url()).await {
         Ok(pool) => pool,
         Err(err) => {
+            assert!(
+                std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_none(),
+                "explicit PostgreSQL fixture must be reachable: {err}"
+            );
             println!("[skip] no Postgres reachable: {err}");
             return None;
         }

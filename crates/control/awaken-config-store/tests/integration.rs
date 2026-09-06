@@ -25,6 +25,51 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
+#[path = "support/revision_cas.rs"]
+mod revision_cas;
+
+#[tokio::test]
+async fn sqlite_config_cas_missing_row_and_revision_decision_table() {
+    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    revision_cas::decision_table(store.as_ref()).await;
+    revision_cas::concurrent_writers(store).await;
+}
+
+#[tokio::test]
+async fn sqlite_config_cas_exhaustion_preserves_reopenable_truth() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "awaken-config-cas-{}-{nonce}.db",
+        std::process::id()
+    ));
+    let scope = ScopeId::from("exhausted");
+    let config = agent_config();
+    let store = SqliteConfigStore::open(path.to_str().unwrap()).unwrap();
+    store.put_config_scoped(&scope, &config).await.unwrap();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE config_agent SET generation = ?1 WHERE scope_id = ?2 AND id = ?3",
+            rusqlite::params![i64::MAX, scope.0, config.id],
+        )
+        .unwrap();
+    revision_cas::exhausted(&store, &config).await;
+    drop(store);
+    let reopened = SqliteConfigStore::open(path.to_str().unwrap()).unwrap();
+    let row = reopened
+        .get_config_revision_scoped(&scope, &config.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.revision, i64::MAX as u64);
+    assert_eq!(row.config, config);
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
+}
+
 fn compile(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
