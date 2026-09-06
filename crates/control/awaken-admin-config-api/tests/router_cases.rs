@@ -1299,6 +1299,22 @@ async fn agent_input_bindings_reject_non_positive_versions() {
 }
 
 #[tokio::test]
+async fn agent_input_identity_rejection_has_a_client_error_projection() {
+    // K1 invalid path identity -> repository rejects -> 422 invalid_identity;
+    // a valid body id cannot replace the authoritative path-selected id.
+    let h = harness();
+    let (status, problem) = call(
+        &h.app,
+        "PUT",
+        "/v1/config/agents/a%1Fb/resources",
+        Some(json!({"agent_id":"valid-body", "inputs":[], "revision":1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
+    assert_eq!(problem["code"], "invalid_identity");
+}
+
+#[tokio::test]
 async fn repository_agent_input_mount_is_validated_before_persistence() {
     // Repository mount write-boundary cause/effect decision table:
     // | Rule | path | Validator | Effect |

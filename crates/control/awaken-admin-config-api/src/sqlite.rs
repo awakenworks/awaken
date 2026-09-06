@@ -13,10 +13,11 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_config_resolver::{
-    AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError,
+    AgentInputAdmission, AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError,
     ConfigRepositoryError, InferenceProfile, InferenceProfileStore, WebhookAuthoringPatch,
     WebhookAuthoringState, WebhookDeliveryOutcome, WebhookDeliveryState, WebhookEndpointDef,
-    WebhookMutationIntent, WebhookStore, validate_agent_input_revision,
+    WebhookMutationIntent, WebhookStore, agent_input_storage_key, agent_input_workspace_prefix,
+    plan_agent_input_write, validate_stored_agent_inputs,
 };
 
 use crate::schema::{BUNDLE_ID, converged_admin_bundle, selected_admin_bundle};
@@ -149,7 +150,7 @@ impl AgentInputBindingRepository for SqliteAdminStore {
         workspace_id: &str,
         config: AgentInputConfig,
     ) -> Result<(), AgentInputRepositoryError> {
-        let key = format!("{workspace_id}\u{1f}{}", config.agent_id);
+        let key = agent_input_storage_key(workspace_id, &config.agent_id)?;
         let mut conn = self
             .conn
             .lock()
@@ -170,19 +171,34 @@ impl AgentInputBindingRepository for SqliteAdminStore {
             .map(serde_json::from_str::<AgentInputConfig>)
             .transpose()
             .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
-        if !validate_agent_input_revision(current.as_ref(), &config)? {
+        let AgentInputAdmission::Write(plan) =
+            plan_agent_input_write(workspace_id, current.as_ref(), &config)?
+        else {
             return Ok(());
-        }
-        let data = serde_json::to_string(&config)
+        };
+        let data = serde_json::to_string(plan.config())
             .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
-        tx.execute(
-            &format!(
-                "INSERT INTO {NS}_agent_resource (agent_id, data) VALUES (?1, ?2) \
-                 ON CONFLICT(agent_id) DO UPDATE SET data = excluded.data"
+        let statement = match plan.expected_revision() {
+            None => format!(
+                "INSERT INTO {NS}_agent_resource (agent_id, data) \
+                            SELECT ?1, ?2 WHERE ?3 IS NULL ON CONFLICT(agent_id) DO NOTHING"
             ),
-            params![key, data],
-        )
-        .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+            Some(_) => format!(
+                "UPDATE {NS}_agent_resource SET data = ?2 \
+                               WHERE agent_id = ?1 AND json_extract(data, '$.revision') = ?3"
+            ),
+        };
+        let changed = tx
+            .execute(
+                &statement,
+                params![plan.storage_key(), data, plan.expected_revision()],
+            )
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+        if changed != 1 {
+            return Err(AgentInputRepositoryError::Storage(
+                "Agent input plan lost its commit predicate".into(),
+            ));
+        }
         tx.commit()
             .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))
     }
@@ -191,15 +207,17 @@ impl AgentInputBindingRepository for SqliteAdminStore {
         workspace_id: &str,
         agent_id: &str,
     ) -> Result<Option<AgentInputConfig>, AgentInputRepositoryError> {
-        let key = format!("{workspace_id}\u{1f}{agent_id}");
+        let key = agent_input_storage_key(workspace_id, agent_id)?;
         self.get_row("agent_resource", "agent_id", &key)
-            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?
+            .map(|config| validate_stored_agent_inputs(workspace_id, &key, config))
+            .transpose()
     }
     fn list_agent_inputs(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<AgentInputConfig>, AgentInputRepositoryError> {
-        let prefix = format!("{workspace_id}\u{1f}");
+        let prefix = agent_input_workspace_prefix(workspace_id)?;
         let conn = self
             .conn
             .lock()
@@ -220,9 +238,10 @@ impl AgentInputBindingRepository for SqliteAdminStore {
                     .map_or(true, |(key, _)| key.starts_with(&prefix))
             })
             .map(|row| {
-                let (_, data) = row?;
-                serde_json::from_str(&data)
-                    .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))
+                let (key, data) = row?;
+                let config = serde_json::from_str(&data)
+                    .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+                validate_stored_agent_inputs(workspace_id, &key, config)
             })
             .collect()
     }

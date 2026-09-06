@@ -1330,6 +1330,7 @@ fn agent_input_write_problem(
 ) -> Problem {
     use awaken_config_resolver::AgentInputRepositoryError as Error;
     let (status, code, title) = match error {
+        Error::InvalidIdentity => (422, "invalid_identity", "Invalid Agent input identity"),
         Error::InvalidRevision(_) => (422, "invalid_revision", "Invalid Agent input revision"),
         Error::RevisionConflict { .. } => {
             (409, "revision_conflict", "Agent input revision conflict")

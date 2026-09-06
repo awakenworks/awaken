@@ -16,6 +16,58 @@ use awaken_credential_vault::{CredentialBinding, SecretRef};
 use sqlx::Executor;
 use sqlx::postgres::PgPool;
 
+#[path = "support/agent_input_admission.rs"]
+mod input_admission;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postgres_agent_input_ambiguous_keys_fail_closed() {
+    let Some(url) = schema_url("t_admin_input_key_admission").await else {
+        return;
+    };
+    let store = PostgresAdminStore::connect(&url).unwrap();
+    input_admission::ambiguous_keys_fail_closed(&store);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postgres_agent_input_rollback_replay_and_corrupt_key_readback() {
+    let Some(url) = schema_url("t_admin_input_failure_admission").await else {
+        return;
+    };
+    let store = PostgresAdminStore::connect(&url).unwrap();
+    let control = PgPool::connect(&url).await.unwrap();
+    control.execute("CREATE FUNCTION reject_input_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected write failure'; END $$").await.unwrap();
+    input_admission::rollback_and_lost_response(&store, |reject| {
+        let control = control.clone();
+        async move {
+            control.execute(if reject {
+                "CREATE TRIGGER reject_input_write BEFORE INSERT OR UPDATE ON admin_agent_resource FOR EACH ROW EXECUTE FUNCTION reject_input_write()"
+            } else { "DROP TRIGGER reject_input_write ON admin_agent_resource" }).await.unwrap();
+        }
+    }).await;
+    drop(store);
+    let store = PostgresAdminStore::connect_existing(&url).unwrap();
+    assert_eq!(
+        store
+            .get_agent_inputs("retry-workspace", "retry-agent")
+            .unwrap()
+            .unwrap()
+            .revision,
+        2
+    );
+    // K4: do not relabel a historical corrupt row under the requested identity.
+    sqlx::query("UPDATE admin_agent_resource SET agent_id = $1")
+        .bind("retry-workspace\u{1f}wrong-agent")
+        .execute(&control)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .get_agent_inputs("retry-workspace", "wrong-agent")
+            .is_err()
+    );
+    assert!(store.list_agent_inputs("retry-workspace").is_err());
+}
+
 fn base_url() -> String {
     std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
         "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
@@ -28,6 +80,10 @@ async fn schema_url(schema: &str) -> Option<String> {
     let admin = match PgPool::connect(&base_url()).await {
         Ok(pool) => pool,
         Err(err) => {
+            assert!(
+                std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_none(),
+                "explicit PostgreSQL fixture must be reachable: {err}"
+            );
             println!("[skip] no Postgres reachable: {err}");
             return None;
         }

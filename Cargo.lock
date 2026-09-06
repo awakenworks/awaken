@@ -2645,6 +2645,7 @@ dependencies = [
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
+ "awaken-sql-storage",
  "awaken-sqlite-pool",
  "base64 0.22.1",
  "loom",
