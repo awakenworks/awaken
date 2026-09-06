@@ -1268,6 +1268,12 @@ fn mount_with_managed_over_and_models(
     ))
     .with_state(managed_state.clone());
     let managed = router(managed_state.clone())
+        .merge(
+            awaken_protocol_awaken::session_event_admission_router(
+                awaken_protocol_managed::close_event_admission,
+            )
+            .with_state(managed_state.clone()),
+        )
         .merge(dreams)
         .merge(awaken_protocol_awaken::live_inbox_router(
             session_application.clone(),

@@ -824,3 +824,43 @@ an exact durable rejection suppresses further Git calls while still allowing
 root cleanup to remove the fresh Session working tree. The Worker HTTP adapter
 adds only the rejection variant of the existing command/receipt control wire;
 it owns no queue, Session phase, Git transport, or sidecar.
+
+## Amendment: final Event-batch non-admission for response-loss recovery
+
+The objective is to settle an application reservation without guessing whether
+a lost request executed. Ordinary input remains `sessions.events.send` on the
+Managed SDK surface. The native-only
+`POST /v1/awaken/sessions/{id}/event-admissions/close` receives the exact original
+Managed body, Idempotency-Key, and optional data-subject header. It resolves
+acceptance rather than retrying execution or rebuilding transcript projections.
+
+| Scope | Existing authority | Decision |
+| --- | --- | --- |
+| Reused unchanged | Session repository root CAS, Workspace ownership, canonical request fingerprint and Managed input schema | Remain the sole identity, isolation and persistence boundaries. |
+| Modified | SessionApplication Event-batch admission | Acceptance and final close share one CAS implementation and retained identity. |
+| Added | Empty final-close variant of the existing root batch; native receipt endpoint | No executable Event, activity, new queue, receipt table or application-token authority is introduced. |
+
+```text
+original SDK send ----+--> Session root CAS --> accepted batch --> existing reconciler
+native close --------+          |
+                                +--> closed identity --> reject delayed SDK send
+```
+
+If acceptance won, close returns `accepted` and the original batch coordinate.
+If close won, its empty, complete batch permanently fences that retry identity
+while the root is retained. Repeated exact close is read-only; changed
+fingerprints conflict. Neither timeout nor 404 establishes final non-admission.
+An accepted receipt is not a Run terminal outcome or a published artifact.
+The durable codec rejects closed receipts containing executable events,
+activity or trace state; omitted flags on historical accepted batches mean
+accepted, not closed.
+
+The implementation/model evidence currently covers retained roots. **Deletion
+remains an open recovery boundary:** existing Session tombstones discard the
+root's Event-batch receipts. After deletion this endpoint cannot distinguish an
+earlier accepted request from an absent one and must not authorize quota
+release from a 404. Extending the existing tombstone with minimal admission
+provenance, together with application reconciliation, is required before
+claiming complete response-loss convergence. ToolResultProtocol checks the
+absorbing alternatives under root CAS, not this missing deletion transition,
+Classroom quota liveness, or universal Rust/SQL refinement.

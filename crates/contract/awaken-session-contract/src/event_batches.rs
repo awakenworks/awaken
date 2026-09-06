@@ -397,6 +397,11 @@ pub struct SessionEventBatch {
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_fingerprint: Option<String>,
+    /// A final non-admission receipt competes with ordinary acceptance at the
+    /// SAME Session root CAS. It contains no executable Events and permanently
+    /// prevents a delayed request with this retry identity from being accepted.
+    #[serde(default)]
+    pub admission_closed: bool,
     /// W3C trace context captured once for this atomic ordinary admission. It
     /// is request-local observability provenance, not Event or Run identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -431,6 +436,65 @@ fn mark_processed_observation(
 }
 
 impl SessionEventBatch {
+    /// A final non-admission receipt can be observed but cannot be replayed as
+    /// accepted input. Both application and wire preflight use this same gate.
+    pub fn require_accepted(&self) -> Result<(), crate::RunError> {
+        if self.admission_closed {
+            return Err(crate::RunError {
+                message: "Session Event batch admission was permanently closed".into(),
+                kind: crate::RunErrorKind::BadRequest,
+                code: "event_admission_closed".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Verify the final-close invariant at the durable codec boundary. Legacy
+    /// accepted batches omit `admission_closed` and retain their old meaning.
+    pub fn verify_admission(&self) -> Result<(), SessionEventBatchError> {
+        if self.admission_closed
+            && (!self.events.is_empty()
+                || self.admitted_revision.0 == 0
+                || self.batch_id.is_empty()
+                || self
+                    .idempotency_key
+                    .as_ref()
+                    .is_none_or(|key| key.trim().is_empty())
+                || self
+                    .request_fingerprint
+                    .as_ref()
+                    .is_none_or(|value| value.trim().is_empty())
+                || self.wake_activity_epoch.is_some()
+                || self.traceparent.is_some())
+        {
+            return Err(SessionEventBatchError::InvalidClosedAdmission);
+        }
+        Ok(())
+    }
+
+    pub fn closed_admission(
+        batch_id: String,
+        revision: crate::SessionRevision,
+        key: String,
+        fingerprint: String,
+    ) -> Result<Self, SessionEventBatchError> {
+        if batch_id.is_empty() || revision.0 == 0 {
+            return Err(SessionEventBatchError::InvalidBatchRevision);
+        }
+        let mut batch = Self {
+            batch_id,
+            events: Vec::new(),
+            admitted_revision: revision,
+            idempotency_key: None,
+            request_fingerprint: None,
+            admission_closed: true,
+            traceparent: None,
+            wake_activity_epoch: None,
+        };
+        batch.bind_idempotency(key, fingerprint)?;
+        Ok(batch)
+    }
+
     pub fn bind_idempotency(
         &mut self,
         key: impl Into<String>,
@@ -673,6 +737,7 @@ impl SessionEventBatch {
             admitted_revision: crate::SessionRevision::default(),
             idempotency_key: None,
             request_fingerprint: None,
+            admission_closed: false,
             traceparent,
             wake_activity_epoch: None,
         })
@@ -744,11 +809,68 @@ pub enum SessionEventBatchError {
     ProgressMismatch,
     #[error("Session Event idempotency key and request fingerprint must both be non-empty")]
     InvalidIdempotencyCoordinate,
+    #[error("closed Session Event admission must contain only its immutable retry coordinate")]
+    InvalidClosedAdmission,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn final_close_rejects_execution_intent_and_preserves_legacy_acceptance() {
+        // Causes: C1 final receipt; C2 a required coordinate is absent; C3
+        // execution/activity/trace is injected; C4 old serialized accepted batch
+        // omits the new field. Effects: E1 closed receipt roundtrips with no
+        // executable work; E2 corrupt proof fails closed; E3 legacy stays accepted.
+        // V1 C1=>E1; V2 C1+(C2 or C3)=>E2 (each field independently);
+        // V3 C4=>E3. This codec invariant is shared by both durable backends.
+        let closed = SessionEventBatch::closed_admission(
+            "batch".into(),
+            crate::SessionRevision(2),
+            "key".into(),
+            "fp".into(),
+        )
+        .unwrap();
+        assert!(closed.is_complete());
+        assert_eq!(
+            closed.require_accepted().unwrap_err().code,
+            "event_admission_closed"
+        );
+        assert_eq!(closed.verify_admission(), Ok(()));
+        let encoded = serde_json::to_value(&closed).unwrap();
+        assert_eq!(
+            serde_json::from_value::<SessionEventBatch>(encoded.clone()).unwrap(),
+            closed
+        );
+        let accepted =
+            SessionEventBatch::compile("session", "accepted", vec![user("hello")]).unwrap();
+        for (field, value) in [
+            ("events", serde_json::to_value(&accepted.events).unwrap()),
+            ("admitted_revision", serde_json::json!(0)),
+            ("batch_id", serde_json::json!("")),
+            ("idempotency_key", serde_json::Value::Null),
+            ("request_fingerprint", serde_json::json!(" ")),
+            ("wake_activity_epoch", serde_json::json!(1)),
+            ("traceparent", serde_json::json!("trace")),
+        ] {
+            let mut corrupt = encoded.clone();
+            corrupt[field] = value;
+            assert_eq!(
+                serde_json::from_value::<SessionEventBatch>(corrupt)
+                    .unwrap()
+                    .verify_admission(),
+                Err(SessionEventBatchError::InvalidClosedAdmission),
+                "V2 {field}"
+            );
+        }
+        let mut legacy = serde_json::to_value(&accepted).unwrap();
+        legacy.as_object_mut().unwrap().remove("admission_closed");
+        let restored: SessionEventBatch = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored, accepted, "V3");
+        assert_eq!(restored.verify_admission(), Ok(()));
+        assert!(restored.require_accepted().is_ok());
+    }
 
     fn user(text: &str) -> SessionEventInput {
         SessionEventInput::UserMessage {
