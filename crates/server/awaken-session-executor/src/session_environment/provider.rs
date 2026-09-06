@@ -598,6 +598,70 @@ impl SessionEnvironmentProvider {
         self.adopt_effective_for_effect(spec, handle, None).await
     }
 
+    /// Rebuild only the revoked process bindings after the lifecycle owner has
+    /// authorized and observed this exact retained Sandbox. Its physical owner
+    /// carries non-durable create-attempt and cleanup participants that a cold
+    /// provider adoption cannot reconstruct. This performs no Sandbox adoption,
+    /// allocation, disposal or process launch; ordinary tool admission remains
+    /// responsible for the new Hand's first invocation.
+    pub(crate) async fn rebind_retained(
+        &self,
+        handle: &pc::SandboxHandle,
+        retained: &SessionEnvironment,
+    ) -> Result<SessionEnvironment, pc::SandboxError> {
+        if &retained.handle() != handle {
+            return Err(pc::SandboxError::new(
+                "retained Environment differs from rebound handle",
+            ));
+        }
+        match (self, retained) {
+            (Self::Workdir(_), SessionEnvironment::Workdir(sandbox)) => {
+                Ok(SessionEnvironment::Workdir(sandbox.clone()))
+            }
+            (
+                Self::Namespace {
+                    hand_factory,
+                    hand_bin,
+                    hand_idle_after,
+                    ..
+                },
+                SessionEnvironment::Namespace { sandbox, .. },
+            ) => Ok(SessionEnvironment::namespace_shared(
+                sandbox.clone(),
+                hand_factory.clone(),
+                hand_bin,
+                *hand_idle_after,
+            )),
+            (
+                Self::Container {
+                    hand_factory,
+                    hand_bin,
+                    hand_idle_after,
+                    hand_residency,
+                    ..
+                },
+                SessionEnvironment::Container {
+                    sandbox,
+                    capabilities,
+                    ..
+                },
+            ) => {
+                SessionEnvironment::container(
+                    sandbox.clone(),
+                    hand_factory.clone(),
+                    hand_bin,
+                    *hand_idle_after,
+                    *hand_residency,
+                    capabilities.clone(),
+                )
+                .await
+            }
+            _ => Err(pc::SandboxError::new(
+                "retained Environment belongs to another provider",
+            )),
+        }
+    }
+
     /// Adopt the already-observed exact handle under the root-authorized
     /// provider fence. Local/namespace providers revalidate their immutable
     /// marker in `adopt_sandbox`; container adapters additionally fence the
