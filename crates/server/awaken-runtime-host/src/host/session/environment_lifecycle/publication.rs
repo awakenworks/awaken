@@ -12,12 +12,11 @@ impl SharedHost {
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
     ) -> Result<UnboundSessionEnvironment, HostError> {
-        self.session_slots.update(thread, |slot| {
-            slot.environment_owner.begin_preparing(
-                environment,
-                awaken_session_contract::SessionEnvironmentEffectKind::Create,
-            )
-        })
+        self.begin_session_environment_candidate(
+            thread,
+            environment,
+            awaken_session_contract::SessionEnvironmentEffectKind::Create,
+        )
     }
 
     pub(crate) fn begin_session_environment_adoption(
@@ -25,11 +24,29 @@ impl SharedHost {
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
     ) -> Result<UnboundSessionEnvironment, HostError> {
+        self.begin_session_environment_candidate(
+            thread,
+            environment,
+            awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
+        )
+    }
+
+    fn begin_session_environment_candidate(
+        &self,
+        thread: &str,
+        environment: Arc<crate::session_environment::SessionEnvironment>,
+        kind: awaken_session_contract::SessionEnvironmentEffectKind,
+    ) -> Result<UnboundSessionEnvironment, HostError> {
         self.session_slots.update(thread, |slot| {
-            slot.environment_owner.begin_preparing(
-                environment,
-                awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
-            )
+            let candidate = slot.environment_owner.begin_preparing(environment, kind)?;
+            #[cfg(target_os = "linux")]
+            self.session_slots.bind_execution_authority(
+                thread,
+                slot,
+                &candidate.environment,
+                self.execution_authority.as_ref(),
+            )?;
+            Ok(candidate)
         })
     }
 

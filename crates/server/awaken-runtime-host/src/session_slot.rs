@@ -13,6 +13,8 @@ use crate::provisioning::StagedResources;
 
 mod environment_owner;
 pub(crate) use environment_owner::*;
+#[cfg(target_os = "linux")]
+mod execution_authority;
 
 /// One process-local projection of aggregate authority, not another lease.
 /// Closing retains the exact lease for cleanup CAS, but never for admission.

@@ -1015,6 +1015,35 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "WorkerExecutionAuthority", source, config, mutations,
                               dependencies=("SessionRealizationAuthority",))
     print("Worker execution authority: 6/6 mutants killed; admission/renewal reachability witnessed")
+    # S1-S21: independently remove each authority/identity guard; release the
+    # original mutex between check and effect; permit a late weak upgrade or
+    # rebinding. The receipt oracle is independent of the mutated predicate.
+    source = (ROOT / "formal/tla/SessionExecutionBinding.tla").read_text()
+    config = (ROOT / "formal/tla/SessionExecutionBinding.cfg").read_text()
+    header = "SPECIFICATION BindingSpec\nCHECK_DEADLOCK FALSE\n"
+    mutations = []
+    for anchor, broken, invariant in [
+        ('CurrentBinding == /\\ RootCurrent', 'CurrentBinding == /\\ TRUE', "OnlyCurrentBindingCommits"),
+        ('/\\ projection = "Live" /\\ ~sessionExpired', '/\\ TRUE /\\ ~sessionExpired', "OnlyCurrentBindingCommits"),
+        ('/\\ ~sessionExpired\n  /\\ selection', '/\\ TRUE\n  /\\ selection', "OnlyCurrentBindingCommits"),
+        ('/\\ boundSlot = slotIdentity', '/\\ TRUE', "OnlyCurrentBindingCommits"),
+        ('/\\ boundGeneration = lease[1]', '/\\ TRUE', "OnlyCurrentBindingCommits"),
+        ('/\\ boundEnvironment = environmentIdentity', '/\\ TRUE', "OnlyCurrentBindingCommits"),
+        ('/\\ environmentPhase \\in {"candidate", "resident"}\n\nSelect', '/\\ TRUE\n\nSelect', "OnlyCurrentBindingCommits"),
+        ('/\\ ~effectHeld /\\ UNCHANGED bindingVars', '/\\ UNCHANGED bindingVars', "OnlyCurrentBindingCommits"),
+        ('Select == /\\ selection = "unset"', 'Select == /\\ selection \\in {"unset", "weak"}', "WeakExecutionCannotUpgrade"),
+        ('/\\ boundSlot = 0 /\\ projection', '/\\ projection', "BindingIsWriteOnce"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"Session execution binding mutation anchor drifted: {anchor}")
+        property_kind = "PROPERTY" if invariant == "BindingIsWriteOnce" else "INVARIANTS"
+        mutations.append((source.replace(anchor, broken), header + property_kind + " " + invariant, invariant))
+    for witness in ("NoCandidateEffectReached", "NoResidentEffectReached"):
+        mutations.append((source, header + "INVARIANTS " + witness, witness))
+    check_tlc_model_mutations(tlc_jar, "SessionExecutionBinding", source, config, mutations,
+                              dependencies=("SessionRealizationAuthority", "WorkerExecutionAuthority"),
+                              action_properties={"BindingIsWriteOnce"})
+    print("Session execution binding: 10/10 mutants killed; candidate/resident effects reachable")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
@@ -1620,7 +1649,7 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
                              else "Temporal properties were violated." if temporal
                              else f"Invariant {invariant} is violated")
             if result.returncode != expected_code or expected_text not in result.stdout:
-                raise SystemExit(f"{name} {'baseline failed' if invariant is None else 'mutant was not killed correctly'} (exit={result.returncode}):\n{result.stdout}")
+                raise SystemExit(f"{name} {'baseline failed' if invariant is None else f'mutant for {invariant} was not killed correctly'} (exit={result.returncode}):\n{result.stdout}")
 
 
 if __name__ == "__main__":

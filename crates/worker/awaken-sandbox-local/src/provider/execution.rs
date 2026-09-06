@@ -17,6 +17,23 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 
 use pc::CurrentExecutionAuthority;
 
+/// Deployment bytes, not execution authority. Selection may precede Session
+/// binding; a selected scope cannot launch until its one authority is installed.
+#[derive(Clone)]
+pub struct LocalExecutionDeployment {
+    launcher: PathBuf,
+    helper: PathBuf,
+}
+
+impl LocalExecutionDeployment {
+    pub fn new(launcher: PathBuf, helper: PathBuf) -> Result<Self, pc::SandboxError> {
+        if !launcher.is_absolute() || !helper.is_absolute() {
+            return Err(err("execution deployment binaries must be absolute"));
+        }
+        Ok(Self { launcher, helper })
+    }
+}
+
 #[derive(Default)]
 struct LiveExecution {
     closed: bool,
@@ -26,7 +43,7 @@ struct LiveExecution {
 pub(super) struct ScopedExecution {
     launcher: PathBuf,
     helper: PathBuf,
-    authority: Arc<dyn CurrentExecutionAuthority>,
+    authority: std::sync::OnceLock<Arc<dyn CurrentExecutionAuthority>>,
     live: Mutex<LiveExecution>,
 }
 
@@ -40,6 +57,48 @@ fn denied() -> io::Error {
 }
 
 impl LocalSandbox {
+    pub(super) fn select_execution_boundary(
+        &self,
+        deployment: &LocalExecutionDeployment,
+    ) -> Result<(), pc::SandboxError> {
+        if !self.trusted_host_access {
+            return Err(err(
+                "host-view execution requires TrustedHost authorization",
+            ));
+        }
+        self.execution
+            .set(ExecutionBinding::Scoped(Box::new(ScopedExecution {
+                launcher: deployment.launcher.clone(),
+                helper: deployment.helper.clone(),
+                authority: Default::default(),
+                live: Mutex::new(LiveExecution::default()),
+            })))
+            .map_err(|_| err("execution boundary is already selected; late upgrade is forbidden"))
+    }
+
+    /// Bind the current Session exactly once; an unselected/weak sandbox is not
+    /// upgraded implicitly. The same selected scope retains all process handles.
+    pub fn bind_execution_authority(
+        &self,
+        authority: Arc<dyn CurrentExecutionAuthority>,
+    ) -> Result<bool, pc::SandboxError> {
+        let Some(ExecutionBinding::Scoped(execution)) = self.execution.get() else {
+            return Ok(false);
+        };
+        execution
+            .authority
+            .set(authority)
+            .map_err(|_| err("execution authority is already bound"))?;
+        Ok(true)
+    }
+
+    pub fn has_scoped_execution(&self) -> bool {
+        matches!(self.execution.get(), Some(ExecutionBinding::Scoped(_)))
+    }
+
+    pub fn needs_execution_authority(&self) -> bool {
+        matches!(self.execution.get(), Some(ExecutionBinding::Scoped(scope)) if scope.authority.get().is_none())
+    }
     /// Composition installs this on an exact current TrustedHost realization
     /// before its first spawn. This does not advertise a Worker capability:
     /// probe, Session binding, renewal and recovery must all be installed there.
@@ -58,14 +117,11 @@ impl LocalSandbox {
                 "scoped execution requires an exact TrustedHost realization and absolute deployment binaries",
             ));
         }
-        self.execution
-            .set(ExecutionBinding::Scoped(Box::new(ScopedExecution {
-                launcher: launcher.into(),
-                helper: helper.into(),
-                authority,
-                live: Mutex::new(LiveExecution::default()),
-            })))
-            .map_err(|_| err("execution boundary is already selected; late upgrade is forbidden"))
+        self.select_execution_boundary(&LocalExecutionDeployment::new(
+            launcher.into(),
+            helper.into(),
+        )?)?;
+        self.bind_execution_authority(authority).map(|_| ())
     }
 
     /// Entry for the EXISTING Session renewal scheduler; composition must wire
@@ -80,7 +136,7 @@ impl LocalSandbox {
                     .refresh_deadline_authorized(CONTROL_TIMEOUT, |grant| {
                         let mut grant = Some(grant);
                         ExecutionDeadline::with_current_authority(
-                            execution.authority.as_ref(),
+                            execution.authority.get().ok_or_else(denied)?.as_ref(),
                             &mut |deadline| {
                                 let live = execution.live.lock().map_err(|_| denied())?;
                                 if live.closed {
@@ -167,7 +223,10 @@ impl ScopedExecution {
         let mut guard = crate::realization_marker::begin_execution(sandbox.root.root(), evidence)?;
         let mut deadline = None;
         ExecutionDeadline::with_current_authority(
-            self.authority.as_ref(),
+            self.authority
+                .get()
+                .ok_or_else(|| err("execution authority is not bound"))?
+                .as_ref(),
             &mut |current_deadline| {
                 if self.live.lock().map_err(|_| denied())?.closed || deadline.is_some() {
                     return Err(denied());
@@ -192,14 +251,17 @@ impl ScopedExecution {
             CONTROL_TIMEOUT,
             |identity, grant| {
                 let mut grant = Some(grant);
-                self.authority.with_current(&mut |_| {
-                    let live = self.live.lock().map_err(|_| denied())?;
-                    if live.closed {
-                        return Err(denied());
-                    }
-                    guard.record_execution(identity).map_err(io::Error::other)?;
-                    grant.take().ok_or_else(denied)?.commit()
-                })
+                self.authority
+                    .get()
+                    .ok_or_else(denied)?
+                    .with_current(&mut |_| {
+                        let live = self.live.lock().map_err(|_| denied())?;
+                        if live.closed {
+                            return Err(denied());
+                        }
+                        guard.record_execution(identity).map_err(io::Error::other)?;
+                        grant.take().ok_or_else(denied)?.commit()
+                    })
             },
         )
         .await

@@ -281,6 +281,49 @@ impl crate::SharedHost {
         now_unix_ms: u64,
         timing: AuthorityLeaseTiming,
     ) -> Result<usize, crate::HostError> {
+        #[cfg(target_os = "linux")]
+        {
+            // One existing sweep drives BOTH authority renewal and physical
+            // cutoff delivery. A long Session lease must not suppress refresh
+            // of its shorter Worker proof. Neither lane may starve its peers.
+            let (renewal, refresh) = tokio::join!(
+                self.renew_due_session_projection_leases(now_unix_ms, timing),
+                self.refresh_session_execution(),
+            );
+            let renewed = renewal?;
+            refresh?;
+            Ok(renewed)
+        }
+        #[cfg(not(target_os = "linux"))]
+        self.renew_due_session_projection_leases(now_unix_ms, timing)
+            .await
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn refresh_session_execution(&self) -> Result<(), crate::HostError> {
+        let outcomes = stream::iter(self.session_slots.execution_environments())
+            .map(|environment| async move {
+                let crate::session_environment::SessionEnvironment::Workdir { sandbox, .. } =
+                    environment.as_ref()
+                else {
+                    unreachable!()
+                };
+                sandbox
+                    .refresh_scoped_execution()
+                    .await
+                    .map_err(|error| crate::HostError::internal(error.to_string()))
+            })
+            .buffer_unordered(MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS)
+            .collect::<Vec<_>>()
+            .await;
+        outcomes.into_iter().collect()
+    }
+
+    async fn renew_due_session_projection_leases(
+        &self,
+        now_unix_ms: u64,
+        timing: AuthorityLeaseTiming,
+    ) -> Result<usize, crate::HostError> {
         let renew_before_unix_ms = now_unix_ms
             .saturating_add(u64::try_from(timing.proof_window().as_millis()).unwrap_or(u64::MAX));
         let mut due = self

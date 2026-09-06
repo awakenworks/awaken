@@ -113,6 +113,8 @@ pub struct LocalProvider {
     base: PathBuf,
     inherit_agent_stderr: bool,
     trusted_host_access: bool,
+    #[cfg(target_os = "linux")]
+    execution_deployment: Option<execution::LocalExecutionDeployment>,
     /// In-memory blob seed for `File`/`Resource` mounts (keyed by id).
     blobs: HashMap<String, Vec<u8>>,
     /// Optional content-addressed store consulted after the seed map (Slice 4).
@@ -132,6 +134,8 @@ impl LocalProvider {
             base: base.into(),
             inherit_agent_stderr: false,
             trusted_host_access: false,
+            #[cfg(target_os = "linux")]
+            execution_deployment: None,
             blobs: HashMap::new(),
             file_store: None,
             secret_broker: Arc::new(std::sync::RwLock::new(None)),
@@ -152,6 +156,39 @@ impl LocalProvider {
     #[must_use]
     pub fn has_trusted_host_access(&self) -> bool {
         self.trusted_host_access
+    }
+
+    /// Install immutable optional execution hardening before provider use.
+    /// This does not qualify `process_tree_supervision`: Managed Git and Worker
+    /// readiness still require complete integration. Only fenced realizations
+    /// are eligible, and their launches deny until the Session owner binds them.
+    #[cfg(target_os = "linux")]
+    pub fn install_execution_deployment(
+        &mut self,
+        deployment: execution::LocalExecutionDeployment,
+    ) -> Result<(), pc::SandboxError> {
+        if !self.trusted_host_access {
+            return Err(err("execution deployment requires TrustedHost"));
+        }
+        if self.execution_deployment.is_some() {
+            return Err(err("execution deployment is already installed"));
+        }
+        self.execution_deployment = Some(deployment);
+        Ok(())
+    }
+
+    fn select_execution_boundary(&self, sandbox: &LocalSandbox) -> Result<(), pc::SandboxError> {
+        #[cfg(target_os = "linux")]
+        if let Some(deployment) = &self.execution_deployment {
+            if sandbox.realization.current().is_none() {
+                return Err(err(
+                    "execution deployment requires a current fenced realization",
+                ));
+            }
+            return sandbox.select_execution_boundary(deployment);
+        }
+        let _ = sandbox;
+        Ok(())
     }
 
     pub(super) fn prepare(&self, spec: &pc::SandboxSpec) -> Result<(), pc::SandboxError> {
@@ -298,6 +335,11 @@ impl LocalProvider {
         // Fail closed against our capabilities (isolation, ro, egress secrets, …).
         self.prepare(spec)?;
 
+        #[cfg(target_os = "linux")]
+        if self.execution_deployment.is_some() && effect_fence.is_none() {
+            return Err(err("execution deployment requires fenced creation"));
+        }
+
         let mut sandbox = self.build(&spec.scope, &spec.outputs_path);
         let realization_fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
         let mut realization_guard = match effect_fence {
@@ -368,6 +410,7 @@ impl LocalProvider {
                 }
             };
             *sandbox.memory_mounts.lock().await = memory_mounts;
+            self.select_execution_boundary(&sandbox)?;
             return Ok(sandbox);
         }
         // A retry must shred credential bytes left by the previous interrupted
@@ -497,6 +540,7 @@ impl LocalProvider {
                 return Err(cause);
             }
         };
+        self.select_execution_boundary(&sandbox)?;
         Ok(sandbox)
     }
 
@@ -533,6 +577,10 @@ impl LocalProvider {
     ) -> Result<LocalSandbox, pc::SandboxError> {
         if handle.restoration().is_none() {
             return self.adopt_sandbox_inner(Some(spec), handle, None).await;
+        }
+        #[cfg(target_os = "linux")]
+        if self.execution_deployment.is_some() {
+            return Err(err("scoped restored realization is not qualified"));
         }
         self.prepare(spec)?;
         if handle.sandbox_id != spec.scope {
@@ -649,6 +697,7 @@ impl LocalProvider {
         };
         sandbox.realized = realized;
         sandbox.realization = crate::realization_marker::LiveRealization::Current(realization);
+        self.select_execution_boundary(&sandbox)?;
         *sandbox
             .terminal_removal
             .lock()
@@ -674,6 +723,15 @@ impl LocalProvider {
         effect_fence: Option<&pc::SandboxEffectFence>,
     ) -> Result<LocalSandbox, pc::SandboxError> {
         let payload = handle.local_payload()?;
+        #[cfg(target_os = "linux")]
+        if self.execution_deployment.is_some() && spec.is_none() {
+            return Err(err(
+                "execution deployment requires the frozen adoption spec",
+            ));
+        }
+        if let Some(spec) = spec {
+            self.prepare(spec)?;
+        }
         if let Some(spec) = spec
             && (handle.realization_fingerprint()
                 != Some(&pc::SandboxRealizationFingerprint::from_spec(spec))
@@ -703,6 +761,7 @@ impl LocalProvider {
             Some((evidence, _)) => crate::realization_marker::LiveRealization::Current(evidence),
             None => crate::realization_marker::LiveRealization::LegacyAdopted,
         };
+        self.select_execution_boundary(&sandbox)?;
         Self::project_durable_handle_fields(&mut sandbox, payload)?;
         if let Some(spec) = spec {
             sandbox.secret_paths = spec

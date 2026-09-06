@@ -23,3 +23,5 @@ pub(crate) use session_hand::UnusedHandExecutorFactory;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::spec as environment_test_spec;

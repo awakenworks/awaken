@@ -924,6 +924,8 @@ mod blob_cache;
 mod git_transport;
 mod namespace;
 mod provider;
+#[cfg(target_os = "linux")]
+pub use provider::execution::LocalExecutionDeployment;
 mod read_only_tree;
 mod realization_marker;
 mod repo_bundle;

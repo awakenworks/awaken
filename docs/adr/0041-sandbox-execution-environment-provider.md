@@ -816,10 +816,47 @@ It checks late responses, fresh admission, generation replacement and renewal;
 six guard mutants plus admission/renewal reachability witnesses run in CI.
 Its atomic callback abstraction does not prove arbitrary callback duration,
 physical GO/cutoff refresh, OS clock correctness, Rust refinement or cleanup
-liveness. Binding the intersection of this root proof and the exact current
-Session/environment to physical launch remains required before capability
-activation; managed Git, reboot recovery and real cross-platform/cloud tests
-also remain outside this slice's completion claim.
+liveness.
+
+The optional Linux Local execution deployment now selects one scope on fenced
+create, Ready replay and exact-spec adoption. It is immutable deployment data,
+not a capability proof: `process_tree_supervision` remains false, including for
+a configured provider. Unfenced creation, spec-less adoption and unqualified
+restoration reject instead of silently falling back. Selected-but-unbound
+scopes reject both process and Agent launch; a weak first launch cannot upgrade.
+
+The existing Session Environment candidate owner binds that scope once to a
+view of the current Worker proof and Session slot. Both create and adopt use
+one enrollment implementation. The view retains no renewable lease: it checks
+the asserted generation against the live lease, existing owner-lock allocation
+identity and exact Environment Arc under the original locks. Candidate and
+Resident may execute; Retiring, missing/replaced owners, expired authority and
+unknown binding cannot. Weak references to the map and Environment avoid an
+ownership cycle. Terminal-only candidates without live authority remain
+unbound and retain their cleanup identity without gaining execution permission.
+
+The existing Session renewal sweep concurrently drives due Control lease
+writes and bounded physical cutoff refresh. A long Session lease no longer
+short-circuits refresh of a shorter Worker proof. Both lanes finish their peer
+work before reporting errors; current authority is reread at each physical
+effect. No second timer, process registry, lease store or deployment-mode flag
+is added. Native Hand, ACP and sandbox-stdio continue to share the provider
+spawn boundary. Managed Git preparation/publication is not yet inside it.
+
+`SessionExecutionBinding` composes the Worker/Session kernel with one selected
+scope, two physical owner allocations and candidate/resident/retiring phases.
+It checks one-time binding, no late weak upgrade, exact guarded effects and
+same-lease allocation ABA. Independent receipt oracles, ten guard mutants and
+candidate/resident reachability witnesses qualify the model. Adjacent Rust
+decision-table cases check every authority coordinate, both budget minima,
+original mutex retention, weak ownership and callback errors. A real Linux
+candidate test crosses unbound rejection, enrollment/retry, launch, no-due
+refresh, Worker closure and exact tree stop while preserving File bytes.
+Callback elapsed time and OS enforcement remain separate deadline/boundary
+obligations; this is not Rust refinement or unbounded distributed liveness.
+Automatic Worker deployment/readiness installation, supervised Managed Git,
+reboot recovery and real cross-platform/cloud qualification remain required
+before advertising full supervision.
 
 Native Linux readiness now executes the same `bubblewrap_argv` profile as a
 real Namespace launch, including PID/IPC/UTS/network namespaces and parent-death
