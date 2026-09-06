@@ -96,11 +96,14 @@ function reconcileCommittedEvent<T extends { readonly id: string }>(current: T, 
 /**
  * Reconcile committed history/SSE overlap by immutable Event identity. The only
  * legal enrichment is `processed_at: absent|null -> non-empty string`; delayed
- * frames can never erase it or rewrite committed material.
+ * frames can never erase it or rewrite committed material. A complete ascending
+ * history additionally owns ordering; observations retain their arrival order.
+ * Unseen concurrent observations remain after the supplied history.
  */
 export function mergeCommittedEvents<T extends { readonly id: string }>(
   current: readonly T[],
   incoming: readonly T[],
+  source: "observation" | "authoritative-history" = "observation",
 ): T[] {
   const result = [...current];
   const byId = new Map<string, { index: number; event: T }>();
@@ -127,7 +130,32 @@ export function mergeCommittedEvents<T extends { readonly id: string }>(
       changed = true;
     }
   }
-  return changed ? result : current as T[];
+  const merged = changed ? result : current as T[];
+  return source === "authoritative-history"
+    ? orderByAuthoritativeHistory(merged, incoming)
+    : merged;
+}
+
+function orderByAuthoritativeHistory<T extends { readonly id: string }>(
+  merged: T[],
+  history: readonly T[],
+): T[] {
+  const byId = new Map(merged.map((event) => [event.id, event]));
+  const ordered: T[] = [];
+  const seen = new Set<string>();
+  for (const event of history) {
+    if (seen.has(event.id)) continue;
+    const reconciled = byId.get(event.id);
+    if (reconciled) ordered.push(reconciled);
+    seen.add(event.id);
+  }
+  for (const event of merged) {
+    if (!seen.has(event.id)) ordered.push(event);
+  }
+  return ordered.length === merged.length
+    && ordered.every((event, index) => event === merged[index])
+    ? merged
+    : ordered;
 }
 
 /** Count new identities and legal `processed_at` enrichments without a second merge policy. */

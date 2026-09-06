@@ -4,7 +4,9 @@
 shared by Awaken reference products:
 
 - merge committed Session events by event ID, allowing only monotonic
-  `processed_at` enrichment and rejecting immutable conflicts;
+  `processed_at` enrichment and rejecting immutable conflicts; complete ascending
+  history uses `authoritative-history` to restore server order after late anchors,
+  while ordinary observations retain arrival order and unseen concurrent tails;
 - fold lifecycle, tool-reply, and accepted-but-unprocessed inbound facts into
   one browser Runtime projection and conservatively join it with the aggregate
   Session status for input admission;

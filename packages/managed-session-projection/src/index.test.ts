@@ -87,6 +87,48 @@ describe("Managed Session committed projection decision table", () => {
   });
 
   /**
+   * History graph: C1 source is observation/full ordered history; C2 an earlier
+   * running anchor arrives after an idle ask; C3 an SSE tail is absent from the
+   * in-flight history; C4 processed_at is enriched or immutable content conflicts.
+   * H1 observation preserves arrival order. H2 full history restores causal order
+   * and exact approval, including repair of an already inverted cache. H3 unseen
+   * tail observations stay after history and retain active/terminal admission.
+   * H4 same-id material is retained with monotonic maturity under reordering;
+   * repeated history is identity-stable. H5 conflicts still fail closed in either
+   * source mode. No timestamp sorting: wire times need not be distinct clocks.
+   */
+  it("uses authoritative history order to repair late lifecycle anchors", () => {
+    const running = event({ id: "running", type: "session.status_running" });
+    const tool = event({ id: "tool", type: "agent.tool_use", name: "write", input: { file_path: "x" }, evaluated_permission: "ask" });
+    const ask = event({ id: "ask", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["tool"] } });
+    const observed = mergeCommittedEvents([tool, ask], [running]);
+    expect(observed.map(({ id }) => id)).toEqual(["tool", "ask", "running"]); // H1
+    expect(managedSessionAdmission(projectManagedSessionRuntime(observed), "idle").canResolveTools).toBe(false);
+    for (const current of [[tool, ask], observed]) {
+      const history = [running, tool, ask];
+      const repaired = mergeCommittedEvents(current, history, "authoritative-history");
+      expect(repaired.map(({ id }) => id)).toEqual(["running", "tool", "ask"]); // H2
+      expect(repaired[2]).toBe(ask);
+      expect(managedSessionAdmission(projectManagedSessionRuntime(repaired), "idle").canResolveTools).toBe(true);
+      expect(mergeCommittedEvents(repaired, history, "authoritative-history")).toBe(repaired); // H4
+    }
+    for (const type of ["session.status_running", "session.status_terminated"] as const) {
+      const tail = event({ id: "newer", type });
+      const merged = mergeCommittedEvents([tool, ask, tail], [running, tool, ask], "authoritative-history");
+      expect(merged.at(-1)).toBe(tail); // H3
+      expect(managedSessionAdmission(projectManagedSessionRuntime(merged), "idle").canResolveTools).toBe(false);
+    }
+    const mature = event({ ...ask, processed_at: "t1" });
+    const enriched = mergeCommittedEvents([tool, ask], [running, tool, mature], "authoritative-history");
+    expect(enriched.at(-1)?.processed_at).toBe("t1"); // H4
+    expect(mergeCommittedEvents(enriched, [running, tool, ask], "authoritative-history")).toBe(enriched);
+    for (const source of ["observation", "authoritative-history"] as const) {
+      expect(() => mergeCommittedEvents([tool, ask], [event({ ...tool, name: "changed" })], source))
+        .toThrow(ManagedProjectionConflictError); // H5
+    }
+  });
+
+  /**
    * Cause/effect rules: C1 same id with changed type/payload/nested material or
    * two different P timestamps -> E1 throw a typed conflict before returning a
    * projection. Top-level undefined equals absence because both are the same

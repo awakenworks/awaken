@@ -105,40 +105,12 @@ export function mergeCommittedSessionCache(
 ): SessionEvent[] {
   try {
     const current = qc.getQueryData<SessionEvent[]>(queryKey) ?? [];
-    const merged = mergeCommittedEvents(current, incoming);
-    // The official list defaults to chronological order. It is the ordering
-    // authority, while the canonical merge above remains the sole identity and
-    // maturity policy and therefore retains first-observed event material.
-    const projected = source === "authoritative-history"
-      ? orderByAuthoritativeHistory(merged, incoming)
-      : merged;
+    const projected = mergeCommittedEvents(current, incoming, source);
     qc.setQueryData<SessionEvent[]>(queryKey, projected);
     return projected;
   } catch (cause) {
     throw publishProjectionError(qc, queryKey, cause);
   }
-}
-
-function orderByAuthoritativeHistory(
-  merged: SessionEvent[],
-  history: readonly SessionEvent[],
-): SessionEvent[] {
-  const byId = new Map(merged.map((event) => [event.id, event]));
-  const ordered: SessionEvent[] = [];
-  const seen = new Set<string>();
-  for (const event of history) {
-    if (seen.has(event.id)) continue;
-    const reconciled = byId.get(event.id);
-    if (reconciled) ordered.push(reconciled);
-    seen.add(event.id);
-  }
-  for (const event of merged) {
-    if (!seen.has(event.id)) ordered.push(event);
-  }
-  return ordered.length === merged.length
-    && ordered.every((event, index) => event === merged[index])
-    ? merged
-    : ordered;
 }
 
 /** Derive the single SessionLog presentation consumed by detail status,
