@@ -44,6 +44,7 @@ pub struct CommittedThread {
     pub thread_id: Option<ThreadId>,
     pub messages: Vec<Message>,
     pub message_commit_cursors: Vec<u64>,
+    pub commit_timestamps: std::collections::BTreeMap<u64, u64>,
     pub run_facts: Vec<RunFact>,
     pub state: Vec<StateCommand>,
     pub state_commit_cursors: Vec<u64>,
@@ -97,6 +98,12 @@ impl CommitState {
                 flat.state_commit_cursors
                     .extend(thread.state_commit_cursors.iter().copied());
                 flat.events.extend(thread.events.iter().cloned());
+                flat.commit_timestamps.extend(
+                    thread
+                        .commit_timestamps
+                        .iter()
+                        .map(|(cursor, at)| (*cursor, *at)),
+                );
                 if thread.latest_run.is_some() {
                     flat.latest_run = thread.latest_run.clone();
                 }
@@ -160,9 +167,12 @@ impl MemoryCommitCoordinator {
     }
 }
 
-#[async_trait]
-impl CommitCoordinator for MemoryCommitCoordinator {
-    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
+impl MemoryCommitCoordinator {
+    pub async fn commit_at(
+        &self,
+        commit: ThreadCommit,
+        committed_at_unix_ms: Option<u64>,
+    ) -> Result<CommitRecord, Error> {
         commit
             .validate()
             .map_err(|e| Error::Rejected(e.to_string()))?;
@@ -171,13 +181,16 @@ impl CommitCoordinator for MemoryCommitCoordinator {
             .lock()
             .map_err(|_| Error::Rejected("commit store poisoned".to_string()))?;
         validate_transition_locked(&state, &commit)?;
-        apply_commit_locked(&mut state, commit)
+        apply_commit_locked(&mut state, commit, committed_at_unix_ms)
     }
 }
 
-#[async_trait]
-impl OperationCoordinator for MemoryCommitCoordinator {
-    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
+impl MemoryCommitCoordinator {
+    pub async fn commit_operation_at(
+        &self,
+        operation: CommitOperation,
+        committed_at_unix_ms: Option<u64>,
+    ) -> Result<CommitReceipt, Error> {
         operation
             .commit
             .validate()
@@ -196,7 +209,7 @@ impl OperationCoordinator for MemoryCommitCoordinator {
             .checked_add(1)
             .ok_or_else(|| Error::Rejected("Thread version overflow".to_string()))?;
         let commit = operation.commit;
-        let record = apply_commit_locked(&mut state, commit)?;
+        let record = apply_commit_locked(&mut state, commit, committed_at_unix_ms)?;
         let receipt = CommitReceipt {
             operation_id: operation_id.clone(),
             commit_sequence: record.sequence,
@@ -206,6 +219,22 @@ impl OperationCoordinator for MemoryCommitCoordinator {
         };
         state.receipts.insert(operation_id, receipt.clone());
         Ok(receipt)
+    }
+}
+
+#[async_trait]
+impl CommitCoordinator for MemoryCommitCoordinator {
+    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
+        use awaken_agent_contract::clock::{Clock, SystemClock};
+        self.commit_at(commit, Some(SystemClock.now_ms())).await
+    }
+}
+#[async_trait]
+impl OperationCoordinator for MemoryCommitCoordinator {
+    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
+        use awaken_agent_contract::clock::{Clock, SystemClock};
+        self.commit_operation_at(operation, Some(SystemClock.now_ms()))
+            .await
     }
 }
 
@@ -279,6 +308,7 @@ fn validate_transition_locked(state: &CommitState, commit: &ThreadCommit) -> Res
 fn apply_commit_locked(
     state: &mut CommitState,
     commit: ThreadCommit,
+    committed_at_unix_ms: Option<u64>,
 ) -> Result<CommitRecord, Error> {
     let next = state
         .sequence
@@ -313,6 +343,9 @@ fn apply_commit_locked(
     }
     let thread = state.threads.entry(thread_id.clone()).or_default();
     thread.thread_id = Some(thread_id.clone());
+    if let Some(at) = committed_at_unix_ms {
+        thread.commit_timestamps.insert(next, at);
+    }
     thread
         .message_commit_cursors
         .extend(std::iter::repeat_n(next, commit.messages.len()));
@@ -516,6 +549,9 @@ impl RunRecoverySource for MemoryCommitCoordinator {
             .collect();
         resume_tickets.sort_by(|left, right| left.run_id.0.cmp(&right.run_id.0));
         Ok(RunRecoverySnapshot {
+            commit_timestamps: thread
+                .map(|thread| thread.commit_timestamps.clone())
+                .unwrap_or_default(),
             thread_id: thread_id.clone(),
             claimed_run_id: claimed_run_id.clone(),
             runs,

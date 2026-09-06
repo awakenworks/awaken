@@ -1723,3 +1723,76 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
     Box::pin(assert_profiled_rejection_rules(repository)).await;
     Box::pin(assert_profiled_direct_resource_rules()).await;
 }
+
+#[tokio::test]
+async fn server_times_do_not_change_default_create_identity_or_retry_receipts() {
+    // Cause/effect table: T1 default identity + absent root -> clock persisted;
+    // T2 identical command + later clock -> exact root, no repeated effects;
+    // T3 genuine mutation -> update only; T4 response loss + same receipt ->
+    // first mutation time; T5 clock rollback -> updated time never regresses.
+    let repository: Arc<dyn ManagedSessionRepository> =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let runtime = Arc::new(RecordingCreateRuntime::default());
+    let clock = Arc::new(awaken_agent_contract::clock::ManualClock::new(
+        1_800_000_000_123,
+    ));
+    let application = SessionApplication::new_with_configuration(
+        runtime.clone(),
+        Arc::new(NoopMcpRealizer),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+        SessionApplicationConfiguration {
+            execution_placement: SessionExecutionPlacement::RegisteredWorker,
+            ..Default::default()
+        },
+    )
+    .with_clock(clock.clone());
+    let make = || {
+        let mut command = creation_command("default-clock-identity");
+        command.intent.control.runtime_placement =
+            awaken_session_contract::SessionRuntimePlacement::Worker;
+        command.idempotency = None;
+        command
+    };
+    let created = application.create_session(make()).await.unwrap();
+    assert_eq!(created.created_at_unix_ms, Some(1_800_000_000_123), "T1");
+    clock.advance(10_000);
+    assert_eq!(
+        application.create_session(make()).await.unwrap(),
+        created,
+        "T2"
+    );
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "T2");
+    let owner = application.owner(&created.session_id).await.unwrap();
+    let mut changed = created.clone();
+    changed.title = Some("time mutation".into());
+    let receipt = awaken_session_contract::IdempotencyRecord {
+        key: "time-mutation".into(),
+        payload_hash: "time-mutation".into(),
+    };
+    let (updated, applied) = application
+        .commit_session_snapshot_with_record(&owner, changed.clone(), receipt.clone(), vec![])
+        .await
+        .unwrap();
+    assert!(applied, "T3");
+    assert_eq!(updated.created_at_unix_ms, created.created_at_unix_ms);
+    assert_eq!(updated.updated_at_unix_ms, Some(1_800_000_010_123));
+    clock.advance(10_000);
+    let (replayed, applied) = application
+        .commit_session_snapshot_with_record(&owner, changed, receipt, vec![])
+        .await
+        .unwrap();
+    assert!(!applied, "T4");
+    assert_eq!(replayed, updated);
+    clock.set(1);
+    let rollback = application
+        .commit_session_snapshot(&owner, updated.clone(), "clock-rollback", vec![])
+        .await
+        .unwrap();
+    assert_eq!(
+        rollback.updated_at_unix_ms, updated.updated_at_unix_ms,
+        "T5"
+    );
+}
+
+mod time_assurance;

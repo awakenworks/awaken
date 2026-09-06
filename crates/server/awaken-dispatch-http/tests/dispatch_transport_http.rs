@@ -217,6 +217,7 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for Recordin
 
 fn terminal_snapshot(thread_id: &ThreadId, run_id: &RunId, state: RunState) -> RunRecoverySnapshot {
     RunRecoverySnapshot {
+        commit_timestamps: Default::default(),
         thread_id: thread_id.clone(),
         claimed_run_id: run_id.clone(),
         runs: vec![RunRecord {

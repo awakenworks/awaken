@@ -1,0 +1,384 @@
+use super::*;
+use awaken_session_contract::{
+    ActivateSessionRealization, BeginSessionRealization, FrozenResourceTransitionUse,
+    SessionRealizationControl, SessionRealizationLease, SessionRealizationTarget,
+    SessionResourceManifest, SessionResourceState,
+};
+
+/// Cause/effect design: C1 retained claim pins A; C2 replacement B is pending;
+/// C3 Session Running/Idle (Awaiting boundary); C4 same/successor Worker; C5
+/// claim instead pins desired B; C6 wrong workspace/revision/content.
+/// R1 C1+!C2 => exact A; R2 C1+C2+C3+C4 => exact A, B untouched through
+/// Begin/Activate; R3 C5+C2 => stage B; R4 C6 => reject before any root mutation.
+/// This extends the SQLite/public-application reproduction, not a second
+/// selector or a relaxed Worker predicate. It does NOT prove Worker HTTP,
+/// physical IO, or model execution; those composition gates remain separate.
+#[tokio::test]
+async fn retained_claim_selects_active_resources_without_consuming_pending_generation() {
+    for status in ["idle", "running"] {
+        for replace in [false, true] {
+            for successor in [false, true] {
+                let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+                    awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+                );
+                let app = application_with_configuration(
+                    repo.clone(),
+                    Arc::new(RecordingEnvironmentSource::default()),
+                    SessionApplicationConfiguration {
+                        execution_placement: SessionExecutionPlacement::RegisteredWorker,
+                        ..Default::default()
+                    },
+                );
+                let id = "retained-resource-run";
+                let mut session = persisted(id, false, status);
+                let awaken_session_contract::SessionBaselineState::Frozen(baseline) =
+                    &mut session.baseline
+                else {
+                    unreachable!()
+                };
+                baseline.runtime_placement = SessionRuntimePlacement::Worker;
+                let active = skill_resources("pinned-skill");
+                let mut desired = awaken_session_contract::ResolvedSessionResources::try_new(
+                    file_resources("context-file").inputs().to_vec(),
+                    active.skills().to_vec(),
+                )
+                .unwrap();
+                session.resources = SessionResourceState::from_active(active.clone());
+                session.realization = Some(SessionRealizationLease {
+                    owner: "worker-a".into(),
+                    runtime_incarnation: "worker-a/boot-1".into(),
+                    epoch: 1,
+                    expires_at_unix_ms: u64::MAX - 1,
+                });
+                create(repo.as_ref(), session).await;
+                let carried = SessionResourceManifest::at_revision("workspace", 1, active.clone());
+                if replace {
+                    let replaced = app
+                        .replace_session_resource_manifest(
+                            id,
+                            ReplaceSessionResourceManifest {
+                                resources: desired.clone(),
+                                expected_resource_revision: Some(1),
+                                idempotency_key: Some("replace-context".into()),
+                                request_fingerprint: "context-inputs".into(),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    // Publication owns lifecycle timestamps too. The carried
+                    // snapshot is the persisted result, not the pre-command DTO.
+                    desired = replaced.session.resources.pending.unwrap();
+                }
+                let target = SessionRealizationTarget {
+                    owner: if successor { "worker-b" } else { "worker-a" }.into(),
+                    runtime_incarnation: if successor {
+                        "worker-b/boot-1"
+                    } else {
+                        "worker-a/boot-1"
+                    }
+                    .into(),
+                    lease_expires_at_unix_ms: u64::MAX,
+                    reassign_existing_lease: true,
+                };
+                let begin = BeginSessionRealization {
+                    session_id: id.into(),
+                    target: target.clone(),
+                    expected_resources: Some(carried.clone()),
+                };
+                // All identity axes independently reject before Begin mutates
+                // the realization lease or increments pending activation attempts.
+                for wrong in [
+                    SessionResourceManifest::at_revision("foreign", 1, active.clone()),
+                    SessionResourceManifest::at_revision("workspace", 99, active.clone()),
+                    SessionResourceManifest::at_revision("workspace", 1, desired.clone()),
+                ] {
+                    let before = repo.get(id).await.unwrap();
+                    assert!(
+                        app.begin_session_realization(BeginSessionRealization {
+                            expected_resources: Some(wrong),
+                            ..begin.clone()
+                        })
+                        .await
+                        .is_err(),
+                        "R4"
+                    );
+                    assert_eq!(repo.get(id).await.unwrap(), before, "R4 no mutation");
+                }
+                let directive = app.begin_session_realization(begin.clone()).await.unwrap();
+                assert_eq!(
+                    directive
+                        .projection
+                        .resource_transition(FrozenResourceTransitionUse::ApplyEffects)
+                        .unwrap()
+                        .desired(),
+                    &carried,
+                    "R1/R2"
+                );
+                assert_eq!(
+                    app.begin_session_realization(begin)
+                        .await
+                        .unwrap()
+                        .projection,
+                    directive.projection,
+                    "exact Begin replay"
+                );
+                let intent =
+                    awaken_session_contract::SessionResourceMaterializationIntent::try_new_skill(
+                        id,
+                        1,
+                        active.skills()[0].clone(),
+                        directive.lease.clone(),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    app.authorize_resource_materialization_intent(&intent)
+                        .await
+                        .unwrap(),
+                    "workspace",
+                    "R2 cold Worker may read exact A while B remains pending"
+                );
+                let activated = app
+                    .activate_session_realization(ActivateSessionRealization {
+                        session_id: id.into(),
+                        lease: directive.lease,
+                        prepared_resource_revision: Some(1),
+                        mcp_receipts: Vec::new(),
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    activated
+                        .projection
+                        .resource_transition(FrozenResourceTransitionUse::ApplyEffects)
+                        .unwrap()
+                        .desired(),
+                    &carried,
+                    "R2 activation preserves A"
+                );
+                let current = repo.get(id).await.unwrap();
+                assert_eq!(current.resources.active, active);
+                assert_eq!(
+                    current.resources.pending,
+                    replace.then_some(desired.clone())
+                );
+                if replace {
+                    let next = app
+                        .begin_session_realization(BeginSessionRealization {
+                            session_id: id.into(),
+                            target,
+                            expected_resources: Some(SessionResourceManifest::at_revision(
+                                "workspace",
+                                2,
+                                desired.clone(),
+                            )),
+                        })
+                        .await
+                        .unwrap();
+                    let selected = next
+                        .projection
+                        .resource_transition(FrozenResourceTransitionUse::ApplyEffects)
+                        .unwrap();
+                    assert_eq!(selected.desired().revision, 2, "R3");
+                    assert_eq!(selected.desired().resources, desired, "R3");
+                    let settled = app
+                        .activate_session_realization(ActivateSessionRealization {
+                            session_id: id.into(),
+                            lease: next.lease.clone(),
+                            prepared_resource_revision: Some(2),
+                            mcp_receipts: Vec::new(),
+                        })
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        settled.projection.resource_revision, 2,
+                        "R3 commits B only after its Stage"
+                    );
+                    assert!(repo.get(id).await.unwrap().resources.pending.is_none());
+                    let before = repo.get(id).await.unwrap();
+                    assert!(
+                        app.authorize_resource_materialization_intent(&intent)
+                            .await
+                            .is_err(),
+                        "retired A cannot be read"
+                    );
+                    assert!(
+                        app.activate_session_realization(ActivateSessionRealization {
+                            session_id: id.into(),
+                            lease: next.lease,
+                            prepared_resource_revision: Some(1),
+                            mcp_receipts: Vec::new(),
+                        })
+                        .await
+                        .is_err(),
+                        "retired Stage A cannot roll back committed B"
+                    );
+                    assert_eq!(
+                        repo.get(id).await.unwrap(),
+                        before,
+                        "late A has no mutation"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Causes: C1 pending/rolled-back/committed replacement, C2 asserted revision
+/// 1/2/unknown 3, C3 target belongs to A/B, C4 Input/Skill, C5 forged target.
+/// Decision table (all C4): pending permits (1,A) and (2,B); rollback only
+/// (1,A), commit only (2,B); every cross-pair/unknown/forged target rejects.
+/// Effects: success returns root Workspace; failure is Invalid; neither writes
+/// the root. Existing lease/terminal tests supply the orthogonal deny overrides.
+#[tokio::test]
+async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
+    use awaken_session_contract::SessionResourceMaterializationIntent;
+    for lifecycle in ["pending", "rollback", "committed"] {
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        );
+        let app = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let id = "materialization-pairs";
+        let resources = |name| {
+            awaken_session_contract::ResolvedSessionResources::try_new(
+                file_resources(name).inputs().to_vec(),
+                skill_resources(name).skills().to_vec(),
+            )
+            .unwrap()
+        };
+        let active = resources("active-a");
+        let desired = resources("pending-b");
+        let lease = SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a/boot-1".into(),
+            epoch: 1,
+            expires_at_unix_ms: u64::MAX,
+        };
+        let mut session = persisted(id, false, "idle");
+        session.realization = Some(lease.clone());
+        session.resources = SessionResourceState::from_active(active.clone());
+        session.resources.prepare(id, desired.clone()).unwrap();
+        match lifecycle {
+            "rollback" => session.resources.rollback("failed replacement").unwrap(),
+            "committed" => session.resources.commit().unwrap(),
+            _ => {}
+        }
+        create(repo.as_ref(), session).await;
+        let before = repo.get(id).await.unwrap();
+        for revision in [1, 2, 3] {
+            for (source, bindings) in [(1, &active), (2, &desired)] {
+                for forged in [false, true] {
+                    let mut input = bindings.inputs()[0].clone();
+                    let mut skill = bindings.skills()[0].clone();
+                    if forged {
+                        input.mount_path = "/foreign".into();
+                        skill.version += 1;
+                    }
+                    for intent in [
+                        SessionResourceMaterializationIntent::try_new(
+                            id,
+                            revision,
+                            input,
+                            lease.clone(),
+                        )
+                        .unwrap(),
+                        SessionResourceMaterializationIntent::try_new_skill(
+                            id,
+                            revision,
+                            skill,
+                            lease.clone(),
+                        )
+                        .unwrap(),
+                    ] {
+                        let allowed = !forged
+                            && revision == source
+                            && match lifecycle {
+                                "rollback" => source == 1,
+                                "committed" => source == 2,
+                                _ => true,
+                            };
+                        let result = app.authorize_resource_materialization_intent(&intent).await;
+                        if allowed {
+                            assert_eq!(
+                                result.unwrap(),
+                                "workspace",
+                                "{lifecycle}/{revision}/{source}"
+                            );
+                        } else {
+                            assert!(matches!(result, Err(awaken_session_contract::SessionRealizationControlFailure::Invalid(_))), "{lifecycle}/{revision}/{source}/{forged}");
+                        }
+                        assert_eq!(
+                            repo.get(id).await.unwrap(),
+                            before,
+                            "authorization never mutates"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Failure decision table: exact active A => record the failed recovery, retain
+/// B with no B activation error; exact pending B => mark B's activation error;
+/// unknown revision => Invalid, no root write. Retryable Running failures keep
+/// the Run resumable and expire only its realization lease for fenced recovery.
+#[tokio::test]
+async fn failed_retained_stage_does_not_attribute_its_error_to_pending_resources() {
+    for revision in [1, 2, 99] {
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        );
+        let app = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let id = "failed-retained-stage";
+        let lease = SessionRealizationLease {
+            owner: "worker".into(),
+            runtime_incarnation: "worker/boot".into(),
+            epoch: 1,
+            expires_at_unix_ms: u64::MAX,
+        };
+        let mut session = persisted(id, false, "running");
+        session.realization = Some(lease.clone());
+        session.resources = SessionResourceState::from_active(file_resources("a"));
+        session.resources.prepare(id, file_resources("b")).unwrap();
+        session.resources.start_attempt().unwrap();
+        create(repo.as_ref(), session).await;
+        let before = repo.get(id).await.unwrap();
+        let result = app
+            .fail_session_realization(awaken_session_contract::FailSessionRealization {
+                session_id: id.into(),
+                lease,
+                prepared_resource_revision: Some(revision),
+                retryable: true,
+                source_run_id: None,
+                reason: "read unavailable".into(),
+            })
+            .await;
+        let after = repo.get(id).await.unwrap();
+        if revision == 99 {
+            assert!(matches!(
+                result,
+                Err(awaken_session_contract::SessionRealizationControlFailure::Invalid(_))
+            ));
+            assert_eq!(after, before);
+        } else {
+            result.unwrap();
+            assert_eq!(
+                after.resources.active_generation(),
+                before.resources.active_generation()
+            );
+            assert_eq!(after.resources.pending, before.resources.pending);
+            assert_eq!(after.execution, before.execution);
+            assert_eq!(after.realization.unwrap().expires_at_unix_ms, 0);
+            assert_eq!(
+                after.resources.activations[0].last_error.as_deref(),
+                (revision == 2).then_some("read unavailable")
+            );
+        }
+    }
+}

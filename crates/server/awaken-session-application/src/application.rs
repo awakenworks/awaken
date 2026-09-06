@@ -122,6 +122,7 @@ impl Default for SessionApplicationConfiguration {
 
 /// Canonical application object shared by wire adapters.
 pub struct SessionApplication {
+    clock: Arc<dyn awaken_agent_contract::clock::Clock>,
     configuration: SessionApplicationConfiguration,
     runtime: Arc<dyn SessionRuntime>,
     mcp_realizer: Arc<dyn McpAttachmentRealizer>,
@@ -163,6 +164,19 @@ pub struct SessionApplication {
 static APPLICATION_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl SessionApplication {
+    /// Install the existing clock port before sharing the application.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn awaken_agent_contract::clock::Clock>) -> Self {
+        self.clock = clock;
+        self.runtime
+            .install_environment_binding_sink(self.environment_binding_sink());
+        self
+    }
+
+    pub fn now_unix_ms(&self) -> u64 {
+        self.clock.now_ms()
+    }
+
     pub(crate) fn realization_retry_budget(&self) -> u32 {
         self.configuration.realization_retry_budget.max(1)
     }
@@ -204,6 +218,7 @@ impl SessionApplication {
             "local Session realization owner must not be empty"
         );
         Self {
+            clock: Arc::new(awaken_agent_contract::clock::SystemClock),
             configuration,
             runtime,
             mcp_realizer,
@@ -485,11 +500,17 @@ impl SessionApplication {
         reconcile_work_dispatches(self.sessions_repo.as_ref(), self.environments.as_ref()).await
     }
 
+    pub fn environment_binding_sink(&self) -> Arc<dyn SessionEnvironmentBindingSink> {
+        Arc::new(
+            RepositoryEnvironmentBindingSink::new(self.sessions_repo.clone())
+                .with_clock(self.clock.clone()),
+        )
+    }
+
     pub fn replace_repository(&mut self, repo: Arc<dyn ManagedSessionRepository>) {
-        self.runtime.install_environment_binding_sink(Arc::new(
-            RepositoryEnvironmentBindingSink::new(repo.clone()),
-        ));
         self.sessions_repo = repo;
+        self.runtime
+            .install_environment_binding_sink(self.environment_binding_sink());
     }
 
     pub fn replace_environment_source(&mut self, source: Arc<dyn SessionEnvironmentSource>) {
@@ -973,19 +994,22 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionA
 /// Repository-backed implementation installed at the runtime materialization boundary.
 pub struct RepositoryEnvironmentBindingSink {
     repo: Arc<dyn ManagedSessionRepository>,
+    clock: Arc<dyn awaken_agent_contract::clock::Clock>,
 }
 
 impl RepositoryEnvironmentBindingSink {
     #[must_use]
     pub fn new(repo: Arc<dyn ManagedSessionRepository>) -> Self {
-        Self { repo }
+        Self {
+            repo,
+            clock: Arc::new(awaken_agent_contract::clock::SystemClock),
+        }
     }
 
-    fn now_unix_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-            .unwrap_or_default()
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn awaken_agent_contract::clock::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     fn receipt_error(error: awaken_session_contract::SessionEnvironmentReceiptError) -> RunError {
@@ -1053,7 +1077,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
             .await
             .map_err(session_repository_error)?;
         session
-            .authorize_environment_effect(&owner, intent, Self::now_unix_ms())
+            .authorize_environment_effect(&owner, intent, self.clock.now_ms())
             .map_err(Self::receipt_error)
     }
 
@@ -1074,7 +1098,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                 .get(session_id)
                 .await
                 .map_err(session_repository_error)?;
-            let now_unix_ms = Self::now_unix_ms();
+            let now_unix_ms = self.clock.now_ms();
             // The aggregate is the only receipt admission authority. It checks
             // phase, source binding, immutable Environment compatibility, and
             // the exact durable pending Resource transition before this adapter
@@ -1122,25 +1146,26 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
             }
             Self::committed_authority(&session, &receipt)?;
             let expected_revision = session.revision;
-            let payload = awaken_session_contract::SessionMutationPayload::Replace(session);
-            let payload_hash = payload.stable_hash();
-            let mutation = awaken_session_contract::SessionMutation {
-                expected_revision,
-                idempotency: awaken_session_contract::IdempotencyRecord {
-                    key: format!(
-                        "session:bind-environment:{session_id}:{}:{payload_hash}",
-                        expected_revision.0
-                    ),
-                    payload_hash,
-                },
-                payload,
-                lifecycle_facts: Vec::new(),
+            let payload_hash =
+                awaken_session_contract::SessionMutationPayload::Replace(session.clone())
+                    .stable_hash();
+            let idempotency = awaken_session_contract::IdempotencyRecord {
+                key: format!(
+                    "session:bind-environment:{session_id}:{}:{payload_hash}",
+                    expected_revision.0
+                ),
+                payload_hash,
             };
-            match self
-                .repo
-                .commit_mutation(&owner, mutation)
-                .await
-                .map_err(session_repository_error)?
+            match crate::mutation::commit_observed_snapshot(
+                self.repo.as_ref(),
+                &owner,
+                &mut session,
+                idempotency,
+                Vec::new(),
+                now_unix_ms,
+            )
+            .await
+            .map_err(session_repository_error)?
             {
                 awaken_session_contract::SessionMutationResult::Applied { .. }
                 | awaken_session_contract::SessionMutationResult::Replayed { .. } => {

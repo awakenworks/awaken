@@ -507,6 +507,7 @@ impl SessionApplication {
             })?;
         let directive = self
             .begin_session_realization_after_refresh(BeginSessionRealization {
+                expected_resources: None,
                 session_id: session_id.to_string(),
                 target: awaken_session_contract::SessionRealizationTarget {
                     owner: self.local_realization_owner().to_string(),

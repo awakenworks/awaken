@@ -952,10 +952,12 @@ impl SessionApplication {
         {
             return Err(SessionResourceManifestError::Conflict);
         }
+        let mut desired = command.resources.clone();
+        desired.observe_input_times(session.resources.desired(), self.now_unix_ms());
         if let Some(baseline) = session.frozen_baseline()
             && !baseline
                 .mutation_policy
-                .admits_resource_replacement(session.resources.desired(), &command.resources)
+                .admits_resource_replacement(session.resources.desired(), &desired)
         {
             return Err(SessionResourceManifestError::Rejected(
                 RunError::bad_request(
@@ -964,16 +966,14 @@ impl SessionApplication {
             ));
         }
 
-        let unchanged = session.resources.desired() == &command.resources;
+        let unchanged = session.resources.desired() == &desired;
         if !unchanged {
             let result = if session.resources.pending.is_some() {
                 session
                     .resources
-                    .revise_unattempted_pending(&session.session_id, command.resources.clone())
+                    .revise_unattempted_pending(&session.session_id, desired.clone())
             } else {
-                session
-                    .resources
-                    .prepare(&session.session_id, command.resources.clone())
+                session.resources.prepare(&session.session_id, desired)
             };
             result.map_err(|error| match error {
                 awaken_session_contract::ResourceActivationError::Pending => {
@@ -1186,6 +1186,10 @@ impl SessionApplication {
                     "repository credential revision changed before Session repin",
                 )));
             }
+            input.updated_at_unix_ms = Some(
+                self.now_unix_ms()
+                    .max(input.updated_at_unix_ms.unwrap_or(0)),
+            );
             persisted.resources.active = persisted
                 .resources
                 .active

@@ -121,6 +121,27 @@ impl SessionApplication {
         for attempt in 0..SessionApplication::ROOT_CAS_ATTEMPTS {
             let (owner_scope, mut session) =
                 self.session_for_realization(&command.session_id).await?;
+            // Retained execution carries its original generation even when a
+            // later replacement is pending. Choose under this same root CAS;
+            // never stage a different generation and rely on Worker rejection.
+            let activate_pending_resources = match command.expected_resources.as_ref() {
+                None => true,
+                Some(expected) => {
+                    if expected.workspace_id != owner_scope {
+                        return Err(SessionRealizationControlFailure::Invalid(
+                            "claimed Resource Workspace does not match the Session".into(),
+                        ));
+                    }
+                    if session.resources.retained_generation(expected.revision)
+                        != Some(&expected.resources)
+                    {
+                        return Err(SessionRealizationControlFailure::Invalid(
+                            "claimed Resource generation is neither active nor pending".into(),
+                        ));
+                    }
+                    expected.revision != session.resources.active_revision()
+                }
+            };
             let now = now_unix_ms();
             let existing_live = session.realization.as_ref().is_some_and(|lease| {
                 awaken_session_contract::realization_lease_is_live_at(lease.expires_at_unix_ms, now)
@@ -164,7 +185,9 @@ impl SessionApplication {
                 awaken_session_contract::SessionRealizationAssignment::Assign { .. }
             );
             if !needs_assignment && requested.is_empty() {
-                return self.next_action(owner_scope, &session, false, true).await;
+                return self
+                    .next_action(owner_scope, &session, false, activate_pending_resources)
+                    .await;
             }
 
             let lease =
@@ -183,7 +206,7 @@ impl SessionApplication {
                         .clone()
                         .expect("a live assignment was checked")
                 };
-            if session.resources.pending.is_some() {
+            if activate_pending_resources && session.resources.pending.is_some() {
                 session.resources.start_attempt().map_err(unavailable)?;
             }
             let to_claim = if needs_assignment {
@@ -249,6 +272,7 @@ impl SessionApplication {
                         )
                     })?;
                 session.realization_progress.last_error = None;
+                session.realization_progress.failed_at_unix_ms = None;
                 session.realization_progress.failure_source_run_id = None;
             }
             session.realization = Some(lease);
@@ -263,7 +287,12 @@ impl SessionApplication {
             {
                 Ok(session) => {
                     return self
-                        .next_action(owner_scope, &session, needs_assignment, true)
+                        .next_action(
+                            owner_scope,
+                            &session,
+                            needs_assignment,
+                            activate_pending_resources,
+                        )
                         .await;
                 }
                 Err(SessionMutationError::Conflict)
@@ -310,13 +339,13 @@ impl SessionApplication {
             {
                 true
             }
-            Some(_) if session.resources.pending.is_some() => {
+            Some(revision) if revision == session.resources.active_revision() => false,
+            Some(_) => {
                 return Err(SessionRealizationControlFailure::Invalid(
-                    "prepared Resource generation does not match the pending Session generation"
-                        .into(),
+                    "prepared Resource generation is neither active nor pending".into(),
                 ));
             }
-            Some(_) | None => false,
+            None => false,
         };
         for receipt in &command.mcp_receipts {
             let request = expected
@@ -347,7 +376,7 @@ impl SessionApplication {
             && !session.resources.active.inputs().is_empty()
         {
             match command.prepared_resource_revision {
-                Some(revision) if revision == session.resources.revision => true,
+                Some(revision) if revision == session.resources.active_revision() => true,
                 Some(_) => {
                     return Err(SessionRealizationControlFailure::Invalid(
                         "prepared legacy Resource generation does not match the active Session generation"
@@ -433,10 +462,18 @@ impl SessionApplication {
                     error => unavailable(error),
                 })?;
         }
-        // The complete validated Stage set is exactly the newly activated or
-        // still-unacknowledged set. Publish what Runtime actually staged, never
-        // fabricate a receipt for a newer lease expiry.
-        let publish = receipt_generations;
+        // Stage also returns receipts for old active generations that activation
+        // moves to Draining. Publish only the canonical pending publication set,
+        // preserving each physical receipt and its originally observed lease.
+        let pending_publish = Self::publication_generations(&session)?;
+        let publish = receipt_generations
+            .into_iter()
+            .filter(|receipt| {
+                pending_publish.iter().any(|current| {
+                    awaken_session_contract::realization_generation_authorizes(current, receipt)
+                })
+            })
+            .collect();
         let drain = Self::draining_generations(&session)?;
         self.realization_directive(
             owner_scope,
@@ -613,11 +650,12 @@ impl SessionApplication {
         }
         let (owner_scope, mut session) = self.session_for_realization(&command.session_id).await?;
         verify_lease(&session, &command.lease)?;
-        if command.prepared_resource_revision.is_some_and(|revision| {
-            session.resources.pending.is_some() && revision != session.resources.revision
-        }) {
+        if command
+            .prepared_resource_revision
+            .is_some_and(|revision| session.resources.retained_generation(revision).is_none())
+        {
             return Err(SessionRealizationControlFailure::Invalid(
-                "failed Resource generation does not match the pending Session generation".into(),
+                "failed Resource generation is neither active nor pending".into(),
             ));
         }
         if command.prepared_resource_revision == Some(session.resources.revision)
@@ -629,6 +667,7 @@ impl SessionApplication {
                 .map_err(unavailable)?;
         }
         session.realization_progress.last_error = Some(command.reason.clone());
+        session.realization_progress.failed_at_unix_ms = Some(self.now_unix_ms());
         session.realization_progress.failure_source_run_id =
             command.source_run_id.clone().map(Box::new);
         let initial_realization = session.execution != SessionExecutionState::Idle;

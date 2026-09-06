@@ -162,6 +162,8 @@ impl ManagedState {
     ) {
         let mcp_servers = typed_mcp_servers(persisted.configured_mcp_servers());
         record.session.status = Self::wire_session_status(persisted.execution);
+        record.session.created_at = super::constants::persisted_time(persisted.created_at_unix_ms);
+        record.session.updated_at = super::constants::persisted_time(persisted.updated_at_unix_ms);
         record.session.title = persisted.title.clone();
         record.session.metadata = persisted.metadata.clone();
         record.session.deployment_id = persisted.metadata.get("awaken.deployment_id").cloned();
@@ -955,8 +957,8 @@ impl ManagedState {
                 .max_list_cost_minor()
                 .map(crate::types::BudgetLimit::from_minor),
             environment_id: environment_id.clone(),
-            created_at: PROCESSED_AT.to_string(),
-            updated_at: PROCESSED_AT.to_string(),
+            created_at: super::constants::persisted_time(persisted.created_at_unix_ms),
+            updated_at: super::constants::persisted_time(persisted.updated_at_unix_ms),
             archived_at: None,
             title: req.title,
             metadata: req.metadata,
@@ -1044,6 +1046,8 @@ impl ManagedState {
         persisted: PersistedSession,
         purpose: RehydrationPurpose,
     ) -> Result<Session, StateError> {
+        let created_at = super::constants::persisted_time(persisted.created_at_unix_ms);
+        let updated_at = super::constants::persisted_time(persisted.updated_at_unix_ms);
         let caps = self.application.capabilities_for(id);
         let projected_budget = persisted
             .budget
@@ -1173,8 +1177,8 @@ impl ManagedState {
             },
             budget: projected_budget,
             environment_id,
-            created_at: PROCESSED_AT.to_string(),
-            updated_at: PROCESSED_AT.to_string(),
+            created_at,
+            updated_at,
             archived_at,
             title,
             metadata,
@@ -1339,7 +1343,7 @@ impl ManagedState {
         // Do not remove the visible record until the repository has atomically
         // stored the terminal fence and outbox fact. Child cleanup targets are
         // frozen later from durable Runtime delegation authority.
-        let _transition = self
+        let transition = self
             .application
             .delete_session(awaken_session_application::SessionDeleteCommand::new(id))
             .await
@@ -1352,7 +1356,10 @@ impl ManagedState {
             record.events.push(Event {
                 id: deleted_id,
                 kind: OutboundKind::SessionDeleted {},
-                processed_at: Some(PROCESSED_AT.to_string()),
+                processed_at: transition
+                    .session
+                    .updated_at_unix_ms
+                    .map(awaken_session_contract::epoch_millis_to_rfc3339),
             });
             self.broadcast_committed_from(id, record, from);
             sessions.remove(id);
@@ -1367,14 +1374,17 @@ impl ManagedState {
     pub async fn archive_session(&self, id: &str) -> Result<Session, StateError> {
         self.ensure_session_for_frozen_control(id).await?;
         let owner = self.resolve_owner(id).await?;
+        let observed_at = self.application.now_unix_ms();
         let terminated_fact = lifecycle_fact(
             format!("session:{id}:terminated"),
             id,
             owner.clone(),
             lifecycle_event::SESSION_TERMINATED,
+            observed_at,
         );
+        let archived_at = awaken_session_contract::epoch_millis_to_rfc3339(observed_at);
         self.application
-            .terminate_session(id, PROCESSED_AT, terminated_fact)
+            .terminate_session(id, &archived_at, terminated_fact)
             .await
             .map_err(Self::map_preparation_error)?;
         // No direct cache mutation or bespoke terminal append belongs here. The

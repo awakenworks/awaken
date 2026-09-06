@@ -1056,8 +1056,23 @@ impl RunRecoverySource for PostgresCommitCoordinator {
             }
         }
 
+        let timestamp_rows = sqlx::query(&format!(
+            "SELECT sequence, FLOOR(EXTRACT(EPOCH FROM committed_at) * 1000)::BIGINT AS millis FROM {p}_commit WHERE thread_id = $1 ORDER BY sequence"
+        )).bind(&thread_id.0).fetch_all(&mut *tx).await.map_err(recovery_reject)?;
+        let mut commit_timestamps = std::collections::BTreeMap::new();
+        for row in timestamp_rows {
+            let sequence: i64 = row.try_get("sequence").map_err(recovery_reject)?;
+            let millis: i64 = row.try_get("millis").map_err(recovery_reject)?;
+            commit_timestamps.insert(
+                decode_authority(sequence)
+                    .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
+                decode_authority(millis)
+                    .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
+            );
+        }
         tx.commit().await.map_err(recovery_reject)?;
         Ok(RunRecoverySnapshot {
+            commit_timestamps,
             thread_id: thread_id.clone(),
             claimed_run_id: claimed_run_id.clone(),
             runs,

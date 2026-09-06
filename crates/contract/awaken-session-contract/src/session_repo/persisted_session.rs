@@ -36,6 +36,13 @@ fn terminal_environment_receipt_is_admitted_only_during_the_fenced_join() {
 #[serde(deny_unknown_fields)]
 pub struct PersistedSession {
     pub session_id: String,
+    /// Durable creation and last root-mutation times. Absent means historical
+    /// unknown, never the current read/recovery time. Omission preserves legacy
+    /// aggregate fingerprints until the owning application commits a new fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at_unix_ms: Option<u64>,
     /// The one optimistic-concurrency fence for baseline, Resource, MCP,
     /// environment, execution, and disposition mutations. New, not-yet-inserted
     /// values use 0.
@@ -139,6 +146,8 @@ impl PersistedSession {
     ) -> Self {
         Self {
             session_id: session_id.into(),
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             revision: SessionRevision::default(),
             baseline: crate::SessionBaselineState::Frozen(baseline),
             title,

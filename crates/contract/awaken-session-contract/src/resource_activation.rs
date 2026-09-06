@@ -49,6 +49,11 @@ pub enum ActivationState {
 pub struct SessionResourceState {
     #[serde(default)]
     pub revision: u64,
+    /// Revision paired with `active`, independent of the attempted-generation
+    /// watermark. Older rows derive it from activation records until the next
+    /// transition persists it. Skill-only and empty manifests have no records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub committed_revision: Option<u64>,
     #[serde(default)]
     pub active: ResolvedSessionResources,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -167,8 +172,10 @@ impl SessionResourceState {
     /// Initialize activation state from the currently installed manifest.
     #[must_use]
     pub fn from_active(active: ResolvedSessionResources) -> Self {
+        let revision = u64::from(!active.inputs().is_empty() || !active.skills().is_empty());
         Self {
-            revision: u64::from(!active.inputs().is_empty() || !active.skills().is_empty()),
+            revision,
+            committed_revision: Some(revision),
             active,
             pending: None,
             activations: Vec::new(),
@@ -197,6 +204,7 @@ impl SessionResourceState {
             .revision
             .checked_add(1)
             .ok_or(ResourceActivationError::RevisionExhausted)?;
+        self.committed_revision = Some(self.active_revision());
         for activation in &mut self.activations {
             if activation.state == ActivationState::Active {
                 activation.state = ActivationState::Releasing;
@@ -292,6 +300,7 @@ impl SessionResourceState {
             }
         }
         self.active = desired;
+        self.committed_revision = Some(self.revision);
         self.compact_settled_activations();
         Ok(())
     }
@@ -376,9 +385,11 @@ impl SessionResourceState {
 
     /// Complete a successful rollback to the previously active manifest.
     pub fn rollback(&mut self, error: impl Into<String>) -> Result<(), ResourceActivationError> {
+        let active_revision = self.active_revision();
         self.pending
             .take()
             .ok_or(ResourceActivationError::NoPending)?;
+        self.committed_revision = Some(active_revision);
         let error = error.into();
         for activation in &mut self.activations {
             match activation.state {
@@ -400,9 +411,11 @@ impl SessionResourceState {
             return;
         }
         self.revision = self.revision.max(1);
+        let active_revision = self.active_revision().max(1);
+        self.committed_revision = Some(active_revision);
         self.activations
             .extend(self.active.inputs().iter().map(|input| {
-                let mut activation = prepared_activation(session_id, self.revision, input);
+                let mut activation = prepared_activation(session_id, active_revision, input);
                 activation.state = ActivationState::Active;
                 activation.attempts = 1;
                 activation
@@ -467,6 +480,9 @@ impl SessionResourceState {
     /// prior Active/Releasing activation still owns the installed manifest.
     #[must_use]
     pub fn active_revision(&self) -> u64 {
+        if let Some(revision) = self.committed_revision {
+            return revision;
+        }
         self.activations
             .iter()
             .filter(|activation| {
@@ -502,6 +518,15 @@ impl SessionResourceState {
             Some(pending) => (self.revision, pending),
             None => self.active_generation(),
         }
+    }
+
+    /// Resolve only a generation still retained by this root. Every Control
+    /// phase uses this lookup; the attempted watermark alone grants nothing.
+    #[must_use]
+    pub fn retained_generation(&self, revision: u64) -> Option<&ResolvedSessionResources> {
+        [self.active_generation(), self.desired_generation()]
+            .into_iter()
+            .find_map(|(current, resources)| (current == revision).then_some(resources))
     }
 
     #[must_use]
@@ -590,6 +615,8 @@ mod tests {
     fn manifest(id: &str) -> ResolvedSessionResources {
         ResolvedSessionResources::try_new(
             vec![ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
                 binding_id: BindingId::from(format!("binding-{id}")),
                 source: ResolvedInputSource::File {
                     file_id: FileId::from(format!("file-{id}")),
@@ -634,6 +661,8 @@ mod tests {
             })
         });
         ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: BindingId::from(format!("binding-{id}")),
             source: ResolvedInputSource::Repository {
                 repository_id,
@@ -781,6 +810,7 @@ mod tests {
         .unwrap();
         let mut state = SessionResourceState {
             revision: 2,
+            committed_revision: Some(1),
             active: active.clone(),
             pending: Some(pending.clone()),
             activations: Vec::new(),
@@ -898,6 +928,55 @@ mod tests {
             state.activations[1].last_error.as_deref(),
             Some("clone failed")
         );
+    }
+
+    /// C1 installed shape = File/Skill/empty; C2 initialization = current or
+    /// legacy wire row; C3 repeated failed replacements; C4 restart after each
+    /// transition. Rules: prepare advances only watermark; rollback keeps the
+    /// installed pair; commit advances the pair; replayed JSON preserves both.
+    /// Cross C1*C2, repeat C3 three times to catch the lossy `revision - 1`
+    /// fallback; empty and Skill-only generations have no input activations.
+    #[test]
+    fn installed_revision_survives_repeated_rollbacks_without_input_records() {
+        let skill = ResolvedSessionResources::try_new(
+            Vec::new(),
+            vec![crate::ResolvedSkillBinding {
+                kind: awaken_agent_contract::AgentSkillKind::Custom,
+                skill_id: "skill-only".into(),
+                version: 1,
+                bundle_sha256: "hash".into(),
+            }],
+        )
+        .unwrap();
+        for active in [manifest("file"), skill, ResolvedSessionResources::default()] {
+            for legacy in [false, true] {
+                let mut state = SessionResourceState::from_active(active.clone());
+                let initial_revision = state.active_revision();
+                if legacy {
+                    let mut wire = serde_json::to_value(&state).unwrap();
+                    wire.as_object_mut().unwrap().remove("committed_revision");
+                    state = serde_json::from_value(wire).unwrap();
+                }
+                for attempt in 1..=3 {
+                    state
+                        .prepare("session", ResolvedSessionResources::default())
+                        .unwrap();
+                    state = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+                    assert_eq!(state.active_generation(), (initial_revision, &active));
+                    assert_eq!(state.revision, initial_revision + attempt);
+                    state.rollback("retry").unwrap();
+                    state = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+                    assert_eq!(state.active_generation(), (initial_revision, &active));
+                    assert_eq!(state.desired_generation(), state.active_generation());
+                }
+                state.prepare("session", manifest("next")).unwrap();
+                state.commit().unwrap();
+                assert_eq!(
+                    state.active_generation(),
+                    (initial_revision + 4, &manifest("next"))
+                );
+            }
+        }
     }
 
     #[test]

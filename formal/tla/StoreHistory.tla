@@ -2,7 +2,7 @@
 EXTENDS Naturals, Sequences, FiniteSets
 
 CONSTANTS Threads, Runs, Operations, Payloads, RunStates, TerminalStates,
-          NoReceipt, NoOperation, NoPayload
+          NoReceipt, NoOperation, NoPayload, ObservationTimes, UnknownTime
 
 ASSUME /\ Threads /= {}
        /\ Runs /= {}
@@ -13,9 +13,13 @@ ASSUME /\ Threads /= {}
        /\ NoOperation \notin Operations
        /\ NoPayload \notin Payloads
 
-VARIABLES history, receipts
+ASSUME /\ ObservationTimes \subseteq Nat
+       /\ ObservationTimes /= {}
+       /\ UnknownTime \notin ObservationTimes
 
-vars == <<history, receipts>>
+VARIABLES history, receipts, recoveredPrefix
+
+vars == <<history, receipts, recoveredPrefix>>
 
 HistoryIndexes == 1..Len(history)
 
@@ -42,22 +46,25 @@ TransitionAllowed(run, nextState) ==
 
 Init ==
     /\ history = <<>>
+    /\ recoveredPrefix = <<>>
     /\ receipts = [operation \in Operations |-> NoReceipt]
 
-AppendRecord(thread, run, state, operation, payload) ==
+AppendRecord(thread, run, state, operation, payload, observedAt) ==
     Append(history,
         [sequence |-> Len(history) + 1,
          thread |-> thread,
          run |-> run,
          state |-> state,
          operation |-> operation,
-         payload |-> payload])
+         payload |-> payload,
+         observedAt |-> observedAt])
 
 ApplyPlainCommit(thread, run, state) ==
+    /\ Len(history) < 3
     /\ TransitionAllowed(run, state)
-    /\ history' = AppendRecord(
-         thread, run, state, NoOperation, NoPayload)
-    /\ UNCHANGED receipts
+    /\ \E observedAt \in ObservationTimes : history' = AppendRecord(
+         thread, run, state, NoOperation, NoPayload, observedAt)
+    /\ UNCHANGED <<receipts, recoveredPrefix>>
 
 OperationAcceptable(thread, run, state, operation,
                     expectedThreadVersion, expectedRunOrdinal) ==
@@ -68,9 +75,12 @@ OperationAcceptable(thread, run, state, operation,
 
 ApplyOperation(thread, run, state, operation, payload,
                expectedThreadVersion, expectedRunOrdinal) ==
+    /\ Len(history) < 3
     /\ OperationAcceptable(thread, run, state, operation,
                            expectedThreadVersion, expectedRunOrdinal)
-    /\ history' = AppendRecord(thread, run, state, operation, payload)
+    /\ \E observedAt \in ObservationTimes :
+         history' = AppendRecord(thread, run, state, operation, payload, observedAt)
+    /\ UNCHANGED recoveredPrefix
     /\ receipts' = [receipts EXCEPT
          ![operation] =
            [payload |-> payload,
@@ -78,30 +88,30 @@ ApplyOperation(thread, run, state, operation, payload,
             thread |-> thread,
             threadVersion |-> expectedThreadVersion + 1,
             expectedThreadVersion |-> expectedThreadVersion,
-            runOrdinal |-> expectedRunOrdinal]]
+            runOrdinal |-> expectedRunOrdinal,
+            observedAt |-> history'[Len(history')].observedAt]]
 
-RetrySomeExactOperation ==
-    /\ \E operation \in Operations, payload \in Payloads :
-         /\ receipts[operation] /= NoReceipt
-         /\ receipts[operation].payload = payload
-    /\ UNCHANGED vars
+\* Exact retries and rejected requests are atomic stutters. Spec's [Next]_vars
+\* already includes precisely that relation; do not re-enumerate identical
+\* transitions for every rejected payload/version tuple. This preserves the
+\* temporal state graph and bounds, rather than introducing another retry path.
 
-OperationRejected(thread, run, state, operation, payload,
-                  expectedThreadVersion, expectedRunOrdinal) ==
-    /\ \/ /\ receipts[operation] /= NoReceipt
-           /\ receipts[operation].payload /= payload
-       \/ /\ receipts[operation] = NoReceipt
-           /\ ~OperationAcceptable(thread, run, state, operation,
-                                   expectedThreadVersion, expectedRunOrdinal)
+\* Legacy fixture insertion represents an old record, not a new writer.
+\* Recovery copies only committed prefix records; a process crash discards
+\* that cache. Ambiguous commit acknowledgements retry the same receipt above.
+LoadLegacy ==
+    /\ history = <<>>
+    /\ \E thread \in Threads, run \in Runs, state \in RunStates :
+         history' = AppendRecord(thread, run, state, NoOperation, NoPayload, UnknownTime)
+    /\ UNCHANGED <<receipts, recoveredPrefix>>
 
-RejectSomeOperation ==
-    /\ \E thread \in Threads, run \in Runs, state \in RunStates,
-          operation \in Operations, payload \in Payloads,
-          expectedThreadVersion \in 0..(Len(history) + 1),
-          expectedRunOrdinal \in 0..(Len(history) + 1) :
-         OperationRejected(thread, run, state, operation, payload,
-                           expectedThreadVersion, expectedRunOrdinal)
-    /\ UNCHANGED vars
+Recover ==
+    /\ recoveredPrefix' = history
+    /\ UNCHANGED <<history, receipts>>
+
+Crash ==
+    /\ recoveredPrefix' = <<>>
+    /\ UNCHANGED <<history, receipts>>
 
 Next ==
     \/ \E thread \in Threads, run \in Runs, state \in RunStates :
@@ -112,8 +122,9 @@ Next ==
           expectedRunOrdinal \in 0..(Len(history) + 1) :
          ApplyOperation(thread, run, state, operation, payload,
                         expectedThreadVersion, expectedRunOrdinal)
-    \/ RetrySomeExactOperation
-    \/ RejectSomeOperation
+    \/ LoadLegacy
+    \/ Recover
+    \/ Crash
 
 Spec == Init /\ [][Next]_vars
 
@@ -121,6 +132,7 @@ Spec == Init /\ [][Next]_vars
 \* same-version CAS race or a terminal successor, and the third distinguishes
 \* another Thread/Run/operation without repeating an already-covered relation.
 \* The constants still vary every cause axis independently.
+\* Guard appends at the same bound, avoiding transient out-of-bound records.
 StateConstraint == Len(history) <= 3
 
 TypeOK ==
@@ -130,7 +142,8 @@ TypeOK ==
           run : Runs,
           state : RunStates,
           operation : Operations \union {NoOperation},
-          payload : Payloads \union {NoPayload}])
+          payload : Payloads \union {NoPayload},
+          observedAt : ObservationTimes \union {UnknownTime}])
     /\ receipts \in [Operations ->
          {NoReceipt} \union
          [payload : Payloads,
@@ -138,7 +151,8 @@ TypeOK ==
           thread : Threads,
           threadVersion : Nat,
           expectedThreadVersion : Nat,
-          runOrdinal : Nat]]
+          runOrdinal : Nat,
+          observedAt : ObservationTimes]]
 
 HistorySequenceIsDenseAndExact ==
     \A index \in HistoryIndexes : history[index].sequence = index
@@ -159,6 +173,7 @@ ReceiptRefinesOneExactHistoryRecord ==
            /\ record.operation = operation
            /\ record.payload = receipt.payload
            /\ record.thread = receipt.thread
+           /\ record.observedAt = receipt.observedAt
            /\ receipt.threadVersion = receipt.expectedThreadVersion + 1
 
 OneCASWinnerPerThreadVersion ==
@@ -174,5 +189,14 @@ ReceiptsNeverOutrunDurableHistory ==
     \A operation \in Operations :
       receipts[operation] /= NoReceipt =>
         receipts[operation].sequence <= Len(history)
+
+CommittedMetadataPrefix(prefix, committed) ==
+    /\ Len(prefix) <= Len(committed)
+    /\ \A index \in 1..Len(prefix) : prefix[index] = committed[index]
+
+RecoveryPreservesExactCommittedMetadata == CommittedMetadataPrefix(recoveredPrefix, history)
+
+CommittedPrefixIsImmutable ==
+    [][\A index \in HistoryIndexes : history'[index] = history[index]]_vars
 
 =============================================================================

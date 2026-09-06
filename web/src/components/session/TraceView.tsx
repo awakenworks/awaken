@@ -79,8 +79,8 @@ export default function TraceView({
             key={s.id}
             id={`event-${s.id}`}
             className={`trace-event${selectedEventId === s.id ? " trace-event-selected" : ""}`}
-            marker={<Pill tone={s.error ? "danger" : KIND_TONE[s.kind]}>{s.kind}</Pill>}
             title={s.label}
+            metadata={<Pill tone={s.error ? "danger" : KIND_TONE[s.kind]}>{s.kind}</Pill>}
             timestamp={s.durationMs == null ? undefined : <span className="mono">{fmtMs(s.durationMs)}</span>}
             actions={(
               <Link

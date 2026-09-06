@@ -38,6 +38,8 @@ formal_tmp_root="$(mktemp -d)"
 trap 'rm -rf "$formal_tmp_root"' EXIT
 rust_trace_dir="$formal_tmp_root/rust-traces"
 rendered_trace_dir="$formal_tmp_root/rendered-traces"
+observation_trace_dir="$formal_tmp_root/observation-traces"
+observation_rendered_dir="$formal_tmp_root/observation-rendered"
 
 python3 scripts/ci/check_feature_coverage.py --require-complete
 python3 scripts/ci/check_formal_coverage.py --require-complete
@@ -92,6 +94,14 @@ python3 scripts/ci/render_runtime_refinement_traces.py \
   "$rust_trace_dir" "$rendered_trace_dir" \
   --require-complete-transition-coverage
 
+# Actual application/driver/store observations refine the SAME relations used
+# by the Session/Store models below. Missing scenarios fail before TLC runs.
+AWAKEN_OBSERVATION_TRACE_DIR="$observation_trace_dir" cargo test -p awaken-session-application --lib
+AWAKEN_OBSERVATION_TRACE_DIR="$observation_trace_dir" cargo test -p awaken-session-contract --lib processed_time_is_first_observation_and_legacy_is_unknown
+AWAKEN_OBSERVATION_TRACE_DIR="$observation_trace_dir" cargo test -p awaken-store-fs --test recovery every_torn_envelope_prefix_preserves_committed_time_and_facts
+python3 scripts/ci/render_runtime_refinement_traces.py --projection session-observations \
+  "$observation_trace_dir" "$observation_rendered_dir" --require-complete-transition-coverage
+
 if command -v cargo-kani >/dev/null 2>&1; then
   # Kani compiles every selected package once and verifies its named harnesses
   # with a bounded worker pool. The old one-process-per-harness path rebuilt the
@@ -135,6 +145,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness environment_image_build_claim_is_exact_non_wrapping_and_blocked_is_inert \
     --harness environment_image_build_mutation_requires_exact_claim_and_admissible_command
   run_kani awaken-session-contract \
+    --harness session_utc_projection_domain_is_total_exact_and_idempotent \
+    --harness realization_generation_authority_requires_every_axis \
+    --harness processed_event_time_is_first_observation_or_atomic_rejection \
     --harness session_realization_control_failure_disposition_is_total_exact_and_fail_closed \
     --harness realization_ownership_loss_proof_is_total_and_exact \
     --harness session_model_override_reuses_only_the_same_identity_and_resolves_every_mismatch \
@@ -277,6 +290,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness acp_session_load_preserves_the_exact_mcp_projection \
     --harness acp_permission_tool_identity_normalization_is_exact
   run_kani awaken-protocol-managed \
+    --harness canonical_event_order_never_depends_on_wall_time \
     --solver kissat \
     --harness organization_bucket_refill_is_exact_and_bounded \
     --harness organization_bucket_saturated_refill_is_canonical_and_bounded \
@@ -491,6 +505,8 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     exit 1
   fi
   tlc_state_root="$formal_tmp_root/tlc-states"
+  python3 scripts/ci/check_formal_mutations.py --session-observation-model-mutants "$tla_jar"
+  python3 scripts/ci/check_formal_mutations.py --session-observation-trace-mutants "$tla_jar" --observation-trace-dir "$observation_trace_dir"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/run-ingress" \
     -config formal/tla/RunIngress.cfg formal/tla/RunIngress.tla
@@ -795,7 +811,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -workers auto \
     -metadir "$tlc_state_root/remote-worker-protocol" \
     -config formal/tla/RemoteWorkerProtocol.cfg formal/tla/RemoteWorkerProtocol.tla
-  for trace_config in "$rendered_trace_dir"/RustTrace*.cfg; do
+  for trace_config in "$rendered_trace_dir"/RustTrace*.cfg "$observation_rendered_dir"/RustTrace*.cfg; do
     trace_module="${trace_config%.cfg}.tla"
     trace_name="$(basename "$trace_module" .tla)"
     java -XX:+UseParallelGC \

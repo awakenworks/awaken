@@ -83,6 +83,8 @@ mod mutation_tests {
         };
 
         PersistedSession {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             session_id: id.into(),
             revision,
             baseline: crate::SessionBaselineState::Preparing(crate::SessionCreationIntent {
@@ -294,6 +296,8 @@ mod mutation_tests {
         // current root binding supplies A. A store mounted twice is correlated by
         // binding id plus exact mount path, never by vector position or store id.
         let input = crate::ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from("memory-binding"),
             source: crate::ResolvedInputSource::MemoryStore {
                 memory_store_id: awaken_resource_contract::MemoryStoreId::from("memory-store"),
@@ -492,6 +496,8 @@ mod mutation_tests {
         aggregate.resources = crate::SessionResourceState::from_active(
             crate::ResolvedSessionResources::try_new(
                 vec![crate::ResolvedInput {
+                    created_at_unix_ms: None,
+                    updated_at_unix_ms: None,
                     binding_id: awaken_resource_contract::BindingId::from("prepared-memory"),
                     source: crate::ResolvedInputSource::MemoryStore {
                         memory_store_id: awaken_resource_contract::MemoryStoreId::from(
@@ -1466,6 +1472,8 @@ mod mutation_tests {
             value.disposition = disposition;
             let desired = crate::ResolvedSessionResources::try_new(
                 vec![crate::ResolvedInput {
+                    created_at_unix_ms: None,
+                    updated_at_unix_ms: None,
                     binding_id: awaken_resource_contract::BindingId::from("input-1"),
                     mount_path: "input.txt".into(),
                     access: awaken_resource_contract::ResourceAccess::ReadOnly,

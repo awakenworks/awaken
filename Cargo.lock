@@ -1853,6 +1853,9 @@ dependencies = [
 [[package]]
 name = "awaken-reliability-testkit"
 version = "1.0.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "awaken-resource-application"
@@ -2321,6 +2324,7 @@ dependencies = [
  "awaken-executable-agent-contract",
  "awaken-executable-environment-contract",
  "awaken-provisioning-contract",
+ "awaken-reliability-testkit",
  "awaken-resource-contract",
  "awaken-resource-persistence",
  "awaken-runtime-contract",
@@ -2345,6 +2349,7 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-environment-contract",
  "awaken-provisioning-contract",
+ "awaken-reliability-testkit",
  "awaken-resource-contract",
  "awaken-runtime-contract",
  "http",
@@ -2495,10 +2500,12 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-reliability-testkit",
  "awaken-store-conformance",
  "awaken-store-inmem",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

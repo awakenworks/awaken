@@ -22,7 +22,7 @@ impl ManagedState {
                 record.events.push(Event {
                     id,
                     kind: OutboundKind::SessionStatusRunning {},
-                    processed_at: Some(PROCESSED_AT.to_string()),
+                    processed_at: None,
                 });
             }
         };
@@ -259,12 +259,12 @@ impl ManagedState {
                 Event {
                     id: usage_id,
                     kind: OutboundKind::SessionUsage { usage, budget },
-                    processed_at: Some(PROCESSED_AT.to_string()),
+                    processed_at: None,
                 },
                 Event {
                     id: idle_id,
                     kind: OutboundKind::SessionStatusIdle { stop_reason },
-                    processed_at: Some(PROCESSED_AT.to_string()),
+                    processed_at: None,
                 },
             ]);
         }

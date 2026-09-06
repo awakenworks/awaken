@@ -242,6 +242,7 @@ impl SessionRuntime for EventBatchRuntime {
                 self.committed_message_projection();
             return Ok(Some(
                 awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                    commit_timestamps: Default::default(),
                     thread_id: thread_id.clone(),
                     claimed_run_id: run_id.clone(),
                     runs: vec![awaken_agent_contract::agent::run::Record {
@@ -282,6 +283,7 @@ impl SessionRuntime for EventBatchRuntime {
         let (messages, message_commit_cursors, store_cursor) = self.committed_message_projection();
         Ok(Some(
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                commit_timestamps: Default::default(),
                 thread_id,
                 claimed_run_id: latest_run_id.clone(),
                 runs,

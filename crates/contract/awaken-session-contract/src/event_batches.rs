@@ -365,6 +365,8 @@ pub struct SessionEventEntry {
     pub event: SessionEventCommand,
     #[serde(default)]
     pub processed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processed_at_unix_ms: Option<u64>,
     /// Absent for unprocessed and legacy commands. Such entries remain durable
     /// provenance but are not listable until the existing effect owner supplies
     /// one immutable commit coordinate.
@@ -405,6 +407,29 @@ pub struct SessionEventBatch {
     pub wake_activity_epoch: Option<u64>,
 }
 
+// The sole processed-marker transition, shared by normal processing and
+// terminal resolution. Lookup/command identity remains owned by the batch;
+// this pure reducer owns only its existing metadata fields, with no new state.
+fn mark_processed_observation(
+    processed: &mut bool,
+    recorded_anchor: &mut Option<SessionEventProjectionAnchor>,
+    recorded_time: &mut Option<u64>,
+    incoming_anchor: Option<SessionEventProjectionAnchor>,
+    now: u64,
+) -> Result<bool, SessionEventBatchError> {
+    if *processed {
+        return if *recorded_anchor == incoming_anchor {
+            Ok(false)
+        } else {
+            Err(SessionEventBatchError::ProgressMismatch)
+        };
+    }
+    *recorded_anchor = incoming_anchor;
+    *recorded_time = Some(now);
+    *processed = true;
+    Ok(true)
+}
+
 impl SessionEventBatch {
     pub fn bind_idempotency(
         &mut self,
@@ -432,22 +457,20 @@ impl SessionEventBatch {
         &mut self,
         operation_id: &str,
         projection_anchor: SessionEventProjectionAnchor,
+        processed_at_unix_ms: u64,
     ) -> Result<bool, SessionEventBatchError> {
         let entry = self
             .events
             .iter_mut()
             .find(|entry| entry.event.operation_id() == operation_id)
             .ok_or(SessionEventBatchError::ProgressMismatch)?;
-        if entry.processed {
-            return if entry.projection_anchor == Some(projection_anchor) {
-                Ok(false)
-            } else {
-                Err(SessionEventBatchError::ProgressMismatch)
-            };
-        }
-        entry.projection_anchor = Some(projection_anchor);
-        entry.processed = true;
-        Ok(true)
+        mark_processed_observation(
+            &mut entry.processed,
+            &mut entry.projection_anchor,
+            &mut entry.processed_at_unix_ms,
+            Some(projection_anchor),
+            processed_at_unix_ms,
+        )
     }
 
     /// Resolve every still-pending accepted command after a legacy terminal
@@ -457,12 +480,19 @@ impl SessionEventBatch {
     pub fn resolve_terminally(
         &mut self,
         projection_anchor: Option<SessionEventProjectionAnchor>,
+        processed_at_unix_ms: u64,
     ) -> usize {
         let mut resolved = 0;
         for entry in &mut self.events {
             if !entry.processed {
-                entry.projection_anchor = projection_anchor;
-                entry.processed = true;
+                mark_processed_observation(
+                    &mut entry.processed,
+                    &mut entry.projection_anchor,
+                    &mut entry.processed_at_unix_ms,
+                    projection_anchor,
+                    processed_at_unix_ms,
+                )
+                .expect("an unprocessed entry admits its first observation");
                 resolved += 1;
             }
         }
@@ -542,6 +572,7 @@ impl SessionEventBatch {
                             data_subject_id: data_subject_id.clone(),
                         },
                         processed: false,
+                        processed_at_unix_ms: None,
                         projection_anchor: None,
                     });
                 }
@@ -555,6 +586,7 @@ impl SessionEventBatch {
                             content,
                         },
                         processed: false,
+                        processed_at_unix_ms: None,
                         projection_anchor: None,
                     });
                 }
@@ -582,6 +614,7 @@ impl SessionEventBatch {
                             max_iterations,
                         },
                         processed: false,
+                        processed_at_unix_ms: None,
                         projection_anchor: None,
                     });
                 }
@@ -599,6 +632,7 @@ impl SessionEventBatch {
                             reply,
                         },
                         processed: false,
+                        processed_at_unix_ms: None,
                         projection_anchor: None,
                     });
                 }
@@ -627,6 +661,7 @@ impl SessionEventBatch {
                             interrupt,
                         },
                         processed: false,
+                        processed_at_unix_ms: None,
                         projection_anchor: None,
                     });
                 }
@@ -798,6 +833,7 @@ mod tests {
                     SessionEventProjectionAnchor {
                         source_commit_cursor: 9,
                     },
+                    1_700_000_000_000
                 ),
                 Err(SessionEventBatchError::ProgressMismatch)
             ),
@@ -811,6 +847,7 @@ mod tests {
                     SessionEventProjectionAnchor {
                         source_commit_cursor: 9,
                     },
+                    1_700_000_000_000
                 )
                 .unwrap(),
             "R3/E4"
@@ -822,6 +859,68 @@ mod tests {
                 .map(|anchor| anchor.source_commit_cursor),
             Some(9),
             "R3/E4 processed CAS retains its immutable public-order receipt"
+        );
+    }
+
+    #[test]
+    fn processed_time_is_first_observation_and_legacy_is_unknown() {
+        // Decision table: T1 unprocessed -> stamp; T2 exact replay with later
+        // clock -> unchanged; T3 changed anchor -> reject atomically; T4 terminal
+        // resolution -> stamp only pending; T5 historical missing field -> None.
+        let mut batch =
+            SessionEventBatch::compile("s", "b", vec![user("one"), user("two")]).unwrap();
+        let op = batch.events[0].event.operation_id().to_string();
+        let anchor = SessionEventProjectionAnchor {
+            source_commit_cursor: 1,
+        };
+        let state = |batch: &SessionEventBatch, index: usize| serde_json::json!({"processed": batch.events[index].processed, "time": batch.events[index].processed_at_unix_ms});
+        let pending = state(&batch, 0);
+        assert!(batch.mark_processed(&op, anchor, 100).unwrap(), "T1");
+        let first = state(&batch, 0);
+        assert!(!batch.mark_processed(&op, anchor, 200).unwrap(), "T2");
+        let replayed = state(&batch, 0);
+        let before = batch.clone();
+        assert!(
+            batch
+                .mark_processed(
+                    &op,
+                    SessionEventProjectionAnchor {
+                        source_commit_cursor: 2
+                    },
+                    300
+                )
+                .is_err(),
+            "T3"
+        );
+        assert_eq!(batch, before);
+        let rejected = state(&batch, 0);
+        let terminal_pending = state(&batch, 1);
+        assert_eq!(batch.resolve_terminally(Some(anchor), 400), 1, "T4");
+        awaken_reliability_testkit::write_observation_trace(
+            "processed-first-replay-terminal",
+            "processed",
+            serde_json::json!([
+            {"before": pending, "after": first, "now":100},
+            {"before": first, "after": replayed, "now":200},
+            {"before": replayed, "after": rejected, "now":300},
+            {"before": terminal_pending, "after": state(&batch, 1), "now":400}]),
+        );
+        assert_eq!(batch.events[0].processed_at_unix_ms, Some(100));
+        assert_eq!(batch.events[1].processed_at_unix_ms, Some(400));
+        let mut json = serde_json::to_value(&batch).unwrap();
+        for entry in json["events"].as_array_mut().unwrap() {
+            entry
+                .as_object_mut()
+                .unwrap()
+                .remove("processed_at_unix_ms");
+        }
+        let legacy: SessionEventBatch = serde_json::from_value(json).unwrap();
+        assert!(
+            legacy
+                .events
+                .iter()
+                .all(|entry| entry.processed_at_unix_ms.is_none()),
+            "T5"
         );
     }
 
@@ -1306,5 +1405,40 @@ mod tests {
         let second = session_event_outcome_id("session-1", "operation-2");
         assert_ne!(first, second, "O2/E2");
         assert!(second.starts_with("outc_"), "O2/E3");
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn processed_event_time_is_first_observation_or_atomic_rejection() {
+    // E1 pending -> stamp; E2 processed+exact anchor -> inert, including legacy
+    // unknown time; E3 changed anchor -> unchanged rejection. All u64 clocks,
+    // cursors and optional markers are symbolic. Batch lookup/operation identity
+    // is tested separately; this calls the production shared metadata reducer.
+    let before_processed: bool = kani::any();
+    let before_time = kani::any::<bool>().then(kani::any::<u64>);
+    let before_anchor = kani::any::<bool>().then(|| SessionEventProjectionAnchor {
+        source_commit_cursor: kani::any(),
+    });
+    let anchor = kani::any::<bool>().then(|| SessionEventProjectionAnchor {
+        source_commit_cursor: kani::any(),
+    });
+    let now: u64 = kani::any();
+    let (mut processed, mut time, mut recorded) = (before_processed, before_time, before_anchor);
+    let result = mark_processed_observation(&mut processed, &mut recorded, &mut time, anchor, now);
+    if before_processed {
+        assert_eq!(processed, before_processed);
+        assert_eq!(time, before_time);
+        assert_eq!(recorded, before_anchor);
+        if before_anchor == anchor {
+            assert_eq!(result, Ok(false));
+        } else {
+            assert!(result.is_err());
+        }
+    } else {
+        assert_eq!(result, Ok(true));
+        assert!(processed);
+        assert_eq!(time, Some(now));
+        assert_eq!(recorded, anchor);
     }
 }

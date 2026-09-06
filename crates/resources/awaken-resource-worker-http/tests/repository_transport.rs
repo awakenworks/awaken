@@ -92,7 +92,7 @@ impl awaken_session_contract::SessionRealizationControl for ExactTerminalPublica
         let exact_input = matches!(
             intent.target(),
             awaken_session_contract::SessionResourceMaterializationTarget::Input(input)
-                if input == &self.command.intent.input
+                if input.as_ref() == &self.command.intent.input
         );
         if intent.session_id() != self.command.session_id
             || intent.lease() != &current_lease
@@ -200,6 +200,8 @@ impl LiveResourceBindingVerifier for ExactRepositoryRegistry {
 fn resources() -> awaken_session_contract::ResolvedSessionResources {
     awaken_session_contract::ResolvedSessionResources::try_new(
         vec![awaken_session_contract::ResolvedInput {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from("repository-binding"),
             source: awaken_session_contract::ResolvedInputSource::Repository {
                 repository_id: awaken_resource_contract::RepositoryId::from("repository-exact"),

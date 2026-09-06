@@ -283,6 +283,44 @@ pub fn realization_generation_authorizes(
         && current.lease_expires_at_unix_ms >= asserted.lease_expires_at_unix_ms
 }
 
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn realization_generation_authority_requires_every_axis() {
+    // G1-G64: all combinations of the five immutable identity equalities and
+    // expiry ordering. Strings use two one-byte representatives of equality;
+    // expiry/epoch/generation retain arbitrary u64 values. Live root authority
+    // is a separate precondition, not a claim of this production predicate.
+    let same_session: bool = kani::any();
+    let same_attachment: bool = kani::any();
+    let same_incarnation: bool = kani::any();
+    let current = McpGenerationRef {
+        session_id: "a".into(),
+        attachment_id: crate::McpAttachmentId("a".into()),
+        generation: crate::McpGeneration(kani::any()),
+        runtime_incarnation: "a".into(),
+        lease_epoch: kani::any(),
+        lease_expires_at_unix_ms: kani::any(),
+    };
+    let asserted = McpGenerationRef {
+        session_id: if same_session { "a" } else { "b" }.into(),
+        attachment_id: crate::McpAttachmentId(if same_attachment { "a" } else { "b" }.into()),
+        generation: crate::McpGeneration(kani::any()),
+        runtime_incarnation: if same_incarnation { "a" } else { "b" }.into(),
+        lease_epoch: kani::any(),
+        lease_expires_at_unix_ms: kani::any(),
+    };
+    assert_eq!(
+        realization_generation_authorizes(&current, &asserted),
+        same_session
+            && same_attachment
+            && same_incarnation
+            && current.generation == asserted.generation
+            && current.lease_epoch == asserted.lease_epoch
+            && current.lease_expires_at_unix_ms >= asserted.lease_expires_at_unix_ms
+    );
+}
+
 /// Opaque Runtime assignment selected outside the Session domain. Worker and
 /// local-process identities are mapped to these strings at the authenticated
 /// application edge; the aggregate never imports their protocol vocabulary.
@@ -569,6 +607,10 @@ mod repository_publication_projection_tests {
 pub struct BeginSessionRealization {
     pub session_id: String,
     pub target: SessionRealizationTarget,
+    /// Exact manifest decoded from a live guarded dispatch, never a browser
+    /// hint. Unclaimed Control realization selects the current desired state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_resources: Option<crate::SessionResourceManifest>,
 }
 
 /// Extend one already-authoritative realization lease without replaying the
@@ -587,6 +629,9 @@ pub struct RenewSessionRealization {
 /// the initial Environment so retry policy survives process and Worker loss.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionRealizationProgress {
+    /// Wall time of the retained failure; recovery and cleanup never resample it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_at_unix_ms: Option<u64>,
     #[serde(default)]
     pub attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -643,13 +688,13 @@ pub struct FailSessionRealization {
     pub reason: String,
 }
 
-/// Exact pending Resource target authorized by one Session realization lease.
+/// Exact active or pending Resource target authorized by one Session realization lease.
 /// The Workspace is intentionally absent: the Session root adds it only after
-/// matching this untrusted transport value to its current pending generation.
+/// matching this untrusted transport value to its retained generation and target.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "target", rename_all = "snake_case")]
 pub enum SessionResourceMaterializationTarget {
-    Input(crate::ResolvedInput),
+    Input(Box<crate::ResolvedInput>),
     Skill(crate::ResolvedSkillBinding),
 }
 
@@ -678,7 +723,7 @@ impl SessionResourceMaterializationIntent {
         Ok(Self {
             session_id,
             resource_revision,
-            target: SessionResourceMaterializationTarget::Input(input),
+            target: SessionResourceMaterializationTarget::Input(Box::new(input)),
             lease,
         })
     }
@@ -1688,6 +1733,34 @@ mod tests {
             lease_epoch: 3,
             lease_expires_at_unix_ms: 10,
         };
+        // G5 every feasible equality combination (64 rows) independently
+        // binds all six axes; G1-G4 below retain readable boundary examples.
+        for mask in 0_u8..64 {
+            let mut candidate = asserted.clone();
+            if mask & 1 != 0 {
+                candidate.session_id = "foreign".into();
+            }
+            if mask & 2 != 0 {
+                candidate.attachment_id = McpAttachmentId("foreign".into());
+            }
+            if mask & 4 != 0 {
+                candidate.generation = McpGeneration(2);
+            }
+            if mask & 8 != 0 {
+                candidate.runtime_incarnation = "foreign".into();
+            }
+            if mask & 16 != 0 {
+                candidate.lease_epoch += 1;
+            }
+            if mask & 32 != 0 {
+                candidate.lease_expires_at_unix_ms -= 1;
+            }
+            assert_eq!(
+                realization_generation_authorizes(&candidate, &asserted),
+                mask == 0,
+                "G5 mask={mask}"
+            );
+        }
         for (rule, current, expected) in [
             ("G1", asserted.clone(), true),
             (

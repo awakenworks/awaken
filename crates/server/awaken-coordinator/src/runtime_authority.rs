@@ -709,7 +709,7 @@ mod tests {
         for (backend, rule) in [(StoreKind::Sqlite, "H1"), (StoreKind::Fs, "H2")] {
             let root = tempfile::tempdir().expect("local authority root");
             let mut deployment = DeploymentConfig::ephemeral();
-            deployment.storage_dir = Some(root.path().to_path_buf());
+            deployment.storage_dir = Some(root.path().join("space 空间/nested"));
             deployment.store = backend;
             let authority = DurableRuntimeAuthority::open(&deployment, SchemaAccess::Migrate)
                 .await
@@ -725,6 +725,26 @@ mod tests {
 
             let child = authority.open_commit("child").await.expect("H3");
             assert!(!Arc::ptr_eq(&left, &child), "H3/E2: {backend:?}");
+            // H4 real path collision => fail without cached broken authority;
+            // H5 repair the filesystem => one successful retry. The nested
+            // Unicode/space root also exercises native path handling on each OS.
+            let blocked = authority.commit_path("blocked").unwrap();
+            if backend == StoreKind::Sqlite {
+                std::fs::create_dir(&blocked).unwrap();
+            } else {
+                std::fs::write(&blocked, b"occupied").unwrap();
+            }
+            assert!(authority.open_commit("blocked").await.is_err(), "H4");
+            if backend == StoreKind::Sqlite {
+                std::fs::remove_dir(&blocked).unwrap();
+            } else {
+                std::fs::remove_file(&blocked).unwrap();
+            }
+            let recovered = authority.open_commit("blocked").await.expect("H5 repaired");
+            assert!(
+                Arc::ptr_eq(&recovered, &authority.open_commit("blocked").await.unwrap()),
+                "H5"
+            );
         }
     }
 

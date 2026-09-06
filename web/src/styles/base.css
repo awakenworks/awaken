@@ -1510,7 +1510,13 @@ textarea.input {
 .relationship-target strong,
 .relationship-target small { overflow-wrap: anywhere; }
 .unused-agents { padding: 13px 14px; }
-.trace-tool-summary { display: grid; gap: 9px; margin: 8px 0 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--soft); }
+.trace { min-width: 0; overflow-wrap: anywhere; }
+.trace .ui-event-list__header { min-width: 0; flex-wrap: wrap; }
+.trace .ui-event-list__title { min-width: 0; overflow-wrap: anywhere; }
+.trace .ui-stat-grid { grid-template-columns: repeat(auto-fit, minmax(min(10rem, 100%), 1fr)); }
+.trace .ui-stat { min-width: 0; }
+.trace .ui-stat__label code { white-space: normal; overflow-wrap: anywhere; }
+.trace-tool-summary { display: grid; min-width: 0; gap: 9px; margin: 8px 0 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--soft); }
 .trace-tool-summary-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
 .trace-event { scroll-margin: 80px; border-radius: var(--r-sm); }
 .trace-event-selected { outline: 2px solid color-mix(in srgb, var(--brand) 48%, transparent); outline-offset: 2px; background: var(--brand-soft); }

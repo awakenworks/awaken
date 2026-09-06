@@ -75,6 +75,30 @@ jobs:
         with:
           name: quality-${{ github.sha }}-${{ github.run_attempt }}
           path: target/test-timings
+      # Decision rule: native non-Windows artifact => exercise durable recovery
+      # on that same OS before packaging; a cross-platform build is not a test.
+      - name: Test native non-Windows persistence and Session projection
+        if: runner.os != 'Windows'
+        shell: bash
+        run: >-
+          cargo test --locked --features awaken-store-sqlite/test-support
+          -p awaken-session-contract -p awaken-session-application
+          -p awaken-store-inmem -p awaken-store-fs -p awaken-store-sqlite
+          -p awaken-protocol-managed
+      - name: Test native non-Windows initialization ownership
+        if: runner.os != 'Windows'
+        shell: bash
+        run: cargo test --locked -p awaken-coordinator --lib runtime_authority::tests
+      # Same native runner, real HTTP MCP adapter, hard process termination.
+      # Release packaging must not substitute compilation for recovery evidence.
+      - name: Test native non-Windows MCP crash recovery
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          pnpm -C e2e install --frozen-lockfile
+          source scripts/ci/_provider_environment.sh
+          awaken_unset_ambient_api_keys
+          pnpm -C e2e exec tsx managed_mcp_recovery_e2e.ts
       - name: Build the canonical archive
         shell: bash
         env:

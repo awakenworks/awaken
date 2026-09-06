@@ -179,6 +179,7 @@ impl SessionRuntime for QueueFake {
         let thread_id = awaken_agent_contract::agent::thread::Id(thread_id.to_string());
         Ok(Some(
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                commit_timestamps: Default::default(),
                 thread_id: thread_id.clone(),
                 claimed_run_id: run_id.clone(),
                 runs: vec![awaken_agent_contract::agent::run::Record {

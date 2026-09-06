@@ -66,6 +66,8 @@ fn session(id: &str, title: &str) -> PersistedSession {
         awaken_credential_contract::CredentialExecutionPolicy::self_hosted_provider(),
     );
     PersistedSession {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
         session_id: id.to_string(),
         revision: Default::default(),
         baseline: awaken_session_contract::SessionBaselineState::Frozen(

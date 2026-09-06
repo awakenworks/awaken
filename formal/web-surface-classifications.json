@@ -1,6 +1,7 @@
 {
   "version": 1,
   "classifications": [
+    {"path":"web/src/lib/generated/suite-navigation.ts","requirement_id":"product.admin_console.console_workflows","proof_status":"product_boundary_only","reason":"The foundation-generated browser navigation helper projects hosted entry and health without owning authorization; its existing consumer remains the suite-navigation adapter. Classification only, not formal evidence."},
     {"path":"web/src/components/agent/AgentAdvanced.tsx","requirement_id":"control.agent_profiles.immutable_profile","proof_status":"product_boundary_only","reason":"Advanced Agent authoring projects profile policy fields; this ownership link is not a formal-proof claim."},
     {"path":"web/src/components/agent/AgentAdvancedToolsEditor.tsx","requirement_id":"runtime.permission.authority_never_widens","proof_status":"product_boundary_only","reason":"Advanced tool authoring projects typed ToolSet permission intent and related policy hints; only the Runtime gate can grant execution authority."},
     {"path":"web/src/components/agent/AgentBuilder.tsx","requirement_id":"control.agent_profiles.immutable_profile","proof_status":"product_boundary_only","reason":"The Agent builder edits the authored profile projection; browser behavior remains a product boundary."},

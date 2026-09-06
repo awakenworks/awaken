@@ -35,11 +35,9 @@ pub(crate) fn lifecycle_fact(
     session_id: &str,
     workspace_id: Option<String>,
     event_type: &str,
+    observed_at_unix_ms: u64,
 ) -> ManagedLifecycleFact {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0);
+    let timestamp = i64::try_from(observed_at_unix_ms / 1_000).unwrap_or(i64::MAX);
     ManagedLifecycleFact {
         id,
         object_id: session_id.to_string(),

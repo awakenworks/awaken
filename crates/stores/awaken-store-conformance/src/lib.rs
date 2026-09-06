@@ -558,6 +558,22 @@ pub async fn recovery_snapshot_is_consistent<S: Coordinator + RunRecoverySource>
     assert_eq!(snapshot.thread_version, 2, "per-Thread version");
     assert_eq!(snapshot.store_cursor, 3, "backend-wide prefix cursor");
     assert_eq!(snapshot.next_commit_ordinal, 1, "claimed Run ordinal");
+    // T1: two local commits + one foreign commit => exactly the local time
+    // observations, within the snapshot fence; new writes never use a fixture date.
+    assert_eq!(
+        snapshot
+            .commit_timestamps
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert!(
+        snapshot
+            .commit_timestamps
+            .values()
+            .all(|at| *at > 1_767_225_600_000)
+    );
 }
 
 /// Operation receipts make an ambiguous acknowledgement retry exactly-once at
@@ -582,6 +598,14 @@ pub async fn commit_operation_is_idempotent_and_cas<
     assert!(!applied.duplicate);
     assert_eq!(applied.thread_version, 1);
 
+    // T2 exact receipt replay after clock advances => original observation;
+    // T3 conflicting payload / stale CAS => no new observation or partial fact.
+    let original_times = store
+        .recovery_snapshot(&thread, &run)
+        .await
+        .unwrap()
+        .commit_timestamps;
+    std::thread::sleep(std::time::Duration::from_millis(5));
     let duplicate = store
         .commit_operation(first.clone())
         .await
@@ -618,6 +642,15 @@ pub async fn commit_operation_is_idempotent_and_cas<
         "CAS rejection is atomic"
     );
 
+    assert_eq!(
+        store
+            .recovery_snapshot(&thread, &run)
+            .await
+            .unwrap()
+            .commit_timestamps,
+        original_times,
+        "T2+T3"
+    );
     let mut current = stale;
     current.expected_thread_version = 1;
     let second = store
@@ -633,12 +666,17 @@ pub async fn commit_operation_is_idempotent_and_cas<
         .expect("post-operation recovery");
     assert_eq!(snapshot.thread_version, 2);
     assert_eq!(snapshot.next_commit_ordinal, 2);
+    assert_eq!(snapshot.commit_timestamps.len(), 2);
+    assert_eq!(
+        snapshot.commit_timestamps.get(&applied.commit_sequence),
+        original_times.get(&applied.commit_sequence)
+    );
 }
 
 /// Two operations prepared from the same Thread prefix race: the Thread CAS
 /// admits exactly one, even when they target different Runs.
 pub async fn concurrent_operations_cas_one_winner<
-    S: OperationCoordinator + CheckpointReader + Sync,
+    S: OperationCoordinator + CheckpointReader + RunRecoverySource + Sync,
 >(
     store: &S,
 ) {
@@ -666,6 +704,14 @@ pub async fn concurrent_operations_cas_one_winner<
         1,
         "the losing CAS appends no partial facts"
     );
+    // T10 the failed writer leaves no observation. Read the same fenced
+    // snapshot contract on all backends, not a separately cached timestamp map.
+    let snapshot = store
+        .recovery_snapshot(&thread, &RunId("left".into()))
+        .await
+        .unwrap();
+    assert_eq!(snapshot.thread_version, 1);
+    assert_eq!(snapshot.commit_timestamps.len(), 1, "T10 winner time only");
 }
 
 /// Empty-store reads: before any commit, every read port is absent — no messages,

@@ -151,7 +151,7 @@ fn inbound_projection(
             id: durable_inbound_event_id(session_id, entry.event.operation_id()),
             kind: public_inbound_kind_from_command(session_id, &entry.event),
             processed_at: inbound_processed_at_visible(view, entry.processed)
-                .then(|| PROCESSED_AT.to_string()),
+                .then(|| super::constants::persisted_time(entry.processed_at_unix_ms)),
         },
     }
 }
@@ -478,7 +478,7 @@ fn append_durable_outcome_projections(
                             record.events.push(Event {
                                 id,
                                 kind,
-                                processed_at: Some(PROCESSED_AT.to_string()),
+                                processed_at: None,
                             });
                         }
                     }
@@ -511,7 +511,7 @@ fn append_durable_outcome_projections(
                         kind: OutboundKind::SessionError {
                             error: SessionError::classify(&failure.code, failure.message.clone()),
                         },
-                        processed_at: Some(PROCESSED_AT.to_string()),
+                        processed_at: None,
                     });
                 }
             }
@@ -628,7 +628,7 @@ fn primary_thread_status_event(
     Event {
         id,
         kind: primary_thread_status_kind(record, status),
-        processed_at: Some(PROCESSED_AT.to_string()),
+        processed_at: None,
     }
 }
 

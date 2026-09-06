@@ -294,6 +294,7 @@ fn durable_inbound_projection_uses_only_session_root_provenance() {
                 awaken_session_contract::SessionEventProjectionAnchor {
                     source_commit_cursor: ordinal as u64 + 1,
                 },
+                1_700_000_000_000,
             )
             .expect("R2 exact marker");
     }
@@ -1220,6 +1221,7 @@ impl SessionRuntime for LifecycleRuntime {
             .unwrap_or_default();
         Ok(Some(
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                commit_timestamps: Default::default(),
                 thread_id: ThreadId(thread_id.to_string()),
                 claimed_run_id: run_id.clone(),
                 runs,
@@ -1459,12 +1461,16 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
         session_id: &str,
         source_run_id: Option<RunId>,
         lifecycle_run_id: Option<RunId>,
-    ) -> Vec<(String, String)> {
+    ) -> Vec<(String, String, Option<String>)> {
         let repository = Arc::new(ephemeral_session_repo());
         let mut persisted = crate::state::tests::sample_persisted(session_id);
         persisted.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
         persisted.realization_progress.last_error =
             Some("broader Session realization failure".into());
+        // AF4 cleanup has a later root update time. The failure owns its
+        // immutable observation and must keep it in every replica.
+        persisted.realization_progress.failed_at_unix_ms = Some(100);
+        persisted.updated_at_unix_ms = Some(900);
         persisted.realization_progress.failure_source_run_id = source_run_id.map(Box::new);
         crate::state::test_support::create_session_fixture(
             repository.as_ref(),
@@ -1505,11 +1511,27 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
                 .data
                 .into_iter()
                 .filter_map(|event| match event.kind {
-                    OutboundKind::SessionError { error } => Some((event.id, error.message)),
+                    OutboundKind::SessionError { error } => {
+                        Some((event.id, error.message, event.processed_at))
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
         };
+        for event in warm
+            .list_events(session_id, None, None, false)
+            .unwrap()
+            .data
+        {
+            if matches!(&event.kind, OutboundKind::SessionError { error } if error.message == "broader Session realization failure")
+            {
+                assert_eq!(
+                    event.processed_at.as_deref(),
+                    Some("1970-01-01T00:00:00.1Z"),
+                    "AF4 failure time, not cleanup time"
+                );
+            }
+        }
         let projected = observe(&warm);
         let cold = ManagedState::new(runtime).with_session_repo(repository);
         cold.refresh_committed_events(session_id).await.unwrap();
@@ -1527,7 +1549,7 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
     assert_eq!(
         exact
             .iter()
-            .map(|(_, message)| message.as_str())
+            .map(|(_, message, _)| message.as_str())
             .collect::<Vec<_>>(),
         vec!["precise Run lifecycle failure"],
         "AF2/E2"
@@ -1542,13 +1564,13 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
     assert!(
         distinct
             .iter()
-            .any(|(_, message)| message == "broader Session realization failure"),
+            .any(|(_, message, _)| message == "broader Session realization failure"),
         "AF3/E3 current realization failure"
     );
     assert!(
         distinct
             .iter()
-            .any(|(_, message)| message == "precise Run lifecycle failure"),
+            .any(|(_, message, _)| message == "precise Run lifecycle failure"),
         "AF3/E3 historical Run failure"
     );
 }
@@ -2918,7 +2940,7 @@ async fn qualified_event_id_routes_every_child_tool_reply_variant() {
             evaluated_permission: Some(EvaluatedPermission::Allow),
             session_thread_id: None,
         },
-        processed_at: Some(PROCESSED_AT.into()),
+        processed_at: Some(LEGACY_UNRECORDED_AT.into()),
     };
     assert!(
         ManagedState::project_event_for_thread(
@@ -3105,7 +3127,7 @@ async fn aggregate_running_edge_is_decided_from_the_locked_event_tail() {
     let event = |kind| Event {
         id: "test-event".into(),
         kind,
-        processed_at: Some(PROCESSED_AT.into()),
+        processed_at: Some(LEGACY_UNRECORDED_AT.into()),
     };
 
     record.events.clear();
@@ -4737,6 +4759,7 @@ fn outcome_projection_requires_a_terminal_fence_and_anchors_synthetic_interrupts
     let snapshot = |entries: Vec<(Command, u64)>| {
         let (state, state_commit_cursors) = entries.into_iter().unzip();
         awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+            commit_timestamps: Default::default(),
             thread_id: ThreadId("outcome-root".into()),
             claimed_run_id: RunId("outcome-state".into()),
             runs: Vec::new(),
@@ -7080,7 +7103,54 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
         ]);
     }
 
+    // Q7 root and child clocks differ: canonical ownership selects each
+    // child's own commit time; cold reconstruction preserves the full metadata.
+    for (thread, at) in [
+        (&session.id[..], 1_800_000_000_000),
+        (child_a.0, 1_800_000_001_000),
+        (child_b.0, 1_800_000_002_000),
+    ] {
+        runtime.commit_times_by_thread.lock().unwrap().insert(
+            thread.to_string(),
+            (1..100).map(|cursor| (cursor, at)).collect(),
+        );
+    }
     state.refresh_committed_events(&session.id).await.unwrap();
+    let warm_thread_times = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .child_threads
+        .iter()
+        .map(|child| {
+            (
+                child.id.clone(),
+                child.created_at.clone(),
+                child.updated_at.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        warm_thread_times
+            .iter()
+            .all(|(_, created, _)| created == "2027-01-15T08:00:00Z"),
+        "Q7 root creation operation"
+    );
+    assert!(
+        warm_thread_times
+            .iter()
+            .any(|(id, _, updated)| id == child_a.0 && updated == "2027-01-15T08:00:01Z"),
+        "Q7 child A time"
+    );
+    assert!(
+        warm_thread_times
+            .iter()
+            .any(|(id, _, updated)| id == child_b.0 && updated == "2027-01-15T08:00:02Z"),
+        "Q7 child B time"
+    );
+
     let primary_events = state
         .list_events(&session.id, None, None, false)
         .unwrap()
@@ -7195,6 +7265,23 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
         .map(|event| event.id)
         .collect::<std::collections::HashSet<_>>();
     assert_eq!(recovered_ids, public_ids, "Q2/E3");
+    let cold_thread_times = restarted
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .child_threads
+        .iter()
+        .map(|child| {
+            (
+                child.id.clone(),
+                child.created_at.clone(),
+                child.updated_at.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(cold_thread_times, warm_thread_times, "Q7 cold metadata");
     let cold_primary = restarted
         .list_events(&session.id, None, None, false)
         .unwrap()
@@ -8105,6 +8192,12 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
         ),
     ]);
 
+    // T1 known commit time -> exact subsecond wire value in every replica;
+    // T2 backwards wall clock between commits -> order remains commit order.
+    runtime.commit_times_by_thread.lock().unwrap().insert(
+        session.id.clone(),
+        [(1, 1_800_000_000_999), (2, 1_800_000_000_123)].into(),
+    );
     warm.refresh_committed_events(&session.id).await.unwrap();
     let assistant_signature = |state: &ManagedState| {
         state
@@ -8177,9 +8270,29 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
     restarted.ensure_session(&session.id).await.unwrap();
     assert_eq!(assistant_signature(&restarted), expected, "R3/E2");
 
+    let wire = |state: &ManagedState| {
+        serde_json::to_value(
+            state
+                .list_events(&session.id, None, None, false)
+                .unwrap()
+                .data,
+        )
+        .unwrap()
+    };
+    let timed = wire(&warm);
+    assert!(
+        timed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["processed_at"] == "2027-01-15T08:00:00.123Z"),
+        "T1"
+    );
+    assert_eq!(wire(&restarted), timed, "T1/T2 cold full payload");
     let peer = ManagedState::new(runtime).with_session_repo(repo);
     peer.ensure_session(&session.id).await.unwrap();
     peer.refresh_committed_events(&session.id).await.unwrap();
+    assert_eq!(wire(&peer), timed, "T1/T2 peer full payload");
     assert_eq!(assistant_signature(&peer), expected, "R4/E2-E3");
     assert_eq!(assistant_signature(&restarted), expected, "R4/E2-E3");
 }
@@ -10300,6 +10413,7 @@ async fn model_request_spans_are_paired_and_keep_required_zero_usage_on_error() 
         },
     ];
     let snapshot = RunRecoverySnapshot {
+        commit_timestamps: Default::default(),
         thread_id: thread_id.clone(),
         claimed_run_id: run_id.clone(),
         runs: vec![RunRecord {
@@ -10525,6 +10639,29 @@ async fn durable_outcome_projector_is_warm_cold_restart_and_active_active_stable
             ],
         }),
     );
+    // P5 the two evaluation commits and a later unrelated commit have distinct,
+    // nonmonotonic times. Latest evaluation completion belongs to cursor 20,
+    // never the largest clock or newest unrelated cursor; replicas retain it.
+    runtime
+        .state_cursors_by_thread
+        .lock()
+        .unwrap()
+        .insert(session_id.into(), vec![10, 20, 20, 20]);
+    runtime
+        .message_cursors_by_thread
+        .lock()
+        .unwrap()
+        .insert(session_id.into(), vec![20]);
+    *runtime.root_store_cursor_override.lock().unwrap() = Some(30);
+    runtime.commit_times_by_thread.lock().unwrap().insert(
+        session_id.into(),
+        [
+            (10, 1_900_000_000_123),
+            (20, 1_800_000_000_123),
+            (30, 2_000_000_000_123),
+        ]
+        .into(),
+    );
     let (left, right) = tokio::join!(
         warm.refresh_committed_events(session_id),
         warm.refresh_committed_events(session_id)
@@ -10563,6 +10700,11 @@ async fn durable_outcome_projector_is_warm_cold_restart_and_active_active_stable
     assert_eq!(warm_observation.1, 1, "P2-P3/E5");
     assert_eq!(warm_observation.2.len(), 1, "P2/E2");
     assert_eq!(warm_observation.2[0].iteration, 1, "P2/E2 latest");
+    assert_eq!(
+        warm_observation.2[0].completed_at.as_deref(),
+        Some("2027-01-15T08:00:00.123Z"),
+        "P5 owning evaluation commit time"
+    );
 
     for label in ["cold", "restart"] {
         let rebuilt = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());

@@ -560,6 +560,7 @@ impl EchoFake {
         let next_commit_ordinal = u64::try_from(messages.len()).unwrap();
         Some(
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                commit_timestamps: Default::default(),
                 thread_id,
                 claimed_run_id: latest.run_id.clone(),
                 runs,
@@ -1526,6 +1527,7 @@ impl ToolAwaitingFake {
             .collect();
         Some(
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                commit_timestamps: Default::default(),
                 thread_id: thread_id.clone(),
                 claimed_run_id: run.run_id.clone(),
                 runs: vec![awaken_agent_contract::agent::run::Record {
@@ -1953,6 +1955,7 @@ impl SessionRuntime for OutcomeFake {
         let store_cursor = state_commit_cursors.iter().copied().max().unwrap_or(0);
         Ok(Some(
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                commit_timestamps: Default::default(),
                 thread_id: ThreadId(thread_id.to_string()),
                 claimed_run_id: RunId(format!("outcome-snapshot:{thread_id}")),
                 runs: Vec::new(),

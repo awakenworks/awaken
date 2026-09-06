@@ -199,6 +199,8 @@ mod tests {
         )
         .unwrap();
         PersistedSession {
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
             session_id: id.into(),
             revision: SessionRevision(0),
             baseline: SessionBaselineState::Frozen(baseline),
@@ -334,6 +336,7 @@ mod tests {
             reassign_existing_lease: false,
         };
         let begin = BeginSessionRealization {
+            expected_resources: None,
             session_id: "session-phase".into(),
             target: target.clone(),
         };
@@ -372,6 +375,7 @@ mod tests {
         let stale = state
             .application
             .begin_session_realization(BeginSessionRealization {
+                expected_resources: None,
                 session_id: "session-phase".into(),
                 target: awaken_session_contract::SessionRealizationTarget {
                     owner: "worker-b".into(),
@@ -727,6 +731,7 @@ mod tests {
         let first = state
             .application
             .begin_session_realization(BeginSessionRealization {
+                expected_resources: None,
                 session_id: "session-owner-restart".into(),
                 target: target.clone(),
             })
@@ -735,6 +740,7 @@ mod tests {
         let replay = state
             .application
             .begin_session_realization(BeginSessionRealization {
+                expected_resources: None,
                 session_id: "session-owner-restart".into(),
                 target: target.clone(),
             })
@@ -745,6 +751,7 @@ mod tests {
         let restarted = state
             .application
             .begin_session_realization(BeginSessionRealization {
+                expected_resources: None,
                 session_id: "session-owner-restart".into(),
                 target: awaken_session_contract::SessionRealizationTarget {
                     runtime_incarnation: "worker-a/incarnation-2".into(),
@@ -772,6 +779,7 @@ mod tests {
         let other = state
             .application
             .begin_session_realization(BeginSessionRealization {
+                expected_resources: None,
                 session_id: "session-owner-restart".into(),
                 target: awaken_session_contract::SessionRealizationTarget {
                     owner: "worker-b".into(),
@@ -814,6 +822,7 @@ mod tests {
         let baseline_stage = baseline_state
             .application
             .begin_session_realization(BeginSessionRealization {
+                expected_resources: None,
                 session_id: "session-baseline-only".into(),
                 target: target.clone(),
             })
@@ -833,6 +842,7 @@ mod tests {
         let staged = empty_state
             .application
             .begin_session_realization(BeginSessionRealization {
+                expected_resources: None,
                 session_id: "session-empty".into(),
                 target: target.clone(),
             })
@@ -888,6 +898,7 @@ mod tests {
         let staged = failed_state
             .application
             .begin_session_realization(BeginSessionRealization {
+                expected_resources: None,
                 session_id: "session-failed".into(),
                 target,
             })
@@ -931,6 +942,7 @@ mod tests {
             failed_state
                 .application
                 .begin_session_realization(BeginSessionRealization {
+                    expected_resources: None,
                     session_id: "session-failed".into(),
                     target: awaken_session_contract::SessionRealizationTarget {
                         owner: "worker-a".into(),

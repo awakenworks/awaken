@@ -155,3 +155,44 @@ async fn resume_ticket_is_durable_across_reopen() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn commit_time_survives_reopen_and_legacy_time_stays_unknown() {
+    use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
+    // T1 new append -> persisted observation survives cold replay; T2 a legacy
+    // line without metadata -> unknown, never reopen time; T3 mixed old/new
+    // prefix -> exactly one observation, unchanged facts and dense cursors.
+    let dir = std::env::temp_dir().join(format!("awaken-fs-time-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let legacy = ended("legacy", "old", "legacy");
+    std::fs::write(
+        dir.join("commits.ndjson"),
+        format!("{}\n", serde_json::to_string(&legacy).unwrap()),
+    )
+    .unwrap();
+    let thread = ThreadId("current".into());
+    let run = RunId("new".into());
+    let store = FsCommitCoordinator::open(&dir).await.unwrap();
+    store
+        .commit(ended("current", "new", "current"))
+        .await
+        .unwrap();
+    let before = store.recovery_snapshot(&thread, &run).await.unwrap();
+    assert_eq!(before.commit_timestamps.len(), 1, "T1");
+    drop(store);
+    let store = FsCommitCoordinator::open(&dir).await.unwrap();
+    assert_eq!(
+        store.recovery_snapshot(&thread, &run).await.unwrap(),
+        before,
+        "T1+T3"
+    );
+    let old = store
+        .recovery_snapshot(&ThreadId("legacy".into()), &RunId("old".into()))
+        .await
+        .unwrap();
+    assert!(old.commit_timestamps.is_empty(), "T2");
+    assert_eq!(old.messages[0].text_content(), "legacy");
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
