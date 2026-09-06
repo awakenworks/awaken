@@ -8,6 +8,23 @@ source scripts/ci/_provider_environment.sh
 awaken_configure_cargo_target "$PWD"
 awaken_unset_ambient_api_keys
 
+# Gate selection table: default preserves the cross-platform contract;
+# --linux-supervision additionally REQUIRES user systemd/cgroup-v2 execution.
+# Unknown/multiple arguments or a non-Linux supervision request fail before
+# any tests. This is substrate qualification, not a production capability bit.
+linux_supervision=false
+if [[ "$#" == 1 && "$1" == --linux-supervision ]]; then
+  [[ "$(uname -s)" == Linux ]] || { echo "Linux supervision requires Linux" >&2; exit 2; }
+  linux_supervision=true
+elif [[ "$#" != 0 ]]; then
+  echo "usage: $0 [--linux-supervision]" >&2
+  exit 2
+fi
+if [[ "$linux_supervision" == true ]]; then
+  cargo test -p awaken-local-process --test linux_cgroup \
+    linux_systemd_process_scope_contract -- --ignored --exact
+fi
+
 # Cause/effect matrix: provider={Workdir,sandbox-absolute}, cwd={default,nested},
 # separator={POSIX,Windows}, candidate cwd={equal,different}. Effects: one
 # process/ACP/prompt view; platform-native relative prompt paths; mismatched

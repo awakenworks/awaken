@@ -608,6 +608,25 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, config, mutations,
                               action_properties={"CrashPreservesOSProcesses"})
     print("Local process mutation score: 5/5 killed (spawn, backoff, cancellation, crash, denied signal)")
+    # CG: close cannot pass an admitted launch; a leader-only observation or
+    # empty observation without an accepted stop cannot publish quiescence.
+    scope_config = (ROOT / "formal/tla/LocalProcessScope.cfg").read_text(encoding="utf-8")
+    scope_replacements = [
+        ("/\\ ~scopePermit /\\ scopeClosed' = TRUE", "/\\ scopeClosed' = TRUE",
+         "ScopeCloseExcludesLaunch"),
+        ("/\\ scopeClosed /\\ scopeKillAccepted /\\ ~leaderAlive /\\ ~descendantAlive",
+         "/\\ scopeClosed /\\ scopeKillAccepted /\\ ~leaderAlive", "ScopeReceiptRequiresEmpty"),
+        ("/\\ scopeClosed /\\ scopeKillAccepted /\\ ~leaderAlive /\\ ~descendantAlive",
+         "/\\ scopeClosed /\\ ~leaderAlive /\\ ~descendantAlive", "ScopeReceiptRequiresAcceptedStop"),
+    ]
+    scope_mutations = []
+    for original, replacement, property_name in scope_replacements:
+        if source.count(original) != 1:
+            raise SystemExit(f"Local scope mutation anchor drifted: {property_name}")
+        scope_mutations.append((source.replace(original, replacement), scope_config, property_name))
+    check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, scope_config, scope_mutations,
+                              action_properties={"CrashPreservesOSProcesses"})
+    print("Local scope mutation score: 3/3 killed (launch/close, descendants, accepted stop)")
 
 
 def check_memory_copy_model_mutant(tlc_jar: Path) -> None:

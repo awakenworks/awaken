@@ -600,6 +600,15 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   it after cancellation. This finite Unix lifecycle model is
   linked to the real process tests, not a Rust refinement, unbounded liveness
   proof, process-tree quiescence certificate or Windows Job Object guarantee.
+  The `LocalProcessScope.cfg` configuration reuses this model for one Linux
+  cgroup owner: launch admission excludes close; accepted KILL is not observed
+  emptiness; leader exit cannot substitute for descendant exit; owner crash
+  still preserves OS processes in the model. Three additional mutations must
+  violate the exact admission, subtree-empty and accepted-stop invariants.
+  Membership-before-workload, a single admitted owner and absence of external
+  cgroup migration are explicit assumptions. The real delegated-systemd test
+  exercises descriptor identity/ABA and owner SIGKILL independently; neither
+  model nor test proves production Worker/Session wiring or unbounded liveness.
 - `WorkerReplacement.tla` composes authored route resolution, dispatch-time
   candidate pinning, worker claims, credential materialization, execution and
   settlement with concurrent route change, rotation, revocation, worker crash,
