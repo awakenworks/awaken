@@ -123,6 +123,19 @@ ReplayBatch(key, fingerprint) ==
     /\ batchFingerprint[key] = fingerprint
     /\ UNCHANGED vars
 
+\* Final non-admission occupies the SAME key/fingerprint slot. batchAppends
+\* counts executable acceptance, not the empty root receipt used to close it.
+\* A delayed AppendBatch is disabled after this competing root CAS wins.
+CloseBatch(key, fingerprint) ==
+    /\ key \in Keys
+    /\ fingerprint \in Fingerprints
+    /\ batchFingerprint[key] = None
+    /\ batchFingerprint' = [batchFingerprint EXCEPT ![key] = fingerprint]
+    /\ UNCHANGED <<awaiting, awaitingCommit, completed, receiptCall,
+                    receiptCommit, accepted, rejected, lastAccepted,
+                    lastExpected, lastAcceptedCommit, lastExpectedCommit,
+                    terminal, batchAppends, batchConflicts>>
+
 ConflictBatch(key, fingerprint) ==
     /\ key \in Keys
     /\ fingerprint \in Fingerprints
@@ -152,7 +165,7 @@ Next ==
         Await(call, pendingCommit))
     \/ (\E key \in Keys, fingerprint \in Fingerprints:
         AppendBatch(key, fingerprint) \/ ReplayBatch(key, fingerprint)
-        \/ ConflictBatch(key, fingerprint))
+        \/ ConflictBatch(key, fingerprint) \/ CloseBatch(key, fingerprint))
     \/ End
 
 TypeOK ==
@@ -193,8 +206,12 @@ AwaitingTicketHasNoPriorReceipt ==
 
 TerminalRejectsLateResults == terminal => awaiting = None
 
-BatchKeyExistsExactlyForOneAppend ==
-    \A key \in Keys: (batchFingerprint[key] # None) \equiv (batchAppends[key] = 1)
+AcceptedBatchHasIdentity ==
+    \A key \in Keys: batchAppends[key] = 1 => batchFingerprint[key] # None
+
+BatchIsClosed(key) == batchFingerprint[key] # None /\ batchAppends[key] = 0
+ClosedBatchNeverAppends == \A key \in Keys: [](BatchIsClosed(key) => []BatchIsClosed(key))
+AcceptedBatchNeverCloses == \A key \in Keys: [](batchAppends[key] = 1 => [](batchAppends[key] = 1))
 
 EveryBatchKeyAppendsAtMostOnce ==
     \A key \in Keys: batchAppends[key] <= 1
