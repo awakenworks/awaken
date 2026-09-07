@@ -42,6 +42,49 @@ class EvidenceTests(unittest.TestCase):
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.root, stderr=subprocess.STDOUT)
 
+    def test_kani_build_dir_matches_the_driver_target_directory(self):
+        # Cause/effect graph: C1 an explicit Cargo target directory and C2 a
+        # user-level build.build-dir are both active. E1 run_kani must override
+        # only the Kani subprocess build directory to <target>/kani, because
+        # that is the location the existing Kani driver reads after compiling;
+        # E2 the package, job count, and harness arguments remain unchanged.
+        # Decision table: R1 C1+C2 -> E1+E2. Omitting C2 is not a separate rule:
+        # the same exact path is valid and keeps one invocation owner.
+        source = (self.root / "scripts/ci/check_formal.sh").read_text()
+        body = source.split("  run_kani() {\n", 1)[1].split("\n  }", 1)[0]
+        function = "run_kani() {\n" + body + "\n}"
+        bindir = Path(self.temporary.name) / "kani-bin"
+        bindir.mkdir()
+        cargo = bindir / "cargo"
+        cargo.write_text(
+            '#!/bin/sh\nprintf \'%s\\n%s\\n\' "$CARGO_BUILD_BUILD_DIR" "$*" > "$CALLS"\n'
+        )
+        cargo.chmod(0o755)
+        calls = bindir / "calls"
+        target = Path(self.temporary.name) / "cargo-target"
+        script = (
+            "set -euo pipefail\n"
+            f"CARGO_TARGET_DIR={shlex.quote(str(target))}\n"
+            "kani_jobs=1\n"
+            + function
+            + "\nrun_kani awaken-dispatch --no-default-features --harness exact_claim\n"
+        )
+        result = subprocess.run(
+            ["/bin/bash", "-c", script],
+            env=dict(os.environ, PATH=str(bindir), CALLS=str(calls)),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = calls.read_text().splitlines()
+        self.assertEqual(lines[0], str(target / "kani"))
+        self.assertEqual(
+            lines[1],
+            "kani -p awaken-dispatch --output-format terse -j 1 "
+            "--no-default-features --harness exact_claim",
+        )
+
     def test_pinned_solver_selection_and_strict_missing_tool_policy(self):
         # Z1 installed exact version + proof success => invoke the exact harness.
         # Z2 wrong/unreadable version => fail before proof. Z3 missing solver =>

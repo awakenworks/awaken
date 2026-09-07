@@ -28,6 +28,32 @@ pub enum RecoveryProjectionError {
     Poisoned,
     #[error("recovery snapshot run {actual} does not match claimed run {expected}")]
     WrongRun { expected: String, actual: String },
+    #[error("recovery snapshot thread {actual} does not match claimed thread {expected}")]
+    WrongThread { expected: String, actual: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoverySnapshotAdmission {
+    Exact,
+    WrongRun,
+    WrongThread,
+}
+
+/// Classify the complete logical identity returned for one claim-fenced
+/// recovery read. Run mismatch wins so a response can never be reinterpreted as
+/// another claim merely because its Thread happens to match.
+#[must_use]
+const fn classify_recovery_snapshot_admission(
+    run_matches: bool,
+    thread_matches: bool,
+) -> RecoverySnapshotAdmission {
+    if !run_matches {
+        RecoverySnapshotAdmission::WrongRun
+    } else if !thread_matches {
+        RecoverySnapshotAdmission::WrongThread
+    } else {
+        RecoverySnapshotAdmission::Exact
+    }
 }
 
 /// Non-authoritative committed-read cache for one remote Worker session.
@@ -114,19 +140,29 @@ impl RecoveryProjection {
     pub fn install(
         &self,
         claimed_run_id: &RunId,
+        claimed_thread_id: &ThreadId,
         snapshot: RunRecoverySnapshot,
     ) -> Result<(), RecoveryProjectionError> {
-        if &snapshot.claimed_run_id != claimed_run_id {
-            return Err(RecoveryProjectionError::WrongRun {
+        match classify_recovery_snapshot_admission(
+            &snapshot.claimed_run_id == claimed_run_id,
+            &snapshot.thread_id == claimed_thread_id,
+        ) {
+            RecoverySnapshotAdmission::WrongRun => Err(RecoveryProjectionError::WrongRun {
                 expected: claimed_run_id.0.clone(),
                 actual: snapshot.claimed_run_id.0,
-            });
+            }),
+            RecoverySnapshotAdmission::WrongThread => Err(RecoveryProjectionError::WrongThread {
+                expected: claimed_thread_id.0.clone(),
+                actual: snapshot.thread_id.0,
+            }),
+            RecoverySnapshotAdmission::Exact => {
+                *self
+                    .snapshot
+                    .write()
+                    .map_err(|_| RecoveryProjectionError::Poisoned)? = Some(snapshot);
+                Ok(())
+            }
         }
-        *self
-            .snapshot
-            .write()
-            .map_err(|_| RecoveryProjectionError::Poisoned)? = Some(snapshot);
-        Ok(())
     }
 
     /// Apply an authoritative operation receipt exactly once. A duplicate
@@ -255,6 +291,30 @@ fn apply_to_snapshot(
 #[cfg(kani)]
 mod verification {
     use super::*;
+
+    #[kani::proof]
+    fn recovery_snapshot_admission_requires_exact_claim_identity() {
+        // Causes: C1 returned Run matches the claim; C2 returned Thread matches
+        // the guarded dispatch. Effects: E1 admit the snapshot; E2 reject it as
+        // the wrong Run; E3 reject it as the wrong Thread. Decision rules:
+        // R1=C1+C2=>E1, R2=!C1=>E2, R3=C1+!C2=>E3. These rules are exhaustive
+        // and Run mismatch has stable precedence when both identities differ.
+        let run_matches: bool = kani::any();
+        let thread_matches: bool = kani::any();
+        let admission = classify_recovery_snapshot_admission(run_matches, thread_matches);
+        assert_eq!(
+            admission == RecoverySnapshotAdmission::Exact,
+            run_matches && thread_matches
+        );
+        assert_eq!(
+            admission == RecoverySnapshotAdmission::WrongRun,
+            !run_matches
+        );
+        assert_eq!(
+            admission == RecoverySnapshotAdmission::WrongThread,
+            run_matches && !thread_matches
+        );
+    }
 
     #[kani::proof]
     fn acknowledged_projection_is_exact_monotonic_or_a_noop() {

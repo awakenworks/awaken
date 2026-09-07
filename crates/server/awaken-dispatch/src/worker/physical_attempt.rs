@@ -7,7 +7,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use super::DispatchWorker;
+use super::{ClaimedSnapshotAuthority, DispatchWorker};
 use crate::Error;
 use crate::clock::Clock;
 use crate::dispatch::{
@@ -26,6 +26,7 @@ pub(super) enum PhysicalAttemptOutcome<T, E> {
 
 pub(super) struct PhysicalAttemptRequest<'a> {
     pub claimed: &'a Claimed,
+    pub claimed_snapshot: &'a ClaimedSnapshotAuthority,
     pub context: &'a RuntimeRunContext,
     pub live_input: LiveInput,
     pub recovery_mode: AttemptRecoveryMode,
@@ -55,6 +56,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     {
         let PhysicalAttemptRequest {
             claimed,
+            claimed_snapshot,
             context,
             live_input,
             recovery_mode,
@@ -63,6 +65,13 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // One claimed instruction owns both Run identity and Thread serialization.
         let claim = RunClaim::from(&claimed.lease);
         let thread_id = claimed.request.thread_id();
+        if !claimed_snapshot.admits(&claim, thread_id) {
+            return Err(Error::Execution(
+                awaken_runtime_contract::execution::Error::Execution(
+                    "physical Run attempt does not match its installed claim snapshot".to_string(),
+                ),
+            ));
+        }
         // Cause L1: one Runtime receives the same exact claimed dispatch twice.
         // Cause L2: two different Runtimes own predecessor/successor claims.
         // Effect E1: L1 is serialized here before durable admission, so the

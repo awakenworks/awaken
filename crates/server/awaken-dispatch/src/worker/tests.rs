@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use super::{
-    DispatchWorker, cancellation_uses_tool_interruption, combine_attempt_cancellation,
-    recovered_attempt_disposition, settle_outcome,
+    ClaimedSnapshotAuthority, DispatchWorker, cancellation_uses_tool_interruption,
+    combine_attempt_cancellation, recovered_attempt_disposition, settle_outcome,
 };
 use awaken_agent_contract::agent::awaiting::{
     AwaitTarget, PendingTool, RemoteInputReason, ResumeTicket, ToolAwaitReason,
@@ -72,6 +72,41 @@ async fn attempt_cancellation_combines_claim_and_host_without_a_second_authority
     let (combined, _relay) =
         combine_attempt_cancellation(CancellationToken::new(), Some(&cancelled_host));
     assert!(combined.is_cancelled(), "AC4/E1");
+}
+
+#[test]
+fn claimed_snapshot_authority_admits_only_the_exact_attempt_identity() {
+    // Cause/effect graph: C1 Run matches; C2 Thread matches; C3 epoch matches.
+    // Effect E1 admits the physical attempt only when all causes hold; E2
+    // rejects every mismatch. Decision table R1=111=>E1; R2=000..110=>E2.
+    // The eight masks exercise the production equality projection rather than
+    // only the Boolean Kani reducer.
+    let claim = RunClaim {
+        run_id: RunId("claimed-run".into()),
+        owner: "worker".into(),
+        epoch: 7,
+    };
+    let thread_id = ThreadId("claimed-thread".into());
+    let authority = ClaimedSnapshotAuthority::installed(&claim, &thread_id);
+
+    for mismatch_mask in 0..8 {
+        let mut candidate = claim.clone();
+        let mut candidate_thread = thread_id.clone();
+        if mismatch_mask & 1 != 0 {
+            candidate.run_id = RunId("other-run".into());
+        }
+        if mismatch_mask & 2 != 0 {
+            candidate_thread = ThreadId("other-thread".into());
+        }
+        if mismatch_mask & 4 != 0 {
+            candidate.epoch += 1;
+        }
+        assert_eq!(
+            authority.admits(&candidate, &candidate_thread),
+            mismatch_mask == 0,
+            "R1-R2 mask={mismatch_mask}"
+        );
+    }
 }
 
 // Behavior 1: an illegal `Running` executor result fails loudly — the worker
@@ -394,13 +429,14 @@ fn remote_projection_is_the_single_awaiting_resume_reader() {
     projection
         .install(
             &run_id,
+            &thread_id,
             RunRecoverySnapshot {
                 commit_timestamps: Default::default(),
                 thread_id: thread_id.clone(),
                 claimed_run_id: run_id.clone(),
                 runs: vec![RunRecord {
                     id: run_id.clone(),
-                    thread_id,
+                    thread_id: thread_id.clone(),
                     state: RunState::Awaiting,
                 }],
                 latest_run_id: Some(run_id.clone()),
@@ -593,6 +629,7 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
     projection
         .install(
             &child_run,
+            &child_thread,
             RunRecoverySnapshot {
                 commit_timestamps: Default::default(),
                 thread_id: child_thread.clone(),
