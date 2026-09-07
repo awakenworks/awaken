@@ -95,6 +95,13 @@ export function startCalcFixture(token, options = {}) {
   const state = { unauthorized: 0 };
 
   const server = http.createServer((req, res) => {
+    // HEAD is a bounded network probe, not the transport's long-lived GET
+    // stream. No JSON-RPC call, grant or token receipt is produced.
+    if (req.method === 'HEAD') {
+      res.writeHead(405, {Allow:'GET, POST'});
+      res.end();
+      return;
+    }
     // --- the OAuth token endpoint: no bearer required (public client) ---
     if (req.url === '/token') {
       if (req.method !== 'POST') {

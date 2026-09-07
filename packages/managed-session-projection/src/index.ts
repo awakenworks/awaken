@@ -342,8 +342,8 @@ export function managedSessionStatusPresentation(
 /**
  * Conservative status presentation for a detail view that has both sources.
  * Terminal facts win; active work from either source wins over a stale idle
- * peer; an Event idle/error can never impersonate a known aggregate active or
- * unavailable state.
+ * peer. A current committed error remains visible even while the aggregate
+ * retains physical work; presentation never authorizes input or cleanup.
  */
 export function managedSessionPresentationPhase(
   runtime: ManagedSessionRuntimeProjection,
@@ -351,9 +351,10 @@ export function managedSessionPresentationPhase(
 ): ManagedSessionRuntimePhase {
   if (runtime.phase === "deleted" || runtime.phase === "terminated") return runtime.phase;
   if (aggregateStatus === "terminated") return "terminated";
+  if (runtime.phase === "error") return "error";
   if (runtime.phase === "running" || runtime.phase === "rescheduling") return runtime.phase;
   if (aggregateStatus === "running" || aggregateStatus === "rescheduling") return aggregateStatus;
-  if (aggregateStatus === "idle") return runtime.phase === "error" ? "error" : "idle";
+  if (aggregateStatus === "idle") return "idle";
   return "unknown";
 }
 
