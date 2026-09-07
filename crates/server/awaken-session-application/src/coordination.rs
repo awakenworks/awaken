@@ -480,6 +480,26 @@ impl SessionAgentCoordination for SessionApplication {
                 "model-request admission does not identify the latest live Run",
             ));
         }
+        // Runtime commits its input before entering this gate. Wake the sole
+        // recovery owner while inference is still running, rather than waiting
+        // for the completion observer or its scheduled recovery scan. An
+        // already anchored input needs no further publication wakeups here.
+        if thread_id.0 == session_id
+            && session.event_batches.iter().any(|batch| {
+                batch.events.iter().any(|entry| {
+                    !entry.processed
+                        && entry.projection_anchor.is_none()
+                        && matches!(
+                            &entry.event,
+                            awaken_session_contract::SessionEventCommand::UserMessage {
+                                run_id: pending_run, ..
+                            } if pending_run == run_id
+                        )
+                })
+            })
+        {
+            self.wake_lifecycle_supervisor();
+        }
         let usage = self
             .session_usage_for_model_request(session_id, &thread_id.0)
             .await?;
