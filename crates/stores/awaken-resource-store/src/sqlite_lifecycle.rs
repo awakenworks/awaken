@@ -9,9 +9,10 @@ use awaken_resource_contract::{
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::{
-    SqliteResourceStore, decode_intent, encode_intent, kind_name, parse_reference_kind,
-    prepare_replacement, reference_kind_name, reference_params, replacement_coordinates,
-    status_name, storage, to_i64, validate_fence_request, validate_reference,
+    ReclamationAcquisitionPlan, SqliteResourceStore, decode_intent, encode_intent, kind_name,
+    parse_reference_kind, plan_reclamation_acquisition, prepare_replacement, reference_kind_name,
+    reference_params, replacement_coordinates, status_name, storage, to_i64,
+    validate_fence_request, validate_reference,
 };
 
 #[async_trait]
@@ -38,17 +39,14 @@ impl ResourceReclamationFence for SqliteResourceStore {
                 )
                 .optional()
                 .map_err(|error| storage(error.to_string()))?;
-            if let Some(owner) = existing {
-                return Ok(if owner == intent_id {
-                    AcquireResourceReclamationOutcome::AlreadyOwned
-                } else {
-                    AcquireResourceReclamationOutcome::Contended
-                });
-            }
-            let blockers =
-                sqlite_references_for_identity(&transaction, target.kind, &target.resource_id)?;
-            if !blockers.is_empty() {
-                return Ok(AcquireResourceReclamationOutcome::Blocked(blockers));
+            let blockers = if existing.is_none() {
+                sqlite_references_for_identity(&transaction, target.kind, &target.resource_id)?
+            } else {
+                Vec::new()
+            };
+            match plan_reclamation_acquisition(existing.as_deref(), &intent_id, blockers) {
+                ReclamationAcquisitionPlan::Return(outcome) => return Ok(outcome),
+                ReclamationAcquisitionPlan::InstallFence => {}
             }
             transaction
                 .execute(

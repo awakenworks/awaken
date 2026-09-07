@@ -19,9 +19,10 @@ use tokio::runtime::Handle;
 
 use crate::schema::{NS, REGISTRY_NS, resource_reclamation_bundle, resource_registry_bundle};
 use crate::{
-    decode_intent, encode_intent, kind_name, parse_reference_kind, prepare_replacement,
-    reference_kind_name, replacement_coordinates, status_name, storage, to_i64,
-    validate_fence_request, validate_reference,
+    ReclamationAcquisitionPlan, decode_intent, encode_intent, kind_name, parse_reference_kind,
+    plan_reclamation_acquisition, prepare_replacement, reference_kind_name,
+    replacement_coordinates, status_name, storage, to_i64, validate_fence_request,
+    validate_reference,
 };
 
 /// Multi-node durable resource lifecycle state.
@@ -196,17 +197,15 @@ impl ResourceReclamationFence for PostgresResourceStore {
             .await
             .map_err(|error| storage(error.to_string()))?;
         lock_identity(&mut transaction, target.kind, &target.resource_id).await?;
-        if let Some(owner) = fence_owner(&mut transaction, target).await? {
-            return Ok(if owner == intent_id {
-                AcquireResourceReclamationOutcome::AlreadyOwned
-            } else {
-                AcquireResourceReclamationOutcome::Contended
-            });
-        }
-        let blockers =
-            references_for_identity(&mut transaction, target.kind, &target.resource_id).await?;
-        if !blockers.is_empty() {
-            return Ok(AcquireResourceReclamationOutcome::Blocked(blockers));
+        let existing = fence_owner(&mut transaction, target).await?;
+        let blockers = if existing.is_none() {
+            references_for_identity(&mut transaction, target.kind, &target.resource_id).await?
+        } else {
+            Vec::new()
+        };
+        match plan_reclamation_acquisition(existing.as_deref(), intent_id, blockers) {
+            ReclamationAcquisitionPlan::Return(outcome) => return Ok(outcome),
+            ReclamationAcquisitionPlan::InstallFence => {}
         }
         sqlx::query(&format!(
             "INSERT INTO {NS}_reclamation_fences

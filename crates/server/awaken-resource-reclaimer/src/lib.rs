@@ -23,6 +23,22 @@ pub struct ReconcileSummary {
     pub conflicts: usize,
 }
 
+/// Final, production-used admission boundary immediately before irreversible
+/// physical cleanup. Storage establishes the fence/reference facts; the second
+/// guard read covers independently owned lifecycle, Session and live-handle
+/// sources. Failure or uncertainty in any input denies the purge.
+const fn physical_purge_is_admitted(
+    reclamation_fence_is_owned: bool,
+    indexed_references_are_clear: bool,
+    final_guard_read_succeeded: bool,
+    final_guard_has_no_blockers: bool,
+) -> bool {
+    reclamation_fence_is_owned
+        && indexed_references_are_clear
+        && final_guard_read_succeeded
+        && final_guard_has_no_blockers
+}
+
 /// Durable, crash-recoverable coordinator for physical resource cleanup.
 pub struct ResourceReclaimer {
     owner: String,
@@ -150,9 +166,9 @@ impl ResourceReclaimer {
                     continue;
                 }
             };
-            match acquisition {
+            let (reclamation_fence_is_owned, indexed_references_are_clear) = match acquisition {
                 AcquireResourceReclamationOutcome::Acquired
-                | AcquireResourceReclamationOutcome::AlreadyOwned => {}
+                | AcquireResourceReclamationOutcome::AlreadyOwned => (true, true),
                 AcquireResourceReclamationOutcome::Blocked(records) => {
                     let claimed_revision = intent.revision;
                     intent.defer(
@@ -177,7 +193,7 @@ impl ResourceReclaimer {
                     summary.conflicts += 1;
                     continue;
                 }
-            }
+            };
 
             // Close the interval between the first guard scan and durable fence
             // acquisition. Writers represented by the reference index now fail
@@ -196,31 +212,58 @@ impl ResourceReclaimer {
                     }
                 }
             }
-            if let Some(error) = guard_error {
-                let release_error = self
-                    .repository
-                    .release_reclamation(&intent.intent_id, &intent.target)
-                    .await
-                    .err();
-                let claimed_revision = intent.revision;
-                intent.retry(
-                    &self.owner,
-                    generation,
-                    now_unix_ms,
-                    combine_errors(error, release_error),
-                )?;
-                self.repository.save(claimed_revision, intent).await?;
-                summary.retryable_failures += 1;
-                continue;
-            }
-            if !blockers.is_empty() {
-                self.repository
-                    .release_reclamation(&intent.intent_id, &intent.target)
-                    .await?;
-                let claimed_revision = intent.revision;
-                intent.defer(&self.owner, generation, now_unix_ms, blockers)?;
-                self.repository.save(claimed_revision, intent).await?;
-                summary.deferred += 1;
+            let final_guard_read_succeeded = guard_error.is_none();
+            let final_guard_has_no_blockers = blockers.is_empty();
+            if !physical_purge_is_admitted(
+                reclamation_fence_is_owned,
+                indexed_references_are_clear,
+                final_guard_read_succeeded,
+                final_guard_has_no_blockers,
+            ) {
+                if let Some(error) = guard_error {
+                    let release_error = self
+                        .repository
+                        .release_reclamation(&intent.intent_id, &intent.target)
+                        .await
+                        .err();
+                    let claimed_revision = intent.revision;
+                    intent.retry(
+                        &self.owner,
+                        generation,
+                        now_unix_ms,
+                        combine_errors(error, release_error),
+                    )?;
+                    self.repository.save(claimed_revision, intent).await?;
+                    summary.retryable_failures += 1;
+                } else if !blockers.is_empty() {
+                    self.repository
+                        .release_reclamation(&intent.intent_id, &intent.target)
+                        .await?;
+                    let claimed_revision = intent.revision;
+                    intent.defer(&self.owner, generation, now_unix_ms, blockers)?;
+                    self.repository.save(claimed_revision, intent).await?;
+                    summary.deferred += 1;
+                } else {
+                    let release_error = self
+                        .repository
+                        .release_reclamation(&intent.intent_id, &intent.target)
+                        .await
+                        .err();
+                    let claimed_revision = intent.revision;
+                    intent.retry(
+                        &self.owner,
+                        generation,
+                        now_unix_ms,
+                        combine_errors(
+                            ResourcePurgeError::Invalid(
+                                "physical purge admission facts are incomplete".into(),
+                            ),
+                            release_error,
+                        ),
+                    )?;
+                    self.repository.save(claimed_revision, intent).await?;
+                    summary.retryable_failures += 1;
+                }
                 continue;
             }
 
@@ -298,6 +341,29 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn physical_purge_admission_requires_every_safety_fact() {
+        // Causes: C1 this intent owns the durable reclamation fence; C2 the
+        // atomic indexed-reference scan was clear; C3 the final independent
+        // guard read succeeded; C4 that read found no lifecycle, Session,
+        // runtime-handle or extraction blocker. Effect E1 permits physical
+        // cleanup; E2 denies it. Constraint: every fact is conjunctive.
+        // Decision table: R1=1111=>E1; R2=0xxx=>E2; R3=10xx=>E2;
+        // R4=110x=>E2; R5=1110=>E2.
+        for (fence, references, guard_read, guard_clear, expected) in [
+            (true, true, true, true, true),
+            (false, true, true, true, false),
+            (true, false, true, true, false),
+            (true, true, false, true, false),
+            (true, true, true, false, false),
+        ] {
+            assert_eq!(
+                physical_purge_is_admitted(fence, references, guard_read, guard_clear),
+                expected
+            );
+        }
+    }
 
     #[derive(Default)]
     struct MemoryRepository {
@@ -752,5 +818,38 @@ mod tests {
             .store(false, Ordering::SeqCst);
         assert_eq!(service.reconcile(111, 1).await.unwrap().completed, 1, "F5");
         assert_eq!(*physical.0.lock().unwrap(), 2, "F5 idempotent replay");
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn physical_purge_requires_zero_references_leases_and_fence() {
+    // Symbolic form of the final production admission table. Kani covers every
+    // combination and proves that a missing fence, indexed reference, failed
+    // guard read, or live guard-reported lease/reference always denies purge.
+    let reclamation_fence_is_owned = kani::any::<bool>();
+    let indexed_references_are_clear = kani::any::<bool>();
+    let final_guard_read_succeeded = kani::any::<bool>();
+    let final_guard_has_no_blockers = kani::any::<bool>();
+    let admitted = physical_purge_is_admitted(
+        reclamation_fence_is_owned,
+        indexed_references_are_clear,
+        final_guard_read_succeeded,
+        final_guard_has_no_blockers,
+    );
+
+    assert_eq!(
+        admitted,
+        reclamation_fence_is_owned
+            && indexed_references_are_clear
+            && final_guard_read_succeeded
+            && final_guard_has_no_blockers
+    );
+    if !reclamation_fence_is_owned
+        || !indexed_references_are_clear
+        || !final_guard_read_succeeded
+        || !final_guard_has_no_blockers
+    {
+        assert!(!admitted);
     }
 }
