@@ -9429,8 +9429,9 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
         &awaken_session_contract::SessionTerminalCleanupAssignment {
             session_id: session_id.into(),
             projection: terminal_projection.clone(),
-            lease: lease.clone(),
+            authority: crate::session_slot::test_lease_receipt(lease.clone()),
         },
+        crate::session_slot::test_observed_lease(lease.clone()),
     )
     .await
     .expect("P1 install the aggregate-fenced publication assignment");
@@ -9516,7 +9517,7 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
         awaken_session_contract::SessionTerminalCleanupAssignment {
             session_id: session_id.into(),
             projection: terminal_projection,
-            lease: lease.clone(),
+            authority: crate::session_slot::test_lease_receipt(lease.clone()),
         },
     );
     *control.session.lock().unwrap() = Some(control_session);
@@ -11924,22 +11925,23 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
 /// | A8 | yes | yes | no OR C4=no | any | E2 |
 #[test]
 fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_renewal() {
+    let base = crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000;
     let generation = awaken_session_contract::McpGenerationRef {
         session_id: "mcp-effect-authority".into(),
         attachment_id: awaken_session_contract::McpAttachmentId("browser".into()),
         generation: awaken_session_contract::McpGeneration(1),
         runtime_incarnation: "runtime-a/boot-1".into(),
         lease_epoch: 3,
-        lease_expires_at_unix_ms: 101,
+        lease_expires_at_unix_ms: base + 101,
     };
     let live = SharedHost::new(Arc::new(OkModel), "stub");
     assert!(
-        live.mcp_generation_is_authorized_at(&generation, 100),
+        live.mcp_generation_is_authorized_at(&generation, base + 100),
         "A1/E1"
     );
 
     let mut expired = generation.clone();
-    expired.lease_expires_at_unix_ms = 90;
+    expired.lease_expires_at_unix_ms = base + 90;
     for (rule, lease, expected) in [
         (
             "A2",
@@ -11947,7 +11949,7 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
                 owner: "worker-a".into(),
                 runtime_incarnation: "runtime-a/boot-1".into(),
                 epoch: 3,
-                expires_at_unix_ms: 110,
+                expires_at_unix_ms: base + 110,
             }),
             true,
         ),
@@ -11957,7 +11959,7 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
                 owner: "worker-a".into(),
                 runtime_incarnation: "runtime-b/boot-1".into(),
                 epoch: 3,
-                expires_at_unix_ms: 110,
+                expires_at_unix_ms: base + 110,
             }),
             false,
         ),
@@ -11967,7 +11969,7 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
                 owner: "worker-a".into(),
                 runtime_incarnation: "runtime-a/boot-1".into(),
                 epoch: 3,
-                expires_at_unix_ms: 80,
+                expires_at_unix_ms: base + 80,
             }),
             false,
         ),
@@ -11977,7 +11979,7 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
                 owner: "worker-a".into(),
                 runtime_incarnation: "runtime-a/boot-1".into(),
                 epoch: 3,
-                expires_at_unix_ms: 100,
+                expires_at_unix_ms: base + 100,
             }),
             false,
         ),
@@ -11986,17 +11988,26 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
         let host = SharedHost::new(Arc::new(OkModel), "stub");
         let has_root = lease.is_some();
         if let Some(lease) = lease {
-            host.install_session_realization_lease(&expired.session_id, lease)
-                .unwrap();
+            // A4/A5 keep exact generation bytes but carry exhausted local
+            // observations. Managed root admission must not use Worker wall time.
+            let proof = if matches!(rule, "A4" | "A5") {
+                crate::session_slot::test_expired_observed_lease(lease)
+            } else {
+                crate::session_slot::test_observed_lease(lease)
+            };
+            host.session_slots.update(&expired.session_id, |slot| {
+                slot.realization_authority =
+                    crate::session_slot::SessionRealizationAuthority::Live(proof);
+            });
         }
         assert_eq!(
-            host.mcp_generation_is_authorized_at(&expired, 100),
+            host.mcp_generation_is_authorized_at(&expired, base + 100),
             expected,
             "{rule}"
         );
         if has_root {
             assert_eq!(
-                host.mcp_generation_is_authorized_at(&generation, 100),
+                host.mcp_generation_is_authorized_at(&generation, base + 100),
                 expected,
                 "A7/A8 {rule}: a future assertion cannot override the root"
             );
@@ -17938,8 +17949,9 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
     )
     .expect("HS1 project the exact durable source binding");
     host.session_slots.update(thread, |slot| {
-        slot.realization_authority =
-            crate::session_slot::SessionRealizationAuthority::Live(lease.clone());
+        slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+            crate::session_slot::test_observed_lease(lease.clone()),
+        );
     });
     let generation = awaken_session_contract::SandboxGeneration::new(
         thread,
@@ -18355,8 +18367,9 @@ fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
     );
 
     host.session_slots.update(session_id, |slot| {
-        slot.realization_authority =
-            crate::session_slot::SessionRealizationAuthority::Live(renewed_lease.clone());
+        slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+            crate::session_slot::test_observed_lease(renewed_lease.clone()),
+        );
     });
     assert_eq!(
         host.terminal_cleanup_effect_fence(&effect)
@@ -18375,8 +18388,9 @@ fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
     );
 
     host.session_slots.update(session_id, |slot| {
-        slot.realization_authority =
-            crate::session_slot::SessionRealizationAuthority::Live(expired_lease.clone());
+        slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+            crate::session_slot::test_expired_observed_lease(expired_lease.clone()),
+        );
     });
     assert!(
         host.terminal_cleanup_effect_fence(&effect).is_err(),
@@ -18394,8 +18408,9 @@ fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
         ..expired_lease
     };
     host.session_slots.update(session_id, |slot| {
-        slot.realization_authority =
-            crate::session_slot::SessionRealizationAuthority::Live(successor);
+        slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+            crate::session_slot::test_observed_lease(successor),
+        );
     });
     assert!(
         host.terminal_cleanup_effect_fence(&effect).is_err(),
@@ -18518,11 +18533,11 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         checkpoint: None,
         source_release_preparation: None,
     };
-    host.install_terminal_cleanup_projection(
+    host.install_test_terminal_cleanup_projection(
         &awaken_session_contract::SessionTerminalCleanupAssignment {
             session_id: thread.into(),
             projection: projection.clone(),
-            lease: lease.clone(),
+            authority: crate::session_slot::test_lease_receipt(lease.clone()),
         },
     )
     .await
@@ -18650,11 +18665,11 @@ async fn install_terminal_recovery_projection(
     .await
     .expect("install frozen terminal recovery projection");
     projection.environment = environment;
-    host.install_terminal_cleanup_projection(
+    host.install_test_terminal_cleanup_projection(
         &awaken_session_contract::SessionTerminalCleanupAssignment {
             session_id: thread.into(),
             projection: projection.clone(),
-            lease,
+            authority: crate::session_slot::test_lease_receipt(lease),
         },
     )
     .await
@@ -18950,11 +18965,11 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
     let (disposing_environment, source_preparation, source_preparation_receipt) =
         disposing_terminal_environment(thread, &lease, &handle, checkpoint_id);
     projection.environment = disposing_environment;
-    host.install_terminal_cleanup_projection(
+    host.install_test_terminal_cleanup_projection(
         &awaken_session_contract::SessionTerminalCleanupAssignment {
             session_id: thread.into(),
             projection: projection.clone(),
-            lease: lease.clone(),
+            authority: crate::session_slot::test_lease_receipt(lease.clone()),
         },
     )
     .await
@@ -19067,11 +19082,11 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
         idle_since_unix_ms: None,
     };
     let (lease, effect) = terminal_recovery_effect(thread, "unavailable-memory-worker");
-    host.install_terminal_cleanup_projection(
+    host.install_test_terminal_cleanup_projection(
         &awaken_session_contract::SessionTerminalCleanupAssignment {
             session_id: thread.into(),
             projection: projection.clone(),
-            lease,
+            authority: crate::session_slot::test_lease_receipt(lease),
         },
     )
     .await
@@ -19141,11 +19156,11 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
     .await
     .expect("HM0b install frozen writable Memory input");
     let (lease, effect) = terminal_recovery_effect(thread, "legacy-memory-worker");
-    host.install_terminal_cleanup_projection(
+    host.install_test_terminal_cleanup_projection(
         &awaken_session_contract::SessionTerminalCleanupAssignment {
             session_id: thread.into(),
             projection: projection.clone(),
-            lease,
+            authority: crate::session_slot::test_lease_receipt(lease),
         },
     )
     .await
@@ -19280,11 +19295,11 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             idle_since_unix_ms: None,
         };
         let (lease, effect) = terminal_recovery_effect(&thread, "terminal-memory-worker");
-        host.install_terminal_cleanup_projection(
+        host.install_test_terminal_cleanup_projection(
             &awaken_session_contract::SessionTerminalCleanupAssignment {
                 session_id: thread.clone(),
                 projection: projection.clone(),
-                lease: lease.clone(),
+                authority: crate::session_slot::test_lease_receipt(lease.clone()),
             },
         )
         .await
@@ -19535,11 +19550,11 @@ async fn exact_terminal_cleanup_disposes_the_threads_sandbox() {
         .command_for("t-end", "t-end")
         .expect("T1 exact root command");
     terminal_projection.environment = environment_state;
-    host.install_terminal_cleanup_projection(
+    host.install_test_terminal_cleanup_projection(
         &awaken_session_contract::SessionTerminalCleanupAssignment {
             session_id: "t-end".into(),
             projection: terminal_projection.clone(),
-            lease: lease.clone(),
+            authority: crate::session_slot::test_lease_receipt(lease.clone()),
         },
     )
     .await
@@ -19847,11 +19862,11 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         epoch: 7,
         expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
     };
-    host.install_terminal_cleanup_projection(
+    host.install_test_terminal_cleanup_projection(
         &awaken_session_contract::SessionTerminalCleanupAssignment {
             session_id: session_id.into(),
             projection: remote_terminal_cleanup_projection(),
-            lease: lease.clone(),
+            authority: crate::session_slot::test_lease_receipt(lease.clone()),
         },
     )
     .await
@@ -20230,7 +20245,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
         &self,
         command: awaken_session_contract::RenewSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationLease,
+        awaken_session_contract::SessionRealizationLeaseReceipt,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
         use std::sync::atomic::Ordering;
@@ -20271,7 +20286,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
                     Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership)
                 } else {
                     current.expires_at_unix_ms = command.requested_expires_at_unix_ms;
-                    Ok(current.clone())
+                    Ok(crate::session_slot::test_lease_receipt(current.clone()))
                 }
             })
             };
@@ -20316,7 +20331,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
         }
         session.realization = Some(renewed.clone());
         *self.authority.lock().unwrap() = Some((projection, renewed.clone()));
-        Ok(renewed)
+        Ok(crate::session_slot::test_lease_receipt(renewed))
     }
 
     async fn activate_session_realization(
@@ -20356,8 +20371,10 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
         self.claim_targets.lock().unwrap().push(target);
         let assignment = self.assignments.lock().unwrap().pop_front();
         if let Some(assignment) = &assignment {
-            *self.authority.lock().unwrap() =
-                Some((assignment.projection.clone(), assignment.lease.clone()));
+            *self.authority.lock().unwrap() = Some((
+                assignment.projection.clone(),
+                assignment.authority.lease.clone(),
+            ));
         }
         Ok(assignment)
     }
@@ -20474,7 +20491,7 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
             assignment: awaken_session_contract::SessionTerminalCleanupAssignment {
                 session_id: session_id.into(),
                 projection,
-                lease: current,
+                authority: crate::session_slot::test_lease_receipt(current),
             },
             action,
         }))
@@ -20817,6 +20834,7 @@ async fn large_session_reconciliation_is_earliest_deadline_first_and_bounded() {
      * | L2 | 64 | released | 8 | E4 + E5 |
      */
     const SESSION_COUNT: usize = 64;
+    let authority_now = crate::terminal_repository_publication::runtime_unix_now_ms();
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
     *control.renewal_gate.lock().unwrap() = Some(gate.clone());
@@ -20832,7 +20850,7 @@ async fn large_session_reconciliation_is_earliest_deadline_first_and_bounded() {
                 owner: "worker-a".into(),
                 runtime_incarnation: "worker-a:incarnation".into(),
                 epoch: 1,
-                expires_at_unix_ms: 50_000 + index as u64,
+                expires_at_unix_ms: authority_now + 5_000 + index as u64 * 10,
             },
         );
     }
@@ -20841,7 +20859,6 @@ async fn large_session_reconciliation_is_earliest_deadline_first_and_bounded() {
     let reconciliation = tokio::spawn(async move {
         running_host
             .renew_due_session_realizations(
-                50_000,
                 awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(15_000),
             )
             .await
@@ -20926,13 +20943,14 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
      * latency claim; live HTTP/PostgreSQL latency remains a deployment
      * measurement.
      *
-     * | Rule | sweep time | renewal due | Sessions | Effect |
+     * | Rule | local monotonic observation | renewal due | Sessions | Effect |
      * |---|---:|---|---:|---|
-     * | S1 | 0, 1000, 5000 | no | 512 | E1 |
-     * | S2 | 100000 | yes | 512 | E2 + E3 |
-     * | S3 | 100001 | no after S2 | 512 | E4 |
+     * | S1 | three immediate sweeps | no | 512 | E1 |
+     * | S2 | 11s elapsed from a 20s proof | yes | 512 | E2 + E3 |
+     * | S3 | immediately after renewal | no after S2 | 512 | E4 |
      */
     const SESSION_COUNT: usize = 512;
+    let authority_now = crate::terminal_repository_publication::runtime_unix_now_ms();
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let host = SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone());
     for index in 0..SESSION_COUNT {
@@ -20945,15 +20963,15 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
                 owner: "worker-a".into(),
                 runtime_incarnation: "worker-a:incarnation".into(),
                 epoch: 1,
-                expires_at_unix_ms: 100_000 + index as u64,
+                expires_at_unix_ms: authority_now + 30_000 + index as u64,
             },
         );
     }
     let timing =
-        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(15_000);
-    for now_unix_ms in [0, 1_000, 5_000] {
+        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000);
+    for _ in 0..3 {
         assert_eq!(
-            host.renew_due_session_realizations(now_unix_ms, timing)
+            host.renew_due_session_realizations(timing)
                 .await
                 .expect("S1 repeated non-due scale sweep succeeds"),
             0,
@@ -20977,10 +20995,14 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
         );
     }
 
+    // Exercise actual proof-clock progression; a synthetic Worker wall-clock
+    // argument no longer selects due state. This leaves about 9s of proof for
+    // the bounded 3s batch and does not alter any durable fence locally.
+    tokio::time::sleep(std::time::Duration::from_secs(11)).await;
     assert_eq!(
         tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            host.renew_due_session_realizations(100_000, timing),
+            host.renew_due_session_realizations(timing),
         )
         .await
         .expect("S2/E3 scale scan remains bounded")
@@ -21001,7 +21023,7 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
     assert_eq!(control.renewals_active.load(Ordering::SeqCst), 0, "S2/E3");
 
     assert_eq!(
-        host.renew_due_session_realizations(100_001, timing)
+        host.renew_due_session_realizations(timing)
             .await
             .expect("S3 post-renewal non-due sweep succeeds"),
         0,
@@ -21224,33 +21246,37 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
      * | F2 | timeout/Unavailable | expired | E2 |
      * Both outcomes must finish within the test deadline: revocation owns the
      * lifecycle lock, so its interruption read must not re-enter that lock.
-     * The transport clock is paused; the scheduler receives a synthetic due
-     * observation. MAX/1 keep actual wall-clock authority in the two intended
-     * partitions even on a loaded host. A 150ms real lease previously allowed
-     * scheduling delay to turn F1 into F2, testing a different cause combination.
+     * Tokio transport deadlines are paused, independently from the platform
+     * proof clock. F1 has 90s of real authority and is due under the 300s
+     * cadence. F2 explicitly installs already-exhausted observed evidence.
+     * No synthetic Worker wall-clock or short real lease selects these rows.
      */
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     *control.renewal_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
     let host = SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone());
-    let now = u64::MAX - 150;
-    for (session_id, expires_at_unix_ms) in [("renewal-live", u64::MAX), ("renewal-expired", 1)] {
-        host.install_session_realization_lease(
-            session_id,
-            awaken_session_contract::SessionRealizationLease {
-                owner: "worker-a".into(),
-                runtime_incarnation: "worker-a:incarnation".into(),
-                epoch: 1,
-                expires_at_unix_ms,
-            },
-        )
-        .unwrap();
+    let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+    for (session_id, expired) in [("renewal-live", false), ("renewal-expired", true)] {
+        let lease = awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a:incarnation".into(),
+            epoch: 1,
+            expires_at_unix_ms: now + 90_000,
+        };
+        let proof = if expired {
+            crate::session_slot::test_expired_observed_lease(lease)
+        } else {
+            crate::session_slot::test_observed_lease(lease)
+        };
+        host.session_slots.update(session_id, |slot| {
+            slot.realization_authority =
+                crate::session_slot::SessionRealizationAuthority::Live(proof);
+        });
     }
 
     tokio::time::timeout(
-        std::time::Duration::from_secs(2),
+        std::time::Duration::from_secs(120),
         host.renew_due_session_realizations(
-            now,
-            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(300),
+            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(300_000),
         ),
     )
     .await
@@ -21289,8 +21315,7 @@ async fn stale_ownership_revokes_even_when_the_old_deadline_is_still_live() {
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
             host.renew_due_session_realizations(
-                now,
-                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(10_000),
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(15_000),
             )
         )
         .await
@@ -21302,20 +21327,22 @@ async fn stale_ownership_revokes_even_when_the_old_deadline_is_still_live() {
     assert!(!host.session_slots.contains("renewal-stale"), "F3");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(start_paused = true)]
 async fn per_request_deadlines_release_every_renewal_capacity_slot() {
     use std::sync::atomic::Ordering;
 
     /* Deadline/capacity cause-effect table: C1 sixteen due lease renewals never
      * answer; C2 the renewal cap is eight; C3 the
-     * authority timing yields a 10ms per-request deadline; C4 all old leases
+     * authority timing yields a 50s virtual per-request deadline; C4 all old leases
      * remain live. Effects: E1 the first eight enter, time out, and release
      * their slots; E2 the second eight then enter; E3 no cancelled future leaks
      * an active slot; E4 all local projections remain for retry.
      *
      * | Rule | renewals | response | deadline/cap | Effect |
      * |---|---:|---|---|---|
-     * | D1 | 16 | never | 10ms / 8 | E1 + E2 + E3 + E4 |
+     * | D1 | 16 | never | 50s virtual / 8 | E1 + E2 + E3 + E4 |
+     * Tokio auto-advances the two timeout waves; the real 90s proof horizon
+     * remains live. The test does not equate scheduling time and OS elapsed time.
      */
     const SESSION_COUNT: usize = 16;
     let control = Arc::new(RemoteTerminalCleanupControl::default());
@@ -21329,21 +21356,20 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
                 owner: "worker-a".into(),
                 runtime_incarnation: "worker-a:incarnation".into(),
                 epoch: 1,
-                expires_at_unix_ms: now.saturating_add(35),
+                expires_at_unix_ms: now.saturating_add(90_000),
             },
         )
         .unwrap();
     }
 
     tokio::time::timeout(
-        std::time::Duration::from_secs(1),
+        std::time::Duration::from_secs(120),
         host.renew_due_session_realizations(
-            now,
-            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(60),
+            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(300_000),
         ),
     )
     .await
-    .expect("D1 the batch cannot inherit the transport's 30s timeout")
+    .expect("D1 the batch finishes within two bounded virtual timeout waves")
     .expect_err("D1 each live Session retains a retry diagnostic");
     assert_eq!(
         control.renewal_sessions.lock().unwrap().len(),
@@ -21422,12 +21448,24 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
                 now + 1_000
             },
         };
-        install_test_renewal_authority(&host, &control, rule, old.clone());
+        if expired {
+            host.session_slots.update(rule, |slot| {
+                slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+                    crate::session_slot::test_expired_observed_lease(old.clone()),
+                );
+            });
+            control
+                .renewals
+                .lock()
+                .unwrap()
+                .insert(rule.into(), old.clone());
+        } else {
+            install_test_renewal_authority(&host, &control, rule, old.clone());
+        }
         let task_host = host.clone();
         let renewal = tokio::spawn(async move {
             task_host
                 .renew_due_session_realizations(
-                    now,
                     awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
                         60_000,
                     ),
@@ -21603,7 +21641,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     let assignment = awaken_session_contract::SessionTerminalCleanupAssignment {
         session_id: "remote-terminal-worker".into(),
         projection: projection.clone(),
-        lease: lease.clone(),
+        authority: crate::session_slot::test_lease_receipt(lease.clone()),
     };
     control
         .assignments
@@ -21701,7 +21739,9 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
     let expiring_unix_ms = now_unix_ms.saturating_add(5_000);
-    let requested_expiry_unix_ms = now_unix_ms.saturating_add(30_000);
+    // Renewal extends the asserted Control coordinate by one renewal interval;
+    // the Worker never supplies its own wall-clock epoch.
+    let requested_expiry_unix_ms = expiring_unix_ms + 10_000;
 
     let ordinary_id = "renewal-beside-terminal";
     let ordinary_projection = remote_terminal_cleanup_projection();
@@ -21739,7 +21779,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         awaken_session_contract::SessionTerminalCleanupAssignment {
             session_id: terminal_id.into(),
             projection: terminal_projection.clone(),
-            lease: terminal_lease.clone(),
+            authority: crate::session_slot::test_lease_receipt(terminal_lease.clone()),
         },
     );
     *control.session.lock().unwrap() = Some(terminal_test_session(
@@ -21776,7 +21816,6 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
             host.renew_due_session_realizations(
-                now_unix_ms,
                 awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
                     30_000,
                 ),
@@ -21889,7 +21928,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         awaken_session_contract::SessionTerminalCleanupAssignment {
             session_id: session_id.into(),
             projection: projection.clone(),
-            lease: lease.clone(),
+            authority: crate::session_slot::test_lease_receipt(lease.clone()),
         },
     );
     let terminal_session = terminal_test_session(

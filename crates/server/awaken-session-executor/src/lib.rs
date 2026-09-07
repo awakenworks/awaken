@@ -177,6 +177,29 @@ pub enum SessionRunBackgroundInstallError {
 
 #[async_trait::async_trait]
 impl SessionRuntime for ManagedHost {
+    async fn renew_session_realization_projections(
+        &self,
+        control: &dyn awaken_session_contract::SessionRealizationControl,
+        owner: &str,
+        runtime_incarnation: &str,
+        timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+    ) -> Result<usize, RunError> {
+        self.host
+            .renew_session_realization_projections(
+                Some(control),
+                Some((owner, runtime_incarnation)),
+                timing,
+            )
+            .await
+            .map_err(to_run_error)
+    }
+
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        awaken_local_process::authority_proof_started()
+            .map_err(|error| RunError::unavailable(format!("authority clock: {error}")))
+    }
     fn validate_session_sandbox_layout(
         &self,
         thread: &str,
@@ -226,7 +249,7 @@ impl SessionRuntime for ManagedHost {
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_contract::SessionRealizationLease,
+        lease: awaken_session_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         let missing = || {
             RunError::classified(
@@ -274,9 +297,10 @@ impl SessionRuntime for ManagedHost {
     async fn install_terminal_cleanup_assignment(
         &self,
         assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+        proof: awaken_session_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         self.host
-            .install_terminal_cleanup_projection(assignment)
+            .install_terminal_cleanup_projection(assignment, proof)
             .await
             .map_err(to_run_error)
     }

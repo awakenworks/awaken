@@ -16,20 +16,90 @@ pub(crate) use environment_owner::*;
 #[cfg(target_os = "linux")]
 mod execution_authority;
 
+/// Host fixtures use the actual Control-clock coordinate for live replies.
+/// Deliberately rejects expired input: an expiry test must construct and age
+/// its request observation explicitly, never silently manufacture fresh TTL.
+#[cfg(test)]
+pub(crate) fn test_lease_receipt(
+    lease: awaken_session_contract::SessionRealizationLease,
+) -> awaken_session_contract::SessionRealizationLeaseReceipt {
+    awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+        lease,
+        crate::terminal_repository_publication::runtime_unix_now_ms(),
+    )
+    .expect("live Control-clock fixture lease")
+}
+
+#[cfg(test)]
+pub(crate) fn test_observed_lease(
+    lease: awaken_session_contract::SessionRealizationLease,
+) -> awaken_session_contract::ObservedSessionRealizationLease {
+    let started = awaken_local_process::authority_proof_started().unwrap();
+    test_lease_receipt(lease).observed(started)
+}
+
+/// Deliberately aged evidence for negative Host tests. Keep the exact durable
+/// fence bytes, but exhaust the local proof on the real platform clock before
+/// returning it. This is never the fallback for a failed live fixture.
+#[cfg(test)]
+pub(crate) fn test_expired_observed_lease(
+    lease: awaken_session_contract::SessionRealizationLease,
+) -> awaken_session_contract::ObservedSessionRealizationLease {
+    let started = awaken_local_process::authority_proof_started().unwrap();
+    let proof = awaken_session_contract::SessionRealizationLeaseReceipt {
+        lease,
+        remaining_ms: std::num::NonZeroU64::new(1).unwrap(),
+    }
+    .observed(started);
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    assert!(
+        proof
+            .remaining_at(awaken_local_process::authority_proof_started().unwrap())
+            .is_none()
+    );
+    proof
+}
+
 /// One process-local projection of aggregate authority, not another lease.
 /// Closing retains the exact lease for cleanup CAS, but never for admission.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum SessionRealizationAuthority {
     #[default]
     Uninstalled,
-    Live(awaken_session_contract::SessionRealizationLease),
+    Live(awaken_session_contract::ObservedSessionRealizationLease),
     Closed(Option<awaken_session_contract::SessionRealizationLease>),
 }
 
 impl SessionRealizationAuthority {
+    pub(crate) fn proof(
+        &self,
+    ) -> Option<&awaken_session_contract::ObservedSessionRealizationLease> {
+        match self {
+            Self::Live(proof) => Some(proof),
+            Self::Uninstalled | Self::Closed(_) => None,
+        }
+    }
+
+    pub(crate) fn remaining(&self) -> Option<std::time::Duration> {
+        self.proof()?
+            .remaining_at(awaken_local_process::authority_proof_started().ok()?)
+    }
+
+    /// One local admission rule: exact aggregate generation and a still-live
+    /// request-relative observation. Callers hold the existing slot mutex;
+    /// neither wall time nor a retained Closed lease grants authority.
+    pub(crate) fn remaining_for(
+        &self,
+        asserted: &awaken_session_contract::SessionRealizationLease,
+    ) -> Option<std::time::Duration> {
+        awaken_session_contract::realization_lease_generation_authorizes(self.lease()?, asserted)
+            .then(|| self.remaining())
+            .flatten()
+    }
+
     pub(crate) fn lease(&self) -> Option<&awaken_session_contract::SessionRealizationLease> {
         match self {
-            Self::Live(lease) => Some(lease),
+            Self::Live(proof) => Some(&proof.lease),
             Self::Uninstalled | Self::Closed(_) => None,
         }
     }
@@ -46,7 +116,7 @@ impl SessionRealizationAuthority {
         expected: Option<&awaken_session_contract::SessionRealizationLease>,
     ) -> bool {
         let retained = match self {
-            Self::Live(lease) => Some(lease),
+            Self::Live(proof) => Some(&mut proof.lease),
             Self::Closed(lease) => lease.as_mut(),
             Self::Uninstalled => None,
         };
@@ -469,28 +539,43 @@ impl SessionRuntimeSlot {
 
     pub(crate) fn install_realization_lease(
         &mut self,
-        lease: awaken_session_contract::SessionRealizationLease,
-    ) {
+        proof: awaken_session_contract::ObservedSessionRealizationLease,
+    ) -> bool {
+        let Ok(now) = awaken_local_process::authority_proof_started() else {
+            return false;
+        };
+        if proof.remaining_at(now).is_none() {
+            return false;
+        }
+        let lease = &proof.lease;
         if let SessionRealizationAuthority::Closed(Some(closed)) = &self.realization_authority
-            && (awaken_session_contract::realization_lease_generation_authorizes(closed, &lease)
-                || awaken_session_contract::realization_lease_generation_authorizes(&lease, closed))
+            && (awaken_session_contract::realization_lease_generation_authorizes(closed, lease)
+                || awaken_session_contract::realization_lease_generation_authorizes(lease, closed))
         {
             // An assertion or delayed renewal cannot reopen a closed generation.
-            return;
+            return false;
+        }
+        if let Some(current) = self.realization_authority.lease()
+            && (awaken_session_contract::realization_lease_generation_authorizes(current, lease)
+                || awaken_session_contract::realization_lease_generation_authorizes(lease, current))
+            && self.realization_authority.remaining().is_none()
+        {
+            return false;
         }
         if self.realization_authority.lease().is_some_and(|current| {
-            awaken_session_contract::realization_lease_generation_authorizes(current, &lease)
+            awaken_session_contract::realization_lease_generation_authorizes(current, lease)
         }) {
             // A slow preparation must not overwrite an intervening renewal.
-            return;
+            return true;
         }
         if self.realization_authority.lease().is_some_and(|current| {
-            !awaken_session_contract::realization_lease_generation_authorizes(&lease, current)
+            !awaken_session_contract::realization_lease_generation_authorizes(lease, current)
         }) && let Some(preparation) = &self.resource_preparation
         {
             preparation.cancel();
         }
-        self.realization_authority = SessionRealizationAuthority::Live(lease);
+        self.realization_authority = SessionRealizationAuthority::Live(proof);
+        true
     }
 
     /// The only renewal response application edge. Callers with an I/O
@@ -499,11 +584,20 @@ impl SessionRuntimeSlot {
     pub(crate) fn renew_realization_lease(
         &mut self,
         asserted: &awaken_session_contract::SessionRealizationLease,
-        renewed: awaken_session_contract::SessionRealizationLease,
+        renewed: awaken_session_contract::ObservedSessionRealizationLease,
     ) -> bool {
         if self.realization_authority.lease() != Some(asserted)
-            || !awaken_session_contract::realization_lease_generation_authorizes(&renewed, asserted)
+            || !awaken_session_contract::realization_lease_generation_authorizes(
+                &renewed.lease,
+                asserted,
+            )
         {
+            return false;
+        }
+        let Some(now) = awaken_local_process::authority_proof_started().ok() else {
+            return false;
+        };
+        if self.realization_authority.remaining().is_none() || renewed.remaining_at(now).is_none() {
             return false;
         }
         self.realization_authority = SessionRealizationAuthority::Live(renewed);
@@ -514,7 +608,6 @@ impl SessionRuntimeSlot {
     pub(crate) fn resource_preparation_authorized(
         &self,
         asserted: &awaken_session_contract::SessionRealizationLease,
-        now_unix_ms: u64,
     ) -> bool {
         !self.realization_authority.is_closed()
             && self
@@ -522,14 +615,7 @@ impl SessionRuntimeSlot {
                 .as_ref()
                 .is_none_or(|preparation| {
                     !preparation.is_cancelled()
-                        && self.realization_authority.lease().is_some_and(|current| {
-                            awaken_session_contract::realization_lease_generation_authorizes(
-                                current, asserted,
-                            ) && awaken_session_contract::realization_lease_is_live_at(
-                                current.expires_at_unix_ms,
-                                now_unix_ms,
-                            )
-                        })
+                        && self.realization_authority.remaining_for(asserted).is_some()
                 })
     }
 }
@@ -704,14 +790,17 @@ impl SessionRuntimeSlots {
 
     pub fn realization_leases(
         &self,
-    ) -> Vec<(String, awaken_session_contract::SessionRealizationLease)> {
+    ) -> Vec<(
+        String,
+        awaken_session_contract::ObservedSessionRealizationLease,
+    )> {
         self.0
             .lock()
             .expect("session runtime slots mutex poisoned")
             .iter()
             .filter_map(|(session_id, slot)| {
                 slot.realization_authority
-                    .lease()
+                    .proof()
                     .cloned()
                     .map(|lease| (session_id.clone(), lease))
             })
@@ -750,20 +839,21 @@ mod tests {
         // Q1 absent+exact rejects; Q2 absent+none closes; Q3 live+stale rejects;
         // Q4 live+exact closes; Q5 closed+exact retry succeeds; Q6-Q8 exact
         // renewal crosses the three expiry partitions; Q9 stale reply rejects.
+        let base = crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000;
         let lease = awaken_session_contract::SessionRealizationLease {
             owner: "worker".into(),
             runtime_incarnation: "worker/1".into(),
             epoch: 1,
-            expires_at_unix_ms: 100,
+            expires_at_unix_ms: base + 100,
         };
         let mut slot = SessionRuntimeSlot::default();
         assert!(!slot.close_realization_authority(Some(&lease)), "Q1");
         assert!(slot.close_realization_authority(None), "Q2");
         assert!(
-            !slot.resource_preparation_authorized(&lease, 1),
+            !slot.resource_preparation_authorized(&lease),
             "Q2 no-preparation fallback denied"
         );
-        slot.install_realization_lease(lease.clone());
+        slot.install_realization_lease(test_observed_lease(lease.clone()));
         let mut stale = lease.clone();
         stale.expires_at_unix_ms -= 1;
         let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
@@ -773,34 +863,41 @@ mod tests {
         assert!(slot.close_realization_authority(Some(&lease)), "Q4");
         assert!(cancellation.is_cancelled(), "Q4");
         assert!(slot.close_realization_authority(Some(&lease)), "Q5");
-        for expiry in [99, 100, 101] {
+        for expiry in [base + 99, base + 100, base + 101] {
             let mut renewed = lease.clone();
             renewed.expires_at_unix_ms = expiry;
             assert!(
-                !slot.renew_realization_lease(&lease, renewed.clone()),
+                !slot.renew_realization_lease(&lease, test_observed_lease(renewed.clone())),
                 "Q5 closed reply"
             );
-            slot.install_realization_lease(renewed.clone());
+            slot.install_realization_lease(test_observed_lease(renewed.clone()));
             assert!(
                 slot.realization_authority.lease().is_none(),
                 "Q5 closed assertion"
             );
             let mut live = SessionRuntimeSlot::default();
-            live.install_realization_lease(lease.clone());
+            live.install_realization_lease(test_observed_lease(lease.clone()));
             assert_eq!(
-                live.renew_realization_lease(&lease, renewed.clone()),
-                expiry >= 100,
+                live.renew_realization_lease(&lease, test_observed_lease(renewed.clone())),
+                expiry >= base + 100,
                 "Q6-Q8"
             );
             assert_eq!(
                 live.realization_authority.lease(),
-                Some(if expiry >= 100 { &renewed } else { &lease })
+                Some(if expiry >= base + 100 {
+                    &renewed
+                } else {
+                    &lease
+                })
             );
-            assert!(!live.renew_realization_lease(&stale, renewed), "Q9");
+            assert!(
+                !live.renew_realization_lease(&stale, test_observed_lease(renewed)),
+                "Q9"
+            );
         }
         let mut next = lease;
         next.epoch += 1;
-        slot.install_realization_lease(next.clone());
+        slot.install_realization_lease(test_observed_lease(next.clone()));
         assert_eq!(
             slot.realization_authority.lease(),
             Some(&next),
@@ -871,12 +968,13 @@ mod tests {
         slots.update("environment-only", |slot| {
             assert!(!slot.has_mcp_projection, "C2");
             slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
-                awaken_session_contract::SessionRealizationLease {
+                test_observed_lease(awaken_session_contract::SessionRealizationLease {
                     owner: "worker".into(),
                     runtime_incarnation: "worker/incarnation".into(),
                     epoch: 1,
-                    expires_at_unix_ms: 30,
-                },
+                    expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms(
+                    ) + 30_000,
+                }),
             );
         });
 

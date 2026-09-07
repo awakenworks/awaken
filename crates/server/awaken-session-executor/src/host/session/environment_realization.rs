@@ -2,6 +2,34 @@
 
 use super::*;
 
+impl crate::session_slot::SessionRuntimeSlot {
+    pub(crate) fn validate_session_publication(
+        &self,
+        publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+    ) -> Result<(), HostError> {
+        if publication.is_some_and(|publication| {
+            self.published_snapshot
+                .as_ref()
+                .is_some_and(|retained| retained != publication)
+        }) {
+            return Err(HostError::internal(
+                "Session cannot replace its immutable Agent publication",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Called after validation under the same slot lock.
+    pub(crate) fn retain_validated_session_publication(
+        &mut self,
+        publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+    ) {
+        if let Some(publication) = publication {
+            self.published_snapshot = Some(publication.clone());
+        }
+    }
+}
+
 impl SharedHost {
     /// Resolve one Session publication and its exact model candidate from
     /// explicit frozen coordinates. This is the sole selector used by cold
@@ -264,28 +292,11 @@ impl SharedHost {
         thread: &str,
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<(), HostError> {
-        let Some(publication) = publication else {
-            return Ok(());
-        };
-        let conflict = self.session_slots.update(thread, |slot| {
-            if slot
-                .published_snapshot
-                .as_ref()
-                .is_some_and(|retained| retained != publication)
-            {
-                true
-            } else {
-                slot.published_snapshot = Some(publication.clone());
-                false
-            }
-        });
-        if conflict {
-            Err(HostError::internal(
-                "Session cannot replace its immutable Agent publication",
-            ))
-        } else {
+        self.session_slots.update(thread, |slot| {
+            slot.validate_session_publication(publication)?;
+            slot.retain_validated_session_publication(publication);
             Ok(())
-        }
+        })
     }
 
     /// Select the environment provider from the immutable publication already

@@ -78,9 +78,9 @@ impl McpRelay {
     pub(crate) async fn for_host(
         host: std::sync::Weak<crate::SharedHost>,
     ) -> std::io::Result<Self> {
-        Self::start_with_authority(Arc::new(move |generation, now| {
+        Self::start_with_authority(Arc::new(move |generation, _now| {
             host.upgrade().is_some_and(|host| {
-                host.mcp_generation_root_authority_at(generation, now)
+                host.mcp_generation_root_authority(generation)
                     .unwrap_or(false)
             })
         }))

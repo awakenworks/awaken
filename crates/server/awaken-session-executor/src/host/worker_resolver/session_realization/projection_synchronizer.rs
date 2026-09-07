@@ -66,11 +66,22 @@ pub(super) fn merge_legacy_claimed_environment_binding(
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjectionSynchronizer<'_> {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<
+        awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        awaken_session_contract::RunError,
+    > {
+        awaken_local_process::authority_proof_started().map_err(|error| {
+            awaken_session_contract::RunError::unavailable(format!("authority clock: {error}"))
+        })
+    }
+
     async fn synchronize_session_projection(
         &self,
         session_id: &str,
         projection: &awaken_session_contract::FrozenSessionProjection,
-        lease: &awaken_session_contract::SessionRealizationLease,
+        lease: &awaken_session_contract::ObservedSessionRealizationLease,
         prepare_session: bool,
     ) -> Result<(), awaken_session_contract::RunError> {
         let retained_publication = self
@@ -305,7 +316,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
                         awaken_session_contract::FrozenResourceTransitionUse::ApplyEffects,
                     )?,
                     self.claim,
-                    Some(lease),
+                    Some(&lease.lease),
                 )
                 .await?;
         }
@@ -449,7 +460,7 @@ mod tests {
             thread,
             projection,
             awaken_session_contract::SessionProjectionInstallMode::Realization {
-                lease: initial_lease,
+                lease: crate::session_slot::test_observed_lease(initial_lease),
                 prepare_session: true,
             },
         )
@@ -513,7 +524,7 @@ mod tests {
         };
         let directive = awaken_session_contract::SessionRealizationDirective {
             projection: projection.clone(),
-            lease: lease.clone(),
+            authority: crate::session_slot::test_lease_receipt(lease.clone()),
             action: awaken_session_contract::SessionRealizationAction::Complete,
         };
         WorkerProjectionSynchronizer::for_directive(
@@ -524,7 +535,12 @@ mod tests {
             true,
             Some(&binding),
         )
-        .synchronize_session_projection(thread, &projection, &lease, true)
+        .synchronize_session_projection(
+            thread,
+            &projection,
+            &crate::session_slot::test_observed_lease(lease.clone()),
+            true,
+        )
         .await
         .expect("DH1/E1 canonical claimed adoption");
 
@@ -701,7 +717,12 @@ mod tests {
             requires_runtime_before_effects: false,
             claimed_environment_binding: Some(&raw_binding),
         }
-        .synchronize_session_projection(thread, &projection, &lease, true)
+        .synchronize_session_projection(
+            thread,
+            &projection,
+            &crate::session_slot::test_observed_lease(lease.clone()),
+            true,
+        )
         .await
         .expect("CR1/E1-E3 cleanup precedes merge and projection installation");
 
@@ -762,7 +783,9 @@ mod tests {
             local_projection,
             None,
             true,
-            Some(cached_lease.clone()),
+            Some(crate::session_slot::test_observed_lease(
+                cached_lease.clone(),
+            )),
         )
         .await
         .expect("RA1 install retained local projection");
@@ -809,7 +832,7 @@ mod tests {
         };
         let directive = awaken_session_contract::SessionRealizationDirective {
             projection: remote_projection.clone(),
-            lease: lease.clone(),
+            authority: crate::session_slot::test_lease_receipt(lease.clone()),
             action: awaken_session_contract::SessionRealizationAction::Complete,
         };
         let error = WorkerProjectionSynchronizer::for_directive(
@@ -820,7 +843,12 @@ mod tests {
             true,
             None,
         )
-        .synchronize_session_projection(thread, &remote_projection, &lease, true)
+        .synchronize_session_projection(
+            thread,
+            &remote_projection,
+            &crate::session_slot::test_observed_lease(lease.clone()),
+            true,
+        )
         .await
         .expect_err("RA1/E1 remote A2A must fail before local effects");
         assert_eq!(

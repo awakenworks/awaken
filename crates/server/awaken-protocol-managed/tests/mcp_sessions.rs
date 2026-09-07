@@ -75,9 +75,18 @@ fn lifecycle_test_state() -> (
 
 #[async_trait::async_trait]
 impl SessionRuntime for PreparingFake {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<
+        awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        awaken_session_contract::RunError,
+    > {
+        awaken_protocol_managed::test_support::observe_realization_request()
+    }
     async fn install_terminal_cleanup_assignment(
         &self,
         _assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+        _proof: awaken_session_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         Ok(())
     }
@@ -259,6 +268,14 @@ struct HotRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for HotRuntime {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<
+        awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        awaken_session_contract::RunError,
+    > {
+        awaken_protocol_managed::test_support::observe_realization_request()
+    }
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -2427,6 +2444,14 @@ async fn minting_namespace_cannot_alias_committed_truth() {
     struct HauntedRuntime;
     #[async_trait::async_trait]
     impl SessionRuntime for HauntedRuntime {
+        fn observe_realization_request(
+            &self,
+        ) -> Result<
+            awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+            awaken_session_contract::RunError,
+        > {
+            awaken_protocol_managed::test_support::observe_realization_request()
+        }
         async fn install_session_projection(
             &self,
             thread: &str,

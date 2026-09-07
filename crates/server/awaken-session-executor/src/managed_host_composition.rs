@@ -148,7 +148,6 @@ impl ManagedHost {
         projection: &awaken_session_contract::FrozenSessionProjection,
         mode: &awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
-        let realization_lease = mode.realization_lease().cloned();
         match mode {
             awaken_session_contract::SessionProjectionInstallMode::Dispatch => {
                 self.host
@@ -157,7 +156,7 @@ impl ManagedHost {
             }
             awaken_session_contract::SessionProjectionInstallMode::Realization {
                 prepare_session,
-                ..
+                lease,
             } => {
                 self.host
                     .install_frozen_session_projection(
@@ -165,7 +164,7 @@ impl ManagedHost {
                         projection.clone(),
                         None,
                         *prepare_session,
-                        realization_lease,
+                        Some(lease.clone()),
                     )
                     .await
             }
