@@ -78,8 +78,9 @@ fn install_exposes_the_claimed_committed_prefix() {
     // the same committed view contract used by every authoritative backend.
     let projection = RecoveryProjection::new();
     let run_id = RunId("run".to_string());
+    let thread_id = ThreadId("thread".to_string());
     projection
-        .install(&run_id, snapshot())
+        .install(&run_id, &thread_id, snapshot())
         .expect("install snapshot");
 
     assert_eq!(
@@ -128,7 +129,7 @@ fn recovery_projection_never_selects_a_historical_wait() {
     let initial = snapshot();
     let expected = initial.resume_tickets[0].ticket.clone();
     projection
-        .install(&claimed, initial.clone())
+        .install(&claimed, &thread, initial.clone())
         .expect("R1 install awaiting head");
     assert_eq!(
         projection.open_wait_for_thread(&thread),
@@ -145,7 +146,7 @@ fn recovery_projection_never_selects_a_historical_wait() {
     });
     newer_terminal.latest_run_id = Some(terminal);
     projection
-        .install(&claimed, newer_terminal)
+        .install(&claimed, &thread, newer_terminal)
         .expect("R2 replace with newer terminal head");
     assert!(
         projection.resume_ticket(&claimed).is_some(),
@@ -164,10 +165,11 @@ fn projection_counter_overflow_is_rejected_without_partial_update() {
     // advance path exists.
     let projection = RecoveryProjection::new();
     let run_id = RunId("run".to_string());
+    let thread_id = ThreadId("thread".to_string());
     let mut at_limit = snapshot();
     at_limit.thread_version = u64::MAX;
     projection
-        .install(&run_id, at_limit.clone())
+        .install(&run_id, &thread_id, at_limit.clone())
         .expect("install snapshot at boundary");
 
     let operation = CommitOperation {
@@ -204,14 +206,35 @@ fn projection_counter_overflow_is_rejected_without_partial_update() {
 }
 
 #[test]
-fn wrong_claim_cannot_install_or_advance_projection() {
+fn recovery_install_requires_the_exact_claimed_run_and_thread() {
+    // Causes: C1 returned Run matches the claim; C2 returned Thread matches the
+    // guarded dispatch. Effects: E1 install the complete prefix; E2 reject
+    // without replacing the current projection. Decision rules:
+    // R1=C1+C2=>E1; R2=!C1=>E2; R3=C1+!C2=>E2. A simultaneous mismatch follows
+    // R2 so the error classification remains stable.
     let projection = RecoveryProjection::new();
+    let run_id = RunId("run".to_string());
+    let thread_id = ThreadId("thread".to_string());
     assert!(
         projection
-            .install(&RunId("other".to_string()), snapshot())
-            .is_err()
+            .install(&RunId("other".to_string()), &thread_id, snapshot())
+            .is_err(),
+        "R2/E2"
     );
-    assert!(projection.current().is_none());
+    assert!(projection.current().is_none(), "R2/E2 no mutation");
+
+    assert!(
+        projection
+            .install(&run_id, &ThreadId("other-thread".to_string()), snapshot())
+            .is_err(),
+        "R3/E2"
+    );
+    assert!(projection.current().is_none(), "R3/E2 no mutation");
+
+    projection
+        .install(&run_id, &thread_id, snapshot())
+        .expect("R1/E1 exact identity");
+    assert!(projection.current().is_some(), "R1/E1");
 }
 
 #[test]
@@ -228,8 +251,9 @@ fn duplicate_receipt_advances_after_response_loss_and_then_becomes_a_noop() {
     // require one projection advance followed by a no-op.
     let projection = RecoveryProjection::new();
     let run_id = RunId("run".to_string());
+    let thread_id = ThreadId("thread".to_string());
     projection
-        .install(&run_id, snapshot())
+        .install(&run_id, &thread_id, snapshot())
         .expect("install snapshot");
     let operation = CommitOperation {
         operation_id: CommitOperationId::new(run_id.clone(), 1),
@@ -334,7 +358,11 @@ impl ClaimedRunCommit for ReceiptService {
 async fn claimed_coordinator_builds_stable_operation_from_recovery_prefix() {
     let projection = Arc::new(RecoveryProjection::new());
     projection
-        .install(&RunId("run".to_string()), snapshot())
+        .install(
+            &RunId("run".to_string()),
+            &ThreadId("thread".to_string()),
+            snapshot(),
+        )
         .unwrap();
     let service = Arc::new(ReceiptService {
         command: Mutex::new(None),

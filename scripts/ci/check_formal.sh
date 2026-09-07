@@ -326,7 +326,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness physical_attempt_slot_installs_and_clears_only_exact_authority \
     --harness physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair
   run_kani awaken-dispatch --no-default-features \
+    --harness recovery_snapshot_admission_requires_exact_claim_identity \
     --harness acknowledged_projection_is_exact_monotonic_or_a_noop \
+    --harness claimed_snapshot_execution_requires_exact_identity \
     --harness dispatch_claim_preserves_every_frozen_binding \
     --harness shared_error_gate_admits_exactly_one_probe_after_the_deadline \
     --harness drain_error_backoff_is_bounded_monotonic_and_saturating \
