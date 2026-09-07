@@ -38,6 +38,8 @@ pub use registry::{
     worker_heartbeat_admission, worker_observation_sequence_after_heartbeat,
     worker_slot_is_replaceable,
 };
+#[cfg(any(test, kani))]
+pub(crate) use requirements::required_capability_is_admitted;
 pub use requirements::{
     ExecutionLocation, Incompatibility, PlacementRequirements, WorkerRecoveryMode, can_claim,
     can_claim_locally, manifest_recovery_matches_installed, sandbox_tool_recovery_is_compatible,
@@ -236,6 +238,17 @@ mod verification {
         };
         assert!(assignment_recovery_rejection(false, recovery, kani::any()).is_none());
     }
+
+    #[kani::proof]
+    fn required_worker_capability_cannot_be_omitted() {
+        let requirement_present: bool = kani::any();
+        let capability_offered: bool = kani::any();
+        let admitted = required_capability_is_admitted(requirement_present, capability_offered);
+        assert_eq!(admitted, !requirement_present || capability_offered);
+        if requirement_present && !capability_offered {
+            assert!(!admitted);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -351,6 +364,46 @@ mod tests {
         // Sandbox cause is present, therefore claim admission has no rejection
         // effect. Negative rows are partitioned by the two tests below.
         assert!(can_claim(&manifest("a", 0).manifest, &requirements()).is_ok());
+    }
+
+    #[test]
+    fn required_capability_decision_table_is_total_and_exact() {
+        // Cause/effect graph: C1 the placement requires session-resources/v1;
+        // C2 the immutable Worker manifest offers it. E1 admission succeeds
+        // when !C1 or C2; E2 C1+!C2 returns the exact MissingCapability error.
+        // Constraint: this hard axis runs inside can_claim before ranking and is
+        // rechecked by the atomic claim path. The four rules exhaust C1/C2.
+        for requirement_present in [false, true] {
+            for capability_offered in [false, true] {
+                let mut worker = WorkerManifest::default();
+                let mut required = PlacementRequirements::default();
+                if requirement_present {
+                    required
+                        .required_capabilities
+                        .insert(SESSION_RESOURCES_CAPABILITY.to_string());
+                }
+                if capability_offered {
+                    worker
+                        .capabilities
+                        .insert(SESSION_RESOURCES_CAPABILITY.to_string());
+                }
+
+                let result = can_claim(&worker, &required);
+                assert_eq!(result.is_ok(), !requirement_present || capability_offered);
+                assert_eq!(
+                    required_capability_is_admitted(requirement_present, capability_offered),
+                    result.is_ok()
+                );
+                if requirement_present && !capability_offered {
+                    assert_eq!(
+                        result,
+                        Err(Incompatibility::MissingCapability(
+                            SESSION_RESOURCES_CAPABILITY.to_string()
+                        ))
+                    );
+                }
+            }
+        }
     }
 
     #[test]
