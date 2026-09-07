@@ -77,7 +77,7 @@ async fn create(app: &Router) -> String {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "Session creation: {s}");
     s["id"].as_str().unwrap().to_string()
 }
 
@@ -108,6 +108,14 @@ fn unsupported_runtime_operation() -> RunError {
 
 #[async_trait::async_trait]
 impl SessionRuntime for QueueFake {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        // Creation requires explicit request-relative execution-clock evidence;
+        // the canonical test clock supplies that prerequisite for wire tests.
+        awaken_protocol_managed::test_support::observe_realization_request()
+    }
+
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -349,6 +357,13 @@ fn app_with_session_application(
     struct Shared(Arc<QueueFake>);
     #[async_trait::async_trait]
     impl SessionRuntime for Shared {
+        fn observe_realization_request(
+            &self,
+        ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError>
+        {
+            self.0.observe_realization_request()
+        }
+
         async fn install_session_projection(
             &self,
             thread: &str,

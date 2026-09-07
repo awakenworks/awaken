@@ -1426,9 +1426,16 @@ test("Models either tests a discovered model or closes the provider prerequisite
     return;
   }
   await testBtn.click();
-  // The modal mounts the shared transcript against the pinned model.
+  // Causes: an enabled discovered model is selected; the shared Transcript
+  // automatically submits its probe. Rule M1: the modal pins that model, shows
+  // exactly one probe in the conversation and keeps the accessible composer.
+  // While the probe is active, admission can disable input and replace its
+  // placeholder; placeholder copy is not evidence of a mounted transcript.
   await expect(page.getByRole("heading", { name: /Test model ·/ })).toBeVisible();
-  await expect(page.getByPlaceholder("Say hello…")).toBeVisible();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("textbox", { name: "Message to agent" })).toBeVisible();
+  await expect(dialog.getByRole("log", { name: "Session conversation" })
+    .getByText("Reply with exactly: MODEL READY", { exact: true })).toHaveCount(1);
 });
 
 // Submission decision table (the descriptor and form are real; only POST is intercepted):

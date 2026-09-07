@@ -1179,49 +1179,5 @@ scans separately retain and isolate undecodable or unsupported-version rows so
 one poison record cannot starve healthy work, but schema migration and repair of
 the isolated record remain operational obligations rather than model claims.
 
-`RunIngress.tla` models claim fencing as one atomic state transition. Production
-now keeps the exact epoch guard live across the actual `ThreadCommit` for the
-local durable backends: PostgreSQL holds a locked dispatch-row transaction and
-SQLite serializes the singleton store's dispatch authority through the commit.
-Database-less workers use one claimed-commit HTTP operation carrying the full
-`RunClaim` (`run_id`, owner, epoch). The store-owning server holds that exact
-claim stable while applying the real `ThreadCommit`; remote adapters cannot
-degrade to a check-then-commit sequence. Custom remote queues fail closed unless
-they supply the same atomic `ClaimedRunCommit` capability.
-
-Likewise, `Delegation.tla` specifies the target semantics for independently
-owned local and remote child Runs. The executable bridge now proves stable child
-identity, durable relationship recovery, durable result delivery, exactly-once
-parent consumption, terminal publication, and cancellation intent for the
-current runtime path. Terminal-only local children emitted in one tool batch run
-concurrently after their relationship/executor-entry commit; children that may
-ask the parent for input stay on the single-ticket path so correlation is never
-collapsed. Remote cancellation stores its opaque task reference with the
-relationship, delivers only after the parent terminal commit, and is redelivered
-when a process rebuilds or re-enters the session. Eventual success across an
-unavailable network remains an environmental liveness property, not a safety
-claim. Native children now enter the same durable dispatch queue as ordinary
-Runs with their own stable identity, exact-target claim, lease epoch, and crash
-reclaim rules. A session-thread route returns recovery to the parent session's
-runtime and commit capabilities without changing the child's first-class Thread
-identity. Store conformance and a durable host integration test link this path
-to the independently owned child state modeled by `Delegation.tla`.
-
-The Managed WorkQueue proof covers queue state, transactional single-active
-claim, lease epoch/expiry, heartbeat compare-and-set, exact-boundary reclaim,
-and terminal authority clearing. The official worker header is persisted as
-the claim owner, including before the first heartbeat; only that worker may
-advance the `first`/`matching last_heartbeat` condition. Stop consumes the exact
-owner-and-epoch lease receipt, so a paused same-incarnation predecessor cannot
-retire a higher-epoch successor. The in-memory, SQLite,
-and PostgreSQL conformance paths exercise the same ownership rule. Stop remains
-a control-plane operation rather than worker authority, and exactly-once
-external work effects remain outside the queue proof.
-
-`CancelRequested` is the terminal parent commit's durable, idempotent
-relationship fact. It intentionally has no later `Cancelled` acknowledgement:
-the commit stores reject every post-terminal mutation. Live cancellation uses
-the one-way child token; recovery uses the same relationship as an outbox and
-the A2A adapter maps its persisted task reference to `tasks:cancel`. A child Run's own
-`EndCause::Cancelled` remains its ordinary Run lifecycle outcome and is not a
-delegation relationship status.
+Run ownership, claimed commit, child delegation and cancellation evidence are
+maintained in [verification boundaries](VERIFICATION_BOUNDARIES.md#run-ownership-and-delegation-evidence).

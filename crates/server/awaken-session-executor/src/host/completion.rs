@@ -1729,7 +1729,10 @@ mod completion_tests {
         let placement = remote_worker_placement(&models, None, None, true);
         assert_eq!(placement.contract_version, 1);
         assert_eq!(placement.dispatch_contract_version, 1);
-        assert_eq!(placement.runtime_protocol_version, 1);
+        assert_eq!(
+            placement.runtime_protocol_version,
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION
+        );
         assert!(placement.required_capabilities.contains("native-runtime"));
         assert!(
             placement

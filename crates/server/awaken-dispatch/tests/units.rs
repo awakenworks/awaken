@@ -148,66 +148,100 @@ async fn dispatch_harness_attaches_one_best_effort_stream_sink_to_its_worker() {
 
 #[tokio::test]
 async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
-    // Test design. Causes: C1 a crash leaves a partial stream checkpoint; C2 the
-    // durable Run is reclaimed and resumed. Effects: E1 C2 includes the partial
-    // text exactly once before new output; E2 terminal completion clears the
-    // checkpoint. Constraint/Invariant: the checkpoint store is the sole partial
-    // stream authority. Decision rule: seed one checkpoint, drive once, and
-    // verify resumed output plus cleanup.
+    use awaken_agent_contract::agent::state::StateKey;
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
+    use awaken_runtime_contract::model_operation::{
+        ActiveModelOperation, ModelExecutionEvidence, ModelOperation, ModelOperationPhase,
+    };
     use awaken_store_inmem::MemoryStreamCheckpointStore;
-
-    let runtime = text_runtime(); // answers "done"
-    let store = Arc::new(MemoryDispatchStore::new());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
-    let checkpoints = Arc::new(MemoryStreamCheckpointStore::new());
-    // A crash mid-recovery left this partial for the run's in-flight step.
-    checkpoints
-        .put(StreamCheckpoint {
-            run_id: "run-ckpt".to_string(),
-            thread_id: THREAD.to_string(),
-            model: "m".to_string(),
-            partial_text: "Resumed ".to_string(),
+    // C1 retained partial; C2 predecessor evidence absent/Unknown/Terminated.
+    // R1 absent and R2 Unknown => zero model calls, no assistant/false terminal,
+    // retained checkpoint and dispatch. R3 Terminated => exactly one continuation,
+    // stitched text, NaturalEnd, checkpoint cleanup. A partial is never stop proof.
+    // The prerequisite uses the same ThreadCommit/RecoveryProjection as production.
+    for evidence in [
+        None,
+        Some(ModelExecutionEvidence::Unknown),
+        Some(ModelExecutionEvidence::Terminated),
+    ] {
+        let (runtime, calls) = harness::counting_text_runtime();
+        let store = Arc::new(MemoryDispatchStore::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let checkpoints = Arc::new(MemoryStreamCheckpointStore::new());
+        let partial = StreamCheckpoint {
+            run_id: "run-ckpt".into(),
+            thread_id: THREAD.into(),
+            model: "m".into(),
+            partial_text: "Resumed ".into(),
             partial_tools: Vec::new(),
             retry_count: 0,
-        })
-        .await
-        .expect("checkpoint put");
-
-    let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "unit-worker")
-        .with_stream_checkpoint(checkpoints.clone() as Arc<dyn StreamCheckpointStore>);
-
-    store
-        .enqueue(RunDispatch::new(activation("run-ckpt")))
-        .await
-        .unwrap();
-    let processed = worker.tick(harness::clock(0)).await.expect("tick");
-    assert_eq!(
-        processed,
-        Some((
-            RunId("run-ckpt".to_string()),
-            RunState::Ended(EndCause::NaturalEnd)
-        ))
-    );
-
-    // The durable worker threaded the checkpoint store into the run context, so
-    // the engine resumed the first step from the flushed partial: the committed
-    // Step message is the recovered prefix stitched onto the model's continuation.
-    let committed = commit.committed();
-    let assistant = committed
-        .messages
-        .iter()
-        .find(|m| m.role == awaken_agent_contract::agent::message::Role::Assistant)
-        .expect("assistant message committed");
-    assert_eq!(assistant.text_content(), "Resumed done");
-    // The consumed checkpoint is cleared once the step concludes.
-    assert!(
-        checkpoints
-            .get("run-ckpt")
+        };
+        checkpoints.put(partial.clone()).await.unwrap();
+        if let Some(evidence) = evidence {
+            let mut prior = ModelOperation::next(
+                None,
+                awaken_runtime_contract::resolved::ModelBinding::new("p", "m", "b"),
+            )
+            .unwrap();
+            prior.phase = ModelOperationPhase::Returned;
+            prior.execution = evidence;
+            awaken_runtime_contract::CommitCoordinator::commit(
+                commit.as_ref(),
+                awaken_runtime_contract::ThreadCommit::assemble(
+                    ThreadId(THREAD.into()),
+                    awaken_runtime_contract::RunDisposition::running(RunId("run-ckpt".into())),
+                    true,
+                    Vec::new(),
+                    vec![ActiveModelOperation::write(&Some(prior))],
+                    Vec::new(),
+                ),
+            )
             .await
-            .expect("checkpoint read")
-            .is_none()
-    );
+            .unwrap();
+        }
+        let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "unit-worker")
+            .with_stream_checkpoint(checkpoints.clone() as Arc<dyn StreamCheckpointStore>);
+        store
+            .enqueue(RunDispatch::new(activation("run-ckpt")))
+            .await
+            .unwrap();
+        let processed = worker.tick(harness::clock(0)).await.expect("tick");
+        let committed = commit.committed();
+        let assistant: Vec<_> = committed
+            .messages
+            .iter()
+            .filter(|m| m.role == awaken_agent_contract::agent::message::Role::Assistant)
+            .collect();
+        if evidence == Some(ModelExecutionEvidence::Terminated) {
+            assert_eq!(
+                processed,
+                Some((
+                    RunId("run-ckpt".into()),
+                    RunState::Ended(EndCause::NaturalEnd)
+                ))
+            );
+            assert_eq!(
+                calls.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "R3 one continuation"
+            );
+            assert_eq!(assistant.len(), 1);
+            assert_eq!(assistant[0].text_content(), "Resumed done");
+            assert!(checkpoints.get("run-ckpt").await.unwrap().is_none());
+            assert_eq!(store.dispatch_count(), 0);
+        } else {
+            assert_eq!(processed, None, "R1/R2 no physical settlement");
+            assert_eq!(
+                calls.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "R1/R2 no reentry"
+            );
+            assert!(assistant.is_empty());
+            assert_eq!(checkpoints.get("run-ckpt").await.unwrap(), Some(partial));
+            assert_eq!(store.dispatch_count(), 1, "R1/R2 retain dispatch fence");
+        }
+    }
 }
 
 #[tokio::test]

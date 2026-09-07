@@ -491,7 +491,11 @@ mod tests {
         > {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let committed = committed_environment(receipt);
-            self.projection.lock().unwrap().environment = committed.clone();
+            let mut projection = self.projection.lock().unwrap();
+            if projection.environment != committed {
+                projection.revision.0 += 1;
+                projection.environment = committed.clone();
+            }
             Ok(committed)
         }
     }
@@ -896,6 +900,7 @@ mod tests {
             .await
             .expect("M1 establish resident baseline");
         let mut remote = resident;
+        remote.revision.0 += 1;
         remote.resource_revision = 1;
         remote.resources = remote
             .resources
@@ -1458,6 +1463,7 @@ mod tests {
             Some(binding.as_str()),
             "R1/C9 Store-read binding remains exact"
         );
+        frozen.revision = original_control.current_projection().revision;
         frozen.environment = committed_environment;
         assert_eq!(
             original_binding_sink.calls(),
@@ -1860,6 +1866,7 @@ mod tests {
         let missing_handle: awaken_provisioning_contract::SandboxHandle =
             serde_json::from_str(&missing).expect("R5 exact unavailable handle");
         drop(rebuild_fixture_host);
+        rebuild_frozen.revision.0 += 1;
         rebuild_frozen.environment = committed_resident_environment(rebuild_thread, missing);
         let rebuild_directive = awaken_session_contract::SessionRealizationDirective {
             projection: rebuild_frozen.clone(),
@@ -1920,6 +1927,7 @@ mod tests {
             )
             .await;
         drop(continuity_fixture_host);
+        continuity_frozen.revision.0 += 1;
         continuity_frozen.environment = committed_resident_environment(continuity_thread, missing);
         let continuity_directive = awaken_session_contract::SessionRealizationDirective {
             projection: continuity_frozen.clone(),

@@ -1573,6 +1573,21 @@ def check_session_observation_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "SessionEnvironmentProjection", projection, config,
         [(projection.replace(anchor, "LET observed == FALSE"), config,
           "ResidentSynchronizationObservesPhysicalOwner")])
+    convergence = (ROOT / "formal/tla/SessionEnvironmentConvergence.cfg").read_text()
+    # R1 no root ordering admits late A; R2 treating a descriptor as a physical
+    # owner strands the Coordinator; R3 bypassing real ownership publishes B
+    # over a retained A. Only named semantic counterexamples count as kills.
+    order = "incoming.revision > before.revision \\/ incoming = before"
+    compatible = "PhysicalProjectionCompatible(physical, incoming)"
+    reject_descriptor = projection.replace("                       " + compatible,
+        "                       " + compatible + ' /\\ physical # "none"', 1)
+    bypass_owner = projection.replace("                       " + compatible,
+                                      "                       TRUE", 1)
+    check_tlc_model_mutations(tlc_jar, "SessionEnvironmentProjection", projection, convergence, [
+        (projection.replace(order, "TRUE", 1), convergence, "ProjectionConvergenceSafety"),
+        (reject_descriptor, convergence, "temporal:ProjectionEventuallyConverges"),
+        (bypass_owner, convergence, "ProjectionConvergenceSafety"),
+    ])
     print("Session observation model mutations passed, including resident physical observation; publication uses the canonical renewal gate")
 
 
@@ -1582,7 +1597,7 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
     # X1 bypass binding stamping; X2 resample processed time; X3 publish retired;
     # X4 rewrite recovered metadata. Mutate REAL emitted observations, not the
     # model. Each must violate the exact relation against a green trace baseline.
-    for name in ["binding-apply", "processed-first-replay-terminal", "publication-cardinality-renewal", "store-torn-prefix"]:
+    for name in ["binding-apply", "processed-first-replay-terminal", "publication-cardinality-renewal", "store-torn-prefix", "environment-projection-convergence"]:
         document = json.loads((trace_dir / f"{name}.json").read_text())
         with tempfile.TemporaryDirectory(prefix="awaken-observation-mutant-") as temp:
             directory = Path(temp)
@@ -1603,6 +1618,9 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
             elif family == "publication":
                 step = next(s for s in document["steps"] if s["drained"])
                 step["published"].append(step["drained"][0])
+            elif family == "environment-projection":
+                step = next(s for s in document["steps"] if s["rule"] == "p0-stale")
+                step["after"]["binding"] = "A"
             else:
                 document["steps"][0]["recovered"][0]["time"] += 1
             write_json(path, document)
@@ -1614,7 +1632,7 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
                 [(mutant, config, "constant:TraceRefines")], dependencies=(definition["model"], *definition["dependencies"]))
     check_observation_rule_mutants(trace_dir, manifest)
     check_realization_trace_mutants(tlc_jar, trace_dir, manifest)
-    print("Production observation trace mutation score: 4/4 killed")
+    print("Production observation trace mutation score: 5/5 killed")
 
 def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     # Worker fault matrix W1 registry-only renewal; W2 evidence-only renewal;

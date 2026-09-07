@@ -27,10 +27,11 @@ impl crate::session_slot::SessionRuntimeSlot {
         thread: &str,
         workspace_id: &str,
         state: &awaken_session_contract::SessionEnvironmentState,
+        newer: bool,
     ) -> Result<SessionEnvironmentOwner, HostError> {
         let projected = projected_environment_owner(state, workspace_id, thread)?;
         let mut owner = self.environment_owner.clone();
-        owner.install_projection(projected)?;
+        owner.install_projection(projected, newer)?;
         Ok(owner)
     }
 
@@ -334,7 +335,7 @@ impl SharedHost {
         state: &awaken_session_contract::SessionEnvironmentState,
     ) -> Result<(), HostError> {
         self.session_slots.update(thread, |slot| {
-            let owner = slot.projected_environment_owner(thread, workspace_id, state)?;
+            let owner = slot.projected_environment_owner(thread, workspace_id, state, false)?;
             slot.install_projected_environment_owner(owner, state);
             Ok(())
         })

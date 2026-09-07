@@ -139,7 +139,11 @@ if command -v cargo-kani >/dev/null 2>&1; then
   kani_jobs="${AWAKEN_KANI_JOBS:-1}"
   run_kani() {
     local package="$1"; shift
-    cargo kani -p "$package" --output-format terse -j "$kani_jobs" "$@"
+    # C1 Cargo has an independent build-dir (user/CI configuration); E1 Kani's
+    # driver still reads target/kani/debug artifacts. Keep compiler and driver
+    # in that one authored tree; otherwise valid compilation ends in ENOENT.
+    CARGO_BUILD_BUILD_DIR="${CARGO_TARGET_DIR%/}/kani" \
+      cargo kani -p "$package" --output-format terse -j "$kani_jobs" "$@"
   }
   run_kani awaken-agent-contract \
     --harness ended_is_absorbing_for_every_next_state \
@@ -487,6 +491,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness durable_dispatch_admission_is_exact_and_commit_store_independent \
     --harness durable_dispatch_admission_is_monotonic_in_persistence_evidence \
     --harness sandbox_support_projection_is_total_exact_and_evidence_bound \
+    --harness projection_revision_admission_is_monotonic_and_exact \
     --harness durable_projection_identity_is_exact_or_a_same_physical_owner_stutter \
     --harness committed_candidate_retains_effect_kind_and_rejects_identity_relabeling \
     --harness terminal_quiescence_rejects_only_unstarted_reservations \
@@ -676,6 +681,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-environment-projection" \
     -config formal/tla/SessionEnvironmentProjection.cfg \
+    formal/tla/SessionEnvironmentProjection.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-environment-convergence" \
+    -config formal/tla/SessionEnvironmentConvergence.cfg \
     formal/tla/SessionEnvironmentProjection.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/managed-projection-publish" \

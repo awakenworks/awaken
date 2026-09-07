@@ -1,8 +1,46 @@
 pub mod awaken_local_process
+pub mod awaken_local_process::scoped
+pub struct awaken_local_process::scoped::ExecutionDeadline(_)
+impl awaken_local_process::scoped::ExecutionDeadline
+pub fn awaken_local_process::scoped::ExecutionDeadline::after(core::time::Duration) -> core::io::error::Result<Self>
+pub fn awaken_local_process::scoped::ExecutionDeadline::with_current_authority(&dyn awaken_provisioning_contract::execution_authority::CurrentExecutionAuthority, &mut dyn core::ops::function::FnMut(Self) -> core::io::error::Result<()>) -> core::io::error::Result<()>
+pub struct awaken_local_process::scoped::ScopedCommand<'a>
+pub awaken_local_process::scoped::ScopedCommand::cwd: &'a std::path::Path
+pub awaken_local_process::scoped::ScopedCommand::materialized: &'a awaken_provisioning_contract::spec::MaterializedCommand
+pub awaken_local_process::scoped::ScopedCommand::stdio: awaken_local_process::scoped::ScopedStdio
+pub struct awaken_local_process::scoped::ScopedDeadlineGrant<'a>
+impl<'a> awaken_local_process::scoped::ScopedDeadlineGrant<'a>
+pub fn awaken_local_process::scoped::ScopedDeadlineGrant<'a>::commit(self, awaken_local_process::scoped::ExecutionDeadline) -> core::io::error::Result<()>
+pub struct awaken_local_process::scoped::ScopedLaunchGrant<'a>
+impl awaken_local_process::scoped::ScopedLaunchGrant<'_>
+pub fn awaken_local_process::scoped::ScopedLaunchGrant<'_>::commit(self) -> core::io::error::Result<()>
+pub struct awaken_local_process::scoped::ScopedProcess
+impl awaken_local_process::scoped::ScopedProcess
+pub fn awaken_local_process::scoped::ScopedProcess::identity(&self) -> &awaken_local_process::ProcessExecutionIdentity
+pub async fn awaken_local_process::scoped::ScopedProcess::refresh_deadline_authorized(&self, core::time::Duration, impl core::ops::function::FnMut(awaken_local_process::scoped::ScopedDeadlineGrant<'_>) -> core::io::error::Result<()>) -> core::io::error::Result<()>
+pub async fn awaken_local_process::scoped::ScopedProcess::spawn_authorized(&std::path::Path, &std::path::Path, awaken_local_process::scoped::ScopedCommand<'_>, awaken_local_process::scoped::ExecutionDeadline, core::time::Duration, impl core::ops::function::FnMut(&awaken_local_process::ProcessExecutionIdentity, awaken_local_process::scoped::ScopedLaunchGrant<'_>) -> core::io::error::Result<()>) -> core::io::error::Result<Self>
+pub fn awaken_local_process::scoped::ScopedProcess::take_stderr(&mut self) -> core::option::Option<tokio::net::unix::pipe::Receiver>
+pub fn awaken_local_process::scoped::ScopedProcess::take_stdin(&mut self) -> core::option::Option<tokio::net::unix::pipe::Sender>
+pub fn awaken_local_process::scoped::ScopedProcess::take_stdout(&mut self) -> core::option::Option<tokio::net::unix::pipe::Receiver>
+impl awaken_provisioning_contract::sandbox::runtime::ProcessHandle for awaken_local_process::scoped::ScopedProcess
+pub fn awaken_local_process::scoped::ScopedProcess::id(&self) -> &str
+pub fn awaken_local_process::scoped::ScopedProcess::poll<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_provisioning_contract::sandbox::runtime::ExitStatus>, awaken_provisioning_contract::sandbox::foundation::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_local_process::scoped::ScopedProcess::signal<'life0, 'async_trait>(&'life0 self, awaken_provisioning_contract::sandbox::runtime::Signal) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::sandbox::foundation::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_local_process::scoped::ScopedProcess::wait<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::sandbox::runtime::ExitStatus, awaken_provisioning_contract::sandbox::foundation::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl core::ops::drop::Drop for awaken_local_process::scoped::ScopedProcess
+pub fn awaken_local_process::scoped::ScopedProcess::drop(&mut self)
+pub struct awaken_local_process::scoped::ScopedStdio
+impl awaken_local_process::scoped::ScopedStdio
+pub fn awaken_local_process::scoped::ScopedStdio::agent(bool) -> Self
+impl core::convert::From<awaken_provisioning_contract::spec::Stdio> for awaken_local_process::scoped::ScopedStdio
+pub fn awaken_local_process::scoped::ScopedStdio::from(awaken_provisioning_contract::spec::Stdio) -> Self
+pub async fn awaken_local_process::scoped::bootstrap() -> core::io::error::Result<awaken_provisioning_contract::sandbox::runtime::ExitStatus>
+pub fn awaken_local_process::scoped::execution_elapsed_time() -> core::io::error::Result<core::time::Duration>
 pub struct awaken_local_process::LocalProcess
 impl awaken_local_process::LocalProcess
 pub async fn awaken_local_process::LocalProcess::bind_private_signal_group(&mut self, u32) -> core::result::Result<(), awaken_provisioning_contract::sandbox::foundation::SandboxError>
 pub fn awaken_local_process::LocalProcess::spawn(&mut tokio::process::Command) -> core::io::error::Result<Self>
+pub fn awaken_local_process::LocalProcess::take_stderr(&mut self) -> core::option::Option<tokio::process::ChildStderr>
 pub fn awaken_local_process::LocalProcess::take_stdin(&mut self) -> core::option::Option<tokio::process::ChildStdin>
 pub fn awaken_local_process::LocalProcess::take_stdout(&mut self) -> core::option::Option<tokio::process::ChildStdout>
 impl awaken_provisioning_contract::sandbox::runtime::ProcessHandle for awaken_local_process::LocalProcess
@@ -10,4 +48,14 @@ pub fn awaken_local_process::LocalProcess::id(&self) -> &str
 pub fn awaken_local_process::LocalProcess::poll<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_provisioning_contract::sandbox::runtime::ExitStatus>, awaken_provisioning_contract::sandbox::foundation::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_local_process::LocalProcess::signal<'life0, 'async_trait>(&'life0 self, awaken_provisioning_contract::sandbox::runtime::Signal) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::sandbox::foundation::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_local_process::LocalProcess::wait<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::sandbox::runtime::ExitStatus, awaken_provisioning_contract::sandbox::foundation::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_local_process::ProcessExecutionIdentity
+impl awaken_local_process::ProcessExecutionIdentity
+pub fn awaken_local_process::ProcessExecutionIdentity::is_quiescent(&self) -> core::io::error::Result<bool>
+pub fn awaken_local_process::ProcessExecutionIdentity::namespace(&self) -> awaken_local_process::ProcessNamespaceIdentity
+pub fn awaken_local_process::ProcessExecutionIdentity::validate(&self) -> core::io::error::Result<()>
+pub struct awaken_local_process::ProcessNamespaceIdentity
+pub awaken_local_process::ProcessNamespaceIdentity::device: u64
+pub awaken_local_process::ProcessNamespaceIdentity::inode: u64
+pub const awaken_local_process::BUBBLEWRAP_PROCESS_BOUNDARY: [&str; 4]
+pub fn awaken_local_process::authority_proof_started() -> core::io::error::Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted>
 pub async fn awaken_local_process::wait_for_process_exit(&dyn awaken_provisioning_contract::sandbox::runtime::ProcessHandle) -> core::result::Result<awaken_provisioning_contract::sandbox::runtime::ExitStatus, awaken_provisioning_contract::sandbox::foundation::SandboxError>

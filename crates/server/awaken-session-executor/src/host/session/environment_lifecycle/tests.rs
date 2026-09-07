@@ -702,18 +702,24 @@ fn restoring_owner_is_only_an_exact_request_fence_until_durable_adoption() {
     };
     assert!(
         owner
-            .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
-                identity: mismatched_identity,
-                binding: "binding".into(),
-            })
+            .install_projection(
+                ProjectedEnvironmentOwner::AwaitingAdoption {
+                    identity: mismatched_identity,
+                    binding: "binding".into(),
+                },
+                false
+            )
             .is_err(),
         "F3/E3"
     );
     owner
-        .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
-            identity: exact_identity,
-            binding: "binding".into(),
-        })
+        .install_projection(
+            ProjectedEnvironmentOwner::AwaitingAdoption {
+                identity: exact_identity,
+                binding: "binding".into(),
+            },
+            false,
+        )
         .expect("F4/E4");
     assert!(matches!(
         owner,
@@ -739,10 +745,13 @@ fn closed_pending_adoption_discards_only_the_pre_observation_identity() {
     };
     let mut owner = SessionEnvironmentOwner::Vacant;
     owner
-        .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
-            identity: replacement.clone(),
-            binding: binding.into(),
-        })
+        .install_projection(
+            ProjectedEnvironmentOwner::AwaitingAdoption {
+                identity: replacement.clone(),
+                binding: binding.into(),
+            },
+            false,
+        )
         .expect("P1 replacement projection");
     assert!(
         !owner.discard_closed_pending_adoption(&observed, binding),
@@ -758,10 +767,13 @@ fn closed_pending_adoption_discards_only_the_pre_observation_identity() {
 
     owner = SessionEnvironmentOwner::Vacant;
     owner
-        .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
-            identity: observed.clone(),
-            binding: binding.into(),
-        })
+        .install_projection(
+            ProjectedEnvironmentOwner::AwaitingAdoption {
+                identity: observed.clone(),
+                binding: binding.into(),
+            },
+            false,
+        )
         .expect("P2 observed projection");
     assert!(
         owner.discard_closed_pending_adoption(&observed, binding),
@@ -810,10 +822,13 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
         generation: generation(thread),
     };
     owner
-        .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
-            identity: reserved_identity.clone(),
-            binding: reserved_binding.clone(),
-        })
+        .install_projection(
+            ProjectedEnvironmentOwner::AwaitingAdoption {
+                identity: reserved_identity.clone(),
+                binding: reserved_binding.clone(),
+            },
+            false,
+        )
         .expect("P1 absorb exact root reservation");
     assert!(matches!(
         &owner,
@@ -828,10 +843,13 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
         generation: generation(thread),
     };
     owner
-        .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
-            identity: same_binding_identity.clone(),
-            binding: reserved_binding.clone(),
-        })
+        .install_projection(
+            ProjectedEnvironmentOwner::AwaitingAdoption {
+                identity: same_binding_identity.clone(),
+                binding: reserved_binding.clone(),
+            },
+            false,
+        )
         .expect("P3 absorb an unordered receipt for the same physical handle");
     assert!(matches!(
         &owner,
@@ -848,13 +866,16 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
     let foreign_binding = serde_json::to_string(&foreign.handle()).unwrap();
     assert!(
         owner
-            .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
-                identity: BoundSessionEnvironmentIdentity::Durable {
-                    effect_id: "foreign-resource-reservation-effect".into(),
-                    generation: generation(thread),
+            .install_projection(
+                ProjectedEnvironmentOwner::AwaitingAdoption {
+                    identity: BoundSessionEnvironmentIdentity::Durable {
+                        effect_id: "foreign-resource-reservation-effect".into(),
+                        generation: generation(thread),
+                    },
+                    binding: foreign_binding,
                 },
-                binding: foreign_binding,
-            })
+                false
+            )
             .is_err(),
         "P2 foreign substrate remains fenced"
     );
@@ -898,10 +919,13 @@ async fn realization_revocation_absorbs_only_a_compatible_durable_receipt() {
         generation: generation(thread),
     };
     owner
-        .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
-            identity: replacement.clone(),
-            binding: binding.clone(),
-        })
+        .install_projection(
+            ProjectedEnvironmentOwner::AwaitingAdoption {
+                identity: replacement.clone(),
+                binding: binding.clone(),
+            },
+            false,
+        )
         .expect("V1 same physical generation absorbs its receipt");
     let retained = owner.clone();
     assert!(
@@ -912,19 +936,22 @@ async fn realization_revocation_absorbs_only_a_compatible_durable_receipt() {
 
     assert!(
         owner
-            .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
-                identity: BoundSessionEnvironmentIdentity::Durable {
-                    effect_id: "foreign-generation-receipt".into(),
-                    generation: awaken_session_contract::SandboxGeneration::new(
-                        thread,
-                        2,
-                        u64::MAX,
-                        "environment",
-                        "image",
-                    ),
+            .install_projection(
+                ProjectedEnvironmentOwner::AwaitingAdoption {
+                    identity: BoundSessionEnvironmentIdentity::Durable {
+                        effect_id: "foreign-generation-receipt".into(),
+                        generation: awaken_session_contract::SandboxGeneration::new(
+                            thread,
+                            2,
+                            u64::MAX,
+                            "environment",
+                            "image",
+                        ),
+                    },
+                    binding,
                 },
-                binding,
-            })
+                false
+            )
             .is_err(),
         "V2 different generation is rejected"
     );
@@ -2444,6 +2471,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             binding: binding.clone(),
             environment: environment.clone(),
         };
+        // A changed aggregate Environment is a new root-CAS snapshot.
+        projection.revision.0 += 1;
         projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
             binding: binding.clone(),
             effect_id: durable.then(|| create_fence.operation_id.clone()),
@@ -3247,4 +3276,105 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         .expect("R20/E3 published Resident");
     assert!(Arc::ptr_eq(&candidate.environment, &resident), "R20/E3");
     assert_eq!(sink.calls(), 2, "R19/R20 sink retries");
+}
+
+#[tokio::test]
+async fn newer_projection_replaces_only_a_descriptor_and_preserves_every_physical_owner() {
+    // C1 Vacant/pending/Candidate/Resident/Retiring; C2 old/equal vs admitted
+    // newer root; C3 foreign physical binding B. R1 pending+newer accepts B;
+    // R2 pending without newer proof rejects; R3 every physical phase rejects B
+    // even with newer root. Revocation, discard, terminal and checkpoint each
+    // retain their exact owner: root ordering never substitutes for closure.
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let env = environment(&provider, "owner-A").await;
+    let bound = BoundSessionEnvironment {
+        identity: identity("owner-A"),
+        binding: serde_json::to_string(&env.handle()).unwrap(),
+        environment: env.clone(),
+    };
+    for newer in [false, true] {
+        let mut pending =
+            SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
+                identity: bound.identity.clone(),
+                binding: bound.binding.clone(),
+            });
+        assert_eq!(
+            pending
+                .install_projection(
+                    ProjectedEnvironmentOwner::AwaitingAdoption {
+                        identity: identity("owner-B"),
+                        binding: "B".into()
+                    },
+                    newer
+                )
+                .is_ok(),
+            newer,
+            "R1/R2"
+        );
+        let mut owners = vec![
+            SessionEnvironmentOwner::Resident(bound.clone()),
+            SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
+                UnboundSessionEnvironment {
+                    origin: UnboundSessionEnvironmentOrigin::Adoption,
+                    binding: bound.binding.clone(),
+                    environment: env.clone(),
+                },
+            )),
+        ];
+        for cause in [
+            SessionEnvironmentRetirementCause::RealizationRevocation,
+            SessionEnvironmentRetirementCause::RecoveryDiscard,
+            SessionEnvironmentRetirementCause::Terminal {
+                effect_id: "terminal-A".into(),
+            },
+            SessionEnvironmentRetirementCause::CheckpointSource {
+                operation: awaken_session_contract::SessionEnvironmentOperation::new(
+                    "workspace",
+                    "owner-A",
+                    "suspend",
+                    &generation("owner-A"),
+                    1,
+                    None,
+                    None,
+                ),
+                generation: generation("owner-A"),
+            },
+        ] {
+            owners.push(SessionEnvironmentOwner::Retiring(
+                RetiringSessionEnvironment {
+                    cause,
+                    owned: RetiringEnvironmentOwner::Bound(bound.clone()),
+                },
+            ));
+        }
+        for mut owner in owners {
+            let phase = std::mem::discriminant(&owner);
+            assert!(
+                owner
+                    .install_projection(
+                        ProjectedEnvironmentOwner::AwaitingAdoption {
+                            identity: identity("owner-B"),
+                            binding: "B".into()
+                        },
+                        newer
+                    )
+                    .is_err(),
+                "R3"
+            );
+            assert_eq!(std::mem::discriminant(&owner), phase);
+            let retained = match &owner {
+                SessionEnvironmentOwner::Resident(o) => &o.environment,
+                SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(o)) => {
+                    &o.environment
+                }
+                SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+                    owned: RetiringEnvironmentOwner::Bound(o),
+                    ..
+                }) => &o.environment,
+                _ => panic!("R3 unexpected phase"),
+            };
+            assert!(Arc::ptr_eq(retained, &env), "R3 exact Arc retained");
+        }
+    }
 }

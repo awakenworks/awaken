@@ -57,8 +57,8 @@ use crate::config::{effective_tool_authorization, server_config};
 mod child_execution;
 mod root_execution;
 pub(crate) use child_execution::{
-    ChildAcpExecutorFactory, ChildExecutionAdapters, ChildRunRequest, RunScheduler,
-    child_attempt_executor, child_dispatch_request, configure_child_native_runtime,
+    AbortOnDropTask, ChildAcpExecutorFactory, ChildExecutionAdapters, ChildRunRequest,
+    RunScheduler, child_attempt_executor, child_dispatch_request, configure_child_native_runtime,
     run_configured_agent_until_boundary,
 };
 #[cfg(test)]
@@ -853,7 +853,11 @@ mod tests {
         );
         assert_eq!(request.placement.contract_version, 1, "P1/E3");
         assert_eq!(request.placement.dispatch_contract_version, 1, "P1/E3");
-        assert_eq!(request.placement.runtime_protocol_version, 1, "P1/E3");
+        assert_eq!(
+            request.placement.runtime_protocol_version,
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION,
+            "P1/E3"
+        );
     }
 
     #[tokio::test]
@@ -944,8 +948,12 @@ mod tests {
     #[async_trait::async_trait]
     impl LlmExecutor for RejectedModel {
         async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+            // This fixture rejects locally before any provider invocation.
             Err(awaken_runtime_contract::llm::Error::Binding(
                 "candidate is outside the frozen set".into(),
+            )
+            .with_execution_evidence(
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
             ))
         }
     }
@@ -1595,6 +1603,107 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn dropping_parent_aborts_direct_and_durable_child_execution() {
+        // C1 direct/durable scheduling; C2 the real child reaches model inference;
+        // C3 its parent future is dropped. R1/R2 require the model future's Drop
+        // receipt and no successful terminal result. A Notify/oneshot handshake
+        // proves the execution seam; no yield-count or sleep guesses entry.
+        // This kills detached JoinHandle behavior in either scheduling branch.
+        struct Dropped(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+        struct Blocked {
+            entered: tokio::sync::Notify,
+            dropped: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        }
+        #[async_trait::async_trait]
+        impl LlmExecutor for Blocked {
+            async fn infer(&self, _: ChatRequest) -> LlmResult<ChatResponse> {
+                let _receipt = Dropped(self.dropped.lock().unwrap().take());
+                self.entered.notify_one();
+                std::future::pending().await
+            }
+        }
+        for durable in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let provider = LocalProvider::new(tmp.path());
+            let sandbox = provider
+                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec(
+                    "cancel-parent",
+                ))
+                .await
+                .unwrap();
+            let commit = Arc::new(MemoryCommitCoordinator::new());
+            let scheduler = durable.then(|| RunScheduler {
+                store: Arc::new(AnyDispatchStore::open_sqlite_in_memory().unwrap()),
+                commit: commit.clone(),
+                reader: commit.clone(),
+                owner: "child-worker".into(),
+                claimed_commit: None,
+                recovery_projection: None,
+                session_resources: None,
+                publication_source: None,
+            });
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let model = Arc::new(Blocked {
+                entered: tokio::sync::Notify::new(),
+                dropped: std::sync::Mutex::new(Some(tx)),
+            });
+            let delegates = HashSet::new();
+            let execution = AgentExecution {
+                agent_id: "worker",
+                model_ref: "default",
+                delegates: &delegates,
+                run_delegation: None,
+                context: Some(
+                    RuntimeRunContext::new()
+                        .with_commit(commit.clone())
+                        .with_reader(commit.clone()),
+                ),
+                scheduler,
+                toolsets: &[],
+            };
+            let run_id = RunId("cancel-child".into());
+            let mut parent = Box::pin(run_agent_until_boundary(
+                model.clone(),
+                execution,
+                AgentRunSandbox::SharedLocal(&sandbox),
+                ChildRunRequest {
+                    run_id: run_id.clone(),
+                    origin: DelegationOrigin::root_for_agent(
+                        RunId("parent".into()),
+                        "call",
+                        "parent",
+                    ),
+                    seed: Some(vec![user("block")].into()),
+                    resume: None,
+                    parent_thread_id: ThreadId("parent-thread".into()),
+                },
+            ));
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::select! { _ = model.entered.notified() => {}, _ = &mut parent => panic!("C2 must remain in inference") }
+            }).await.expect("C2 real model entered");
+            drop(parent);
+            tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+                .await
+                .expect("R1/R2 child was not detached")
+                .unwrap();
+            assert!(
+                !matches!(
+                    commit.run_state(&run_id),
+                    Some(RunState::Ended(EndCause::NaturalEnd))
+                ),
+                "no fabricated successful completion"
+            );
+        }
+    }
+
     /// A delegated child reaches the same typed HITL boundary as a root Run. The
     /// parent-facing coordinator resumes it with a `ResumeResult`; no child-only
     /// continuation language or automatic permission bypass exists.
@@ -1611,6 +1720,9 @@ mod tests {
         // remains the sole execution fence; K4 no second read model is introduced.
         // Decision table: R1=C0+C1+C2+new=>Awaiting; R2=R1+duplicate=>E2;
         // R3=R1+resume=>E3; R4=E3+replay=>E4.
+        // C4 default test-thread stack, with no RUST_MIN_STACK override: all
+        // four rules exercise the durable owned-task boundary. Restoring direct
+        // Worker polling must reproduce stack overflow, not merely an assertion.
         struct PermissionModel;
 
         #[async_trait::async_trait]

@@ -116,10 +116,17 @@ case "$mode" in
       cargo check --workspace --all-targets "${locked[@]}"
     ;;
   --full)
+    # C1 Cargo's user build-dir differs from target-dir; C2 Scenario tests
+    # resolve the real Hand beside their test executable. E1 one full-test
+    # artifact tree preserves Cargo's sibling layout for either C1 value.
+    export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
     if step "clippy" "review the errors above; auto-fixable lints: cargo clippy --fix --all-targets --allow-dirty" \
-      cargo clippy --workspace --all-targets "${locked[@]}" -- -D warnings; then
+      cargo clippy --workspace --all-targets --features awaken-sandbox/hand "${locked[@]}" -- -D warnings; then
+      # Scenario/Coordinator integration uses the real release Hand companion.
+      # C1 full workspace tests => E1 build its authored feature in the same
+      # Cargo graph; a thin default binary must not replace the tested companion.
       step "test" "re-run a single failure with: cargo test --workspace <test_name> -- --nocapture" \
-        cargo test --workspace "${locked[@]}"
+        cargo test --workspace --features awaken-sandbox/hand "${locked[@]}"
     else
       echo "   (skipping tests until clippy compiles)" >&2
     fi

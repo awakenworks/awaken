@@ -763,6 +763,7 @@ async fn durable_submit_persists_then_runs_to_completion() {
             .count(),
         1
     );
+    harness::assert_one_model_invocation(commit.as_ref());
     let messages = commit.committed().messages;
     assert_eq!(
         messages.len(),
@@ -1207,6 +1208,7 @@ async fn durable_submit_is_idempotent_per_run() {
         .await
         .expect("first submit");
     let first_commit_count = commit.commit_count();
+    harness::assert_one_model_invocation(commit.as_ref());
     // Re-submitting the same run id is a no-op: the dispatch was already settled,
     // and re-enqueue does not create a second run or a second commit.
     let state = ingress
@@ -1221,6 +1223,7 @@ async fn durable_submit_is_idempotent_per_run() {
         first_commit_count,
         "re-submit adds no commit"
     );
+    harness::assert_one_model_invocation(commit.as_ref());
 }
 
 #[tokio::test]
@@ -1380,7 +1383,7 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
     // Thread commit; C2 the lease expires; C3 a replacement claim executes the
     // same Run. Effects: E1 recovery durably records one neutral reschedule
     // observation before execution; E2 input/running and terminal each commit
-    // exactly once; E3 the dispatch is removed; E4 the successful logical model
+    // exactly once, plus the model enter/return receipts; E3 the dispatch is removed; E4 the successful logical model
     // request is recorded once in the terminal commit. Decision rule
     // R1=C1+C2+C3 => E1+E2+E3+E4. The audit-kind order distinguishes the
     // intentional recovery and model observation from duplicate execution, so
@@ -1442,20 +1445,7 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
         ],
         "R1/E1-E2+E4: recovery and the logical model request are observed once"
     );
-    let committed = commit.committed();
-    let operation = awaken_runtime_contract::model_operation::ActiveModelOperation::at_commit(
-        &committed.state,
-        &committed.state_commit_cursors,
-        &RunId("run-1".into()),
-        u64::MAX,
-    )
-    .unwrap()
-    .expect("R1 one actual invocation is journaled");
-    assert_eq!(operation.ordinal.get(), 1, "R1 no repeated model entry");
-    assert_eq!(
-        operation.phase,
-        awaken_runtime_contract::model_operation::ModelOperationPhase::Returned
-    );
+    harness::assert_one_model_invocation(commit.as_ref());
     assert_eq!(store.dispatch_count(), 0);
 }
 

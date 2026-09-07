@@ -368,7 +368,11 @@ def project_realization_trace(events: list[dict[str, Any]]) -> list[dict[str, An
 def validate_observation_rule(name: str, step: dict[str, Any]) -> None:
     """Bind partition labels to raw measured conditions; model owns outcomes."""
     rule = step["rule"]
-    if name == "publication-cardinality-renewal":
+    if name == "environment-projection-convergence":
+        snapshot = {"revision": "uint", "fingerprint": "text", "binding": "text"}
+        state = {"exists": "bool", **snapshot}
+        validate_observation_schema(step, {"rule": "text", "before": state, "incoming": snapshot, "after": state, "admitted": "bool"}, name)
+    elif name == "publication-cardinality-renewal":
         match = re.fullmatch(r"count-(\d+)-predecessor-(true|false)-renewed-(true|false)", rule)
         count, predecessor, renewed = match.groups()
         cause = step["cause"]

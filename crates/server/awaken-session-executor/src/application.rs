@@ -1422,6 +1422,9 @@ impl crate::SharedHost {
             .session_slots
             .update(thread, |slot| slot.resource_projection.clone());
         let _resource_projection = resource_projection.lock().await;
+        let receipt = crate::session_slot::FrozenProjectionReceipt::from_projection(&projection)?;
+        self.session_slots
+            .update(thread, |slot| slot.validate_projection_receipt(&receipt))?;
         let (publication, model_candidate) = self.resolve_canonical_session_projection(
             &projection.workspace_id,
             crate::host::CanonicalSessionProjection::Baseline(&projection.baseline),
@@ -1604,10 +1607,12 @@ impl crate::SharedHost {
                 // published before the time proof/preparation is admitted.
                 slot.validate_session_publication(publication.as_ref())?;
                 slot.validate_environment_projection(thread, &environment_projection)?;
+                let newer = slot.validate_projection_receipt(&receipt)?;
                 let owner = slot.projected_environment_owner(
                     thread,
                     &projection.workspace_id,
                     &projection.environment,
+                    newer,
                 )?;
                 if let Some(preparation) = &preparation {
                     preparation.finish(slot)?;
@@ -1624,6 +1629,7 @@ impl crate::SharedHost {
                 // publication between the check above and these writes.
                 slot.retain_validated_session_publication(publication.as_ref());
                 slot.install_projected_environment_owner(owner, &projection.environment);
+                slot.frozen_projection_receipt = Some(receipt);
                 slot.project_validated_session_init(&init, environment_projection);
                 slot.install_session_request_context(projection.request_context.clone());
                 if let Some(baseline) = baseline_to_install {

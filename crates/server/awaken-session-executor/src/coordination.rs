@@ -172,14 +172,22 @@ impl CoordinationEndpoint {
         command: SessionAgentMessageCommand,
     ) -> Result<SessionAgentMessageReceipt, ToolError> {
         match self {
-            Self::Local(application) => application
-                .upgrade()
-                .ok_or_else(|| {
+            Self::Local(application) => {
+                let application = application.upgrade().ok_or_else(|| {
                     ToolError::Execution("Session coordination application is unavailable".into())
-                })?
-                .send_session_agent_message(command)
+                })?;
+                // Admission can realize another Agent's full Session projection
+                // before child execution starts. Break that nested poll stack at
+                // the local application port, using the same cancellation owner
+                // as child execution; dropping the tool must not detach admission.
+                crate::agent_runner::AbortOnDropTask::spawn(async move {
+                    application.send_session_agent_message(command).await
+                })
+                .join()
                 .await
-                .map_err(tool_error),
+                .map_err(|error| ToolError::Execution(error.to_string()))?
+                .map_err(tool_error)
+            }
             Self::Remote { control, slots } => {
                 let claim = Self::current_claim(slots, &command.session_id, source_run_id)?;
                 control
@@ -434,6 +442,25 @@ impl DispatchSettlementObserver for HostDispatchSettlementObserver {
 #[derive(Default)]
 pub(crate) struct RecordingSessionAgentCoordination {
     boundaries: std::sync::Mutex<Vec<SessionAgentBoundaryCommand>>,
+    message_gate: Option<Arc<AdmissionGate>>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct AdmissionGate {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    dropped: tokio::sync::Notify,
+}
+
+#[cfg(test)]
+struct AdmissionDropReceipt(Arc<AdmissionGate>);
+
+#[cfg(test)]
+impl Drop for AdmissionDropReceipt {
+    fn drop(&mut self) {
+        self.0.dropped.notify_one();
+    }
 }
 
 #[cfg(test)]
@@ -450,6 +477,11 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
         &self,
         _command: SessionAgentMessageCommand,
     ) -> Result<SessionAgentMessageReceipt, awaken_session_contract::RunError> {
+        if let Some(gate) = &self.message_gate {
+            let _receipt = AdmissionDropReceipt(gate.clone());
+            gate.entered.notify_one();
+            gate.release.notified().await;
+        }
         Err(awaken_session_contract::RunError::bad_request("unused"))
     }
 
@@ -552,6 +584,54 @@ mod tests {
             awaken_dispatch_contract::ClaimedSessionControlError,
         > {
             Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn local_admission_task_propagates_errors_and_never_detaches_on_drop() {
+        // Causes: C1 the real local endpoint enters application admission;
+        // C2 application returns an error / the owning tool future is dropped.
+        // Rules A1: release -> original error, completed future dropped;
+        // A2: drop -> blocked application future dropped without release.
+        // Notify receipts establish entry and destruction; timeouts bound hangs,
+        // never stand in for proof that the cancellation boundary was reached.
+        // The Coordinator delegation HTTP test covers successful full admission
+        // and projection on the default stack, before child execution starts.
+        for cancel in [false, true] {
+            let gate = Arc::new(AdmissionGate::default());
+            let application: Arc<dyn SessionAgentCoordination> =
+                Arc::new(RecordingSessionAgentCoordination {
+                    message_gate: Some(gate.clone()),
+                    ..Default::default()
+                });
+            let endpoint = CoordinationEndpoint::Local(Arc::downgrade(&application));
+            let command = SessionAgentMessageCommand {
+                session_id: "session".into(),
+                source_thread_id: ThreadId("root".into()),
+                source_run_id: RunId("run".into()),
+                source_call_id: "call".into(),
+                operation_id: "operation".into(),
+                target: SessionAgentTarget::Spawn {
+                    agent_id: "child".into(),
+                },
+                message: "work".into(),
+            };
+            let mut send = Box::pin(endpoint.send("run", command));
+            tokio::select! {
+                biased;
+                result = &mut send => panic!("admission completed before release: {result:?}"),
+                () = gate.entered.notified() => {},
+                () = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("admission did not enter"),
+            }
+            if cancel {
+                drop(send);
+            } else {
+                gate.release.notify_one();
+                assert!(send.await.unwrap_err().to_string().contains("unused"));
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(5), gate.dropped.notified())
+                .await
+                .expect("the owning future must destroy the application future");
         }
     }
 

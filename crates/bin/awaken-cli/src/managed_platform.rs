@@ -439,7 +439,7 @@ mod tests {
          * returned process lifecycle. Decision table: B1 Control+remote Control
          * store failure=>E1; B2 Coordinator+remote runtime-store failure=>E1;
          * B3 AllInOne+remote runtime-store failure=>E1; B4 explicitly
-         * initialized AllInOne+all local build dependencies ready=>E2. B4 uses
+         * initialized AllInOne+local stores ready+local Worker disabled=>E2. B4 uses
          * the canonical admission and migration owners to establish its local
          * installation prerequisite; the same two production call sites own
          * the three roles, so no test-only startup path or second lifecycle is
@@ -520,7 +520,10 @@ mod tests {
         let mut success = crate::config::local_test_deployment(success_dir.path().to_owned());
         success.identity_mode = awaken_control::ManagementIdentityMode::NoLogin;
         success.cloud_models = crate::config::CloudModelMode::Disabled;
-        success.runtime.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+        // B4 owns service registration, so use the existing remote-Worker
+        // composition. Local Hand installation is not a prerequisite for this
+        // boundary; its admission is tested by Runtime Host and substrate gates.
+        success.runtime.disable_local_pool = true;
         let success_authorization = crate::installation_binding::InstallationAuthorization::new(
             Some("managed-background-services-b4".into()),
             None,

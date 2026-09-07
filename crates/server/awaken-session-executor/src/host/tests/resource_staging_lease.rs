@@ -457,6 +457,8 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
     // C2 its initially positive local proof expires during that wait; C3
     // Resource revision is zero or nonzero. E1 both paths reject; E2 neither
     // publishes publication/Environment/baseline/dispatch/context coordinates;
+    // E2 also leaves root-version admission unchanged, so a failed higher root
+    // cannot fence a later retry before any complete projection was installed.
     // E3 no File read begins. R1 C1+C2+zero covers final publication, while R2
     // C1+C2+nonzero covers the preparation entrance before Resource I/O.
     // Polling once proves the awaited lock boundary; no scheduler-yield count
@@ -511,6 +513,7 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
                     && slot.environment_projection.is_none()
                     && slot.environment_snapshot.is_none()
                     && slot.baseline.is_none()
+                    && slot.frozen_projection_receipt.is_none()
                     && slot.resource_transition.is_none()
                     && !slot.session_dispatch
                     && slot.request_context.is_empty()
@@ -615,6 +618,7 @@ impl StagingFixture {
                 .session_slots
                 .read(SESSION, |slot| {
                     slot.baseline.is_none()
+                        && slot.frozen_projection_receipt.is_none()
                         && slot.runtime.is_none()
                         && !slot.session_dispatch
                         && slot.resource_transition.is_none()
