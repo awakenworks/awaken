@@ -195,6 +195,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness source_preparation_and_disposal_require_distinct_durable_phases \
     --harness resource_materialization_selects_only_active_or_pending_root_generation \
     --harness failed_resource_replacement_never_promotes_the_pending_manifest \
+    --harness resource_retry_reuses_exact_pending_revision \
     --harness terminal_execution_never_reopens \
     --harness realization_renewal_never_widens_owner_epoch_or_expiry_authority \
     --harness session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an_epoch \

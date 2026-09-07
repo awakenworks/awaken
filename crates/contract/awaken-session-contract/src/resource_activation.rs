@@ -152,6 +152,13 @@ const fn resource_manifest_settlement_plan(
     }
 }
 
+/// Select the only generation that a fresh or restarted reconciler may retry.
+/// The persisted pending slot grants retry authority; the generation watermark
+/// is returned unchanged rather than allocating a second logical activation.
+const fn pending_resource_retry_revision(pending: bool, revision: u64) -> Option<u64> {
+    if pending { Some(revision) } else { None }
+}
+
 /// Closed scalar kernel behind retained-generation selection. Active wins if a
 /// corrupt or legacy row aliases both revisions; the public lookup then still
 /// returns one inseparable revision/manifest pair rather than mixing slots.
@@ -243,6 +250,28 @@ fn failed_resource_replacement_never_promotes_the_pending_manifest() {
     );
     if settlement != ResourceManifestSettlementKind::Commit {
         assert!(!plan.promote_pending);
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn resource_retry_reuses_exact_pending_revision() {
+    // Cause/effect graph: C1 a persisted pending manifest exists; C2 it does
+    // not. Effects: E1 select the exact persisted generation watermark for the
+    // next attempt; E2 reject retry authority. The process lifecycle is not an
+    // input because restart may reconstruct only these durable scalar facts.
+    //
+    // | Rule | pending | persisted revision | retry revision | Effect |
+    // |---|---|---|---|---|
+    // | R1 | yes | any u64 | identical | E1 |
+    // | R2 | no | any u64 | none | E2 |
+    let pending: bool = kani::any();
+    let revision: u64 = kani::any();
+    let selected = pending_resource_retry_revision(pending, revision);
+
+    assert_eq!(selected.is_some(), pending);
+    if let Some(selected) = selected {
+        assert_eq!(selected, revision);
     }
 }
 
@@ -383,11 +412,10 @@ impl SessionResourceState {
     /// Fence one external attempt durably. A retry increments the same records;
     /// it never creates a second logical activation.
     pub fn start_attempt(&mut self) -> Result<(), ResourceActivationError> {
-        if self.pending.is_none() {
-            return Err(ResourceActivationError::NoPending);
-        }
+        let retry_revision = pending_resource_retry_revision(self.pending.is_some(), self.revision)
+            .ok_or(ResourceActivationError::NoPending)?;
         for activation in self.activations.iter_mut().filter(|activation| {
-            activation.revision == self.revision && activation.state == ActivationState::Prepared
+            activation.revision == retry_revision && activation.state == ActivationState::Prepared
         }) {
             activation.attempts = activation.attempts.saturating_add(1);
             activation.last_error = None;
