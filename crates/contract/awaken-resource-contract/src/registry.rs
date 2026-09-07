@@ -275,6 +275,70 @@ fn validate_live_definition(id: &str, state: ResourceState) -> Result<(), Resour
     }
 }
 
+fn ensure_resource_workspace(
+    id: &str,
+    resource_workspace_id: &str,
+    requested_workspace_id: &str,
+) -> Result<(), ResourceRegistryError> {
+    if resource_workspace_id == requested_workspace_id {
+        Ok(())
+    } else {
+        Err(ResourceRegistryError::NotFound(id.to_string()))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveBindingAdmission {
+    Accept,
+    WorkspaceMismatch,
+    NotActive,
+    ConfigMissing,
+}
+
+const fn live_binding_admission(
+    workspace_matches: bool,
+    state: ResourceState,
+    config_exists: bool,
+) -> LiveBindingAdmission {
+    if !workspace_matches {
+        LiveBindingAdmission::WorkspaceMismatch
+    } else if !matches!(state, ResourceState::Active) {
+        LiveBindingAdmission::NotActive
+    } else if !config_exists {
+        LiveBindingAdmission::ConfigMissing
+    } else {
+        LiveBindingAdmission::Accept
+    }
+}
+
+fn verify_live_binding_facts(
+    id: &str,
+    resource_workspace_id: &str,
+    requested_workspace_id: &str,
+    state: ResourceState,
+    version: ConfigVersion,
+    config_exists: bool,
+) -> Result<(), ResourceRegistryError> {
+    match live_binding_admission(
+        resource_workspace_id == requested_workspace_id,
+        state,
+        config_exists,
+    ) {
+        LiveBindingAdmission::Accept => Ok(()),
+        LiveBindingAdmission::WorkspaceMismatch => {
+            Err(ResourceRegistryError::NotFound(id.to_string()))
+        }
+        LiveBindingAdmission::NotActive => Err(ResourceRegistryError::NotActive {
+            id: id.to_string(),
+            state,
+        }),
+        LiveBindingAdmission::ConfigMissing => Err(ResourceRegistryError::ConfigNotFound {
+            id: id.to_string(),
+            version,
+        }),
+    }
+}
+
 fn validate_publish(
     id: &str,
     current: ConfigVersion,
@@ -368,7 +432,11 @@ impl MemoryStoreAggregate {
         &self,
         workspace_id: &str,
     ) -> Result<MemoryStoreConfigVersion, ResourceRegistryError> {
-        self.ensure_workspace(workspace_id)?;
+        ensure_resource_workspace(
+            self.definition.id.as_str(),
+            &self.definition.workspace_id,
+            workspace_id,
+        )?;
         validate_live_definition(self.definition.id.as_str(), self.definition.state)?;
         self.config(self.definition.current_config_version)
             .cloned()
@@ -385,14 +453,14 @@ impl MemoryStoreAggregate {
         workspace_id: &str,
         version: ConfigVersion,
     ) -> Result<(), ResourceRegistryError> {
-        self.ensure_workspace(workspace_id)?;
-        validate_live_definition(self.definition.id.as_str(), self.definition.state)?;
-        self.config(version)
-            .map(|_| ())
-            .ok_or_else(|| ResourceRegistryError::ConfigNotFound {
-                id: self.definition.id.to_string(),
-                version,
-            })
+        verify_live_binding_facts(
+            self.definition.id.as_str(),
+            &self.definition.workspace_id,
+            workspace_id,
+            self.definition.state,
+            version,
+            self.config(version).is_some(),
+        )
     }
 
     pub fn update_profile(
@@ -415,7 +483,11 @@ impl MemoryStoreAggregate {
         config: MemoryStoreConfigVersion,
         updated_at: u64,
     ) -> Result<(), ResourceRegistryError> {
-        self.ensure_workspace(workspace_id)?;
+        ensure_resource_workspace(
+            self.definition.id.as_str(),
+            &self.definition.workspace_id,
+            workspace_id,
+        )?;
         if config.memory_store_id != self.definition.id {
             return Err(ResourceRegistryError::Invalid(
                 "MemoryStore config identity does not match its aggregate".into(),
@@ -445,20 +517,14 @@ impl MemoryStoreAggregate {
         state: ResourceState,
         updated_at: u64,
     ) -> Result<(), ResourceRegistryError> {
-        self.ensure_workspace(workspace_id)?;
+        ensure_resource_workspace(
+            self.definition.id.as_str(),
+            &self.definition.workspace_id,
+            workspace_id,
+        )?;
         self.definition.state = state;
         self.definition.timestamps.transition_to(state, updated_at);
         Ok(())
-    }
-
-    fn ensure_workspace(&self, workspace_id: &str) -> Result<(), ResourceRegistryError> {
-        if self.definition.workspace_id == workspace_id {
-            Ok(())
-        } else {
-            Err(ResourceRegistryError::NotFound(
-                self.definition.id.to_string(),
-            ))
-        }
     }
 }
 
@@ -531,7 +597,11 @@ impl RepositoryAggregate {
         &self,
         workspace_id: &str,
     ) -> Result<RepositoryConfigVersion, ResourceRegistryError> {
-        self.ensure_workspace(workspace_id)?;
+        ensure_resource_workspace(
+            self.definition.id.as_str(),
+            &self.definition.workspace_id,
+            workspace_id,
+        )?;
         validate_live_definition(self.definition.id.as_str(), self.definition.state)?;
         self.config(self.definition.current_config_version)
             .cloned()
@@ -548,14 +618,14 @@ impl RepositoryAggregate {
         workspace_id: &str,
         version: ConfigVersion,
     ) -> Result<(), ResourceRegistryError> {
-        self.ensure_workspace(workspace_id)?;
-        validate_live_definition(self.definition.id.as_str(), self.definition.state)?;
-        self.config(version)
-            .map(|_| ())
-            .ok_or_else(|| ResourceRegistryError::ConfigNotFound {
-                id: self.definition.id.to_string(),
-                version,
-            })
+        verify_live_binding_facts(
+            self.definition.id.as_str(),
+            &self.definition.workspace_id,
+            workspace_id,
+            self.definition.state,
+            version,
+            self.config(version).is_some(),
+        )
     }
 
     pub fn publish_config(
@@ -565,7 +635,11 @@ impl RepositoryAggregate {
         config: RepositoryConfigVersion,
         updated_at: u64,
     ) -> Result<(), ResourceRegistryError> {
-        self.ensure_workspace(workspace_id)?;
+        ensure_resource_workspace(
+            self.definition.id.as_str(),
+            &self.definition.workspace_id,
+            workspace_id,
+        )?;
         validate_repository_config(self.definition.id.as_str(), config.version, &config)?;
         validate_publish(
             self.definition.id.as_str(),
@@ -591,20 +665,14 @@ impl RepositoryAggregate {
         state: ResourceState,
         updated_at: u64,
     ) -> Result<(), ResourceRegistryError> {
-        self.ensure_workspace(workspace_id)?;
+        ensure_resource_workspace(
+            self.definition.id.as_str(),
+            &self.definition.workspace_id,
+            workspace_id,
+        )?;
         self.definition.state = state;
         self.definition.timestamps.transition_to(state, updated_at);
         Ok(())
-    }
-
-    fn ensure_workspace(&self, workspace_id: &str) -> Result<(), ResourceRegistryError> {
-        if self.definition.workspace_id == workspace_id {
-            Ok(())
-        } else {
-            Err(ResourceRegistryError::NotFound(
-                self.definition.id.to_string(),
-            ))
-        }
     }
 }
 
@@ -870,6 +938,79 @@ pub trait ResourceRegistryRepository: Send + Sync {
     ) -> Result<ReplaceOutcome, RegistryRepositoryError>;
 }
 
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[test]
+    fn live_binding_decision_table_is_total_exact_and_fail_closed() {
+        // Cause/effect graph: C1 the requested Workspace matches the resource;
+        // C2 lifecycle is Active; C3 the frozen config exists. E1 accepts only
+        // C1+C2+C3; E2 a C1 failure is NotFound; E3 after C1, a C2 failure is
+        // NotActive; E4 after C1+C2, a C3 failure is ConfigNotFound.
+        // Constraint: error precedence hides cross-Workspace existence before
+        // exposing lifecycle or config facts. The 2*4*2 table below exercises
+        // every rule for both shared MemoryStore and Repository admission.
+        let states = [
+            ResourceState::Active,
+            ResourceState::Suspended,
+            ResourceState::Archived,
+            ResourceState::Deleted,
+        ];
+        for workspace_matches in [false, true] {
+            for state in states {
+                for config_exists in [false, true] {
+                    let expected = if !workspace_matches {
+                        LiveBindingAdmission::WorkspaceMismatch
+                    } else if state != ResourceState::Active {
+                        LiveBindingAdmission::NotActive
+                    } else if !config_exists {
+                        LiveBindingAdmission::ConfigMissing
+                    } else {
+                        LiveBindingAdmission::Accept
+                    };
+                    assert_eq!(
+                        live_binding_admission(workspace_matches, state, config_exists),
+                        expected
+                    );
+
+                    let requested_workspace = if workspace_matches { "ws-a" } else { "ws-b" };
+                    assert_eq!(
+                        ensure_resource_workspace("resource-a", "ws-a", requested_workspace)
+                            .is_ok(),
+                        workspace_matches
+                    );
+                    let result = verify_live_binding_facts(
+                        "resource-a",
+                        "ws-a",
+                        requested_workspace,
+                        state,
+                        ConfigVersion(7),
+                        config_exists,
+                    );
+                    match expected {
+                        LiveBindingAdmission::Accept => assert!(result.is_ok()),
+                        LiveBindingAdmission::WorkspaceMismatch => assert!(matches!(
+                            result,
+                            Err(ResourceRegistryError::NotFound(id)) if id == "resource-a"
+                        )),
+                        LiveBindingAdmission::NotActive => assert!(matches!(
+                            result,
+                            Err(ResourceRegistryError::NotActive { id, state: actual })
+                                if id == "resource-a" && actual == state
+                        )),
+                        LiveBindingAdmission::ConfigMissing => assert!(matches!(
+                            result,
+                            Err(ResourceRegistryError::ConfigNotFound { id, version })
+                                if id == "resource-a" && version == ConfigVersion(7)
+                        )),
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(kani)]
 mod registry_proofs {
     use super::*;
@@ -938,5 +1079,32 @@ mod registry_proofs {
             timestamps.archived_unix_nanos,
             matches!(state, ResourceState::Archived | ResourceState::Deleted).then_some(at)
         );
+    }
+
+    #[kani::proof]
+    fn live_resource_binding_requires_exact_scope_active_state_and_existing_pin() {
+        let workspace_matches: bool = kani::any();
+        let state_code: u8 = kani::any();
+        let config_exists: bool = kani::any();
+        kani::assume(state_code <= 3);
+        let state = match state_code {
+            0 => ResourceState::Active,
+            1 => ResourceState::Suspended,
+            2 => ResourceState::Archived,
+            _ => ResourceState::Deleted,
+        };
+        let decision = live_binding_admission(workspace_matches, state, config_exists);
+
+        assert_eq!(
+            decision == LiveBindingAdmission::Accept,
+            workspace_matches && matches!(state, ResourceState::Active) && config_exists
+        );
+        if !workspace_matches {
+            assert_eq!(decision, LiveBindingAdmission::WorkspaceMismatch);
+        } else if !matches!(state, ResourceState::Active) {
+            assert_eq!(decision, LiveBindingAdmission::NotActive);
+        } else if !config_exists {
+            assert_eq!(decision, LiveBindingAdmission::ConfigMissing);
+        }
     }
 }
