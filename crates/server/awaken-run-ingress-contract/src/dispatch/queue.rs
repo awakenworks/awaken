@@ -154,6 +154,10 @@ pub trait DispatchQueue: Send + Sync {
     /// resumed or cancelled. The candidate itself is excluded from this peer
     /// check, so its matching reply/cancellation can wake it. Returns `None` when
     /// nothing is runnable, and the run's current pending input in [`Claimed`].
+    /// Broad selection prefers eligible rows without an occupied physical slot.
+    /// Recovery with an unconfirmed predecessor remains discoverable when no
+    /// independent runnable work exists; it cannot starve other Threads. This
+    /// order also applies to compatible/placed claims and never clears a slot.
     async fn claim(
         &self,
         owner: &str,

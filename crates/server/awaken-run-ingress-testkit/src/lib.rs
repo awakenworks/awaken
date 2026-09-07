@@ -333,6 +333,7 @@ pub async fn assert_dispatch_conformance_with_clock(
     if capabilities.local_commit_guard {
         local_claims_skip_remote_only_work(store, namespace).await;
     }
+    occupied_recovery_does_not_starve_other_threads(store, namespace, clock).await;
     exact_claim_recovery_and_fencing(store, namespace, clock).await;
     retry_exhaustion_claim_is_atomic_and_policy_exact(store, namespace, clock).await;
     attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities, clock).await;
