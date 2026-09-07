@@ -1332,7 +1332,7 @@ impl WorkerNode {
         // A lease receipt proves no more time than remained when the request
         // started. Anchoring locally before I/O prevents response latency from
         // extending the Coordinator-owned expiry in the Worker process.
-        let initial_heartbeat_started = lifecycle::ProofStarted::now()?;
+        let initial_heartbeat_started = lifecycle::authority_proof_started()?;
         let initial_heartbeat = lifecycle.observations.snapshot().into_heartbeat(
             1,
             awaken_worker_contract::process_ready_after_startup(

@@ -5,6 +5,10 @@ EXTENDS SessionRealizationAuthority, Integers
    projection now shared by heartbeat and Session installation. One incarnation,
    one outstanding response, boot clock 0..3, conservative proof window 2.
    Clock may advance without a heartbeat tick (suspend/scheduling delay).
+   Response sampling chooses current boot time or -1 (before every request)
+   to exercise checked elapsed subtraction; -1 is an invalid observation,
+   not a claim that real BOOTTIME regresses or that arbitrary rollback is
+   detectable. One outstanding request excludes response reordering.
    Root checks and Session mutation are one synchronous callback action; no
    async owner lock is held there. This is not a model of physical GO, OS cutoff,
    arbitrary callback duration, clock correctness, or Rust refinement. *)
@@ -24,18 +28,22 @@ RequestHeartbeat ==
   /\ UNCHANGED <<vars, rootPhase, bootNow, deadline, closedEver,
                   badReceipt, badAdmission, admissions>>
 
-ApplyHeartbeat ==
+ApplyHeartbeatAt(observed) ==
   /\ heartbeatRequest # -1
   /\ LET accepted == (rootPhase = "Starting" \/ RootCurrent)
-                      /\ bootNow < heartbeatRequest + 2
+                      /\ observed >= heartbeatRequest
+                      /\ observed < heartbeatRequest + 2
      IN /\ rootPhase' = IF accepted THEN "Live" ELSE "Closed"
         /\ deadline' = IF accepted THEN heartbeatRequest + 2 ELSE deadline
         /\ closedEver' = (closedEver \/ ~accepted)
         /\ badReceipt' = (badReceipt \/ (accepted /\
              (rootPhase = "Closed" \/ (rootPhase = "Live" /\ bootNow >= deadline)
-              \/ bootNow >= heartbeatRequest + 2)))
+              \/ observed < heartbeatRequest
+              \/ observed >= heartbeatRequest + 2)))
   /\ heartbeatRequest' = -1
   /\ UNCHANGED <<vars, bootNow, badAdmission, admissions>>
+
+ApplyHeartbeat == \E observed \in {bootNow, -1} : ApplyHeartbeatAt(observed)
 
 CloseRoot ==
   /\ rootPhase # "Closed" /\ rootPhase' = "Closed" /\ closedEver' = TRUE
@@ -89,4 +97,5 @@ ReceiptNeverRevivesExpiredProof == ~badReceipt
 SessionInstallationRequiresCurrentRoot == ~badAdmission
 NoAdmissionReached == admissions = 0
 NoRenewedRootReached == deadline < 3
+NoRegressionResponse == [][~ApplyHeartbeatAt(-1)]_allVars
 =============================================================================

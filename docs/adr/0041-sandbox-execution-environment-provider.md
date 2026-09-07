@@ -858,6 +858,16 @@ Session registry is added. Linux uses the same suspend-inclusive BOOTTIME source
 as the execution cutoff, retaining submillisecond precision; other platforms
 retain their existing Instant timing and do not gain a supervision claim.
 
+Request-start observations and conservative remaining-time arithmetic now live
+in the existing neutral `authority_lease` value objects. The Local process adapter
+is the single platform sampler and reuses the existing physical cutoff clock on
+Linux; Worker startup and heartbeat both consume it. Observations contain no
+wall-clock value, are not serializable, and confer no ownership independently
+of the existing guarded receipt. This extraction removes the Worker-private
+clock implementation before Session receipt integration; it does not yet fix
+the Session projection's absolute-expiry clock correspondence or qualify a
+direct all-in-one Host's execution authority.
+
 Adjacent cause/effect tests cover the initial/renewal latency boundary,
 irreversible close, clock regression, Linux suspend, callback error/unwind,
 root-lock contention, late complete projection with/without Resources, both
@@ -865,8 +875,14 @@ renewal entrances, and cancellation during a real gated Resource read. A real
 HTTP Worker fixture rejects an aged first receipt before dispatch. The bounded
 `WorkerExecutionAuthority` model composes the existing Session slot/cleanup
 kernel with one root receipt, one outstanding response and a finite boot clock.
-It checks late responses, fresh admission, generation replacement and renewal;
-six guard mutants plus admission/renewal reachability witnesses run in CI.
+It checks late responses, fresh admission, generation replacement and renewal.
+It also admits an invalid response observation before its request start;
+removing that lower-bound guard must violate the independent receipt oracle.
+Seven guard mutants plus admission/renewal/rejected-response reachability
+witnesses run in CI. Adjacent Rust rows W10/W11 cover initial and renewal
+responses and verify that later valid receipts cannot reopen a closed proof.
+One outstanding request and boot time 0..3 exclude response reordering and
+general clock rollback detection from the model's claim.
 Its atomic callback abstraction does not prove arbitrary callback duration,
 physical GO/cutoff refresh, OS clock correctness, Rust refinement or cleanup
 liveness.

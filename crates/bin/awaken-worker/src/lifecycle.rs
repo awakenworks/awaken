@@ -16,8 +16,8 @@ mod environment_evidence;
 
 pub(crate) use environment_evidence::proof_is_fresh as environment_proof_is_fresh;
 mod authority;
-pub(crate) use authority::ProofStarted;
 pub(crate) use authority::WorkerAuthorityProof;
+pub(crate) use authority::authority_proof_started;
 
 const SESSION_REALIZATION_LEASE_TTL_MS: u64 = 20_000;
 
@@ -321,16 +321,16 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
         return;
     };
     awaken_observability::set_worker_authority_proof_remaining(remaining);
-    let mut next_attempt = receipt.started.scheduled + receipt.timing.renew_interval();
+    let mut next_attempt = receipt.started.scheduled() + receipt.timing.renew_interval();
     let mut next_regular = next_attempt;
     let mut admission_suspended = false;
     let mut consecutive_failures = 0_u64;
     loop {
         tokio::time::sleep_until(tokio::time::Instant::from_std(next_attempt)).await;
-        let Ok(attempt) = ProofStarted::now() else {
+        let Ok(attempt) = authority_proof_started() else {
             break;
         };
-        let attempt_started = attempt.scheduled;
+        let attempt_started = attempt.scheduled();
         let scheduling_lag = attempt_started.saturating_duration_since(next_attempt);
         let Ok((receipt, _)) = lifecycle.authority.snapshot() else {
             awaken_observability::record_worker_authority_loss("proof_expired");

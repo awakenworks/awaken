@@ -2,41 +2,12 @@
 //! The durable registry remains authoritative. Heartbeat scheduling and local
 //! Session admission consult this same projection; neither keeps a second lease.
 
+pub(crate) use awaken_local_process::authority_proof_started;
 use awaken_provisioning_contract::CurrentExecutionAuthority;
-use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
-use std::{
-    io,
-    sync::Mutex,
-    time::{Duration, Instant},
+use awaken_runtime_contract::authority_lease::{
+    AuthorityLeaseTiming, AuthorityProofStarted as ProofStarted,
 };
-
-#[derive(Clone, Copy)]
-pub(crate) struct ProofStarted {
-    pub(super) scheduled: Instant,
-    #[cfg(target_os = "linux")]
-    boot: Duration,
-}
-
-impl ProofStarted {
-    pub(crate) fn now() -> io::Result<Self> {
-        Ok(Self {
-            scheduled: Instant::now(),
-            #[cfg(target_os = "linux")]
-            boot: awaken_local_process::scoped::execution_elapsed_time()?,
-        })
-    }
-
-    fn elapsed_at(self, now: Self) -> Option<Duration> {
-        #[cfg(target_os = "linux")]
-        {
-            now.boot.checked_sub(self.boot)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            now.scheduled.checked_duration_since(self.scheduled)
-        }
-    }
-}
+use std::{io, sync::Mutex, time::Duration};
 
 #[derive(Clone, Copy)]
 pub(super) struct Receipt {
@@ -46,10 +17,7 @@ pub(super) struct Receipt {
 
 impl Receipt {
     fn remaining_at(self, now: ProofStarted) -> Option<Duration> {
-        let remaining = self
-            .timing
-            .remaining_proof_after(self.started.elapsed_at(now)?);
-        (!remaining.is_zero()).then_some(remaining)
+        self.timing.remaining_proof_at(self.started, now)
     }
 }
 
@@ -110,7 +78,7 @@ impl WorkerAuthorityProof {
         timing: AuthorityLeaseTiming,
     ) -> io::Result<()> {
         let mut proof = self.0.lock().map_err(|_| denied())?;
-        proof.apply(Receipt { started, timing }, ProofStarted::now()?)
+        proof.apply(Receipt { started, timing }, authority_proof_started()?)
     }
 
     /// Copies are for cadence/metrics only; effects must use `with_current`.
@@ -118,7 +86,7 @@ impl WorkerAuthorityProof {
         self.0
             .lock()
             .map_err(|_| denied())?
-            .current(ProofStarted::now()?)
+            .current(authority_proof_started()?)
     }
 
     pub(super) fn remaining(&self) -> Duration {
@@ -138,7 +106,7 @@ impl WorkerAuthorityProof {
 impl CurrentExecutionAuthority for WorkerAuthorityProof {
     fn with_current(&self, effect: &mut dyn FnMut(Duration) -> io::Result<()>) -> io::Result<()> {
         let mut proof = self.0.lock().map_err(|_| denied())?;
-        let (_, remaining) = proof.current(ProofStarted::now()?)?;
+        let (_, remaining) = proof.current(authority_proof_started()?)?;
         effect(remaining)
     }
 }
@@ -150,11 +118,7 @@ mod tests {
 
     fn at(base: ProofStarted, millis: u64) -> ProofStarted {
         let delta = Duration::from_millis(millis);
-        ProofStarted {
-            scheduled: base.scheduled + delta,
-            #[cfg(target_os = "linux")]
-            boot: base.boot + delta,
-        }
+        ProofStarted::from_clock_sample(base.scheduled() + delta, base.elapsed_clock() + delta)
     }
 
     #[test]
@@ -170,7 +134,12 @@ mod tests {
         // | W5 | Closed | 10 | 11 | closed |
         // | W6 | Live@10 | 0 | 11 | closed, backward receipt |
         // | W7 | Live@0 | 10 | 30 | closed, aged new receipt |
-        let base = ProofStarted::now().unwrap();
+        // | W10 | Starting | 10 | 9 | closed, regressed response clock |
+        // | W11 | Live@0 | 10 | 9 | closed, regressed response clock |
+        // W10/W11 correspond to ApplyHeartbeatAt(-1) in the existing
+        // WorkerExecutionAuthority model. Both must remain closed after a
+        // later well-formed receipt; this is not general rollback detection.
+        let base = authority_proof_started().unwrap();
         let receipt = |start| Receipt {
             started: at(base, start),
             timing: AuthorityLeaseTiming::from_ttl_ms(30),
@@ -185,6 +154,8 @@ mod tests {
             ("W5", Some(u64::MAX), 10, 11, None),
             ("W6", Some(10), 0, 11, None),
             ("W7", Some(0), 10, 30, None),
+            ("W10", None, 10, 9, None),
+            ("W11", Some(0), 10, 9, None),
         ] {
             let mut proof = match previous {
                 None => Proof::Starting,
@@ -225,19 +196,24 @@ mod tests {
         // W8: scheduler Instant stalls during suspend; BOOTTIME advances to
         // expiry. Admission closes although cadence has not observed its tick.
         // W9: retain submillisecond precision; never round remaining upward.
-        let base = ProofStarted::now().unwrap();
+        let base = authority_proof_started().unwrap();
         let mut proof = Proof::Live(Receipt {
             started: base,
             timing: AuthorityLeaseTiming::from_ttl_ms(30),
         });
-        let mut now = base;
-        now.boot += Duration::from_micros(19_999);
+        let now = ProofStarted::from_clock_sample(
+            base.scheduled(),
+            base.elapsed_clock() + Duration::from_micros(19_999),
+        );
         assert_eq!(
             proof.current(now).unwrap().1,
             Duration::from_micros(1),
             "W9"
         );
-        now.boot += Duration::from_micros(1);
+        let now = ProofStarted::from_clock_sample(
+            base.scheduled(),
+            base.elapsed_clock() + Duration::from_millis(20),
+        );
         assert!(proof.current(now).is_err(), "W8");
     }
 
@@ -245,7 +221,7 @@ mod tests {
         let proof = Arc::new(WorkerAuthorityProof::default());
         proof
             .apply(
-                ProofStarted::now().unwrap(),
+                authority_proof_started().unwrap(),
                 AuthorityLeaseTiming::from_ttl_ms(60_000),
             )
             .unwrap();
@@ -293,7 +269,7 @@ mod tests {
         assert!(
             authority
                 .apply(
-                    ProofStarted::now().unwrap(),
+                    authority_proof_started().unwrap(),
                     AuthorityLeaseTiming::from_ttl_ms(60_000)
                 )
                 .is_err()
@@ -310,11 +286,11 @@ mod tests {
         starting.with_current(&mut |_| panic!("W12")).unwrap_err();
         starting
             .apply(
-                ProofStarted::now().unwrap(),
+                authority_proof_started().unwrap(),
                 AuthorityLeaseTiming::from_ttl_ms(60_000),
             )
             .unwrap();
-        let before = starting.snapshot().unwrap().0.started.scheduled;
+        let before = starting.snapshot().unwrap().0.started.scheduled();
         let mut calls = 0;
         let error = starting
             .with_current(&mut |_| {
@@ -324,7 +300,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(calls, 1, "W13");
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
-        assert_eq!(starting.snapshot().unwrap().0.started.scheduled, before);
+        assert_eq!(starting.snapshot().unwrap().0.started.scheduled(), before);
         assert!(
             std::panic::catch_unwind(|| {
                 let _ = starting.with_current(&mut |_| panic!("W14"));
@@ -337,7 +313,7 @@ mod tests {
         assert!(
             starting
                 .apply(
-                    ProofStarted::now().unwrap(),
+                    authority_proof_started().unwrap(),
                     AuthorityLeaseTiming::from_ttl_ms(60_000)
                 )
                 .is_err()
