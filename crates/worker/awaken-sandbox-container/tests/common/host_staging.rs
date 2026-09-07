@@ -22,8 +22,12 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
      * container and staging disappear, repeated disposal is harmless. R4 an
      * unfenced create retry is rejected before staging; retained files alone
      * never authorize a second physical creation or replacement.
-     * These are real daemon operations, not a successful mock recovery claim.
-     * The missing-root rejection row remains in podman_it's peer test. */
+     * R5=live container+missing root => reject without removal/replacement;
+     * R6=live container+symlink root => reject without following it; restoring
+     * the exact root then enables R2, so rejection cannot destroy its bytes.
+     * R7=absent container after R3 => reject without recreating physical state.
+     * The creating wrapper being gone is not itself evidence of missing binds.
+     * Both real daemon adapters consume this one decision table. */
     let scope = format!(
         "ordinary-stage-{}-{}",
         std::process::id(),
@@ -100,6 +104,32 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
         .await
         .unwrap();
     let peer = ContainerProvider::new(peer_runtime.clone(), image);
+    let displaced = root.with_extension("test-displaced");
+    assert!(
+        !displaced.exists(),
+        "fault target belongs only to this test"
+    );
+    std::fs::rename(&root, &displaced).unwrap();
+    let missing_rejected = peer
+        .adopt_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
+        .await
+        .is_err();
+    let missing_preserved =
+        peer_runtime.inspect(&physical_id).await.unwrap() == ContainerState::Running;
+    #[cfg(unix)]
+    let (symlink_rejected, symlink_preserved) = {
+        std::os::unix::fs::symlink(&displaced, &root).unwrap();
+        let rejected = peer
+            .adopt_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
+            .await
+            .is_err();
+        let preserved = peer_runtime.inspect(&physical_id).await.unwrap()
+            == ContainerState::Running
+            && displaced.is_dir();
+        std::fs::remove_file(&root).unwrap();
+        (rejected, preserved)
+    };
+    std::fs::rename(&displaced, &root).unwrap();
     let adopted = peer
         .adopt_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
         .await
@@ -164,4 +194,20 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
         ),
         "R3 physical container removed"
     );
+    assert!(
+        missing_rejected && missing_preserved,
+        "R5 reject with zero physical removal"
+    );
+    #[cfg(unix)]
+    assert!(
+        symlink_rejected && symlink_preserved,
+        "R6 reject with zero symlink-target mutation"
+    );
+    assert!(
+        peer.adopt_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
+            .await
+            .is_err(),
+        "R7 absent physical environment is not silently recreated"
+    );
+    assert!(!root.exists(), "R7 rejection cannot recreate staging");
 }
