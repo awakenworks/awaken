@@ -122,6 +122,10 @@ describe("sessionViewFromSearch", () => {
 });
 
 describe("Session detail transport presentation", () => {
+  // Peer identity decision rule: a linked shared Transcript may have a React
+  // peer installed by Cowork; this renderer and its hooks must still share the
+  // Console React instance. Render real shared primitives (do not mock hooks),
+  // so a second dispatcher fails these submitting/recovery journeys.
   it("presents one submitting state while the shared Transcript is sending", () => {
     /**
      * Cause/effect graph: C1 the durable aggregate and committed Event truth are
