@@ -28,7 +28,10 @@ impl crate::SharedHost {
         let mut effect = Some(effect);
         let mut result = None;
         authority
-            .with_current(&mut |_| {
+            .with_current(&mut |remaining| {
+                if remaining.is_zero() {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
                 let effect = effect
                     .take()
                     .ok_or_else(|| io::Error::other("authority callback repeated"))?;
