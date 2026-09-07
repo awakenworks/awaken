@@ -18335,6 +18335,11 @@ fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
     // | R1 | expired >20s | same generation renewed/live | prepare + dispose | E1 |
     // | R2 | expired >20s | same expired lease | prepare + dispose | E2 |
     // | R3 | expired >20s | successor epoch/live | prepare + dispose | E3 |
+    // R4/R5 separate clock coordinates from proof lifetime: a Control expiry
+    // already behind Worker UTC plus a fresh request-relative proof permits
+    // both projections; a future UTC expiry plus exhausted proof denies both.
+    // R6 closed/uninstalled slots deny even with matching retained lease bytes.
+    // These are Host projection decisions, not async Provider commit grants.
     let host = SharedHost::new(Arc::new(OkModel), "stub");
     let session_id = "terminal-renewed-provider-fence";
     let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
@@ -18394,6 +18399,54 @@ fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
         renewed_lease.expires_at_unix_ms,
         "R1/E1 disposal projects current expiry"
     );
+
+    let skewed_proof = awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+        expired_lease.clone(),
+        expired_lease.expires_at_unix_ms - 30_000,
+    )
+    .unwrap()
+    .observed(awaken_local_process::authority_proof_started().unwrap());
+    host.session_slots.update(session_id, |slot| {
+        slot.realization_authority =
+            crate::session_slot::SessionRealizationAuthority::Live(skewed_proof);
+    });
+    assert_eq!(
+        host.terminal_cleanup_effect_fence(&effect).unwrap(),
+        effect.sandbox_effect_fence().unwrap(),
+        "R4 fresh relative proof, not Worker UTC, owns preparation"
+    );
+    assert_eq!(
+        host.terminal_cleanup_disposal_authorization(&disposal)
+            .expect("R4 same relative proof owns disposal projection"),
+        disposal
+            .sandbox_disposal_authorization_for_current_generation(&expired_lease)
+            .unwrap(),
+        "R4 preserve exact aggregate preparation and successor identity"
+    );
+    host.session_slots.update(session_id, |slot| {
+        slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+            crate::session_slot::test_expired_observed_lease(renewed_lease.clone()),
+        );
+    });
+    assert!(host.terminal_cleanup_effect_fence(&effect).is_err(), "R5");
+    assert!(
+        host.terminal_cleanup_disposal_authorization(&disposal)
+            .is_err(),
+        "R5"
+    );
+    for closed in [
+        crate::session_slot::SessionRealizationAuthority::Closed(Some(renewed_lease.clone())),
+        crate::session_slot::SessionRealizationAuthority::Uninstalled,
+    ] {
+        host.session_slots
+            .update(session_id, |slot| slot.realization_authority = closed);
+        assert!(host.terminal_cleanup_effect_fence(&effect).is_err(), "R6");
+        assert!(
+            host.terminal_cleanup_disposal_authorization(&disposal)
+                .is_err(),
+            "R6"
+        );
+    }
 
     host.session_slots.update(session_id, |slot| {
         slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
