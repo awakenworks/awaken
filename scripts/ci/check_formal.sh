@@ -280,6 +280,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness managed_creation_begin_rejects_every_published_identity \
     --harness managed_mutation_operation_shape_is_closed_and_delete_is_absorbing \
     --harness credential_material_attempt_requires_owner_and_exact_physical_namespace \
+    --harness credential_inventory_never_orphans_committed_pending_or_foreign_material \
     --harness managed_rollout_never_precedes_exact_pair_publication \
     --harness managed_rollout_ack_requires_converged_progress
   run_kani awaken-tool-relay \
@@ -394,7 +395,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-ext-mcp \
     --harness sensitive_marker_never_projects_payload_publicly \
     --harness sensitivity_markers_can_never_widen_a_redacted_projection \
-    --harness notification_admission_is_exact_and_unknown_fails_closed
+    --harness notification_admission_is_exact_and_unknown_fails_closed \
+    --harness mcp_call_admission_requires_both_accepting_observations
   run_kani awaken-sandbox-container \
     --harness continuation_writable_roots_share_one_claim_without_aliasing \
     --harness allowlist_claim_never_exceeds_its_evidence
