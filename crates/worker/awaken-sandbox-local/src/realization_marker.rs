@@ -558,8 +558,8 @@ impl ProviderCreationGuard {
 /// identity/provenance, not a second clock. Production callers enter the
 /// existing current-effect guard before those synchronous mutations; Memory
 /// acknowledgement already holds it, so re-entering authority here would
-/// deadlock the original owner locks. Checkpoint WAL admission is still owned
-/// separately by the existing CheckpointParticipantGuard implementation.
+/// deadlock the original owner locks. Checkpoint WAL calls likewise enter
+/// through the provider's borrowed CurrentCheckpointParticipant adapter.
 pub(crate) struct RemovalGuard {
     root: PathBuf,
     marker: RealizationMarker,
@@ -598,7 +598,7 @@ impl RemovalGuard {
                 "filesystem realization already entered aggregate-authorized physical authorization",
             ));
         }
-        validate_live_effect_fence(effect_fence)?;
+        effect_fence.validate_identity()?;
         if !self.marker.effect_fence.authorizes_successor(effect_fence) {
             return Err(err(
                 "terminal disposal fence is stale, foreign, or regresses lease expiry",
@@ -792,7 +792,7 @@ impl RemovalGuard {
             .checkpoint_expected_effect_fence
             .as_ref()
             .ok_or_else(|| err("terminal checkpoint cleanup has no bound expected effect"))?;
-        validate_live_effect_fence(&self.marker.effect_fence)?;
+        self.marker.effect_fence.validate_identity()?;
         let marker = read_marker_locked(&self.root, &self.lock)?
             .ok_or_else(|| err("terminal checkpoint cleanup lost its realization marker"))?;
         let source = marker

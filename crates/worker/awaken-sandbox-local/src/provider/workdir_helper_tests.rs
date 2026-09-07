@@ -1489,22 +1489,16 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
             .is_err(),
         "R4 input drift"
     );
-    let expired_terminal =
-        pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, 0).unwrap();
+    // Exhaust current proof while keeping successor order valid; an old
+    // regressing timestamp would test identity rejection instead of liveness.
+    let exhausted = awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal);
+    exhausted.current.lock().unwrap().as_mut().unwrap().1 = std::time::Duration::ZERO;
     assert!(
         terminal_sandbox
-            .cleanup_checkpoint_for_terminal(
-                &request,
-                &store,
-                &suspend,
-                &expired_terminal,
-                &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                    &expired_terminal
-                )
-            )
+            .cleanup_checkpoint_for_terminal(&request, &store, &suspend, &terminal, &exhausted)
             .await
             .is_err(),
-        "R4 expired terminal"
+        "R4 exhausted terminal authority"
     );
     terminal_sandbox
         .cleanup_checkpoint_for_terminal(

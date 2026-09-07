@@ -1588,9 +1588,9 @@ fn disposal_authorization_projection_is_canonical_and_phase_bound() {
 #[test]
 fn ready_operation_admission_holds_one_exact_effect_boundary() {
     // Ready-operation cause/effect table: C1 marker phase Ready/non-Ready;
-    // C2 root exact/substituted; C3 operation fence live+authorized/stale/
-    // expired. R1 Ready+exact+live authorized admits under the lifecycle
-    // lock and revalidates before the external effect; R2 stale/expired
+    // C2 root exact/substituted; C3 operation fence authorized/stale/
+    // regressing. R1 Ready+exact+authorized admits under the lifecycle
+    // lock and revalidates before the external effect; R2 stale/regressing
     // rejects before any effect; R3 a root substitution after admission is
     // detected at the second boundary and the foreign root is untouched.
     let base = tempfile::tempdir().unwrap();
@@ -1612,7 +1612,7 @@ fn ready_operation_admission_holds_one_exact_effect_boundary() {
     let expired = pc::SandboxEffectFence::new("expired", "owner", "runtime", 2, 0).unwrap();
     assert!(
         begin_ready_operation(&root, &evidence, &expired).is_err(),
-        "R2 expired successor is rejected at admission"
+        "R2 expiry regression is rejected independently of liveness"
     );
 
     let operation = begin_ready_operation(&root, &evidence, &suspend).expect("R3 admit");

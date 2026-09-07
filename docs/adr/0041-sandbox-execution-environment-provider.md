@@ -873,7 +873,8 @@ projection publication are owned by the
 [ADR-0066 amendment](0066-session-service-binding-and-realization.md#2026-09-07-amendment-request-relative-realization-evidence).
 That amendment also owns terminal Provider clock migration: preparation,
 reconstruction and physical removal consume current proof without repeating
-Worker UTC checks. Creation/adoption, checkpoint WAL correspondence and complete
+Worker UTC checks. Ordinary and terminal checkpoint WAL now use that same proof.
+Creation/adoption clock correspondence and complete
 platform qualification remain open; this ADR defines no second Session clock.
 
 Compound Kubernetes terminal and restored-target removal forward that same

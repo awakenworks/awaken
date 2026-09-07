@@ -45,72 +45,6 @@ impl ReadyOperationGuard {
         Ok(marker)
     }
 
-    /// Return an already-recorded exact receipt before taking a second snapshot.
-    /// Receipt recovery is non-mutating, so an expired lease may read it; every
-    /// WAL/store mutation below still checks expiry at its own boundary.
-    pub(crate) fn completed_checkpoint(
-        &self,
-        request_fingerprint: &str,
-    ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
-        let marker = self.current_marker()?;
-        completed_checkpoint(
-            &marker,
-            request_fingerprint,
-            &self.operation_effect_fence.operation_id,
-        )
-    }
-
-    /// Publish or replay the pending snapshot evidence before object mutation.
-    pub(crate) fn begin_checkpoint_upload(
-        &mut self,
-        request_fingerprint: &str,
-        snapshot_digest: &str,
-        snapshot_size_bytes: u64,
-    ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
-        self.current_marker()?;
-        let operation_id = self.operation_effect_fence.operation_id.clone();
-        let pending = CheckpointParticipant::pending(
-            operation_id,
-            request_fingerprint,
-            snapshot_digest,
-            snapshot_size_bytes,
-        );
-        begin_checkpoint_upload(
-            &self.root,
-            &self.lock,
-            &mut self.marker,
-            &self.authorization_effect_fence,
-            pending,
-        )
-    }
-
-    /// Persist the verified durability receipt before returning it to Session.
-    pub(crate) fn complete_checkpoint_upload(
-        &mut self,
-        request_fingerprint: &str,
-        reference: &pc::SandboxCheckpointRef,
-    ) -> Result<(), pc::SandboxError> {
-        self.current_marker()?;
-        let operation_id = self.operation_effect_fence.operation_id.clone();
-        complete_checkpoint_upload(
-            &self.root,
-            &self.lock,
-            &mut self.marker,
-            &self.authorization_effect_fence,
-            &operation_id,
-            request_fingerprint,
-            reference,
-        )
-    }
-
-    /// Recheck the lease and exact root immediately before the external effect.
-    /// The lock makes this one continuation of admission; the reread also
-    /// detects an out-of-protocol marker or pathname replacement.
-    pub(crate) fn validate_before_effect(&self) -> Result<(), pc::SandboxError> {
-        validate_live_effect_fence(&self.authorization_effect_fence)?;
-        execution_participant::require_quiescent(&self.current_marker()?)
-    }
-
     /// Keep response-loss Memory replay bound to the same immutable Ready
     /// completion receipt observed before this lock was acquired. The live
     /// effect and exact root are rechecked at every external mount boundary.
@@ -118,7 +52,10 @@ impl ReadyOperationGuard {
         &self,
         expected: &RealizationCompletionReceipt,
     ) -> Result<(), pc::SandboxError> {
-        self.validate_before_effect()?;
+        // Ordinary adoption has not migrated to current proof yet. This clock
+        // belongs only to that receipt-reconstruction path, never checkpoint WAL.
+        validate_live_effect_fence(&self.authorization_effect_fence)?;
+        execution_participant::require_quiescent(&self.current_marker()?)?;
         if self.marker.completion.as_ref() != Some(expected) {
             return Err(err(
                 "ready filesystem effect changed the exact completion receipt",
@@ -150,10 +87,8 @@ fn begin_checkpoint_upload(
     root: &Path,
     lock: &awaken_sandbox_fs::ExclusiveFileLock,
     marker: &mut RealizationMarker,
-    authorization_effect_fence: &pc::SandboxEffectFence,
     pending: CheckpointParticipant,
 ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
-    validate_live_effect_fence(authorization_effect_fence)?;
     if let Some(participant) = &marker.checkpoint {
         if !participant.matches_pending(&pending) {
             return Err(err(
@@ -173,12 +108,10 @@ fn complete_checkpoint_upload(
     root: &Path,
     lock: &awaken_sandbox_fs::ExclusiveFileLock,
     marker: &mut RealizationMarker,
-    authorization_effect_fence: &pc::SandboxEffectFence,
     operation_id: &str,
     request_fingerprint: &str,
     reference: &pc::SandboxCheckpointRef,
 ) -> Result<(), pc::SandboxError> {
-    validate_live_effect_fence(authorization_effect_fence)?;
     let participant = marker
         .checkpoint
         .as_ref()
@@ -215,6 +148,9 @@ fn complete_checkpoint_upload(
 /// One checkpoint participant API shared by Ready upload and Removing terminal
 /// cleanup. Implementations differ only in phase/evidence validation; WAL
 /// transitions and exact replay comparisons above have one owner.
+/// This private port proves structural custody, not liveness. Production calls
+/// must be wrapped by CurrentCheckpointParticipant using the original current
+/// execution authority, including cached receipt reads and final success.
 pub(crate) trait CheckpointParticipantGuard: Send {
     fn completed_checkpoint(
         &self,
@@ -238,37 +174,58 @@ pub(crate) trait CheckpointParticipantGuard: Send {
 }
 
 impl CheckpointParticipantGuard for ReadyOperationGuard {
+    // Exact receipt/WAL identity belongs here; current liveness belongs to the
+    // provider's existing CurrentCheckpointParticipant around every call.
     fn completed_checkpoint(
         &self,
         request_fingerprint: &str,
     ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
-        ReadyOperationGuard::completed_checkpoint(self, request_fingerprint)
+        let marker = self.current_marker()?;
+        completed_checkpoint(
+            &marker,
+            request_fingerprint,
+            &self.operation_effect_fence.operation_id,
+        )
     }
 
+    /// Publish or replay the pending snapshot evidence before object mutation.
     fn begin_checkpoint_upload(
         &mut self,
         request_fingerprint: &str,
         snapshot_digest: &str,
         snapshot_size_bytes: u64,
     ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
-        ReadyOperationGuard::begin_checkpoint_upload(
-            self,
+        self.current_marker()?;
+        let operation_id = self.operation_effect_fence.operation_id.clone();
+        let pending = CheckpointParticipant::pending(
+            operation_id,
             request_fingerprint,
             snapshot_digest,
             snapshot_size_bytes,
-        )
+        );
+        begin_checkpoint_upload(&self.root, &self.lock, &mut self.marker, pending)
     }
 
+    /// Persist the verified durability receipt before returning it to Session.
     fn complete_checkpoint_upload(
         &mut self,
         request_fingerprint: &str,
         reference: &pc::SandboxCheckpointRef,
     ) -> Result<(), pc::SandboxError> {
-        ReadyOperationGuard::complete_checkpoint_upload(self, request_fingerprint, reference)
+        self.current_marker()?;
+        let operation_id = self.operation_effect_fence.operation_id.clone();
+        complete_checkpoint_upload(
+            &self.root,
+            &self.lock,
+            &mut self.marker,
+            &operation_id,
+            request_fingerprint,
+            reference,
+        )
     }
 
     fn validate_before_effect(&self) -> Result<(), pc::SandboxError> {
-        ReadyOperationGuard::validate_before_effect(self)
+        execution_participant::require_quiescent(&self.current_marker()?)
     }
 }
 
@@ -292,7 +249,6 @@ impl CheckpointParticipantGuard for RemovalGuard {
         snapshot_size_bytes: u64,
     ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
         self.current_checkpoint_marker()?;
-        let authorization = self.marker.effect_fence.clone();
         let operation_id = self
             .checkpoint_expected_effect_fence
             .as_ref()
@@ -305,13 +261,7 @@ impl CheckpointParticipantGuard for RemovalGuard {
             snapshot_digest,
             snapshot_size_bytes,
         );
-        begin_checkpoint_upload(
-            &self.root,
-            &self.lock,
-            &mut self.marker,
-            &authorization,
-            pending,
-        )
+        begin_checkpoint_upload(&self.root, &self.lock, &mut self.marker, pending)
     }
 
     fn complete_checkpoint_upload(
@@ -320,7 +270,6 @@ impl CheckpointParticipantGuard for RemovalGuard {
         reference: &pc::SandboxCheckpointRef,
     ) -> Result<(), pc::SandboxError> {
         self.current_checkpoint_marker()?;
-        let authorization = self.marker.effect_fence.clone();
         let operation_id = self
             .checkpoint_expected_effect_fence
             .as_ref()
@@ -331,7 +280,6 @@ impl CheckpointParticipantGuard for RemovalGuard {
             &self.root,
             &self.lock,
             &mut self.marker,
-            &authorization,
             &operation_id,
             request_fingerprint,
             reference,

@@ -321,6 +321,9 @@ impl LocalSandbox {
                 request.format
             )));
         }
+        if let Some((operation, _)) = operation.as_ref() {
+            operation.validate_before_effect()?;
+        }
         let bytes = self.checkpoint_snapshot()?;
         let size_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if size_bytes > request.max_bytes {
@@ -423,7 +426,9 @@ impl LocalSandbox {
         request: &pc::SandboxCheckpointRequest,
         store: &dyn pc::SandboxCheckpointStore,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
+        pc::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
         validate_checkpoint_effect(request, effect_fence)?;
         let request_fingerprint = checkpoint_request_fingerprint(request, effect_fence);
         let evidence = self
@@ -435,6 +440,11 @@ impl LocalSandbox {
             evidence,
             effect_fence,
         )?;
+        let mut operation = CurrentCheckpointParticipant {
+            participant: &mut operation,
+            fence: effect_fence,
+            authority,
+        };
         if let Some(reference) = operation.completed_checkpoint(&request_fingerprint)? {
             validate_checkpoint_reference(request, &reference)?;
             return Ok(reference);
@@ -513,11 +523,221 @@ mod tests {
     use std::time::Duration;
 
     #[tokio::test]
+    async fn checkpoint_upload_and_cached_receipt_require_current_authority_not_utc() {
+        // Decision table U: C1 past/future Control expiry; C2 new/cached WAL;
+        // C3 current/revoked/exhausted/wrong-operation/wrong-generation proof.
+        // 2x2x5 rows. U1 current -> one upload or exact cached receipt, unchanged
+        // metadata. U2 all other proofs -> zero NEW WAL/store effects, including
+        // a cached receipt. U3 source bytes and original WAL survive denial.
+        // All structural coordinates besides the selected cause remain valid.
+        for expiry in [100, u64::MAX - 1] {
+            for cached in [false, true] {
+                for change in ["current", "revoke", "expire", "operation", "generation"] {
+                    let tmp = tempfile::tempdir().unwrap();
+                    let create =
+                        pc::SandboxEffectFence::new("create", "owner", "boot", 1, u64::MAX)
+                            .unwrap();
+                    let suspend =
+                        pc::SandboxEffectFence::new("suspend", "owner", "boot", 2, expiry).unwrap();
+                    let sandbox = LocalProvider::new(tmp.path())
+                        .create_sandbox_for_effect(
+                            &workdir_spec("upload-clock", false),
+                            &create,
+                            None,
+                        )
+                        .await
+                        .unwrap();
+                    let path = sandbox.workspace_path().join("source");
+                    std::fs::write(&path, b"unchanged").unwrap();
+                    let request = request("suspend");
+                    let store = CheckpointStore::default();
+                    let authority = EffectAuthority::new(&suspend);
+                    let original = if cached {
+                        Some(
+                            pc::Sandbox::checkpoint_for_effect(
+                                &sandbox, &request, &store, &suspend, &authority,
+                            )
+                            .await
+                            .unwrap(),
+                        )
+                    } else {
+                        None
+                    };
+                    match change {
+                        "revoke" => *authority.current.lock().unwrap() = None,
+                        "expire" => {
+                            authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO
+                        }
+                        "operation" => authority
+                            .current
+                            .lock()
+                            .unwrap()
+                            .as_mut()
+                            .unwrap()
+                            .0
+                            .operation_id
+                            .push('x'),
+                        "generation" => {
+                            authority.current.lock().unwrap().as_mut().unwrap().0.epoch += 1
+                        }
+                        _ => {}
+                    }
+                    let result = pc::Sandbox::checkpoint_for_effect(
+                        &sandbox, &request, &store, &suspend, &authority,
+                    )
+                    .await;
+                    assert_eq!(
+                        result.is_ok(),
+                        change == "current",
+                        "U {expiry}/{cached}/{change}: {result:?}"
+                    );
+                    assert_eq!(
+                        store.puts.load(Ordering::SeqCst),
+                        usize::from(cached || change == "current"),
+                        "U1/U2"
+                    );
+                    assert_eq!(store.deletes.load(Ordering::SeqCst), 0);
+                    assert_eq!(std::fs::read(path).unwrap(), b"unchanged", "U3");
+                    let guard = crate::realization_marker::begin_ready_operation(
+                        sandbox.root.root(),
+                        sandbox.realization.current().unwrap(),
+                        &suspend,
+                    )
+                    .unwrap();
+                    let recorded = guard
+                        .completed_checkpoint(&checkpoint_request_fingerprint(&request, &suspend))
+                        .unwrap();
+                    assert_eq!(recorded.is_some(), cached || change == "current", "U3 WAL");
+                    if let Ok(receipt) = result {
+                        assert_eq!(recorded.as_ref(), Some(&receipt));
+                        assert_eq!(receipt.created_at_unix_ms, request.created_at_unix_ms);
+                        assert_eq!(receipt.expires_at_unix_ms, request.expires_at_unix_ms);
+                        if let Some(original) = original {
+                            assert_eq!(receipt, original, "U1 exact replay");
+                        }
+                    } else {
+                        assert_eq!(recorded, original);
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn checkpoint_put_response_cannot_publish_after_authority_loss() {
+        // Decision table UP: C1 past/future Control expiry; C2 revoke/replace/
+        // exhaust/renew/cancel while the real store has committed a put but
+        // withholds its response. UP1 renewal -> original WAL receipt once.
+        // UP2 all other rows -> retained pending WAL, no success/receipt/delete.
+        // UP3 exact retry reuses the SAME object key and bytes, then cached
+        // replay never uploads again. An admitted remote put is not rolled back.
+        // No sleep or remote-commit fencing claim; the existing store owns CAS.
+        for expiry in [100, u64::MAX - 1] {
+            for change in ["revoke", "replace", "expire", "renew", "cancel"] {
+                let tmp = tempfile::tempdir().unwrap();
+                let create =
+                    pc::SandboxEffectFence::new("create", "owner", "boot", 1, u64::MAX).unwrap();
+                let suspend =
+                    pc::SandboxEffectFence::new("suspend", "owner", "boot", 2, expiry).unwrap();
+                let sandbox = LocalProvider::new(tmp.path())
+                    .create_sandbox_for_effect(&workdir_spec("upload-wait", false), &create, None)
+                    .await
+                    .unwrap();
+                let request = request("suspend");
+                let store = CheckpointStore::default();
+                let authority = EffectAuthority::new(&suspend);
+                let gate = Arc::new(tokio::sync::Notify::new());
+                *store.pause.lock().unwrap() = Some((CheckpointPause::AfterPut, gate.clone()));
+                let mut pending = Box::pin(pc::Sandbox::checkpoint_for_effect(
+                    &sandbox, &request, &store, &suspend, &authority,
+                ));
+                std::future::poll_fn(|cx| {
+                    assert!(
+                        std::future::Future::poll(pending.as_mut(), cx).is_pending(),
+                        "UP must reach actual Pending"
+                    );
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                assert_eq!(store.puts.load(Ordering::SeqCst), 1);
+                assert_eq!(store.objects.lock().unwrap().len(), 1);
+                match change {
+                    "revoke" => *authority.current.lock().unwrap() = None,
+                    "replace" => authority.current.lock().unwrap().as_mut().unwrap().0.epoch += 1,
+                    "expire" => {
+                        authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO
+                    }
+                    "renew" => {
+                        authority
+                            .current
+                            .lock()
+                            .unwrap()
+                            .as_mut()
+                            .unwrap()
+                            .0
+                            .expires_at_unix_ms += 1
+                    }
+                    _ => {}
+                }
+                if change == "cancel" {
+                    drop(pending);
+                } else {
+                    gate.notify_one();
+                    assert_eq!(
+                        pending.await.is_ok(),
+                        change == "renew",
+                        "UP {expiry}/{change}"
+                    );
+                }
+                let fingerprint = checkpoint_request_fingerprint(&request, &suspend);
+                let guard = crate::realization_marker::begin_ready_operation(
+                    sandbox.root.root(),
+                    sandbox.realization.current().unwrap(),
+                    &suspend,
+                )
+                .unwrap();
+                assert_eq!(
+                    guard.completed_checkpoint(&fingerprint).unwrap().is_some(),
+                    change == "renew",
+                    "UP2 no late receipt"
+                );
+                drop(guard);
+                *store.pause.lock().unwrap() = None;
+                // Explicit test recovery, not revival of production revoked roots.
+                *authority.current.lock().unwrap() =
+                    Some((suspend.clone(), Duration::from_secs(1)));
+                let receipt = pc::Sandbox::checkpoint_for_effect(
+                    &sandbox, &request, &store, &suspend, &authority,
+                )
+                .await
+                .unwrap();
+                let replay = pc::Sandbox::checkpoint_for_effect(
+                    &sandbox, &request, &store, &suspend, &authority,
+                )
+                .await
+                .unwrap();
+                assert_eq!(receipt, replay, "UP3");
+                assert_eq!(
+                    store.puts.load(Ordering::SeqCst),
+                    if change == "renew" { 1 } else { 2 }
+                );
+                assert_eq!(
+                    store.objects.lock().unwrap().len(),
+                    1,
+                    "UP3 no orphan second object"
+                );
+                assert_eq!(store.deletes.load(Ordering::SeqCst), 0);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn terminal_checkpoint_current_authority_covers_every_wait_and_exact_retry() {
         // Cause/effect graph: C1 original participant Ready/Removing; C2 wait
         // slot/committed-put-response/committed-delete-response; C3 current
         // authority revoked/replaced/expired/renewed/caller-cancelled.
-        // 2 x 3 x 5 = 30 real Pending schedules, not sleeps or pre-set results.
+        // Cross past/future Control timestamps: 2 x 2 x 3 x 5 = 60 real
+        // Pending schedules, not sleeps or pre-set results.
         // R1 denied entry => zero WAL/store effect. R2 denial after slot/put =>
         // no next put/receipt/delete; after delete => no success (the already
         // committed delete is not undone). R3 renewal => exact completion.
@@ -525,9 +745,12 @@ mod tests {
         // R5 exact retry after a lost put response repeats the SAME object key,
         // while receipt replay never uploads again. R6 cached success remains
         // authority-bound. Byte/root identity survives every failed attempt.
-        // Store atomicity, remote cancellation and provider UTC are not proved;
-        // UTC is non-expiring so it cannot accidentally act as the C3 oracle.
-        for removing in [false, true] {
+        // Store atomicity and remote cancellation are not proved. Fresh local
+        // proof must admit both timestamp classes, without shifting WAL identity.
+        for (removing, expiry) in [false, true]
+            .into_iter()
+            .flat_map(|removing| [100, u64::MAX - 1].map(|expiry| (removing, expiry)))
+        {
             for wait in ["slot", "put", "delete"] {
                 for change in ["revoke", "replace", "expire", "renew", "cancel"] {
                     let tmp = tempfile::tempdir().unwrap();
@@ -537,16 +760,11 @@ mod tests {
                         pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX - 1)
                             .unwrap();
                     let suspend =
-                        pc::SandboxEffectFence::new("suspend", "owner", "runtime", 1, u64::MAX - 1)
+                        pc::SandboxEffectFence::new("suspend", "owner", "runtime", 2, expiry)
                             .unwrap();
-                    let terminal = pc::SandboxEffectFence::new(
-                        "terminal",
-                        "owner",
-                        "runtime",
-                        1,
-                        u64::MAX - 1,
-                    )
-                    .unwrap();
+                    let terminal =
+                        pc::SandboxEffectFence::new("terminal", "owner", "runtime", 3, expiry)
+                            .unwrap();
                     let sandbox = provider
                         .create_sandbox_for_effect(&spec, &create, None)
                         .await

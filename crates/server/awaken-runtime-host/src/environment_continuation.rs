@@ -269,6 +269,17 @@ impl ManagedHost {
             ));
         }
         let effect_fence = self.continuation_effect_fence(thread, &request.operation)?;
+        // Capture the original Worker/Session roots before awaiting lifecycle
+        // ownership; a same-byte replacement must not rebind this operation.
+        let authority = self
+            .host
+            .session_slots
+            .provider_effect_authority(
+                thread,
+                &effect_fence,
+                self.host.execution_authority.as_ref(),
+            )
+            .map_err(to_run_error)?;
         let lifecycle = self
             .host
             .session_slots
@@ -295,17 +306,24 @@ impl ManagedHost {
                 )
             })?;
         let provider_request = provisioning_checkpoint_request(&request);
-        self.continuation_effect_fence(thread, &request.operation)?;
+        awaken_provisioning_contract::with_current_sandbox_effect(
+            &effect_fence,
+            &authority,
+            || Ok(()),
+        )
+        .map_err(|error| RunError::unavailable(error.to_string()))?;
         let checkpoint = environment
-            .checkpoint_for_effect(&provider_request, store.as_ref(), &effect_fence)
+            .checkpoint_for_effect(&provider_request, store.as_ref(), &effect_fence, &authority)
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
-        self.continuation_effect_fence(thread, &request.operation)?;
-        Ok(awaken_session_contract::CheckpointReceipt {
-            effect_id: provider_request.effect_id,
-            generation_id: provider_request.generation_id,
-            checkpoint,
+        awaken_provisioning_contract::with_current_sandbox_effect(&effect_fence, &authority, || {
+            Ok(awaken_session_contract::CheckpointReceipt {
+                effect_id: provider_request.effect_id,
+                generation_id: provider_request.generation_id,
+                checkpoint,
+            })
         })
+        .map_err(|error| RunError::unavailable(error.to_string()))
     }
 
     pub(super) async fn prepare_environment_continuation_source_release(

@@ -188,9 +188,10 @@ impl SessionEnvironment {
         request: &pc::SandboxCheckpointRequest,
         store: &dyn pc::SandboxCheckpointStore,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
         self.sandbox()
-            .checkpoint_for_effect(request, store, effect_fence)
+            .checkpoint_for_effect(request, store, effect_fence, authority)
             .await
     }
 

@@ -317,7 +317,12 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     let store = CheckpointStore::default();
     let checkpoint_request = checkpoint_request_for(&spec.scope);
     let checkpoint = source
-        .checkpoint_for_effect(&checkpoint_request, &store, &suspend)
+        .checkpoint_for_effect(
+            &checkpoint_request,
+            &store,
+            &suspend,
+            &pc::test_support::EffectAuthority::new(&suspend),
+        )
         .await
         .expect("T1 checkpoint participant");
     drop(source);

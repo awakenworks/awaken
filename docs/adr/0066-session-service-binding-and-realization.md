@@ -322,7 +322,7 @@ before revocation, renewal or replacement, and verify no subsequent credential
 effect or successful preparation. Already-admitted broker commits remain
 possible; exact writeback identity is retained for retry. The terminal
 marker/physical-removal clock migration is described below; creation/adoption,
-checkpoint WAL admission and backend commit fencing remain separate obligations.
+checkpoint WAL admission is covered below; backend commit fencing remains separate.
 
 The Host source decision table and barrier tests cover direct/registered
 topologies, same-byte slot replacement, renewal and closure during Worker,
@@ -376,7 +376,7 @@ The existing model shares one provider wait across fixed preparation/disposal
 selectors; 26 semantic mutants and 12 reachability witnesses include disposal
 and cached completion. Its two-effect bound does not establish ordering across
 both aggregate phases, callback elapsed time or asynchronous remote commit
-fencing. Creation/adoption and checkpoint WAL clock admission, plus real
+fencing. Creation/adoption clock admission and real
 cloud/platform qualification, remain open. Cold reconstruction extends this wiring:
 the Host captures its existing operation-bound Session/Worker authority before
 calling the Provider, and both public provider ports require it. Local and
@@ -440,7 +440,7 @@ clock fixed in its rejecting class; the oracle independently expands the
 current authority coordinates. This checks that a fresh provider callback can
 enter, not eventual cleanup, callback duration, Rust refinement, real clock
 conversion or remote commit fencing. The existing two-effect bound is unchanged.
-Creation/adoption, ordinary and terminal checkpoint WAL clock correspondence,
+Checkpoint WAL migration is described below. Creation/adoption clock correspondence,
 FUSE cancellation/compensation ownership and real cloud/platform/credential
 qualification still require their own closure; no such guarantee is inferred
 from the physical-removal tests.
@@ -560,11 +560,37 @@ Dynamic order is capture Worker/Session authority -> await the retained slot ->
 current marker admission -> current WAL/put admission -> put response -> current
 receipt publication -> current delete admission -> delete response -> current
 completion. Cached receipts use the same path without uploading again.
+Ordinary checkpoint upload now also requires that port: Host captures the
+original Worker/Session roots before waiting for lifecycle ownership and passes
+the proof through SessionEnvironment to Local. Both upload and terminal recovery
+use the existing borrowed `CurrentCheckpointParticipant` for snapshot admission,
+WAL decisions and post-response publication. The private WAL functions validate
+exact marker/request/snapshot/receipt identity, never Worker UTC. Ready's redundant
+inherent checkpoint methods and forwarding implementations are consolidated into
+the one trait implementation; no alternative journal, clock or upload path is
+introduced. The legacy unfenced method still rejects current realizations.
+Ordinary adoption keeps its existing receipt-reconstruction check and is not
+silently granted checkpoint's current-authority guarantee.
+
+The adjacent ordinary-upload table crosses new/cached WAL, past/future Control
+timestamps and current/revoked/exhausted/wrong-operation/wrong-generation proof
+(20 rows); ten committed-put Pending schedules verify no late receipt, exact
+retry and no repeated upload after receipt publication. Twenty Host schedules
+exercise direct/registered deployments with the real Local provider, lifecycle
+and put waits, same-byte slot replacement, Session/Worker loss and renewal.
+These are deterministic store-boundary tests, not real cloud durability evidence.
+`SessionExecutionBinding` extends its fixed phase selector to checkpoint upload
+and cached replay, retaining two effects and the original slot/generation bounds.
+Three checkpoint-only stale-admission mutants, one over-denial mutant and two
+positive witnesses bring it to 39 mutants and 18 witnesses. The unchanged
+`LocalProcessRecovery` model separately owns terminal put/WAL/delete ordering;
+neither model proves snapshot bytes, backend atomicity or Rust refinement.
 Committed checkpoint deletion independently captures the same Host authority
 before calling the existing store and rechecks it after the response.
 
 Adjacent Local tests cross Ready/Removing, slot/put/delete response waits and
-revocation/replacement/expiry/renewal/cancellation (30 schedules). They inspect
+revocation/replacement/expiry/renewal/cancellation and both Control timestamp classes
+(60 schedules). They inspect
 the original WAL before retry, require zero next mutations, and distinguish
 lost-put replay from cached-receipt replay. Six Host schedules separately check
 Worker/Session loss after committed-object deletion without invoking a mock
@@ -575,8 +601,8 @@ cover the combined recovery model, including expired backend responses and
 successful checkpoint completion. Its fresh-authority Boolean still assumes
 the shared Session/Worker admission contract: exact WAL identity, Ready-phase
 Rust wiring, clocks, in-flight backend atomicity and OS progress are not proved
-by this abstraction. Provider UTC migration, exact restored-target disposal
-and cold FUSE ownership remain open; a committed remote delete is not rolled
+by this abstraction. Creation/adoption UTC migration, cold FUSE ownership and
+real remote commit fencing remain open; a committed remote delete is not rolled
 back by a rejected late response.
 
 Adjacent decision tables exercise competing disposers, cancellation during
