@@ -139,8 +139,12 @@ Cancellation, task abort and
 watchdog expiry retain the physical slot. A watchdog ends the logical Run as
 Indeterminate without inner retry, continuation, failover or outer failure
 tolerance. Cancellation retains its logical Cancelled outcome; neither outcome
-is physical-termination evidence. ACP's fixed business outcome likewise does not
-imply successful process cleanup.
+is physical-termination evidence. Managed's shared root/child lifecycle classifier reads the
+same Run's model evidence at the cancellation commit and exposes Unknown as the
+existing execution-unknown error. It never clears a Dispatch slot or rewrites
+Run state. The browser retains that current error across same-activity idle;
+a new committed working boundary moves it to history. ACP's fixed business
+outcome likewise does not imply successful process cleanup.
 
 One continuation case is stronger than terminal receipt: an A2A executor may
 recover a complete committed `TaskReference` whose endpoint matches the frozen

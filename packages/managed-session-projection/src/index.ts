@@ -189,6 +189,8 @@ export interface ManagedSessionRuntimeProjection {
   /** Accepted inbound Event ids that lack their processed commit anchor. */
   resolvingInputIds: Set<string>;
   latestError?: ManagedEvent;
+  /** Error in the current activity; idle is not evidence that it was resolved. */
+  currentError?: ManagedEvent;
 }
 
 function closeTool(
@@ -217,6 +219,7 @@ export function projectManagedSessionRuntime(
   let resolving = new Set<string>();
   let resolvingInputs = new Set<string>();
   let latestError: ManagedEvent | undefined;
+  let currentError: ManagedEvent | undefined;
   for (const event of log) {
     if (phase === "deleted") continue;
     if (phase === "terminated") {
@@ -229,12 +232,14 @@ export function projectManagedSessionRuntime(
     switch (event.type) {
       case "session.status_running":
         phase = "running";
+        currentError = undefined;
         pending = new Set();
         resolving = new Set();
         resolvingInputs = new Set();
         break;
       case "session.status_rescheduled":
         phase = "rescheduling";
+        currentError = undefined;
         pending = new Set();
         resolving = new Set();
         resolvingInputs = new Set();
@@ -253,6 +258,7 @@ export function projectManagedSessionRuntime(
         resolving = new Set();
         resolvingInputs = new Set();
         latestError = event;
+        currentError = event;
         break;
       case "session.status_terminated":
         phase = "terminated";
@@ -291,6 +297,7 @@ export function projectManagedSessionRuntime(
     resolvingToolIds: resolving,
     resolvingInputIds: resolvingInputs,
     ...(latestError ? { latestError } : {}),
+    ...(currentError ? { currentError } : {}),
   };
 }
 
@@ -351,7 +358,7 @@ export function managedSessionPresentationPhase(
 ): ManagedSessionRuntimePhase {
   if (runtime.phase === "deleted" || runtime.phase === "terminated") return runtime.phase;
   if (aggregateStatus === "terminated") return "terminated";
-  if (runtime.phase === "error") return "error";
+  if (runtime.currentError || runtime.phase === "error") return "error";
   if (runtime.phase === "running" || runtime.phase === "rescheduling") return runtime.phase;
   if (aggregateStatus === "running" || aggregateStatus === "rescheduling") return aggregateStatus;
   if (aggregateStatus === "idle") return "idle";

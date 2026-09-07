@@ -1,3 +1,5 @@
+mod cancelled_model;
+
 use super::committed_projection::{
     budget_reach_close_cursor, budget_reach_projection_close_cursor,
     message_projection_ordinal_bound,

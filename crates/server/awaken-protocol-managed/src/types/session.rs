@@ -758,14 +758,45 @@ impl SessionError {
     ) -> Option<Self> {
         use awaken_agent_contract::agent::run::{EndCause, RunState};
         match state {
-            RunState::Ended(EndCause::Error(failure)) => Some(Self::classify(failure.code(), failure.message())),
-            RunState::Ended(EndCause::Indeterminate) => Some(Self {
-                kind: "unknown_error",
-                message: "The execution result is unknown. This operation will not be automatically repeated. Do not repeat external actions until their outcome is verified.".into(),
-                retry_status: RetryStatus::Terminal,
-                mcp_server_name: None,
-            }),
+            RunState::Ended(EndCause::Error(failure)) => {
+                Some(Self::classify(failure.code(), failure.message()))
+            }
+            RunState::Ended(EndCause::Indeterminate) => Some(Self::execution_unknown()),
             _ => None,
+        }
+    }
+
+    /// One root/child classifier over the same lifecycle and recovery prefix.
+    /// Cancellation intent never supplies physical termination evidence; later
+    /// receipts cannot rewrite an already published historical diagnosis.
+    pub(crate) fn from_committed_lifecycle(
+        terminal: &awaken_agent_contract::RunLifecycleEvent,
+        snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    ) -> Result<Option<Self>, awaken_agent_contract::agent::state::StateError> {
+        use awaken_agent_contract::agent::run::{EndCause, RunState};
+        if matches!(terminal.state, RunState::Ended(EndCause::Cancelled))
+            && let Some(snapshot) = snapshot
+        {
+            let operation =
+                awaken_runtime_contract::model_operation::ActiveModelOperation::at_commit(
+                    &snapshot.state,
+                    &snapshot.state_commit_cursors,
+                    &terminal.run_id,
+                    terminal.source_commit_cursor,
+                )?;
+            if operation.is_some_and(|operation| !operation.execution.permits_reentry()) {
+                return Ok(Some(Self::execution_unknown()));
+            }
+        }
+        Ok(Self::from_run_state(&terminal.state))
+    }
+
+    pub(crate) fn execution_unknown() -> Self {
+        Self {
+            kind: "unknown_error",
+            message: "The execution result is unknown. This operation will not be automatically repeated. Do not repeat external actions until their outcome is verified.".into(),
+            retry_status: RetryStatus::Terminal,
+            mcp_server_name: None,
         }
     }
 

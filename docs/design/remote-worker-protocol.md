@@ -147,12 +147,22 @@ tool effect; this does not attest provider compute termination. An uncertain too
 or an executor lost to SIGKILL still cannot manufacture the missing exact receipt.
 
 The one warm/cold Managed lifecycle projector lowers this committed outcome into
-an existing `session.error` event with a stable lifecycle identity. It neither
+an existing `session.error` event with a stable lifecycle identity. For a Native
+root or child Run that committed `Cancelled`, it also reads `ActiveModelOperation` from
+the same recovery snapshot at that exact lifecycle commit. Unknown execution
+produces the same diagnostic without rewriting cancellation. Another Run's
+journal and evidence committed later cannot change that historical event;
+malformed evidence or missing cursor alignment fails the read. An absent model
+journal does not prove completion and does not fabricate a model-specific error. It neither
 publishes a new protocol status nor releases the Session aggregate. The shared
 browser projection presents a current error even when the aggregate remains
 Running/Rescheduling; ordinary message and approval admission still use the
-unchanged aggregate fence. A later committed working boundary changes the
-presentation, while historical error evidence remains in the transcript.
+unchanged aggregate fence. Error relevance is independent of the latest runtime
+phase: idle in the same activity cannot hide it. A later committed running or
+rescheduled boundary retires its prominent relevance, while historical error
+evidence remains in the transcript. `retry_status=terminal` describes the error,
+not permanent termination of the entire Session; it does not override aggregate
+admission. This projection is not a provider receipt query or a slot-release API.
 
 Cold Docker/Podman terminal preparation reuses the existing exact staging-root
 adoption and frozen Memory/Secret participant reconstruction. It does not perform
