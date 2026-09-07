@@ -804,9 +804,13 @@ mod tests {
             .create_sandbox_for_effect(&demanded_spec("namespace-terminal-order"), &create, None)
             .await
             .unwrap();
-        pc::Sandbox::prepare_disposal_for_effect(&sandbox, &terminal)
-            .await
-            .unwrap();
+        pc::Sandbox::prepare_disposal_for_effect(
+            &sandbox,
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
+        .await
+        .unwrap();
         let socket = sandbox
             .control_directory
             .as_ref()

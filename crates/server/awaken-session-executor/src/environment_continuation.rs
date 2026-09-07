@@ -430,8 +430,17 @@ impl ManagedHost {
                 })?;
         }
         let effect_fence = self.continuation_preparation_effect_fence(thread, preparation)?;
+        let authority = self
+            .host
+            .session_slots
+            .provider_effect_authority(
+                thread,
+                &effect_fence,
+                self.host.execution_authority.as_ref(),
+            )
+            .map_err(to_run_error)?;
         let provider_prepared_effect_fence = environment
-            .prepare_disposal_for_effect(&effect_fence)
+            .prepare_disposal_for_effect(&effect_fence, &authority)
             .await
             .map_err(|error| {
                 RunError::unavailable_classified(

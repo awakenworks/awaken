@@ -1215,17 +1215,30 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
         if source.count(anchor) != 1:
             raise SystemExit(f"Memory acknowledgement mutation anchor drifted: {anchor}")
         mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
+    # D1-D3: pending preparation cannot report an effect; a completed wait and
+    # a cached Memory ack cannot bypass the shared current authority. The
+    # independent receipt oracle is unchanged, including zero-Memory paths.
+    for anchor, broken in [
+        ('/\\ preparationWait # 1\n', '/\\ TRUE\n'),
+        ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ (preparationWait = 2 \\/ CurrentBinding)'),
+        ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ ((preparationWait = 2 /\\ memoryDrains = 1) \\/ CurrentBinding)'),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"Disposal preparation mutation anchor drifted: {anchor}")
+        invariant = "OnlyCurrentBindingCommits"
+        mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
     # Both topology paths must reach actual effects. Otherwise an accidental
     # mandatory Worker guard could make all direct-local safety checks vacuous.
     for witness in ("NoCandidateEffectReached", "NoResidentEffectReached",
                     "NoLocalEffectReached", "NoRegisteredEffectReached",
                     "NoProviderEffectReached", "NoUnreadyProviderEffectReached",
-                    "NoMemoryAckReached", "NoMemoryReplayReached"):
+                    "NoMemoryAckReached", "NoMemoryReplayReached",
+                    "NoEmptyPreparationReached", "NoCachedPreparationReached"):
         mutations.append((source, header + "INVARIANTS " + witness, witness))
     check_tlc_model_mutations(tlc_jar, "SessionExecutionBinding", source, config, mutations,
                               dependencies=("SessionRealizationAuthority", "WorkerExecutionAuthority"),
                               heap_mb=2048, timeout_seconds=180)
-    print("Session execution binding: 20/20 mutants killed; execution, provider projection, Memory acknowledgement and replay reachable")
+    print("Session execution binding: 23/23 mutants killed; execution, provider projection, Memory acknowledgement/replay and empty/cached preparation reachable")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:

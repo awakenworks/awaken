@@ -512,7 +512,10 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
     let _ = adopted_process.wait().await;
     let terminal = effect_fence("namespace-hand-terminal");
     let prepared = adopted
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("prepare fenced namespace disposal");
     adopted
