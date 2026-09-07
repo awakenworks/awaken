@@ -25,7 +25,9 @@ import { withoutAmbientProviderKeys } from './process_environment.mjs';
 // The historical 38xxx defaults overlap Linux's ephemeral client-port range.
 // Assign each Node scenario a small, non-ephemeral block before the importing
 // module reads E2E_PORT. Explicit caller/stage assignments remain authoritative.
-const processPortBase = 20_000 + (process.pid % 100) * 100;
+const processPortBase = process.env.E2E_PORT && process.env.E2E_WORKER_PORT
+  ? undefined
+  : await availablePortBlock(20_000 + (process.pid % 100) * 100);
 process.env.E2E_PORT ??= String(processPortBase);
 process.env.E2E_WORKER_PORT ??= String(processPortBase + 50);
 
@@ -1101,6 +1103,26 @@ export function waitForPort(port, timeoutMs = 900_000, server = null) {
 
 function waitForServer(server, port) {
   return waitForPort(port, 900_000, server);
+}
+
+// Default scenarios use offsets within one 100-port block. Probe every member
+// using the same socket owner as explicit callers, rather than trusting PID
+// modulo uniqueness. A later bind race still fails the owned-child readiness gate.
+export async function availablePortBlock(preferred) {
+  if (!Number.isInteger(preferred) || preferred < 20_000 || preferred >= 30_000
+      || preferred % 100 !== 0) throw new RangeError('invalid E2E port block');
+  for (let index = 0; index < 100; index += 1) {
+    const base = 20_000 + ((preferred - 20_000 + index * 100) % 10_000);
+    let free = true;
+    for (let offset = 0; offset < 100; offset += 1) {
+      if (await availablePort(base + offset) !== base + offset) {
+        free = false;
+        break;
+      }
+    }
+    if (free) return base;
+  }
+  throw new Error('no available E2E port block in 20000..29999');
 }
 
 export async function availablePort(preferred) {
