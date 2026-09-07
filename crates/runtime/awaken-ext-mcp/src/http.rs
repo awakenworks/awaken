@@ -927,21 +927,7 @@ mod tests {
             let mut captured = Vec::new();
             for (delay, response) in responses {
                 let (mut socket, _) = listener.accept().await.unwrap();
-                let mut request = Vec::new();
-                let mut buf = [0u8; 4096];
-                // Read until the blank line; these requests have small bodies
-                // that arrive in the same segments.
-                loop {
-                    let n = socket.read(&mut buf).await.unwrap();
-                    if n == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buf[..n]);
-                    if request.windows(4).any(|w| w == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                captured.push(String::from_utf8_lossy(&request).to_string());
+                captured.push(read_fixture_request(&mut socket).await);
                 tokio::time::sleep(delay).await;
                 if delay.is_zero() {
                     socket.write_all(response.as_bytes()).await.unwrap();
@@ -958,6 +944,48 @@ mod tests {
         (url, handle)
     }
 
+    // Both HTTP fixtures observe the whole Content-Length-framed request. TCP
+    // packet boundaries cannot serve as evidence that an effect was dispatched.
+    async fn read_fixture_request(reader: &mut (impl tokio::io::AsyncRead + Unpin)) -> String {
+        let mut request = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = reader.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            request.extend_from_slice(&buf[..n]);
+            if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                let header = String::from_utf8_lossy(&request[..end]);
+                let length = header
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
+                    .map(|(_, value)| value.trim().parse::<usize>().unwrap())
+                    .unwrap_or(0);
+                if request.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+        String::from_utf8(request).unwrap()
+    }
+
+    #[tokio::test]
+    async fn http_fixture_waits_for_fragmented_request_body() {
+        // F1 headers complete but body incomplete => no receipt; F2 final body
+        // bytes arrive => exact one request. Small duplex capacity forces packet
+        // fragmentation; the sender stays open, so EOF cannot fake completion.
+        let (mut client, mut server) = tokio::io::duplex(8);
+        let request = b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\ndata";
+        let send = tokio::spawn(async move {
+            client.write_all(request).await.unwrap();
+            client
+        });
+        assert_eq!(read_fixture_request(&mut server).await.as_bytes(), request);
+        let _client = send.await.unwrap();
+    }
+
     /// Serve one response and signal only after the request is on the wire.
     async fn serve_after_request(
         response: String,
@@ -971,22 +999,11 @@ mod tests {
         let (request_seen, request_observed) = oneshot::channel();
         let handle = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            let mut buf = [0u8; 4096];
-            loop {
-                let n = socket.read(&mut buf).await.unwrap();
-                if n == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buf[..n]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            let request = read_fixture_request(&mut socket).await;
             let _ = request_seen.send(());
             socket.write_all(response.as_bytes()).await.unwrap();
             socket.shutdown().await.ok();
-            String::from_utf8_lossy(&request).to_string()
+            request
         });
         (url, handle, request_observed)
     }
@@ -1190,6 +1207,57 @@ mod tests {
         let transport = HttpTransportBuilder::new(url).build();
         assert!(transport.list_tools().await.expect("S2/E1").is_empty());
         server.await.expect("fixture completes");
+    }
+
+    #[tokio::test]
+    async fn raw_tool_preserves_effect_reply_certainty_over_http() {
+        use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError};
+        // H1/H2 complete success/tool-error result -> original ToolOutput;
+        // H3 malformed reply, H4 JSON-RPC server error, H5 response lost ->
+        // Indeterminate. Every row uses one real HTTP request and never retries
+        // tools/call. Accepted bytes alone are not a remote-stop receipt.
+        for case in 0..5 {
+            let body = match case {
+                0 | 1 => json!({"jsonrpc":"2.0","id":1,"result":{
+                    "content":[{"type":"text","text":"original"}],"isError":case == 1
+                }})
+                .to_string(),
+                2 => "{".into(),
+                3 => json!({"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"unknown"}})
+                    .to_string(),
+                _ => String::new(),
+            };
+            let response = if case == 4 {
+                String::new()
+            } else {
+                ok_response(&body)
+            };
+            let (url, server) = serve(vec![response]).await;
+            let transport = Arc::new(HttpTransportBuilder::new(url).build());
+            let tool = crate::tool::McpRawTool::new("srv", "effect", transport).unwrap();
+            let result = tool
+                .invoke(ToolCall {
+                    call_id: "original-id".into(),
+                    tool_id: tool.id().into(),
+                    arguments: json!({}),
+                })
+                .await;
+            if case < 2 {
+                let output = result.unwrap();
+                assert_eq!(output.is_error, case == 1);
+                assert_eq!(output.call_id, "original-id");
+                assert_eq!(output.text(), "original");
+            } else {
+                assert!(
+                    matches!(result, Err(ToolError::Indeterminate(_))),
+                    "H{}",
+                    case + 1
+                );
+            }
+            let requests = server.await.unwrap();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0].contains("tools/call"));
+        }
     }
 
     #[tokio::test]

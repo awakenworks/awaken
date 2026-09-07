@@ -48,6 +48,7 @@ pub enum awaken_mcp_wire::McpTransportError
 pub awaken_mcp_wire::McpTransportError::ConnectionClosed
 pub awaken_mcp_wire::McpTransportError::IoError(core::io::error::Error)
 pub awaken_mcp_wire::McpTransportError::JsonError(serde_json::error::Error)
+pub awaken_mcp_wire::McpTransportError::NotDispatched(alloc::string::String)
 pub awaken_mcp_wire::McpTransportError::NotSupported(alloc::string::String)
 pub awaken_mcp_wire::McpTransportError::ProtocolError(alloc::string::String)
 pub awaken_mcp_wire::McpTransportError::ServerError(alloc::string::String)
