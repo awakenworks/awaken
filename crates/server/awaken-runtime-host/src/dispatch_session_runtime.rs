@@ -12,6 +12,13 @@ use awaken_session_contract::RunError;
 
 use crate::{ManagedHost, SharedHost};
 
+const fn dispatched_resource_scope_is_admitted(
+    workspace_is_nonempty: bool,
+    scope_matches: bool,
+) -> bool {
+    workspace_is_nonempty && scope_matches
+}
+
 /// Decode the one Session-owned Resource envelope carried by durable dispatch.
 /// Both execution realization and post-commit observation cross this boundary;
 /// keeping scope validation here prevents either caller from inventing a second
@@ -26,7 +33,10 @@ pub(crate) fn decode_dispatched_resource_manifest(
         .execution_scope
         .as_ref()
         .map(|scope| scope.0.0.as_str());
-    if envelope.workspace_id.trim().is_empty() || scope != Some(envelope.workspace_id.as_str()) {
+    if !dispatched_resource_scope_is_admitted(
+        !envelope.workspace_id.trim().is_empty(),
+        scope == Some(envelope.workspace_id.as_str()),
+    ) {
         return Err(format!(
             "run {} has a resource manifest outside its execution scope",
             dispatch.run_id().0
@@ -439,5 +449,45 @@ impl SharedHost {
         generation: awaken_session_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()?.drain_mcp(generation).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatched_resource_scope_decision_table_is_total_and_exact() {
+        // Cause/effect graph: C1 the envelope Workspace is nonempty; C2 it is
+        // exactly the durable execution scope. E1 only C1+C2 admits decoding;
+        // E2 every other combination rejects before manifest parsing or Runtime
+        // effects. The four rows exhaust both boolean causes. String trimming,
+        // equality, decoding, and effect ordering remain covered by the claimed
+        // dispatch integration tests that consume this production predicate.
+        for workspace_is_nonempty in [false, true] {
+            for scope_matches in [false, true] {
+                assert_eq!(
+                    dispatched_resource_scope_is_admitted(workspace_is_nonempty, scope_matches),
+                    workspace_is_nonempty && scope_matches
+                );
+            }
+        }
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn dispatched_resource_manifest_requires_exact_nonempty_scope() {
+        let workspace_is_nonempty: bool = kani::any();
+        let scope_matches: bool = kani::any();
+        let admitted = dispatched_resource_scope_is_admitted(workspace_is_nonempty, scope_matches);
+
+        assert_eq!(admitted, workspace_is_nonempty && scope_matches);
+        if !workspace_is_nonempty || !scope_matches {
+            assert!(!admitted);
+        }
     }
 }

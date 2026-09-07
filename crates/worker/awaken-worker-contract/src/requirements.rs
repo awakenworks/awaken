@@ -220,6 +220,18 @@ pub fn manifest_recovery_matches_installed(
     advertised == installed
 }
 
+/// Exact admission rule for one immutable Worker capability requirement.
+///
+/// Collection traversal remains an adapter concern: `can_claim` applies this
+/// production rule to every required capability and rejects the first denial.
+#[must_use]
+pub(crate) const fn required_capability_is_admitted(
+    requirement_present: bool,
+    capability_offered: bool,
+) -> bool {
+    !requirement_present || capability_offered
+}
+
 /// Non-replaceable compatibility kernel. It is intentionally independent from
 /// liveness and ranking; callers re-run it inside the atomic claim transaction.
 pub fn can_claim(
@@ -242,7 +254,9 @@ pub fn can_claim(
     if let Some(missing) = requirements
         .required_capabilities
         .iter()
-        .find(|capability| !manifest.capabilities.contains(*capability))
+        .find(|capability| {
+            !required_capability_is_admitted(true, manifest.capabilities.contains(*capability))
+        })
     {
         return Err(Incompatibility::MissingCapability(missing.clone()));
     }

@@ -457,6 +457,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness configured_capture_redactor_selection_is_total_and_exact \
     --harness session_resource_replacement_requires_newer_or_authority_amended_generation \
     --harness explicit_empty_resource_manifest_revokes_without_activation \
+    --harness dispatched_resource_manifest_requires_exact_nonempty_scope \
     --harness session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed \
     --harness container_hand_residency_recovery_mapping_is_total_exact_and_non_widening \
     --harness mcp_credential_realization_preserves_the_request_target_exactly \
@@ -508,6 +509,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness never_replace_rejects_every_replacement \
     --harness sandbox_continuity_authorizes_replacement_exactly_when_bound \
     --harness same_incarnation_never_spends_replacement_authority \
+    --harness required_worker_capability_cannot_be_omitted \
     --harness sandbox_tool_recovery_claim_axis_is_exact_and_non_widening \
     --harness manifest_recovery_mapping_accepts_only_the_exact_installed_capability \
     --harness dynamic_evidence_can_only_restrict_ready_worker_admission \
