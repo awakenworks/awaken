@@ -484,6 +484,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness exhausted_resource_config_versions_fail_closed \
     --harness portable_aggregate_revision_is_strictly_monotonic_and_never_wraps \
     --harness resource_lifecycle_timestamps_project_the_exact_transition \
+    --harness live_resource_binding_requires_exact_scope_active_state_and_existing_pin \
     --harness stale_resource_purge_claim_cannot_commit_receipt
   run_kani awaken-resource-store \
     --harness reclamation_fence_admission_requires_absent_owner_and_zero_references
