@@ -757,6 +757,8 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     // idempotent preparation retry -> existing sweep with NO due Session lease
     // refreshes (no installed Control) -> Worker close causes refresh and launch denial -> exact tree
     // stop. A real workload File survives denial/stop. No vendor/cloud claim.
+    // S29 the helper is Cargo's exact artifact, independent of the test binary's
+    // intermediate directory; the normal startup validation/probe still runs.
     let base = tempfile::tempdir().unwrap();
     let gate = Arc::new(WorkerProofGate(std::sync::Mutex::new(true)));
     let mut deployment = crate::DeploymentConfig::ephemeral();
@@ -764,9 +766,12 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     deployment.sandbox_dir = Some(base.path().into());
     deployment.sandbox.trusted_host_scoped_execution = true;
     let host = SharedHost::new_with_deployment(Arc::new(OkModel), "stub", deployment)
-        .with_session_environment_from_deployment(Some(Arc::new(
-            crate::session_environment::UnusedHandExecutorFactory,
-        )))
+        .with_session_environment_from_deployment_at(
+            Some(Arc::new(
+                crate::session_environment::UnusedHandExecutorFactory,
+            )),
+            crate::acp_backend::deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
+        )
         .await
         .unwrap()
         .with_execution_authority(gate.clone());

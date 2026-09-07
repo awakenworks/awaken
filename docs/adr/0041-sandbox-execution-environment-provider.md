@@ -598,6 +598,13 @@ directory disposal require a Hand stop receipt; only Container disposal itself
 owns a physical execution-substrate teardown. Unconfigured weaker Local
 embeddings keep their explicit rooted tool path, not a failure fallback.
 
+Installed-binary qualification supplies the exact Cargo JSON artifact to that
+same startup owner, because Cargo's intermediate/test directory can differ from
+its final binary directory. Release sibling resolution remains unchanged; tests
+still require the ordinary Hand capability check and scoped deployment probe.
+No alternate startup, build-cache search, or production environment override is
+introduced by this test input.
+
 Native prompts are relative to the Hand's initial `/workspace`; the configured
 ACP working directory affects only ACP. Bash may subsequently change its own
 cwd and must resolve the supplied paths from their stated reference directory.

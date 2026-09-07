@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { test } from 'node:test';
 import {
   cargoArguments,
@@ -14,11 +15,13 @@ import {
 // worktrees cannot consume same-version stale artifacts. Decision table:
 // R1 C1 -> E1; R2 C2 -> E2; R3 C1+C3 -> E1+E3. The returned environment keeps
 // all unrelated variables and never mutates the caller-owned input.
+// Platform rule: only the derived default is native-path normalized; an
+// explicit caller path remains byte-for-byte unchanged on Windows/macOS/Linux.
 test('keeps every E2E Cargo build inside its invoking checkout', () => {
   const inherited = { PATH: '/bin' };
   assert.deepEqual(checkoutLocalCargoEnvironment('/work/a', inherited), {
     PATH: '/bin',
-    CARGO_TARGET_DIR: '/work/a/target',
+    CARGO_TARGET_DIR: path.resolve('/work/a', 'target'),
   }, 'R1');
   assert.deepEqual(checkoutLocalCargoEnvironment('/work/a', {
     ...inherited,
@@ -66,6 +69,9 @@ test('derives every Cargo target and feature argument through one decision path'
 // records, C3 explicit prebuilt path exists. Effects: E1 exact executable is
 // selected, E2 missing artifact fails closed, E3 a valid prebuild bypasses Cargo.
 // Decision rules: R1 C1+any C2 -> E1; R2 !C1 -> E2; R3 C3 -> E3.
+// R4 final artifact differs from test/intermediate layout and may contain
+// spaces, Unicode, or Windows separators/.exe -> preserve Cargo's exact path;
+// neither host normalization nor sibling inference is an artifact authority.
 test('selects only the exact Cargo executable artifact', () => {
   const output = [
     'not json',
@@ -76,6 +82,17 @@ test('selects only the exact Cargo executable artifact', () => {
   assert.equal(parseCargoExecutable(output, 'awaken', 'bin'), '/tmp/awaken');
   assert.throws(() => parseCargoExecutable(output, 'missing', 'bin'), /no bin artifact/);
   assert.equal(requirePrebuiltExecutable('BIN', { BIN: process.execPath }), process.execPath);
+  for (const executable of [
+    '/separate final/工作目录/debug/awaken-sandbox',
+    'C:\\separate final\\工作目录\\debug\\awaken-sandbox.exe',
+  ]) {
+    const artifact = JSON.stringify({
+      reason: 'compiler-artifact',
+      target: { name: 'awaken-sandbox', kind: ['bin'] },
+      executable,
+    });
+    assert.equal(parseCargoExecutable(`${output}\n${artifact}`, 'awaken-sandbox', 'bin'), executable, 'R4');
+  }
 });
 
 // Error-guessing coverage: structured diagnostics are authoritative; absent

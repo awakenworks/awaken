@@ -67,6 +67,14 @@ fn namespace_hand_path(current_exe: &std::path::Path) -> std::path::PathBuf {
     sibling
 }
 
+#[cfg(test)]
+pub(crate) fn deployment_test_binary(key: &str) -> std::path::PathBuf {
+    let path =
+        std::path::PathBuf::from(std::env::var_os(key).unwrap_or_else(|| panic!("required {key}")));
+    assert!(path.is_absolute() && path.is_file(), "invalid {key}");
+    path
+}
+
 enum AcpExecutorSource {
     Static(Arc<AcpRunExecutor>),
     Bound {
@@ -341,6 +349,27 @@ impl crate::host::SharedHost {
         self,
         hand_factory: Option<Arc<dyn crate::HandExecutorFactory>>,
     ) -> Result<Self, String> {
+        // Production bundles install both executables as siblings. Resolve at
+        // this composition edge; providers never search host paths themselves.
+        let companion = std::env::current_exe()
+            .ok()
+            .map(|path| namespace_hand_path(&path))
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX))
+            });
+        self.with_session_environment_from_deployment_at(hand_factory, companion)
+            .await
+    }
+
+    /// The one startup owner, shared with installed-binary qualification. Tests
+    /// supply Cargo's exact artifact rather than assuming that Cargo's separate
+    /// intermediate directory is the release installation directory. This input
+    /// never bypasses capability validation or changes provider selection.
+    pub(crate) async fn with_session_environment_from_deployment_at(
+        self,
+        hand_factory: Option<Arc<dyn crate::HandExecutorFactory>>,
+        namespace_hand_path: std::path::PathBuf,
+    ) -> Result<Self, String> {
         self.deployment.validate_local_execution()?;
         if self.session_provider_explicit && !self.deployment.trusted_host_enabled() {
             return Ok(self);
@@ -359,16 +388,7 @@ impl crate::host::SharedHost {
             .map_err(|error| format!("configure the Session sandbox tier: {error}"))?
         };
         let mut host = self;
-        // Namespace and TrustedHost run the same Hand binary as Container, from the local
-        // installation rather than from the image filesystem. Production bundles
-        // install both executables as siblings; keeping this resolution at the
-        // composition root prevents provider-specific host paths crossing inward.
-        let namespace_hand_path = std::env::current_exe()
-            .ok()
-            .map(|path| namespace_hand_path(&path))
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX))
-            });
+        // Namespace and TrustedHost validate/install the same local companion.
         let trusted_hand_factory = if deployment.trusted_host_enabled() {
             Some(
                 hand_factory
@@ -719,7 +739,10 @@ mod tests {
         let expected = deployment.sandbox_support().0;
 
         let host = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
-            .with_session_environment_from_deployment(Some(Arc::new(NoHandFactory)))
+            .with_session_environment_from_deployment_at(
+                Some(Arc::new(NoHandFactory)),
+                deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
+            )
             .await
             .unwrap()
             .with_acp_from_deployment(None, None)
@@ -740,6 +763,8 @@ mod tests {
         // is needed: real CLI/Hand/resource execution lives in the E2E gate.
         // S7 scoped={off,on Linux} crosses both startup orderings, probes the
         // real binary, preserves root relocation and is idempotent on reentry.
+        // S8 Cargo's test and binary directories may differ: supply its exact
+        // artifact to the SAME startup owner, never copy/search another binary.
         let modes: &[bool] = if cfg!(target_os = "linux") {
             &[false, true]
         } else {
@@ -765,11 +790,17 @@ mod tests {
                     host.session_provider_explicit = explicit_primary;
                     let capabilities = host.session_provider.capabilities();
                     let host = host
-                        .with_session_environment_from_deployment(Some(Arc::new(NoHandFactory)))
+                        .with_session_environment_from_deployment_at(
+                            Some(Arc::new(NoHandFactory)),
+                            deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
+                        )
                         .await
                         .unwrap();
                     let host = host
-                        .with_session_environment_from_deployment(Some(Arc::new(NoHandFactory)))
+                        .with_session_environment_from_deployment_at(
+                            Some(Arc::new(NoHandFactory)),
+                            deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
+                        )
                         .await
                         .unwrap();
                     #[cfg(target_os = "linux")]
@@ -811,6 +842,10 @@ mod tests {
         // support => fail. There is no successful Local executor substitution.
         // Configuration failure is a returned error, not an unwind: callers
         // must still be able to withdraw an already-created Worker registration.
+        // S5/S6 enter the same startup owner with an explicit artifact, proving
+        // artifact injection cannot bypass capability checks or fall back to a
+        // different executable. Successful real artifacts are the ignored rows
+        // above; release-layout selection remains the pure resolver's table.
         let mut deployment = crate::DeploymentConfig::ephemeral();
         deployment.sandbox_tier = crate::SandboxTier::Local;
         let message = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
@@ -820,17 +855,23 @@ mod tests {
             .expect("missing factory must reject");
         assert!(message.contains("requires the installed Hand factory"));
         let root = tempfile::tempdir().unwrap();
-        assert!(
-            validate_namespace_hand_bin(&root.path().join("missing"))
+        for (artifact, reason) in [
+            (root.path().join("missing"), "require the release companion"),
+            (root.path().to_path_buf(), "companion is not a file"),
+            (std::env::current_exe().unwrap(), "companion check failed"),
+        ] {
+            let mut deployment = crate::DeploymentConfig::ephemeral();
+            deployment.sandbox_tier = crate::SandboxTier::Local;
+            let error = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
+                .with_session_environment_from_deployment_at(
+                    Some(Arc::new(NoHandFactory)),
+                    artifact,
+                )
                 .await
-                .is_err()
-        );
-        assert!(validate_namespace_hand_bin(root.path()).await.is_err());
-        assert!(
-            validate_namespace_hand_bin(&std::env::current_exe().unwrap())
-                .await
-                .is_err()
-        );
+                .err()
+                .expect("S5/S6 explicit invalid artifact must fail startup");
+            assert!(error.contains(reason), "S5/S6 expected {reason}: {error}");
+        }
     }
 
     #[test]
