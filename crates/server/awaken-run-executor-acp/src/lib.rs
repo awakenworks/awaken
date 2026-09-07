@@ -757,11 +757,21 @@ impl AcpRunExecutor {
         // handshake. One relaunch is safe only before `session/new` returned an id:
         // the user prompt has not been sent and no agent fact can have happened.
         let mut handshake_retry_used = false;
-        let activation_namespace = activation
-            .input
-            .last()
-            .map(|message| message.id.0.clone())
-            .unwrap_or_else(|| "empty-input".to_string());
+        // Permission continuations may all have empty input and restart wire
+        // sequence/step ordinal at zero. The committed Thread prefix, not a
+        // process-local counter, distinguishes those activations while keeping
+        // replay from the same prefix stable. Count every message: a tool-only
+        // commit also advances identity without inventing an assistant Step.
+        let committed_prefix = context.reader.as_ref().map_or(0, |reader| {
+            reader.committed_messages(&activation.thread_id).len()
+        });
+        let activation_namespace = format!(
+            "{}:prefix:{committed_prefix}",
+            activation
+                .input
+                .last()
+                .map_or("empty-input", |message| message.id.0.as_str()),
+        );
         let mut step_ordinal = 0_u64;
         // The reader supplies the durable prefix on replacement/resume. Local
         // ACP Steps advance this cursor until the next atomic ThreadCommit.
