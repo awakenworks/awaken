@@ -1228,6 +1228,9 @@ async fn physical_disposal_rechecks_current_authority_before_delete_release_and_
     // Two FUSE participants isolate physical release from the already accepted
     // source-preparation phase. No fake probe can turn an in-flight backend
     // commit into a claim that cancellation undid it. No wall-time sleeps.
+    // R6 every admitted observation, including retry, must be TerminalCleanup:
+    // current authority cannot turn Recovery's process absence into proof that
+    // retained resources are gone. The backend classifier owns that distinction.
     for boundary in [
         "participant",
         "observation",
@@ -1383,6 +1386,12 @@ async fn physical_disposal_rechecks_current_authority_before_delete_release_and_
             assert!(!staging.exists());
             assert_eq!(runtime.st.lock().unwrap().removals.len(), 1);
             let observations = runtime.st.lock().unwrap().observations;
+            assert!(observations > 0, "R6 non-vacuous runtime observation");
+            assert_eq!(
+                runtime.st.lock().unwrap().observation_purposes,
+                vec![ContainerObservationPurpose::TerminalCleanup; observations as usize],
+                "R6 {boundary}/{change}"
+            );
             *authority.current.lock().unwrap() = None;
             assert!(
                 sandbox
@@ -2089,6 +2098,8 @@ async fn cold_terminal_reconstruction_rechecks_authority_after_each_provider_wai
     // restored fixture authority retries the exact handle. All 5x5 rows keep
     // UTC non-expiring and assert zero removal/writeback: reconstruction is
     // not disposal. These checks do not cancel already accepted backend work.
+    // R5 every cold observation uses TerminalCleanup, including the None row:
+    // Recovery absence is insufficient for terminal resource acknowledgement.
     for (phase, boundary) in [
         ("ready", "observation"),
         ("ready", "staging"),
@@ -2203,6 +2214,11 @@ async fn cold_terminal_reconstruction_rechecks_authority_after_each_provider_wai
                 let mut state = runtime.st.lock().unwrap();
                 assert_eq!(state.observations, observations + 1);
                 assert_eq!(
+                    state.observation_purposes.last(),
+                    Some(&ContainerObservationPurpose::TerminalCleanup),
+                    "R5 {phase}/{boundary}/{change}"
+                );
+                assert_eq!(
                     state.recovered_staging_calls,
                     usize::from(
                         phase == "ready" && (change == "renew" || boundary != "observation")
@@ -2231,6 +2247,11 @@ async fn cold_terminal_reconstruction_rechecks_authority_after_each_provider_wai
             .await
             .unwrap();
             assert_eq!(replay.is_none(), phase == "absent");
+            assert_eq!(
+                runtime.st.lock().unwrap().observation_purposes.last(),
+                Some(&ContainerObservationPurpose::TerminalCleanup),
+                "R5 exact retry preserves the purpose"
+            );
             drop(replay);
             crate::restore_target::remove_host_staging_path(&root).unwrap();
         }
@@ -2416,6 +2437,7 @@ struct FakeState {
     restore_disposals: usize,
     restore_disposal_authorizations: Vec<pc::SandboxDisposalAuthorization>,
     observations: u32,
+    observation_purposes: Vec<ContainerObservationPurpose>,
     retained_observation_attempts: Vec<Option<String>>,
     observation: Option<pc::SandboxObservation>,
 }
@@ -2912,6 +2934,7 @@ impl ContainerRuntime for FakeRuntime {
         let (observation, gate) = {
             let mut state = self.st.lock().unwrap();
             state.observations += 1;
+            state.observation_purposes.push(expectation.purpose);
             state
                 .retained_observation_attempts
                 .push(expectation.retained_attempt.map(|a| a.as_str().to_string()));
@@ -3990,6 +4013,20 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
     .unwrap();
     let state = runtime.st.lock().unwrap();
     assert_eq!(state.retained_observation_attempts.len(), 4, "A5/A6");
+    // A7 ordinary unfenced/fenced observations remain Recovery; only disposal
+    // changes purpose. Replay adds no observation. This independent wire oracle
+    // prevents both global TerminalCleanup defaulting and loss of the disposal
+    // override when current-authority checks and main's classifier are composed.
+    assert_eq!(
+        state.observation_purposes,
+        [
+            ContainerObservationPurpose::Recovery,
+            ContainerObservationPurpose::Recovery,
+            ContainerObservationPurpose::Recovery,
+            ContainerObservationPurpose::TerminalCleanup,
+        ],
+        "A7 one observer, distinct recovery and cleanup semantics"
+    );
     assert_eq!(
         state.retained_observation_attempts.last(),
         Some(&Some(expected)),
