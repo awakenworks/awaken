@@ -36,7 +36,13 @@ restoredDisposal == providerPhase = "restore-disposal"
    waits. providerWait=1 is an admitted pending call, =2 its response. An
    admitted backend may finish after revocation; its response is NOT a grant
    for the next operation or a successful preparation receipt. This finite
-   model abstracts one such wait and two effects, not backend commit fencing. *)
+   model abstracts one such wait and two effects, not backend commit fencing.
+   Kubernetes compound cleanup maps each adjacent HTTP-response/next-effect
+   pair to this SAME wait/check transition (disposal or restore-disposal).
+   cleanup_tests.rs enumerates every response, including finalizer CAS retry,
+   and checks the committed prefix plus fresh-successor replay. These adapter
+   schedules connect the model obligation to real kube requests; they do not
+   establish Rust refinement, API-server fencing, or controller liveness. *)
 VARIABLES memoryWait, memoryDrains, providerWait
 memoryVars == <<memoryWait, memoryDrains, providerWait>>
 VARIABLES selection, boundSlot, boundGeneration, boundEnvironment,

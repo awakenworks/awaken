@@ -680,10 +680,15 @@ impl ContainerRuntime for K8sRuntime {
         container_id: &str,
         runtime_handle: Option<&pc::ContainerContinuationHandle>,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {
         let (pod_uid, claim_uid) = deletion_incarnation(runtime_handle)?;
-        let authorization = continuation::PodCleanupAuthorization::Aggregate(authorization.clone());
-        self.remove_bound(container_id, pod_uid, claim_uid, Some(&authorization))
-            .await
+        self.remove_bound(
+            container_id,
+            pod_uid,
+            claim_uid,
+            Some((authorization, authority)),
+        )
+        .await
     }
 }

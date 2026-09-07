@@ -1012,7 +1012,7 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
         .dispose_for_effect(
             &disposal_authorization(&terminal_fence),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&terminal_fence)).effect_fence(),
+                disposal_authorization(&terminal_fence).effect_fence(),
             ),
         )
         .await
@@ -1236,7 +1236,7 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
         .dispose_for_effect(
             &disposal_authorization(&terminal_fence),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&terminal_fence)).effect_fence(),
+                disposal_authorization(&terminal_fence).effect_fence(),
             ),
         )
         .await

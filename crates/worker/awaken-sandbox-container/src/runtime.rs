@@ -1910,6 +1910,7 @@ pub trait ContainerRuntime: Send + Sync {
                     expectation.container_id,
                     expectation.runtime_handle,
                     authorization,
+                    authority,
                 )
                 .await?;
                 admit()
@@ -1920,11 +1921,14 @@ pub trait ContainerRuntime: Send + Sync {
     /// Adapter-only compare-and-delete effect reached after the shared exact
     /// observation policy. Implementations must use an immutable container ID
     /// or Pod UID precondition; a mutable name is never sufficient.
+    /// Re-enter current authority at each asynchronous mutation boundary, not
+    /// just once around a compound adapter cleanup operation.
     async fn remove_exact_incarnation(
         &self,
         _container_id: &str,
         _runtime_handle: Option<&pc::ContainerContinuationHandle>,
         _authorization: &pc::SandboxDisposalAuthorization,
+        _authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {
         Err(RuntimeError::Backend(
             "container runtime does not implement immutable-incarnation removal".into(),

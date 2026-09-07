@@ -1032,7 +1032,7 @@ impl ContainerRuntime for PodmanRuntime {
                 .map_err(|error| pc::SandboxError::new(error.to_string()))
         })
         .map_err(backend)?;
-        self.remove_exact_incarnation(&container_id, None, authorization)
+        self.remove_exact_incarnation(&container_id, None, authorization, authority)
             .await?;
         admit()
     }
@@ -1278,14 +1278,19 @@ impl ContainerRuntime for PodmanRuntime {
         &self,
         container_id: &str,
         runtime_handle: Option<&pc::ContainerContinuationHandle>,
-        _authorization: &pc::SandboxDisposalAuthorization,
+        authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {
         if runtime_handle.is_some() {
             return Err(backend(
                 "Podman exact removal received foreign continuation evidence",
             ));
         }
-        self.remove(container_id).await
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+            .map_err(backend)?;
+        self.remove(container_id).await?;
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+            .map_err(backend)
     }
 }
 

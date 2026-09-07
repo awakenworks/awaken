@@ -1060,6 +1060,7 @@ impl K8sRuntime {
         pod_name: &str,
         pod_uid: &str,
         attempt_id: &str,
+        admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
     ) -> Result<(), RuntimeError>
     where
         K: Clone + std::fmt::Debug + serde::de::DeserializeOwned + Resource<DynamicType = ()>,
@@ -1070,7 +1071,9 @@ impl K8sRuntime {
             k8s_attempt_label(attempt_id),
         );
         let params = ListParams::default().labels(&selector);
+        admit()?;
         for object in api.list(&params).await.map_err(backend)? {
+            admit()?;
             let Some(preconditions) = projected_content_delete_preconditions(
                 object.meta(),
                 pod_name,
@@ -1094,7 +1097,7 @@ impl K8sRuntime {
                 Err(error) => return Err(backend(error)),
             }
         }
-        Ok(())
+        admit()
     }
 
     async fn cleanup_projected_content(
@@ -1102,12 +1105,13 @@ impl K8sRuntime {
         pod_name: &str,
         pod_uid: &str,
         attempt_id: &str,
+        admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
     ) -> Result<(), RuntimeError> {
         let configmaps = self.configmaps();
-        self.cleanup_projected_kind(&configmaps, pod_name, pod_uid, attempt_id)
+        self.cleanup_projected_kind(&configmaps, pod_name, pod_uid, attempt_id, admit)
             .await?;
         let secrets = self.secrets();
-        self.cleanup_projected_kind(&secrets, pod_name, pod_uid, attempt_id)
+        self.cleanup_projected_kind(&secrets, pod_name, pod_uid, attempt_id, admit)
             .await
     }
 
@@ -1115,12 +1119,16 @@ impl K8sRuntime {
         &self,
         pod_name: &str,
         pod_uid: &str,
+        admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
     ) -> Result<(), RuntimeError> {
         const DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
         const DELETE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
         let deadline = tokio::time::Instant::now() + DELETE_TIMEOUT;
         loop {
-            match self.pods().get(pod_name).await {
+            admit()?;
+            let observed = self.pods().get(pod_name).await;
+            admit()?;
+            match observed {
                 Err(error) if api_not_found(&error) => return Ok(()),
                 Err(error) => return Err(backend(error)),
                 Ok(pod) if pod.metadata.uid.as_deref() != Some(pod_uid) => return Ok(()),
@@ -1141,6 +1149,7 @@ impl K8sRuntime {
         expected_uid: &str,
         expected_resource_version: &str,
         attempt_id: Option<&str>,
+        admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
     ) -> Result<(), RuntimeError> {
         let pod_name = pod
             .metadata
@@ -1164,7 +1173,10 @@ impl K8sRuntime {
                 resource_version: Some(expected_resource_version.to_owned()),
             },
         );
-        match self.pods().delete(pod_name, &params).await {
+        admit()?;
+        let deleted = self.pods().delete(pod_name, &params).await;
+        admit()?;
+        match deleted {
             Ok(_) => {}
             Err(error) if api_not_found(&error) => return Ok(()),
             Err(error) => return Err(backend(error)),
@@ -1174,10 +1186,12 @@ impl K8sRuntime {
         // exists and only for participants stamped by the same attempt. Once
         // that Pod is absent (or its stable name points at a new UID), native
         // ownerReference GC is the sole deletion authority.
-        match self.pods().get(pod_name).await {
+        let observed = self.pods().get(pod_name).await;
+        admit()?;
+        match observed {
             Ok(observed) if observed.metadata.uid.as_deref() == Some(expected_uid) => {
                 if let Some(attempt_id) = attempt_id {
-                    self.cleanup_projected_content(pod_name, expected_uid, attempt_id)
+                    self.cleanup_projected_content(pod_name, expected_uid, attempt_id, admit)
                         .await?;
                 }
             }
@@ -1200,9 +1214,16 @@ impl K8sRuntime {
             .name
             .as_deref()
             .ok_or_else(|| backend("Kubernetes Sandbox Pod has no name"))?;
-        self.begin_exact_pod_delete(pod, expected_uid, expected_resource_version, attempt_id)
-            .await?;
-        self.await_exact_pod_deleted(pod_name, expected_uid).await
+        self.begin_exact_pod_delete(
+            pod,
+            expected_uid,
+            expected_resource_version,
+            attempt_id,
+            &|| Ok(()),
+        )
+        .await?;
+        self.await_exact_pod_deleted(pod_name, expected_uid, &|| Ok(()))
+            .await
     }
 
     async fn remove_bound(
@@ -1210,8 +1231,27 @@ impl K8sRuntime {
         container_id: &str,
         persisted_pod_uid: Option<&str>,
         persisted_claim_uid: Option<&str>,
-        authorization: Option<&continuation::PodCleanupAuthorization>,
+        authorization: Option<(
+            &pc::SandboxDisposalAuthorization,
+            &dyn pc::CurrentExecutionAuthority,
+        )>,
     ) -> Result<(), RuntimeError> {
+        // One borrowed admission callback threads the existing operation-bound
+        // authority through all cleanup writes. It owns no lease or retry state.
+        // Unfenced legacy removal retains its existing UID/continuation gates;
+        // aggregate cleanup cannot supply provenance without current authority.
+        let admit = || {
+            if let Some((authorization, authority)) = authorization {
+                pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+                    .map_err(backend)?;
+            }
+            Ok(())
+        };
+        admit()?;
+        let cleanup_authorization = authorization.map(|(authorization, _)| {
+            continuation::PodCleanupAuthorization::Aggregate(authorization.clone())
+        });
+        let authorization = cleanup_authorization.as_ref();
         let effect_fenced = authorization.is_some();
         let pods = self.pods();
         let observed_pod = match pods.get(container_id).await {
@@ -1219,6 +1259,7 @@ impl K8sRuntime {
             Err(error) if api_not_found(&error) => None,
             Err(error) => return Err(backend(error)),
         };
+        admit()?;
         let pod_claim_uid = observed_pod
             .as_ref()
             .and_then(continuation::bound_claim_uid)
@@ -1269,6 +1310,7 @@ impl K8sRuntime {
                 effect_fenced && persisted_claim_uid.is_some(),
             )
             .await?;
+        admit()?;
         if continuation == ContinuationObservationDisposition::Incompatible {
             return Err(backend(
                 "Kubernetes Sandbox continuation state differs from its durable handle",
@@ -1281,10 +1323,10 @@ impl K8sRuntime {
                 let pending =
                     continuation::absent_pod_claim_deletion(&claims, container_id, uid).await?;
                 if let Some(pending) = pending.as_ref() {
-                    continuation::await_claim_deletion(&claims, pending).await?;
+                    continuation::await_claim_deletion(&claims, pending, &admit).await?;
                 }
             }
-            return Ok(());
+            return admit();
         };
 
         if continuation == ContinuationObservationDisposition::Disposing
@@ -1298,15 +1340,16 @@ impl K8sRuntime {
             // re-read and await exact P. A foreign replacement UID ends only
             // the A wait and still cannot redirect the claim fence.
             let pod_uid = persisted_pod_uid.expect("disposing Pod has persisted UID");
-            self.await_exact_pod_deleted(container_id, pod_uid).await?;
+            self.await_exact_pod_deleted(container_id, pod_uid, &admit)
+                .await?;
             if let Some(uid) = expected_claim_uid {
                 let pending =
                     continuation::absent_pod_claim_deletion(&claims, container_id, uid).await?;
                 if let Some(pending) = pending.as_ref() {
-                    continuation::await_claim_deletion(&claims, pending).await?;
+                    continuation::await_claim_deletion(&claims, pending, &admit).await?;
                 }
             }
-            return Ok(());
+            return admit();
         }
 
         // Cause/effect order for a retained source is fixed: exact Pod A first
@@ -1326,6 +1369,7 @@ impl K8sRuntime {
                     &observed_pod,
                     persisted_pod_uid.expect("retained bound Pod has persisted UID"),
                     authorization,
+                    &admit,
                 )
                 .await?,
             )
@@ -1337,7 +1381,7 @@ impl K8sRuntime {
             // Retain the Pod finalizer and fail so a root retry can classify P's
             // deletionTimestamp; releasing the gate here would reopen the
             // stable name while claim disposal may already be irreversible.
-            continuation::initiate_claim_deletion(&claims, container_id, uid).await?
+            continuation::initiate_claim_deletion(&claims, container_id, uid, &admit).await?
         } else {
             None
         };
@@ -1349,6 +1393,7 @@ impl K8sRuntime {
                 &current,
                 persisted_pod_uid.expect("retained bound Pod has persisted UID"),
                 authorization.expect("retained cleanup has authorization authority"),
+                &admit,
             )
             .await?;
         }
@@ -1366,17 +1411,24 @@ impl K8sRuntime {
             .as_ref()
             .and_then(|annotations| annotations.get(SANDBOX_ATTEMPT_ANNOTATION))
             .map(String::as_str);
-        self.begin_exact_pod_delete(pod, &incarnation.identity, resource_version, attempt_id)
-            .await?;
+        self.begin_exact_pod_delete(
+            pod,
+            &incarnation.identity,
+            resource_version,
+            attempt_id,
+            &admit,
+        )
+        .await?;
         if let Some(pending) = pending_pod_cleanup.as_ref() {
-            continuation::release_pod_cleanup_gate(&pods, pending).await?;
+            continuation::release_pod_cleanup_gate(&pods, pending, &admit).await?;
         }
-        self.await_exact_pod_deleted(container_id, &incarnation.identity)
+        self.await_exact_pod_deleted(container_id, &incarnation.identity, &admit)
             .await?;
         if let Some(pending) = pending_claim_deletion.as_ref() {
-            continuation::await_claim_deletion(&claims, pending).await?;
+            admit()?;
+            continuation::await_claim_deletion(&claims, pending, &admit).await?;
         }
-        Ok(())
+        admit()
     }
 
     fn pod_for_effect(
@@ -1693,6 +1745,8 @@ fn build_pod_with_continuation(
     }
 }
 
+#[cfg(test)]
+mod cleanup_tests;
 /// Host side of the reverse-dial: bind the rendezvous and accept the Pod's outbound
 /// connection, returning it as the agent channel. Extracted so it is testable with a
 /// stand-in dialer (no cluster).
