@@ -13,17 +13,24 @@ EXTENDS WorkerExecutionAuthority
    Host has only its real Session owner, never an invented infinite Worker
    receipt. This model does not prove that deployment classification or the
    new request-relative Session clock adapter is implemented correctly. *)
-VARIABLES deploymentReady, registeredWorker
+(* providerSource selects the existing Container renewal callback: it captures
+   the same slot/generation before preparation, but no Environment exists yet.
+   A callback result is only a durable-fence projection, NOT asynchronous
+   provider mutation authority. The check/commit here spans that projection
+   under the Worker/slot locks. Backend expiry, clock conversion, operation-id
+   bytes and actual I/O after return remain executable/adapter obligations. *)
+VARIABLES deploymentReady, registeredWorker, providerSource
 VARIABLES selection, boundSlot, boundGeneration, boundEnvironment,
           environmentIdentity, environmentPhase, sessionExpired,
           effectHeld, effectChecked, badEffect, effects, effectPhases, weakStarted
 bindingVars == <<selection, boundSlot, boundGeneration, boundEnvironment,
     environmentIdentity, environmentPhase, sessionExpired, effectHeld,
     effectChecked, badEffect, effects, effectPhases, weakStarted>>
-bindingAll == <<allVars, bindingVars, deploymentReady, registeredWorker>>
+bindingAll == <<allVars, bindingVars, deploymentReady, registeredWorker, providerSource>>
 
 BindingInit == RootInit
   /\ registeredWorker \in BOOLEAN
+  /\ providerSource \in BOOLEAN
   /\ deploymentReady = FALSE
   /\ selection = "unset" /\ boundSlot = 0 /\ boundGeneration = 0 /\ boundEnvironment = 0
   /\ environmentIdentity = 1 /\ environmentPhase = "candidate" /\ sessionExpired = FALSE
@@ -32,20 +39,23 @@ BindingInit == RootInit
 
 ExecutionRootCurrent == ~registeredWorker \/ RootCurrent
 CurrentBinding == /\ ExecutionRootCurrent /\ projection = "Live" /\ ~sessionExpired
-  /\ selection = "scoped" /\ boundSlot = slotIdentity
-  /\ boundGeneration = lease[1] /\ boundEnvironment = environmentIdentity
-  /\ environmentPhase \in {"candidate", "resident"}
+  /\ boundSlot = slotIdentity /\ boundGeneration = lease[1]
+  /\ (providerSource \/
+      (/\ selection = "scoped" /\ boundEnvironment = environmentIdentity
+       /\ environmentPhase \in {"candidate", "resident"}))
 
 Select == /\ selection = "unset" /\ deploymentReady /\ selection' = "scoped"
+  /\ ~providerSource
   /\ UNCHANGED <<allVars, boundSlot, boundGeneration, boundEnvironment,
        environmentIdentity, environmentPhase, sessionExpired, effectHeld,
        effectChecked, badEffect, effects, effectPhases, weakStarted>>
 WeakSpawn == /\ selection \in {"unset", "weak"}
+  /\ ~providerSource
   /\ selection' = "weak" /\ weakStarted' = TRUE
   /\ UNCHANGED <<allVars, boundSlot, boundGeneration, boundEnvironment,
        environmentIdentity, environmentPhase, sessionExpired, effectHeld,
        effectChecked, badEffect, effects, effectPhases>>
-Bind == /\ selection = "scoped" /\ boundSlot = 0 /\ projection = "Live"
+Bind == /\ (providerSource \/ selection = "scoped") /\ boundSlot = 0 /\ projection = "Live"
   /\ boundSlot' = slotIdentity /\ boundGeneration' = lease[1]
   /\ boundEnvironment' = environmentIdentity
   /\ UNCHANGED <<allVars, selection, environmentIdentity, environmentPhase,
@@ -59,10 +69,11 @@ CommitEffect == /\ effectHeld /\ effectChecked /\ effects < 2
   \* weaken the assertion against which that mutant is checked.
   /\ badEffect' = (badEffect \/ (registeredWorker /\ ~RootCurrent)
        \/ projection # "Live" \/ sessionExpired
-       \/ selection # "scoped" \/ boundSlot # slotIdentity \/ boundGeneration # lease[1]
-       \/ boundEnvironment # environmentIdentity \/ environmentPhase = "retiring")
+       \/ boundSlot # slotIdentity \/ boundGeneration # lease[1]
+       \/ (~providerSource /\ (selection # "scoped"
+           \/ boundEnvironment # environmentIdentity \/ environmentPhase = "retiring")))
   /\ effects' = effects + 1
-  /\ effectPhases' = effectPhases \cup {environmentPhase}
+  /\ effectPhases' = effectPhases \cup {IF providerSource THEN "provider" ELSE environmentPhase}
   /\ effectHeld' = FALSE /\ effectChecked' = FALSE
   /\ UNCHANGED <<allVars, selection, boundSlot, boundGeneration, boundEnvironment,
        environmentIdentity, environmentPhase, sessionExpired, weakStarted>>
@@ -81,11 +92,11 @@ AuthorityChanges == ((registeredWorker /\
           \/ (ExecutionRootCurrent /\ RecreateSlot)) /\ UNCHANGED rootVars))
   /\ ~effectHeld /\ UNCHANGED bindingVars
 EnvironmentChanges == /\ ~effectHeld
-  /\ \/ (/\ environmentPhase = "candidate" /\ environmentPhase' = "resident"
+  /\ \/ (/\ ~providerSource /\ environmentPhase = "candidate" /\ environmentPhase' = "resident"
           /\ UNCHANGED <<environmentIdentity, sessionExpired>>)
-     \/ (/\ environmentPhase \in {"candidate", "resident"}
+     \/ (/\ ~providerSource /\ environmentPhase \in {"candidate", "resident"}
           /\ environmentPhase' = "retiring" /\ UNCHANGED <<environmentIdentity, sessionExpired>>)
-     \/ (/\ environmentIdentity = 1 /\ environmentIdentity' = 2
+     \/ (/\ ~providerSource /\ environmentIdentity = 1 /\ environmentIdentity' = 2
           /\ UNCHANGED <<environmentPhase, sessionExpired>>)
      \/ (/\ ~sessionExpired /\ sessionExpired' = TRUE
           /\ UNCHANGED <<environmentIdentity, environmentPhase>>)
@@ -98,19 +109,21 @@ EnvironmentChanges == /\ ~effectHeld
 \* LocalProcessBoundary owns its timeout/exit mechanics. No business lease is
 \* acquired by this action, and readiness alone cannot satisfy CurrentBinding.
 ProbeReady == /\ ~deploymentReady /\ deploymentReady' = TRUE
+  /\ ~providerSource
   /\ UNCHANGED <<allVars, bindingVars>>
 BindingNext == (((Select \/ WeakSpawn \/ Bind \/ CheckEffect \/ CommitEffect
   \/ CancelEffect \/ AuthorityChanges \/ EnvironmentChanges)
   /\ UNCHANGED deploymentReady) \/ ProbeReady)
-  /\ UNCHANGED registeredWorker
+  /\ UNCHANGED <<registeredWorker, providerSource>>
 BindingSpec == BindingInit /\ [][BindingNext]_bindingAll
 BindingTypeOK == RootTypeOK /\ selection \in {"unset", "weak", "scoped"}
   /\ deploymentReady \in BOOLEAN /\ registeredWorker \in BOOLEAN
+  /\ providerSource \in BOOLEAN
   /\ boundSlot \in 0..2 /\ boundGeneration \in 0..2 /\ boundEnvironment \in 0..2
   /\ environmentIdentity \in 1..2 /\ environmentPhase \in {"candidate", "resident", "retiring"}
   /\ sessionExpired \in BOOLEAN /\ effectHeld \in BOOLEAN /\ effectChecked \in BOOLEAN
   /\ badEffect \in BOOLEAN /\ weakStarted \in BOOLEAN /\ effects \in 0..2
-  /\ effectPhases \subseteq {"candidate", "resident", "retiring"}
+  /\ effectPhases \subseteq {"candidate", "resident", "retiring", "provider"}
 OnlyCurrentBindingCommits == ~badEffect
 OnlyProbedDeploymentSelected == selection = "scoped" => deploymentReady
 WeakExecutionCannotUpgrade == weakStarted => selection = "weak"
@@ -119,4 +132,6 @@ NoCandidateEffectReached == "candidate" \notin effectPhases
 NoResidentEffectReached == "resident" \notin effectPhases
 NoLocalEffectReached == registeredWorker \/ effects = 0
 NoRegisteredEffectReached == ~registeredWorker \/ effects = 0
+NoProviderEffectReached == "provider" \notin effectPhases
+NoUnreadyProviderEffectReached == ~providerSource \/ deploymentReady \/ effects = 0
 =============================================================================

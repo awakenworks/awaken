@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg(test)]
+mod fence_source_tests;
+
 impl crate::session_slot::SessionRuntimeSlot {
     pub(crate) fn validate_session_publication(
         &self,
@@ -946,37 +949,64 @@ impl SharedHost {
         source_handle: Option<&awaken_provisioning_contract::SandboxHandle>,
         intent: awaken_sandbox_container::ContainerRealizationIntent,
     ) -> Result<crate::session_environment::SessionEnvironment, HostError> {
+        use awaken_sandbox_container::ContainerEffectFenceSource;
+
         let spec = self.validate_session_environment_capabilities(provider, spec)?;
+        // Capture before any preparation await. A same-byte replacement slot
+        // must not lend its proof to this in-flight creation or its retries.
+        let current_fence = effect_fence
+            .map(|fence| self.session_environment_effect_fence_source(thread, fence))
+            .transpose()?;
+        if let (Some(source), Some(fence)) = (&current_fence, effect_fence) {
+            source
+                .current_effect_fence(fence)
+                .map_err(|error| HostError::internal(error.to_string()))?;
+        }
         self.cache_volume_prewarmer
             .prepare_mounts(&spec.mounts)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        let current_fence = |asserted: &awaken_provisioning_contract::SandboxEffectFence| {
-            let lease = self
-                .session_slots
-                .read(thread, |slot| slot.realization_authority.lease().cloned())
-                .flatten()
-                .ok_or_else(|| {
-                    awaken_provisioning_contract::SandboxError::new(
-                        "Session realization authority is no longer installed",
-                    )
-                })?;
-            lease
-                .sandbox_effect_fence(asserted.operation_id.clone())
-                .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))
-        };
+        if let (Some(source), Some(fence)) = (&current_fence, effect_fence) {
+            // Cache preparation is asynchronous: recheck after it, not only
+            // before it. This sample does not replace provider-side fencing.
+            source
+                .current_effect_fence(fence)
+                .map_err(|error| HostError::internal(error.to_string()))?;
+        }
         provider
             .create_effective_for_effect(
                 &spec,
                 effect_fence,
-                effect_fence.map(|_| {
-                    &current_fence as &dyn awaken_sandbox_container::ContainerEffectFenceSource
+                current_fence.as_ref().map(|source| {
+                    source as &dyn awaken_sandbox_container::ContainerEffectFenceSource
                 }),
                 source_handle,
                 intent,
             )
             .await
             .map_err(|error| HostError::internal(error.to_string()))
+    }
+
+    /// A projection through the existing Worker -> Session admission guards,
+    /// not another lease owner. Capture the exact operation and slot allocation;
+    /// renewals may replace the observation, never these identities. This
+    /// returns durable Control coordinates, not a provider-local expiry or an
+    /// authorization to perform asynchronous I/O after the guards are released.
+    fn session_environment_effect_fence_source(
+        &self,
+        thread: &str,
+        initial: &awaken_provisioning_contract::SandboxEffectFence,
+    ) -> Result<
+        impl awaken_sandbox_container::ContainerEffectFenceSource
+        + awaken_provisioning_contract::CurrentExecutionAuthority
+        + use<>,
+        HostError,
+    > {
+        self.session_slots.provider_effect_authority(
+            thread,
+            initial,
+            self.execution_authority.as_ref(),
+        )
     }
 
     /// Validate one exact physical projection without creating it. Reservation
