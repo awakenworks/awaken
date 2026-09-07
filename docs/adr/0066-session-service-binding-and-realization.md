@@ -397,9 +397,12 @@ preparation or disposal, sharing the same wait and authority transitions; three
 cold-only mutants and two reconstruction/replay witnesses bring its total to
 29 mutants and 14 witnesses. This is still a two-effect admission abstraction,
 not a proof of aggregate ordering, backend commits, or cross-clock correspondence.
-Cold FUSE cancellation while the external mounter owns an unfinished operation,
-and process-lifetime retention after failed ownerless compensation, are not
-closed by these admission tests. Exact restored-target disposal now uses the
+Cold FUSE cancellation and failed compensation were not closed by these admission
+tests. The live-Provider ownership follow-up in
+[ADR-0053](0053-memory-store-fuse-mount.md#live-provider-ownership-across-cancellation)
+now retains the original mount future/guards across wrapper cancellation and
+retries Local/Namespace compensation; process death and Container retention remain
+outside that bound. Exact restored-target disposal now uses the
 current-authority port described below; terminal checkpoint cleanup is wired
 below. No new store, timer, lease, registry or state machine is
 introduced by this cold reconstruction change.

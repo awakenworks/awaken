@@ -4,7 +4,7 @@ use awaken_provisioning_contract::{
     IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxSpec,
 };
 
-pub(super) fn workdir_spec(scope: &str, deny_egress: bool) -> SandboxSpec {
+pub(crate) fn workdir_spec(scope: &str, deny_egress: bool) -> SandboxSpec {
     SandboxSpec {
         process_tree_supervision: false,
         scope: scope.into(),
@@ -107,12 +107,12 @@ async fn trusted_host_realizes_readonly_resource_as_advisory_access() {
     );
 }
 
-pub(super) struct TeardownProbe {
-    pub(super) teardowns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    pub(super) drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    pub(super) failures: usize,
-    pub(super) wait_until_ms: Option<u64>,
-    pub(super) response_gate: Option<std::sync::Arc<tokio::sync::Semaphore>>,
+pub(crate) struct TeardownProbe {
+    pub(crate) teardowns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub(crate) drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub(crate) failures: usize,
+    pub(crate) wait_until_ms: Option<u64>,
+    pub(crate) response_gate: Option<std::sync::Arc<tokio::sync::Semaphore>>,
 }
 
 impl Drop for TeardownProbe {
@@ -186,8 +186,8 @@ impl pc::MemoryMounter for FailedCreationMounter {
 async fn failed_creation_teardown_retains_guards_past_temporary_sandbox_drop() {
     // Ownerless-rollback decision row: C1 Memory mount succeeds; C2 a later
     // frozen mount fails; C3 Memory teardown fails. R1 C1+C2 invokes teardown;
-    // R2 C3 transfers the complete guard set out of the temporary LocalSandbox
-    // and retains it for process lifetime, so returning Err and dropping that
+    // R2 C3 keeps the complete guard set in the live Provider's root owner,
+    // so returning Err and dropping the temporary
     // wrapper cannot call MemoryMount::drop on the still-live participant.
     let tmp = tempfile::tempdir().unwrap();
     let mount_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
