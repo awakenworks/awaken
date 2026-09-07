@@ -52,6 +52,8 @@ import { closeHttpServer } from '../http_server.mjs';
 ///                   this server-only value. This lets live-model tests prove a
 ///                   real tool call without accepting an answer the model could
 ///                   derive from the prompt itself.
+///   listenHost      local IPv4 bind/advertised address (default 127.0.0.1).
+///                   Container callers must provide a mutually reachable host.
 ///   allowAnonymous  when true, requests without Authorization are accepted;
 ///                   an explicitly supplied wrong bearer is still rejected.
 export function startCalcFixture(token, options = {}) {
@@ -63,6 +65,7 @@ export function startCalcFixture(token, options = {}) {
     clientAuth = null,
     opaqueResult = null,
     allowAnonymous = false,
+    listenHost = '127.0.0.1',
   } = options;
 
   // Undo application/x-www-form-urlencoded encoding ('+' is a space).
@@ -220,12 +223,13 @@ export function startCalcFixture(token, options = {}) {
     });
   });
 
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, listenHost, () => {
       const { port } = server.address();
       resolve({
-        url: `http://127.0.0.1:${port}/`,
-        tokenUrl: `http://127.0.0.1:${port}/token`,
+        url: `http://${listenHost}:${port}/`,
+        tokenUrl: `http://${listenHost}:${port}/token`,
         calls,
         grants,
         tokenRequests,
