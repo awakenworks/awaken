@@ -182,7 +182,10 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     let id = created["id"].as_str().unwrap();
     let events = format!("/v1/sessions/{id}/events");
     let close = format!("/v1/awaken/sessions/{id}/event-admissions/close");
-    let body = serde_json::json!({"events":[{"type":"user.message","content":[{"type":"text","text":"hello"}]}]});
+    let body = serde_json::json!({"events":[
+        {"type":"user.message","content":[{"type":"text","text":"hello"}]},
+        {"type":"user.message","content":[{"type":"text","text":"hello"}]}
+    ]});
     let (status, receipt) = post_events_with_idempotency(&app, &close, "closed-key", &body).await;
     assert_eq!(status, StatusCode::OK, "N1 {receipt}");
     assert_eq!(receipt["status"], "closed", "N1");
@@ -203,6 +206,31 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
         post_events_with_idempotency(&app, &close, "accepted-key", &body).await;
     assert_eq!(status, StatusCode::OK, "N2 {resolved}");
     assert_eq!(resolved["status"], "accepted", "N2");
+    // N6 accepted is not executed: an observer needs the exact input event
+    // identity before a later Idle can be attributed to this submission.
+    // Never infer it from message text, current status or a client hash.
+    let input_ids: Vec<_> = accepted["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["id"].clone())
+        .collect();
+    assert_eq!(
+        input_ids.len(),
+        2,
+        "N6 identical texts still have separate identities"
+    );
+    assert_ne!(input_ids[0], input_ids[1], "N6 never correlate by text");
+    assert_eq!(
+        resolved["event_ids"],
+        serde_json::json!(input_ids),
+        "N6 stable order"
+    );
+    assert_eq!(
+        receipt["event_ids"],
+        serde_json::json!([]),
+        "N1 no executable events"
+    );
     let (_, replay) = post_events_with_idempotency(&app, &events, "accepted-key", &body).await;
     assert_eq!(accepted, replay, "N2 original receipt unchanged");
     let changed = serde_json::json!({"events":[{"type":"user.message","content":[{"type":"text","text":"changed"}]}]});

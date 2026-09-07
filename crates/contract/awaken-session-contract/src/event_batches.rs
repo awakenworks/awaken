@@ -436,6 +436,15 @@ fn mark_processed_observation(
 }
 
 impl SessionEventBatch {
+    /// Ordered identities shared by live receipts and content-free deletion
+    /// evidence. Do not derive a second sequence from current execution state.
+    pub fn operation_ids(&self) -> Vec<String> {
+        self.events
+            .iter()
+            .map(|entry| entry.event.operation_id().to_owned())
+            .collect()
+    }
+
     /// A final non-admission receipt can be observed but cannot be replayed as
     /// accepted input. Both application and wire preflight use this same gate.
     pub fn require_accepted(&self) -> Result<(), crate::RunError> {

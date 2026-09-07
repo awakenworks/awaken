@@ -14,6 +14,7 @@ pub(super) fn encode(session: &PersistedSession) -> Result<String, SessionReposi
                 request_fingerprint: fingerprint.clone(),
                 batch_id: batch.batch_id.clone(),
                 closed: batch.admission_closed,
+                operation_ids: Some(batch.operation_ids()),
             }),
             (None, None) => {}
             _ => {
@@ -48,6 +49,22 @@ pub(super) fn decode(
                 return Err(super::corrupt(
                     "invalid retained Session event admission identity",
                 ));
+            }
+            if let Some(ids) = &receipt.operation_ids {
+                if (receipt.closed && !ids.is_empty())
+                    || (!receipt.closed && ids.is_empty())
+                    || ids.iter().enumerate().any(|(ordinal, id)| {
+                        awaken_session_contract::decode_session_event_batch_operation(id)
+                            .is_none_or(|coordinate| {
+                                coordinate.batch_id != receipt.batch_id
+                                    || coordinate.ordinal != ordinal
+                            })
+                    })
+                {
+                    return Err(super::corrupt(
+                        "invalid retained Session event observation identity",
+                    ));
+                }
             }
         }
     }
@@ -96,6 +113,56 @@ mod tests {
                 decode(1, Some(encoded)),
                 Err(SessionRepositoryError::Corrupt(_))
             ));
+        }
+    }
+
+    #[test]
+    fn retained_observation_coordinates_are_complete_ordered_and_content_free() {
+        // I1 omitted identities on an old receipt => preserve unknown, not [];
+        // I2 closed => known empty; I3 accepted => ordered canonical batch
+        // coordinates; I4 empty/foreign/gapped/repeated/noncanonical => corrupt.
+        // Only opaque ids extend the existing tombstone JSON, never input data.
+        let op = |batch, ordinal| {
+            awaken_session_contract::session_event_batch_operation(batch, ordinal).unwrap()
+        };
+        let entry = |closed, ids: serde_json::Value| {
+            json!([{
+            "key":"k", "request_fingerprint":"f", "batch_id":"b", "closed":closed, "operation_ids":ids,
+        }]).to_string()
+        };
+        assert_eq!(
+            decode(1, Some(entry(true, json!([]))))
+                .unwrap()
+                .admissions
+                .unwrap()[0]
+                .operation_ids,
+            Some(vec![])
+        );
+        let ids = vec![op("b", 0), op("b", 1)];
+        assert_eq!(
+            decode(1, Some(entry(false, json!(ids))))
+                .unwrap()
+                .admissions
+                .unwrap()[0]
+                .operation_ids,
+            Some(ids)
+        );
+        for (closed, ids) in [
+            (false, json!([])),
+            (true, json!([op("b", 0)])),
+            (false, json!([op("foreign", 0)])),
+            (false, json!([op("b", 1)])),
+            (false, json!([op("b", 0), op("b", 0)])),
+            (false, json!([" "])),
+            (false, json!(["operation:private message"])),
+        ] {
+            assert!(
+                matches!(
+                    decode(1, Some(entry(closed, ids))),
+                    Err(SessionRepositoryError::Corrupt(_))
+                ),
+                "I4"
+            );
         }
     }
 }

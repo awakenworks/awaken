@@ -1102,6 +1102,7 @@ async fn deleted_event_admission_decision_table<R: ManagedSessionRepository>(rep
                 if kind == "accepted" {
                     SessionEventAdmission::Accepted {
                         batch_id: "batch".into(),
+                        operation_ids: Some(value.event_batches[0].operation_ids()),
                     }
                 } else {
                     SessionEventAdmission::Closed {
@@ -1118,7 +1119,8 @@ async fn deleted_event_admission_decision_table<R: ManagedSessionRepository>(rep
             let retained = serde_json::to_value(proof.admissions.as_ref().unwrap()).unwrap();
             assert_eq!(
                 retained,
-                json!([{"key":"key","request_fingerprint":"fp","batch_id":"batch","closed":kind == "closed"}])
+                json!([{"key":"key","request_fingerprint":"fp","batch_id":"batch","closed":kind == "closed",
+                    "operation_ids":value.event_batches[0].operation_ids()}])
             );
         }
         assert_eq!(

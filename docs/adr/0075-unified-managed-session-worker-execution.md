@@ -866,6 +866,33 @@ excluded by the same permanent Session tombstone. Nullable legacy inventories
 remain unavailable/unknown; NULL must never be interpreted as an empty list.
 Changing the original fingerprint remains a conflict even after deletion.
 
+Native Event-batch receipts additionally expose ordered `event_ids`, projected
+by the same `durable_inbound_event_id` function as standard SDK send receipts
+and committed history. The existing root Event entries own the operation
+coordinates; live and deletion evidence use `SessionEventBatch::operation_ids`
+without a parallel event-id registry. Accepted input is not necessarily driven
+yet, so a browser must observe these exact events rather than match text or
+treat an older Idle snapshot as the new command's completion. These ids are
+admission/observation coordinates, not a Run terminal or publication proof.
+
+The existing tombstone JSON retains only the ordered canonical operation ids
+alongside its prior key/fingerprint/batch/outcome. Store decoding rejects foreign
+batch coordinates, gaps, duplicates, malformed ids and executable ids on Closed
+receipts. Old tombstones without that optional field still prove their original
+admission outcome; the observation identity stays unknown and is omitted from
+the native reply. Closed receipts expose an empty list; a deletion-only proof
+has no event list. No message text, tool arguments or trace payload is retained.
+Old binaries reject the newly extended tombstone JSON because their decoder
+denies unknown fields: upgrade all readers before enabling new deletion writers,
+or drain and replace the single-version deployment. Do not erase retained fields
+to make an old binary accept them or interpret decode failure as non-admission.
+
+The HTTP decision-table test compares a two-input batch containing identical
+text against SDK-issued event ids, then verifies unchanged replies after actual
+deletion and cold reconstruction. The shared SQLite/PostgreSQL conformance
+suite checks the same retained projection. This is protocol/storage evidence,
+not a live browser/model execution-completion proof.
+
 The shared current DDL tail appends a nullable column inside the selected
 table-owning Session lineage without rewriting historical checksums. The old
 convergence marker stays unchanged and owns no table DDL. Deploy the migration and deleting

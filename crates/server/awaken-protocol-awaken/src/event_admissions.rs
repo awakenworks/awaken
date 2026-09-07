@@ -23,8 +23,16 @@ pub struct EventAdmissionReceipt {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "proof", rename_all = "snake_case")]
 pub enum EventAdmissionProof {
-    EventBatch { batch_id: String },
-    SessionDeleted { deleted_revision: u64 },
+    EventBatch {
+        batch_id: String,
+        /// Exact standard Managed event ids; omitted only for legacy retained
+        /// receipts. These prove admission identity, not execution completion.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event_ids: Option<Vec<String>>,
+    },
+    SessionDeleted {
+        deleted_revision: u64,
+    },
 }
 
 /// The caller supplies the exact original Managed events body and retry key.
