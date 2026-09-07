@@ -150,7 +150,7 @@ const EXPANDED_V15_CHECKSUM: &str =
 #[cfg(feature = "durable")]
 const EXPANDED_V16_CHECKSUM: &str =
     "b69507cd88429793df7d48d30bf84246ff61873687be7938cd737a602776db6b";
-#[cfg(test)]
+#[cfg(all(test, feature = "durable"))]
 const COMPACT_V15_CHECKSUM: &str =
     "e835f0eaae0017589eda70e1f1049fc1d2e428e7ade63f42defdc2366c737a90";
 
@@ -334,10 +334,13 @@ pub(crate) fn converged_dispatch_bundle() -> Result<MigrationBundle, MigrationEr
 
 /// The runtime table prefix, mirrored from `postgres::NS`/`sqlite::NS` so the
 /// render test can assert the prefixing without reaching into a backend module.
-#[cfg(test)]
+#[cfg(all(test, feature = "durable"))]
 const NS: &str = "runtime";
 
-#[cfg(test)]
+// These tests exercise published SQL lineages and actual SQLite migrations.
+// They remain in the durable/default unit suite; a database-less Worker must
+// not acquire SQLite solely to compile its otherwise store-neutral tests.
+#[cfg(all(test, feature = "durable"))]
 mod tests {
     use super::*;
 

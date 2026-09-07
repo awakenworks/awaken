@@ -110,6 +110,19 @@ step "fmt" "cargo fmt --all" \
 step "runtime-host-neutral" "keep neutral Runtime Host ports available without enabling authority dependencies" \
   cargo check -p awaken-session-executor --no-default-features "${locked[@]}"
 
+# Compile-surface decision table: CR2 a database-less Worker consumes Ingress
+# without durable/test support -> compile its production library warning-free;
+# CR3 a workspace peer enables durable -> that unified graph cannot substitute
+# for CR2; CR4 store/unit/Kani consumers still use the same bounded arithmetic.
+# This separate root detects orphaned authority helpers that cargo check on a
+# consumer only warns about. Default/all-target and formal gates retain CR4.
+# CR5 cfg(test) activates memory fixtures, not SQL adapters: execute the same
+# pure kernels there; SQL migration fixtures stay in the default/durable suite.
+step "run-ingress-neutral" "keep store-only arithmetic out of the database-less Worker graph" \
+  cargo clippy -p awaken-dispatch --no-default-features --lib "${locked[@]}" -- -D warnings
+step "run-ingress-neutral-unit" "keep memory and domain tests independent from optional SQL drivers" \
+  cargo test -p awaken-dispatch --no-default-features --lib "${locked[@]}"
+
 case "$mode" in
   --quick)
     step "check" "fix the compile errors shown above" \

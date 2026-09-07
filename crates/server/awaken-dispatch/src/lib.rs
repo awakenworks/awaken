@@ -113,7 +113,7 @@ pub use wake::{LocalWakeSignal, WakeSignal};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker, claim_bound_ownership_verifier};
 pub use worker_context::InferenceMaterializerFn;
 
-#[cfg(feature = "durable")]
+#[cfg(any(feature = "durable", test))]
 fn next_supersession_epoch(max_epoch: i64) -> Result<i64, DispatchError> {
     max_epoch.checked_add(1).ok_or_else(|| {
         DispatchError::Rejected(
@@ -123,7 +123,7 @@ fn next_supersession_epoch(max_epoch: i64) -> Result<i64, DispatchError> {
     })
 }
 
-#[cfg(feature = "durable")]
+#[cfg(any(feature = "durable", test))]
 fn next_claim_epoch(previous_epoch: i64) -> Result<u64, DispatchError> {
     let next = previous_epoch.checked_add(1).ok_or_else(|| {
         DispatchError::Rejected(
@@ -186,7 +186,7 @@ fn transition_error(error: awaken_dispatch_contract::DispatchTransitionError) ->
 /// SQL backends expose signed integers while the domain uses unsigned values.
 /// Treating a corrupt negative value as zero would silently mint fresh authority;
 /// this boundary therefore fails closed instead of normalizing it.
-#[cfg(feature = "durable")]
+#[cfg(any(feature = "durable", test))]
 fn durable_u64(field: &str, value: i64) -> Result<u64, DispatchError> {
     u64::try_from(value).map_err(|_| {
         DispatchError::Rejected(format!(
@@ -196,7 +196,7 @@ fn durable_u64(field: &str, value: i64) -> Result<u64, DispatchError> {
 }
 
 /// Encode one unsigned domain counter for SQL without wrapping at `i64::MAX`.
-#[cfg(feature = "durable")]
+#[cfg(any(feature = "durable", test))]
 fn durable_i64(field: &str, value: u64) -> Result<i64, DispatchError> {
     i64::try_from(value).map_err(|_| {
         DispatchError::Rejected(format!(
@@ -211,11 +211,14 @@ mod supersession_epoch_tests {
 
     #[test]
     fn supersession_epoch_overflow_fails_closed() {
+        // S1 a representable successor advances once; S2 the SQL maximum has
+        // no successor and rejects without wrapping. One case owns both bounds
+        // and the exact diagnostic, including in the database-less unit graph.
         assert_eq!(next_supersession_epoch(0).unwrap(), 1);
         assert!(matches!(
             next_supersession_epoch(i64::MAX),
             Err(DispatchError::Rejected(message))
-                if message.contains("refusing to wrap ordering authority")
+                if message == "dispatch supersession epoch exhausted; refusing to wrap ordering authority"
         ));
     }
 
@@ -243,15 +246,6 @@ mod supersession_epoch_tests {
         assert!(matches!(
             durable_i64("lease epoch", u64::MAX),
             Err(DispatchError::Rejected(message)) if message.contains("refusing to wrap")
-        ));
-    }
-
-    #[test]
-    fn supersession_epochs_fail_closed_at_the_sql_boundary() {
-        assert!(matches!(
-            next_supersession_epoch(i64::MAX),
-            Err(DispatchError::Rejected(message))
-                if message.contains("dispatch supersession epoch exhausted")
         ));
     }
 }
@@ -292,7 +286,7 @@ impl Error {
 /// Shared policy adapter used by every durable backend. Eligibility and
 /// replacement authority remain in the worker-contract kernel; stores only use
 /// the boolean result while holding their backend-specific claim lock.
-#[cfg(feature = "durable")]
+#[cfg(any(feature = "durable", test))]
 pub(crate) struct DispatchPlacement<'a> {
     pub recovered: bool,
     pub previous: Option<&'a WorkerAssignment>,
@@ -302,7 +296,7 @@ pub(crate) struct DispatchPlacement<'a> {
     pub now_ms: u64,
 }
 
-#[cfg(feature = "durable")]
+#[cfg(any(feature = "durable", test))]
 pub(crate) fn policy_selects_requester(
     request: &RunDispatch,
     policy: &dyn PlacementPolicy,
