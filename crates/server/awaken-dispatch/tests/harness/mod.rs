@@ -413,19 +413,27 @@ fn blocking_tool_runtime_parts_with_calls(
     let active = Arc::new(AtomicUsize::new(0));
     let maximum = Arc::new(AtomicUsize::new(0));
     let entered = Arc::new(tokio::sync::Notify::new());
-    let runtime = Arc::new(
-        Runtime::new()
-            .with_llm(Arc::new(ToolUntilResult { calls_per_batch }))
-            .with_tool(Arc::new(BlockingEcho {
-                ran: ran.clone(),
-                active: active.clone(),
-                maximum: maximum.clone(),
-                entered: entered.clone(),
-                release,
-                first_seen: std::sync::atomic::AtomicBool::new(false),
-            })),
+    let runtime = tool_until_result_runtime(
+        Arc::new(BlockingEcho {
+            ran: ran.clone(),
+            active: active.clone(),
+            maximum: maximum.clone(),
+            entered: entered.clone(),
+            release,
+            first_seen: std::sync::atomic::AtomicBool::new(false),
+        }),
+        calls_per_batch,
     );
     (runtime, ran, entered, active, maximum)
+}
+
+/// Share the transcript-driven model without registering competing tool ids.
+pub fn tool_until_result_runtime(tool: Arc<dyn RawTool>, calls_per_batch: usize) -> Arc<Runtime> {
+    Arc::new(
+        Runtime::new()
+            .with_llm(Arc::new(ToolUntilResult { calls_per_batch }))
+            .with_tool(tool),
+    )
 }
 
 /// Build a pending input for the test thread. The one place the `PendingInput`

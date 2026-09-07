@@ -48,6 +48,10 @@ pub enum DetachedToolError {
     /// detached observation; polling or replaying could duplicate the effect.
     #[error("detached tool executor state invalidated after dispatch")]
     StateInvalidated,
+    /// An entered effect has no definitive outcome. Never lower it to a
+    /// completed tool result or treat it as a retryable observation outage.
+    #[error("detached tool execution indeterminate")]
+    Indeterminate,
     #[error("execute detached tool: {0}")]
     Execution(String),
 }
@@ -56,6 +60,9 @@ fn map_runtime_error(error: awaken_runtime_contract::execution::Error) -> Detach
     match error {
         awaken_runtime_contract::execution::Error::StateConflict => {
             DetachedToolError::StateInvalidated
+        }
+        awaken_runtime_contract::execution::Error::Indeterminate => {
+            DetachedToolError::Indeterminate
         }
         other => DetachedToolError::Execution(other.to_string()),
     }

@@ -40,6 +40,10 @@ pub enum Error {
     /// terminal `Failure::StateConflict`; it must not escape `RunExecutor`.
     #[error("runtime state batch conflicts")]
     StateConflict,
+    /// Internal signal consumed by the runtime loop as `EndCause::Indeterminate`.
+    /// A logical terminal outcome is not evidence that an external effect stopped.
+    #[error("runtime external execution indeterminate")]
+    Indeterminate,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

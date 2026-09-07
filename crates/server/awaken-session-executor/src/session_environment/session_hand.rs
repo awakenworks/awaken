@@ -973,6 +973,11 @@ impl ToolExecutor for SessionHandExecutor {
             // lifecycle before returning the Runtime-only fatal signal,
             // because reacquiring or replaying could duplicate the effect.
             self.lifecycle.close();
+            // Projection failure must not hide stronger physical uncertainty
+            // already reported by the Hand. Neither class permits reacquisition.
+            if matches!(result, Err(ToolError::Indeterminate(_))) {
+                return result;
+            }
             return Err(ToolError::StateInvalidatedAfterDispatch(detail));
         }
         let _ = self.lifecycle.touch();
