@@ -340,6 +340,23 @@ def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
     quality = workflows.get(QUALITY_WORKFLOW, "")
     release = workflows.get(RELEASE_WORKFLOW, "")
     full_job = re.search(r"^  full_quality:\n(?:(?!^  \S).|\n)*", quality, re.MULTILINE)
+    portability = re.search(r"^  trusted_host_portability:\n(?:(?!^  \S).|\n)*", quality, re.MULTILINE)
+    if portability:
+        calls = re.findall(
+            r"^        run: scripts/ci/check-trusted-host-portability\.sh.*$",
+            portability.group(0), re.MULTILINE,
+        )
+        expected = "run: scripts/ci/check-trusted-host-portability.sh ${{ runner.os == 'Linux' && '--linux-supervision' || '' }}"
+        if calls != ["        " + expected]:
+            errors.append("portability matrix must select Linux supervision through one canonical call")
+        step = re.search(
+            r"^      - name: Verify TrustedHost filesystem and native Sandbox contracts\n"
+            r"(?:(?!^      - ).|\n)*", portability.group(0), re.MULTILINE,
+        )
+        if (not step or expected not in step.group(0)
+            or re.search(r"^        if:", step.group(0), re.MULTILINE)
+            or re.search(r"^    if:", portability.group(0), re.MULTILINE)):
+            errors.append("portability matrix may not conditionally skip its canonical gate")
     for trigger in ("workflow_call:", "pull_request:", "push:", "workflow_dispatch:"):
         if trigger not in quality:
             errors.append(f"quality workflow does not declare {trigger}")
@@ -881,6 +898,27 @@ def self_test() -> None:
     }
     assert not workflow_gate_errors(workflows), "W1"
     quality = workflows[QUALITY_WORKFLOW]
+    # W11 cause/effect table: a portability job is configured; selector is
+    # Linux/foreign/absent, invocation count is one/two, job/step is unconditional
+    # or skipped. Only Linux + one unconditional call retains real scoped
+    # qualification without forcing it on Windows/macOS.
+    # Keep the existing full-gate-only projection test independent below.
+    call = next(line for line in quality.splitlines()
+                if "run: scripts/ci/check-trusted-host-portability.sh" in line)
+    for broken in (
+        call.replace("'Linux'", "'Windows'"),
+        "        run: scripts/ci/check-trusted-host-portability.sh",
+        call + "\n" + call,
+        "        if: false\n" + call,
+    ):
+        changed = dict(workflows)
+        changed[QUALITY_WORKFLOW] = quality.replace(call, broken, 1)
+        assert any("portability matrix" in error for error in workflow_gate_errors(changed)), "W11"
+    changed = dict(workflows)
+    changed[QUALITY_WORKFLOW] = quality.replace(
+        "  trusted_host_portability:\n", "  trusted_host_portability:\n    if: false\n", 1,
+    )
+    assert any("portability matrix" in error for error in workflow_gate_errors(changed)), "W11 job skip"
     prefix, full_quality = quality.split("  full_quality:\n", 1)
     workflow_mutations = (
         quality.replace('test "$(git rev-parse HEAD)" = "$source_revision"', "true", 1),
