@@ -473,3 +473,70 @@ async fn restart_retries_the_exact_persisted_pending_resource_revision() {
     );
     assert!(!settled.needs_resource_reconciliation(), "R2/E4");
 }
+
+#[test]
+fn terminal_resource_recovery_releases_without_ordinary_runtime_apply() {
+    run_composed_async_test(
+        terminal_resource_recovery_releases_without_ordinary_runtime_apply_case,
+    );
+}
+
+async fn terminal_resource_recovery_releases_without_ordinary_runtime_apply_case() {
+    // Cause/effect graph: C1 the Session root is terminal; C2 active generation
+    // A remains; C3 replacement B is pending and has already been attempted;
+    // C4 recovery scans the root. Effects: E1 ordinary Runtime apply count stays
+    // zero; E2 terminal cleanup clears A; E3 B becomes Failed rather than
+    // Active; E4 no Resource manifest or retention edge survives. Released A
+    // diagnostics may be compacted because this aggregate is not an audit log.
+    //
+    // | Rule | terminal | active | pending | Recovery outcome | Effect |
+    // |---|---|---|---|---|---|
+    // | R1 | no | A | B | ordinary reconciliation | covered by restart test |
+    // | R2 | yes | A | B | terminal release only | E1-E4 |
+    // The lifecycle classifier and terminal-release record transitions are
+    // covered independently by their contract decision tables; this test owns
+    // the application-to-Runtime negative effect boundary.
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("Session authority"),
+    );
+    let session_id = "terminal-resource-never-reactivates";
+    let mut session = persisted(session_id, false, "terminated");
+    session.resources = SessionResourceState::from_active(file_resources("active"));
+    session
+        .resources
+        .prepare(session_id, file_resources("never-active"))
+        .unwrap();
+    session.resources.start_attempt().unwrap();
+    create(repository.as_ref(), session).await;
+
+    let runtime = Arc::new(RecordingCleanupRuntime::default());
+    let application = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let report = application.reconcile_resource_activations().await;
+    assert!(report.failures.is_empty(), "R2/E2-E4: {report:?}");
+    assert_eq!(report.settled.len(), 1, "R2/E2-E4");
+    assert_eq!(
+        runtime.ordinary_resource_apply_calls.load(Ordering::SeqCst),
+        0,
+        "R2/E1"
+    );
+
+    let terminal = repository.get(session_id).await.unwrap();
+    assert!(terminal.resources.active.inputs().is_empty(), "R2/E2-E4");
+    assert!(terminal.resources.pending.is_none(), "R2/E3-E4");
+    assert!(!terminal.resources.has_references(), "R2/E4");
+    assert!(
+        terminal.resources.activations.iter().any(|activation| {
+            activation.resource_id
+                == awaken_resource_contract::InputResourceId::File(
+                    awaken_resource_contract::FileId::from("never-active"),
+                )
+                && activation.state == awaken_session_contract::ActivationState::Failed
+        }),
+        "R2/E3"
+    );
+}

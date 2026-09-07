@@ -226,6 +226,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness environment_owner_topology_is_exact_and_frozen \
     --harness only_an_applied_awaited_create_may_enter_post_create_effects \
     --harness session_recovery_backoff_is_bounded_monotonic_and_saturating \
+    --harness terminal_session_never_enters_ordinary_resource_reconciliation \
     --harness dependency_wake_never_postpones_the_single_existing_deadline
   run_kani awaken-tenancy \
     --harness successful_scope_resolution_never_widens_authority \
