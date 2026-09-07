@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   managedAgentWithAlwaysAskTools,
+  availablePort,
   spawnServer,
   stopServer,
   waitForPort,
@@ -24,7 +25,7 @@ import {
 } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const PORT = 39717;
+const PORT = await availablePort(Number(process.env.E2E_PORT));
 const STORE = `/tmp/awaken-durable-hitl-deny-${process.pid}`;
 async function main() {
   fs.rmSync(STORE, { recursive: true, force: true });

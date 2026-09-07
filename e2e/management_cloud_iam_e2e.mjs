@@ -39,6 +39,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   deploymentEnv,
+  availablePort,
   spawnServer,
   stopServer,
   waitForPort,
@@ -46,7 +47,7 @@ import {
   pass,
 } from './harness.mjs';
 
-const PORT = 38257;
+const PORT = await availablePort(Number(process.env.E2E_PORT));
 const ISSUER = 'https://accounts.e2e.awakenworks.test';
 const AUDIENCE = 'awaken-runtime';
 const KEY_ID = 'cloud-e2e-ed25519';

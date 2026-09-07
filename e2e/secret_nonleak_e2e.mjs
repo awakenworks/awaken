@@ -28,7 +28,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const PORT = 38523;
+const PORT = Number(process.env.E2E_PORT);
 const TRACE_FILE = `/tmp/awaken-secret-nonleak-trace-${process.pid}.jsonl`;
 
 // A unique, unguessable sentinel: if this exact string appears on any read-back

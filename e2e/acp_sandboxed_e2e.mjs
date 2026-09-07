@@ -12,11 +12,11 @@
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, waitForSessionEventReceipt } from './harness.mjs';
+import { availablePort, spawnServer, stopServer, waitForPort, pass, waitForSessionEventReceipt } from './harness.mjs';
 import { requireOrSkipBwrap } from './bwrap_capability.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const PORT = 38171;
+const PORT = await availablePort(Number(process.env.E2E_PORT));
 
 function agentTexts(events) {
   return events

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
+import net from 'node:net';
+import { once } from 'node:events';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 import {
   allowManagedToolBoundaries,
@@ -11,6 +13,7 @@ import {
   ensureProductionBuilt,
   initializeE2EInstallation,
   scenarioMemoryStore,
+  spawnServer,
   stopServer,
   trackSpawnedServer,
   waitForPort,
@@ -18,6 +21,111 @@ import {
 } from './harness.mjs';
 
 async function main() {
+  // Port-selection cause/effect table: C1 no caller assignment; C2 explicit
+  // server/Worker assignment; C3 the preferred socket is occupied; C4 invalid
+  // port input; C5 the previous listener has fully closed. Effects: P1 C1 ->
+  // defaults outside Linux's 32768..60999 ephemeral range; P2 C2 -> preserve
+  // exact assignments; P3 C3 -> another port without closing the foreign owner;
+  // P4 C4 -> reject instead of hiding configuration errors; P5 C5 -> reuse the
+  // preferred port. Bind/probe/close is not an atomic cross-process reservation;
+  // the existing child-exit readiness rules below must still reject a lost race.
+  // These are harness contracts. Real restart scenarios retain their own
+  // durable-state assertions and consume this same E2E_PORT authority.
+  for (const [rule, assignments] of [
+    ['P1', {}],
+    ['P2', { E2E_PORT: '23117', E2E_WORKER_PORT: '23167' }],
+  ]) {
+    const env = { ...process.env };
+    delete env.E2E_PORT;
+    delete env.E2E_WORKER_PORT;
+    Object.assign(env, assignments);
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      await import(${JSON.stringify(new URL('./harness.mjs', import.meta.url).href)});
+      console.log(JSON.stringify([process.env.E2E_PORT, process.env.E2E_WORKER_PORT]));
+    `], { env, encoding: 'utf8' });
+    assert.equal(child.status, 0, `${rule}: ${child.stderr}`);
+    const selected = JSON.parse(child.stdout.trim());
+    if (rule === 'P2') assert.deepEqual(selected, ['23117', '23167'], rule);
+    else assert.ok(selected.every(value => Number(value) >= 20_000 && Number(value) < 30_000), rule);
+  }
+  const foreign = net.createServer();
+  await new Promise((resolve, reject) => {
+    foreign.once('error', reject);
+    foreign.listen(0, '127.0.0.1', resolve);
+  });
+  const occupiedPort = foreign.address().port;
+  try {
+    const selected = await availablePort(occupiedPort);
+    assert.notEqual(selected, occupiedPort, 'P3 falls back');
+    assert.ok(foreign.listening, 'P3 preserves the foreign listener');
+    await waitForPort(occupiedPort, 1_000);
+    await assert.rejects(availablePort(-1), { code: 'ERR_SOCKET_BAD_PORT' }, 'P4');
+    // P6 foreign listener + real ScenarioHost bind failure -> reject readiness,
+    // send no business request, preserve the foreign owner. This negative
+    // control failed with TCP-only readiness (which returned before bind failed).
+    const collision = spawnServer('echo', occupiedPort);
+    try {
+      await assert.rejects(waitForPort(occupiedPort, 30_000, collision.server), /server exited before it listened/u, 'P6');
+      assert.ok(foreign.listening, 'P6 foreign listener survives');
+    } finally {
+      await stopServer(collision.server);
+    }
+
+  } finally {
+    await new Promise((resolve, reject) => foreign.close(error => error ? reject(error) : resolve()));
+  }
+  assert.equal(await availablePort(occupiedPort), occupiedPort, 'P5 reuses after close');
+
+  // Child-announcement decision table: A1 socket + complete exact stderr line
+  // -> ready; A2 socket + absent/wrong/stdout-only/partial line -> deadline;
+  // A3 exact line without socket -> deadline; A4 A2 partial + newline -> ready.
+  // IPC orders the observations without startup sleeps. These synthetic
+  // children validate the harness protocol; P6 above checks the real bind owner.
+  for (const [rule, listens, emission] of [
+    ['A1', true, 'exact'],
+    ['A2 absent', true, 'absent'],
+    ['A2 wrong', true, 'wrong'],
+    ['A2 stdout', true, 'stdout'],
+    ['A2 partial', true, 'partial'],
+    ['A3', false, 'exact'],
+  ]) {
+    const port = await availablePort(0);
+    const line = `awaken-coordinator listening on http://127.0.0.1:${port}`;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', String.raw`
+      import net from 'node:net';
+      const line = ${JSON.stringify(line)};
+      const listener = net.createServer();
+      const announce = () => {
+        const emission = ${JSON.stringify(emission)};
+        if (emission === 'exact') process.stderr.write(line + '\n');
+        if (emission === 'wrong') process.stderr.write(line + '/wrong\n');
+        if (emission === 'stdout') process.stdout.write(line + '\n');
+        if (emission === 'partial') process.stderr.write(line);
+        process.send('announced');
+      };
+      process.on('message', () => process.stderr.write('\n'));
+      process.stdin.on('end', () => process.exit(0));
+      process.stdin.resume();
+      if (${listens}) listener.listen(${port}, '127.0.0.1', announce);
+      else announce();
+    `], { stdio: ['pipe', 'ignore', 'pipe', 'ipc'] });
+    trackSpawnedServer(port, child, line);
+    try {
+      await Promise.race([
+        once(child, 'message'),
+        once(child, 'exit').then(([code, signal]) => { throw new Error(`${rule}: child exited ${code}/${signal} before announcement`); }),
+      ]);
+      if (rule === 'A1') await waitForPort(port, 1_000, child);
+      else await assert.rejects(waitForPort(port, 50, child), /server did not listen/u, rule);
+      if (emission === 'partial') {
+        child.send('commit newline');
+        await waitForPort(port, 1_000, child);
+      }
+    } finally {
+      await stopServer(child);
+    }
+  }
+
   // Deterministic Memory fixture decision table: C1 one well-formed Store on a
   // terminal PageCursor -> E1 return its server-owned id; C2 empty, multiple,
   // paginated, or malformed data -> E2 reject without selecting the first row.
@@ -347,7 +455,8 @@ async function main() {
   console.log('E2E PASS: harness child lifecycle readiness decision table.');
 }
 
-main().catch((error) => {
+// Keep incomplete asynchronous test execution from exiting successfully.
+await main().catch((error) => {
   console.error('E2E FAIL:', error);
   process.exitCode = 1;
 });
