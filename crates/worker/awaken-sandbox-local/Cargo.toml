@@ -43,6 +43,7 @@ url.workspace = true
 command-fds = "0.3.3"
 
 [dev-dependencies]
+awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util"] }
 # Tests wire a real content-addressed store behind the `BlobSource` port via a small
 # adapter — the store stays a dev-only dependency (dev-deps are boundary-exempt).

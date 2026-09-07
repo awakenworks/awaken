@@ -853,8 +853,13 @@ impl SharedHost {
             return Ok(());
         };
         let effect_fence = self.terminal_cleanup_effect_fence(effect)?;
+        let authority = self.session_slots.provider_effect_authority(
+            &effect.command.session_id,
+            &effect_fence,
+            self.execution_authority.as_ref(),
+        )?;
         environment
-            .acknowledge_memory_reconciliation(&effect_fence, materializations)
+            .acknowledge_memory_reconciliation(&effect_fence, materializations, &authority)
             .await
             .map_err(|error| HostError::unavailable(error.to_string()))
     }

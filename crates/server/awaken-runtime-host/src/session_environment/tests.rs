@@ -2946,9 +2946,13 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
         )
         .await
         .expect("T1 hot Fuse create");
-    hot.acknowledge_memory_reconciliation(&hot_terminal, &[])
-        .await
-        .expect("T1 exact empty Fuse evidence");
+    hot.acknowledge_memory_reconciliation(
+        &hot_terminal,
+        &[],
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(&hot_terminal),
+    )
+    .await
+    .expect("T1 exact empty Fuse evidence");
     let prepared = hot
         .prepare_disposal_for_effect(&hot_terminal)
         .await
@@ -3058,7 +3062,11 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
             .expect("T2 Removing participant");
         assert_eq!(mounts.load(Ordering::SeqCst), 3, "T2 {label}");
         second
-            .acknowledge_memory_reconciliation(&terminal, &[])
+            .acknowledge_memory_reconciliation(
+                &terminal,
+                &[],
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+            )
             .await
             .expect("T4 exact empty Fuse evidence");
         let prepared = second

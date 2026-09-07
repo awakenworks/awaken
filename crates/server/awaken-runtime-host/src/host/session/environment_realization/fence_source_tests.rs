@@ -175,6 +175,46 @@ fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                 usize::from(allowed),
                 "{registered}/{rule}/effect count"
             );
+
+            // The SAME decision table now drives real acknowledgement code,
+            // not only the fence projection adapter. C7 empty/new/replay: all
+            // must reauthorize, and only a first nonempty ack may drain. The
+            // 60s Control epoch is intentionally expired in Worker UTC; local
+            // proof, not that unrelated wall clock, decides this boundary.
+            let evidence = [
+                awaken_provisioning_contract::MemoryMaterializationEvidence::new(
+                    "store",
+                    "/memory",
+                    vec![],
+                )
+                .unwrap(),
+            ];
+            for materials in [&[][..], evidence.as_slice()] {
+                let ack = awaken_provisioning_contract::MemoryReconciliationAck::default();
+                let mut drained = 0;
+                for _ in 0..2 {
+                    let result = ack.acknowledge(&asserted, &source, materials, materials, || {
+                        drained += 1;
+                        if registered {
+                            assert!(worker.0.try_lock().is_err());
+                        }
+                        Ok(())
+                    });
+                    assert_eq!(
+                        result.is_ok(),
+                        matches!(rule, "exact" | "renewed" | "renewed_assertion"),
+                        "{registered}/{rule}/ack"
+                    );
+                }
+                assert_eq!(
+                    drained,
+                    usize::from(
+                        !materials.is_empty()
+                            && matches!(rule, "exact" | "renewed" | "renewed_assertion")
+                    ),
+                    "{registered}/{rule}/drain"
+                );
+            }
         }
     }
 }

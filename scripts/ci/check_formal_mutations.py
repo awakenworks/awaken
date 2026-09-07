@@ -1187,17 +1187,28 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
             raise SystemExit(f"Provider fence source mutation anchor drifted: {anchor}")
         invariant = "OnlyCurrentBindingCommits"
         mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
+    # M1-M3: a queued request cannot commit before acquiring the mount lock;
+    # a cached Copy ack cannot skip current authority; replay cannot redrain.
+    for anchor, broken, invariant in [
+        ('/\\ memoryWait # 1\n', '/\\ TRUE\n', "OnlyCurrentBindingCommits"),
+        ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ (memoryDrains = 1 \\/ CurrentBinding)', "OnlyCurrentBindingCommits"),
+        ('IF memoryWait = 2 THEN 1 ELSE memoryDrains', 'IF memoryWait = 2 THEN memoryDrains + 1 ELSE memoryDrains', "MemoryCopyDrainedOnce"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"Memory acknowledgement mutation anchor drifted: {anchor}")
+        mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
     # Both topology paths must reach actual effects. Otherwise an accidental
     # mandatory Worker guard could make all direct-local safety checks vacuous.
     for witness in ("NoCandidateEffectReached", "NoResidentEffectReached",
                     "NoLocalEffectReached", "NoRegisteredEffectReached",
-                    "NoProviderEffectReached", "NoUnreadyProviderEffectReached"):
+                    "NoProviderEffectReached", "NoUnreadyProviderEffectReached",
+                    "NoMemoryAckReached", "NoMemoryReplayReached"):
         mutations.append((source, header + "INVARIANTS " + witness, witness))
     check_tlc_model_mutations(tlc_jar, "SessionExecutionBinding", source, config, mutations,
                               dependencies=("SessionRealizationAuthority", "WorkerExecutionAuthority"),
                               action_properties={"BindingIsWriteOnce"},
                               heap_mb=2048, timeout_seconds=180)
-    print("Session execution binding: 17/17 mutants killed; candidate/resident, local/registered and pre-environment provider projections reachable")
+    print("Session execution binding: 20/20 mutants killed; execution, provider projection, Memory acknowledgement and replay reachable")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:

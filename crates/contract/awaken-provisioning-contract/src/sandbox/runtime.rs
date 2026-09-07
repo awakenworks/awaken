@@ -15,9 +15,7 @@ mod memory_reconciliation;
 
 pub use disposal::{SandboxDisposalAuthorization, SandboxDisposalPreparation};
 pub use memory_reconciliation::MemoryReconciliationAck;
-use memory_reconciliation::{
-    default_memory_reconciliation_ack, validate_live_memory_reconciliation_fence,
-};
+use memory_reconciliation::{authorize_memory_ack, default_memory_reconciliation_ack};
 
 /// A serializable, **durable** reference to a realized sandbox. Persist it the
 /// moment a sandbox is created; a live `Box<dyn Sandbox>` cannot survive a host
@@ -1505,13 +1503,19 @@ pub trait Sandbox: Send + Sync {
     /// materialization evidence. Implementations retire Copy guards without
     /// teardown; FUSE guards remain owned by ordinary disposal. This is a
     /// process-local lifecycle acknowledgement, never a durable Memory receipt.
+    /// After any asynchronous guard acquisition, implementations enter the
+    /// supplied effect-bound current authority before validating/draining or
+    /// admitting a cached/empty acknowledgement. No await may occur inside
+    /// that callback. The shared [`MemoryReconciliationAck`] owns this kernel.
     async fn acknowledge_memory_reconciliation(
         &self,
         effect_fence: &SandboxEffectFence,
         complete_materializations: &[MemoryMaterializationEvidence],
+        authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<(), SandboxError> {
-        validate_live_memory_reconciliation_fence(effect_fence)?;
-        default_memory_reconciliation_ack(complete_materializations)
+        authorize_memory_ack(effect_fence, authority, || {
+            default_memory_reconciliation_ack(complete_materializations)
+        })
     }
 
     /// Complete every source-dependent disposal participant under one aggregate
@@ -1744,11 +1748,11 @@ mod terminal_memory_reconciliation_contract_tests {
     #[test]
     fn shared_ack_kernel_is_exact_effect_scoped_and_response_loss_safe() {
         // Shared-kernel decision table: C1 expected/supplied evidence is exact
-        // including canonical order; C2 fence is live; C3 state is empty / same
+        // including canonical order; C2 effect-bound local proof is live; C3 state is empty / same
         // effect / same realization lease with another operation / foreign lease.
         // K1 !C1 or !C2 rejects before the provider closure; K2 exact+live+empty
         // runs it once and records the complete effect identity; K3 a same-effect
-        // replay succeeds without rerunning it; K4 a same-lease successor effect
+        // replay rechecks current authority without rerunning drain; K4 a same-lease successor effect
         // reruns provider authorization/drain and rebinds the acknowledgement;
         // K5 a different or higher lease rejects. The disposal gate admits only
         // the latest exact K2/K4 effect. Empty evidence validates but records no
@@ -1789,9 +1793,14 @@ mod terminal_memory_reconciliation_contract_tests {
             ("K1 order", &live, reversed.as_slice()),
             ("K1 expired", &expired, expected.as_slice()),
         ] {
+            let authority = if rule == "K1 expired" {
+                crate::test_support::EffectAuthority::denied()
+            } else {
+                crate::test_support::EffectAuthority::new(fence)
+            };
             let calls = calls.clone();
             assert!(
-                ack.acknowledge(fence, &expected, supplied, || {
+                ack.acknowledge(fence, &authority, &expected, supplied, || {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Ok(())
                 })
@@ -1801,31 +1810,49 @@ mod terminal_memory_reconciliation_contract_tests {
         }
         assert_eq!(calls.load(Ordering::SeqCst), 0, "K1");
 
-        ack.acknowledge(&live, &expected, &expected, {
-            let calls = calls.clone();
-            move || {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }
-        })
+        ack.acknowledge(
+            &live,
+            &crate::test_support::EffectAuthority::new(&live),
+            &expected,
+            &expected,
+            {
+                let calls = calls.clone();
+                move || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+        )
         .expect("K2");
-        ack.acknowledge(&live, &expected, &expected, {
-            let calls = calls.clone();
-            move || {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }
-        })
+        ack.acknowledge(
+            &live,
+            &crate::test_support::EffectAuthority::new(&live),
+            &expected,
+            &expected,
+            {
+                let calls = calls.clone();
+                move || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+        )
         .expect("K3");
         assert_eq!(calls.load(Ordering::SeqCst), 1, "K2/K3");
 
-        ack.acknowledge(&takeover, &expected, &expected, {
-            let calls = calls.clone();
-            move || {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }
-        })
+        ack.acknowledge(
+            &takeover,
+            &crate::test_support::EffectAuthority::new(&takeover),
+            &expected,
+            &expected,
+            {
+                let calls = calls.clone();
+                move || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+        )
         .expect("K4");
         assert_eq!(calls.load(Ordering::SeqCst), 2, "K4 reauthorizes");
         assert!(
@@ -1836,13 +1863,25 @@ mod terminal_memory_reconciliation_contract_tests {
             .expect("K4 latest gate");
 
         assert!(
-            ack.acknowledge(&foreign, &expected, &expected, || Ok(()))
-                .is_err(),
+            ack.acknowledge(
+                &foreign,
+                &crate::test_support::EffectAuthority::new(&foreign),
+                &expected,
+                &expected,
+                || Ok(())
+            )
+            .is_err(),
             "K5 foreign owner"
         );
         assert!(
-            ack.acknowledge(&higher, &expected, &expected, || Ok(()))
-                .is_err(),
+            ack.acknowledge(
+                &higher,
+                &crate::test_support::EffectAuthority::new(&higher),
+                &expected,
+                &expected,
+                || Ok(())
+            )
+            .is_err(),
             "K5 higher epoch"
         );
         assert!(
@@ -1852,9 +1891,13 @@ mod terminal_memory_reconciliation_contract_tests {
 
         let empty = MemoryReconciliationAck::default();
         empty
-            .acknowledge(&live, &[], &[], || {
-                panic!("empty evidence has no Copy drain")
-            })
+            .acknowledge(
+                &live,
+                &crate::test_support::EffectAuthority::new(&live),
+                &[],
+                &[],
+                || panic!("empty evidence has no Copy drain"),
+            )
             .expect("empty evidence");
         empty
             .require_for_disposal(&[], &foreign)

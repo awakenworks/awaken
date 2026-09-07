@@ -17414,26 +17414,30 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
         &self,
         effect_fence: &pc::SandboxEffectFence,
         complete_materializations: &[pc::MemoryMaterializationEvidence],
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         let expected = self.handle.memory_materializations()?.unwrap_or_default();
-        if expected != complete_materializations {
-            return Err(pc::SandboxError::new(
-                "terminal recovery Memory acknowledgement changed durable evidence",
-            ));
-        }
-        if matches!(
-            self.mode,
-            TerminalRecoveryEnvironmentMode::LiveMemory
-                | TerminalRecoveryEnvironmentMode::UnavailableAuxiliaryMemory
-        ) {
-            self.events.lock().unwrap().push("ack-memory");
-        }
         if let Some(probe) = &self.fence_refresh_probe {
             probe.record("memory", effect_fence);
             probe.memory_entered.notify_one();
             probe.memory_release.notified().await;
         }
-        Ok(())
+        pc::MemoryReconciliationAck::default().acknowledge(
+            effect_fence,
+            authority,
+            expected,
+            complete_materializations,
+            || {
+                if matches!(
+                    self.mode,
+                    TerminalRecoveryEnvironmentMode::LiveMemory
+                        | TerminalRecoveryEnvironmentMode::UnavailableAuxiliaryMemory
+                ) {
+                    self.events.lock().unwrap().push("ack-memory");
+                }
+                Ok(())
+            },
+        )
     }
 
     async fn prepare_disposal_for_effect(

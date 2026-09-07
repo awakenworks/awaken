@@ -1787,6 +1787,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         &self,
         effect_fence: &pc::SandboxEffectFence,
         complete_materializations: &[pc::MemoryMaterializationEvidence],
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         // `SandboxHandle` is the sole durable provider projection and
         // canonicalizes this slice. Staging order must never become a second
@@ -1796,6 +1797,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         let mut memory = self.lifecycle.memory.lock().await;
         self.lifecycle.memory_reconciliation_ack.acknowledge(
             effect_fence,
+            authority,
             expected_materializations,
             complete_materializations,
             || {

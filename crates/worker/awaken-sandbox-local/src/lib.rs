@@ -448,16 +448,119 @@ mod memory_mount_release_tests {
     }
 
     #[tokio::test]
+    async fn memory_ack_rechecks_authority_after_mount_wait_and_on_replay() {
+        // Causes: C1 lock wait vs completed ack replay; C2 current authority
+        // live/renewed/revoked/zero/replaced; C3 caller cancelled while waiting.
+        // W1 live/renewed => drain Copy once, no teardown, authority guard held.
+        // W2 revoked/zero/replaced => deny, no new drain or ack; W3 cancellation
+        // => no effect. W4 successful ack followed by revocation => replay must
+        // fail, not return cached success. An explicit Pending poll proves the
+        // authorization change occurs AFTER request initiation and BEFORE grant.
+        use std::{future::Future, task::Poll, time::Duration};
+        for rule in [
+            "live",
+            "renewed",
+            "revoked",
+            "zero",
+            "replaced",
+            "cancelled",
+        ] {
+            let fence = pc::SandboxEffectFence::new("effect", "owner", "boot", 1, 100).unwrap();
+            let authority = pc::test_support::EffectAuthority::new(&fence);
+            let evidence =
+                vec![pc::MemoryMaterializationEvidence::new("store", "/memory", vec![]).unwrap()];
+            let ack = pc::MemoryReconciliationAck::default();
+            let drops = Arc::new(AtomicUsize::new(0));
+            let teardowns = Arc::new(AtomicUsize::new(0));
+            let mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>> =
+                tokio::sync::Mutex::new(vec![Box::new(CountedMount {
+                    calls: teardowns.clone(),
+                    drops: drops.clone(),
+                    fail_first: false,
+                    realization: pc::Realization::Copy,
+                })]);
+            let locked = mounts.lock().await;
+            let mut pending = Box::pin(super::acknowledge_memory_reconciliation(
+                &ack,
+                &mounts,
+                &fence,
+                &authority,
+                &evidence,
+                || Ok(evidence.clone()),
+                || {
+                    assert!(authority.current.try_lock().is_err(), "W1 held authority");
+                    Ok(())
+                },
+            ));
+            std::future::poll_fn(|cx| {
+                assert!(pending.as_mut().poll(cx).is_pending(), "W wait");
+                Poll::Ready(())
+            })
+            .await;
+            assert_eq!(drops.load(Ordering::SeqCst), 0, "W wait");
+            match rule {
+                "revoked" => *authority.current.lock().unwrap() = None,
+                "zero" => authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO,
+                "replaced" => authority.current.lock().unwrap().as_mut().unwrap().0.epoch += 1,
+                "renewed" => {
+                    authority
+                        .current
+                        .lock()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .0
+                        .expires_at_unix_ms += 100
+                }
+                "cancelled" => {
+                    drop(pending);
+                    drop(locked);
+                    assert_eq!(drops.load(Ordering::SeqCst), 0, "W3");
+                    continue;
+                }
+                "live" => {}
+                _ => unreachable!(),
+            }
+            drop(locked);
+            let allowed = matches!(rule, "live" | "renewed");
+            assert_eq!(pending.await.is_ok(), allowed, "W1/W2 {rule}");
+            assert_eq!(
+                drops.load(Ordering::SeqCst),
+                usize::from(allowed),
+                "W1/W2 {rule}"
+            );
+            assert_eq!(teardowns.load(Ordering::SeqCst), 0, "W1/W2");
+            if allowed {
+                *authority.current.lock().unwrap() = None;
+                assert!(
+                    super::acknowledge_memory_reconciliation(
+                        &ack,
+                        &mounts,
+                        &fence,
+                        &authority,
+                        &evidence,
+                        || Ok(evidence.clone()),
+                        || panic!("W4 cached acknowledgement cannot bypass revocation"),
+                    )
+                    .await
+                    .is_err(),
+                    "W4"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn terminal_ack_is_exact_effect_scoped_and_retires_only_copy_guards() {
         // Terminal-memory acknowledgement decision table. Causes: C1 supplied
         // evidence equals the complete canonical provider evidence (including
-        // order); C2 fence is live; C3 this process recorded no ack / the same
+        // order); C2 effect-bound current proof is live; C3 this process recorded no ack / the same
         // effect / a same-lease takeover / a foreign lease; C4 guard is
         // Copy/FUSE. Rules: A1 !C1 or
         // !C2 => reject before authorization or guard mutation; A2 C1+C2+no ack
         // => authorize once, drop every Copy without teardown, retain FUSE, and
         // record the full effect identity; A3 same-effect replay => success with
-        // no repeated authorization/drop; A4 same-lease takeover reauthorizes,
+        // current authority rechecked but no repeated marker mutation/drop; A4 same-lease takeover reauthorizes,
         // drains idempotently, and rebinds the ack; A5 foreign lease rejects
         // with the retained FUSE and ack unchanged. Disposal gating admits only
         // the latest effect recorded by A2/A4.
@@ -522,6 +625,7 @@ mod memory_mount_release_tests {
                 &ack,
                 &mounts,
                 &live,
+                &pc::test_support::EffectAuthority::new(&live),
                 &reversed,
                 || Ok(expected.clone()),
                 || {
@@ -538,6 +642,7 @@ mod memory_mount_release_tests {
                 &ack,
                 &mounts,
                 &expired,
+                &pc::test_support::EffectAuthority::denied(),
                 &expected,
                 || Ok(expected.clone()),
                 || {
@@ -557,6 +662,7 @@ mod memory_mount_release_tests {
             &ack,
             &mounts,
             &live,
+            &pc::test_support::EffectAuthority::new(&live),
             &expected,
             || Ok(expected.clone()),
             || {
@@ -575,6 +681,7 @@ mod memory_mount_release_tests {
             &ack,
             &mounts,
             &live,
+            &pc::test_support::EffectAuthority::new(&live),
             &expected,
             || Ok(expected.clone()),
             || {
@@ -588,6 +695,7 @@ mod memory_mount_release_tests {
             &ack,
             &mounts,
             &takeover,
+            &pc::test_support::EffectAuthority::new(&takeover),
             &expected,
             || Ok(expected.clone()),
             || {
@@ -611,6 +719,7 @@ mod memory_mount_release_tests {
                 &ack,
                 &mounts,
                 &foreign,
+                &pc::test_support::EffectAuthority::new(&foreign),
                 &expected,
                 || Ok(expected.clone()),
                 || {
@@ -646,6 +755,7 @@ pub(crate) async fn acknowledge_memory_reconciliation(
     acknowledgement: &awaken_provisioning_contract::MemoryReconciliationAck,
     mounts: &tokio::sync::Mutex<Vec<Box<dyn awaken_provisioning_contract::MemoryMount>>>,
     effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
+    authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
     supplied_materializations: &[awaken_provisioning_contract::MemoryMaterializationEvidence],
     expected_materializations: impl FnOnce() -> Result<
         Vec<awaken_provisioning_contract::MemoryMaterializationEvidence>,
@@ -659,6 +769,7 @@ pub(crate) async fn acknowledge_memory_reconciliation(
     let expected_materializations = expected_materializations()?;
     acknowledgement.acknowledge(
         effect_fence,
+        authority,
         &expected_materializations,
         supplied_materializations,
         || {

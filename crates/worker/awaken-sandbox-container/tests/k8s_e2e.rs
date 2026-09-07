@@ -1208,7 +1208,11 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
         .expect("R4 reconcile through the canonical terminal Memory port");
     }
     sandbox
-        .acknowledge_memory_reconciliation(&terminal_fence, evidence)
+        .acknowledge_memory_reconciliation(
+            &terminal_fence,
+            evidence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .expect("R4 acknowledge the complete reconciled evidence set");
     sandbox

@@ -1016,9 +1016,14 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
     )
     .unwrap();
     assert!(
-        pc::Sandbox::acknowledge_memory_reconciliation(&replay, &terminal, &[mismatched],)
-            .await
-            .is_err(),
+        pc::Sandbox::acknowledge_memory_reconciliation(
+            &replay,
+            &terminal,
+            &[mismatched],
+            &pc::test_support::EffectAuthority::new(&terminal)
+        )
+        .await
+        .is_err(),
         "M3 mismatched evidence"
     );
     assert!(
@@ -1026,6 +1031,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
             &replay,
             &stale,
             std::slice::from_ref(&evidence),
+            &pc::test_support::EffectAuthority::new(&stale),
         )
         .await
         .is_err(),
@@ -1036,6 +1042,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         &replay,
         &terminal,
         std::slice::from_ref(&evidence),
+        &pc::test_support::EffectAuthority::new(&terminal),
     )
     .await
     .expect("M1 exact ack");
@@ -1043,6 +1050,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         &replay,
         &terminal,
         std::slice::from_ref(&evidence),
+        &pc::test_support::EffectAuthority::new(&terminal),
     )
     .await
     .expect("M1 response-loss replay");
@@ -1061,6 +1069,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         &replay,
         &successor,
         std::slice::from_ref(&evidence),
+        &pc::test_support::EffectAuthority::new(&successor),
     )
     .await
     .expect("M4 same-lease successor");
@@ -1069,6 +1078,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
             &replay,
             &foreign,
             std::slice::from_ref(&evidence),
+            &pc::test_support::EffectAuthority::new(&foreign),
         )
         .await
         .is_err(),

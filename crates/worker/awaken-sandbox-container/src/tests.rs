@@ -868,6 +868,7 @@ async fn native_memory_volume_seeds_and_harvests_through_the_same_mounter() {
 
 #[tokio::test]
 async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
+    use pc::Sandbox as _;
     /* Container disposal preparation/authorization table NM2. Causes: C1 a
      * fresh handle carries exact copy materialization M and a writable Secret;
      * C2 aggregate fence F is live; C3 acknowledgement is missing/exact/foreign;
@@ -900,7 +901,10 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
      * process-exit Secret tests: successful and failed writeback, replay, and
      * exact physical removal are all driven by the aggregate fence. A process
      * terminal status is deliberately absent from the causes because it owns
-     * neither source preparation nor Environment disposal. */
+     * neither source preparation nor Environment disposal.
+     * N7 current authority is revoked after an explicit Pending mount-lock
+     * poll: reject with Copy guards, ack and Secret state untouched. N8 an
+     * already successful ack replay under revoked authority also rejects. */
     let runtime = Arc::new(
         FakeRuntime::default()
             .with_native_memory_archive(Vec::new())
@@ -929,7 +933,7 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
         fail_teardown: false,
     }));
     let sandbox = provider
-        .create(&sandbox_spec)
+        .create_container(&sandbox_spec)
         .await
         .expect("NM2 create exact copy-backed Container");
     let handle = sandbox.handle();
@@ -967,9 +971,52 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
 
     let mut foreign = materializations.clone();
     foreign[0].store_id = "foreign-memory".into();
+
+    let authority = pc::test_support::EffectAuthority::new(&continuation);
+    let memory_locked = sandbox.lifecycle.memory.lock().await;
+    let copies_before = memory_locked.as_ref().unwrap().len();
+    let mut waiting = Box::pin(sandbox.acknowledge_memory_reconciliation(
+        &continuation,
+        &materializations,
+        &authority,
+    ));
+    std::future::poll_fn(|cx| {
+        assert!(
+            std::future::Future::poll(waiting.as_mut(), cx).is_pending(),
+            "N7 wait"
+        );
+        std::task::Poll::Ready(())
+    })
+    .await;
+    *authority.current.lock().unwrap() = None;
+    drop(memory_locked);
+    assert!(waiting.await.is_err(), "N7 recheck after wait");
+    assert_eq!(
+        sandbox
+            .lifecycle
+            .memory
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .len(),
+        copies_before,
+        "N7 Copy retained"
+    );
     assert!(
         sandbox
-            .acknowledge_memory_reconciliation(&continuation, &foreign)
+            .prepare_disposal_for_effect(&continuation)
+            .await
+            .is_err(),
+        "N7 no ack"
+    );
+    assert!(
+        sandbox
+            .acknowledge_memory_reconciliation(
+                &continuation,
+                &foreign,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&continuation)
+            )
             .await
             .is_err(),
         "N2 foreign materialization cannot unlock disposal"
@@ -986,13 +1033,28 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
     );
 
     sandbox
-        .acknowledge_memory_reconciliation(&continuation, &materializations)
+        .acknowledge_memory_reconciliation(
+            &continuation,
+            &materializations,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&continuation),
+        )
         .await
         .expect("N2 exact continuation reconciliation acknowledgement");
     sandbox
-        .acknowledge_memory_reconciliation(&continuation, &materializations)
+        .acknowledge_memory_reconciliation(
+            &continuation,
+            &materializations,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&continuation),
+        )
         .await
         .expect("N2 response-loss replay is idempotent");
+    assert!(
+        sandbox
+            .acknowledge_memory_reconciliation(&continuation, &materializations, &authority,)
+            .await
+            .is_err(),
+        "N8 cached success does not survive revocation"
+    );
     assert!(
         sandbox
             .prepare_disposal_for_effect(&continuation)
@@ -1029,13 +1091,21 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
     .unwrap();
     assert!(
         sandbox
-            .acknowledge_memory_reconciliation(&foreign_lease, &materializations)
+            .acknowledge_memory_reconciliation(
+                &foreign_lease,
+                &materializations,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&foreign_lease)
+            )
             .await
             .is_err(),
         "N6 a foreign realization lease cannot take over drained guards"
     );
     sandbox
-        .acknowledge_memory_reconciliation(&terminal, &materializations)
+        .acknowledge_memory_reconciliation(
+            &terminal,
+            &materializations,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("N4 same-lease terminal successor rebinds the acknowledgement");
     assert!(
@@ -1342,7 +1412,11 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
     .expect("E1 neutral port projects the same terminal owner")
     .expect("E1 terminal realization has a neutral lifecycle owner");
     adopted
-        .acknowledge_memory_reconciliation(&terminal_fence, evidence)
+        .acknowledge_memory_reconciliation(
+            &terminal_fence,
+            evidence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .expect("E2 exact terminal Memory acknowledgement gates physical cleanup");
     adopted

@@ -263,17 +263,37 @@ expired or replaced slot cannot supply a fence; neither can a changed operation,
 owner, incarnation, epoch or regressed expiry. A zero Worker budget denies the
 shared effect callback. Preparation checks run before and after its await, and
 Container retries use that same captured source rather than looking up a new
-slot by Session id. No persistent fields, public interfaces or lease owners are
-added. The unfenced direct-provider entry remains unchanged.
+slot by Session id. No persistent fields or lease owners are added. The
+unfenced direct-provider creation entry remains unchanged.
 
 The captured provider target also exposes the existing synchronous
 `CurrentExecutionAuthority` port with the minimum current Worker/Session
 budget. Both interfaces use one held-lock decision; neither captures a copied
 deadline nor retains the Host or slot map. The common implementation is
 platform-neutral; only scoped process enrollment remains Linux-gated.
-This does not yet connect the port to Memory acknowledgement or every physical
-Provider boundary. Memory acknowledgement's contract-owned wall-clock sample
-and the provider marker/cleanup clock checks still need migration.
+Memory acknowledgement now uses this same authority. The existing
+`CurrentExecutionAuthority::with_current_effect` method binds the assertion to
+the captured operation/generation and supplies a current fence under the same
+guards; its default rejects an execution-only grant. Container's fence-query
+adapter delegates to that method rather than duplicating its identity checks.
+The two Host callers (continuation release and terminal cleanup) capture this
+provider target and forward it through `SessionEnvironment` to the Sandbox.
+Local/Namespace and Container acquire their existing async Memory guard list,
+then the shared `MemoryReconciliationAck` enters Worker -> Session -> ack guards
+before recording/draining. There is no await within that callback. Local marker
+authorization still uses the existing nonblocking filesystem-lock participant.
+Empty evidence and cached same-effect success also require current authority;
+Copy retirement remains idempotent and FUSE remains an ordinary disposal owner.
+
+Reused unchanged: durable Session CAS, materialization ordering, Memory CAS and
+retention, marker/removal identity, and the existing Copy/FUSE lifecycle. Modified:
+the existing authority port, both Host call chains, Sandbox acknowledgement
+signatures, and the shared ack kernel. Added: one feature-gated, explicit
+revocable test fixture shared across provider tests; no production store, timer,
+lease, registry, or alternative cleanup path. The acknowledgement no longer
+compares Control expiry with Worker UTC. Disposal preparation's separate
+`require_for_disposal` gate and provider marker/cleanup clocks still do, so this
+does not establish end-to-end cross-clock physical disposal correctness.
 
 The Host source decision table and barrier tests cover direct/registered
 topologies, same-byte slot replacement, renewal and closure during Worker,
@@ -282,8 +302,16 @@ provider projections in its existing lock/authority kernel; provider-specific
 guard mutants and a pre-readiness reachability witness prevent execution-only
 evidence from standing in for this branch. This bounded model treats a source
 response as a synchronous projection, NOT a grant for later asynchronous
-physical mutation. The independent Provider wall-clock checks and real backend
-effect-boundary authority remain unresolved by this amendment.
+physical mutation. Its Memory extension represents mount-lock wait/release,
+cancellation, current-authority check/commit, and cached acknowledgement replay
+using the same authority transitions. Dedicated mutants bypass the wait, skip
+authority on replay, or drain twice; reachability witnesses require actual ack
+and replay. This is a bounded safety model, not async-lock fairness, Memory CAS
+refinement, OS timing, or real backend availability evidence. Executable tests
+poll a real pending mount-lock future before revoking authority, cover empty,
+new and replay acknowledgements, and retain receipts after response loss.
+The independent Provider wall-clock checks and real backend effect-boundary
+authority remain unresolved by this amendment.
 
 ## 2026-08-12 amendment
 

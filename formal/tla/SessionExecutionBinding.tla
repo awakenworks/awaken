@@ -13,20 +13,28 @@ EXTENDS WorkerExecutionAuthority
    Host has only its real Session owner, never an invented infinite Worker
    receipt. This model does not prove that deployment classification or the
    new request-relative Session clock adapter is implemented correctly. *)
-(* providerSource selects the existing Container renewal callback: it captures
+(* providerSource selects the shared pre-Environment effect authority: it captures
    the same slot/generation before preparation, but no Environment exists yet.
    A callback result is only a durable-fence projection, NOT asynchronous
    provider mutation authority. The check/commit here spans that projection
    under the Worker/slot locks. Backend expiry, clock conversion, operation-id
-   bytes and actual I/O after return remain executable/adapter obligations. *)
+   bytes and actual I/O after return remain executable/adapter obligations.
+   Memory acknowledgement additionally waits for its async mount lock BEFORE
+   entering the same check/commit. memoryWait is 0=no pending wait, 1=waiting,
+   2=mount lock acquired. memoryDrains is the cached process-local Copy ack:
+   replay still needs current authority but never drains twice. This models
+   the local acknowledgement only; MemoryCAS owns durable reconciliation and
+   retention. No fairness/termination of an unavailable mount is assumed. *)
 VARIABLES deploymentReady, registeredWorker, providerSource
+VARIABLES memoryWait, memoryDrains
+memoryVars == <<memoryWait, memoryDrains>>
 VARIABLES selection, boundSlot, boundGeneration, boundEnvironment,
           environmentIdentity, environmentPhase, sessionExpired,
           effectHeld, effectChecked, badEffect, effects, effectPhases, weakStarted
 bindingVars == <<selection, boundSlot, boundGeneration, boundEnvironment,
     environmentIdentity, environmentPhase, sessionExpired, effectHeld,
     effectChecked, badEffect, effects, effectPhases, weakStarted>>
-bindingAll == <<allVars, bindingVars, deploymentReady, registeredWorker, providerSource>>
+bindingAll == <<allVars, bindingVars, deploymentReady, registeredWorker, providerSource, memoryVars>>
 
 BindingInit == RootInit
   /\ registeredWorker \in BOOLEAN
@@ -36,6 +44,7 @@ BindingInit == RootInit
   /\ environmentIdentity = 1 /\ environmentPhase = "candidate" /\ sessionExpired = FALSE
   /\ effectHeld = FALSE /\ effectChecked = FALSE /\ badEffect = FALSE
   /\ effects = 0 /\ effectPhases = {} /\ weakStarted = FALSE
+  /\ memoryWait = 0 /\ memoryDrains = 0
 
 ExecutionRootCurrent == ~registeredWorker \/ RootCurrent
 CurrentBinding == /\ ExecutionRootCurrent /\ projection = "Live" /\ ~sessionExpired
@@ -61,19 +70,26 @@ Bind == /\ (providerSource \/ selection = "scoped") /\ boundSlot = 0 /\ projecti
   /\ UNCHANGED <<allVars, selection, environmentIdentity, environmentPhase,
        sessionExpired, effectHeld, effectChecked, badEffect, effects, effectPhases, weakStarted>>
 CheckEffect == /\ ~effectHeld /\ effects < 2 /\ CurrentBinding
+  /\ memoryWait # 1
   /\ effectHeld' = TRUE /\ effectChecked' = TRUE
+  /\ UNCHANGED memoryVars
   /\ UNCHANGED <<allVars, selection, boundSlot, boundGeneration, boundEnvironment,
        environmentIdentity, environmentPhase, sessionExpired, badEffect, effects, effectPhases, weakStarted>>
 CommitEffect == /\ effectHeld /\ effectChecked /\ effects < 2
   \* Independent receipt oracle: changing an admission guard must not also
   \* weaken the assertion against which that mutant is checked.
   /\ badEffect' = (badEffect \/ (registeredWorker /\ ~RootCurrent)
+       \/ memoryWait = 1
        \/ projection # "Live" \/ sessionExpired
        \/ boundSlot # slotIdentity \/ boundGeneration # lease[1]
        \/ (~providerSource /\ (selection # "scoped"
            \/ boundEnvironment # environmentIdentity \/ environmentPhase = "retiring")))
   /\ effects' = effects + 1
-  /\ effectPhases' = effectPhases \cup {IF providerSource THEN "provider" ELSE environmentPhase}
+  /\ effectPhases' = effectPhases \cup {IF memoryWait = 2 THEN
+       (IF memoryDrains = 0 THEN "memory" ELSE "memory-replay")
+       ELSE IF providerSource THEN "provider" ELSE environmentPhase}
+  /\ memoryDrains' = (IF memoryWait = 2 THEN 1 ELSE memoryDrains)
+  /\ memoryWait' = 0
   /\ effectHeld' = FALSE /\ effectChecked' = FALSE
   /\ UNCHANGED <<allVars, selection, boundSlot, boundGeneration, boundEnvironment,
        environmentIdentity, environmentPhase, sessionExpired, weakStarted>>
@@ -111,9 +127,15 @@ EnvironmentChanges == /\ ~effectHeld
 ProbeReady == /\ ~deploymentReady /\ deploymentReady' = TRUE
   /\ ~providerSource
   /\ UNCHANGED <<allVars, bindingVars>>
-BindingNext == (((Select \/ WeakSpawn \/ Bind \/ CheckEffect \/ CommitEffect
-  \/ CancelEffect \/ AuthorityChanges \/ EnvironmentChanges)
-  /\ UNCHANGED deploymentReady) \/ ProbeReady)
+MemoryWaitChanges == /\ providerSource /\ boundSlot # 0 /\ ~effectHeld /\ effects < 2
+  /\ \/ (memoryWait = 0 /\ memoryWait' = 1)
+     \/ (memoryWait = 1 /\ memoryWait' = 2)
+     \/ (memoryWait # 0 /\ memoryWait' = 0)
+  /\ UNCHANGED <<allVars, bindingVars, deploymentReady, memoryDrains>>
+BindingNext == (((((Select \/ WeakSpawn \/ Bind
+  \/ CancelEffect \/ AuthorityChanges \/ EnvironmentChanges) /\ UNCHANGED memoryVars)
+  \/ CheckEffect \/ CommitEffect) /\ UNCHANGED deploymentReady)
+  \/ (ProbeReady /\ UNCHANGED memoryVars) \/ MemoryWaitChanges)
   /\ UNCHANGED <<registeredWorker, providerSource>>
 BindingSpec == BindingInit /\ [][BindingNext]_bindingAll
 BindingTypeOK == RootTypeOK /\ selection \in {"unset", "weak", "scoped"}
@@ -123,7 +145,9 @@ BindingTypeOK == RootTypeOK /\ selection \in {"unset", "weak", "scoped"}
   /\ environmentIdentity \in 1..2 /\ environmentPhase \in {"candidate", "resident", "retiring"}
   /\ sessionExpired \in BOOLEAN /\ effectHeld \in BOOLEAN /\ effectChecked \in BOOLEAN
   /\ badEffect \in BOOLEAN /\ weakStarted \in BOOLEAN /\ effects \in 0..2
-  /\ effectPhases \subseteq {"candidate", "resident", "retiring", "provider"}
+  /\ effectPhases \subseteq {"candidate", "resident", "retiring", "provider", "memory", "memory-replay"}
+  /\ memoryWait \in 0..2 /\ memoryDrains \in 0..2
+MemoryCopyDrainedOnce == memoryDrains <= 1
 OnlyCurrentBindingCommits == ~badEffect
 OnlyProbedDeploymentSelected == selection = "scoped" => deploymentReady
 WeakExecutionCannotUpgrade == weakStarted => selection = "weak"
@@ -134,4 +158,6 @@ NoLocalEffectReached == registeredWorker \/ effects = 0
 NoRegisteredEffectReached == ~registeredWorker \/ effects = 0
 NoProviderEffectReached == "provider" \notin effectPhases
 NoUnreadyProviderEffectReached == ~providerSource \/ deploymentReady \/ effects = 0
+NoMemoryAckReached == "memory" \notin effectPhases
+NoMemoryReplayReached == "memory-replay" \notin effectPhases
 =============================================================================
