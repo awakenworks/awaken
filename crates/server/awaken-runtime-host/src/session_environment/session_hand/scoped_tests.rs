@@ -108,7 +108,12 @@ async fn terminal_delete(environment: &SessionEnvironment) {
     let authorization =
         super::super::tests::restart_disposal_authorization(prepared, "scoped-stop");
     environment
-        .dispose_for_effect(&authorization)
+        .dispose_for_effect(
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&authorization).effect_fence(),
+            ),
+        )
         .await
         .unwrap();
 }

@@ -112,6 +112,7 @@ pub(super) struct TeardownProbe {
     pub(super) drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub(super) failures: usize,
     pub(super) wait_until_ms: Option<u64>,
+    pub(super) response_gate: Option<std::sync::Arc<tokio::sync::Semaphore>>,
 }
 
 impl Drop for TeardownProbe {
@@ -132,6 +133,9 @@ impl pc::MemoryMount for TeardownProbe {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Some(deadline) = self.wait_until_ms {
             wait_until_wall_expiry(deadline).await;
+        }
+        if let Some(gate) = &self.response_gate {
+            let _permit = gate.acquire().await.unwrap();
         }
         if call < self.failures {
             Err(pc::SandboxError::new("injected teardown failure"))
@@ -173,6 +177,7 @@ impl pc::MemoryMounter for FailedCreationMounter {
             drops: self.drops.clone(),
             failures: usize::MAX,
             wait_until_ms: None,
+            response_gate: None,
         }))
     }
 }
@@ -1168,7 +1173,12 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
     assert!(root.is_dir(), "M4 preparation cannot dispose the root");
     let disposal = crate::test_disposal_authorization_for_current(&terminal, &successor);
     replay
-        .dispose_for_effect(&disposal)
+        .dispose_for_effect(
+            &disposal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal).effect_fence(),
+            ),
+        )
         .await
         .expect("M5 aggregate-authorized physical disposal");
 
@@ -1290,7 +1300,12 @@ async fn terminal_checkpoint_cancellation_reuses_the_original_guard_and_upload_j
                 "C3 preparation is busy"
             );
             let authorization = crate::test_disposal_authorization(&terminal);
-            let mut disposal = Box::pin(sandbox.dispose_for_effect(&authorization));
+            let disposal_authority =
+                awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    (&authorization).effect_fence(),
+                );
+            let mut disposal =
+                Box::pin(sandbox.dispose_for_effect(&authorization, &disposal_authority));
             tokio::select! {
                 biased;
                 result = &mut disposal => panic!("C3 concurrent cleanup escaped slot: {result:?}"),
@@ -1323,7 +1338,12 @@ async fn terminal_checkpoint_cancellation_reuses_the_original_guard_and_upload_j
                 .await
                 .unwrap();
             sandbox
-                .dispose_for_effect(&crate::test_disposal_authorization(&terminal))
+                .dispose_for_effect(
+                    &crate::test_disposal_authorization(&terminal),
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                        (&crate::test_disposal_authorization(&terminal)).effect_fence(),
+                    ),
+                )
                 .await
                 .unwrap();
         }
@@ -1386,7 +1406,12 @@ async fn terminal_checkpoint_cleanup_uses_the_hot_ready_guard() {
         .await
         .expect("Rule H source-dependent preparation has zero physical effect");
     sandbox
-        .dispose_for_effect(&crate::test_disposal_authorization(&terminal))
+        .dispose_for_effect(
+            &crate::test_disposal_authorization(&terminal),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&crate::test_disposal_authorization(&terminal)).effect_fence(),
+            ),
+        )
         .await
         .expect("Rule H finish");
 }
@@ -1454,7 +1479,12 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
         .await
         .expect("R1 durable preparation precedes physical disposal");
     terminal_sandbox
-        .dispose_for_effect(&crate::test_disposal_authorization(&terminal))
+        .dispose_for_effect(
+            &crate::test_disposal_authorization(&terminal),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&crate::test_disposal_authorization(&terminal)).effect_fence(),
+            ),
+        )
         .await
         .expect("R1 finish");
 }
@@ -1608,7 +1638,12 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
         .await
         .expect("T1 durable P precedes physical Disposal");
     terminal_sandbox
-        .dispose_for_effect(&crate::test_disposal_authorization(&terminal))
+        .dispose_for_effect(
+            &crate::test_disposal_authorization(&terminal),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&crate::test_disposal_authorization(&terminal)).effect_fence(),
+            ),
+        )
         .await
         .expect("T1 physical Disposal");
     assert!(

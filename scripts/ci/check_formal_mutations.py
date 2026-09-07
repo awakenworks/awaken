@@ -1219,12 +1219,24 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
     # a cached Memory ack cannot bypass the shared current authority. The
     # independent receipt oracle is unchanged, including zero-Memory paths.
     for anchor, broken in [
-        ('/\\ preparationWait # 1\n', '/\\ TRUE\n'),
-        ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ (preparationWait = 2 \\/ CurrentBinding)'),
-        ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ ((preparationWait = 2 /\\ memoryDrains = 1) \\/ CurrentBinding)'),
+        ('/\\ providerWait # 1\n', '/\\ TRUE\n'),
+        ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ (providerWait = 2 \\/ CurrentBinding)'),
+        ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ ((providerWait = 2 /\\ memoryDrains = 1) \\/ CurrentBinding)'),
     ]:
         if source.count(anchor) != 1:
             raise SystemExit(f"Disposal preparation mutation anchor drifted: {anchor}")
+        invariant = "OnlyCurrentBindingCommits"
+        mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
+    # F1-F3 bypass the SAME shared wait/authority kernel only for physical
+    # disposal. Preparation counterexamples cannot kill these mutants. The
+    # cached row requires an actual prior disposal before skipping authority.
+    for anchor, broken in [
+        ('/\\ providerWait # 1\n', '/\\ (physicalDisposal \\/ providerWait # 1)\n'),
+        ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ ((physicalDisposal /\\ providerWait = 2) \\/ CurrentBinding)'),
+        ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ ((physicalDisposal /\\ "disposal" \\in effectPhases) \\/ CurrentBinding)'),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"Physical disposal mutation anchor drifted: {anchor}")
         invariant = "OnlyCurrentBindingCommits"
         mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
     # Both topology paths must reach actual effects. Otherwise an accidental
@@ -1233,12 +1245,13 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
                     "NoLocalEffectReached", "NoRegisteredEffectReached",
                     "NoProviderEffectReached", "NoUnreadyProviderEffectReached",
                     "NoMemoryAckReached", "NoMemoryReplayReached",
-                    "NoEmptyPreparationReached", "NoCachedPreparationReached"):
+                    "NoEmptyPreparationReached", "NoCachedPreparationReached",
+                    "NoPhysicalDisposalReached", "NoCachedDisposalReached"):
         mutations.append((source, header + "INVARIANTS " + witness, witness))
     check_tlc_model_mutations(tlc_jar, "SessionExecutionBinding", source, config, mutations,
                               dependencies=("SessionRealizationAuthority", "WorkerExecutionAuthority"),
                               heap_mb=2048, timeout_seconds=180)
-    print("Session execution binding: 23/23 mutants killed; execution, provider projection, Memory acknowledgement/replay and empty/cached preparation reachable")
+    print("Session execution binding: 26/26 mutants killed; 12 witnesses cover execution, provider projection, Memory, preparation and physical disposal/replay")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:

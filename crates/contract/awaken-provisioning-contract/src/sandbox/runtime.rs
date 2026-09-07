@@ -13,9 +13,10 @@ use super::restore_wire::{HostBindRestorationHandle, SandboxRestorationEvidence}
 mod disposal;
 mod memory_reconciliation;
 
+use crate::with_current_sandbox_effect;
 pub use disposal::{SandboxDisposalAuthorization, SandboxDisposalPreparation};
 pub use memory_reconciliation::MemoryReconciliationAck;
-use memory_reconciliation::{authorize_memory_ack, default_memory_reconciliation_ack};
+use memory_reconciliation::default_memory_reconciliation_ack;
 
 /// A serializable, **durable** reference to a realized sandbox. Persist it the
 /// moment a sandbox is created; a live `Box<dyn Sandbox>` cannot survive a host
@@ -1513,7 +1514,7 @@ pub trait Sandbox: Send + Sync {
         complete_materializations: &[MemoryMaterializationEvidence],
         authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<(), SandboxError> {
-        authorize_memory_ack(effect_fence, authority, || {
+        with_current_sandbox_effect(effect_fence, authority, || {
             default_memory_reconciliation_ack(complete_materializations)
         })
     }
@@ -1544,9 +1545,14 @@ pub trait Sandbox: Send + Sync {
     /// or checkpoint I/O. Implementations revalidate immutable incarnation
     /// evidence at the destructive edge and retain retryable physical lifecycle
     /// guards when removal or dependency release fails.
+    /// Current operation-bound authority is required even for cached success.
+    /// Re-enter after waits and hold the guard through synchronous destructive
+    /// effects; the preparation receipt is not a grant across later I/O.
+    /// Backend commit fencing remains the resource adapter's responsibility.
     async fn dispose_for_effect(
         &self,
         _authorization: &SandboxDisposalAuthorization,
+        _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<(), SandboxError> {
         Err(SandboxError::new(
             "sandbox does not implement fenced disposal",

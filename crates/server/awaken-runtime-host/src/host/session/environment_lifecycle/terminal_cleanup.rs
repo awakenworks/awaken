@@ -419,8 +419,13 @@ impl SharedHost {
                             "terminal disposal authorization changed under its lifecycle lock",
                         ));
                     }
+                    let authority = self.session_slots.provider_effect_authority(
+                        &effect.command.session_id,
+                        authorization.effect_fence(),
+                        self.execution_authority.as_ref(),
+                    )?;
                     environment
-                        .dispose_for_effect(&authorization)
+                        .dispose_for_effect(&authorization, &authority)
                         .await
                         .map_err(|error| HostError::unavailable(error.to_string()))?;
                 }

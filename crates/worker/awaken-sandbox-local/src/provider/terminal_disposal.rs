@@ -80,6 +80,7 @@ pub(crate) async fn dispose_terminal_realization(
     secret_paths: &[PathBuf],
     terminal_removal: &tokio::sync::Mutex<Option<realization_marker::RemovalGuard>>,
     authorization: &awaken_provisioning_contract::SandboxDisposalAuthorization,
+    authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
     quiesce: impl std::future::Future<Output = ()>,
 ) -> Result<(), awaken_provisioning_contract::SandboxError> {
     use awaken_provisioning_contract as pc;
@@ -88,15 +89,28 @@ pub(crate) async fn dispose_terminal_realization(
     let removal = slot.as_mut().ok_or_else(|| {
         pc::SandboxError::new("physical disposal requires an exact prepared filesystem participant")
     })?;
-    removal.authorize_disposal(authorization)?;
+    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
+        removal.authorize_disposal(authorization)
+    })?;
     quiesce.await;
-    removal.authorize_disposal(authorization)?;
-    release_memory_mounts(memory_mounts, || removal.authorize_disposal(authorization)).await?;
-    removal.authorize_disposal(authorization)?;
-    shred_secret_paths_for_removal(removal, sandbox_root, secret_paths)?;
-    removal.remove_root()?;
-    removal.finish()?;
-    slot.take();
+    release_memory_mounts(memory_mounts, || {
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
+            removal.authorize_disposal(authorization)
+        })
+    })
+    .await?;
+    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
+        removal.authorize_disposal(authorization)?;
+        shred_secret_paths_for_removal(removal, sandbox_root, secret_paths)
+    })?;
+    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
+        removal.remove_root()
+    })?;
+    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || removal.finish())?;
+    pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
+        slot.take();
+        Ok(())
+    })?;
     Ok(())
 }
 

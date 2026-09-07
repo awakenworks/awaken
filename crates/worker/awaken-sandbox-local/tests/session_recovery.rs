@@ -183,7 +183,12 @@ async fn cross_node_adopt(tier: Tier, can_exec: bool) {
         .await
         .unwrap();
     sandbox_b
-        .dispose_for_effect(&authorization(&terminal))
+        .dispose_for_effect(
+            &authorization(&terminal),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&authorization(&terminal)).effect_fence(),
+            ),
+        )
         .await
         .unwrap();
     assert!(matches!(

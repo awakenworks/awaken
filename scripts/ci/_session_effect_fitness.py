@@ -279,7 +279,7 @@ REQUIRED = {
         ".harvest_with_fence_mode(",
         "ArtifactPublicationFence::Terminal",
         "SessionCleanupPreparation::try_new",
-        ".dispose_for_effect(&authorization)",
+        ".dispose_for_effect(&authorization, &authority)",
         "SessionCleanupDisposalReceipt::new",
     ),
     GIT_REPOSITORY_PUBLICATION: (
@@ -688,7 +688,8 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             (
                 "let authorization = self.terminal_cleanup_disposal_authorization(&effect)?",
                 "authorization.effect_fence()",
-                ".dispose_for_effect(&authorization)",
+                "self.session_slots.provider_effect_authority(",
+                ".dispose_for_effect(&authorization, &authority)",
                 "self.terminal_cleanup_disposal_authorization(&effect)?",
                 "SessionCleanupDisposalReceipt::new(",
             ),
@@ -1083,7 +1084,8 @@ fn dispose_terminal_cleanup_effect() {
     self.terminal_cleanup_disposal_authorization(&effect)?;
     let authorization = self.terminal_cleanup_disposal_authorization(&effect)?;
     prepare(authorization.effect_fence());
-    environment.dispose_for_effect(&authorization);
+    let authority = self.session_slots.provider_effect_authority(...);
+    environment.dispose_for_effect(&authorization, &authority);
     self.terminal_cleanup_disposal_authorization(&effect)?;
     SessionCleanupDisposalReceipt::new(&effect.command);
 }
@@ -1225,6 +1227,18 @@ fn recover_terminal_receipts() {
         mutant = dict(canonical)
         mutant[owner] = mutant[owner].replace(marker, "", 1)
         assert session_effect_violations(mutant), f"removed {rule} rejected"
+
+    # Physical-disposal wiring decision table: C1 capture the existing current
+    # provider authority in this function; C2 forward that same authority with
+    # the typed disposal receipt. Accept C1+C2; either omission must fail even
+    # when the old typed-fence and aggregate-receipt markers remain present.
+    for marker in (
+        "let authority = self.session_slots.provider_effect_authority(...);",
+        ".dispose_for_effect(&authorization, &authority)",
+    ):
+        mutant = dict(canonical)
+        mutant[RUNTIME_HOST_TERMINAL_CLEANUP] = mutant[RUNTIME_HOST_TERMINAL_CLEANUP].replace(marker, "", 1)
+        assert session_effect_violations(mutant), f"removed current disposal wiring: {marker}"
 
     # G48 authority/deadline removal rules: C1 each destructive Worker route
     # verifies the authenticated cleanup generation in its own function before

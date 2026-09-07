@@ -1871,6 +1871,7 @@ pub trait ContainerRuntime: Send + Sync {
         &self,
         mut expectation: crate::ContainerObservationExpectation<'_>,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {
         let effect_fence = authorization.effect_fence();
         if expectation.effect_fence != Some(effect_fence) {
@@ -1888,7 +1889,16 @@ pub trait ContainerRuntime: Send + Sync {
         // a recovery expectation. Process absence alone cannot acknowledge
         // retained continuation bytes as deleted.
         expectation.purpose = crate::ContainerObservationPurpose::TerminalCleanup;
-        match exact_removal_decision(self.observe(expectation).await?)? {
+        let admit = || {
+            pc::with_current_sandbox_effect(effect_fence, authority, || Ok(()))
+                .map_err(|error| RuntimeError::Backend(error.to_string()))
+        };
+        admit()?;
+        let observed = self.observe(expectation).await?;
+        // A late observation cannot authorize a new delete request. Identity
+        // validation and current authority are independent mandatory gates.
+        admit()?;
+        match exact_removal_decision(observed)? {
             // Adapter observation may report absence only after every typed
             // physical participant is gone. Kubernetes keeps a live/terminating
             // retained claim out of this row, so response-loss replay has no
@@ -1900,7 +1910,8 @@ pub trait ContainerRuntime: Send + Sync {
                     expectation.runtime_handle,
                     authorization,
                 )
-                .await
+                .await?;
+                admit()
             }
         }
     }

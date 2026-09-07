@@ -610,8 +610,14 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
         )
         .await
         .unwrap();
+    let authorization = restart_disposal_authorization(prepared, "hand-adoption");
     adopted
-        .dispose_for_effect(&restart_disposal_authorization(prepared, "hand-adoption"))
+        .dispose_for_effect(
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&authorization).effect_fence(),
+            ),
+        )
         .await
         .unwrap();
     let relocated = provider.at_root(base.path().join("relocated"));
@@ -3002,9 +3008,14 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
         .await
         .expect("T1 prepared");
     let authorization = restart_disposal_authorization(prepared, "terminal-fuse-hot");
-    hot.dispose_for_effect(&authorization)
-        .await
-        .expect("T1 dispose");
+    hot.dispose_for_effect(
+        &authorization,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(
+            (&authorization).effect_fence(),
+        ),
+    )
+    .await
+    .expect("T1 dispose");
     assert_eq!(hot_mounts.load(Ordering::SeqCst), 1, "T1 no remount");
     assert_eq!(hot_teardowns.load(Ordering::SeqCst), 1, "T1 one teardown");
 
@@ -3123,7 +3134,15 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
         let authorization =
             restart_disposal_authorization(prepared, &format!("terminal-fuse-{label}"));
         assert!(
-            second.dispose_for_effect(&authorization).await.is_err(),
+            second
+                .dispose_for_effect(
+                    &authorization,
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                        (&authorization).effect_fence()
+                    )
+                )
+                .await
+                .is_err(),
             "T4 first teardown fails after authorization WAL",
         );
         assert_eq!(teardowns.load(Ordering::SeqCst), 1, "T4 {label}");
@@ -3141,7 +3160,12 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
             .expect("T4 authorized Removing participant");
         assert_eq!(mounts.load(Ordering::SeqCst), 4, "T4 {label} remount");
         replay
-            .dispose_for_effect(&authorization)
+            .dispose_for_effect(
+                &authorization,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    (&authorization).effect_fence(),
+                ),
+            )
             .await
             .expect("T4 response-loss disposal converges");
         assert_eq!(teardowns.load(Ordering::SeqCst), 2, "T4 {label} retry");
@@ -3275,7 +3299,15 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
     let disposal_fence =
         pc::SandboxEffectFence::new(disposal_id, "provider-test", "runtime", 1, u64::MAX).unwrap();
     let authorization = disposal_preparation.authorize(disposal_fence).unwrap();
-    adopted.dispose_for_effect(&authorization).await.unwrap();
+    adopted
+        .dispose_for_effect(
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&authorization).effect_fence(),
+            ),
+        )
+        .await
+        .unwrap();
 
     let provider = Arc::new(FakeContainerProvider::default());
     let unsafe_mount = pc::MountRequirement {
