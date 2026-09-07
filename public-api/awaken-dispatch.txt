@@ -131,6 +131,9 @@ pub awaken_dispatch::RecoveryProjectionError::Poisoned
 pub awaken_dispatch::RecoveryProjectionError::WrongRun
 pub awaken_dispatch::RecoveryProjectionError::WrongRun::actual: alloc::string::String
 pub awaken_dispatch::RecoveryProjectionError::WrongRun::expected: alloc::string::String
+pub awaken_dispatch::RecoveryProjectionError::WrongThread
+pub awaken_dispatch::RecoveryProjectionError::WrongThread::actual: alloc::string::String
+pub awaken_dispatch::RecoveryProjectionError::WrongThread::expected: alloc::string::String
 pub enum awaken_dispatch::SqliteStoreError
 pub awaken_dispatch::SqliteStoreError::Migrate(alloc::string::String)
 pub awaken_dispatch::SqliteStoreError::Open(alloc::string::String)
@@ -410,7 +413,7 @@ impl awaken_dispatch::RecoveryProjection
 pub fn awaken_dispatch::RecoveryProjection::apply_receipt(&self, awaken_agent_contract::thread::commit::operation::CommitOperation, &awaken_agent_contract::thread::commit::operation::CommitReceipt) -> core::result::Result<(), awaken_agent_contract::thread::commit::coordinator::Error>
 pub fn awaken_dispatch::RecoveryProjection::clear(&self)
 pub fn awaken_dispatch::RecoveryProjection::current(&self) -> core::option::Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>
-pub fn awaken_dispatch::RecoveryProjection::install(&self, &awaken_agent_contract::agent::run::Id, awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot) -> core::result::Result<(), awaken_dispatch::RecoveryProjectionError>
+pub fn awaken_dispatch::RecoveryProjection::install(&self, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot) -> core::result::Result<(), awaken_dispatch::RecoveryProjectionError>
 pub fn awaken_dispatch::RecoveryProjection::new() -> Self
 impl awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView for awaken_dispatch::RecoveryProjection
 pub fn awaken_dispatch::RecoveryProjection::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
