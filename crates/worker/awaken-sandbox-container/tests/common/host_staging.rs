@@ -19,7 +19,9 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
      * R1=C1+C2 => physical container and its exact host bytes survive;
      * R2=R1+C3 => fresh provider adopts the same handle and reads a newly
      * projected input through the retained bind; R3=R2+C4 => both physical
-     * container and staging disappear, repeated disposal is harmless.
+     * container and staging disappear, repeated disposal is harmless. R4 an
+     * unfenced create retry is rejected before staging; retained files alone
+     * never authorize a second physical creation or replacement.
      * These are real daemon operations, not a successful mock recovery claim.
      * The missing-root rejection row remains in podman_it's peer test. */
     let scope = format!(
@@ -102,6 +104,15 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
         "test \"$(cat /data/source.txt)\" = source-before-drop && test \"$(cat /mnt/session/uploads/after.txt)\" = source-after-drop"
     ])).await.unwrap();
     let result = tokio::time::timeout(Duration::from_secs(20), process.wait()).await;
+    let error = match peer.create(&spec).await {
+        Ok(_) => panic!("R4 unfenced create cannot recover an existing effect"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("durable effect fence"),
+        "R4 {error}"
+    );
+    assert!(root.is_dir(), "R4 rejection preserves the exact live stage");
     adopted
         .dispose()
         .await
