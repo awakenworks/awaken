@@ -116,6 +116,42 @@ enum RetainedResourceGenerationSlot {
     Pending,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceManifestSettlementKind {
+    Commit,
+    Rollback,
+    RetryableFailure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResourceManifestSettlementPlan {
+    promote_pending: bool,
+    retain_pending: bool,
+}
+
+/// One closed manifest-selection decision shared by every attempt outcome.
+/// Activation-record diagnostics remain in their existing per-state reducer;
+/// this plan owns only whether pending can replace active and whether it stays
+/// available to the next retry.
+const fn resource_manifest_settlement_plan(
+    settlement: ResourceManifestSettlementKind,
+) -> ResourceManifestSettlementPlan {
+    match settlement {
+        ResourceManifestSettlementKind::Commit => ResourceManifestSettlementPlan {
+            promote_pending: true,
+            retain_pending: false,
+        },
+        ResourceManifestSettlementKind::Rollback => ResourceManifestSettlementPlan {
+            promote_pending: false,
+            retain_pending: false,
+        },
+        ResourceManifestSettlementKind::RetryableFailure => ResourceManifestSettlementPlan {
+            promote_pending: false,
+            retain_pending: true,
+        },
+    }
+}
+
 /// Closed scalar kernel behind retained-generation selection. Active wins if a
 /// corrupt or legacy row aliases both revisions; the public lookup then still
 /// returns one inseparable revision/manifest pair rather than mixing slots.
@@ -173,7 +209,63 @@ fn resource_materialization_selects_only_active_or_pending_root_generation() {
     assert_eq!(selected.is_some(), selects_active || selects_pending);
 }
 
+#[cfg(kani)]
+#[kani::proof]
+fn failed_resource_replacement_never_promotes_the_pending_manifest() {
+    // Cause/effect graph: C1 realization commits; C2 it fails and rollback
+    // succeeds; C3 it fails and rollback is unavailable. Effects: E1 promote
+    // and clear pending, E2 preserve active and clear pending, E3 preserve
+    // active and retain pending. C1-C3 are closed and mutually exclusive.
+    //
+    // | Rule | outcome | promote pending | retain pending | Effect |
+    // |---|---|---|---|---|
+    // | R1 | commit | yes | no | E1 |
+    // | R2 | rollback | no | no | E2 |
+    // | R3 | retryable failure | no | yes | E3 |
+    let committed: bool = kani::any();
+    let rollback_completed: bool = kani::any();
+    let settlement = if committed {
+        ResourceManifestSettlementKind::Commit
+    } else if rollback_completed {
+        ResourceManifestSettlementKind::Rollback
+    } else {
+        ResourceManifestSettlementKind::RetryableFailure
+    };
+    let plan = resource_manifest_settlement_plan(settlement);
+
+    assert_eq!(
+        plan.promote_pending,
+        settlement == ResourceManifestSettlementKind::Commit
+    );
+    assert_eq!(
+        plan.retain_pending,
+        settlement == ResourceManifestSettlementKind::RetryableFailure
+    );
+    if settlement != ResourceManifestSettlementKind::Commit {
+        assert!(!plan.promote_pending);
+    }
+}
+
 impl SessionResourceState {
+    fn apply_manifest_settlement(
+        &mut self,
+        settlement: ResourceManifestSettlementKind,
+    ) -> Result<(), ResourceActivationError> {
+        if self.pending.is_none() {
+            return Err(ResourceActivationError::NoPending);
+        }
+        let plan = resource_manifest_settlement_plan(settlement);
+        if plan.promote_pending {
+            self.active = self
+                .pending
+                .take()
+                .expect("pending presence was checked before settlement");
+        } else if !plan.retain_pending {
+            self.pending = None;
+        }
+        Ok(())
+    }
+
     /// Remove superseded terminal diagnostics without touching any activation
     /// that can still authorize or require a physical effect.
     ///
@@ -344,7 +436,7 @@ impl SessionResourceState {
     pub fn commit(&mut self) -> Result<(), ResourceActivationError> {
         let desired = self
             .pending
-            .take()
+            .as_ref()
             .ok_or(ResourceActivationError::NoPending)?;
         let desired_repository_ids = desired
             .inputs()
@@ -366,7 +458,7 @@ impl SessionResourceState {
                 _ => {}
             }
         }
-        self.active = desired;
+        self.apply_manifest_settlement(ResourceManifestSettlementKind::Commit)?;
         self.committed_revision = Some(self.revision);
         self.compact_settled_activations();
         Ok(())
@@ -438,9 +530,7 @@ impl SessionResourceState {
         &mut self,
         error: impl Into<String>,
     ) -> Result<(), ResourceActivationError> {
-        if self.pending.is_none() {
-            return Err(ResourceActivationError::NoPending);
-        }
+        self.apply_manifest_settlement(ResourceManifestSettlementKind::RetryableFailure)?;
         let error = error.into();
         for activation in self.activations.iter_mut().filter(|activation| {
             activation.revision == self.revision && activation.state == ActivationState::Prepared
@@ -453,9 +543,7 @@ impl SessionResourceState {
     /// Complete a successful rollback to the previously active manifest.
     pub fn rollback(&mut self, error: impl Into<String>) -> Result<(), ResourceActivationError> {
         let active_revision = self.active_revision();
-        self.pending
-            .take()
-            .ok_or(ResourceActivationError::NoPending)?;
+        self.apply_manifest_settlement(ResourceManifestSettlementKind::Rollback)?;
         self.committed_revision = Some(active_revision);
         let error = error.into();
         for activation in &mut self.activations {
