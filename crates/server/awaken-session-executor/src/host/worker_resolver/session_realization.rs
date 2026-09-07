@@ -8,86 +8,7 @@ use projection_synchronizer::WorkerProjectionSynchronizer;
 #[cfg(test)]
 use projection_synchronizer::merge_legacy_claimed_environment_binding;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SessionRealizationWorkerEffect {
-    /// Keep the claim parked while the Session Work slot is occupied.
-    Defer,
-    /// Relinquish the claim through the retryable execution-failure path.
-    Relinquish,
-    /// Settle the still-current claim with an absorbing Run failure.
-    Absorb,
-}
-
-pub(super) const fn session_realization_worker_effect(
-    disposition: awaken_session_contract::SessionRealizationControlDisposition,
-) -> SessionRealizationWorkerEffect {
-    match disposition {
-        awaken_session_contract::SessionRealizationControlDisposition::NotReady => {
-            SessionRealizationWorkerEffect::Defer
-        }
-        awaken_session_contract::SessionRealizationControlDisposition::Retryable => {
-            SessionRealizationWorkerEffect::Relinquish
-        }
-        awaken_session_contract::SessionRealizationControlDisposition::Terminal => {
-            SessionRealizationWorkerEffect::Absorb
-        }
-    }
-}
-
-#[cfg(kani)]
-#[kani::proof]
-fn session_realization_control_disposition_projects_exact_worker_effect() {
-    let selector = kani::any::<u8>() % 3;
-    let (disposition, expected) = match selector {
-        0 => (
-            awaken_session_contract::SessionRealizationControlDisposition::NotReady,
-            SessionRealizationWorkerEffect::Defer,
-        ),
-        1 => (
-            awaken_session_contract::SessionRealizationControlDisposition::Retryable,
-            SessionRealizationWorkerEffect::Relinquish,
-        ),
-        _ => (
-            awaken_session_contract::SessionRealizationControlDisposition::Terminal,
-            SessionRealizationWorkerEffect::Absorb,
-        ),
-    };
-
-    assert_eq!(session_realization_worker_effect(disposition), expected);
-}
-
 impl HostWorkerResolver {
-    fn map_session_realization_drive_error(
-        error: awaken_session_contract::SessionRealizationDriveError,
-    ) -> awaken_dispatch::Error {
-        match error {
-            awaken_session_contract::SessionRealizationDriveError::Effect(error)
-                if error.kind == awaken_session_contract::RunErrorKind::Unavailable =>
-            {
-                Self::execution_error(error.to_string())
-            }
-            awaken_session_contract::SessionRealizationDriveError::Control(control) => {
-                match session_realization_worker_effect(control.disposition()) {
-                    SessionRealizationWorkerEffect::Defer => {
-                        awaken_dispatch::Error::ResolutionNotReady(
-                            "Session realization is not ready".into(),
-                        )
-                    }
-                    SessionRealizationWorkerEffect::Relinquish => {
-                        Self::execution_error(control.to_string())
-                    }
-                    SessionRealizationWorkerEffect::Absorb => {
-                        Self::terminal_resolution_error(control.to_string())
-                    }
-                }
-            }
-            retryable @ awaken_session_contract::SessionRealizationDriveError::DidNotConverge => {
-                Self::execution_error(retryable.to_string())
-            }
-            error => Self::terminal_resolution_error(error.to_string()),
-        }
-    }
-
     #[cfg(test)]
     pub(crate) async fn realize_session(
         host: &SharedHost,
@@ -418,75 +339,6 @@ mod tests {
             host.session_environment("cold-invalid").await.is_none(),
             "C3"
         );
-    }
-
-    #[test]
-    fn session_realization_preserves_retryable_and_absorbing_failure_classes() {
-        // Cause/effect graph: C1 the canonical driver classifies an effect as
-        // Unavailable, C2 Control reports transient ownership/readiness, or C3
-        // the phase is permanently invalid. Effects: C1/C2 relinquish or defer
-        // the WorkQueue claim; only C3 becomes TerminalResolution. This preserves
-        // the Session aggregate's already-persisted retry decision instead of
-        // creating a second host-side policy.
-        //
-        // | Rule | driver cause | effect |
-        // | R1 | unavailable effect | retryable Execution |
-        // | R2 | Control unavailable/conflict | retryable Execution |
-        // | R3 | Control not ready | ResolutionNotReady |
-        // | R4 | permanent effect/invalid Control | TerminalResolution |
-        let retryable_effect = HostWorkerResolver::map_session_realization_drive_error(
-            awaken_session_contract::SessionRealizationDriveError::Effect(
-                awaken_session_contract::RunError::unavailable_classified(
-                    "mcp_material_source_unavailable",
-                    "materializer unavailable",
-                ),
-            ),
-        );
-        assert!(matches!(
-            retryable_effect,
-            awaken_dispatch::Error::Execution(_)
-        ));
-
-        let retryable_control = HostWorkerResolver::map_session_realization_drive_error(
-            awaken_session_contract::SessionRealizationDriveError::Control(
-                awaken_session_contract::SessionRealizationControlFailure::Unavailable(
-                    "repository unavailable".into(),
-                ),
-            ),
-        );
-        assert!(matches!(
-            retryable_control,
-            awaken_dispatch::Error::Execution(_)
-        ));
-
-        let not_ready = HostWorkerResolver::map_session_realization_drive_error(
-            awaken_session_contract::SessionRealizationDriveError::Control(
-                awaken_session_contract::SessionRealizationControlFailure::NotReady,
-            ),
-        );
-        assert!(matches!(
-            not_ready,
-            awaken_dispatch::Error::ResolutionNotReady(_)
-        ));
-
-        for permanent in [
-            awaken_session_contract::SessionRealizationDriveError::Effect(
-                awaken_session_contract::RunError::classified(
-                    "mcp_credential_revision_mismatch",
-                    "invalid revision",
-                ),
-            ),
-            awaken_session_contract::SessionRealizationDriveError::Control(
-                awaken_session_contract::SessionRealizationControlFailure::Invalid(
-                    "invalid phase".into(),
-                ),
-            ),
-        ] {
-            assert!(matches!(
-                HostWorkerResolver::map_session_realization_drive_error(permanent),
-                awaken_dispatch::Error::TerminalResolution(_)
-            ));
-        }
     }
 
     #[derive(Default)]
@@ -1595,9 +1447,9 @@ mod tests {
             required_environment: Some((Arc::downgrade(&host), thread.into())),
             ..Default::default()
         });
-        let managed = crate::ManagedHost::new(host.clone())
-            .with_mcp_attachment_realizer(realizer.clone())
-            .install_dispatch_session_runtime();
+        let managed = super::test_support::complete_managed_test_host(
+            crate::ManagedHost::new(host.clone()).with_mcp_attachment_realizer(realizer.clone()),
+        );
         let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
         awaken_session_contract::SessionRuntime::install_environment_binding_sink(
             &managed,
@@ -1660,6 +1512,111 @@ mod tests {
             ["stage", "publish", "stage", "publish"],
             "R2 reuses the resident Environment without another claimed snapshot"
         );
+
+        // R9/R10 expand the graph with independent Worker/Sandbox failures:
+        // C10 the Worker and exact Environment Arc survive, but the physical
+        // root disappears; C11 Runtime is cached or evicted; C12 the directive
+        // is Complete (no MCP stage or tool can force a hidden materialization).
+        // R9=C10+C11+C12+continuity => error, retain exact Arc/binding, zero
+        // replacement. R10=same cut+rebuild => observe, retire exact A, create B,
+        // and publish its new handle. Cross both Runtime states with both
+        // policies and Ready replay through the real driver, requiring the same B Arc.
+        for runtime_cached in [false, true] {
+            if runtime_cached {
+                host.ctx_for_snapshot(thread, Some("agent-a"), Some(activation.snapshot.clone()))
+                    .await
+                    .expect("R9 warm Runtime");
+            } else {
+                host.evict_session_for_rebuild(thread).await;
+            }
+            assert_eq!(
+                host.session_slots
+                    .read(thread, |slot| slot.runtime.is_some())
+                    .unwrap_or(false),
+                runtime_cached,
+                "R9 fixture independently establishes each Runtime state"
+            );
+            let retained = host
+                .session_environment(thread)
+                .await
+                .expect("R9 resident Arc");
+            let old_handle = retained.handle();
+            crate::host::worker_resolver::test_support::remove_local_environment_root(
+                &host, thread,
+            );
+            let missing_directive = awaken_session_contract::SessionRealizationDirective {
+                projection: control.current_projection(),
+                lease: directive.lease.clone(),
+                action: awaken_session_contract::SessionRealizationAction::Complete,
+            };
+            let error = HostWorkerResolver::realize_session(
+                &host,
+                &control,
+                thread,
+                missing_directive.clone(),
+                None,
+                Some(&activation.snapshot),
+                false,
+            )
+            .await
+            .expect_err("R9 resident Arc cannot hide physical unavailability");
+            assert!(
+                error.to_string().contains("unavailable or terminal"),
+                "R9: {error}"
+            );
+            assert!(
+                Arc::ptr_eq(&retained, &host.session_environment(thread).await.unwrap()),
+                "R9 retains exact owner"
+            );
+            assert_eq!(
+                control.current_projection().environment.binding(),
+                Some(serde_json::to_string(&old_handle).unwrap().as_str()),
+                "R9 zero replacement binding"
+            );
+            HostWorkerResolver::realize_session(
+                &host,
+                &control,
+                thread,
+                missing_directive,
+                None,
+                Some(&activation.snapshot),
+                true,
+            )
+            .await
+            .expect("R10 rebuild through the production synchronizer");
+            let replacement = host
+                .session_environment(thread)
+                .await
+                .expect("R10 replacement");
+            assert_ne!(
+                replacement.handle(),
+                old_handle,
+                "R10 new physical incarnation"
+            );
+            let replay = awaken_session_contract::SessionRealizationDirective {
+                projection: control.current_projection(),
+                lease: directive.lease.clone(),
+                action: awaken_session_contract::SessionRealizationAction::Complete,
+            };
+            HostWorkerResolver::realize_session(
+                &host,
+                &control,
+                thread,
+                replay,
+                None,
+                Some(&activation.snapshot),
+                true,
+            )
+            .await
+            .expect("R10 Ready replay");
+            assert!(
+                Arc::ptr_eq(
+                    &replacement,
+                    &host.session_environment(thread).await.unwrap()
+                ),
+                "R10 no duplicate ready owner"
+            );
+        }
 
         let first_use_thread = "cold-first-use-environment";
         let first_use_activation = test_activation(first_use_thread, "run-cold-first-use");
