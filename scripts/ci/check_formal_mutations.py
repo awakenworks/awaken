@@ -489,6 +489,7 @@ def main() -> None:
     model_selection.add_argument("--resolution-failure-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--config-cas-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--background-completion-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--sandbox-control-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--audit-commit-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--effect-retirement-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--credential-removal-model-mutant", type=Path, metavar="TLC_JAR")
@@ -511,6 +512,9 @@ def main() -> None:
         return
     if arguments.cowork_lifecycle_model_mutants is not None:
         check_cowork_lifecycle_model_mutants(arguments.cowork_lifecycle_model_mutants)
+        return
+    if arguments.sandbox_control_model_mutants is not None:
+        check_sandbox_control_model_mutants(arguments.sandbox_control_model_mutants)
         return
     if arguments.realization_renewal_model_mutant is not None:
         check_realization_renewal_model_mutant(arguments.realization_renewal_model_mutant)
@@ -1244,6 +1248,42 @@ def check_config_cas_model_mutant(tlc_jar: Path) -> None:
         (source.replace(guard, "expected[w] = generation"), config, "TypeOK"),
     ])
     print("Config CAS mutation score: 2/2 killed (absent-row predicate, exhaustion)")
+
+
+def check_sandbox_control_model_mutants(tlc_jar: Path) -> None:
+    # SC1 first close forgets participant; SC2 cancellation forgets it; SC3
+    # return skips join; SC4 Drop releases early; SC5 late start after cancel;
+    # SC6 join before exit; SC7 disable completion. Each uses the exact oracle
+    # and green baseline; four witnesses exclude unreachable race/terminal paths.
+    source = (ROOT / "formal/tla/SandboxControlPublication.tla").read_text()
+    config = (ROOT / "formal/tla/SandboxControlPublication.cfg").read_text()
+    header = config.split("INVARIANTS\n", 1)[0]
+    mutations = []
+    for anchor, broken, oracle, kind in [
+        ('retained\' = (phase = "Active")', "retained' = FALSE", "ReturnRequiresJoin", "INVARIANTS"),
+        ('closers\' = [closers EXCEPT ![i] = "Cancelled"]\n    /\\ UNCHANGED <<phase, nextLease, activeLease, staleLease, closedOnce,\n                   task, cancelled, retained>>',
+         'closers\' = [closers EXCEPT ![i] = "Cancelled"]\n    /\\ retained\' = FALSE\n    /\\ UNCHANGED <<phase, nextLease, activeLease, staleLease, closedOnce,\n                   task, cancelled>>',
+         "ReturnRequiresJoin", "INVARIANTS"),
+        ('/\\ (~retained \\/ task \\in Quiescent)', '/\\ TRUE', "ReturnRequiresJoin", "INVARIANTS"),
+        ('/\\ task \\in Quiescent\n    /\\ phase\' = "Vacant"', '/\\ phase\' = "Vacant"',
+         "ReleaseRequiresJoin", "INVARIANTS"),
+        ('phase = "Active" /\\ ~cancelled /\\ task = "Absent"',
+         'phase = "Active" /\\ task = "Absent"', "NoStartAfterCancellation", "PROPERTIES"),
+        ('JoinTask ==\n    /\\ task = "Exited"', 'JoinTask ==\n    /\\ task \\in {"Running", "Exited"}',
+         "JoinRequiresExit", "PROPERTIES"),
+        ('FinishClose(i) ==\n    /\\ closers[i] = "Waiting"', 'FinishClose(i) ==\n    /\\ FALSE\n    /\\ closers[i] = "Waiting"',
+         "temporal:DisposalEventuallyReturns", "PROPERTIES"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"Sandbox control mutation anchor drifted: {oracle}")
+        selected = oracle.removeprefix("temporal:")
+        mutations.append((source.replace(anchor, broken), header + f"{kind} {selected}\n", oracle))
+    for witness in ("NoConcurrentWaitReached", "NoCancelledPendingReached",
+                    "NoFinishedDisposalReached", "NoDroppedPendingReached"):
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "SandboxControlPublication", source, config, mutations,
+                              action_properties={"NoStartAfterCancellation", "JoinRequiresExit"})
+    print("Sandbox control mutation score: 7/7 killed; 4 disposal/drop schedules reachable")
 
 
 def check_background_completion_model_mutant(tlc_jar: Path) -> None:

@@ -202,6 +202,62 @@ pub struct SandboxControlPublishError;
 #[derive(Clone)]
 pub struct SandboxControlPublicationLease(Arc<()>);
 
+/// Shared task participant for a publication, including asynchronous setup.
+/// Cancellation requests shutdown; only joining establishes completion.
+#[derive(Clone, Default)]
+pub struct SandboxControlPublicationTask {
+    cancel: tokio_util::sync::CancellationToken,
+    task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+}
+
+impl SandboxControlPublicationTask {
+    #[must_use]
+    pub fn cancellation(&self) -> tokio_util::sync::CancellationToken {
+        self.cancel.clone()
+    }
+
+    /// Install before running setup. No spawned task can escape an in-flight
+    /// join: start and join use the same slot, and close permanently cancels it.
+    pub fn start(
+        &self,
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> Result<(), SandboxControlPublishError> {
+        let mut task = self
+            .task
+            .try_lock()
+            .map_err(|_| SandboxControlPublishError)?;
+        if self.cancel.is_cancelled() || task.is_some() {
+            return Err(SandboxControlPublishError);
+        }
+        *task = Some(tokio::spawn(future));
+        Ok(())
+    }
+
+    /// Cancellation of this future leaves the JoinHandle in its original slot.
+    pub async fn close(&self) {
+        self.cancel.cancel();
+        let mut task = self.task.lock().await;
+        if let Some(join) = task.as_mut() {
+            let _ = join.await;
+            task.take();
+        }
+    }
+
+    /// Drop cannot await. Retain the publication until the same join completes;
+    /// never detach an aborted task and release its resource identity early.
+    /// Without a live runtime, leave cleanup to the registry's explicit dispose.
+    pub fn close_after_drop(&self, cleanup: impl FnOnce() + Send + 'static) {
+        self.cancel.cancel();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let state = self.clone();
+            runtime.spawn(async move {
+                state.close().await;
+                cleanup();
+            });
+        }
+    }
+}
+
 /// One provider-neutral publication slot shared by Sandbox implementations.
 ///
 /// The slot owns only local lifecycle serialization: vacant -> active -> vacant,
@@ -214,7 +270,7 @@ pub struct SandboxControlPublicationSlot<T> {
 
 enum PublicationSlotState<T> {
     Open(Option<(SandboxControlPublicationLease, T)>),
-    Closed,
+    Closed(Option<(SandboxControlPublicationLease, T)>),
 }
 
 impl<T> Default for SandboxControlPublicationSlot<T> {
@@ -261,8 +317,32 @@ impl<T> SandboxControlPublicationSlot<T> {
         lease: &SandboxControlPublicationLease,
         update: impl FnOnce(&mut T) -> R,
     ) -> Result<R, SandboxControlPublishError> {
+        self.with_matching_mut(lease, false, update)
+    }
+
+    /// Resource teardown only: the exact closing allocation still owns its
+    /// cleanup state, but cannot publish or reserve another task.
+    pub fn with_retained_mut<R>(
+        &self,
+        lease: &SandboxControlPublicationLease,
+        cleanup: impl FnOnce(&mut T) -> R,
+    ) -> Result<R, SandboxControlPublishError> {
+        self.with_matching_mut(lease, true, cleanup)
+    }
+
+    fn with_matching_mut<R>(
+        &self,
+        lease: &SandboxControlPublicationLease,
+        allow_closed: bool,
+        update: impl FnOnce(&mut T) -> R,
+    ) -> Result<R, SandboxControlPublishError> {
         let mut state = self.state.lock().map_err(|_| SandboxControlPublishError)?;
-        let PublicationSlotState::Open(Some((current, value))) = &mut *state else {
+        if !allow_closed && matches!(*state, PublicationSlotState::Closed(_)) {
+            return Err(SandboxControlPublishError);
+        }
+        let (PublicationSlotState::Open(Some((current, value)))
+        | PublicationSlotState::Closed(Some((current, value)))) = &mut *state
+        else {
             return Err(SandboxControlPublishError);
         };
         if !Arc::ptr_eq(&current.0, &lease.0) {
@@ -287,17 +367,40 @@ impl<T> SandboxControlPublicationSlot<T> {
         }
     }
 
-    /// Permanently close the slot and return its active provider state, if any.
+    /// Permanently close admission and retain the same cleanup participant for
+    /// every closer, including a retry after a cancelled disposal future.
     /// Poison recovery is deliberate here: disposal must remain absorbing even
     /// after another local task panicked while holding the mutex.
-    pub fn close(&self) -> Option<T> {
+    pub fn close(&self) -> Option<T>
+    where
+        T: Clone,
+    {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match std::mem::replace(&mut *state, PublicationSlotState::Closed) {
-            PublicationSlotState::Open(Some((_, value))) => Some(value),
-            PublicationSlotState::Open(None) | PublicationSlotState::Closed => None,
+        if let PublicationSlotState::Open(active) = &mut *state {
+            *state = PublicationSlotState::Closed(active.take());
+        }
+        match &*state {
+            PublicationSlotState::Closed(Some((_, value))) => Some(value.clone()),
+            _ => None,
+        }
+    }
+
+    /// Call only after the retained task was joined. Final resource cleanup and
+    /// forgetting the participant are one synchronous transition, so no closer
+    /// can return before teardown or repeat an inode cleanup after completion.
+    pub fn finish_close(&self, cleanup: impl FnOnce(&mut T)) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let PublicationSlotState::Closed(active) = &mut *state {
+            if let Some((_, value)) = active {
+                cleanup(value);
+            }
+            *active = None;
         }
     }
 }
@@ -489,7 +592,148 @@ mod tests {
         assert_eq!(slot.close(), Some(4), "PS4/E4 returns active value");
         assert!(!slot.owns(&second), "PS4/E4 no active owner");
         assert!(slot.reserve(5).is_err(), "PS4/E4 close is absorbing");
-        assert_eq!(slot.close(), None, "PS4/E4 close is idempotent");
+        assert_eq!(slot.close(), Some(4), "PS4/E4 retains cleanup on retry");
+        slot.release(&second);
+        assert_eq!(
+            slot.close(),
+            Some(4),
+            "PS4 stale release cannot lose cleanup"
+        );
+        assert!(slot.with_current_mut(&second, |_| ()).is_err());
+        slot.finish_close(|value| assert_eq!(*value, 4));
+        assert_eq!(slot.close(), None, "PS4 only finished cleanup is forgotten");
+    }
+
+    #[tokio::test]
+    async fn publication_task_serializes_start_cancel_join_and_drop_cleanup() {
+        // Task decision table: C1=empty/live/closed participant; C2=setup has
+        // started but ignores cancellation at a barrier; C3=explicit close or
+        // Drop; C4=closer cancelled. E1=start once only; E2=no cleanup before
+        // actual join; E3=retry joins the retained handle; E4=closed cannot start.
+        // T1 empty=>E1; T2 live+C2+C3=>E2; T3 C4=>E3; T4 closed=>E4.
+        for drop_close in [false, true] {
+            let state = SandboxControlPublicationTask::default();
+            let release = Arc::new(tokio::sync::Notify::new());
+            state
+                .start({
+                    let release = release.clone();
+                    async move { release.notified().await }
+                })
+                .unwrap();
+            assert!(state.start(async {}).is_err(), "T1 only one installed task");
+            let (cleaned, cleanup) = tokio::sync::oneshot::channel();
+            let first = if drop_close {
+                state.close_after_drop(move || {
+                    let _ = cleaned.send(());
+                });
+                None
+            } else {
+                drop(cleaned);
+                Some(tokio::spawn({
+                    let state = state.clone();
+                    async move { state.close().await }
+                }))
+            };
+            state.cancellation().cancelled().await;
+            let mut cleanup = cleanup;
+            if drop_close {
+                assert!(
+                    matches!(
+                        cleanup.try_recv(),
+                        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                    ),
+                    "T2 cleanup waits for join"
+                );
+            }
+            if let Some(first) = first {
+                first.abort();
+                assert!(first.await.unwrap_err().is_cancelled());
+            }
+            let retry = state.close();
+            tokio::pin!(retry);
+            tokio::select! {
+                biased;
+                () = &mut retry => panic!("T2/T3 cannot report cancellation as completion"),
+                () = std::future::ready(()) => {}
+            }
+            assert!(state.start(async {}).is_err(), "T4 late start rejected");
+            release.notify_one();
+            retry.await;
+            if drop_close {
+                cleanup.await.unwrap();
+            }
+            state.close().await;
+            assert!(state.start(async {}).is_err(), "T4 completed is absorbing");
+        }
+    }
+
+    #[test]
+    fn poisoned_slot_retains_cleanup_but_never_readmits_publication() {
+        // PS5 C1=panic under the authoritative slot lock; C2=close/retry;
+        // E1=admission denied; E2=exact cleanup still available once; E3=foreign
+        // lease cannot mutate cleanup even in the ordinary closing state.
+        let slot = SandboxControlPublicationSlot::default();
+        let lease = slot.reserve(7_u8).unwrap();
+        let foreign = SandboxControlPublicationSlot::default()
+            .reserve(9_u8)
+            .unwrap();
+        slot.close();
+        assert!(slot.with_retained_mut(&foreign, |_| ()).is_err(), "PS5/E3");
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _ = slot.with_retained_mut(&lease, |_| panic!("synthetic cleanup panic"));
+            })
+            .is_err()
+        );
+        assert!(slot.reserve(8).is_err(), "PS5/E1");
+        assert_eq!(slot.close(), Some(7), "PS5/E2 retry retains participant");
+        slot.finish_close(|value| assert_eq!(*value, 7));
+        slot.finish_close(|_| panic!("PS5 cleanup repeated"));
+        assert_eq!(slot.close(), None);
+    }
+
+    #[test]
+    fn drop_outside_runtime_leaves_the_original_registry_responsible() {
+        // T7 C1=task installed on a live runtime; C2=Drop outside an entered
+        // runtime. E1=cancel requested without panicking or falsely invoking
+        // cleanup; E2=explicit registry disposal later joins that same task.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let slot = SandboxControlPublicationSlot::default();
+        let state = SandboxControlPublicationTask::default();
+        slot.reserve(state.clone()).unwrap();
+        let cancel = state.cancellation();
+        runtime.block_on(async {
+            state
+                .start(async move { cancel.cancelled().await })
+                .unwrap();
+        });
+        state.close_after_drop(|| panic!("T7 no runtime cannot claim cleanup"));
+        assert!(state.cancellation().is_cancelled());
+        runtime.block_on(async {
+            slot.close().unwrap().close().await;
+            slot.finish_close(|_| {});
+        });
+        assert!(slot.close().is_none());
+    }
+
+    #[tokio::test]
+    async fn unstarted_and_panicked_publications_have_joinable_terminal_states() {
+        // T5 no task + close => terminal without spawning; T6 task panic +
+        // close => JoinError consumed, repeated close terminates, no restart.
+        // Panic is not successful service execution; this proves only quiescence.
+        for panics in [false, true] {
+            let state = SandboxControlPublicationTask::default();
+            if panics {
+                state
+                    .start(async { panic!("synthetic publication failure") })
+                    .unwrap();
+            }
+            state.close().await;
+            state.close().await;
+            assert!(state.start(async {}).is_err());
+        }
     }
 
     #[tokio::test]

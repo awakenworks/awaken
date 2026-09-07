@@ -313,6 +313,51 @@ new and replay acknowledgements, and retain receipts after response loss.
 The independent Provider wall-clock checks and real backend effect-boundary
 authority remain unresolved by this amendment.
 
+### Control-publication cleanup participant
+
+The disposal preflight must not mistake caller cancellation or a concurrent
+disposer for task completion. `SandboxControlPublicationSlot` remains the sole
+process-local publication registry. Its closed state now retains the original
+participant until join and synchronous cleanup finish; repeated close retrieves
+the same participant, and stale release cannot forget a closing task.
+
+Reused unchanged: Session authority, physical provider disposal, Container channel
+transport/retry, Namespace codec and bounded request JoinSet. Modified: the
+existing publication slot and both provider adapters. Consolidated: the two
+identical cancellation/JoinHandle implementations into
+`SandboxControlPublicationTask` in the existing Sandbox control contract. There
+is no additional registry, durable state machine, supervisor or systemd service.
+
+Dynamic order: reserve -> install the task before asynchronous channel/socket
+setup -> readiness response -> serving. Dropping an unfinished publisher or a
+published handle requests cancellation; a best-effort background join releases
+the exact reservation only after completion. Explicit dispose closes admission,
+joins that same participant, then performs/finishes cleanup in the original slot.
+If a disposal future is cancelled, another caller can resume the retained join.
+Task start is rejected after cancellation. Namespace listener teardown removes
+its recorded inode while the descriptor is still alive, including when the slot
+is closing; the completed slot cannot repeat this cleanup against a later socket.
+Normal Namespace shutdown cancels and drains request children before returning.
+
+Decision tables live beside the contract/provider tests. They cover overlapping
+registry disposers, cancellation/retry, late task start, first-channel setup
+cancellation, handle Drop, task panic, and a real Unix-socket request being drained.
+The existing `SandboxControlPublication` model adds retained cleanup, two callers,
+task start/exit/join, Drop and cancellation/retry. Its safety and conditional
+liveness checks have semantic mutants and reachability witnesses in the existing
+strict gate. Eventual completion assumes task exit and a fair retrying disposer;
+this does not prove OS process-tree termination, Rust/Tokio refinement, remote
+backend cancellation, or survival of a stopped runtime. Without a live runtime,
+Drop cancels but does not claim cleanup; explicit disposal retains responsibility.
+The provider authority-clock and live cloud/platform qualification gaps above
+remain separate from this process-local lifecycle fix.
+Fenced Namespace disposal still calls control shutdown after physical removal;
+moving it earlier requires prior valid physical authorization. The shared
+physical-disposal helper and Local terminal-checkpoint cleanup also temporarily
+take the prepared `RemovalGuard` out of its resident slot across asynchronous
+I/O. Cancellation-safe retention and the authorization/quiescence/effect order
+remain required before claiming complete physical-disposal closure.
+
 ## 2026-08-12 amendment
 
 Session creation no longer waits for Worker-authored input. The complete

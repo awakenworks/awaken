@@ -1880,6 +1880,7 @@ struct FakeState {
     control_binding_missing: bool,
     control_binding_calls: Vec<(bool, Option<String>)>,
     control_channel_opens: usize,
+    control_open_pending: Option<(Arc<tokio::sync::Notify>, Arc<AtomicBool>)>,
     control_peers: Vec<tokio::io::DuplexStream>,
     removals: Vec<(String, usize)>,
     inspections: usize,
@@ -2040,6 +2041,18 @@ impl ContainerRuntime for FakeRuntime {
         _binding: &pc::SandboxControlIncarnation,
         _kind: SandboxControlServiceKind,
     ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
+        let pending = self.st.lock().unwrap().control_open_pending.clone();
+        if let Some((entered, dropped)) = pending {
+            struct PendingOpen(Arc<AtomicBool>);
+            impl Drop for PendingOpen {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+            let _pending = PendingOpen(dropped);
+            entered.notify_one();
+            std::future::pending::<()>().await;
+        }
         let (host, peer) = tokio::io::duplex(64 * 1024);
         let mut state = self.st.lock().unwrap();
         state.control_channel_opens += 1;
@@ -2496,6 +2509,12 @@ impl ContainerRuntime for FakeRuntime {
     }
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
         let mut state = self.st.lock().unwrap();
+        if let Some((_, dropped)) = &state.control_open_pending {
+            assert!(
+                dropped.load(Ordering::SeqCst),
+                "B9/B10 setup must be reaped at the actual removal edge"
+            );
+        }
         let opens = state.control_channel_opens;
         state.removals.push((container_id.into(), opens));
         state.alive.insert(container_id.into(), false);
@@ -3223,6 +3242,71 @@ async fn control_publication_survives_idle_and_channel_failure_but_stops_before_
     );
     drop(lease);
     assert_eq!(runtime.st.lock().unwrap().control_channel_opens, 4, "B8/E4");
+}
+
+#[tokio::test]
+async fn control_disposal_and_publisher_cancellation_reap_initial_channel_setup() {
+    // B9 setup is awaiting its first runtime channel, before a publication
+    // handle has been returned. B10 caller is cancelled at that await.
+    // Cause/effect rows: B9+dispose => setup future dropped before removal;
+    // B9+B10+dispose => same, no lost reservation or detached setup task.
+    // In both rows: zero channels opened, exactly one removal, no later publish.
+    for cancel_publisher in [false, true] {
+        let runtime = Arc::new(FakeRuntime::default().with_sandbox_control());
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        runtime.st.lock().unwrap().control_open_pending = Some((entered.clone(), dropped.clone()));
+        let mut demanded = spec("publication-setup");
+        demanded
+            .control_services
+            .insert(SandboxControlServiceKind::RepositoryGitCredential);
+        let sandbox = Arc::new(
+            provider(runtime.clone())
+                .create_container(&demanded)
+                .await
+                .unwrap(),
+        );
+        let publishing = tokio::spawn({
+            let sandbox = sandbox.clone();
+            async move {
+                sandbox
+                    .publish_sandbox_control_service(
+                        SandboxControlServiceKind::RepositoryGitCredential,
+                        Arc::new(UnavailableControlService),
+                    )
+                    .await
+            }
+        });
+        entered.notified().await;
+        if cancel_publisher {
+            publishing.abort();
+        }
+        pc::Sandbox::dispose(sandbox.as_ref()).await.unwrap();
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "B9/B10 setup reaped before disposal return"
+        );
+        let result = publishing.await;
+        if cancel_publisher {
+            assert!(result.err().unwrap().is_cancelled());
+        } else {
+            assert!(result.unwrap().is_err());
+        }
+        {
+            let state = runtime.st.lock().unwrap();
+            assert_eq!(state.control_channel_opens, 0);
+            assert_eq!(state.removals, vec![("cid-publication-setup".into(), 0)]);
+        }
+        assert!(
+            sandbox
+                .publish_sandbox_control_service(
+                    SandboxControlServiceKind::RepositoryGitCredential,
+                    Arc::new(UnavailableControlService),
+                )
+                .await
+                .is_err()
+        );
+    }
 }
 
 #[tokio::test]

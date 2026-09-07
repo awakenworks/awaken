@@ -733,6 +733,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/sandbox-control-publication" \
     -config formal/tla/SandboxControlPublication.cfg \
     formal/tla/SandboxControlPublication.tla
+  python3 scripts/ci/check_formal_mutations.py --sandbox-control-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/eval-evidence" \
     -config formal/tla/EvalEvidence.cfg formal/tla/EvalEvidence.tla

@@ -49,6 +49,11 @@ cargo test -p awaken-agent-config --lib \
 cargo test -p awaken-run-executor-acp --lib
 cargo test -p awaken-worker-contract --lib
 cargo test -p awaken-cli --lib acp_local_credentials
+# Publication lifecycle uses the same portable task/slot kernel. Include both
+# adapter races on every matrix runner; Namespace's Unix-socket rows remain
+# Linux-gated inside the Local suite. No container daemon is needed here.
+cargo test -p awaken-sandbox-control --lib
+cargo test -p awaken-sandbox-container --lib control
 cargo test -p awaken-sandbox-local --lib
 cargo test -p awaken-local-process --lib
 # Run the actual Hand binary with an explicit resource root and a nested cwd,

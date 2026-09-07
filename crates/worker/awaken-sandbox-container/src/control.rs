@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use awaken_sandbox_control::{
     PublishedSandboxControlService, SandboxControlPublicationLease, SandboxControlPublicationSlot,
-    SandboxControlPublishError, SandboxControlService, SandboxControlServiceKind,
-    SandboxControlServicePublisher, serve_one_after_first_byte,
+    SandboxControlPublicationTask, SandboxControlPublishError, SandboxControlService,
+    SandboxControlServiceKind, SandboxControlServicePublisher, serve_one_after_first_byte,
 };
 use tokio::io::AsyncReadExt as _;
 use tokio_util::sync::CancellationToken;
@@ -18,35 +18,6 @@ const FIRST_CHANNEL_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 const CONTROL_EXCHANGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const CONTROL_RETRY_INITIAL: std::time::Duration = std::time::Duration::from_millis(50);
 const CONTROL_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(1);
-
-#[derive(Clone)]
-struct ContainerControlPublicationState {
-    cancel: CancellationToken,
-    task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
-}
-
-impl ContainerControlPublicationState {
-    async fn close_task(&self) {
-        self.cancel.cancel();
-        // Keep the slot locked until the one task has actually stopped. `None`
-        // therefore means completed/never installed, never "another closer is
-        // still joining", so disposal cannot remove the runtime early.
-        let mut task_slot = self.task.lock().await;
-        if let Some(task) = task_slot.as_mut() {
-            let _ = task.await;
-            task_slot.take();
-        }
-    }
-
-    fn abort_task(&self) {
-        self.cancel.cancel();
-        if let Ok(mut task) = self.task.try_lock()
-            && let Some(task) = task.take()
-        {
-            task.abort();
-        }
-    }
-}
 
 async fn wait_before_reopen(cancel: &CancellationToken, delay: &mut std::time::Duration) -> bool {
     let keep_running = tokio::select! {
@@ -79,7 +50,7 @@ async fn open_channel<R: ContainerRuntime + 'static>(
 
 #[derive(Default)]
 pub(crate) struct ContainerControlPublicationRegistry {
-    slot: SandboxControlPublicationSlot<ContainerControlPublicationState>,
+    slot: SandboxControlPublicationSlot<SandboxControlPublicationTask>,
 }
 
 impl ContainerControlPublicationRegistry {
@@ -88,14 +59,11 @@ impl ContainerControlPublicationRegistry {
     ) -> Result<
         (
             SandboxControlPublicationLease,
-            ContainerControlPublicationState,
+            SandboxControlPublicationTask,
         ),
         SandboxControlPublishError,
     > {
-        let state = ContainerControlPublicationState {
-            cancel: CancellationToken::new(),
-            task: Arc::new(tokio::sync::Mutex::new(None)),
-        };
+        let state = SandboxControlPublicationTask::default();
         let lease = self.slot.reserve(state.clone())?;
         Ok((lease, state))
     }
@@ -111,7 +79,8 @@ impl ContainerControlPublicationRegistry {
     pub(crate) async fn close_for_dispose(&self) {
         let state = self.slot.close();
         if let Some(state) = state {
-            state.close_task().await;
+            state.close().await;
+            self.slot.finish_close(|_| {});
         }
     }
 }
@@ -119,20 +88,22 @@ impl ContainerControlPublicationRegistry {
 struct ContainerControlPublication {
     registry: Arc<ContainerControlPublicationRegistry>,
     lease: SandboxControlPublicationLease,
-    state: ContainerControlPublicationState,
+    state: SandboxControlPublicationTask,
 }
 
 impl Drop for ContainerControlPublication {
     fn drop(&mut self) {
-        self.state.abort_task();
-        self.registry.release(&self.lease);
+        let registry = self.registry.clone();
+        let lease = self.lease.clone();
+        self.state
+            .close_after_drop(move || registry.release(&lease));
     }
 }
 
 #[async_trait]
 impl PublishedSandboxControlService for ContainerControlPublication {
     async fn close(&self) {
-        self.state.close_task().await;
+        self.state.close().await;
         self.registry.release(&self.lease);
     }
 }
@@ -150,30 +121,35 @@ impl<R: ContainerRuntime + 'static> SandboxControlServicePublisher for Container
             return Err(SandboxControlPublishError);
         }
         let (lease, state) = self.control_publication.acquire()?;
-        let binding = self.sandbox_control_incarnation.clone().ok_or_else(|| {
-            self.control_publication.release(&lease);
-            SandboxControlPublishError
-        })?;
-        let first = open_channel(
-            self.runtime.as_ref(),
-            &self.container_id,
-            &binding,
-            kind,
-            &state.cancel,
-        )
-        .await;
-        let first = match first {
-            Ok(channel) if self.control_publication.owns(&lease) => channel,
-            Ok(_) | Err(_) => {
-                self.control_publication.release(&lease);
-                return Err(SandboxControlPublishError);
-            }
+        let publication = ContainerControlPublication {
+            registry: self.control_publication.clone(),
+            lease,
+            state,
         };
-
+        let binding = self
+            .sandbox_control_incarnation
+            .clone()
+            .ok_or(SandboxControlPublishError)?;
         let runtime = self.runtime.clone();
         let container_id = self.container_id.clone();
-        let task_cancel = state.cancel.clone();
-        let task = tokio::spawn(async move {
+        let task_cancel = publication.state.cancellation();
+        let (ready, started) = tokio::sync::oneshot::channel();
+        publication.state.start(async move {
+            let first = match open_channel(
+                runtime.as_ref(),
+                &container_id,
+                &binding,
+                kind,
+                &task_cancel,
+            )
+            .await
+            {
+                Ok(channel) => channel,
+                Err(_) => return,
+            };
+            if ready.send(()).is_err() {
+                return;
+            }
             let mut next_channel = Some(first);
             let mut retry_delay = CONTROL_RETRY_INITIAL;
             loop {
@@ -233,21 +209,12 @@ impl<R: ContainerRuntime + 'static> SandboxControlServicePublisher for Container
                     break;
                 }
             }
-        });
-        {
-            let mut task_slot = state.task.lock().await;
-            if state.cancel.is_cancelled() || !self.control_publication.owns(&lease) {
-                task.abort();
-                self.control_publication.release(&lease);
-                return Err(SandboxControlPublishError);
-            }
-            *task_slot = Some(task);
+        })?;
+        started.await.map_err(|_| SandboxControlPublishError)?;
+        if !self.control_publication.owns(&publication.lease) {
+            return Err(SandboxControlPublishError);
         }
-        Ok(Box::new(ContainerControlPublication {
-            registry: self.control_publication.clone(),
-            lease,
-            state,
-        }))
+        Ok(Box::new(publication))
     }
 }
 
@@ -278,41 +245,51 @@ mod tests {
     async fn concurrent_close_and_dispose_wait_for_the_same_join_completion() {
         /* Close-join cause/effect table:
          * C1=one task ignores cancellation and waits at a barrier; C2=the first
-         * closer is awaiting its JoinHandle; C3=that close future is cancelled;
-         * C4=dispose arrives. E1=the JoinHandle remains in the state; E2=dispose
-         * stays pending (and cannot remove/reopen) until the task exits.
-         * Rule P4 C1+C2+C3+C4=>E1+E2.
+         * registry disposer is awaiting its JoinHandle; C3=another dispose
+         * arrives; C4=first disposal is cancelled; C5=a retry arrives.
+         * E1=both concurrent and retried dispose remain pending until task exit;
+         * E2=completion is absorbing. P4 C1+C2+C3=>E1; P5 C4+C5=>E1+E2.
          */
         let registry = Arc::new(ContainerControlPublicationRegistry::default());
         let (_, state) = registry.acquire().unwrap();
         let release = Arc::new(tokio::sync::Notify::new());
-        *state.task.lock().await = Some(tokio::spawn({
-            let release = release.clone();
-            async move { release.notified().await }
-        }));
+        state
+            .start({
+                let release = release.clone();
+                async move { release.notified().await }
+            })
+            .unwrap();
 
         let first = tokio::spawn({
-            let state = state.clone();
-            async move { state.close_task().await }
+            let registry = registry.clone();
+            async move { registry.close_for_dispose().await }
         });
-        while state.task.try_lock().is_ok() {
-            tokio::task::yield_now().await;
+        state.cancellation().cancelled().await;
+        let disposal = registry.close_for_dispose();
+        tokio::pin!(disposal);
+        tokio::select! {
+            biased;
+            () = &mut disposal => panic!("P4 concurrent dispose returned before join"),
+            () = std::future::ready(()) => {}
         }
         first.abort();
         assert!(
             first.await.unwrap_err().is_cancelled(),
             "P4 cancelled close"
         );
-        assert!(state.task.lock().await.is_some(), "P4/E1");
-        let disposal = tokio::spawn({
-            let registry = registry.clone();
-            async move { registry.close_for_dispose().await }
-        });
-        tokio::task::yield_now().await;
-        assert!(!disposal.is_finished(), "P4/E1");
+        let retry = registry.close_for_dispose();
+        tokio::pin!(retry);
+        tokio::select! {
+            biased;
+            () = &mut retry => panic!("P5 retry returned before join"),
+            () = std::future::ready(()) => {}
+        }
         release.notify_one();
-        disposal.await.unwrap();
-        assert!(state.task.lock().await.is_none(), "P4/E2");
+        tokio::join!(disposal, retry);
+        assert!(
+            registry.slot.close().is_none(),
+            "P5 completed participant retired"
+        );
         assert!(registry.acquire().is_err(), "P4 disposal is irreversible");
     }
 }
