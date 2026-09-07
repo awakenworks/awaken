@@ -677,6 +677,18 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "cold terminal reconstruction authority",
         )
     )
+    errors.extend(
+        _require_ordered_function(
+            sources, RUNTIME_HOST_TERMINAL_PREPARATION,
+            "cleanup_terminal_checkpoint",
+            ("self.terminal_cleanup_effect_fence(effect)?",
+             "self.session_slots.provider_effect_authority(",
+             "with_current_sandbox_effect(", "match (checkpoint, pending_checkpoint)",
+             ".cleanup_checkpoint_for_terminal(", "&authority,",
+             "with_current_sandbox_effect("),
+            "terminal checkpoint current authority",
+        )
+    )
     disposal_projection = _rust_function(
         sources.get(RUNTIME_HOST_TERMINAL_PREPARATION, ""),
         "terminal_cleanup_disposal_authorization",
@@ -1080,6 +1092,15 @@ fn install_bound_environment_under_lifecycle() {
     let authority = self.session_slots.provider_effect_authority(...);
     provider.prepare_terminal_effective_for_effect(spec, handle, expected, effect, &authority,);
 }
+fn cleanup_terminal_checkpoint() {
+    let fence = self.terminal_cleanup_effect_fence(effect)?;
+    let authority = self.session_slots.provider_effect_authority(...);
+    with_current_sandbox_effect(&fence, &authority, || Ok(()));
+    match (checkpoint, pending_checkpoint) {
+        provider.cleanup_checkpoint_for_terminal(request, store, expected, fence, &authority,);
+    }
+    with_current_sandbox_effect(&fence, &authority, || Ok(()));
+}
 """
     canonical[RUNTIME_HOST_TERMINAL_CLEANUP] = """
 fn prepare_terminal_cleanup_effect() {
@@ -1259,6 +1280,26 @@ fn recover_terminal_receipts() {
         mutant = dict(canonical)
         mutant[RUNTIME_HOST_TERMINAL_PREPARATION] = mutant[RUNTIME_HOST_TERMINAL_PREPARATION].replace(marker, "", 1)
         assert any("cold terminal reconstruction authority" in error
+                   for error in session_effect_violations(mutant)), marker
+
+    # Checkpoint C1 capture, C2 pre-I/O admission, C3 port forwarding, C4
+    # post-response admission. Removing either authority edge is rejected in
+    # this function even though cold reconstruction retains all its markers.
+    for marker, replacement, last in (
+        ("self.session_slots.provider_effect_authority(", "", False),
+        ("with_current_sandbox_effect(", "", False),
+        ("with_current_sandbox_effect(", "", True),
+        (".cleanup_checkpoint_for_terminal(request, store, expected, fence, &authority,)",
+         ".cleanup_checkpoint_for_terminal(request, store, expected, fence)", False),
+    ):
+        mutant = dict(canonical)
+        body = _rust_function(mutant[RUNTIME_HOST_TERMINAL_PREPARATION],
+                              "cleanup_terminal_checkpoint")
+        assert body is not None
+        changed = replacement.join(body.rsplit(marker, 1)) if last else body.replace(marker, replacement, 1)
+        mutant[RUNTIME_HOST_TERMINAL_PREPARATION] = mutant[RUNTIME_HOST_TERMINAL_PREPARATION].replace(
+            body, changed, 1)
+        assert any("terminal checkpoint current authority" in error
                    for error in session_effect_violations(mutant)), marker
 
     # G48 authority/deadline removal rules: C1 each destructive Worker route

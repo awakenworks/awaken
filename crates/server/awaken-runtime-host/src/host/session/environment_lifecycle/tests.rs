@@ -2,6 +2,125 @@ use super::state::ProjectedEnvironmentOwner;
 use super::*;
 use crate::session_slot::UnboundSessionEnvironmentOrigin;
 
+#[tokio::test]
+async fn terminal_committed_checkpoint_requires_current_worker_and_session_after_delete() {
+    use crate::host::tests::{
+        RecordingTerminalCheckpointStore, disposing_terminal_environment,
+        terminal_fixture_container_handle, terminal_recovery_effect,
+    };
+    use awaken_provisioning_contract as pc;
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
+    // C1 committed checkpoint (no Sandbox reconstruction); C2 delete has
+    // committed but its response is pending; C3 Worker revoke/expiry, Session
+    // revoke/replacement, same-generation renewal, or caller cancellation.
+    // Six schedules: R1 denied entry calls no store; R2 a late delete response
+    // cannot complete under lost authority; R3 renewal may complete; R4 cancel
+    // does not produce a receipt. R5 exact authorized retry uses the SAME id.
+    // No get/put/provider is installed: this isolates the committed-object
+    // branch from the pending-upload port and cannot accidentally test a mock
+    // provider's independent authorization instead of the Host composition.
+    // The fixture observes delete calls, not remote atomic commit fencing.
+    for change in [
+        "worker-revoke",
+        "worker-expire",
+        "session-revoke",
+        "replace",
+        "renew",
+        "cancel",
+    ] {
+        let thread = "current-committed-checkpoint";
+        let (lease, effect) = terminal_recovery_effect(thread, "checkpoint-worker");
+        let fence = effect.sandbox_effect_fence().unwrap();
+        let worker = Arc::new(pc::test_support::EffectAuthority::new(&fence));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut host =
+            SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
+                .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
+                    events: events.clone(),
+                    expected_id: "exact-checkpoint".into(),
+                    delete_gate: Some(gate.clone()),
+                }));
+        host.execution_authority = Some(worker.clone());
+        host.session_slots.update(thread, |slot| {
+            slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+                crate::session_slot::test_observed_lease(lease.clone()),
+            );
+        });
+        let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread));
+        let (state, _, _) =
+            disposing_terminal_environment(thread, &lease, &handle, "exact-checkpoint");
+        *worker.current.lock().unwrap() = None;
+        assert!(
+            host.cleanup_terminal_checkpoint(&effect, &state, None, None)
+                .await
+                .is_err(),
+            "R1"
+        );
+        assert!(events.lock().unwrap().is_empty(), "R1");
+        *worker.current.lock().unwrap() = Some((fence.clone(), Duration::from_secs(1)));
+        let mut pending = Box::pin(host.cleanup_terminal_checkpoint(&effect, &state, None, None));
+        tokio::select! {
+            biased;
+            result = &mut pending => panic!("C2 must wait: {result:?}"),
+            () = std::future::ready(()) => {}
+        }
+        assert_eq!(events.lock().unwrap().as_slice(), &["delete-checkpoint"]);
+        match change {
+            "worker-revoke" => *worker.current.lock().unwrap() = None,
+            "worker-expire" => worker.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO,
+            "session-revoke" => host.session_slots.update(thread, |slot| {
+                slot.realization_authority =
+                    crate::session_slot::SessionRealizationAuthority::Closed(Some(lease.clone()));
+            }),
+            "replace" | "renew" => host.session_slots.update(thread, |slot| {
+                let mut next = lease.clone();
+                if change == "replace" {
+                    next.epoch += 1;
+                }
+                next.expires_at_unix_ms += 10_000;
+                slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+                    crate::session_slot::test_observed_lease(next),
+                );
+            }),
+            "cancel" => {}
+            _ => unreachable!(),
+        }
+        if change == "cancel" {
+            drop(pending);
+            gate.add_permits(1);
+        } else {
+            gate.add_permits(1);
+            assert_eq!(pending.await.is_ok(), change == "renew", "R2/R3");
+        }
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "R2/R4 no next store operation"
+        );
+        // Reset only the fixture for exact-object retry; production renewal
+        // cannot revive a closed/replaced Worker or Session incarnation.
+        *worker.current.lock().unwrap() = Some((fence.clone(), Duration::from_secs(1)));
+        host.session_slots.update(thread, |slot| {
+            slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+                crate::session_slot::test_observed_lease(lease.clone()),
+            );
+        });
+        host.cleanup_terminal_checkpoint(&effect, &state, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            &["delete-checkpoint", "delete-checkpoint"],
+            "R5"
+        );
+    }
+}
+
 fn environment_effect_fence(thread: &str) -> awaken_provisioning_contract::SandboxEffectFence {
     awaken_provisioning_contract::SandboxEffectFence::new(
         format!("environment-lifecycle-fixture:{thread}"),

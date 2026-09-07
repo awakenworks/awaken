@@ -1454,7 +1454,9 @@ pub trait Sandbox: Send + Sync {
     /// a terminal takeover. `expected_effect_fence` identifies the immutable
     /// suspend participant and may already be expired; it never authorizes a
     /// mutation. Every write-ahead update, exact `put` replay, and idempotent
-    /// object deletion is authorized only by the live terminal fence. This is
+    /// object deletion consumes the current operation-bound `authority`, not
+    /// the copied terminal expiry. Re-enter after participant/store waits and
+    /// before returning success, including cached-receipt replay. This is
     /// the checkpoint port's terminal edge, not a second cleanup state machine.
     async fn cleanup_checkpoint_for_terminal(
         &self,
@@ -1462,6 +1464,7 @@ pub trait Sandbox: Send + Sync {
         _store: &dyn SandboxCheckpointStore,
         _expected_effect_fence: &SandboxEffectFence,
         _terminal_effect_fence: &SandboxEffectFence,
+        _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<(), SandboxError> {
         Err(SandboxError::new(
             "sandbox does not implement terminal checkpoint cleanup",

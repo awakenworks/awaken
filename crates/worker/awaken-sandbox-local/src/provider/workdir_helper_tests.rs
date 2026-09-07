@@ -729,15 +729,17 @@ async fn dynamic_inline_projection_handles_file_directory_and_missing_removal() 
 }
 
 #[derive(Default)]
-struct CheckpointStore {
-    objects: std::sync::Mutex<HashMap<String, StoredTestCheckpoint>>,
+pub(super) struct CheckpointStore {
+    pub(super) objects: std::sync::Mutex<HashMap<String, StoredTestCheckpoint>>,
     gets: std::sync::atomic::AtomicUsize,
-    pause: std::sync::Mutex<Option<(CheckpointPause, Arc<tokio::sync::Notify>)>>,
-    paused: tokio::sync::Notify,
+    pub(super) puts: std::sync::atomic::AtomicUsize,
+    pub(super) deletes: std::sync::atomic::AtomicUsize,
+    pub(super) pause: std::sync::Mutex<Option<(CheckpointPause, Arc<tokio::sync::Notify>)>>,
+    pub(super) paused: tokio::sync::Notify,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum CheckpointPause {
+pub(super) enum CheckpointPause {
     AfterPut,
     AfterDelete,
 }
@@ -759,7 +761,7 @@ impl CheckpointStore {
 }
 
 #[derive(Clone)]
-struct StoredTestCheckpoint {
+pub(super) struct StoredTestCheckpoint {
     metadata: pc::CheckpointObjectMetadata,
     bytes: Vec<u8>,
     receipt: pc::StoredCheckpointObject,
@@ -772,6 +774,7 @@ impl pc::SandboxCheckpointStore for CheckpointStore {
         metadata: &pc::CheckpointObjectMetadata,
         bytes: Vec<u8>,
     ) -> Result<pc::StoredCheckpointObject, pc::SandboxError> {
+        self.puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let id = format!(
             "{}/{}/{}/{}",
             metadata.workspace_id,
@@ -823,6 +826,8 @@ impl pc::SandboxCheckpointStore for CheckpointStore {
     }
 
     async fn delete(&self, id: &str) -> Result<(), pc::SandboxError> {
+        self.deletes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.objects.lock().unwrap().remove(id);
         self.pause_at(CheckpointPause::AfterDelete).await;
         Ok(())
@@ -1300,6 +1305,9 @@ async fn terminal_checkpoint_cancellation_reuses_the_original_guard_and_upload_j
                             store.as_ref(),
                             &suspend,
                             &terminal,
+                            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                                &terminal,
+                            ),
                         )
                         .await
                 }
@@ -1344,6 +1352,7 @@ async fn terminal_checkpoint_cancellation_reuses_the_original_guard_and_upload_j
                     store.as_ref(),
                     &suspend,
                     &terminal,
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
                 )
                 .await
                 .unwrap();
@@ -1403,7 +1412,13 @@ async fn terminal_checkpoint_cleanup_uses_the_hot_ready_guard() {
         "Rule H current realization rejects an unfenced upload"
     );
     sandbox
-        .cleanup_checkpoint_for_terminal(&request, &store, &suspend, &terminal)
+        .cleanup_checkpoint_for_terminal(
+            &request,
+            &store,
+            &suspend,
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("Rule H");
     assert!(store.objects.lock().unwrap().is_empty(), "Rule H delete");
@@ -1413,7 +1428,13 @@ async fn terminal_checkpoint_cleanup_uses_the_hot_ready_guard() {
         "Rule H keeps the live resident Ready until dispose"
     );
     sandbox
-        .cleanup_checkpoint_for_terminal(&request, &store, &suspend, &terminal)
+        .cleanup_checkpoint_for_terminal(
+            &request,
+            &store,
+            &suspend,
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("Rule H delete response-loss replay");
     sandbox
@@ -1472,7 +1493,13 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
         pc::SandboxEffectFence::new("other-suspend", "owner", "runtime", 1, u64::MAX).unwrap();
     assert!(
         terminal_sandbox
-            .cleanup_checkpoint_for_terminal(&request, &store, &wrong_suspend, &terminal,)
+            .cleanup_checkpoint_for_terminal(
+                &request,
+                &store,
+                &wrong_suspend,
+                &terminal,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal)
+            )
             .await
             .is_err(),
         "R4 input drift"
@@ -1481,17 +1508,37 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
         pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, 0).unwrap();
     assert!(
         terminal_sandbox
-            .cleanup_checkpoint_for_terminal(&request, &store, &suspend, &expired_terminal,)
+            .cleanup_checkpoint_for_terminal(
+                &request,
+                &store,
+                &suspend,
+                &expired_terminal,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &expired_terminal
+                )
+            )
             .await
             .is_err(),
         "R4 expired terminal"
     );
     terminal_sandbox
-        .cleanup_checkpoint_for_terminal(&request, &store, &suspend, &terminal)
+        .cleanup_checkpoint_for_terminal(
+            &request,
+            &store,
+            &suspend,
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("R1");
     terminal_sandbox
-        .cleanup_checkpoint_for_terminal(&request, &store, &suspend, &terminal)
+        .cleanup_checkpoint_for_terminal(
+            &request,
+            &store,
+            &suspend,
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("R2");
     assert!(store.objects.lock().unwrap().is_empty(), "R2");

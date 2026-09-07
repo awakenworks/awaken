@@ -1662,12 +1662,14 @@ impl pc::Sandbox for LocalSandbox {
         store: &dyn pc::SandboxCheckpointStore,
         expected_effect_fence: &pc::SandboxEffectFence,
         terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         self.cleanup_checkpoint_for_terminal(
             request,
             store,
             expected_effect_fence,
             terminal_effect_fence,
+            authority,
         )
         .await
     }

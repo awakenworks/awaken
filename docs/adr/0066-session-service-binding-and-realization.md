@@ -399,9 +399,9 @@ cold-only mutants and two reconstruction/replay witnesses bring its total to
 not a proof of aggregate ordering, backend commits, or cross-clock correspondence.
 Cold FUSE cancellation while the external mounter owns an unfinished operation,
 and process-lifetime retention after failed ownerless compensation, are not
-closed by these admission tests. Checkpoint cleanup and exact restored-target
-disposal also still require current-authority migration through their own
-existing participants. No new store, timer, lease, registry or state machine is
+closed by these admission tests. Exact restored-target disposal still requires
+current-authority migration through its existing participants; terminal checkpoint
+cleanup is wired below. No new store, timer, lease, registry or state machine is
 introduced by this cold reconstruction change.
 
 ### Control-publication cleanup participant
@@ -458,6 +458,35 @@ upload journal. Removed publication changes the in-memory marker only after the
 durable write succeeds; a lost acknowledgement is replayed against the exact
 intended tombstone, never a foreign value. These are extensions to the existing
 Provider and marker, not another store, cleanup service or lifecycle.
+
+Terminal checkpoint cleanup now consumes the same current-authority port.
+Reused unchanged: Ready/Removing ownership, checkpoint object identity, snapshot
+encoding and upload WAL. Modified: the existing Host terminal branch, Sandbox
+port and Local forwarding. The private borrowed `CurrentCheckpointParticipant`
+adapts that original participant to `with_current_sandbox_effect`; it owns no
+lock, lease, journal or cached state and does not add another upload algorithm.
+Dynamic order is capture Worker/Session authority -> await the retained slot ->
+current marker admission -> current WAL/put admission -> put response -> current
+receipt publication -> current delete admission -> delete response -> current
+completion. Cached receipts use the same path without uploading again.
+Committed checkpoint deletion independently captures the same Host authority
+before calling the existing store and rechecks it after the response.
+
+Adjacent Local tests cross Ready/Removing, slot/put/delete response waits and
+revocation/replacement/expiry/renewal/cancellation (30 schedules). They inspect
+the original WAL before retry, require zero next mutations, and distinguish
+lost-put replay from cached-receipt replay. Six Host schedules separately check
+Worker/Session loss after committed-object deletion without invoking a mock
+Sandbox. Both reuse existing store fixtures. `LocalProcessRecovery` refines its
+existing checkpoint borrow into upload-response, WAL, delete-response and
+acknowledgement cuts; 23 semantic mutants and eight reachability witnesses
+cover the combined recovery model, including expired backend responses and
+successful checkpoint completion. Its fresh-authority Boolean still assumes
+the shared Session/Worker admission contract: exact WAL identity, Ready-phase
+Rust wiring, clocks, in-flight backend atomicity and OS progress are not proved
+by this abstraction. Provider UTC migration, exact restored-target disposal
+and cold FUSE ownership remain open; a committed remote delete is not rolled
+back by a rejected late response.
 
 Adjacent decision tables exercise competing disposers, cancellation during
 control/Memory/checkpoint waits, expiry across lock and per-mount waits, partial

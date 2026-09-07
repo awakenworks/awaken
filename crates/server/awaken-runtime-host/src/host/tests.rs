@@ -17333,13 +17333,17 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
         _store: &dyn pc::SandboxCheckpointStore,
         _expected_effect_fence: &pc::SandboxEffectFence,
         terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
-        self.events.lock().unwrap().push("checkpoint-live-io");
+        pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+            self.events.lock().unwrap().push("checkpoint-live-io");
+            Ok(())
+        })?;
         if let Some(probe) = &self.fence_refresh_probe {
             probe.record("checkpoint", terminal_effect_fence);
             probe.checkpoint_entered.notify_one();
             probe.checkpoint_release.notified().await;
-            return Ok(());
+            return pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(()));
         }
         Err(pc::SandboxError::new(
             "terminal recovery fixture has no pending checkpoint upload",
@@ -17549,7 +17553,10 @@ impl awaken_sandbox_container::ContainerEnvironment for TerminalRecoveryEnvironm
     }
 }
 
-fn terminal_fixture_container_handle(thread: &str, spec: &pc::SandboxSpec) -> pc::SandboxHandle {
+pub(super) fn terminal_fixture_container_handle(
+    thread: &str,
+    spec: &pc::SandboxSpec,
+) -> pc::SandboxHandle {
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
     pc::SandboxHandle::container_v2(
         thread,
@@ -18101,9 +18108,10 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::ArtifactPub
     }
 }
 
-struct RecordingTerminalCheckpointStore {
-    events: Arc<Mutex<Vec<&'static str>>>,
-    expected_id: String,
+pub(super) struct RecordingTerminalCheckpointStore {
+    pub(super) events: Arc<Mutex<Vec<&'static str>>>,
+    pub(super) expected_id: String,
+    pub(super) delete_gate: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 #[async_trait::async_trait]
@@ -18131,11 +18139,14 @@ impl pc::SandboxCheckpointStore for RecordingTerminalCheckpointStore {
             ));
         }
         self.events.lock().unwrap().push("delete-checkpoint");
+        if let Some(gate) = &self.delete_gate {
+            let _permit = gate.acquire().await.unwrap();
+        }
         Ok(())
     }
 }
 
-fn terminal_recovery_effect(
+pub(super) fn terminal_recovery_effect(
     thread: &str,
     owner: &str,
 ) -> (
@@ -18156,7 +18167,7 @@ fn terminal_recovery_effect(
     (lease, effect)
 }
 
-fn disposing_terminal_environment(
+pub(super) fn disposing_terminal_environment(
     thread: &str,
     lease: &awaken_session_contract::SessionRealizationLease,
     handle: &pc::SandboxHandle,
@@ -18548,6 +18559,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
             events: events.clone(),
             expected_id: "unused-pending-checkpoint-id".into(),
+            delete_gate: None,
         }));
     raw_host.install_memory_mounter(Arc::new(RecordingTerminalMemoryMounter {
         events: events.clone(),
@@ -18892,6 +18904,7 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
         raw_host.with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
             events: events.clone(),
             expected_id: checkpoint_id.clone(),
+            delete_gate: None,
         }));
     let host = Arc::new(raw_host);
     let managed = install_test_dispatch_runtime(&host);
@@ -19018,6 +19031,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
             events: events.clone(),
             expected_id: checkpoint_id.into(),
+            delete_gate: None,
         }));
     raw_host.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
         events: events.clone(),
@@ -19841,6 +19855,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
                 events: events.clone(),
                 expected_id: checkpoint.id,
+                delete_gate: None,
             })),
     );
     let managed = install_test_dispatch_runtime(&host);
