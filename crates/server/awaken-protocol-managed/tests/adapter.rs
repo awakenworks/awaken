@@ -240,6 +240,71 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
         awaken_session_application::SessionEventBatchIdempotency::Absent,
         "N5 no mutation"
     );
+    // D1 delete after accepted/closed => preserve exact original receipts;
+    // D2 unseen identity=>Closed with deletion proof, late POST cannot execute;
+    // D3 changed body=>409; D4 foreign owner=>404, including after cold restart.
+    // Actual cleanup and store CAS run here; no fabricated tombstone fixture.
+    support::drive_retained_session_events(&state, id).await;
+    state.delete_session(id).await.unwrap();
+    state
+        .session_application()
+        .release_terminal_resources("default", id)
+        .await
+        .unwrap();
+    let repo = state.session_application().session_repository_handle();
+    assert!(matches!(
+        repo.get(id).await,
+        Err(awaken_session_contract::SessionRepositoryError::NotFound)
+    ));
+    let restarted = Arc::new(ManagedState::new(EchoFake::default()).with_session_repo(repo));
+    let cold = router(restarted.clone()).merge(
+        awaken_protocol_awaken::session_event_admission_router(
+            awaken_protocol_managed::close_event_admission,
+        )
+        .with_state(restarted),
+    );
+    for (key, expected) in [("closed-key", receipt), ("accepted-key", resolved)] {
+        let (status, retained) = post_events_with_idempotency(&cold, &close, key, &body).await;
+        assert_eq!(status, StatusCode::OK, "D1 {retained}");
+        assert_eq!(
+            retained, expected,
+            "D1 immutable proof survives restart and deletion"
+        );
+        assert_eq!(
+            post_events_with_idempotency(&cold, &close, key, &changed)
+                .await
+                .0,
+            StatusCode::CONFLICT,
+            "D3"
+        );
+    }
+    let (status, deleted) = post_events_with_idempotency(&cold, &close, "unseen", &body).await;
+    assert_eq!(status, StatusCode::OK, "D2 {deleted}");
+    assert_eq!(deleted["status"], "closed");
+    assert_eq!(deleted["proof"], "session_deleted");
+    assert!(deleted["deleted_revision"].as_u64().unwrap() > 0);
+    assert!(
+        deleted.get("batch_id").is_none(),
+        "no imaginary Event batch"
+    );
+    let (late_status, late_body) =
+        post_events_with_idempotency(&cold, &events, "unseen", &body).await;
+    assert_eq!(
+        late_status,
+        StatusCode::BAD_REQUEST,
+        "ordinary admission retains its existing missing-root error: {late_body}"
+    );
+    assert_eq!(late_body["error"]["message"], "Session was not found");
+    let foreign_cold = cold.layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+        "foreign-workspace".into(),
+    )));
+    assert_eq!(
+        post_events_with_idempotency(&foreign_cold, &close, "accepted-key", &body)
+            .await
+            .0,
+        StatusCode::NOT_FOUND,
+        "D4"
+    );
 }
 
 #[tokio::test]

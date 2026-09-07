@@ -29,6 +29,7 @@ use awaken_session_contract::{
 
 mod deployments;
 mod dream;
+mod event_admissions;
 mod extraction;
 mod row_codec;
 mod schema;

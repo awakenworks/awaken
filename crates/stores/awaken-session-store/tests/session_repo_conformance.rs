@@ -1034,6 +1034,130 @@ async fn tombstone_requires_hidden_completed_cleanup<R: ManagedSessionRepository
     );
 }
 
+async fn deleted_event_admission_decision_table<R: ManagedSessionRepository>(repo: &R) {
+    use awaken_session_contract::{SessionEventAdmission, SessionEventBatch, SessionEventInput};
+    // Delete CAS is the sole proof writer. D1 accepted key=>same Accepted;
+    // D2 closed key=>same Closed; D3 absent key=>Deleted fence; D4 changed
+    // fingerprint=>conflict; D5 foreign/missing Session=>no disclosure; D6
+    // stale delete=>no tombstone. Payload is absent from retained projection.
+    for kind in ["accepted", "closed", "empty"] {
+        let id = format!("sesn_retained_{kind}");
+        let mut value = session(&id, "private title");
+        if kind != "empty" {
+            let batch = if kind == "closed" {
+                SessionEventBatch::closed_admission(
+                    "batch".into(),
+                    SessionRevision(1),
+                    "key".into(),
+                    "fp".into(),
+                )
+                .unwrap()
+            } else {
+                let input = SessionEventInput::UserMessage {
+                    content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                        "private message",
+                    )],
+                };
+                let mut batch = SessionEventBatch::compile(&id, "batch", vec![input]).unwrap();
+                batch.admitted_revision = SessionRevision(1);
+                batch.bind_idempotency("key", "fp").unwrap();
+                batch.resolve_terminally(None, 1);
+                batch
+            };
+            value.event_batches.push(batch);
+        }
+        assert!(value.request_delete());
+        complete_terminal_cleanup(&mut value);
+        let value = create_session(repo, "ws_a", value, vec![]).await;
+        assert_eq!(
+            repo.deleted_event_admissions("ws_a", &id).await.unwrap(),
+            None
+        );
+        let mut stale = delete_mutation(&value, &format!("delete-stale-{kind}"));
+        stale.expected_revision = SessionRevision(0);
+        assert!(repo.commit_mutation("ws_a", stale).await.is_err(), "D6");
+        assert_eq!(
+            repo.deleted_event_admissions("ws_a", &id).await.unwrap(),
+            None,
+            "D6"
+        );
+        repo.commit_mutation("ws_a", delete_mutation(&value, &format!("delete-{kind}")))
+            .await
+            .unwrap();
+        let proof = repo
+            .deleted_event_admissions("ws_a", &id)
+            .await
+            .unwrap()
+            .unwrap();
+        let deleted = SessionEventAdmission::Deleted {
+            deleted_revision: SessionRevision(value.revision.0 + 1),
+        };
+        assert_eq!(proof.resolve("unseen", "fp").unwrap(), deleted, "D3");
+        if kind == "empty" {
+            assert_eq!(proof.admissions, Some(vec![]));
+            assert_eq!(proof.resolve("key", "fp").unwrap(), deleted);
+        } else {
+            assert_eq!(
+                proof.resolve("key", "fp").unwrap(),
+                if kind == "accepted" {
+                    SessionEventAdmission::Accepted {
+                        batch_id: "batch".into(),
+                    }
+                } else {
+                    SessionEventAdmission::Closed {
+                        batch_id: "batch".into(),
+                    }
+                },
+                "D1/D2"
+            );
+            assert_eq!(
+                proof.resolve("key", "changed").unwrap_err().code,
+                "idempotency_conflict",
+                "D4"
+            );
+            let retained = serde_json::to_value(proof.admissions.as_ref().unwrap()).unwrap();
+            assert_eq!(
+                retained,
+                json!([{"key":"key","request_fingerprint":"fp","batch_id":"batch","closed":kind == "closed"}])
+            );
+        }
+        assert_eq!(
+            repo.deleted_event_admissions("foreign", &id).await.unwrap(),
+            None,
+            "D5"
+        );
+        assert!(matches!(
+            repo.get(&id).await,
+            Err(SessionRepositoryError::NotFound)
+        ));
+        let mut recreated = value;
+        recreated.revision = SessionRevision(0);
+        let payload = SessionMutationPayload::Replace(recreated.clone());
+        assert!(
+            matches!(
+                repo.create(
+                    "ws_a",
+                    recreated,
+                    record(&format!("recreate-{kind}"), &payload),
+                    vec![]
+                )
+                .await,
+                Err(SessionRepositoryError::Conflict(
+                    SessionRepositoryConflict::Tombstoned
+                ))
+            ),
+            "late recreation is fenced"
+        );
+    }
+    assert_eq!(
+        repo.deleted_event_admissions("ws_a", "missing")
+            .await
+            .unwrap(),
+        None,
+        "D5"
+    );
+}
+
 async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
     // Cause-effect graph:
     // C1 valid command -> C2 idempotency absent-or-equal -> C3 live row exists
@@ -1577,6 +1701,7 @@ async fn run_suite<R: ManagedSessionRepository + 'static>(fresh: impl Fn() -> R)
     lifecycle_outbox_tracks_every_committed_transition(&fresh()).await;
     pending_resource_activation_index_is_durable(&fresh()).await;
     tombstone_requires_hidden_completed_cleanup(&fresh()).await;
+    deleted_event_admission_decision_table(&fresh()).await;
     let cas_repo = fresh();
     root_cas_decision_table(&cas_repo).await;
     create_receipt_decision_table(&fresh()).await;
@@ -1936,6 +2061,8 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
             .expect("open Postgres Session repository"),
     );
     global_environment_phase_count_has_no_recovery_batch_limit(repo.as_ref()).await;
+    tombstone_requires_hidden_completed_cleanup(repo.as_ref()).await;
+    deleted_event_admission_decision_table(repo.as_ref()).await;
     root_cas_decision_table(repo.as_ref()).await;
     create_receipt_decision_table(repo.as_ref()).await;
     create_receipt_race_decision_table(repo.clone()).await;

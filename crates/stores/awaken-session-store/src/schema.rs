@@ -37,7 +37,12 @@ pub(crate) struct SelectedSessionSchema {
 
 /// V1 is the published current baseline. Later additions keep its checksum
 /// immutable and advance through the same ledger-owned migration stream.
+#[cfg(test)]
 pub(crate) fn session_bundle() -> Result<MigrationBundle, MigrationError> {
+    append_current_tail(compact_published_bundle()?)
+}
+
+fn compact_published_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         BUNDLE_ID,
         vec![
@@ -147,7 +152,7 @@ pub(crate) fn selected_session_schema(
         _ => PublishedSessionStream::Compact,
     };
     let (published, complete) = match stream {
-        PublishedSessionStream::Compact => (None, session_bundle()?),
+        PublishedSessionStream::Compact => (None, compact_published_bundle()?),
         PublishedSessionStream::Original => (
             Some(expanded::published_bundle(
                 expanded::ExpandedStream::Original,
@@ -176,7 +181,7 @@ pub(crate) fn selected_session_schema(
     Ok(SelectedSessionSchema {
         stream,
         pre_convergence,
-        complete,
+        complete: append_current_tail(complete)?,
     })
 }
 
@@ -189,6 +194,24 @@ pub(crate) fn converged_session_bundle() -> Result<MigrationBundle, MigrationErr
             "SELECT 1",
         )?],
     )
+}
+
+/// One shared DDL tail, appended within the table-owning selected lineage.
+/// The historical convergence marker owns no tables and must not ALTER them.
+/// Preserve its receipt and every historical checksum; never fork future DDL.
+fn append_current_tail(bundle: MigrationBundle) -> Result<MigrationBundle, MigrationError> {
+    let mut migrations = bundle.migrations().to_vec();
+    let next = migrations
+        .last()
+        .expect("published Session schema is nonempty")
+        .version()
+        + 1;
+    migrations.push(Migration::new(
+        next,
+        "retain minimal event admission evidence at Session deletion",
+        "ALTER TABLE {prefix}_session_tombstone ADD COLUMN event_admissions_json TEXT",
+    )?);
+    MigrationBundle::new(bundle.bundle_id(), migrations)
 }
 
 #[cfg(test)]
@@ -221,7 +244,7 @@ mod tests {
                 .iter()
                 .map(awaken_scoped_migration::Migration::version)
                 .collect::<Vec<_>>(),
-            [1, 2]
+            [1, 2, 3]
         );
         let sql = bundle.migrations()[0].sql_for(awaken_scoped_migration::Dialect::Sqlite);
         for retired in [
@@ -249,8 +272,8 @@ mod tests {
         // Causes: H1 empty/current compact V1; H2 original V1 with no/old V15;
         // H3 original V1 plus compacted V15; H4 fully converged legacy; H5
         // unknown V1/V15. Effects: E1
-        // compact V1/V2; E2 original V1..V23; E3 compacted V1..V21; E4 ordinary
-        // checksum failure; E5 one shared future append stream; E6 skip the
+        // compact V1..V3; E2 original V1..V24; E3 compacted V1..V22; E4 ordinary
+        // checksum failure; E5 one shared table-owning DDL tail; E6 skip the
         // shorter pre-convergence replay. Rules: H1=>E1+E5; H2=>E2+E5;
         // H3=>E3+E5; H4=>E6; H5=>E4.
         let compact = session_bundle().unwrap();
@@ -278,7 +301,7 @@ mod tests {
         );
         assert_eq!(
             original.complete.migrations().last().unwrap().version(),
-            23,
+            24,
             "E2"
         );
         let compacted_receipts = BTreeMap::from([
@@ -301,7 +324,7 @@ mod tests {
         );
         assert_eq!(
             compacted.complete.migrations().last().unwrap().version(),
-            21,
+            22,
             "E3"
         );
         let converged_original_receipts = original
@@ -338,5 +361,25 @@ mod tests {
         ));
         awaken_scoped_migration::lint(std::slice::from_ref(&converged_session_bundle().unwrap()))
             .expect("E5");
+        awaken_scoped_migration::lint(std::slice::from_ref(&compact))
+            .expect("E5 current table ownership");
+        // The lint cannot resolve historical RENAME TO aliases. Keep those
+        // immutable histories verified by real upgrade tests; compare their
+        // new tail to the same linted compact authority, not copied DDL.
+        for selected in [&compact, &original.complete, &compacted.complete] {
+            assert_eq!(
+                selected
+                    .migrations()
+                    .last()
+                    .unwrap()
+                    .sql_for(Dialect::Sqlite),
+                compact
+                    .migrations()
+                    .last()
+                    .unwrap()
+                    .sql_for(Dialect::Sqlite),
+                "E5 same DDL, no branch copy"
+            );
+        }
     }
 }

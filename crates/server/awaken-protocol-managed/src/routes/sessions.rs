@@ -35,9 +35,11 @@ use crate::types::{
 };
 use crate::types::{Event, StreamFrame};
 
+mod event_admission;
 mod pagination;
 mod profiled_run;
 
+pub use event_admission::close_event_admission;
 use pagination::{SessionListPage, parse_session_list, session_list_page};
 pub use profiled_run::submit_profiled_session_run;
 
@@ -1479,56 +1481,6 @@ fn event_data_subject(headers: &HeaderMap) -> Result<Option<String>, WireErr> {
                 })
         })
         .transpose()
-}
-
-/// Native-only final-close proof; no projection rebuild, Run activation, or
-/// execution retry is performed. Ownership is checked before reading receipts.
-pub async fn close_event_admission(
-    State(state): State<Arc<ManagedState>>,
-    Path(id): Path<String>,
-    workspace: Option<axum::Extension<WorkspaceScope>>,
-    headers: HeaderMap,
-    body: Result<Json<SendEventsRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<awaken_protocol_awaken::EventAdmissionReceipt>, WireErr> {
-    let Json(req) = body.map_err(|rejection| {
-        error_response(StateError::Run(RunError::bad_request(
-            crate::routes::extractors::managed_json_message(rejection.body_text()),
-        )))
-    })?;
-    ensure_session_scope(
-        state.as_ref(),
-        &id,
-        workspace.as_ref().map(|scope| &scope.0),
-    )
-    .await?;
-    let key = parse_idempotency_key(&headers)?.ok_or_else(|| {
-        error_response(StateError::Run(RunError::bad_request(
-            "event admission close requires Idempotency-Key",
-        )))
-    })?;
-    let fingerprint =
-        awaken_session_contract::stable_fingerprint(&(&req, &event_data_subject(&headers)?));
-    let batch = state
-        .session_application()
-        .close_session_event_admission(&id, key.clone(), fingerprint)
-        .await
-        .map_err(|error| {
-            error_response(if error.code == "idempotency_conflict" {
-                StateError::IdempotencyMismatch
-            } else {
-                StateError::Run(error)
-            })
-        })?;
-    Ok(Json(awaken_protocol_awaken::EventAdmissionReceipt {
-        session_id: id,
-        idempotency_key: key,
-        batch_id: batch.batch_id,
-        status: if batch.admission_closed {
-            awaken_protocol_awaken::EventAdmissionStatus::Closed
-        } else {
-            awaken_protocol_awaken::EventAdmissionStatus::Accepted
-        },
-    }))
 }
 
 async fn send_events(

@@ -15,8 +15,16 @@ pub enum EventAdmissionStatus {
 pub struct EventAdmissionReceipt {
     pub session_id: String,
     pub idempotency_key: String,
-    pub batch_id: String,
     pub status: EventAdmissionStatus,
+    #[serde(flatten)]
+    pub proof: EventAdmissionProof,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "proof", rename_all = "snake_case")]
+pub enum EventAdmissionProof {
+    EventBatch { batch_id: String },
+    SessionDeleted { deleted_revision: u64 },
 }
 
 /// The caller supplies the exact original Managed events body and retry key.
