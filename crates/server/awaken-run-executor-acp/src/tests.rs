@@ -1372,6 +1372,78 @@ fn acp_fact_ids_follow_the_role_specific_identity_authority() {
 }
 
 #[tokio::test]
+async fn acp_result_ids_survive_repeated_empty_input_activations() {
+    // Cause/effect graph: committed prefix + activation input + restarted wire
+    // sequence -> private Tool Message identity -> Managed deduplication.
+    // R1 same prefix/input/frame replay is stable; R2 after a committed result,
+    // another empty-input activation must mint a distinct result even when the
+    // wire sequence and provider call id restart. R3 input-bearing activations
+    // obey the same rule. R4 assistant ids remain the canonical Run/Step family.
+    // R5 tool-only committed progress also distinguishes the next activation;
+    // counting only assistant messages would miss this reachable prefix shape.
+    // The old test varied a caller-invented namespace; it never exercised the
+    // executor that actually generated "empty-input:0" for every continuation.
+    // These are executor-boundary invocations, not proof of dispatch admission.
+    for (has_input, has_call) in [(false, false), (false, true), (true, false), (true, true)] {
+        let recorded = Arc::new(RecordingCoordinator::default());
+        let mut active = activation();
+        if !has_input {
+            active.input.clear();
+        }
+        let mut frames = vec![
+            r#"{"type":"tool_call","id":"same-wire-id","name":"read","input":{"path":"report.md"}}"#.into(),
+            r#"{"type":"tool_result","id":"same-wire-id","content":"read contents","is_error":false}"#.into(),
+            r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+        ];
+        if !has_call {
+            frames.remove(0);
+        }
+        let mut result_ids = std::collections::HashSet::new();
+        for _ in 0..3 {
+            // Two newly constructed executors see the same immutable prefix;
+            // replay commits into a separate recorder and cannot advance it.
+            let replay = Arc::new(RecordingCoordinator::default());
+            exec(frames.clone())
+                .execute(
+                    active.clone(),
+                    RuntimeRunContext::new()
+                        .with_reader(recorded.clone())
+                        .with_commit(replay.clone()),
+                )
+                .await
+                .unwrap();
+            let result = exec(frames.clone())
+                .execute(
+                    active.clone(),
+                    RuntimeRunContext::new()
+                        .with_reader(recorded.clone())
+                        .with_commit(recorded.clone()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result, RunState::Ended(EndCause::NaturalEnd));
+            let messages = recorded
+                .commits
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .messages
+                .clone();
+            assert_eq!(messages, replay.messages(), "R1 same-prefix replay");
+            let tool = messages.iter().find(|m| m.role == Role::Tool).unwrap();
+            assert!(
+                result_ids.insert(tool.id.clone()),
+                "R2/R3 duplicate result id: {}",
+                tool.id.0
+            );
+            assert_eq!(tool.id.assistant_step_of(&active.run_id), None, "R4");
+        }
+        assert_eq!(result_ids.len(), 3);
+    }
+}
+
+#[tokio::test]
 async fn regenerated_approved_tool_projects_as_one_logical_call() {
     // C1 the durable transcript owns original O; C2 replacement streams no
     // placeholder/null/empty/partial input before exact T/A; C3 result arrives;
