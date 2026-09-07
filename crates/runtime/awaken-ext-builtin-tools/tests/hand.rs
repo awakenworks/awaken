@@ -904,3 +904,82 @@ async fn unknown_argument_shape_is_an_invalid_arguments_error() {
         .expect_err("fixed-size view range is enforced by deserialization");
     assert!(matches!(err, ToolError::InvalidArguments(_)));
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn mutation_receipts_keep_the_resolved_logical_path_after_bash_changes_directory() {
+    // W graph: relative/absolute/normalized input x direct/projected roots,
+    // with persistent Bash cwd changed. W1 write still uses the FileContext;
+    // W2 its receipt names the resolved logical target, usable by another tool;
+    // W3 edit (one/all matches) returns that same target; W4 a host projection
+    // never leaks physical storage paths. Existing escape/symlink/error tests
+    // retain ownership of failed admission; this changes only success receipts.
+    // The direct root expectation follows the host canonical path (macOS /var
+    // may resolve through /private); projected output remains /managed.
+    for projected in [false, true] {
+        for form in ["relative", "absolute", "normalized"] {
+            let root = tempfile::tempdir().unwrap();
+            let mount = tempfile::tempdir().unwrap();
+            std::fs::create_dir(root.path().join("nested")).unwrap();
+            let context = if projected {
+                HandToolContext::new(root.path())
+                    .with_path_projection("/managed", mount.path())
+                    .with_path_projection("outputs", mount.path())
+            } else {
+                HandToolContext::new(root.path())
+            };
+            let tools = all_hand_tools_in(context);
+            let get = |id: &str| tools.iter().find(|tool| tool.id() == id).unwrap();
+            get("bash")
+                .invoke(call("bash", serde_json::json!({"command":"cd nested"})))
+                .await
+                .unwrap();
+            let expected = if projected {
+                "/managed/result.txt".to_string()
+            } else {
+                root.path()
+                    .canonicalize()
+                    .unwrap()
+                    .join("result.txt")
+                    .display()
+                    .to_string()
+            };
+            let input = match (projected, form) {
+                (_, "absolute") => expected.clone(),
+                (true, "relative") => "outputs/result.txt".into(),
+                (true, _) => "outputs/sub/../result.txt".into(),
+                (false, "relative") => "result.txt".into(),
+                (false, _) => "nested/../result.txt".into(),
+            };
+            let written = get("write")
+                .invoke(call(
+                    "write",
+                    serde_json::json!({"file_path":input,"content":"甲 old old"}),
+                ))
+                .await
+                .unwrap()
+                .text();
+            assert_eq!(
+                written,
+                format!("wrote 11 bytes to {expected}"),
+                "{projected}/{form}"
+            );
+            for (old, new, all, suffix) in [
+                ("甲", "乙", false, "1 replacement(s)"),
+                ("old", "new", true, "2 replacements"),
+            ] {
+                let edited = get("edit").invoke(call("edit", serde_json::json!({"file_path":input,"old_string":old,"new_string":new,"replace_all":all}))).await.unwrap().text();
+                assert_eq!(edited, format!("edited {expected} ({suffix})"));
+            }
+            let read = get("read")
+                .invoke(call("read", serde_json::json!({"file_path":expected})))
+                .await
+                .unwrap();
+            assert_eq!(read.text(), "乙 new new");
+            assert!(!root.path().join("nested/result.txt").exists());
+            if projected {
+                assert!(!written.contains(&mount.path().display().to_string()));
+            }
+        }
+    }
+}
