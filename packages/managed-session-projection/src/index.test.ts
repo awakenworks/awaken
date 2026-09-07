@@ -518,6 +518,48 @@ describe("Managed Session Runtime and admission decision table", () => {
   });
 
   /**
+   * Error relevance graph: C1 committed error; C2 later same-activity idle;
+   * C3 a new running/rescheduled activity; C4 terminal/deleted Session;
+   * C5 aggregate idle/running/rescheduling/unavailable; C6 retry status.
+   * E1 diagnosis survives C2; E2 C3 retires only its prominent relevance;
+   * E3 C4 absorbs later work; E4 admission uses aggregate and pending inputs,
+   * never error taxonomy. R1=C1+C2=>E1; R2=C1+C3=>E2; R3=C4=>E3;
+   * R4=C1*C5*C6=>E4. Full-history replay and every pagination split must
+   * converge; an error still in history must not revive after new work.
+   */
+  it("retains current errors across idle and retires them on new activity", () => {
+    for (const retry of ["terminal", "exhausted", "retrying"]) {
+      const failure = event({id:"failure",type:"session.error",error:{type:"unknown_error",message:"failed",retry_status:{type:retry}}});
+      const log = [event({id:"run",type:"session.status_running"}), failure,
+        event({id:"idle-after-error",type:"session.status_idle",stop_reason:{type:"end_turn"}})];
+      for (let split = 0; split <= log.length; split++) {
+        const warm = mergeCommittedEvents(mergeCommittedEvents([], log.slice(0, split)), log.slice(split));
+        for (const history of [warm, mergeCommittedEvents(warm, log, "authoritative-history"), log]) {
+          const runtime = projectManagedSessionRuntime(history);
+          expect(runtime.phase).toBe("idle");
+          expect(runtime.currentError).toBe(failure);
+          for (const aggregate of ["idle", "running", "rescheduling", undefined] as const) {
+            expect(managedSessionPresentationPhase(runtime, aggregate)).toBe("error");
+            expect(managedSessionAdmission(runtime, aggregate).canSendMessage).toBe(aggregate === "idle");
+          }
+          for (const type of ["session.status_running", "session.status_rescheduled"]) {
+            const resumed = projectManagedSessionRuntime([...history, event({id:"next",type})]);
+            expect(resumed.currentError).toBeUndefined();
+            expect(resumed.latestError).toBe(failure);
+            expect(managedSessionPresentationPhase(resumed, "idle")).not.toBe("error");
+            expect(managedSessionAdmission(resumed, "idle").canSendMessage).toBe(false);
+          }
+          for (const type of ["session.status_terminated", "session.deleted"]) {
+            const terminal = projectManagedSessionRuntime([...history, event({id:"end",type}), event({id:"stale",type:"session.status_running"})]);
+            expect(terminal.currentError).toBe(failure);
+            expect(managedSessionAdmission(terminal, "idle").canSendMessage).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
+  /**
    * Cause/effect table: C1 aggregate is active/idle/terminal/unknown; C2 Event
    * phase is working/idle/error/terminal. E1 terminal or active evidence cannot
    * be hidden by stale idle; E2 idle/error cannot override aggregate active or

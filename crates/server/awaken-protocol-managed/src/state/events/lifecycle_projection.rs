@@ -45,6 +45,10 @@ impl ManagedState {
         events: &[RunLifecycleEvent],
         pending: &std::collections::HashMap<String, Pending>,
         historical_pending: &std::collections::HashMap<RunLifecycleCursor, Pending>,
+        snapshots: &std::collections::HashMap<
+            String,
+            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+        >,
     ) -> Result<(), StateError> {
         let latest_cursor_by_thread =
             events
@@ -161,7 +165,12 @@ impl ManagedState {
                         terminal_pending,
                         event.await_reason.as_ref(),
                     )?;
-                    if let Some(error) = SessionError::from_run_state(&event.state) {
+                    if let Some(error) =
+                        SessionError::from_committed_lifecycle(event, snapshots.get(thread_id))
+                            .map_err(|error| {
+                                StateError::Run(RunError::internal(error.to_string()))
+                            })?
+                    {
                         let id = managed_multiagent_event_id(
                             &record.session.id,
                             thread_id,
@@ -570,6 +579,7 @@ impl ManagedState {
             lifecycle_events,
             pending,
             historical_pending,
+            snapshots,
         )?;
         // Archive is an absorbing Thread disposition, so it is projected after
         // historical Run lifecycle. On warm refresh it prevents later lifecycle

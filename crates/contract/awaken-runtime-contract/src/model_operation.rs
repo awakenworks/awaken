@@ -88,6 +88,42 @@ impl StateKey for ActiveModelOperation {
     type Value = Option<ModelOperation>;
 }
 
+impl ActiveModelOperation {
+    /// Read the exact Run's evidence at a committed lifecycle boundary. A later
+    /// receipt must not rewrite an already published historical error. Reuse the
+    /// typed cell and state materializer; this observer grants no recovery rights.
+    pub fn at_commit(
+        state: &[awaken_agent_contract::agent::state::Command],
+        cursors: &[u64],
+        run_id: &awaken_agent_contract::agent::run::Id,
+        through: u64,
+    ) -> Result<Option<ModelOperation>, awaken_agent_contract::agent::state::StateError> {
+        use awaken_agent_contract::agent::state::{StateError, Store};
+        let belongs = |command: &&awaken_agent_contract::agent::state::Command| {
+            command.scope == Self::SCOPE
+                && command.key.0 == Self::KEY
+                && command.run_id.as_ref() == Some(run_id)
+        };
+        if !state.iter().any(|command| belongs(&command)) {
+            return Ok(None);
+        }
+        if state.len() != cursors.len() {
+            return Err(StateError {
+                key: Self::KEY.into(),
+                scope: Self::SCOPE,
+                detail: "model evidence has no aligned commit coordinates".into(),
+            });
+        }
+        let mut store = Store::new();
+        for (command, cursor) in state.iter().zip(cursors) {
+            if belongs(&command) && *cursor <= through {
+                store.apply(command);
+            }
+        }
+        Self::load(&store)
+    }
+}
+
 #[cfg(kani)]
 #[kani::proof]
 fn model_execution_reentry_requires_positive_evidence() {
@@ -145,6 +181,46 @@ fn model_operation_ordinal_never_wraps_or_reuses_a_coordinate() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn committed_model_observation_is_exact_run_and_prefix_scoped() {
+        // C1 Run A/B, C2 boundary before/at/after write, C3 later receipt,
+        // C4 malformed value, C5 unaligned cursors. R1 A at entry=>Unknown;
+        // R2 A at receipt=>Terminated; R3 B/earlier=>absent; R4 C4/C5=>error.
+        // Effects: later evidence cannot mutate the historical observation;
+        // neither another Run nor corrupt persistence fabricates completion.
+        use awaken_agent_contract::agent::run::Id;
+        let a = Id("a".into());
+        let b = Id("b".into());
+        let mut operation = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+        let mut entered = ActiveModelOperation::write(&Some(operation.clone()));
+        entered.bind_run(&a);
+        operation.execution = ModelExecutionEvidence::Terminated;
+        let mut returned = ActiveModelOperation::write(&Some(operation));
+        returned.bind_run(&a);
+        let commands = [entered, returned];
+        for through in 0..=3 {
+            for run in [&a, &b] {
+                let value =
+                    ActiveModelOperation::at_commit(&commands, &[1, 3], run, through).unwrap();
+                assert_eq!(
+                    value.map(|v| v.execution),
+                    if run == &b || through == 0 {
+                        None
+                    } else if through < 3 {
+                        Some(ModelExecutionEvidence::Unknown)
+                    } else {
+                        Some(ModelExecutionEvidence::Terminated)
+                    }
+                );
+            }
+        }
+        assert!(ActiveModelOperation::at_commit(&commands, &[1], &a, 2).is_err());
+        let mut corrupt = commands[0].clone();
+        corrupt.action =
+            awaken_agent_contract::agent::state::Action::Set(serde_json::json!("corrupt"));
+        assert!(ActiveModelOperation::at_commit(&[corrupt], &[1], &a, 2).is_err());
+    }
 
     #[test]
     fn legacy_local_phases_never_create_termination_evidence() {
