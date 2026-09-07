@@ -48,37 +48,23 @@ impl PostgresDispatchStore {
             active_owner.as_deref() == Some(&claim.owner),
             active_epoch == Some(claim.epoch),
         );
-        let transition = if handoff {
-            handoff_physical_attempt(live, slot)
-        } else {
-            begin_physical_attempt(live, slot)
-        };
-        let admission = match transition {
-            PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace => {
-                sqlx::query(&format!(
-                    "UPDATE {p}_dispatch SET active_attempt_owner = $2, \
+        let (transition, admission) =
+            crate::dispatch::decide_physical_attempt_admission(live, slot, handoff)?;
+        if matches!(
+            transition,
+            PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace
+        ) {
+            sqlx::query(&format!(
+                "UPDATE {p}_dispatch SET active_attempt_owner = $2, \
                      active_attempt_epoch = $3 WHERE run_id = $1"
-                ))
-                .bind(&claim.run_id.0)
-                .bind(&claim.owner)
-                .bind(epoch)
-                .execute(&mut *tx)
-                .await
-                .map_err(store_error)?;
-                AttemptAdmission::Applied
-            }
-            PhysicalAttemptTransition::Stutter => AttemptAdmission::AlreadyApplied,
-            PhysicalAttemptTransition::Blocked => AttemptAdmission::Blocked,
-            PhysicalAttemptTransition::Fenced => AttemptAdmission::Fenced,
-            PhysicalAttemptTransition::Corrupt => {
-                return Err(DispatchError::Rejected(
-                    "persisted physical attempt slot is not an owner/epoch pair".to_string(),
-                ));
-            }
-            PhysicalAttemptTransition::Clear => {
-                unreachable!("attempt admission never clears a slot")
-            }
-        };
+            ))
+            .bind(&claim.run_id.0)
+            .bind(&claim.owner)
+            .bind(epoch)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        }
         tx.commit().await.map_err(store_error)?;
         Ok(admission)
     }
@@ -1149,34 +1135,20 @@ impl DispatchQueue for PostgresDispatchStore {
             active_owner.as_deref() == Some(&claim.owner),
             active_epoch == Some(claim.epoch),
         );
-        let outcome = match awaken_dispatch_contract::finish_physical_attempt(slot) {
-            PhysicalAttemptTransition::Clear => {
-                sqlx::query(&format!(
-                    "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
+        let (transition, outcome) = crate::dispatch::decide_physical_attempt_finish(slot)?;
+        if transition == PhysicalAttemptTransition::Clear {
+            sqlx::query(&format!(
+                "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
                      active_attempt_epoch = NULL WHERE run_id = $1 \
                      AND active_attempt_owner = $2 AND active_attempt_epoch = $3"
-                ))
-                .bind(&claim.run_id.0)
-                .bind(&claim.owner)
-                .bind(epoch)
-                .execute(&mut *tx)
-                .await
-                .map_err(store_error)?;
-                SettleOutcome::Applied
-            }
-            PhysicalAttemptTransition::Stutter => SettleOutcome::Applied,
-            PhysicalAttemptTransition::Fenced => SettleOutcome::Fenced,
-            PhysicalAttemptTransition::Corrupt => {
-                return Err(DispatchError::Rejected(
-                    "persisted physical attempt slot is not an owner/epoch pair".to_string(),
-                ));
-            }
-            PhysicalAttemptTransition::Install
-            | PhysicalAttemptTransition::Replace
-            | PhysicalAttemptTransition::Blocked => {
-                unreachable!("finish never installs, replaces, or blocks a slot")
-            }
-        };
+            ))
+            .bind(&claim.run_id.0)
+            .bind(&claim.owner)
+            .bind(epoch)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        }
         tx.commit().await.map_err(store_error)?;
         Ok(outcome)
     }

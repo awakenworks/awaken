@@ -41,8 +41,7 @@ use crate::{
 use awaken_dispatch_contract::{
     CancelTransition, CommitEpochAdmission, DispatchTransition, DispatchTransitionError,
     GuardedTransition, PhysicalAttemptSlot, PhysicalAttemptTransition, RelinquishTransition,
-    RunDispatch, begin_physical_attempt, classify_commit_epoch_admission, finish_physical_attempt,
-    handoff_physical_attempt,
+    RunDispatch, classify_commit_epoch_admission,
 };
 
 mod outbox;
@@ -817,26 +816,15 @@ impl MemoryDispatchStore {
             Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,
             Some(_) => PhysicalAttemptSlot::OtherClaim,
         };
-        let transition = if handoff {
-            handoff_physical_attempt(current, slot)
-        } else {
-            begin_physical_attempt(current, slot)
-        };
-        match transition {
-            PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace => {
-                row.active_attempt = Some(claim.clone());
-                Ok(AttemptAdmission::Applied)
-            }
-            PhysicalAttemptTransition::Stutter => Ok(AttemptAdmission::AlreadyApplied),
-            PhysicalAttemptTransition::Blocked => Ok(AttemptAdmission::Blocked),
-            PhysicalAttemptTransition::Fenced => Ok(AttemptAdmission::Fenced),
-            PhysicalAttemptTransition::Corrupt => Err(DispatchError::Rejected(
-                "persisted physical attempt slot is not an owner/epoch pair".to_string(),
-            )),
-            PhysicalAttemptTransition::Clear => {
-                unreachable!("attempt admission never clears a slot")
-            }
+        let (transition, admission) =
+            crate::dispatch::decide_physical_attempt_admission(current, slot, handoff)?;
+        if matches!(
+            transition,
+            PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace
+        ) {
+            row.active_attempt = Some(claim.clone());
         }
+        Ok(admission)
     }
 }
 
@@ -1492,22 +1480,11 @@ impl DispatchQueue for MemoryDispatchStore {
             Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,
             Some(_) => PhysicalAttemptSlot::OtherClaim,
         };
-        match finish_physical_attempt(slot) {
-            PhysicalAttemptTransition::Clear => row.active_attempt = None,
-            PhysicalAttemptTransition::Stutter => return Ok(SettleOutcome::Applied),
-            PhysicalAttemptTransition::Fenced => return Ok(SettleOutcome::Fenced),
-            PhysicalAttemptTransition::Corrupt => {
-                return Err(DispatchError::Rejected(
-                    "persisted physical attempt slot is not an owner/epoch pair".to_string(),
-                ));
-            }
-            PhysicalAttemptTransition::Install
-            | PhysicalAttemptTransition::Replace
-            | PhysicalAttemptTransition::Blocked => {
-                unreachable!("finish never installs, replaces, or blocks a slot")
-            }
+        let (transition, outcome) = crate::dispatch::decide_physical_attempt_finish(slot)?;
+        if transition == PhysicalAttemptTransition::Clear {
+            row.active_attempt = None;
         }
-        Ok(SettleOutcome::Applied)
+        Ok(outcome)
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {

@@ -70,6 +70,30 @@ TABLE_AUTHORITIES: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
     ),
 )
 
+ATTEMPT_RESULT_OWNER = "crates/server/awaken-dispatch/src/dispatch.rs"
+ATTEMPT_BACKENDS = {
+    "crates/server/awaken-dispatch/src/memory.rs": ("admission", "finish"),
+    "crates/server/awaken-dispatch/src/sqlite/physical_attempt.rs": ("admission",),
+    "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs": ("finish",),
+    "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs": ("admission", "finish"),
+}
+
+
+def attempt_rule_violations(relative: str, source: str) -> list[str]:
+    """Adapters may apply storage effects, but cannot fork physical-slot policy."""
+    errors: list[str] = []
+    if relative.startswith("crates/server/awaken-dispatch/src/"):
+        if relative != ATTEMPT_RESULT_OWNER and re.search(
+            r"\b(?:begin|handoff|finish)_physical_attempt\s*\(", source
+        ):
+            errors.append(f"{relative}: physical-slot rules must use {ATTEMPT_RESULT_OWNER}")
+    if relative in ATTEMPT_BACKENDS:
+        for operation in ATTEMPT_BACKENDS[relative]:
+            decision = f"decide_physical_attempt_{operation}"
+            if not re.search(rf"\b{decision}\s*\(", source):
+                errors.append(f"{relative}: missing canonical {decision} call")
+    return errors
+
 
 def _owned_by(relative_path: str, allowed: tuple[str, ...]) -> bool:
     return any(relative_path == prefix or relative_path.startswith(prefix) for prefix in allowed)
@@ -122,6 +146,22 @@ def selftest() -> None:
     stripped = _crate_boundary_workspace.production_rust(sample)
     assert "Fake" not in stripped  # R4
     assert "live" in stripped  # R5
+    # Causes: C1 canonical result adapter or storage backend; C2 direct kernel
+    # call; C3 every adapter call assigned to this file retained. Effects/rules:
+    # A1 owner+C2 -> accept; A2 backend+C2 -> reject the policy bypass;
+    # A3 backend+!C2+C3 -> accept; A4 backend missing any C3 call -> reject.
+    # SQLite's admission and finish are separate source files, not rule owners.
+    # Constraint: this is structural ownership evidence, not a proof of SQL
+    # transaction semantics; backend conformance owns behavioral refinement.
+    shared = "decide_physical_attempt_admission(x); decide_physical_attempt_finish(x);"
+    assert attempt_rule_violations(ATTEMPT_RESULT_OWNER, "begin_physical_attempt(x)") == []
+    for backend, operations in ATTEMPT_BACKENDS.items():
+        assert attempt_rule_violations(backend, shared) == []  # A3
+        for verb in ("begin", "handoff", "finish"):
+            assert attempt_rule_violations(backend, shared + f"{verb}_physical_attempt(x)")  # A2
+        for operation in operations:
+            missing = shared.replace(f"decide_physical_attempt_{operation}(x);", "")
+            assert attempt_rule_violations(backend, missing)  # A4
 
 
 def check_all(repo_root: Path, crates_root: Path) -> list[str]:
@@ -142,6 +182,7 @@ def check_all(repo_root: Path, crates_root: Path) -> list[str]:
             if path.suffix == ".rs"
             else source
         )
+        errors.extend(attempt_rule_violations(relative, production))
         for match in implementation.finditer(production):
             errors.extend(implementation_violation(relative, match.group(1)))
         for authority, pattern, allowed in TABLE_AUTHORITIES:

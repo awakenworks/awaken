@@ -740,6 +740,10 @@ fn pending_for(
 
 #[tokio::test]
 async fn durable_submit_persists_then_runs_to_completion() {
+    // C1 fresh durable input + C2 one successful model invocation -> E1 one
+    // input commit, E2 Entered/Returned evidence for ordinal 1, E3 one terminal
+    // commit and dispatch removal. R1=C1+C2 requires all four commits; the
+    // evidence phases distinguish durable observation from duplicate execution.
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -1198,7 +1202,11 @@ async fn durable_worker_opens_one_fresh_live_inbox_per_physical_attempt() {
 
 #[tokio::test]
 async fn durable_submit_is_idempotent_per_run() {
-    let runtime = text_runtime();
+    // R1 fresh Run -> one model call plus durable input/evidence/terminal;
+    // R2 replay the same settled Run -> same outcome, no additional model call
+    // or commit of any kind. Compare the observed prefix instead of equating
+    // number of infrastructure evidence commits with number of executions.
+    let (runtime, calls) = counting_text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
@@ -1209,6 +1217,7 @@ async fn durable_submit_is_idempotent_per_run() {
         .expect("first submit");
     let first_commit_count = commit.commit_count();
     harness::assert_one_model_invocation(commit.as_ref());
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "R1 executes once");
     // Re-submitting the same run id is a no-op: the dispatch was already settled,
     // and re-enqueue does not create a second run or a second commit.
     let state = ingress
@@ -1224,6 +1233,7 @@ async fn durable_submit_is_idempotent_per_run() {
         "re-submit adds no commit"
     );
     harness::assert_one_model_invocation(commit.as_ref());
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "R2 does not execute again");
 }
 
 #[tokio::test]

@@ -96,6 +96,24 @@ claim receives `Blocked` while the predecessor slot remains. `finish_attempt`
 may clear only the matching exact slot, even after its mutation lease advanced.
 It grants no commit, checkpoint, or settlement authority.
 
+The physical-slot transition kernel in `awaken-dispatch-contract` is the
+single rule owner. Continuation handoff reuses ordinary admission and changes
+only `Blocked` to `Replace`; it cannot bypass stale-claim or corrupt-slot
+rejection. The backend-neutral adapter in `awaken-dispatch::dispatch` owns
+the mapping to admission/settlement outcomes and corruption errors. Memory,
+SQLite and PostgreSQL load one locked snapshot, call that adapter, and apply the
+returned mutation within their existing lock or transaction. Their clocks and
+storage operations remain backend responsibilities, not duplicate domain rules.
+HTTP authentication precedes this same store path and adds no second reducer.
+No new table, receipt store, public API or wire format is introduced.
+
+The shared recovery conformance trace checks duplicate admission, lost-ACK
+retry, and an old ACK arriving after successor admission against the same
+backend contract. The production-kernel Kani harness checks the complete slot
+and claim partitions, including equivalence of ordinary and continuation guards.
+These checks validate admission and fencing; they do not establish that an
+external effect stopped or that a whole-Session stop is attempt-local.
+
 ```text
 claim A -> begin A -> external future A
 lease A expires -> claim B

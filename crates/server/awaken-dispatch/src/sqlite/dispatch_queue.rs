@@ -1217,32 +1217,18 @@ impl DispatchQueue for SqliteDispatchStore {
                 active_owner.as_deref() == Some(&claim.owner),
                 active_epoch == Some(claim.epoch),
             );
-            let outcome = match awaken_dispatch_contract::finish_physical_attempt(slot) {
-                PhysicalAttemptTransition::Clear => {
-                    tx.execute(
-                        &format!(
-                            "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
+            let (transition, outcome) = crate::dispatch::decide_physical_attempt_finish(slot)?;
+            if transition == PhysicalAttemptTransition::Clear {
+                tx.execute(
+                    &format!(
+                        "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
                              active_attempt_epoch = NULL WHERE run_id = ?1 \
                              AND active_attempt_owner = ?2 AND active_attempt_epoch = ?3"
-                        ),
-                        params![claim.run_id.0, claim.owner, epoch],
-                    )
-                    .map_err(store_error)?;
-                    SettleOutcome::Applied
-                }
-                PhysicalAttemptTransition::Stutter => SettleOutcome::Applied,
-                PhysicalAttemptTransition::Fenced => SettleOutcome::Fenced,
-                PhysicalAttemptTransition::Corrupt => {
-                    return Err(DispatchError::Rejected(
-                        "persisted physical attempt slot is not an owner/epoch pair".to_string(),
-                    ));
-                }
-                PhysicalAttemptTransition::Install
-                | PhysicalAttemptTransition::Replace
-                | PhysicalAttemptTransition::Blocked => {
-                    unreachable!("finish never installs, replaces, or blocks a slot")
-                }
-            };
+                    ),
+                    params![claim.run_id.0, claim.owner, epoch],
+                )
+                .map_err(store_error)?;
+            }
             tx.commit().map_err(store_error)?;
             Ok(outcome)
         })
