@@ -30,12 +30,12 @@ use crate::config::{build_runtime_with_authorization, effective_tool_authorizati
 /// A child task must not outlive the parent future that owns its delegation
 /// boundary. Tokio's bare `JoinHandle` detaches on drop; this guard makes parent
 /// cancellation abort the same child execution instead of creating an orphan.
-struct AbortOnDropTask<T> {
+pub(crate) struct AbortOnDropTask<T> {
     handle: tokio::task::JoinHandle<T>,
 }
 
 impl<T> AbortOnDropTask<T> {
-    fn spawn(future: impl std::future::Future<Output = T> + Send + 'static) -> Self
+    pub(crate) fn spawn(future: impl std::future::Future<Output = T> + Send + 'static) -> Self
     where
         T: Send + 'static,
     {
@@ -44,7 +44,7 @@ impl<T> AbortOnDropTask<T> {
         }
     }
 
-    async fn join(mut self) -> Result<T, tokio::task::JoinError> {
+    pub(crate) async fn join(mut self) -> Result<T, tokio::task::JoinError> {
         (&mut self.handle).await
     }
 }

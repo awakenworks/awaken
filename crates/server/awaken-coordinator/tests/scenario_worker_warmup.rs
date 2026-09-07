@@ -55,7 +55,16 @@ async fn scenario_worker_warmup_matches_private_transport_topology_and_identity_
         WorkerUpstream::new(format!("http://{address}")).with_worker_id("warmup-worker"),
     );
     let registration = exact
-        .register_classified("warmup-boot", WorkerManifest::default())
+        .register_classified(
+            "warmup-boot",
+            WorkerManifest {
+                // W1 requires positive protocol evidence before identity admission.
+                runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                    awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                ),
+                ..Default::default()
+            },
+        )
         .await
         .expect("W1 register exact Worker");
     let warmups = exact

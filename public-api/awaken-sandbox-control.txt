@@ -29,13 +29,21 @@ pub fn awaken_sandbox_control::RepositoryGitCredentialQuery::validate(&self) -> 
 pub struct awaken_sandbox_control::SandboxControlPublicationLease(_)
 pub struct awaken_sandbox_control::SandboxControlPublicationSlot<T>
 impl<T> awaken_sandbox_control::SandboxControlPublicationSlot<T>
-pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::close(&self) -> core::option::Option<T>
+pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::close(&self) -> core::option::Option<T> where T: core::clone::Clone
+pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::finish_close(&self, impl core::ops::function::FnOnce(&mut T))
 pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::owns(&self, &awaken_sandbox_control::SandboxControlPublicationLease) -> bool
 pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::release(&self, &awaken_sandbox_control::SandboxControlPublicationLease)
 pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::reserve(&self, T) -> core::result::Result<awaken_sandbox_control::SandboxControlPublicationLease, awaken_sandbox_control::SandboxControlPublishError>
 pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::with_current_mut<R>(&self, &awaken_sandbox_control::SandboxControlPublicationLease, impl core::ops::function::FnOnce(&mut T) -> R) -> core::result::Result<R, awaken_sandbox_control::SandboxControlPublishError>
+pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::with_retained_mut<R>(&self, &awaken_sandbox_control::SandboxControlPublicationLease, impl core::ops::function::FnOnce(&mut T) -> R) -> core::result::Result<R, awaken_sandbox_control::SandboxControlPublishError>
 impl<T> core::default::Default for awaken_sandbox_control::SandboxControlPublicationSlot<T>
 pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::default() -> Self
+pub struct awaken_sandbox_control::SandboxControlPublicationTask
+impl awaken_sandbox_control::SandboxControlPublicationTask
+pub fn awaken_sandbox_control::SandboxControlPublicationTask::cancellation(&self) -> tokio_util::sync::cancellation_token::CancellationToken
+pub async fn awaken_sandbox_control::SandboxControlPublicationTask::close(&self)
+pub fn awaken_sandbox_control::SandboxControlPublicationTask::close_after_drop(&self, impl core::ops::function::FnOnce() + core::marker::Send + 'static)
+pub fn awaken_sandbox_control::SandboxControlPublicationTask::start(&self, impl core::future::future::Future<Output = ()> + core::marker::Send + 'static) -> core::result::Result<(), awaken_sandbox_control::SandboxControlPublishError>
 pub struct awaken_sandbox_control::SandboxControlPublishError
 pub struct awaken_sandbox_control::SandboxControlSecret(_)
 impl awaken_sandbox_control::SandboxControlSecret

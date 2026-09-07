@@ -72,6 +72,18 @@ async fn independent_coordinators_converge_after_binding_replacement_and_reject_
     };
     let mut conflict = b.clone();
     conflict.environment = a.environment.clone();
+    // R3b a stale root with the SAME payload must still not lower the receipt;
+    // R4b equal root + SAME binding + changed logical identity must reject.
+    // These kill weakened ordering/equality even when the physical-binding
+    // guard would accept, so a changed error string cannot be the only oracle.
+    let mut stale_replay = b.clone();
+    stale_replay.revision = a.revision;
+    let mut identity_conflict = b.clone();
+    if let SessionEnvironmentState::Resident { effect_id, .. } = &mut identity_conflict.environment
+    {
+        *effect_id = Some("contradictory-effect".into());
+    }
+
     let hosts: Vec<_> = (0..3)
         .map(|_| Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub")))
         .collect();
@@ -110,7 +122,12 @@ async fn independent_coordinators_converge_after_binding_replacement_and_reject_
         )
         .await
         .expect("R2 replay");
-        for (label, rejected) in [("stale", &a), ("conflict", &conflict)] {
+        for (label, rejected) in [
+            ("stale", &a),
+            ("stale-replay", &stale_replay),
+            ("conflict", &conflict),
+            ("identity-conflict", &identity_conflict),
+        ] {
             let before = observation(&hosts[i]);
             let error = deliver(
                 &hosts[i],
@@ -127,7 +144,7 @@ async fn independent_coordinators_converge_after_binding_replacement_and_reject_
             );
             assert_eq!(
                 error.kind,
-                if label == "stale" {
+                if label.starts_with("stale") {
                     awaken_session_contract::RunErrorKind::Unavailable
                 } else {
                     awaken_session_contract::RunErrorKind::Internal

@@ -6369,7 +6369,7 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
             };
             let draft = |name: &str, version: &str| McpAttachmentDraft {
                 name: name.into(),
-                target: McpTarget::parse_http(&format!("https://{name}.example.test/{version}"))
+                target: McpTarget::parse_http(format!("https://{name}.example.test/{version}"))
                     .unwrap(),
                 prompts_as_skills: false,
                 credential: None,

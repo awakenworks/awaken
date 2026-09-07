@@ -634,6 +634,16 @@ runtime and commit capabilities without changing the child's first-class Thread
 identity. Store conformance and a durable host integration test link this path
 to the independently owned child state modeled by `Delegation.tla`.
 
+Local coordination admission and child execution reuse one `AbortOnDropTask`
+owner. The local Session application call installs a child projection before
+execution begins, so it needs the same poll-stack boundary as direct and durable
+child execution. Default-stack Coordinator HTTP and scenario-factory tests cover
+that complete chain; runtime-host tests require actual application/model-future
+Drop receipts when their owning future is dropped. These native checks validate
+stack and cancellation behavior. The TLA+ relation does not model Rust frame
+sizes or prove Tokio's scheduler/abort implementation, and logical cancellation
+alone remains insufficient evidence of physical model termination.
+
 The Managed WorkQueue proof covers queue state, transactional single-active
 claim, lease epoch/expiry, heartbeat compare-and-set, exact-boundary reclaim,
 and terminal authority clearing. The official worker header is persisted as

@@ -57,8 +57,8 @@ use crate::config::{effective_tool_authorization, server_config};
 mod child_execution;
 mod root_execution;
 pub(crate) use child_execution::{
-    ChildAcpExecutorFactory, ChildExecutionAdapters, ChildRunRequest, RunScheduler,
-    child_attempt_executor, child_dispatch_request, configure_child_native_runtime,
+    AbortOnDropTask, ChildAcpExecutorFactory, ChildExecutionAdapters, ChildRunRequest,
+    RunScheduler, child_attempt_executor, child_dispatch_request, configure_child_native_runtime,
     run_configured_agent_until_boundary,
 };
 #[cfg(test)]
@@ -853,7 +853,11 @@ mod tests {
         );
         assert_eq!(request.placement.contract_version, 1, "P1/E3");
         assert_eq!(request.placement.dispatch_contract_version, 1, "P1/E3");
-        assert_eq!(request.placement.runtime_protocol_version, 1, "P1/E3");
+        assert_eq!(
+            request.placement.runtime_protocol_version,
+            awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION,
+            "P1/E3"
+        );
     }
 
     #[tokio::test]

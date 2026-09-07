@@ -139,7 +139,11 @@ if command -v cargo-kani >/dev/null 2>&1; then
   kani_jobs="${AWAKEN_KANI_JOBS:-1}"
   run_kani() {
     local package="$1"; shift
-    cargo kani -p "$package" --output-format terse -j "$kani_jobs" "$@"
+    # C1 Cargo has an independent build-dir (user/CI configuration); E1 Kani's
+    # driver still reads target/kani/debug artifacts. Keep compiler and driver
+    # in that one authored tree; otherwise valid compilation ends in ENOENT.
+    CARGO_BUILD_BUILD_DIR="${CARGO_TARGET_DIR%/}/kani" \
+      cargo kani -p "$package" --output-format terse -j "$kani_jobs" "$@"
   }
   run_kani awaken-agent-contract \
     --harness ended_is_absorbing_for_every_next_state \

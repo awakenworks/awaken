@@ -25,6 +25,17 @@ use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, WorkerUpstream,
 };
 
+// Registration requires explicit current protocol evidence. Default/ANY remains
+// a negative transport case; positive registry/credential rules use this owner.
+fn current_manifest() -> WorkerManifest {
+    WorkerManifest {
+        runtime_protocol: awaken_worker_contract::VersionRange::exact(
+            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+        ),
+        ..Default::default()
+    }
+}
+
 #[tokio::test]
 async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
     let clock = Arc::new(ManualWorkerClock::new(100));
@@ -45,7 +56,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
         WorkerUpstream::new(format!("http://{address}")).with_worker_id("worker-http"),
     );
     let registered = client
-        .register_classified("boot-http", WorkerManifest::default())
+        .register_classified("boot-http", current_manifest())
         .await
         .unwrap();
     // Registration/lifecycle cause-effect graph: C1 same Worker id; C2
@@ -60,7 +71,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
     // one Registry protocol while production composition still releases Work.
     assert!(matches!(
         client
-            .register_classified("boot-http-conflict", WorkerManifest::default())
+            .register_classified("boot-http-conflict", current_manifest())
             .await,
         Err(WorkerRegistrationError::SlotOccupied(_))
     ));
@@ -180,7 +191,7 @@ async fn authenticated_header_cannot_register_a_different_worker_id() {
                 "registration": {
                     "worker_id": "impersonated",
                     "incarnation_id": "boot",
-                    "manifest": WorkerManifest::default()
+                    "manifest": current_manifest()
                 }
             })
             .to_string(),
@@ -266,7 +277,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
 
     let upstream = WorkerUpstream::new(format!("http://{address}")).with_worker_id("worker-cpu");
     let control = WorkerControlClient::new(upstream);
-    let mut manifest = WorkerManifest::default();
+    let mut manifest = current_manifest();
     manifest.capabilities.insert("cpu".to_string());
     let registered = control
         .register_classified("boot-cpu", manifest)
@@ -404,7 +415,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         let control = WorkerControlClient::new(
             WorkerUpstream::new(format!("http://{address}")).with_worker_id(worker_id),
         );
-        let mut manifest = WorkerManifest::default();
+        let mut manifest = current_manifest();
         manifest
             .capabilities
             .insert(WORKER_LOCAL_CREDENTIALS_CAPABILITY.to_string());

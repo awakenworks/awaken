@@ -522,7 +522,7 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
         .dispose_for_effect(
             &disposal_authorization(&prepared),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&prepared)).effect_fence(),
+                disposal_authorization(&prepared).effect_fence(),
             ),
         )
         .await

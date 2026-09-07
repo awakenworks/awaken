@@ -151,10 +151,11 @@ async fn a_message_queued_mid_run_reaches_the_same_run() {
 
 /// Cause/effect design: C0 the Host installs the canonical dispatch Session
 /// Runtime; C1 a follow-up is queued while the first Run is gated; C2 that Run
-/// is interrupted before a drain boundary; C3 a second Run starts on the same
-/// Thread. Effects: E1 the first inbox closes and rejects later offers; E2 its
-/// uncommitted entry is discarded; E3 the second Run completes after one
-/// inference without folding that entry. Decision rule L2=C0+C1+C2+C3=>E1+E2+E3.
+/// is interrupted before a drain boundary with unknown model termination; C3 a
+/// second Run is requested on the same Thread. Effects: E1 the first inbox
+/// closes and rejects later offers; E2 its uncommitted entry is discarded;
+/// E3 the physical fence rejects reentry without a second inference.
+/// Decision rule L2=C0+C1+C2+C3=>E1+E2+E3.
 /// Constraint: reliable cross-attempt delivery uses durable Session ingress,
 /// never a parallel process-local carry-over queue. L1 covers consumption before
 /// close; the active-generation test covers replacement by another live attempt.
@@ -183,11 +184,21 @@ async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
         .interrupt(thread)
         .await
         .expect("interrupt the gated Run");
-    timeout(Duration::from_secs(5), run)
+    let interrupted = timeout(Duration::from_secs(5), run)
         .await
         .expect("cancelled Run returns")
         .expect("cancelled Run task joins")
         .expect("cancelled Run has a committed terminal receipt");
+    assert!(
+        matches!(
+            interrupted.state,
+            awaken_agent_contract::agent::run::RunState::Ended(
+                awaken_agent_contract::agent::run::EndCause::Cancelled
+            )
+        ),
+        "direct Run commits logical cancellation: {:?}",
+        interrupted.state
+    );
 
     assert!(
         h.host.live_inbox(thread).await.is_none(),
@@ -205,30 +216,25 @@ async fn a_message_the_cancelled_run_never_consumed_is_discarded() {
         "L2/E1 the retired inbox cannot accept another ownerless entry"
     );
 
-    // Next Run on the same Thread gets a fresh empty inbox. One permitted
-    // inference is therefore sufficient for a natural end; a second inference
-    // would prove that the retired entry crossed the attempt boundary.
-    let run = {
-        let host = h.host.clone();
-        tokio::spawn(async move { host.run(None, thread, vec![user("u2", "Second.")]).await })
-    };
-    h.wait_step_started().await;
-    let _ = h.permits.send(());
-
-    let result = timeout(Duration::from_secs(5), run)
-        .await
-        .expect("Run finishes")
-        .expect("task join")
-        .expect("Run ok");
-    let reply = result
-        .new_messages
-        .iter()
-        .rfind(|m| m.role == Role::Assistant)
-        .expect("assistant reply");
+    // Reentry cannot erase the unknown physical attempt. Assert the actual
+    // rejection and absence of another inference, instead of waiting for an
+    // unsafe new attempt or fabricating termination evidence in the fixture.
+    let result = timeout(
+        Duration::from_secs(5),
+        h.host.run(None, thread, vec![user("u2", "Second.")]),
+    )
+    .await
+    .expect("reentry reaches a terminal admission decision");
+    let error = result
+        .err()
+        .expect("unknown physical attempt rejects reentry");
     assert!(
-        !reply.text_content().contains("Survivor."),
-        "L2/E3 the next attempt must not see retired input (reply: {})",
-        reply.text_content()
+        error.to_string().contains("no termination evidence"),
+        "rejection must come from the physical fence: {error}"
+    );
+    assert!(
+        h.started.lock().await.try_recv().is_err(),
+        "L2/E3 no second inference entered"
     );
     let committed = h
         .host

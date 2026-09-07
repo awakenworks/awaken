@@ -198,7 +198,7 @@ async fn dispose(sandbox: &awaken_sandbox_local::LocalSandbox) {
         .dispose_for_effect(
             &authorization,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&authorization).effect_fence(),
+                authorization.effect_fence(),
             ),
         )
         .await

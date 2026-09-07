@@ -330,15 +330,21 @@
           "p1-B",
           "p1-replay",
           "p1-stale",
+          "p1-stale-replay",
           "p1-conflict",
+          "p1-identity-conflict",
           "p0-B",
           "p0-replay",
           "p0-stale",
+          "p0-stale-replay",
           "p0-conflict",
+          "p0-identity-conflict",
           "p2-B",
           "p2-replay",
           "p2-stale",
-          "p2-conflict"
+          "p2-stale-replay",
+          "p2-conflict",
+          "p2-identity-conflict"
         ]
       }
     }

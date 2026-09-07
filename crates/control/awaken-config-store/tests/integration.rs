@@ -608,10 +608,14 @@ async fn config_compiles_stores_and_the_runtime_executes_the_snapshot() {
     // runtime consumed.
     let state = runtime.execute(activation, ctx).await.expect("execute");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-    // Per-step durability: the input commits at the first step boundary
-    // (under a Running fact), then the text-only terminal step commits
-    // through finish.
-    assert_eq!(commit.commit_count(), 2);
+    // C1 persisted exact publication + C2 one successful model response =>
+    // E1 input/Running, model enter, model return, terminal commits; E2 one
+    // input and one answer. Model receipts are independent of message count.
+    assert_eq!(commit.commit_count(), 4);
+    let messages = commit.committed().messages;
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].text_content(), "hi");
+    assert_eq!(messages[1].text_content(), "done");
 }
 
 #[tokio::test]

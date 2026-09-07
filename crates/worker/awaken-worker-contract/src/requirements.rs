@@ -111,11 +111,8 @@ impl PlacementRequirements {
     #[must_use]
     pub fn remote_required() -> Self {
         Self {
-            contract_version: CURRENT_CONTRACT_VERSION,
             location: ExecutionLocation::RemoteRequired,
-            dispatch_contract_version: CURRENT_CONTRACT_VERSION,
-            runtime_protocol_version: CURRENT_CONTRACT_VERSION,
-            ..Self::default()
+            ..Self::remote_preferred()
         }
     }
 
@@ -129,7 +126,7 @@ impl PlacementRequirements {
             contract_version: CURRENT_CONTRACT_VERSION,
             location: ExecutionLocation::RemotePreferred,
             dispatch_contract_version: CURRENT_CONTRACT_VERSION,
-            runtime_protocol_version: CURRENT_CONTRACT_VERSION,
+            runtime_protocol_version: CURRENT_RUNTIME_PROTOCOL_VERSION,
             ..Self::default()
         }
     }
@@ -147,7 +144,6 @@ impl PlacementRequirements {
         checkpoint_format: Option<String>,
     ) -> Self {
         let mut requirements = Self::remote_required();
-        requirements.runtime_protocol_version = CURRENT_RUNTIME_PROTOCOL_VERSION;
         requirements.checkpoint_format = checkpoint_format;
         if has_session_resources {
             requirements
