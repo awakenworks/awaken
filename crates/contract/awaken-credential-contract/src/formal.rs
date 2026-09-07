@@ -1,7 +1,27 @@
 use super::{
     CredentialRealizationSelection, credential_realization_selection,
-    project_worker_plaintext_holder, validate_credential_envelope_issuance_claim,
+    durable_material_source_is_reference_only, project_worker_plaintext_holder,
+    validate_credential_envelope_issuance_claim,
 };
+
+/// The production source enum is the durable credential channel. This proof
+/// keeps its complete current domain reference-only; material remains behind
+/// the non-serializable resolver result.
+#[kani::proof]
+fn durable_credential_material_source_has_no_inline_plaintext_class() {
+    // Cause/effect graph: C1 selects the Control-plane source; C2 selects the
+    // Worker-local source. E1 classifies the selected source as reference-only.
+    // The causes are mutually exclusive and exhaustive because the production
+    // match has no wildcard. Decision table: R1=C1=>E1; R2=C2=>E1. Adding a
+    // source variant breaks compilation until this boundary is reviewed.
+    let source = if kani::any::<bool>() {
+        super::CredentialMaterialSource::ControlPlaneReference
+    } else {
+        super::CredentialMaterialSource::WorkerReference
+    };
+
+    assert!(durable_material_source_is_reference_only(source));
+}
 
 #[kani::proof]
 fn environment_credential_custody_selects_exactly_one_authorized_profile() {
