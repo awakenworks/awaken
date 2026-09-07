@@ -1173,7 +1173,12 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
         "N4 preparation has zero physical effect"
     );
     sandbox
-        .dispose_for_effect(&disposal_authorization(&terminal))
+        .dispose_for_effect(
+            &disposal_authorization(&terminal),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&terminal)).effect_fence(),
+            ),
+        )
         .await
         .expect("N6 aggregate-authorized physical authorization");
     assert!(
@@ -1205,6 +1210,194 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
         &[expected_secret_effect.writeback_id().to_string()],
         "N5 Secret idempotency is bound to the exact credential reference and physical Sandbox, not the aggregate operation",
     );
+}
+
+#[tokio::test]
+async fn physical_disposal_rechecks_current_authority_before_delete_release_and_cached_success() {
+    use pc::Sandbox as _;
+    use std::time::Duration;
+    // C1 Pending participant lock / observation / committed removal response /
+    // Memory lock / first or last FUSE teardown; C2 revoke/replace/expire/renew/
+    // cancel. The complete 6x5 table holds every other predicate valid, notably
+    // UTC expiry, and reuses the real disposal + exact-observation call chain.
+    // R1 stale authority denies the NEXT effect and Done, retaining staging and
+    // every remaining participant. R2 renewal completes. R3 cancellation keeps
+    // the same participants for retry; an already committed delete stays gone.
+    // R4 exact retry converges without repeating committed physical deletion.
+    // R5 cached Done under revoked authority returns Err with zero I/O.
+    // Two FUSE participants isolate physical release from the already accepted
+    // source-preparation phase. No fake probe can turn an in-flight backend
+    // commit into a claim that cancellation undid it. No wall-time sleeps.
+    for boundary in [
+        "participant",
+        "observation",
+        "remove",
+        "memory-lock",
+        "first-mount",
+        "last-mount",
+    ] {
+        for change in ["revoke", "replace", "expire", "renew", "cancel"] {
+            let runtime = Arc::new(FakeRuntime::default());
+            let sandbox = provider(runtime.clone())
+                .create_container(&spec("physical-authority"))
+                .await
+                .unwrap();
+            let prepared =
+                pc::SandboxEffectFence::new("prepared", "owner", "boot", 1, u64::MAX - 1).unwrap();
+            sandbox
+                .prepare_disposal_for_effect(
+                    &prepared,
+                    &pc::test_support::EffectAuthority::new(&prepared),
+                )
+                .await
+                .unwrap();
+            let authorization = disposal_authorization(&prepared);
+            let authority = pc::test_support::EffectAuthority::new(authorization.effect_fence());
+            let staging = sandbox
+                .lifecycle
+                .staging
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .path()
+                .to_owned();
+            let retained = staging.join("synthetic-retained");
+            std::fs::write(&retained, b"synthetic-resource").unwrap();
+            let gate = Arc::new(tokio::sync::Semaphore::new(0));
+            let calls = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
+            *sandbox.lifecycle.memory.lock().await = Some(
+                calls
+                    .iter()
+                    .enumerate()
+                    .map(|(index, calls)| StagedMemoryMount {
+                        handle: Box::new(FakeMemoryMount {
+                            torn_down: Arc::new(AtomicBool::new(false)),
+                            fail_teardown: false,
+                            teardown_calls: calls.clone(),
+                            realization: pc::Realization::Fuse,
+                            response_gate: ((boundary == "first-mount" && index == 0)
+                                || (boundary == "last-mount" && index == 1))
+                                .then(|| gate.clone()),
+                        }),
+                        host_path: staging.join(format!("fuse-{index}")),
+                        mount_path: format!("/memory/{index}"),
+                        access: pc::MountAccess::ReadWrite,
+                        materialization: None,
+                        native_runtime_volume: false,
+                        writeback_prepared: true,
+                    })
+                    .collect(),
+            );
+            if boundary == "observation" {
+                runtime.st.lock().unwrap().observation_response_gate = Some(gate.clone());
+            }
+            if boundary == "remove" {
+                runtime.st.lock().unwrap().removal_response_gate = Some(gate.clone());
+            }
+            let participant = if boundary == "participant" {
+                Some(sandbox.lifecycle.remove_done.lock().await)
+            } else {
+                None
+            };
+            let memory = if boundary == "memory-lock" {
+                Some(sandbox.lifecycle.memory.lock().await)
+            } else {
+                None
+            };
+            let mut pending = Box::pin(sandbox.dispose_for_effect(&authorization, &authority));
+            std::future::poll_fn(|cx| {
+                assert!(
+                    std::future::Future::poll(pending.as_mut(), cx).is_pending(),
+                    "{boundary}/{change}"
+                );
+                std::task::Poll::Ready(())
+            })
+            .await;
+            let mut current = authorization.effect_fence().clone();
+            current.expires_at_unix_ms += 1;
+            if change == "replace" {
+                current.epoch += 1;
+            }
+            *authority.current.lock().unwrap() = if change == "revoke" {
+                None
+            } else {
+                Some((
+                    current,
+                    if change == "expire" {
+                        Duration::ZERO
+                    } else {
+                        Duration::from_secs(1)
+                    },
+                ))
+            };
+            drop(participant);
+            drop(memory);
+            gate.add_permits(1);
+            if change == "cancel" {
+                drop(pending);
+            } else {
+                assert_eq!(
+                    pending.await.is_ok(),
+                    change == "renew",
+                    "{boundary}/{change}"
+                );
+            }
+            assert_eq!(
+                runtime.st.lock().unwrap().removals.len(),
+                usize::from(
+                    change == "renew" || !matches!(boundary, "participant" | "observation")
+                )
+            );
+            assert_eq!(
+                calls[0].load(Ordering::SeqCst),
+                usize::from(change == "renew" || matches!(boundary, "first-mount" | "last-mount"))
+            );
+            assert_eq!(
+                calls[1].load(Ordering::SeqCst),
+                usize::from(change == "renew" || boundary == "last-mount")
+            );
+            if change != "renew" {
+                assert!(!*sandbox.lifecycle.remove_done.lock().await);
+                assert_eq!(
+                    sandbox
+                        .lifecycle
+                        .memory
+                        .lock()
+                        .await
+                        .as_ref()
+                        .unwrap()
+                        .len(),
+                    2
+                );
+                assert_eq!(std::fs::read(&retained).unwrap(), b"synthetic-resource");
+                *authority.current.lock().unwrap() =
+                    Some((authorization.effect_fence().clone(), Duration::from_secs(1)));
+                sandbox
+                    .dispose_for_effect(&authorization, &authority)
+                    .await
+                    .unwrap();
+            }
+            assert!(*sandbox.lifecycle.remove_done.lock().await);
+            assert!(sandbox.lifecycle.memory.lock().await.is_none());
+            assert!(!staging.exists());
+            assert_eq!(runtime.st.lock().unwrap().removals.len(), 1);
+            let observations = runtime.st.lock().unwrap().observations;
+            *authority.current.lock().unwrap() = None;
+            assert!(
+                sandbox
+                    .dispose_for_effect(&authorization, &authority)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                runtime.st.lock().unwrap().observations,
+                observations,
+                "R5 no cached-path I/O"
+            );
+            assert_eq!(runtime.st.lock().unwrap().removals.len(), 1);
+        }
+    }
 }
 
 #[tokio::test]
@@ -1562,7 +1755,12 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
         "E2 preparation has zero physical effect"
     );
     adopted
-        .dispose_for_effect(&disposal_authorization(&terminal_fence))
+        .dispose_for_effect(
+            &disposal_authorization(&terminal_fence),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&terminal_fence)).effect_fence(),
+            ),
+        )
         .await
         .expect("E2/E3 terminal cleanup");
 
@@ -1691,7 +1889,12 @@ async fn disposing_terminal_preparation_reconstructs_only_physical_cleanup() {
     .expect("CN2 prepare exact disposing owner")
     .expect("CN2 disposing realization still needs physical cleanup");
     cleanup
-        .dispose_for_effect(&disposal_authorization(&terminal))
+        .dispose_for_effect(
+            &disposal_authorization(&terminal),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&terminal)).effect_fence(),
+            ),
+        )
         .await
         .expect("CN2 resume exact physical cleanup");
 
@@ -1922,6 +2125,9 @@ struct FakeMemoryMounter {
 struct FakeMemoryMount {
     torn_down: Arc<AtomicBool>,
     fail_teardown: bool,
+    teardown_calls: Arc<AtomicUsize>,
+    response_gate: Option<Arc<tokio::sync::Semaphore>>,
+    realization: pc::Realization,
 }
 
 #[async_trait]
@@ -1938,6 +2144,9 @@ impl pc::MemoryMounter for FakeMemoryMounter {
         Ok(Box::new(FakeMemoryMount {
             torn_down: self.torn_down.clone(),
             fail_teardown: self.fail_teardown,
+            teardown_calls: Arc::new(AtomicUsize::new(0)),
+            response_gate: None,
+            realization: pc::Realization::Copy,
         }))
     }
 }
@@ -1945,7 +2154,7 @@ impl pc::MemoryMounter for FakeMemoryMounter {
 #[async_trait]
 impl pc::MemoryMount for FakeMemoryMount {
     fn realization(&self) -> pc::Realization {
-        pc::Realization::Copy
+        self.realization
     }
 
     fn materialization_heads(&self) -> Option<Vec<pc::MemoryMaterializationHead>> {
@@ -1954,6 +2163,10 @@ impl pc::MemoryMount for FakeMemoryMount {
 
     async fn teardown(&self) -> Result<(), pc::SandboxError> {
         self.torn_down.store(true, Ordering::SeqCst);
+        self.teardown_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(gate) = &self.response_gate {
+            let _permit = gate.acquire().await.unwrap();
+        }
         if self.fail_teardown {
             Err(pc::SandboxError::new("injected Memory teardown failure"))
         } else {
@@ -2012,6 +2225,8 @@ struct FakeState {
     control_open_pending: Option<(Arc<tokio::sync::Notify>, Arc<AtomicBool>)>,
     control_peers: Vec<tokio::io::DuplexStream>,
     removals: Vec<(String, usize)>,
+    removal_response_gate: Option<Arc<tokio::sync::Semaphore>>,
+    observation_response_gate: Option<Arc<tokio::sync::Semaphore>>,
     inspections: usize,
     restore_targets: HashMap<String, pc::SandboxRestorationEvidence>,
     restore_plan_fingerprints: HashMap<String, String>,
@@ -2492,20 +2707,27 @@ impl ContainerRuntime for FakeRuntime {
         &self,
         expectation: crate::ContainerObservationExpectation<'_>,
     ) -> Result<pc::SandboxObservation, RuntimeError> {
-        let mut state = self.st.lock().unwrap();
-        state.observations += 1;
-        state
-            .retained_observation_attempts
-            .push(expectation.retained_attempt.map(|a| a.as_str().to_string()));
-        Ok(state.observation.clone().unwrap_or_else(|| {
-            if state.alive.get(expectation.container_id) == Some(&false) {
-                pc::SandboxObservation::DefinitivelyUnavailable {
-                    physical_incarnation: Some(expectation.container_id.to_string()),
+        let (observation, gate) = {
+            let mut state = self.st.lock().unwrap();
+            state.observations += 1;
+            state
+                .retained_observation_attempts
+                .push(expectation.retained_attempt.map(|a| a.as_str().to_string()));
+            let observation = state.observation.clone().unwrap_or_else(|| {
+                if state.alive.get(expectation.container_id) == Some(&false) {
+                    pc::SandboxObservation::DefinitivelyUnavailable {
+                        physical_incarnation: Some(expectation.container_id.to_string()),
+                    }
+                } else {
+                    pc::SandboxObservation::Ready
                 }
-            } else {
-                pc::SandboxObservation::Ready
-            }
-        }))
+            });
+            (observation, state.observation_response_gate.clone())
+        };
+        if let Some(gate) = gate {
+            let _permit = gate.acquire().await.unwrap();
+        }
+        Ok(observation)
     }
     async fn spawn(
         &self,
@@ -2644,16 +2866,24 @@ impl ContainerRuntime for FakeRuntime {
         Ok(())
     }
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
-        let mut state = self.st.lock().unwrap();
-        if let Some((_, dropped)) = &state.control_open_pending {
-            assert!(
-                dropped.load(Ordering::SeqCst),
-                "B9/B10 setup must be reaped at the actual removal edge"
-            );
+        let gate = {
+            let mut state = self.st.lock().unwrap();
+            if let Some((_, dropped)) = &state.control_open_pending {
+                assert!(
+                    dropped.load(Ordering::SeqCst),
+                    "B9/B10 setup must be reaped at the actual removal edge"
+                );
+            }
+            let opens = state.control_channel_opens;
+            state.removals.push((container_id.into(), opens));
+            state.alive.insert(container_id.into(), false);
+            state.removal_response_gate.clone()
+        };
+        // Pause only the response, after the fake backend really committed.
+        // Revocation cannot retroactively undo this already-admitted removal.
+        if let Some(gate) = gate {
+            let _permit = gate.acquire().await.unwrap();
         }
-        let opens = state.control_channel_opens;
-        state.removals.push((container_id.into(), opens));
-        state.alive.insert(container_id.into(), false);
         Ok(())
     }
 
@@ -3538,12 +3768,24 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
     .await
     .unwrap();
     let authorization = disposal_authorization(&fence);
-    pc::Sandbox::dispose_for_effect(&sandbox, &authorization)
-        .await
-        .unwrap();
-    pc::Sandbox::dispose_for_effect(&sandbox, &authorization)
-        .await
-        .unwrap();
+    pc::Sandbox::dispose_for_effect(
+        &sandbox,
+        &authorization,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(
+            (&authorization).effect_fence(),
+        ),
+    )
+    .await
+    .unwrap();
+    pc::Sandbox::dispose_for_effect(
+        &sandbox,
+        &authorization,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(
+            (&authorization).effect_fence(),
+        ),
+    )
+    .await
+    .unwrap();
     let state = runtime.st.lock().unwrap();
     assert_eq!(state.retained_observation_attempts.len(), 4, "A5/A6");
     assert_eq!(
@@ -4529,7 +4771,12 @@ async fn canonical_environment_spawns_agent_without_process_owning_terminal_clea
         "L3 Container reports its exact provider-prepared predecessor"
     );
     environment
-        .dispose_for_effect(&disposal_authorization(&terminal))
+        .dispose_for_effect(
+            &disposal_authorization(&terminal),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&terminal)).effect_fence(),
+            ),
+        )
         .await
         .expect("L3 aggregate-authorized physical cleanup");
     assert_eq!(
@@ -4782,7 +5029,12 @@ async fn durable_writable_secret_waits_for_explicit_environment_disposal() {
         .await
         .expect("W2 aggregate-owned terminal preparation");
     environment
-        .dispose_for_effect(&disposal_authorization(&terminal))
+        .dispose_for_effect(
+            &disposal_authorization(&terminal),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&terminal)).effect_fence(),
+            ),
+        )
         .await
         .expect("W2 aggregate-authorized physical cleanup");
     assert_eq!(
@@ -4851,7 +5103,12 @@ async fn remote_runtime_harvests_live_credential_only_at_environment_disposal() 
         .await
         .expect("S2 aggregate-owned terminal preparation");
     environment
-        .dispose_for_effect(&disposal_authorization(&terminal))
+        .dispose_for_effect(
+            &disposal_authorization(&terminal),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&terminal)).effect_fence(),
+            ),
+        )
         .await
         .expect("S2 aggregate-authorized physical cleanup");
     assert_eq!(

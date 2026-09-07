@@ -176,8 +176,11 @@ impl SessionEnvironment {
     pub(crate) async fn dispose_for_effect(
         &self,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
-        self.sandbox().dispose_for_effect(authorization).await
+        self.sandbox()
+            .dispose_for_effect(authorization, authority)
+            .await
     }
 
     pub(crate) async fn checkpoint_for_effect(

@@ -194,7 +194,15 @@ async fn dispose(sandbox: &awaken_sandbox_local::LocalSandbox) {
     let authorization = preparation
         .authorize(fence(&preparation.operation_id().unwrap()))
         .unwrap();
-    sandbox.dispose_for_effect(&authorization).await.unwrap();
+    sandbox
+        .dispose_for_effect(
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&authorization).effect_fence(),
+            ),
+        )
+        .await
+        .unwrap();
     assert!(!sandbox.workspace_path().exists());
 }
 

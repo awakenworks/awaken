@@ -6,6 +6,151 @@ use pc::Sandbox as _;
 use std::sync::Arc;
 
 #[tokio::test]
+async fn physical_disposal_rechecks_current_authority_after_every_retained_wait() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    // Cause/effect decision table: C1 wait for participant/quiescence/mount
+    // lock/first or last mount; C2 revoke/replace/expire/renew/cancel. Every
+    // 5x5 row first polls the REAL future Pending, then changes C2. R1 revoked,
+    // replaced or exhausted current proof => no NEXT teardown, shred, removal
+    // or terminal success. R2 same-generation renewal => finish once. R3
+    // cancellation retains the original participant and exact resource set.
+    // R4 retry of R1/R3 under restored explicit fixture authority converges on
+    // the SAME Sandbox. An admitted teardown may finish; its late response is
+    // not permission to start the next. UTC remains deliberately non-expiring:
+    // these rows would falsely pass if they merely tested old marker expiry.
+    for boundary in [
+        "participant",
+        "quiescence",
+        "mount-lock",
+        "first-mount",
+        "last-mount",
+    ] {
+        for change in ["revoke", "replace", "expire", "renew", "cancel"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let fence =
+                pc::SandboxEffectFence::new("dispose", "owner", "boot", 1, u64::MAX - 1).unwrap();
+            let sandbox = LocalProvider::new(tmp.path())
+                .create_sandbox_for_effect(&workdir_spec("physical-authority", false), &fence, None)
+                .await
+                .unwrap();
+            sandbox
+                .prepare_disposal_for_effect(
+                    &fence,
+                    &pc::test_support::EffectAuthority::new(&fence),
+                )
+                .await
+                .unwrap();
+            let authorization = crate::test_disposal_authorization(&fence);
+            let authority = pc::test_support::EffectAuthority::new(authorization.effect_fence());
+            let secret = sandbox.workspace_path().join("synthetic-secret");
+            std::fs::write(&secret, b"synthetic-material").unwrap();
+            let gate = Arc::new(tokio::sync::Semaphore::new(0));
+            let calls = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
+            let drops = Arc::new(AtomicUsize::new(0));
+            for (index, calls) in calls.iter().enumerate() {
+                sandbox
+                    .memory_mounts
+                    .lock()
+                    .await
+                    .push(Box::new(TeardownProbe {
+                        teardowns: calls.clone(),
+                        drops: drops.clone(),
+                        failures: 0,
+                        wait_until_ms: None,
+                        response_gate: ((boundary == "first-mount" && index == 0)
+                            || (boundary == "last-mount" && index == 1))
+                            .then(|| gate.clone()),
+                    }));
+            }
+            let participant = if boundary == "participant" {
+                Some(sandbox.terminal_removal.lock().await)
+            } else {
+                None
+            };
+            let mounts = if boundary == "mount-lock" {
+                Some(sandbox.memory_mounts.lock().await)
+            } else {
+                None
+            };
+            let mut pending = Box::pin(crate::dispose_terminal_realization(
+                &sandbox.memory_mounts,
+                sandbox.root.root(),
+                &sandbox.secret_paths,
+                &sandbox.terminal_removal,
+                &authorization,
+                &authority,
+                async {
+                    if boundary == "quiescence" {
+                        let _permit = gate.acquire().await.unwrap();
+                    }
+                },
+            ));
+            std::future::poll_fn(|cx| {
+                assert!(
+                    std::future::Future::poll(pending.as_mut(), cx).is_pending(),
+                    "{boundary}/{change}"
+                );
+                std::task::Poll::Ready(())
+            })
+            .await;
+            let mut current = authorization.effect_fence().clone();
+            current.expires_at_unix_ms += 1;
+            if change == "replace" {
+                current.epoch += 1;
+            }
+            *authority.current.lock().unwrap() = if change == "revoke" {
+                None
+            } else {
+                Some((
+                    current,
+                    if change == "expire" {
+                        Duration::ZERO
+                    } else {
+                        Duration::from_secs(1)
+                    },
+                ))
+            };
+            drop(participant);
+            drop(mounts);
+            gate.add_permits(1);
+            if change == "cancel" {
+                drop(pending);
+            } else {
+                assert_eq!(
+                    pending.await.is_ok(),
+                    change == "renew",
+                    "{boundary}/{change}"
+                );
+            }
+            assert_eq!(
+                calls[0].load(Ordering::SeqCst),
+                usize::from(change == "renew" || matches!(boundary, "first-mount" | "last-mount"))
+            );
+            assert_eq!(
+                calls[1].load(Ordering::SeqCst),
+                usize::from(change == "renew" || boundary == "last-mount")
+            );
+            if change != "renew" {
+                assert_eq!(std::fs::read(&secret).unwrap(), b"synthetic-material");
+                assert!(sandbox.terminal_removal.lock().await.is_some());
+                assert_eq!(sandbox.memory_mounts.lock().await.len(), 2);
+                assert_eq!(drops.load(Ordering::SeqCst), 0);
+                *authority.current.lock().unwrap() =
+                    Some((authorization.effect_fence().clone(), Duration::from_secs(1)));
+                sandbox
+                    .dispose_for_effect(&authorization, &authority)
+                    .await
+                    .unwrap();
+            }
+            assert!(!sandbox.root.root().exists());
+            assert!(sandbox.terminal_removal.lock().await.is_none());
+            assert_eq!(drops.load(Ordering::SeqCst), 2);
+        }
+    }
+}
+
+#[tokio::test]
 async fn terminal_preparation_requires_current_authority_before_creating_or_reusing_a_participant()
 {
     // C1 no participant / cached prepared participant; C2 revoked / changed
@@ -96,14 +241,33 @@ async fn terminal_disposal_teardown_error_retains_every_participant_until_exact_
             drops: drops.clone(),
             failures: 1,
             wait_until_ms: None,
+            response_gate: None,
         }));
     let authorization = crate::test_disposal_authorization(&fence);
-    assert!(sandbox.dispose_for_effect(&authorization).await.is_err());
+    assert!(
+        sandbox
+            .dispose_for_effect(
+                &authorization,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    (&authorization).effect_fence()
+                )
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(std::fs::read(&secret).unwrap(), b"synthetic-material");
     assert!(sandbox.terminal_removal.lock().await.is_some());
     assert_eq!(sandbox.memory_mounts.lock().await.len(), 1);
     assert_eq!(drops.load(Ordering::SeqCst), 0);
-    sandbox.dispose_for_effect(&authorization).await.unwrap();
+    sandbox
+        .dispose_for_effect(
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&authorization).effect_fence(),
+            ),
+        )
+        .await
+        .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
     assert!(!sandbox.root.root().exists());
@@ -154,6 +318,7 @@ async fn terminal_disposal_revalidates_expiry_after_each_async_boundary() {
                     drops: drops.clone(),
                     failures: 0,
                     wait_until_ms: expires.then_some(deadline),
+                    response_gate: None,
                 }));
         }
         let held = if boundary == "lock" {
@@ -162,12 +327,14 @@ async fn terminal_disposal_revalidates_expiry_after_each_async_boundary() {
             None
         };
         let authorization = crate::test_disposal_authorization(&prepared);
+        let authority = pc::test_support::EffectAuthority::new(authorization.effect_fence());
         let mut disposal = Box::pin(crate::dispose_terminal_realization(
             &sandbox.memory_mounts,
             sandbox.root.root(),
             &sandbox.secret_paths,
             &sandbox.terminal_removal,
             &authorization,
+            &authority,
             async {
                 if boundary == "quiescence" {
                     wait_until_wall_expiry(deadline).await;
@@ -212,9 +379,13 @@ async fn terminal_disposal_revalidates_expiry_after_each_async_boundary() {
         let renewed =
             pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX).unwrap();
         sandbox
-            .dispose_for_effect(&crate::test_disposal_authorization_for_current(
-                &prepared, &renewed,
-            ))
+            .dispose_for_effect(
+                &crate::test_disposal_authorization_for_current(&prepared, &renewed),
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    (&crate::test_disposal_authorization_for_current(&prepared, &renewed))
+                        .effect_fence(),
+                ),
+            )
             .await
             .unwrap();
         assert!(
@@ -261,7 +432,10 @@ async fn terminal_disposal_cancellation_retains_the_original_participant_and_ser
     let root = sandbox.root.root().to_path_buf();
     let authorization = crate::test_disposal_authorization(&terminal);
     let mounts = sandbox.memory_mounts.lock().await;
-    let mut first = Box::pin(sandbox.dispose_for_effect(&authorization));
+    let disposal_authority = awaken_provisioning_contract::test_support::EffectAuthority::new(
+        (&authorization).effect_fence(),
+    );
+    let mut first = Box::pin(sandbox.dispose_for_effect(&authorization, &disposal_authority));
     tokio::select! {
         biased;
         result = &mut first => panic!("D1 premature disposal: {result:?}"),
@@ -281,7 +455,10 @@ async fn terminal_disposal_cancellation_retains_the_original_participant_and_ser
             .is_err(),
         "D4 fail busy, not deadlock"
     );
-    let mut second = Box::pin(sandbox.dispose_for_effect(&authorization));
+    let disposal_authority = awaken_provisioning_contract::test_support::EffectAuthority::new(
+        (&authorization).effect_fence(),
+    );
+    let mut second = Box::pin(sandbox.dispose_for_effect(&authorization, &disposal_authority));
     tokio::select! {
         biased;
         result = &mut second => panic!("D2 bypassed original participant: {result:?}"),
@@ -303,7 +480,15 @@ async fn terminal_disposal_cancellation_retains_the_original_participant_and_ser
     );
     assert!(root.exists(), "D1-D4 no early root deletion");
     drop(mounts);
-    sandbox.dispose_for_effect(&authorization).await.unwrap();
+    sandbox
+        .dispose_for_effect(
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&authorization).effect_fence(),
+            ),
+        )
+        .await
+        .unwrap();
     assert!(!root.exists(), "D5 root deleted");
     assert!(
         sandbox.terminal_removal.lock().await.is_none(),
@@ -343,6 +528,9 @@ async fn disposal_requires_authorization_before_quiescence_and_retains_cancelled
             &sandbox.secret_paths,
             &sandbox.terminal_removal,
             &crate::test_disposal_authorization(&foreign),
+            &pc::test_support::EffectAuthority::new(
+                crate::test_disposal_authorization(&foreign).effect_fence()
+            ),
             async {
                 entered.store(true, Ordering::SeqCst);
             },
@@ -355,12 +543,14 @@ async fn disposal_requires_authorization_before_quiescence_and_retains_cancelled
         "D6 unauthorized cannot close service"
     );
     let authorization = crate::test_disposal_authorization(&terminal);
+    let authority = pc::test_support::EffectAuthority::new(authorization.effect_fence());
     let mut pending = Box::pin(crate::dispose_terminal_realization(
         &sandbox.memory_mounts,
         sandbox.root.root(),
         &sandbox.secret_paths,
         &sandbox.terminal_removal,
         &authorization,
+        &authority,
         async {
             entered.store(true, Ordering::SeqCst);
             std::future::pending::<()>().await;
@@ -381,5 +571,13 @@ async fn disposal_requires_authorization_before_quiescence_and_retains_cancelled
         sandbox.terminal_removal.lock().await.is_some(),
         "D7 guard retained"
     );
-    sandbox.dispose_for_effect(&authorization).await.unwrap();
+    sandbox
+        .dispose_for_effect(
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&authorization).effect_fence(),
+            ),
+        )
+        .await
+        .unwrap();
 }

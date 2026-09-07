@@ -2,6 +2,7 @@
 
 use super::super::foundation::{MemoryMaterializationEvidence, SandboxError};
 use super::SandboxEffectFence;
+use crate::with_current_sandbox_effect;
 
 #[derive(Debug)]
 struct AppliedMemoryReconciliation {
@@ -37,7 +38,7 @@ impl MemoryReconciliationAck {
         // Replays and empty projections must cross the same live authority
         // boundary. The caller has already acquired any asynchronous mount
         // lock; no copied pre-await observation can authorize Copy retirement.
-        authorize_memory_ack(effect_fence, authority, || {
+        with_current_sandbox_effect(effect_fence, authority, || {
             self.acknowledge_current(
                 effect_fence,
                 expected_materializations,
@@ -114,7 +115,7 @@ impl MemoryReconciliationAck {
         authority: &dyn crate::CurrentExecutionAuthority,
         prepare: impl FnOnce() -> Result<T, SandboxError>,
     ) -> Result<T, SandboxError> {
-        authorize_memory_ack(effect_fence, authority, || {
+        with_current_sandbox_effect(effect_fence, authority, || {
             self.require_current_for_disposal(expected_materializations, effect_fence)?;
             prepare()
         })
@@ -144,33 +145,6 @@ impl MemoryReconciliationAck {
             )),
         }
     }
-}
-
-/// One guarded admission for both the shared kernel and the fail-closed
-/// provider default. Durable expiry stays in Control coordinates. This edge
-/// consumes local current proof rather than comparing unrelated wall clocks.
-pub(super) fn authorize_memory_ack<T>(
-    asserted: &SandboxEffectFence,
-    authority: &dyn crate::CurrentExecutionAuthority,
-    apply: impl FnOnce() -> Result<T, SandboxError>,
-) -> Result<T, SandboxError> {
-    asserted.validate_identity()?;
-    let mut apply = Some(apply);
-    let mut result = None;
-    authority
-        .with_current_effect(asserted, &mut |current, remaining| {
-            if remaining.is_zero()
-                || !asserted.same_effect_identity(current)
-                || current.expires_at_unix_ms < asserted.expires_at_unix_ms
-            {
-                return Err(std::io::ErrorKind::PermissionDenied.into());
-            }
-            let apply = apply.take().ok_or(std::io::ErrorKind::PermissionDenied)?;
-            result = Some(apply().map_err(std::io::Error::other)?);
-            Ok(())
-        })
-        .map_err(|error| SandboxError::new(error.to_string()))?;
-    result.ok_or_else(|| SandboxError::new("Memory authority omitted the acknowledgement"))
 }
 
 pub(super) fn default_memory_reconciliation_ack(

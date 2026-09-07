@@ -519,7 +519,12 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
         .await
         .expect("prepare fenced namespace disposal");
     adopted
-        .dispose_for_effect(&disposal_authorization(&prepared))
+        .dispose_for_effect(
+            &disposal_authorization(&prepared),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&prepared)).effect_fence(),
+            ),
+        )
         .await
         .expect("dispose fenced namespace");
 }

@@ -79,7 +79,12 @@ async fn dispose_current_environment(
         "environment-lifecycle-current-disposal-preparation",
     );
     environment
-        .dispose_for_effect(&authorization)
+        .dispose_for_effect(
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&authorization).effect_fence(),
+            ),
+        )
         .await
         .expect("dispose current Environment through aggregate effect fence");
 }

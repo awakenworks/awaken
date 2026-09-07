@@ -405,7 +405,12 @@ async fn terminal_takeover_disposes_incomplete_writable_memory_without_inventing
         .await
         .expect("R1 preparation");
     terminal_sandbox
-        .dispose_for_effect(&crate::test_disposal_authorization(&terminal))
+        .dispose_for_effect(
+            &crate::test_disposal_authorization(&terminal),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&crate::test_disposal_authorization(&terminal)).effect_fence(),
+            ),
+        )
         .await
         .expect("R1 fenced disposal");
     assert!(!root.exists(), "R1 partial root removed");
@@ -628,9 +633,14 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
     );
     assert!(root.is_dir(), "N4 preparation cannot dispose the root");
     let disposal = crate::test_disposal_authorization_for_current(&terminal, &successor);
-    cold.dispose_for_effect(&disposal)
-        .await
-        .expect("N5 aggregate-authorized physical disposal");
+    cold.dispose_for_effect(
+        &disposal,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(
+            (&disposal).effect_fence(),
+        ),
+    )
+    .await
+    .expect("N5 aggregate-authorized physical disposal");
 }
 
 #[tokio::test]

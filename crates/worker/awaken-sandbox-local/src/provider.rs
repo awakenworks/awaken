@@ -1848,6 +1848,7 @@ impl pc::Sandbox for LocalSandbox {
     async fn dispose_for_effect(
         &self,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         crate::dispose_terminal_realization(
             &self.memory_mounts,
@@ -1855,6 +1856,7 @@ impl pc::Sandbox for LocalSandbox {
             &self.secret_paths,
             &self.terminal_removal,
             authorization,
+            authority,
             std::future::ready(()),
         )
         .await

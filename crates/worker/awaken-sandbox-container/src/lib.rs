@@ -1641,7 +1641,7 @@ impl ContainerCleanupState {
                 .remove_with_handle(container_id, runtime_handle)
                 .await
                 .map_err(err)?;
-            self.release_dependencies().await?;
+            self.release_dependencies(&|effect| effect()).await?;
             *done = true;
         }
         Ok(())
@@ -1652,32 +1652,59 @@ impl ContainerCleanupState {
         runtime: &R,
         expectation: ContainerObservationExpectation<'_>,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         let mut done = self.remove_done.lock().await;
+        let admit = |effect: &mut dyn FnMut() -> Result<(), pc::SandboxError>| {
+            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, effect)
+        };
+        // A cached result and a completed lock wait both consume current proof.
+        // Backend admission below is asynchronous: its response can arrive
+        // after revocation, but cannot authorize dependency release or Done.
+        admit(&mut || Ok(()))?;
         if !*done {
             runtime
-                .dispose_authorized(expectation, authorization)
+                .dispose_authorized(expectation, authorization, authority)
                 .await
                 .map_err(err)?;
-            self.release_dependencies().await?;
-            *done = true;
+            admit(&mut || Ok(()))?;
+            self.release_dependencies(&admit).await?;
+            admit(&mut || {
+                *done = true;
+                Ok(())
+            })?;
         }
         Ok(())
     }
 
-    async fn release_dependencies(&self) -> Result<(), pc::SandboxError> {
+    async fn release_dependencies(
+        &self,
+        admit: &(
+             impl Fn(&mut dyn FnMut() -> Result<(), pc::SandboxError>) -> Result<(), pc::SandboxError>
+             + Sync
+         ),
+    ) -> Result<(), pc::SandboxError> {
         let mut memory = self.memory.lock().await;
+        admit(&mut || Ok(()))?;
         if let Some(mounts) = memory.as_ref() {
             for mount in mounts {
+                admit(&mut || Ok(()))?;
                 mount.handle.teardown().await?;
+                admit(&mut || Ok(()))?;
             }
-            *memory = None;
+            admit(&mut || {
+                *memory = None;
+                Ok(())
+            })?;
         }
         drop(memory);
-        if let Some(staging) = self.staging.lock().expect("staging mutex poisoned").take() {
-            staging.remove();
-        }
-        Ok(())
+        let mut staging = self.staging.lock().expect("staging mutex poisoned");
+        admit(&mut || {
+            if let Some(staging) = staging.take() {
+                staging.remove();
+            }
+            Ok(())
+        })
     }
 }
 
@@ -1895,6 +1922,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
     async fn dispose_for_effect(
         &self,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         authorization.validate()?;
         if self.adoption_fingerprint.is_none() || self.realization_fingerprint.is_none() {
@@ -1917,7 +1945,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         // fingerprints still gate deletion; cold wrappers retain no proof.
         expectation.retained_attempt = self.retained_attempt.as_ref();
         self.lifecycle
-            .dispose_once_for_effect(self.runtime.as_ref(), expectation, authorization)
+            .dispose_once_for_effect(self.runtime.as_ref(), expectation, authorization, authority)
             .await
     }
 }
