@@ -1516,23 +1516,27 @@ struct AdapterToolRun {
     pending: Option<Pending>,
 }
 
+#[derive(Clone)]
 struct ToolAwaitingFake {
     scenario: AdapterToolScenario,
-    run: Mutex<Option<AdapterToolRun>>,
+    run: Arc<Mutex<Option<AdapterToolRun>>>,
+    settlement: Arc<Mutex<Option<awaken_session_contract::SessionAgentBoundaryCommand>>>,
 }
 
 impl ToolAwaitingFake {
     fn permission() -> Self {
         Self {
             scenario: AdapterToolScenario::Permission,
-            run: Mutex::new(None),
+            run: Arc::new(Mutex::new(None)),
+            settlement: Arc::new(Mutex::new(None)),
         }
     }
 
     fn custom() -> Self {
         Self {
             scenario: AdapterToolScenario::Custom,
-            run: Mutex::new(None),
+            run: Arc::new(Mutex::new(None)),
+            settlement: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1822,6 +1826,18 @@ impl SessionRuntime for ToolAwaitingFake {
         if delivery.fence != expected {
             return Err(RunError::bad_request("adapter fixture reply fence changed"));
         }
+        *self.settlement.lock().unwrap() =
+            Some(awaken_session_contract::SessionAgentBoundaryCommand {
+                session_id: delivery.command.session_id.clone(),
+                source_thread_id: delivery
+                    .command
+                    .target
+                    .thread_id(&delivery.command.session_id),
+                source_run_id: delivery.command.expected_run_id.clone(),
+                source_agent_id: String::new(),
+                session_activity_epoch: delivery.session_activity_epoch,
+                cancellation_requested: false,
+            });
         let mut slot = self.run.lock().unwrap();
         let run = slot
             .as_mut()
@@ -2348,7 +2364,8 @@ async fn hitl_await_confirm_resume() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let state = Arc::new(ManagedState::new(ToolAwaitingFake::permission()));
+    let runtime = ToolAwaitingFake::permission();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let app = router(state.clone());
     let id = create(&app).await;
 
@@ -2503,9 +2520,10 @@ async fn hitl_await_confirm_resume() {
     // coordinate; the canonical phase order keeps the inbound receipt before
     // the Run's Resumed edge and output.
     // This narrow adapter fixture intentionally has no Host settlement observer.
-    // The Session application nevertheless owns the durable aggregate activity
-    // interval, so the resumed terminal Thread closes with the canonical usage
-    // and Session-idle suffix exactly once.
+    // Thread completion is not aggregate settlement. Explicitly deliver the
+    // committed boundary through the SAME Session application observer used by
+    // the Host before requiring usage/Session-idle, never by sleeping or making
+    // the read-side projector infer another activity authority.
     // Transport-retry extension of H6: C1 two HTTP callers race with one new
     // key/body while the exact tool ticket is pending => E1 append once and
     // return the same receipt to both; C2 the same
@@ -2545,6 +2563,33 @@ async fn hitl_await_confirm_resume() {
     assert!(
         confirmation["data"][0]["processed_at"].is_null(),
         "H6/E1 receipt is the immutable admission view"
+    );
+    let application = state.session_application();
+    let before_settlement = application.session(&id).await.unwrap();
+    let boundary = runtime
+        .settlement
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("H8 exact delivery fence");
+    // H8: a committed resumed terminal Run + its exact activity epoch closes
+    // one interval; duplicate observer delivery is a no-op. Assert root truth
+    // as well as the HTTP suffix so a cache-only repair cannot pass this case.
+    for _ in 0..2 {
+        awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+            application.as_ref(),
+            boundary.clone(),
+        )
+        .await
+        .unwrap();
+    }
+    let settled = application.session(&id).await.unwrap();
+    assert_eq!(settled.execution, SessionExecutionState::Idle, "H8");
+    assert_eq!(
+        settled.closed_runtime_intervals.len(),
+        before_settlement.closed_runtime_intervals.len()
+            + usize::from(before_settlement.running_interval.is_some()),
+        "H8 no duplicate interval"
     );
     let list = json_call(
         &app,
