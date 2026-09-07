@@ -4,8 +4,10 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+mod binary_support;
+
 fn command(role: &str, socket: &std::path::Path) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_awaken-sandbox"));
+    let mut command = tokio::process::Command::new(binary_support::awaken_sandbox());
     command
         .args([role, "--unix"])
         .arg(socket)

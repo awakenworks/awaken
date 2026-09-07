@@ -265,7 +265,7 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
         .await
         .expect("fenced namespace");
     let binary = binary_support::awaken_sandbox();
-    let mut command = pc::Command::new([binary.as_str(), "hand", "--stdio"]);
+    let mut command = pc::Command::new([binary, "hand", "--stdio"]);
     command.cwd = "/workspace".into();
     let (process, channel) = sandbox.spawn_agent(command).await.expect("spawn Hand");
     let executor = RemoteToolExecutor::new(channel);
@@ -476,7 +476,7 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
         .await
         .expect("reconcile frozen mount");
     let binary = binary_support::awaken_sandbox();
-    let mut adopted_command = pc::Command::new([binary.as_str(), "hand", "--stdio"]);
+    let mut adopted_command = pc::Command::new([binary, "hand", "--stdio"]);
     adopted_command.cwd = "/workspace".into();
     let (adopted_process, adopted_channel) = adopted
         .spawn_agent(adopted_command)

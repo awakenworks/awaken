@@ -4,7 +4,68 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {startCalcFixture} from './mcp_calc_fixture.mjs';
-import {assertContainerFixtureReachable} from './sandbox_image.mjs';
+import {assertContainerFixtureReachable, ensureCanonicalSandboxImage} from './sandbox_image.mjs';
+
+test('canonical image admission verifies selected ACP runtimes on reuse and after build', async () => {
+  // Causes: C1=image exists; C2=environment label; C3=Hand contracts;
+  // C4=quality tools; C5=selected runtime negotiates; C6=build repairs C1-C5.
+  // Rules: I1 all required checks pass => no build; I2 any required check
+  // fails + C6 => build once and recheck; I3 !C5+!C6 => reject even after
+  // build. Empty selection requires no ACP; Claude requires a real handshake.
+  // This tests the actual shell admission owner with process-boundary fixtures;
+  // real image/ACP acceptance remains the responsibility of the service E2E.
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sandbox-admission-'));
+  const previous = { ...process.env };
+  try {
+    for (const relative of ['deploy/images/sandbox/build.sh', 'deploy/images/sandbox/stage-binary.sh',
+      'scripts/ci/_deadline.sh', 'scripts/ci/deadline.py']) {
+      const destination = path.join(root, relative);
+      await fs.mkdir(path.dirname(destination), { recursive:true });
+      await fs.copyFile(new URL('../../' + relative, import.meta.url), destination);
+    }
+    const bin = path.join(root, 'bin'); await fs.mkdir(bin);
+    const calls = path.join(root, 'calls'); const state = path.join(root, 'built');
+    const executable = path.join(bin, 'sandbox');
+    await fs.writeFile(executable, '#!/bin/sh\nexit 0\n', { mode:0o755 });
+    await fs.writeFile(path.join(bin, 'cargo'), `#!${process.execPath}
+const args=process.argv.slice(2);
+if(args[0]==='build') console.log(JSON.stringify({reason:'compiler-artifact',target:{name:'awaken-sandbox'},executable:process.env.ADMISSION_BINARY}));
+else console.log('{}');
+`, { mode:0o755 });
+    await fs.writeFile(path.join(bin, 'docker'), `#!${process.execPath}
+const fs=require('node:fs'),args=process.argv.slice(2),mode=process.env.ADMISSION_MODE;
+fs.appendFileSync(process.env.ADMISSION_CALLS,JSON.stringify(args)+'\\n');
+const repaired=fs.existsSync(process.env.ADMISSION_STATE);
+if(args[0]==='build'){fs.writeFileSync(process.env.ADMISSION_STATE,'built');process.exit(0);}
+if(args[0]==='image'){
+ if(!repaired&&mode==='absent')process.exit(1);
+ if(args.includes('--format'))console.log(!repaired&&mode==='label'?'old':'2');
+}else if(args.includes('/usr/local/bin/awaken-verify-acp-runtimes')){
+ if(mode==='unrepairable'||(!repaired&&mode==='runtime'))process.exit(1);
+}else if(!repaired&&((mode==='hand'&&args.includes('hand'))||(mode==='publish'&&args.includes('repository-publish-noreplace'))||(mode==='reader'&&args.includes('read-tree-nofollow'))||(mode==='tools'&&args.includes('/bin/sh'))))process.exit(1);
+`, { mode:0o755 });
+    Object.assign(process.env, { PATH:bin + path.delimiter + previous.PATH,
+      ADMISSION_CALLS:calls, ADMISSION_STATE:state, ADMISSION_BINARY:executable });
+    for (const [runtimeIds, mode] of [['','ok'], ['claude','ok'], ['all','ok'], ['claude,codex','ok'], ['', 'runtime'],
+      ...['absent','label','hand','publish','reader','tools','runtime','unrepairable'].map(mode=>['claude', mode])]) {
+      await fs.writeFile(calls, ''); await fs.rm(state, { force:true });
+      process.env.ADMISSION_MODE = mode;
+      const run = () => ensureCanonicalSandboxImage({engine:'docker',image:'exact-fixture',repoRoot:root,runtimeIds});
+      if (mode === 'unrepairable') assert.throws(run); else run();
+      const commands = (await fs.readFile(calls,'utf8')).trim().split('\n').map(JSON.parse);
+      const mustBuild = mode !== 'ok' && !(runtimeIds === '' && mode === 'runtime');
+      assert.equal(commands.filter(args=>args[0] === 'build').length, Number(mustBuild), `${runtimeIds}/${mode}`);
+      const probes = commands.filter(args=>args.includes('/usr/local/bin/awaken-verify-acp-runtimes'));
+      assert.equal(probes.length, runtimeIds ? (['runtime','unrepairable'].includes(mode) ? 2 : 1) : 0);
+      for (const args of probes) assert.deepEqual(args.slice(args.indexOf('exact-fixture') + 1),
+        runtimeIds === 'all' ? [] : runtimeIds.split(','));
+    }
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+    Object.assign(process.env, previous);
+    await fs.rm(root, {recursive:true,force:true});
+  }
+});
 
 test('fixture route admission uses exact substrate and never converts transport failure to model evidence', async () => {
   // C1 Docker/Podman/K8s; C2 curl has HTTP response/no response/nonzero exit;

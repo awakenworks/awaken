@@ -150,7 +150,11 @@ build_image() {
 # entry point starts; C4=curl exists; C5=the pinned Rust quality components
 # exist; C6=the same configured execution binary exposes atomic no-replace
 # Repository publication; C7=that binary exposes the descriptor-relative
-# nofollow tree reader used for terminal participant recovery. E1=reuse exactly
+# nofollow tree reader used for terminal participant recovery; C8=each selected
+# ACP runtime passes the canonical prompt-free handshake (empty selection has
+# no ACP requirement). Every full-acceptance row below additionally requires C8.
+# The executable cause/effect cases live in e2e/fixtures/sandbox_image.test.mjs.
+# E1=reuse exactly
 # that image; E2=build through this authoritative script, then require the same
 # acceptance checks.
 #
@@ -163,10 +167,10 @@ build_image() {
 # | I5 | ensure-hand | otherwise | | | | | | | E2, then full acceptance |
 accept_hand() {
   run_with_deadline "$operation_timeout_seconds" \
-    "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" hand --stdio </dev/null
+    "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" hand --stdio </dev/null || return 1
   run_with_deadline "$operation_timeout_seconds" \
     "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" \
-    repository-publish-noreplace --check
+    repository-publish-noreplace --check || return 1
   run_with_deadline "$operation_timeout_seconds" \
     "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" \
     read-tree-nofollow --check
@@ -176,12 +180,27 @@ image_exists() {
   "$engine" image inspect "$image" >/dev/null 2>&1
 }
 
+# The configured runtime selection is part of image admission, including reuse.
+# An environment label/Hand alone does not prove an ACP CLI exists or negotiates.
+accept_runtimes() {
+  if [[ -n "$runtime_ids" ]]; then
+    local verify_ids=()
+    if [[ "$runtime_ids" != all ]]; then
+      IFS=',' read -r -a verify_ids <<<"$runtime_ids"
+    fi
+    run_with_deadline "$operation_timeout_seconds" \
+      "$engine" run --rm --entrypoint /usr/local/bin/awaken-verify-acp-runtimes \
+      "$image" "${verify_ids[@]}"
+  fi
+}
+
 accept_image() {
   [[ $($engine image inspect --format '{{index .Config.Labels "org.awaken.environment-packages"}}' "$image" 2>/dev/null) == 2 ]] || return 1
   accept_hand || return 1
   run_with_deadline "$operation_timeout_seconds" \
     "$engine" run --rm --entrypoint /bin/sh "$image" -c \
-    'command -v curl >/dev/null && curl --version >/dev/null && cargo clippy --version >/dev/null && rustfmt --version >/dev/null'
+    'command -v curl >/dev/null && curl --version >/dev/null && cargo clippy --version >/dev/null && rustfmt --version >/dev/null' || return 1
+  accept_runtimes
 }
 
 if { [[ $ensure_existing == full ]] && image_exists && accept_image; } \
@@ -222,16 +241,3 @@ fi
 # binary. Rule B1 C1+C2+C3=>E1; a staging regression fails the build here instead
 # of surfacing later as a closed Session hand channel.
 accept_image
-
-# Perform the production prompt-free initialize + session/new handshake, not
-# merely `command -v`. Independent adapters are probed concurrently by the
-# image-local verifier, bounding cold-start validation to one probe deadline.
-if [[ -n "$runtime_ids" ]]; then
-  verify_ids=()
-  if [[ "$runtime_ids" != all ]]; then
-    IFS=',' read -r -a verify_ids <<<"$runtime_ids"
-  fi
-  run_with_deadline "$operation_timeout_seconds" \
-    "$engine" run --rm --entrypoint /usr/local/bin/awaken-verify-acp-runtimes \
-    "$image" "${verify_ids[@]}"
-fi

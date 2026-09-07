@@ -8,7 +8,8 @@ use awaken_provisioning_contract::{
 use std::{path::Path, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-const HELPER: &str = env!("CARGO_BIN_EXE_awaken-sandbox");
+mod binary_support;
+use binary_support::awaken_sandbox as sandbox_binary;
 
 #[path = "linux_scoped/provider.rs"]
 mod scoped_provider;
@@ -16,7 +17,7 @@ mod scoped_provider;
 async fn launch(command: &MaterializedCommand, cwd: &Path, lifetime: Duration) -> ScopedProcess {
     ScopedProcess::spawn_authorized(
         Path::new("/usr/bin/bwrap"),
-        Path::new(HELPER),
+        Path::new(sandbox_binary()),
         ScopedCommand {
             materialized: command,
             cwd,
@@ -163,7 +164,7 @@ async fn scoped_launch_denial_invalid_input_and_failed_exec_never_become_ready()
     for omitted in [false, true] {
         let result = ScopedProcess::spawn_authorized(
             Path::new("/usr/bin/bwrap"),
-            Path::new(HELPER),
+            Path::new(sandbox_binary()),
             ScopedCommand {
                 materialized: &command,
                 cwd: root.path(),
@@ -194,8 +195,8 @@ async fn scoped_launch_denial_invalid_input_and_failed_exec_never_become_ready()
     // S11 successful GO followed by callback failure still returns ownership.
     for (helper, timeout) in [
         (Path::new("relative-helper"), Duration::from_secs(1)),
-        (Path::new(HELPER), Duration::ZERO),
-        (Path::new(HELPER), Duration::MAX),
+        (Path::new(sandbox_binary()), Duration::ZERO),
+        (Path::new(sandbox_binary()), Duration::MAX),
     ] {
         let result = ScopedProcess::spawn_authorized(
             Path::new("/usr/bin/bwrap"),
@@ -222,7 +223,7 @@ async fn scoped_launch_denial_invalid_input_and_failed_exec_never_become_ready()
     let started = std::time::Instant::now();
     let expired = ScopedProcess::spawn_authorized(
         Path::new("/usr/bin/bwrap"),
-        Path::new(HELPER),
+        Path::new(sandbox_binary()),
         ScopedCommand {
             materialized: &command,
             cwd: root.path(),
@@ -251,7 +252,7 @@ async fn scoped_launch_denial_invalid_input_and_failed_exec_never_become_ready()
     assert!(!marker.exists(), "S14 expired before exec");
     let committed = ScopedProcess::spawn_authorized(
         Path::new("/usr/bin/bwrap"),
-        Path::new(HELPER),
+        Path::new(sandbox_binary()),
         ScopedCommand {
             materialized: &command,
             cwd: root.path(),
