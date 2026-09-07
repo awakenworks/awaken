@@ -691,12 +691,39 @@ serializes launch against adoption, replay, checkpoint and terminal effects.
 Multiple live participants share that marker; only positively absent entries
 may be reclaimed. Rebuild source evidence retains the same participants.
 
+The same optional boundary wraps Local Repository realization/publication as
+one internal `repository-effect` helper operation. The existing Git transport
+remains the only clone/CAS/credential authority; its synchronous workflow and
+all Git descendants run inside the selected scope. This is post-Environment
+resource activation, not a second creation-lock protocol. Requests reuse the
+secret-free Repository plan and exact root identity; command credentials use
+opaque materialized environment values, never request JSON. Internal effects
+use Worker environment, not Agent-configured environment or broker references.
+Temporary Git state stays under the existing runtime-owned workspace root.
+The existing pre-GO marker and renewal sweep cover the operation; cancellation
+retains durable participant evidence until exact process-tree absence.
+
+The parent closes request stdin before awaiting the response, drains bounded
+stdio and joins complete scope exit. Valid stdout alone cannot yield a result;
+publication additionally checks the exact existing receipt/rejection contract.
+`LocalRepositoryEffect` composes `LocalProcessLifecycle`, checking reply,
+exit, cancellation and Worker-crash schedules. Its six mutants and three
+reachability witnesses are bounded abstract evidence, not Rust refinement,
+Git server correctness or a hard kernel teardown deadline. Real Linux tests
+exercise clone, publication replay/CAS, private environment, EOF ordering and
+early-reply rejection. Container host Git bundles and Namespace Git are not
+covered by this optional Local binding; production capability activation remains
+disabled until all selected effect paths and deployment wiring are qualified.
+
 Cold observation never signals a persisted numeric PID. A live participant
 blocks effects, and missing, masked, foreign-boot or foreign-observer evidence
 remains unknown. Destructive preparation, Memory guard retirement/unmount,
 secret shredding and deletion cannot turn that uncertainty into a terminal
 receipt. Runtime-local weak process handles only deliver explicit stop/cutoff
 refresh requests; they are neither a durable registry nor a renewal scheduler.
+Interrupted zero-timeout pidfd polling retains a pending observation; the
+existing waiter retries rather than spinning or creating an exit receipt.
+Invalid descriptor/error flags still fail closed, even alongside readiness.
 Refresh delivery errors re-poll the same exact process handle: an observed
 complete tree exit makes that renewal unnecessary, whereas a live tree or
 unknown poll remains an error regardless of transport error kind. This does

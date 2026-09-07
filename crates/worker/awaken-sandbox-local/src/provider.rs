@@ -1491,6 +1491,21 @@ impl pc::RepositoryRealizer for LocalSandbox {
     ) -> Result<(), pc::SandboxError> {
         self.require_root_identity()?;
         plan.validate_mount_path()?;
+        #[cfg(target_os = "linux")]
+        if let Some(outcome) = self.scoped_repository(plan, None, credential).await? {
+            match outcome {
+                crate::repository_effect::Outcome::Realized => {
+                    self.reserve_owned_path(&plan.mount_path);
+                    return Ok(());
+                }
+                crate::repository_effect::Outcome::Unavailable(error) => return Err(err(error)),
+                _ => {
+                    return Err(err(
+                        "repository realization returned another operation's receipt",
+                    ));
+                }
+            }
+        }
         provision_repo_at(
             &self.root,
             &plan.mount_path,
@@ -1514,6 +1529,31 @@ impl pc::RepositoryRealizer for LocalSandbox {
             .map_err(pc::RepositoryPublicationError::Unavailable)?;
         plan.validate_mount_path()
             .map_err(pc::RepositoryPublicationError::Unavailable)?;
+        #[cfg(target_os = "linux")]
+        if let Some(outcome) = self
+            .scoped_repository(plan, Some(expectation), credential)
+            .await
+            .map_err(pc::RepositoryPublicationError::Unavailable)?
+        {
+            use crate::repository_effect::Outcome;
+            return match outcome {
+                Outcome::Published(receipt)
+                    if receipt == pc::RepositoryPublicationReceipt::new(plan, expectation) =>
+                {
+                    Ok(receipt)
+                }
+                Outcome::Rejected(rejection) => {
+                    rejection.verify(expectation)?;
+                    Err(pc::RepositoryPublicationError::Rejected(rejection))
+                }
+                Outcome::Unavailable(error) => {
+                    Err(pc::RepositoryPublicationError::Unavailable(err(error)))
+                }
+                _ => Err(pc::RepositoryPublicationError::Unavailable(err(
+                    "repository publication returned another operation's receipt",
+                ))),
+            };
+        }
         push_repo_to_at(&self.root, &plan.mount_path, plan, expectation, credential)
     }
 }

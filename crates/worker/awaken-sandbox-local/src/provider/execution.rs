@@ -57,6 +57,114 @@ fn denied() -> io::Error {
 }
 
 impl LocalSandbox {
+    pub(super) async fn scoped_repository(
+        &self,
+        plan: &pc::RepositoryRealizationPlan,
+        publication: Option<&pc::RepositoryPublicationExpectation>,
+        credential: Option<&pc::RepositoryHttpBasicCredential>,
+    ) -> Result<Option<crate::repository_effect::Outcome>, pc::SandboxError> {
+        use crate::repository_effect::{self, MAX_FRAME, Request};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let ExecutionBinding::Scoped(execution) = self
+            .execution
+            .get_or_init(|| ExecutionBinding::Unsupervised)
+        else {
+            return Ok(None);
+        };
+        let bytes = Request::new(
+            self.root.root(),
+            self.require_root_identity()?,
+            plan,
+            publication,
+            credential,
+        )
+        .encode()?;
+        let mut command = pc::MaterializedCommand::new([
+            execution.helper.to_string_lossy().into_owned(),
+            "repository-effect".into(),
+        ]);
+        command.cwd = self.root.root().to_string_lossy().into_owned();
+        command.stdio = pc::Stdio::Piped;
+        // This is Worker-side transport, not Agent execution. Preserve the
+        // existing direct Git caller's ambient environment, with opaque values;
+        // never resolve or inherit Session base_env (including loader knobs).
+        command.env = std::env::vars_os()
+            .map(|(name, value)| {
+                Ok(pc::MaterializedEnvVar {
+                    name: name
+                        .into_string()
+                        .map_err(|_| err("repository environment name is not Unicode"))?,
+                    value: pc::MaterializedEnvValue::Secret(
+                        value
+                            .into_string()
+                            .map_err(|_| err("repository environment value is not Unicode"))?
+                            .into(),
+                    ),
+                })
+            })
+            .collect::<Result<Vec<_>, pc::SandboxError>>()?;
+        for variable in repository_effect::environment(self.root.root(), credential) {
+            command.env.retain(|current| current.name != variable.name);
+            command.env.push(variable);
+        }
+        let prepared = PreparedCommand {
+            command,
+            cwd: self.root.root().to_owned(),
+        };
+        let mut process = execution
+            .spawn_prepared(self, async { Ok(prepared) }, pc::Stdio::Piped.into())
+            .await?;
+        let mut input = process
+            .take_stdin()
+            .ok_or_else(|| err("repository input pipe missing"))?;
+        let output = process
+            .take_stdout()
+            .ok_or_else(|| err("repository output pipe missing"))?;
+        let error = process
+            .take_stderr()
+            .ok_or_else(|| err("repository error pipe missing"))?;
+        // Register before any I/O wait. The existing sweep can refresh this
+        // operation; cancellation drops the same last-owner handle and leaves
+        // durable participant evidence until the complete tree is absent.
+        let process = execution.track(process)?;
+        let write = async move {
+            input.write_all(&bytes).await?;
+            input.shutdown().await?;
+            // ChildStdin shutdown need not close the pipe. The bounded codec
+            // reads to EOF, so release the writer before joining its response.
+            drop(input);
+            Ok::<_, io::Error>(())
+        };
+        let read = async {
+            let mut bytes = Vec::new();
+            output
+                .take((MAX_FRAME + 1) as u64)
+                .read_to_end(&mut bytes)
+                .await?;
+            Ok::<_, io::Error>(bytes)
+        };
+        let drain = async {
+            let mut sink = tokio::io::sink();
+            tokio::io::copy(&mut error.take((MAX_FRAME + 1) as u64), &mut sink).await
+        };
+        let (written, output, drained, status) = tokio::join!(write, read, drain, process.wait());
+        // Business stdout alone is never an exit/cleanup receipt. Do not expose
+        // malformed process bytes or stderr in errors (they may contain secrets).
+        written.map_err(|_| err("repository request delivery failed"))?;
+        drained.map_err(|_| err("repository error stream failed"))?;
+        let status = status?;
+        if status.code != Some(0) || status.signaled {
+            return Err(err("repository helper failed"));
+        }
+        let output = output.map_err(|_| err("repository response delivery failed"))?;
+        if output.len() > MAX_FRAME {
+            return Err(err("repository response too large"));
+        }
+        serde_json::from_slice(&output)
+            .map(Some)
+            .map_err(|_| err("repository response invalid"))
+    }
+
     pub(super) fn select_execution_boundary(
         &self,
         deployment: &LocalExecutionDeployment,
@@ -216,6 +324,16 @@ impl ScopedExecution {
         command: pc::Command,
         stdio: ScopedStdio,
     ) -> Result<ScopedProcess, pc::SandboxError> {
+        self.spawn_prepared(sandbox, sandbox.build_command(command), stdio)
+            .await
+    }
+
+    async fn spawn_prepared(
+        &self,
+        sandbox: &LocalSandbox,
+        prepare: impl std::future::Future<Output = Result<PreparedCommand, pc::SandboxError>>,
+        stdio: ScopedStdio,
+    ) -> Result<ScopedProcess, pc::SandboxError> {
         let evidence = sandbox
             .realization
             .current()
@@ -238,7 +356,7 @@ impl ScopedExecution {
         .map_err(err)?;
         let deadline =
             deadline.ok_or_else(|| err("current authority omitted execution deadline"))?;
-        let prepared = sandbox.build_command(command).await?;
+        let prepared = prepare.await?;
         ScopedProcess::spawn_authorized(
             &self.launcher,
             &self.helper,

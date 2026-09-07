@@ -121,8 +121,8 @@ pub(super) fn validate_credentialed_git_transport(
     })
 }
 
-const GIT_CREDENTIAL_USERNAME_ENV: &str = "AWAKEN_GIT_CREDENTIAL_USERNAME";
-const GIT_CREDENTIAL_PASSWORD_ENV: &str = "AWAKEN_GIT_CREDENTIAL_PASSWORD";
+pub(crate) const GIT_CREDENTIAL_USERNAME_ENV: &str = "AWAKEN_GIT_CREDENTIAL_USERNAME";
+pub(crate) const GIT_CREDENTIAL_PASSWORD_ENV: &str = "AWAKEN_GIT_CREDENTIAL_PASSWORD";
 const GIT_CREDENTIAL_PROTOCOL_ENV: &str = "AWAKEN_GIT_CREDENTIAL_PROTOCOL";
 const GIT_CREDENTIAL_AUTHORITY_ENV: &str = "AWAKEN_GIT_CREDENTIAL_AUTHORITY";
 const GIT_CREDENTIAL_HELPER: &str = "!f() { [ \"$1\" = get ] || exit 0; protocol=; host=; while IFS='=' read -r key value; do [ -n \"$key\" ] || break; case \"$key\" in protocol) protocol=$value ;; host) host=$value ;; esac; done; [ \"$protocol\" = \"$AWAKEN_GIT_CREDENTIAL_PROTOCOL\" ] || exit 0; [ \"$host\" = \"$AWAKEN_GIT_CREDENTIAL_AUTHORITY\" ] || exit 0; printf '%s\\n' \"username=$AWAKEN_GIT_CREDENTIAL_USERNAME\" \"password=$AWAKEN_GIT_CREDENTIAL_PASSWORD\"; }; f";
@@ -141,6 +141,10 @@ fn git_command_output(
     args: &[&str],
     authentication: GitAuthentication<'_>,
 ) -> Result<std::process::Output, SandboxError> {
+    let redaction = match &authentication {
+        GitAuthentication::Local => None,
+        GitAuthentication::Network { credential, .. } => *credential,
+    };
     let mut command = std::process::Command::new("git");
     command
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -258,10 +262,18 @@ fn git_command_output(
         .output()
         .map_err(|error| SandboxError(format!("git {}: {error}", args.first().unwrap_or(&""))))?;
     if !output.status.success() {
+        let mut detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        if let Some(credential) = redaction {
+            for secret in [credential.expose_password(), credential.expose_username()] {
+                if !secret.is_empty() {
+                    detail = detail.replace(secret, "[REDACTED]");
+                }
+            }
+        }
         return Err(SandboxError(format!(
             "git {} failed: {}",
             args.first().unwrap_or(&""),
-            String::from_utf8_lossy(&output.stderr).trim()
+            detail
         )));
     }
     Ok(output)
@@ -340,4 +352,42 @@ pub(crate) fn git_stdout(cwd: Option<&Path>, args: &[&str]) -> Result<String, Sa
 
 pub(crate) fn git_bytes(cwd: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, SandboxError> {
     git_run(cwd, args).map(|output| output.stdout)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_git_stderr_redacts_command_credentials_at_the_canonical_seam() {
+        // R1 failed credentialed child echoes username/password -> retain
+        // diagnostic context, redact both exact values before any caller/codec.
+        // R2 anonymous failure -> retain ordinary stderr. Real Git alias emits
+        // controlled bytes; no global env mutation, remote server or real secret.
+        let credential = awaken_provisioning_contract::RepositoryHttpBasicCredential::new(
+            "unique-http-user".to_owned(),
+            "unique-http-password".to_owned(),
+        );
+        let endpoint = "https://example.invalid/repo";
+        for material in [Some(&credential), None] {
+            let error = git_command_output(
+                None,
+                &["-c",
+                  r#"alias.fixture=!printf 'failure-context %s %s' "$AWAKEN_GIT_CREDENTIAL_USERNAME" "$AWAKEN_GIT_CREDENTIAL_PASSWORD" >&2; exit 1"#,
+                  "fixture"],
+                GitAuthentication::Network {
+                    credential: material,
+                    transport: validate_credentialed_git_transport(endpoint, material).unwrap(),
+                    alternate_objects: None,
+                },
+            ).unwrap_err().to_string();
+            assert!(error.contains("failure-context"));
+            assert!(!error.contains(credential.expose_username()));
+            assert!(!error.contains(credential.expose_password()));
+            assert_eq!(
+                error.matches("[REDACTED]").count(),
+                if material.is_some() { 2 } else { 0 }
+            );
+        }
+    }
 }

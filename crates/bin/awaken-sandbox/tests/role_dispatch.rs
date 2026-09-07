@@ -124,6 +124,32 @@ fn no_role_prints_usage_and_fails() {
 }
 
 #[test]
+fn repository_effect_role_rejects_invalid_input_without_echoing_payload() {
+    // D3 Linux empty request -> bounded codec failure; unexpected argv -> usage.
+    // D4 non-Linux -> unsupported internal role, never a host Git fallback.
+    // Command::output closes stdin; a missing EOF would hang this entrypoint.
+    for args in [
+        vec!["repository-effect"],
+        vec!["repository-effect", "synthetic-private-argument"],
+    ] {
+        let (ok, text) = run(&args);
+        assert!(!ok);
+        assert!(!text.contains("synthetic-private-argument"));
+        if cfg!(target_os = "linux") && args.len() == 1 {
+            assert!(
+                text.contains("repository-effect transport failed"),
+                "{text}"
+            );
+        } else {
+            assert!(
+                text.contains("repository-effect (Linux internal role)"),
+                "{text}"
+            );
+        }
+    }
+}
+
+#[test]
 fn tree_reader_projects_an_absent_root_as_an_empty_archive() {
     /* Tree-reader decision table. Causes: C1 root is absent; C2 root is an
      * exact directory; C3 root is a non-directory. Effects: E1 emit a valid

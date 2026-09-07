@@ -780,6 +780,49 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "LocalProcessRefresh", refresh_source, refresh_config,
                               refresh_mutations, dependencies=("LocalProcessLifecycle",))
     print("Local refresh mutation score: 3/3 killed; both skip/error outcomes reachable")
+    # Repository R1-R3 compose the same kernel. Test response-only acceptance,
+    # leader-only wait, malformed response, failed exit, cancelled caller and
+    # Worker crash separately; witnesses require useful and adverse schedules.
+    source = (ROOT / "formal/tla/LocalRepositoryEffect.tla").read_text()
+    config = (ROOT / "formal/tla/LocalRepositoryEffect.cfg").read_text()
+    header = config.split("INVARIANTS\n", 1)[0]
+    mutations = []
+    for replacements, oracle, temporal in [
+        ([('/\\ repositoryReply = "valid" /\\ repositoryStatus = "success"\n  /\\ initState = "exited"',
+           '/\\ repositoryReply = "valid"')], "RepositoryReturnRequiresExit", False),
+        ([('workloadStarted /\\ initState = "exited" /\\ repositoryStatus = "none"',
+           'workloadStarted /\\ ~leaderAlive /\\ repositoryStatus = "none"'),
+          ('\n  /\\ initState = "exited"\n  /\\ repositoryCaller\'',
+           '\n  /\\ ~leaderAlive\n  /\\ repositoryCaller\'')],
+         "RepositoryReturnRequiresExit", False),
+        ([('repositoryReply = "valid" /\\ repositoryStatus = "success"',
+           'repositoryReply # "none" /\\ repositoryStatus = "success"')],
+         "RepositoryReturnRequiresValidReply", False),
+        ([('repositoryReply = "valid" /\\ repositoryStatus = "success"',
+           'repositoryReply = "valid" /\\ repositoryStatus # "none"')],
+         "RepositoryReturnRequiresSuccess", False),
+        ([('repositoryCaller = "waiting" /\\ phase = "owned"',
+           'repositoryCaller # "returned" /\\ phase = "owned"')],
+         "RepositoryCancellationIsTerminal", True),
+        ([('repositoryCaller = "waiting" /\\ phase = "owned"',
+           'repositoryCaller = "waiting"')],
+         "RepositoryCrashCannotReturn", True),
+    ]:
+        mutant = source
+        for anchor, broken in replacements:
+            if mutant.count(anchor) != 1:
+                raise SystemExit(f"Repository effect mutation anchor drifted: {oracle}")
+            mutant = mutant.replace(anchor, broken)
+        keyword = "PROPERTIES" if temporal else "INVARIANTS"
+        mutations.append((mutant, header + f"{keyword} {oracle}\n", oracle))
+    for witness in ("NoRepositoryReturnReached", "NoEarlyRepositoryReplyReached",
+                    "NoCancelledRepositoryExitReached"):
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "LocalRepositoryEffect", source, config, mutations,
+                              dependencies=("LocalProcessLifecycle",),
+                              action_properties={"RepositoryCancellationIsTerminal",
+                                                 "RepositoryCrashCannotReturn"})
+    print("Local Repository effect mutation score: 6/6 killed; 3 schedules reachable")
     # D9-D14: sampling the OS anchor AFTER the authority wait must mint time;
     # removing expiry rejection must invoke a stale effect. Each oracle is exact.
     source = (ROOT / "formal/tla/LocalProcessDeadline.tla").read_text()

@@ -3,6 +3,9 @@ use awaken_provisioning_contract::{CurrentExecutionAuthority, Sandbox as _};
 use awaken_sandbox_local::LocalProvider;
 use std::sync::{Arc, Mutex};
 
+#[path = "repository.rs"]
+mod repository;
+
 struct Authority(
     Mutex<(Option<Duration>, usize, bool)>,
     Mutex<Option<AuthorityPause>>,

@@ -929,6 +929,8 @@ pub use provider::execution::LocalExecutionDeployment;
 mod read_only_tree;
 mod realization_marker;
 mod repo_bundle;
+#[cfg(target_os = "linux")]
+pub mod repository_effect;
 // The provider resolves mount bytes from an injected [`pc::BlobSource`] port
 // (ADR-0038 D6, dependency-inverted) — this worker-tier crate links no durable
 // store; the composition root adapts the content-addressed store to the port.

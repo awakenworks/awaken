@@ -277,14 +277,29 @@ mod linux {
     pub(crate) fn pidfd_exited(init: &OwnedFd) -> io::Result<bool> {
         use rustix::event::{PollFd, PollFlags, Timespec, poll};
         let mut fds = [PollFd::new(init, PollFlags::IN)];
-        poll(
+        let observation = poll(
             &mut fds,
             Some(&Timespec {
                 tv_sec: 0,
                 tv_nsec: 0,
             }),
-        )?;
-        let observed = fds[0].revents();
+        )
+        .map(|_| fds[0].revents());
+        classify_pidfd_observation(observation)
+    }
+
+    fn classify_pidfd_observation(
+        observation: rustix::io::Result<rustix::event::PollFlags>,
+    ) -> io::Result<bool> {
+        use rustix::event::PollFlags;
+        let observed = match observation {
+            // A zero-timeout poll may still be interrupted by SIGCHLD.
+            // No observation is no receipt: retain pending and let the
+            // existing async waiter retry, without spinning under signals.
+            Err(rustix::io::Errno::INTR) => return Ok(false),
+            Err(error) => return Err(error.into()),
+            Ok(observed) => observed,
+        };
         if observed.intersects(PollFlags::NVAL | PollFlags::ERR) {
             return Err(invalid());
         }
@@ -294,6 +309,25 @@ mod linux {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn interrupted_pidfd_poll_is_pending_not_exit_or_permanent_failure() {
+            // P1 EINTR/empty -> no quiescence receipt, existing waiter retries;
+            // P2 IN/HUP -> exact exit; P3 invalid/error flags dominate even IN;
+            // P4 other syscall failure remains unknown/error. Pure seam keeps
+            // signals deterministic and does not install process-global handlers.
+            use rustix::{event::PollFlags as F, io::Errno};
+            for observation in [Err(Errno::INTR), Ok(F::empty())] {
+                assert!(!classify_pidfd_observation(observation).unwrap());
+            }
+            for flags in [F::IN, F::HUP, F::IN | F::HUP] {
+                assert!(classify_pidfd_observation(Ok(flags)).unwrap());
+            }
+            for flags in [F::NVAL, F::ERR, F::NVAL | F::IN, F::ERR | F::HUP] {
+                assert!(classify_pidfd_observation(Ok(flags)).is_err());
+            }
+            assert!(classify_pidfd_observation(Err(Errno::BADF)).is_err());
+        }
+
         #[test]
         fn recovery_identity_decoding_requires_exact_boot_and_descendant_init() {
             // I1 exact boot UUID + matching Pid/NSpid ending in 1 => identity;
