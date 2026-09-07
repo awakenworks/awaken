@@ -51,13 +51,8 @@ async fn seatbelt_hand_reads_the_session_mount_when_the_host_mnt_exists() {
     };
     let sandbox = provider.create_sandbox(&spec).await.expect("namespace");
     let binary = binary_support::awaken_sandbox();
-    let mut command = pc::Command::new([
-        binary.as_str(),
-        "hand",
-        "--stdio",
-        "--mount-root",
-        "/mnt",
-    ]);
+    let mut command =
+        pc::Command::new([binary.as_str(), "hand", "--stdio", "--mount-root", "/mnt"]);
     command.cwd = "/workspace".into();
     let (process, channel) = sandbox.spawn_agent(command).await.expect("spawn Hand");
     let executor = RemoteToolExecutor::new(channel);

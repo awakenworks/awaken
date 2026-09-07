@@ -8,6 +8,12 @@
       "evidence": ["crates/contract/awaken-session-contract/src/lib.rs", "crates/devtools/awaken-scenario-host/src/realization_observation.rs", "e2e/managed_mcp_recovery_e2e.ts"]
     },
     {
+      "path": "crates/contract/awaken-provisioning-contract/src/test_support.rs",
+      "boundary": "test_only",
+      "reason": "Static owner: one explicit revocable effect-authority fixture shared by provider tests. Dynamic path: tests install, renew or revoke its finite grant; the module is compiled only by cfg(any(test, feature = test-support)), not the default production graph. It is not a production clock or a second Session authority.",
+      "evidence": ["crates/contract/awaken-provisioning-contract/src/lib.rs", "crates/contract/awaken-provisioning-contract/Cargo.toml"]
+    },
+    {
       "path": "crates/bin/awaken-cli/src/config/report.rs",
       "boundary": "presentation_only",
       "reason": "Formats an already-resolved deployment into redacted text or JSON; it owns no authorization, state transition, concurrency, or persistence decision.",

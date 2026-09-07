@@ -418,8 +418,13 @@ obligation when the development host is Linux.
 - `SandboxControlPublication.tla` covers the provider-neutral control-channel
   publication slot shared by local Namespace and container sandboxes: one live
   owner identity, stale-release fencing, finite identity exhaustion without
-  wraparound, and absorbing close. Provider sockets, Kubernetes Pods, process
-  lifetime, and kernel isolation remain executable or environmental evidence.
+  wraparound, absorbing close, and a retained task participant across two
+  concurrent/cancelled/retried disposers. Setup and serving share task admission;
+  Drop cannot release before join and completion cannot forget pending cleanup.
+  Conditional liveness assumes eventual task exit and fair retry/completion;
+  seven semantic mutants and four reachability witnesses guard this model in
+  the strict gate. Provider sockets, Kubernetes Pods, Rust/Tokio refinement,
+  process lifetime, and kernel isolation remain executable or environmental evidence.
 - `EvalEvidence.tla` covers only deterministic evaluation evidence handling:
   frozen dataset version, exactly-one observation validity, complete case
   classification before publication, and post-publication immutability.

@@ -9,6 +9,9 @@ context = "worker"
 layer = "contract"
 authority = "sandbox-provisioning"
 
+[features]
+test-support = []
+
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-sandbox-control.workspace = true

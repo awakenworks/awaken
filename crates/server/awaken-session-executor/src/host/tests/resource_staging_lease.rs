@@ -300,11 +300,13 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 closed.as_mut().enable();
                 let h = host.clone();
                 let expected = lease.clone();
+                let realization = host.session_slots.realization_lock(SESSION);
                 let mut revocation = tokio::spawn(async move {
                     if all {
                         h.revoke_all_session_realizations().await.map(|n| n != 0)
                     } else {
-                        h.revoke_session_realization(SESSION, Some(&expected)).await
+                        h.revoke_session_realization(SESSION, Some((&expected, &realization)))
+                            .await
                     }
                 });
                 tokio::time::timeout(std::time::Duration::from_secs(2), &mut closed)
@@ -1350,10 +1352,8 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
         *f.control.renewal_response_gate.lock().unwrap() = Some(gate.clone());
         let host = f.host.clone();
-        let now = f.now;
         let renewal = tokio::spawn(async move {
             host.renew_due_session_realizations(
-                now,
                 awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(30_000),
             )
             .await
@@ -1376,12 +1376,20 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
                 .unwrap()
                 .insert(SESSION.into(), expected.clone());
             f.host
-                .install_session_realization_lease(SESSION, expected.clone());
+                .install_session_realization_lease(SESSION, expected.clone())
+                .unwrap();
         } else {
+            // R17 extends the asserted Control expiry, not Worker wall time.
+            // The stalled first response has not installed its newer expiry.
+            expected.expires_at_unix_ms = f.lease.expires_at_unix_ms
+                + awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                    60_000,
+                )
+                .renew_interval()
+                .as_millis() as u64;
             assert_eq!(
                 f.host
                     .renew_due_session_realizations(
-                        f.now,
                         awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
                             60_000
                         )
@@ -1399,7 +1407,10 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
         );
         f.source.release.notify_one();
         assert_eq!(preparation.await.unwrap().is_err(), takeover);
-        assert_eq!(f.host.session_slots.realization_leases()[0].1, expected);
+        assert_eq!(
+            f.host.session_slots.realization_leases()[0].1.lease,
+            expected
+        );
         if takeover {
             f.assert_unpublished();
         } else {
@@ -1444,11 +1455,7 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
     }
     let started = std::time::Instant::now();
     while started.elapsed() < std::time::Duration::from_millis(ttl * 10) {
-        let now = crate::terminal_repository_publication::runtime_unix_now_ms();
-        f.host
-            .renew_due_session_realizations(now, timing)
-            .await
-            .unwrap();
+        f.host.renew_due_session_realizations(timing).await.unwrap();
         for (index, task) in tasks.iter().enumerate() {
             assert!(!task.is_finished(), "L1 session {index}");
             assert!(
@@ -1456,8 +1463,7 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
                     .session_slots
                     .read(&format!("soak-{index:02}"), |slot| slot.baseline.is_none()
                         && slot.resource_preparation.is_some()
-                        && slot.realization_lease.as_ref().unwrap().expires_at_unix_ms
-                            > now)
+                        && slot.realization_authority.remaining().is_some())
                     .unwrap()
             );
         }
@@ -1470,13 +1476,7 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
         .insert("soak-00".into(), ttl * 10);
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
         while !tasks[0].is_finished() {
-            let _ = f
-                .host
-                .renew_due_session_realizations(
-                    crate::terminal_repository_publication::runtime_unix_now_ms(),
-                    timing,
-                )
-                .await;
+            let _ = f.host.renew_due_session_realizations(timing).await;
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
     })

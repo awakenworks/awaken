@@ -11,79 +11,6 @@ use awaken_session_contract::RunError;
 
 use crate::{ManagedHost, to_run_error};
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-
-    #[test]
-    fn continuation_fence_keeps_control_coordinates_but_requires_current_local_proof() {
-        use crate::session_slot::SessionRealizationAuthority as Authority;
-        use awaken_session_contract::{SessionRealizationLease, SessionRealizationLeaseReceipt};
-        // F1 exact live receipt with Control expiry older than local wall time
-        // -> return the unchanged Control fence. F2 missing root, F3 expired
-        // observation, F4 closed root, F5 replaced incarnation -> reject before
-        // lowering a fence. These are adapter/call-path checks of the shared
-        // slot rule; provider-side expiry semantics are intentionally not mocked
-        // into a claim of end-to-end clock-skew compatibility.
-        let lease = SessionRealizationLease {
-            owner: "control".into(),
-            runtime_incarnation: "boot".into(),
-            epoch: 1,
-            expires_at_unix_ms: 30_000,
-        };
-        for (rule, admitted) in [
-            ("F1", true),
-            ("F2", false),
-            ("F3", false),
-            ("F4", false),
-            ("F5", false),
-        ] {
-            let host = Arc::new(crate::SharedHost::new(
-                Arc::new(crate::no_model::NoModelConfiguredExecutor),
-                "stub",
-            ));
-            let mut current = lease.clone();
-            if rule == "F5" {
-                current.runtime_incarnation.push_str("-new");
-            }
-            let authority = match rule {
-                "F2" => Authority::Uninstalled,
-                "F3" => Authority::Live(crate::session_slot::test_expired_observed_lease(current)),
-                "F4" => Authority::Closed(Some(current)),
-                _ => Authority::Live(
-                    SessionRealizationLeaseReceipt::issued_at(current, 0)
-                        .unwrap()
-                        .observed(awaken_local_process::authority_proof_started().unwrap()),
-                ),
-            };
-            host.session_slots
-                .update(rule, |slot| slot.realization_authority = authority);
-            let managed = ManagedHost::new(host);
-            let generation =
-                awaken_session_contract::SandboxGeneration::new(rule, 1, 30_000, "env", "image");
-            let operation = awaken_session_contract::SessionEnvironmentOperation::new(
-                "workspace",
-                rule,
-                "suspend",
-                &generation,
-                1,
-                Some(lease.clone()),
-                None,
-            );
-            let fence = managed.continuation_effect_fence(rule, &operation);
-            assert_eq!(fence.is_ok(), admitted, "{rule}");
-            if let Ok(fence) = fence {
-                assert_eq!(
-                    fence,
-                    lease.sandbox_effect_fence(&operation.effect_id).unwrap(),
-                    "{rule}/no rewritten expiry or identity"
-                );
-            }
-        }
-    }
-}
-
 /// The Runtime Host is the sole adapter from aggregate checkpoint intent to
 /// provider byte-custody input. Ordinary suspension and terminal takeover both
 /// call this projection so metadata, expiry, and effect identity cannot drift.
@@ -483,8 +410,17 @@ impl ManagedHost {
         }
         if let Some(materializations) = acknowledged_materializations {
             let effect_fence = self.continuation_preparation_effect_fence(thread, preparation)?;
+            let authority = self
+                .host
+                .session_slots
+                .provider_effect_authority(
+                    thread,
+                    &effect_fence,
+                    self.host.execution_authority.as_ref(),
+                )
+                .map_err(to_run_error)?;
             environment
-                .acknowledge_memory_reconciliation(&effect_fence, materializations)
+                .acknowledge_memory_reconciliation(&effect_fence, materializations, &authority)
                 .await
                 .map_err(|error| {
                     RunError::unavailable_classified(
@@ -643,5 +579,78 @@ impl ManagedHost {
             .delete(&checkpoint.id)
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn continuation_fence_keeps_control_coordinates_but_requires_current_local_proof() {
+        use crate::session_slot::SessionRealizationAuthority as Authority;
+        use awaken_session_contract::{SessionRealizationLease, SessionRealizationLeaseReceipt};
+        // F1 exact live receipt with Control expiry older than local wall time
+        // -> return the unchanged Control fence. F2 missing root, F3 expired
+        // observation, F4 closed root, F5 replaced incarnation -> reject before
+        // lowering a fence. These are adapter/call-path checks of the shared
+        // slot rule; provider-side expiry semantics are intentionally not mocked
+        // into a claim of end-to-end clock-skew compatibility.
+        let lease = SessionRealizationLease {
+            owner: "control".into(),
+            runtime_incarnation: "boot".into(),
+            epoch: 1,
+            expires_at_unix_ms: 30_000,
+        };
+        for (rule, admitted) in [
+            ("F1", true),
+            ("F2", false),
+            ("F3", false),
+            ("F4", false),
+            ("F5", false),
+        ] {
+            let host = Arc::new(crate::SharedHost::new(
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                "stub",
+            ));
+            let mut current = lease.clone();
+            if rule == "F5" {
+                current.runtime_incarnation.push_str("-new");
+            }
+            let authority = match rule {
+                "F2" => Authority::Uninstalled,
+                "F3" => Authority::Live(crate::session_slot::test_expired_observed_lease(current)),
+                "F4" => Authority::Closed(Some(current)),
+                _ => Authority::Live(
+                    SessionRealizationLeaseReceipt::issued_at(current, 0)
+                        .unwrap()
+                        .observed(awaken_local_process::authority_proof_started().unwrap()),
+                ),
+            };
+            host.session_slots
+                .update(rule, |slot| slot.realization_authority = authority);
+            let managed = ManagedHost::new(host);
+            let generation =
+                awaken_session_contract::SandboxGeneration::new(rule, 1, 30_000, "env", "image");
+            let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+                "workspace",
+                rule,
+                "suspend",
+                &generation,
+                1,
+                Some(lease.clone()),
+                None,
+            );
+            let fence = managed.continuation_effect_fence(rule, &operation);
+            assert_eq!(fence.is_ok(), admitted, "{rule}");
+            if let Ok(fence) = fence {
+                assert_eq!(
+                    fence,
+                    lease.sandbox_effect_fence(&operation.effect_id).unwrap(),
+                    "{rule}/no rewritten expiry or identity"
+                );
+            }
+        }
     }
 }

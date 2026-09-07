@@ -1224,8 +1224,12 @@ impl crate::SharedHost {
         else {
             return Ok(false);
         };
-        self.retire_selected_session_realization(session_id, selected, expected_projection.is_some())
-            .await
+        self.retire_selected_session_realization(
+            session_id,
+            selected,
+            expected_projection.is_some(),
+        )
+        .await
     }
 
     async fn retire_selected_session_realization(

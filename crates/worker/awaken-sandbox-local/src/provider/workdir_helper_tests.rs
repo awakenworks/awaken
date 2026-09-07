@@ -4,7 +4,7 @@ use awaken_provisioning_contract::{
     IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxSpec,
 };
 
-fn workdir_spec(scope: &str, deny_egress: bool) -> SandboxSpec {
+pub(super) fn workdir_spec(scope: &str, deny_egress: bool) -> SandboxSpec {
     SandboxSpec {
         process_tree_supervision: false,
         scope: scope.into(),
@@ -107,27 +107,37 @@ async fn trusted_host_realizes_readonly_resource_as_advisory_access() {
     );
 }
 
-struct FailedCreationMount {
-    teardowns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+pub(super) struct TeardownProbe {
+    pub(super) teardowns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub(super) drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub(super) failures: usize,
+    pub(super) wait_until_ms: Option<u64>,
 }
 
-impl Drop for FailedCreationMount {
+impl Drop for TeardownProbe {
     fn drop(&mut self) {
         self.drops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
 #[async_trait::async_trait]
-impl pc::MemoryMount for FailedCreationMount {
+impl pc::MemoryMount for TeardownProbe {
     fn realization(&self) -> pc::Realization {
         pc::Realization::Fuse
     }
 
     async fn teardown(&self) -> Result<(), pc::SandboxError> {
-        self.teardowns
+        let call = self
+            .teardowns
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Err(pc::SandboxError::new("injected teardown failure"))
+        if let Some(deadline) = self.wait_until_ms {
+            wait_until_wall_expiry(deadline).await;
+        }
+        if call < self.failures {
+            Err(pc::SandboxError::new("injected teardown failure"))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -158,9 +168,11 @@ impl pc::MemoryMounter for FailedCreationMounter {
         }
         std::fs::create_dir_all(host_path)
             .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        Ok(Box::new(FailedCreationMount {
+        Ok(Box::new(TeardownProbe {
             teardowns: self.teardowns.clone(),
             drops: self.drops.clone(),
+            failures: usize::MAX,
+            wait_until_ms: None,
         }))
     }
 }
@@ -715,6 +727,30 @@ async fn dynamic_inline_projection_handles_file_directory_and_missing_removal() 
 struct CheckpointStore {
     objects: std::sync::Mutex<HashMap<String, StoredTestCheckpoint>>,
     gets: std::sync::atomic::AtomicUsize,
+    pause: std::sync::Mutex<Option<(CheckpointPause, Arc<tokio::sync::Notify>)>>,
+    paused: tokio::sync::Notify,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CheckpointPause {
+    AfterPut,
+    AfterDelete,
+}
+
+impl CheckpointStore {
+    async fn pause_at(&self, at: CheckpointPause) {
+        let gate = self
+            .pause
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|(selected, _)| *selected == at)
+            .map(|(_, gate)| gate.clone());
+        if let Some(gate) = gate {
+            self.paused.notify_one();
+            gate.notified().await;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -745,26 +781,30 @@ impl pc::SandboxCheckpointStore for CheckpointStore {
             digest,
             size_bytes,
         };
-        let mut objects = self.objects.lock().unwrap();
-        match objects.get(&receipt.id) {
-            Some(stored) if stored.metadata == *metadata && stored.bytes == bytes => {
-                Ok(stored.receipt.clone())
+        let result = {
+            let mut objects = self.objects.lock().unwrap();
+            match objects.get(&receipt.id) {
+                Some(stored) if stored.metadata == *metadata && stored.bytes == bytes => {
+                    Ok(stored.receipt.clone())
+                }
+                Some(_) => Err(err(
+                    "checkpoint logical key is already bound to different metadata or bytes",
+                )),
+                None => {
+                    objects.insert(
+                        receipt.id.clone(),
+                        StoredTestCheckpoint {
+                            metadata: metadata.clone(),
+                            bytes,
+                            receipt: receipt.clone(),
+                        },
+                    );
+                    Ok(receipt)
+                }
             }
-            Some(_) => Err(err(
-                "checkpoint logical key is already bound to different metadata or bytes",
-            )),
-            None => {
-                objects.insert(
-                    receipt.id.clone(),
-                    StoredTestCheckpoint {
-                        metadata: metadata.clone(),
-                        bytes,
-                        receipt: receipt.clone(),
-                    },
-                );
-                Ok(receipt)
-            }
-        }
+        };
+        self.pause_at(CheckpointPause::AfterPut).await;
+        result
     }
 
     async fn get(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
@@ -779,6 +819,7 @@ impl pc::SandboxCheckpointStore for CheckpointStore {
 
     async fn delete(&self, id: &str) -> Result<(), pc::SandboxError> {
         self.objects.lock().unwrap().remove(id);
+        self.pause_at(CheckpointPause::AfterDelete).await;
         Ok(())
     }
 }
@@ -1016,9 +1057,14 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
     )
     .unwrap();
     assert!(
-        pc::Sandbox::acknowledge_memory_reconciliation(&replay, &terminal, &[mismatched],)
-            .await
-            .is_err(),
+        pc::Sandbox::acknowledge_memory_reconciliation(
+            &replay,
+            &terminal,
+            &[mismatched],
+            &pc::test_support::EffectAuthority::new(&terminal)
+        )
+        .await
+        .is_err(),
         "M3 mismatched evidence"
     );
     assert!(
@@ -1026,6 +1072,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
             &replay,
             &stale,
             std::slice::from_ref(&evidence),
+            &pc::test_support::EffectAuthority::new(&stale),
         )
         .await
         .is_err(),
@@ -1036,6 +1083,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         &replay,
         &terminal,
         std::slice::from_ref(&evidence),
+        &pc::test_support::EffectAuthority::new(&terminal),
     )
     .await
     .expect("M1 exact ack");
@@ -1043,6 +1091,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         &replay,
         &terminal,
         std::slice::from_ref(&evidence),
+        &pc::test_support::EffectAuthority::new(&terminal),
     )
     .await
     .expect("M1 response-loss replay");
@@ -1061,6 +1110,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         &replay,
         &successor,
         std::slice::from_ref(&evidence),
+        &pc::test_support::EffectAuthority::new(&successor),
     )
     .await
     .expect("M4 same-lease successor");
@@ -1069,6 +1119,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
             &replay,
             &foreign,
             std::slice::from_ref(&evidence),
+            &pc::test_support::EffectAuthority::new(&foreign),
         )
         .await
         .is_err(),
@@ -1118,6 +1169,126 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         crate::terminal_copy_materializations(&no_memory, Some(&handle)).is_err(),
         "M2 extra"
     );
+}
+
+pub(super) fn wall_time_ms() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+}
+
+pub(super) async fn wait_until_wall_expiry(deadline: u64) {
+    // Exercise the provider's existing real wall-clock gate, not Tokio's virtual
+    // timer. Timeout fails the test if this host clock regresses/stalls.
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let remaining = deadline.saturating_sub(wall_time_ms());
+            if remaining == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(remaining.min(100))).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn terminal_checkpoint_cancellation_reuses_the_original_guard_and_upload_journal() {
+    // C1 resident={Ready,Removing}; C2 paused after={put,delete} committed but
+    // response not delivered; C3 second prepare/dispose attempts; C4 caller
+    // cancelled. Four rows C1 x C2: C3 cannot cross the held slot; C4 retains
+    // Removing guard (or Ready WAL); exact retry reuses the original journal,
+    // removes the object and allows ordinary authorized physical disposal.
+    for prepared in [false, true] {
+        for at in [CheckpointPause::AfterPut, CheckpointPause::AfterDelete] {
+            let tmp = tempfile::tempdir().unwrap();
+            let provider = LocalProvider::new(tmp.path());
+            let spec = workdir_spec("cancelled-terminal-checkpoint", false);
+            let create =
+                pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
+            let terminal =
+                pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX).unwrap();
+            let suspend =
+                pc::SandboxEffectFence::new("suspend", "owner", "runtime", 1, u64::MAX).unwrap();
+            let sandbox = Arc::new(
+                provider
+                    .create_sandbox_for_effect(&spec, &create, None)
+                    .await
+                    .unwrap(),
+            );
+            if prepared {
+                sandbox
+                    .prepare_disposal_for_effect(&terminal)
+                    .await
+                    .unwrap();
+            }
+            let store = Arc::new(CheckpointStore::default());
+            *store.pause.lock().unwrap() = Some((at, Arc::new(tokio::sync::Notify::new())));
+            let first = tokio::spawn({
+                let sandbox = sandbox.clone();
+                let store = store.clone();
+                let terminal = terminal.clone();
+                let suspend = suspend.clone();
+                async move {
+                    sandbox
+                        .cleanup_checkpoint_for_terminal(
+                            &checkpoint_request(),
+                            store.as_ref(),
+                            &suspend,
+                            &terminal,
+                        )
+                        .await
+                }
+            });
+            store.paused.notified().await;
+            assert!(
+                sandbox
+                    .prepare_disposal_for_effect(&terminal)
+                    .await
+                    .is_err(),
+                "C3 preparation is busy"
+            );
+            let authorization = crate::test_disposal_authorization(&terminal);
+            let mut disposal = Box::pin(sandbox.dispose_for_effect(&authorization));
+            tokio::select! {
+                biased;
+                result = &mut disposal => panic!("C3 concurrent cleanup escaped slot: {result:?}"),
+                () = std::future::ready(()) => {}
+            }
+            drop(disposal);
+            first.abort();
+            assert!(first.await.unwrap_err().is_cancelled());
+            assert_eq!(
+                sandbox.terminal_removal.lock().await.is_some(),
+                prepared,
+                "C4 preserves resident state"
+            );
+            *store.pause.lock().unwrap() = None;
+            sandbox
+                .cleanup_checkpoint_for_terminal(
+                    &checkpoint_request(),
+                    store.as_ref(),
+                    &suspend,
+                    &terminal,
+                )
+                .await
+                .unwrap();
+            assert!(store.objects.lock().unwrap().is_empty());
+            sandbox
+                .prepare_disposal_for_effect(&terminal)
+                .await
+                .unwrap();
+            sandbox
+                .dispose_for_effect(&crate::test_disposal_authorization(&terminal))
+                .await
+                .unwrap();
+        }
+    }
 }
 
 #[tokio::test]

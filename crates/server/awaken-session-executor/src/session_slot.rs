@@ -654,10 +654,14 @@ impl SessionRuntimeSlots {
     pub(crate) fn close_realization(
         &self,
         session: &str,
-        expected: Option<(&awaken_session_contract::SessionRealizationLease, &Arc<tokio::sync::Mutex<()>>)>,
+        expected: Option<(
+            &awaken_session_contract::SessionRealizationLease,
+            &Arc<tokio::sync::Mutex<()>>,
+        )>,
     ) -> Option<SessionRealizationRevocationSelection> {
         self.modify(session, |slot| {
-            if expected.is_some_and(|(_, realization)| !Arc::ptr_eq(&slot.realization, realization)) {
+            if expected.is_some_and(|(_, realization)| !Arc::ptr_eq(&slot.realization, realization))
+            {
                 return None;
             }
             SessionRealizationRevocationSelection::close(slot, expected.map(|(lease, _)| lease))

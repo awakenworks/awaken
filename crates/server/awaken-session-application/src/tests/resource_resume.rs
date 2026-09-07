@@ -127,7 +127,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                         id,
                         1,
                         active.skills()[0].clone(),
-                        directive.lease.clone(),
+                        directive.authority.lease.clone(),
                     )
                     .unwrap();
                 assert_eq!(
@@ -140,7 +140,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                 let activated = app
                     .activate_session_realization(ActivateSessionRealization {
                         session_id: id.into(),
-                        lease: directive.lease,
+                        lease: directive.authority.lease,
                         prepared_resource_revision: Some(1),
                         mcp_receipts: Vec::new(),
                     })
@@ -183,7 +183,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                     let settled = app
                         .activate_session_realization(ActivateSessionRealization {
                             session_id: id.into(),
-                            lease: next.lease.clone(),
+                            lease: next.authority.lease.clone(),
                             prepared_resource_revision: Some(2),
                             mcp_receipts: Vec::new(),
                         })
@@ -204,7 +204,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                     assert!(
                         app.activate_session_realization(ActivateSessionRealization {
                             session_id: id.into(),
-                            lease: next.lease,
+                            lease: next.authority.lease,
                             prepared_resource_revision: Some(1),
                             mcp_receipts: Vec::new(),
                         })

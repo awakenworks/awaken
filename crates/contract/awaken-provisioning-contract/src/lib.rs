@@ -39,6 +39,9 @@ mod sandbox;
 mod spec;
 mod vocab;
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 pub use awaken_sandbox_control::SandboxControlServiceKind;
 
 pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness};

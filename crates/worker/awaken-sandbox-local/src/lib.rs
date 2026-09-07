@@ -210,15 +210,20 @@ pub(crate) fn terminal_copy_materializations(
 
 pub(crate) async fn teardown_memory_mounts(
     mounts: &[Box<dyn awaken_provisioning_contract::MemoryMount>],
+    mut authorize: impl FnMut() -> Result<(), awaken_provisioning_contract::SandboxError>,
 ) -> Result<(), awaken_provisioning_contract::SandboxError> {
     let mut failure = None;
     for mount in mounts {
+        authorize()?;
         if let Err(error) = mount.teardown().await
             && failure.is_none()
         {
             failure = Some(error);
         }
     }
+    // The next iteration checks after each non-final await. This final check
+    // also covers the empty set and precedes forgetting any retained guards.
+    authorize()?;
     failure.map_or(Ok(()), Err)
 }
 
@@ -310,12 +315,77 @@ mod memory_mount_release_tests {
                 }),
             ]);
 
-        assert!(super::release_memory_mounts(&mounts).await.is_err(), "R1");
+        assert!(
+            super::release_memory_mounts(&mounts, || Ok(()))
+                .await
+                .is_err(),
+            "R1"
+        );
         assert_eq!(mounts.lock().await.len(), 2, "R1");
-        super::release_memory_mounts(&mounts).await.expect("R2/R3");
+        super::release_memory_mounts(&mounts, || Ok(()))
+            .await
+            .expect("R2/R3");
         assert!(mounts.lock().await.is_empty(), "R3");
         assert_eq!(successful_calls.load(Ordering::SeqCst), 2, "R2");
         assert_eq!(retry_calls.load(Ordering::SeqCst), 2, "R2");
+    }
+
+    #[tokio::test]
+    async fn authorization_denial_retains_empty_or_populated_mount_sets() {
+        // C1 set size=0/1/2; C2 authorization denied before mount k or after
+        // the final await; C3 all checks succeed. R1 denial at k => only the
+        // preceding k mounts were entered, all guards retained, no Drop.
+        // R2 all-Ok => each mount once, then complete set Drop. Even an empty
+        // set must check authorization before returning a release receipt.
+        // Real async expiry/lock waits are covered by the Provider D10-D14
+        // matrix; this table isolates every callback branch without sleeps.
+        for count in 0..=2 {
+            for denied in (0..=count).map(Some).chain(std::iter::once(None)) {
+                let calls: Vec<_> = (0..count).map(|_| Arc::new(AtomicUsize::new(0))).collect();
+                let drops = Arc::new(AtomicUsize::new(0));
+                let mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>> =
+                    tokio::sync::Mutex::new(
+                        calls
+                            .iter()
+                            .map(|calls| {
+                                Box::new(CountedMount {
+                                    calls: calls.clone(),
+                                    drops: drops.clone(),
+                                    fail_first: false,
+                                    realization: pc::Realization::Fuse,
+                                }) as Box<dyn pc::MemoryMount>
+                            })
+                            .collect(),
+                    );
+                let mut checks = 0;
+                let result = super::release_memory_mounts(&mounts, || {
+                    let current = checks;
+                    checks += 1;
+                    if denied == Some(current) {
+                        Err(pc::SandboxError::new("expired callback evidence"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .await;
+                assert_eq!(result.is_err(), denied.is_some());
+                assert_eq!(checks, denied.unwrap_or(count) + 1);
+                for (index, calls) in calls.iter().enumerate() {
+                    assert_eq!(
+                        calls.load(Ordering::SeqCst),
+                        usize::from(index < denied.unwrap_or(count))
+                    );
+                }
+                assert_eq!(
+                    mounts.lock().await.len(),
+                    if denied.is_some() { count } else { 0 }
+                );
+                assert_eq!(
+                    drops.load(Ordering::SeqCst),
+                    if denied.is_some() { 0 } else { count }
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -448,16 +518,119 @@ mod memory_mount_release_tests {
     }
 
     #[tokio::test]
+    async fn memory_ack_rechecks_authority_after_mount_wait_and_on_replay() {
+        // Causes: C1 lock wait vs completed ack replay; C2 current authority
+        // live/renewed/revoked/zero/replaced; C3 caller cancelled while waiting.
+        // W1 live/renewed => drain Copy once, no teardown, authority guard held.
+        // W2 revoked/zero/replaced => deny, no new drain or ack; W3 cancellation
+        // => no effect. W4 successful ack followed by revocation => replay must
+        // fail, not return cached success. An explicit Pending poll proves the
+        // authorization change occurs AFTER request initiation and BEFORE grant.
+        use std::{future::Future, task::Poll, time::Duration};
+        for rule in [
+            "live",
+            "renewed",
+            "revoked",
+            "zero",
+            "replaced",
+            "cancelled",
+        ] {
+            let fence = pc::SandboxEffectFence::new("effect", "owner", "boot", 1, 100).unwrap();
+            let authority = pc::test_support::EffectAuthority::new(&fence);
+            let evidence =
+                vec![pc::MemoryMaterializationEvidence::new("store", "/memory", vec![]).unwrap()];
+            let ack = pc::MemoryReconciliationAck::default();
+            let drops = Arc::new(AtomicUsize::new(0));
+            let teardowns = Arc::new(AtomicUsize::new(0));
+            let mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>> =
+                tokio::sync::Mutex::new(vec![Box::new(CountedMount {
+                    calls: teardowns.clone(),
+                    drops: drops.clone(),
+                    fail_first: false,
+                    realization: pc::Realization::Copy,
+                })]);
+            let locked = mounts.lock().await;
+            let mut pending = Box::pin(super::acknowledge_memory_reconciliation(
+                &ack,
+                &mounts,
+                &fence,
+                &authority,
+                &evidence,
+                || Ok(evidence.clone()),
+                || {
+                    assert!(authority.current.try_lock().is_err(), "W1 held authority");
+                    Ok(())
+                },
+            ));
+            std::future::poll_fn(|cx| {
+                assert!(pending.as_mut().poll(cx).is_pending(), "W wait");
+                Poll::Ready(())
+            })
+            .await;
+            assert_eq!(drops.load(Ordering::SeqCst), 0, "W wait");
+            match rule {
+                "revoked" => *authority.current.lock().unwrap() = None,
+                "zero" => authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO,
+                "replaced" => authority.current.lock().unwrap().as_mut().unwrap().0.epoch += 1,
+                "renewed" => {
+                    authority
+                        .current
+                        .lock()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .0
+                        .expires_at_unix_ms += 100
+                }
+                "cancelled" => {
+                    drop(pending);
+                    drop(locked);
+                    assert_eq!(drops.load(Ordering::SeqCst), 0, "W3");
+                    continue;
+                }
+                "live" => {}
+                _ => unreachable!(),
+            }
+            drop(locked);
+            let allowed = matches!(rule, "live" | "renewed");
+            assert_eq!(pending.await.is_ok(), allowed, "W1/W2 {rule}");
+            assert_eq!(
+                drops.load(Ordering::SeqCst),
+                usize::from(allowed),
+                "W1/W2 {rule}"
+            );
+            assert_eq!(teardowns.load(Ordering::SeqCst), 0, "W1/W2");
+            if allowed {
+                *authority.current.lock().unwrap() = None;
+                assert!(
+                    super::acknowledge_memory_reconciliation(
+                        &ack,
+                        &mounts,
+                        &fence,
+                        &authority,
+                        &evidence,
+                        || Ok(evidence.clone()),
+                        || panic!("W4 cached acknowledgement cannot bypass revocation"),
+                    )
+                    .await
+                    .is_err(),
+                    "W4"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn terminal_ack_is_exact_effect_scoped_and_retires_only_copy_guards() {
         // Terminal-memory acknowledgement decision table. Causes: C1 supplied
         // evidence equals the complete canonical provider evidence (including
-        // order); C2 fence is live; C3 this process recorded no ack / the same
+        // order); C2 effect-bound current proof is live; C3 this process recorded no ack / the same
         // effect / a same-lease takeover / a foreign lease; C4 guard is
         // Copy/FUSE. Rules: A1 !C1 or
         // !C2 => reject before authorization or guard mutation; A2 C1+C2+no ack
         // => authorize once, drop every Copy without teardown, retain FUSE, and
         // record the full effect identity; A3 same-effect replay => success with
-        // no repeated authorization/drop; A4 same-lease takeover reauthorizes,
+        // current authority rechecked but no repeated marker mutation/drop; A4 same-lease takeover reauthorizes,
         // drains idempotently, and rebinds the ack; A5 foreign lease rejects
         // with the retained FUSE and ack unchanged. Disposal gating admits only
         // the latest effect recorded by A2/A4.
@@ -522,6 +695,7 @@ mod memory_mount_release_tests {
                 &ack,
                 &mounts,
                 &live,
+                &pc::test_support::EffectAuthority::new(&live),
                 &reversed,
                 || Ok(expected.clone()),
                 || {
@@ -538,6 +712,7 @@ mod memory_mount_release_tests {
                 &ack,
                 &mounts,
                 &expired,
+                &pc::test_support::EffectAuthority::denied(),
                 &expected,
                 || Ok(expected.clone()),
                 || {
@@ -557,6 +732,7 @@ mod memory_mount_release_tests {
             &ack,
             &mounts,
             &live,
+            &pc::test_support::EffectAuthority::new(&live),
             &expected,
             || Ok(expected.clone()),
             || {
@@ -575,6 +751,7 @@ mod memory_mount_release_tests {
             &ack,
             &mounts,
             &live,
+            &pc::test_support::EffectAuthority::new(&live),
             &expected,
             || Ok(expected.clone()),
             || {
@@ -588,6 +765,7 @@ mod memory_mount_release_tests {
             &ack,
             &mounts,
             &takeover,
+            &pc::test_support::EffectAuthority::new(&takeover),
             &expected,
             || Ok(expected.clone()),
             || {
@@ -611,6 +789,7 @@ mod memory_mount_release_tests {
                 &ack,
                 &mounts,
                 &foreign,
+                &pc::test_support::EffectAuthority::new(&foreign),
                 &expected,
                 || Ok(expected.clone()),
                 || {
@@ -631,9 +810,10 @@ mod memory_mount_release_tests {
 /// never be converted into successful root deletion.
 pub(crate) async fn release_memory_mounts(
     mounts: &tokio::sync::Mutex<Vec<Box<dyn awaken_provisioning_contract::MemoryMount>>>,
+    authorize: impl FnMut() -> Result<(), awaken_provisioning_contract::SandboxError>,
 ) -> Result<(), awaken_provisioning_contract::SandboxError> {
     let mut retained = mounts.lock().await;
-    teardown_memory_mounts(&retained).await?;
+    teardown_memory_mounts(&retained, authorize).await?;
     retained.clear();
     Ok(())
 }
@@ -646,6 +826,7 @@ pub(crate) async fn acknowledge_memory_reconciliation(
     acknowledgement: &awaken_provisioning_contract::MemoryReconciliationAck,
     mounts: &tokio::sync::Mutex<Vec<Box<dyn awaken_provisioning_contract::MemoryMount>>>,
     effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
+    authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
     supplied_materializations: &[awaken_provisioning_contract::MemoryMaterializationEvidence],
     expected_materializations: impl FnOnce() -> Result<
         Vec<awaken_provisioning_contract::MemoryMaterializationEvidence>,
@@ -659,6 +840,7 @@ pub(crate) async fn acknowledge_memory_reconciliation(
     let expected_materializations = expected_materializations()?;
     acknowledgement.acknowledge(
         effect_fence,
+        authority,
         &expected_materializations,
         supplied_materializations,
         || {
@@ -677,152 +859,9 @@ pub(crate) fn require_memory_reconciliation_ack(
     acknowledgement.require_for_disposal(expected_materializations, effect_fence)
 }
 
-/// Admit or refresh one exact filesystem removal participant. Both Local and
-/// Namespace use this sole provider authorization path before Copy guards are
-/// retired or disposal preparation is reported. Same-operation renewals retain
-/// the first durable predecessor; another operation cannot reuse it.
-pub(crate) fn authorize_terminal_disposal(
-    root: &Path,
-    realization: &realization_marker::LiveRealization,
-    terminal_removal: &std::sync::Mutex<Option<realization_marker::RemovalGuard>>,
-    effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
-) -> Result<
-    awaken_provisioning_contract::SandboxEffectFence,
-    awaken_provisioning_contract::SandboxError,
-> {
-    use awaken_provisioning_contract as pc;
-
-    let evidence = realization.current().ok_or_else(|| {
-        pc::SandboxError::new("legacy sandbox handle cannot authorize fenced Memory reconciliation")
-    })?;
-    let mut slot = terminal_removal
-        .lock()
-        .map_err(|_| pc::SandboxError::new("terminal removal lock poisoned"))?;
-    let mut removal = slot.take();
-    if removal.is_none() {
-        removal = realization_marker::begin_terminal_takeover(
-            root,
-            evidence.fingerprint(),
-            Some(realization_marker::RebuildSource {
-                fingerprint: evidence.fingerprint(),
-                effect_fence: evidence.effect_fence(),
-                physical_incarnation: evidence.physical_incarnation(),
-            }),
-            None,
-            effect_fence,
-            None,
-        )?
-        .map(|(_, removal)| removal);
-    }
-    let Some(mut removal) = removal else {
-        return Err(pc::SandboxError::new(
-            "Memory reconciliation lost its exact physical Sandbox participant",
-        ));
-    };
-    let prepared_effect_fence = match removal.prepare_disposal_effect(effect_fence) {
-        Ok(prepared_effect_fence) => prepared_effect_fence,
-        Err(error) => {
-            *slot = Some(removal);
-            return Err(error);
-        }
-    };
-    *slot = Some(removal);
-    Ok(prepared_effect_fence)
-}
-
-/// Validate the provider-neutral Memory acknowledgement and bind the exact
-/// filesystem removal participant without deleting or shredding any bytes.
-/// The aggregate persists successful preparation before invoking physical
-/// authorization; this process-local guard is only its provider projection.
-pub(crate) fn prepare_terminal_disposal(
-    acknowledgement: &awaken_provisioning_contract::MemoryReconciliationAck,
-    expected_materializations: &[awaken_provisioning_contract::MemoryMaterializationEvidence],
-    root: &Path,
-    realization: &realization_marker::LiveRealization,
-    terminal_removal: &std::sync::Mutex<Option<realization_marker::RemovalGuard>>,
-    effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
-) -> Result<
-    awaken_provisioning_contract::SandboxEffectFence,
-    awaken_provisioning_contract::SandboxError,
-> {
-    require_memory_reconciliation_ack(acknowledgement, expected_materializations, effect_fence)?;
-    authorize_terminal_disposal(root, realization, terminal_removal, effect_fence)
-}
-
-/// Consume one previously prepared exact filesystem participant. This is the
-/// sole Local/Namespace physical authorization owner: remaining FUSE mounts,
-/// credential bytes, the exact root, and finally the Removed marker are handled
-/// in that order. Any pre-delete failure restores the guard for exact replay.
-pub(crate) async fn dispose_terminal_realization(
-    memory_mounts: &tokio::sync::Mutex<Vec<Box<dyn awaken_provisioning_contract::MemoryMount>>>,
-    sandbox_root: &Path,
-    secret_paths: &[PathBuf],
-    terminal_removal: &std::sync::Mutex<Option<realization_marker::RemovalGuard>>,
-    authorization: &awaken_provisioning_contract::SandboxDisposalAuthorization,
-) -> Result<(), awaken_provisioning_contract::SandboxError> {
-    use awaken_provisioning_contract as pc;
-
-    let mut removal = terminal_removal
-        .lock()
-        .map_err(|_| pc::SandboxError::new("terminal removal lock poisoned"))?
-        .take()
-        .ok_or_else(|| {
-            pc::SandboxError::new(
-                "physical disposal requires an exact prepared filesystem participant",
-            )
-        })?;
-    if let Err(error) = removal.authorize_disposal(authorization) {
-        *terminal_removal
-            .lock()
-            .map_err(|_| pc::SandboxError::new("terminal removal lock poisoned"))? = Some(removal);
-        return Err(error);
-    }
-    if let Err(error) = release_memory_mounts(memory_mounts).await {
-        *terminal_removal
-            .lock()
-            .map_err(|_| pc::SandboxError::new("terminal removal lock poisoned"))? = Some(removal);
-        return Err(error);
-    }
-    if let Err(error) = shred_secret_paths_for_removal(&removal, sandbox_root, secret_paths) {
-        *terminal_removal
-            .lock()
-            .map_err(|_| pc::SandboxError::new("terminal removal lock poisoned"))? = Some(removal);
-        return Err(error);
-    }
-    if let Err(error) = removal.remove_root() {
-        *terminal_removal
-            .lock()
-            .map_err(|_| pc::SandboxError::new("terminal removal lock poisoned"))? = Some(removal);
-        return Err(error);
-    }
-    removal.finish()
-}
-
-fn shred_secret_paths_for_removal(
-    removal: &realization_marker::RemovalGuard,
-    sandbox_root: &Path,
-    secret_paths: &[PathBuf],
-) -> Result<(), awaken_provisioning_contract::SandboxError> {
-    let Some((owned_root, identity)) = removal.owned_root()? else {
-        return Ok(());
-    };
-    let owned = IsolatedRoot::new(owned_root);
-    let paths = secret_paths
-        .iter()
-        .map(|path| {
-            path.strip_prefix(sandbox_root)
-                .map(|relative| owned.root().join(relative))
-                .map_err(|_| {
-                    awaken_provisioning_contract::SandboxError::new(format!(
-                        "secret path `{}` is outside sandbox root `{}`",
-                        path.display(),
-                        sandbox_root.display()
-                    ))
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    shred_secret_paths_at(&owned, Some(identity), &paths)
-}
+pub(crate) use provider::terminal_disposal::{
+    authorize_terminal_disposal, dispose_terminal_realization, prepare_terminal_disposal,
+};
 
 /// Shred provider-selected credential paths through the one exact-root leaf.
 /// `None` is valid only for a marker-free legacy admission whose root is still

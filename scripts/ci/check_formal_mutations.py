@@ -489,6 +489,7 @@ def main() -> None:
     model_selection.add_argument("--resolution-failure-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--config-cas-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--background-completion-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--sandbox-control-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--audit-commit-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--effect-retirement-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--credential-removal-model-mutant", type=Path, metavar="TLC_JAR")
@@ -500,6 +501,7 @@ def main() -> None:
 
     model_selection.add_argument("--cowork-lifecycle-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--local-process-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--local-recovery-model-mutants", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
     if arguments.session_observation_trace_mutants is not None:
         if arguments.observation_trace_dir is None:
@@ -511,6 +513,12 @@ def main() -> None:
         return
     if arguments.cowork_lifecycle_model_mutants is not None:
         check_cowork_lifecycle_model_mutants(arguments.cowork_lifecycle_model_mutants)
+        return
+    if arguments.local_recovery_model_mutants is not None:
+        check_local_recovery_model_mutants(arguments.local_recovery_model_mutants)
+        return
+    if arguments.sandbox_control_model_mutants is not None:
+        check_sandbox_control_model_mutants(arguments.sandbox_control_model_mutants)
         return
     if arguments.realization_renewal_model_mutant is not None:
         check_realization_renewal_model_mutant(arguments.realization_renewal_model_mutant)
@@ -616,7 +624,7 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
         ("lock' = IF lock = w THEN NoLock ELSE lock", "lock' = lock", "NoParkedWaiterOwnsLock"),
         ("/\\ UNCHANGED <<privateGroup, dropPolicy, leaderAlive, descendantAlive,\n                  stopRequested, observedExit, signalVars>>",
          "/\\ descendantAlive' = FALSE\n  /\\ UNCHANGED <<privateGroup, dropPolicy, leaderAlive,\n                  stopRequested, observedExit, signalVars>>",
-         "CrashPreservesOSProcesses"),
+         "action:CrashPreservesOSProcesses"),
         ('signalAccepted\' = (outcome \\in {"accepted", "absent"})',
          'signalAccepted\' = (outcome \\in {"accepted", "absent"} \\/ ~leaderAlive)',
          "SignalDenialIsNotAcknowledged"),
@@ -626,8 +634,7 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
         if source.count(original) != 1:
             raise SystemExit(f"Local process mutation anchor drifted: {property_name}")
         mutations.append((source.replace(original, replacement), config, property_name))
-    check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, config, mutations,
-                              action_properties={"CrashPreservesOSProcesses"})
+    check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, config, mutations)
     print("Local process mutation score: 5/5 killed (spawn, backoff, cancellation, crash, denied signal)")
     # CG: close cannot pass an admitted launch; a leader-only observation or
     # empty observation without an accepted stop cannot publish quiescence.
@@ -663,8 +670,7 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
         if source.count(original) != 1:
             raise SystemExit(f"Local scope mutation anchor drifted: {property_name}")
         scope_mutations.append((source.replace(original, replacement), scope_config, property_name))
-    check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, scope_config, scope_mutations,
-                              action_properties={"CrashPreservesOSProcesses"})
+    check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, scope_config, scope_mutations)
     print("Local scope mutation score: 8/8 killed (final authority, revoke/grant exclusion, launch/close, descendants, accepted stop, early exec, early release, cancelled GO)")
     # NS decision table: NS1 workload exits before namespace init => no receipt;
     # NS2 init teardown leaves a detached member => not quiescent; NS3 exec after
@@ -680,7 +686,7 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
          "/\\ leaderAlive' = FALSE /\\ UNCHANGED descendantAlive\n  /\\ helperAlive' = FALSE",
          "BoundaryExitedHasNoMembers"),
         ("((~workloadStarted /\\ workloadStarted') => BoundaryRunnable)",
-         "TRUE", "BoundaryExecRequiresLiveCutoff"),
+         "TRUE", "action:BoundaryExecRequiresLiveCutoff"),
     ]
     boundary_mutations = []
     for original, replacement, property_name in boundary_replacements:
@@ -702,8 +708,7 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
         mutant = source.replace(guard, f'/\\ ({replacement}) /\\ initState\' = "stopping"')
         boundary_mutations.append((mutant, temporal_config, "temporal:BoundaryFailureEventuallyTerminates"))
     check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, boundary_config,
-                              boundary_mutations,
-                              action_properties={"BoundaryExecRequiresLiveCutoff"})
+                              boundary_mutations)
     print("Local boundary mutation score: 7/7 killed (init receipt, detached member, expired exec, owner/helper/control/deadline links)")
     # R1 no held current authority at write => unauthorized frame; R2 stale
     # frame overwrites cutoff => shortening; R3 late frame bypasses expiry =>
@@ -729,53 +734,18 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
          "temporal:RenewalPartialCannotStallClock", False),
     ]
     renewal_mutations = []
-    actions = set()
     for original, replacement, property_name, action in renewal_replacements:
         if source.count(original) != 1:
             raise SystemExit(f"Local renewal mutation anchor drifted: {property_name}")
-        if action:
-            actions.add(property_name)
         keyword = "PROPERTIES" if action or property_name.startswith("temporal:") else "INVARIANTS"
         selected = property_name.removeprefix("temporal:")
         selected_config = renewal_header + f"{keyword} {selected}\n"
-        renewal_mutations.append((source.replace(original, replacement), selected_config, property_name))
+        renewal_mutations.append((source.replace(original, replacement), selected_config,
+                                  "action:" + property_name if action else property_name))
     check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, renewal_config,
-                              renewal_mutations, action_properties=actions)
+                              renewal_mutations)
     print("Local renewal mutation score: 5/5 killed (current grant, stale cutoff, resurrection, transit time, partial stall)")
-    # REC1 omit WAL before GO; REC2 foreign observer becomes empty; REC3 leader
-    # exit substitutes for init exit; REC4-6 bypass the Session Hand/tree
-    # conjunction. Each mutant must violate its EXACT oracle,
-    # with the unchanged LocalProcessLifecycle dependency and a green baseline.
-    recovery_source = (ROOT / "formal/tla/LocalProcessRecovery.tla").read_text(encoding="utf-8")
-    recovery_config = (ROOT / "formal/tla/LocalProcessRecovery.cfg").read_text(encoding="utf-8")
-    recovery_header = recovery_config.split("INVARIANTS\n", 1)[0]
-    recovery_mutations = []
-    for original, replacement, property_name, action in [
-        ('=> markerRecorded /\\ markerLock = "launch"', '=> markerLock = "launch"',
-         "GoRequiresDurableParticipant", False),
-        ('ELSE IF ~observerKnown THEN "unknown"', 'ELSE IF ~observerKnown THEN "empty"',
-         "EffectsRequireKnownQuiescence", True),
-        ('ELSE IF initState \\in {"absent", "exited"} THEN "empty" ELSE "live"',
-         'ELSE IF ~leaderAlive THEN "empty" ELSE "live"',
-         "EffectsRequireKnownQuiescence", True),
-        ('recoveryObservation = "empty"\n  /\\ handQuiescent',
-         'recoveryObservation = "empty"', "EffectsRequireHandQuiescence", True),
-        ('/\\ ~sessionReceipt\n  /\\ handQuiescent',
-         '/\\ ~sessionReceipt', "SessionReceiptRequiresAllParticipants", True),
-        ('/\\ (~markerRecorded \\/ (observerKnown /\\ initState \\in {"absent", "exited"}))\n  /\\ sessionReceipt\' = TRUE',
-         '/\\ sessionReceipt\' = TRUE', "SessionReceiptRequiresAllParticipants", True),
-    ]:
-        if recovery_source.count(original) != 1:
-            raise SystemExit(f"Local recovery mutation anchor drifted: {property_name}")
-        keyword = "PROPERTIES" if action else "INVARIANTS"
-        recovery_mutations.append((recovery_source.replace(original, replacement),
-                                   recovery_header + f"{keyword} {property_name}\n", property_name))
-    check_tlc_model_mutations(tlc_jar, "LocalProcessRecovery", recovery_source, recovery_config,
-                              recovery_mutations, dependencies=("LocalProcessLifecycle",),
-                              action_properties={"EffectsRequireKnownQuiescence",
-                                                 "EffectsRequireHandQuiescence",
-                                                 "SessionReceiptRequiresAllParticipants"})
-    print("Local recovery mutation score: 6/6 killed (pre-GO WAL, unknown observer, leader-only receipt, Hand effect, Hand receipt, tree receipt)")
+    check_local_recovery_model_mutants(tlc_jar)
     # Refresh classification reuses the exact kernel model. F1 swallowing all
     # errors must fail safety; F2 the old unconditional error must fail benign
     # exit handling; F3 leader-only observation must fail exact-tree safety.
@@ -835,14 +805,12 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
                 raise SystemExit(f"Repository effect mutation anchor drifted: {oracle}")
             mutant = mutant.replace(anchor, broken)
         keyword = "PROPERTIES" if temporal else "INVARIANTS"
-        mutations.append((mutant, header + f"{keyword} {oracle}\n", oracle))
+        mutations.append((mutant, header + f"{keyword} {oracle}\n", "action:" + oracle if temporal else oracle))
     for witness in ("NoRepositoryReturnReached", "NoEarlyRepositoryReplyReached",
                     "NoCancelledRepositoryExitReached"):
         mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "LocalRepositoryEffect", source, config, mutations,
-                              dependencies=("LocalProcessLifecycle",),
-                              action_properties={"RepositoryCancellationIsTerminal",
-                                                 "RepositoryCrashCannotReturn"})
+                              dependencies=("LocalProcessLifecycle",))
     print("Local Repository effect mutation score: 6/6 killed; 3 schedules reachable")
     # D9-D14: sampling the OS anchor AFTER the authority wait must mint time;
     # removing expiry rejection must invoke a stale effect. Each oracle is exact.
@@ -864,6 +832,56 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "LocalProcessDeadline", source, config, mutations,
                               dependencies=("LocalProcessLifecycle",))
     print("Local deadline mutation score: 2/2 killed; accepted/expired conversion reachable")
+
+
+def check_local_recovery_model_mutants(tlc_jar: Path) -> None:
+    # One authority for the former recovery mutants and the async participant
+    # extension. REC1-6 retain GO/OS/Hand checks. D1 cancellation loses the file
+    # guard; D2 steals another borrow; D3-5/D9 skip fresh checks; D6-7 admit
+    # false control/unmount completion; D8 records Removed with a live root;
+    # D10 skips post-wait quiescence; D11 skips only the NEXT mount admission;
+    # D12 forgets the complete guard set after an expired final teardown.
+    # Exact oracles and a green base are required.
+    source = (ROOT / "formal/tla/LocalProcessRecovery.tla").read_text()
+    config = (ROOT / "formal/tla/LocalProcessRecovery.cfg").read_text()
+    header = config.split("INVARIANTS\n", 1)[0]
+    mutations = []
+    for original, replacement, oracle, action in [
+        ('=> markerRecorded /\\ markerLock = "launch"', '=> markerLock = "launch"', "GoRequiresDurableParticipant", False),
+        ('ELSE IF ~observerKnown THEN "unknown"', 'ELSE IF ~observerKnown THEN "empty"', "EffectsRequireKnownQuiescence", True),
+        ('ELSE IF initState \\in {"absent", "exited"} THEN "empty" ELSE "live"', 'ELSE IF ~leaderAlive THEN "empty" ELSE "live"', "EffectsRequireKnownQuiescence", True),
+        ('recoveryObservation = "empty"\n  /\\ handQuiescent', 'recoveryObservation = "empty"', "EffectsRequireHandQuiescence", True),
+        ('/\\ ~sessionReceipt\n  /\\ handQuiescent', '/\\ ~sessionReceipt', "SessionReceiptRequiresAllParticipants", True),
+        ('/\\ (~markerRecorded \\/ (observerKnown /\\ initState \\in {"absent", "exited"}))\n  /\\ sessionReceipt\' = TRUE', '/\\ sessionReceipt\' = TRUE', "SessionReceiptRequiresAllParticipants", True),
+        ('CancelCleanup ==\n  /\\ cleanupCaller \\in Waiters\n  /\\ cleanupCaller\' = NoLock /\\ cleanupStage\' = "idle"\n  /\\ UNCHANGED <<allBoundaryVars, renewalVars, markerVars,',
+         'CancelCleanup ==\n  /\\ cleanupCaller \\in Waiters\n  /\\ cleanupCaller\' = NoLock /\\ cleanupStage\' = "idle"\n  /\\ markerLock\' = "free"\n  /\\ UNCHANGED <<allBoundaryVars, renewalVars, markerPhase, markerRecorded, observerKnown, recoveryObservation, rootPresent, resourceEffect, deletion, handQuiescent, sessionReceipt,',
+         "CleanupCancellationRetainsParticipant", True),
+        ('EnterCleanup(c, operation) ==\n  /\\ markerLock = "remove" /\\ cleanupCaller = NoLock',
+         'EnterCleanup(c, operation) ==\n  /\\ markerLock = "remove"', "CleanupBorrowIsExclusive", True),
+        ('/\\ RecoveryQuiescent /\\ cleanupFenceLive', '/\\ RecoveryQuiescent', "CleanupEffectRequiresFreshFence", True),
+        ('cleanupStage \\in {"memory-admit", "memory-next"}\n  /\\ cleanupFenceLive /\\ RecoveryQuiescent', 'cleanupStage \\in {"memory-admit", "memory-next"}\n  /\\ RecoveryQuiescent', "CleanupEffectRequiresFreshFence", True),
+        ('cleanupStage \\in {"memory-admit", "memory-next"}\n  /\\ cleanupFenceLive /\\ RecoveryQuiescent', 'cleanupStage \\in {"memory-admit", "memory-next"}\n  /\\ (cleanupStage = "memory-next" \\/ cleanupFenceLive) /\\ RecoveryQuiescent', "CleanupEffectRequiresFreshFence", True),
+        ('cleanupStage = "memory-finish"\n  /\\ cleanupFenceLive /\\ RecoveryQuiescent', 'cleanupStage = "memory-finish"\n  /\\ RecoveryQuiescent', "CleanupEffectRequiresFreshFence", True),
+        ('cleanupStage = "physical"\n  /\\ cleanupFenceLive /\\ RecoveryQuiescent', 'cleanupStage = "physical"\n  /\\ RecoveryQuiescent', "CleanupEffectRequiresFreshFence", True),
+        ('controlQuiescent\' = TRUE /\\ cleanupStage\' = "memory-admit"', 'controlQuiescent\' = FALSE /\\ cleanupStage\' = "memory-admit"', "RootRemovalFollowsParticipants", False),
+        ('mountsReleased\' = TRUE /\\ cleanupStage\' = "physical"', 'mountsReleased\' = FALSE /\\ cleanupStage\' = "physical"', "RootRemovalFollowsParticipants", False),
+        ('/\\ cleanupFenceLive /\\ ~rootPresent', '/\\ cleanupFenceLive', "RemovedIsPhysical", False),
+        ('/\\ cleanupFenceLive /\\ ~rootPresent', '/\\ ~rootPresent', "CleanupEffectRequiresFreshFence", True),
+        ('cleanupStage = "physical"\n  /\\ cleanupFenceLive /\\ RecoveryQuiescent', 'cleanupStage = "physical"\n  /\\ cleanupFenceLive', "EffectsRequireKnownQuiescence", True),
+    ]:
+        if source.count(original) != 1:
+            raise SystemExit(f"Local recovery mutation anchor drifted: {oracle}")
+        keyword = "PROPERTIES" if action else "INVARIANTS"
+        mutations.append((source.replace(original, replacement), header + f"{keyword} {oracle}\n",
+                          "action:" + oracle if action else oracle))
+    for witness in ("NoCancelledCleanupReached", "NoQueuedCheckpointReached",
+                    "NoUnrecordedRemovalReached", "NoLostRemovedReceiptReached",
+                    "NoInterMountAdmissionReached"):
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "LocalProcessRecovery", source, config, mutations,
+                              dependencies=("LocalProcessLifecycle",),
+                              heap_mb=1024, timeout_seconds=240)
+    print("Local recovery mutation score: 18/18 killed; 5 async cleanup schedules reachable")
 
 
 def check_memory_copy_model_mutant(tlc_jar: Path) -> None:
@@ -940,13 +958,13 @@ def check_memory_copy_model_mutant(tlc_jar: Path) -> None:
         (r"/\ UNCHANGED <<copyVars, retSeen, retInFlight, retSaved, retDisposed>>",
          r"/\ retInFlight' = retInFlight \ {w}" + "\n"
          + r"    /\ UNCHANGED <<copyVars, retSeen, retSaved, retDisposed>>",
-         "RetCancellationPreservesRequest"),
+         "action:RetCancellationPreservesRequest"),
     ]:
         if source.count(original) != 1:
             raise SystemExit(f"Memory retention mutation anchor drifted: {invariant}")
         retention_mutants.append((source.replace(original, replacement), retention_config, invariant))
     check_tlc_model_mutations(tlc_jar, "MemoryCAS", source, retention_config,
-                              retention_mutants, action_properties={"RetCancellationPreservesRequest"})
+                              retention_mutants)
     print("Memory retention mutation score: 3/3 killed (durable ack, disposal, late commit)")
 
 
@@ -992,17 +1010,17 @@ def check_realization_publication_model_mutants(tlc_jar: Path) -> None:
     # Two witnesses prove recovery and response loss are actually reachable.
     source = (ROOT / "formal/tla/SessionRealizationMutex.tla").read_text()
     config = (ROOT / "formal/tla/SessionRealizationPublication.cfg").read_text()
+    header = config.split("INVARIANTS", 1)[0]
     mutations = []
     for anchor, broken, invariant in [
-        ("publish |-> @.staged \\cap ActiveGenerations", "publish |-> @.staged",
-         "PublicationUsesActiveReceipts"),
+        ("publish |-> PublicationCandidates(@.staged, ActiveGenerations)", "publish |-> @.staged",
+         "PublicationExcludesRetiredGenerations"),
         ("(publication[session].publish \\cup publication[session].drain)",
          "publication[session].publish", "LostActivationCanReplay"),
     ]:
         if source.count(anchor) != 1:
             raise SystemExit("Realization publication mutation anchor drifted; review the model")
-        mutations.append((source.replace(anchor, broken), config, invariant))
-    header = config.split("INVARIANTS", 1)[0]
+        mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
     for witness in ("NoRecoveredPublicationReached", "NoLostActivationReached"):
         mutations.append((source, header + "INVARIANTS " + witness, witness))
     check_tlc_model_mutations(tlc_jar, "SessionRealizationMutex", source, config, mutations)
@@ -1139,10 +1157,9 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
     # The negative elapsed branch must be reachable, not merely a guard over
     # impossible inputs. NoRegressionResponse is an action property, so the
     # existing oracle demands its named temporal counterexample.
-    mutations.append((source, header + "PROPERTY NoRegressionResponse", "NoRegressionResponse"))
+    mutations.append((source, header + "PROPERTY NoRegressionResponse", "action:NoRegressionResponse"))
     check_tlc_model_mutations(tlc_jar, "WorkerExecutionAuthority", source, config, mutations,
-                              dependencies=("SessionRealizationAuthority",),
-                              action_properties={"NoRegressionResponse"})
+                              dependencies=("SessionRealizationAuthority",))
     print("Worker execution authority: 7/7 mutants killed; admission/renewal/regression reachable")
     check_session_execution_binding_model_mutants(tlc_jar)
 
@@ -1171,7 +1188,8 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
         if source.count(anchor) != 1:
             raise SystemExit(f"Session execution binding mutation anchor drifted: {anchor}")
         property_kind = "PROPERTY" if invariant == "BindingIsWriteOnce" else "INVARIANTS"
-        mutations.append((source.replace(anchor, broken), header + property_kind + " " + invariant, invariant))
+        mutations.append((source.replace(anchor, broken), header + property_kind + " " + invariant,
+                          "action:" + invariant if property_kind == "PROPERTY" else invariant))
     # P1-P6 bypass each shared guard ONLY for a pre-Environment provider
     # callback. Execution-mode counterexamples cannot kill these mutants;
     # this prevents the new branch from borrowing the old branch's proof.
@@ -1187,17 +1205,27 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
             raise SystemExit(f"Provider fence source mutation anchor drifted: {anchor}")
         invariant = "OnlyCurrentBindingCommits"
         mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
+    # M1-M3: a queued request cannot commit before acquiring the mount lock;
+    # a cached Copy ack cannot skip current authority; replay cannot redrain.
+    for anchor, broken, invariant in [
+        ('/\\ memoryWait # 1\n', '/\\ TRUE\n', "OnlyCurrentBindingCommits"),
+        ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ (memoryDrains = 1 \\/ CurrentBinding)', "OnlyCurrentBindingCommits"),
+        ('IF memoryWait = 2 THEN 1 ELSE memoryDrains', 'IF memoryWait = 2 THEN memoryDrains + 1 ELSE memoryDrains', "MemoryCopyDrainedOnce"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"Memory acknowledgement mutation anchor drifted: {anchor}")
+        mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
     # Both topology paths must reach actual effects. Otherwise an accidental
     # mandatory Worker guard could make all direct-local safety checks vacuous.
     for witness in ("NoCandidateEffectReached", "NoResidentEffectReached",
                     "NoLocalEffectReached", "NoRegisteredEffectReached",
-                    "NoProviderEffectReached", "NoUnreadyProviderEffectReached"):
+                    "NoProviderEffectReached", "NoUnreadyProviderEffectReached",
+                    "NoMemoryAckReached", "NoMemoryReplayReached"):
         mutations.append((source, header + "INVARIANTS " + witness, witness))
     check_tlc_model_mutations(tlc_jar, "SessionExecutionBinding", source, config, mutations,
                               dependencies=("SessionRealizationAuthority", "WorkerExecutionAuthority"),
-                              action_properties={"BindingIsWriteOnce"},
                               heap_mb=2048, timeout_seconds=180)
-    print("Session execution binding: 17/17 mutants killed; candidate/resident, local/registered and pre-environment provider projections reachable")
+    print("Session execution binding: 20/20 mutants killed; execution, provider projection, Memory acknowledgement and replay reachable")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
@@ -1233,6 +1261,42 @@ def check_config_cas_model_mutant(tlc_jar: Path) -> None:
         (source.replace(guard, "expected[w] = generation"), config, "TypeOK"),
     ])
     print("Config CAS mutation score: 2/2 killed (absent-row predicate, exhaustion)")
+
+
+def check_sandbox_control_model_mutants(tlc_jar: Path) -> None:
+    # SC1 first close forgets participant; SC2 cancellation forgets it; SC3
+    # return skips join; SC4 Drop releases early; SC5 late start after cancel;
+    # SC6 join before exit; SC7 disable completion. Each uses the exact oracle
+    # and green baseline; four witnesses exclude unreachable race/terminal paths.
+    source = (ROOT / "formal/tla/SandboxControlPublication.tla").read_text()
+    config = (ROOT / "formal/tla/SandboxControlPublication.cfg").read_text()
+    header = config.split("INVARIANTS\n", 1)[0]
+    mutations = []
+    for anchor, broken, oracle, kind in [
+        ('retained\' = (phase = "Active")', "retained' = FALSE", "ReturnRequiresJoin", "INVARIANTS"),
+        ('closers\' = [closers EXCEPT ![i] = "Cancelled"]\n    /\\ UNCHANGED <<phase, nextLease, activeLease, staleLease, closedOnce,\n                   task, cancelled, retained>>',
+         'closers\' = [closers EXCEPT ![i] = "Cancelled"]\n    /\\ retained\' = FALSE\n    /\\ UNCHANGED <<phase, nextLease, activeLease, staleLease, closedOnce,\n                   task, cancelled>>',
+         "ReturnRequiresJoin", "INVARIANTS"),
+        ('/\\ (~retained \\/ task \\in Quiescent)', '/\\ TRUE', "ReturnRequiresJoin", "INVARIANTS"),
+        ('/\\ task \\in Quiescent\n    /\\ phase\' = "Vacant"', '/\\ phase\' = "Vacant"',
+         "ReleaseRequiresJoin", "INVARIANTS"),
+        ('phase = "Active" /\\ ~cancelled /\\ task = "Absent"',
+         'phase = "Active" /\\ task = "Absent"', "NoStartAfterCancellation", "PROPERTIES"),
+        ('JoinTask ==\n    /\\ task = "Exited"', 'JoinTask ==\n    /\\ task \\in {"Running", "Exited"}',
+         "JoinRequiresExit", "PROPERTIES"),
+        ('FinishClose(i) ==\n    /\\ closers[i] = "Waiting"', 'FinishClose(i) ==\n    /\\ FALSE\n    /\\ closers[i] = "Waiting"',
+         "temporal:DisposalEventuallyReturns", "PROPERTIES"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"Sandbox control mutation anchor drifted: {oracle}")
+        selected = oracle.removeprefix("temporal:")
+        mutations.append((source.replace(anchor, broken), header + f"{kind} {selected}\n",
+                          "action:" + oracle if kind == "PROPERTIES" and not oracle.startswith("temporal:") else oracle))
+    for witness in ("NoConcurrentWaitReached", "NoCancelledPendingReached",
+                    "NoFinishedDisposalReached", "NoDroppedPendingReached"):
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "SandboxControlPublication", source, config, mutations)
+    print("Sandbox control mutation score: 7/7 killed; 4 disposal/drop schedules reachable")
 
 
 def check_background_completion_model_mutant(tlc_jar: Path) -> None:
@@ -1394,12 +1458,9 @@ def check_session_observation_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "StoreHistory", history, config,
         [(mutant, config, "RecoveryPreservesExactCommittedMetadata")])
 
-    driver = (ROOT / "formal/tla/SessionRealizationMutex.tla").read_text()
-    config = (ROOT / "formal/tla/SessionRealizationRenewal.cfg").read_text().replace("INVARIANTS Safety", "INVARIANTS PublicationExcludesRetiredGenerations")
-    anchor = 'PublicationCandidates({"old", "new"}, {"new"})'
-    assert driver.count(anchor) == 1
-    check_tlc_model_mutations(tlc_jar, "SessionRealizationMutex", driver, config,
-        [(driver.replace(anchor, '{"old", "new"}'), config, "PublicationExcludesRetiredGenerations")])
+    # Publication partition and lost-response mutations belong to the same
+    # driver's check_realization_publication_model_mutants, already invoked by
+    # the strict renewal gate. Keep one owner instead of a second coarse graph.
     # S1-S3: a surviving resident Arc cannot bypass the physical observation.
     # Restore the old caller bypass in the existing owner model, then require
     # its named routing invariant to fail (not a parser/tool/timeout failure).
@@ -1415,7 +1476,7 @@ def check_session_observation_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "SessionEnvironmentProjection", projection, config,
         [(projection.replace(anchor, "LET observed == FALSE"), config,
           "ResidentSynchronizationObservesPhysicalOwner")])
-    print("Session observation model mutation score: 7/7 killed")
+    print("Session observation model mutations passed, including resident physical observation; publication uses the canonical renewal gate")
 
 
 def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:

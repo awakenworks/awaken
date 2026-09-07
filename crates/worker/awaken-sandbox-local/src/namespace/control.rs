@@ -3,12 +3,11 @@
 use super::*;
 use awaken_sandbox_control::{
     PublishedSandboxControlService, SANDBOX_CONTROL_DIRECTORY_PATH, SandboxControlPublicationLease,
-    SandboxControlPublicationSlot, SandboxControlPublishError, SandboxControlService,
-    SandboxControlServiceKind, SandboxControlServicePublisher,
+    SandboxControlPublicationSlot, SandboxControlPublicationTask, SandboxControlPublishError,
+    SandboxControlService, SandboxControlServiceKind, SandboxControlServicePublisher,
 };
 #[cfg(target_os = "linux")]
 use awaken_sandbox_control::{REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, serve_one};
-use tokio_util::sync::CancellationToken;
 
 #[cfg(target_os = "linux")]
 const PRIVATE_CONTROL_HOST_PARENT: &str = ".awaken-control";
@@ -106,34 +105,11 @@ fn unlink_if_identity(path: &std::path::Path, expected: SocketIdentity) {
 #[derive(Clone)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct NamespaceControlPublicationState {
-    cancel: CancellationToken,
-    task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    task: SandboxControlPublicationTask,
     socket: PathBuf,
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-impl NamespaceControlPublicationState {
-    async fn close_task(&self) {
-        self.cancel.cancel();
-        // Serialize every closer through completion of the same JoinHandle.
-        // `None` cannot be observed while another closer is still joining.
-        let mut task_slot = self.task.lock().await;
-        if let Some(task) = task_slot.as_mut() {
-            let _ = task.await;
-            task_slot.take();
-        }
-    }
-
-    fn abort_task(&self) {
-        self.cancel.cancel();
-        if let Ok(mut task) = self.task.try_lock()
-            && let Some(task) = task.take()
-        {
-            task.abort();
-        }
-    }
-}
-
+#[derive(Clone)]
 struct ActiveNamespaceControlPublication {
     state: NamespaceControlPublicationState,
     #[cfg(target_os = "linux")]
@@ -158,8 +134,7 @@ impl NamespaceControlPublicationRegistry {
         SandboxControlPublishError,
     > {
         let state = NamespaceControlPublicationState {
-            cancel: CancellationToken::new(),
-            task: Arc::new(tokio::sync::Mutex::new(None)),
+            task: SandboxControlPublicationTask::default(),
             socket,
         };
         let lease = self.slot.reserve(ActiveNamespaceControlPublication {
@@ -197,7 +172,7 @@ impl NamespaceControlPublicationRegistry {
         // critical section. Disposal can observe neither an ownerless active
         // generation nor an owned inode after clearing that generation.
         self.slot.with_current_mut(lease, |current| {
-            if state.cancel.is_cancelled() {
+            if state.task.cancellation().is_cancelled() {
                 return Err(SandboxControlPublishError);
             }
             while_active_locked();
@@ -206,7 +181,7 @@ impl NamespaceControlPublicationRegistry {
         })?
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg(all(test, target_os = "linux"))]
     fn release_reservation(&self, lease: &SandboxControlPublicationLease) {
         self.slot.release(lease);
     }
@@ -217,27 +192,33 @@ impl NamespaceControlPublicationRegistry {
         lease: &SandboxControlPublicationLease,
         _state: &NamespaceControlPublicationState,
     ) {
-        if self
-            .slot
-            .with_current_mut(lease, |_active| {
-                #[cfg(target_os = "linux")]
-                if let Some(identity) = _active.owned_socket.take() {
-                    unlink_if_identity(&_state.socket, identity);
-                }
-            })
-            .is_ok()
-        {
-            self.slot.release(lease);
-        }
+        self.unlink_owned(lease, _state);
+        self.slot.release(lease);
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn unlink_owned(
+        &self,
+        lease: &SandboxControlPublicationLease,
+        _state: &NamespaceControlPublicationState,
+    ) {
+        let _ = self.slot.with_retained_mut(lease, |_active| {
+            #[cfg(target_os = "linux")]
+            if let Some(identity) = _active.owned_socket.take() {
+                unlink_if_identity(&_state.socket, identity);
+            }
+        });
     }
 
     pub(super) async fn close_for_dispose(&self) {
         if let Some(active) = self.slot.close() {
-            active.state.close_task().await;
-            #[cfg(target_os = "linux")]
-            if let Some(identity) = active.owned_socket {
-                unlink_if_identity(&active.state.socket, identity);
-            }
+            active.state.task.close().await;
+            self.slot.finish_close(|_active| {
+                #[cfg(target_os = "linux")]
+                if let Some(identity) = _active.owned_socket.take() {
+                    unlink_if_identity(&_active.state.socket, identity);
+                }
+            });
         }
     }
 }
@@ -257,8 +238,7 @@ impl Drop for OwnedNamespaceControlListener {
         // descriptor alive prevents its inode from being recycled between the
         // ownership check and unlink; a replacement path therefore cannot be
         // mistaken for this generation even when the task exits unexpectedly.
-        self.registry
-            .cleanup_owned_if_active(&self.lease, &self.state);
+        self.registry.unlink_owned(&self.lease, &self.state);
     }
 }
 
@@ -271,16 +251,19 @@ struct NamespaceControlPublication {
 
 impl Drop for NamespaceControlPublication {
     fn drop(&mut self) {
-        self.state.abort_task();
-        self.registry
-            .cleanup_owned_if_active(&self.lease, &self.state);
+        let registry = self.registry.clone();
+        let lease = self.lease.clone();
+        let state = self.state.clone();
+        self.state
+            .task
+            .close_after_drop(move || registry.cleanup_owned_if_active(&lease, &state));
     }
 }
 
 #[async_trait]
 impl PublishedSandboxControlService for NamespaceControlPublication {
     async fn close(&self) {
-        self.state.close_task().await;
+        self.state.task.close().await;
         self.registry
             .cleanup_owned_if_active(&self.lease, &self.state);
     }
@@ -367,33 +350,40 @@ async fn publish_namespace_control_service(
         return Err(SandboxControlPublishError);
     }
     let (lease, state) = sandbox.control_publication.reserve(socket.clone())?;
-    let (listener, identity) = match bind_namespace_control_listener(&socket).await {
-        Ok(bound) => bound,
-        Err(error) => {
-            // Reservation never implies filesystem ownership. A bind failure
-            // cannot unlink an ambient live socket it did not create.
-            sandbox.control_publication.release_reservation(&lease);
-            return Err(error);
-        }
-    };
-    if sandbox
-        .control_publication
-        .record_owned_socket(&lease, &state, identity)
-        .is_err()
-    {
-        unlink_if_identity(&socket, identity);
-        sandbox.control_publication.release_reservation(&lease);
-        return Err(SandboxControlPublishError);
-    }
-    let task_cancel = state.cancel.clone();
-    let permits = Arc::new(tokio::sync::Semaphore::new(16));
-    let owned_listener = OwnedNamespaceControlListener {
-        listener,
+    let publication = NamespaceControlPublication {
         registry: sandbox.control_publication.clone(),
         lease: lease.clone(),
         state: state.clone(),
     };
-    let task = tokio::spawn(async move {
+    let task_cancel = state.task.cancellation();
+    let permits = Arc::new(tokio::sync::Semaphore::new(16));
+    let registry = sandbox.control_publication.clone();
+    let (ready, started) = tokio::sync::oneshot::channel();
+    publication.state.task.start(async move {
+        let bound = tokio::select! {
+            biased;
+            () = task_cancel.cancelled() => return,
+            bound = bind_namespace_control_listener(&socket) => bound,
+        };
+        let Ok((listener, identity)) = bound else {
+            return;
+        };
+        if registry
+            .record_owned_socket(&lease, &state, identity)
+            .is_err()
+        {
+            unlink_if_identity(&socket, identity);
+            return;
+        }
+        let owned_listener = OwnedNamespaceControlListener {
+            listener,
+            registry,
+            lease,
+            state,
+        };
+        if ready.send(()).is_err() {
+            return;
+        }
         let mut requests = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
@@ -427,23 +417,12 @@ async fn publish_namespace_control_service(
         }
         requests.abort_all();
         while requests.join_next().await.is_some() {}
-    });
-    {
-        let mut task_slot = state.task.lock().await;
-        if state.cancel.is_cancelled() || !sandbox.control_publication.owns(&lease) {
-            task.abort();
-            sandbox
-                .control_publication
-                .cleanup_owned_if_active(&lease, &state);
-            return Err(SandboxControlPublishError);
-        }
-        *task_slot = Some(task);
+    })?;
+    started.await.map_err(|_| SandboxControlPublishError)?;
+    if !sandbox.control_publication.owns(&publication.lease) {
+        return Err(SandboxControlPublishError);
     }
-    Ok(Box::new(NamespaceControlPublication {
-        registry: sandbox.control_publication.clone(),
-        lease,
-        state,
-    }))
+    Ok(Box::new(publication))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -556,6 +535,7 @@ mod tests {
         );
         drop(owned_listener);
         assert!(socket.exists(), "N3/E3");
+        registry.cleanup_owned_if_active(&first_lease, &first);
 
         let (second_lease, second) = registry.reserve(socket.clone()).unwrap();
         let replacement_identity = socket_identity(&socket).unwrap();
@@ -689,7 +669,7 @@ mod tests {
             .reserve(directory.path().join("control.sock"))
             .unwrap();
         registry.close_for_dispose().await;
-        assert!(state.cancel.is_cancelled(), "N5/E1");
+        assert!(state.task.cancellation().is_cancelled(), "N5/E1");
         assert!(
             registry
                 .reserve(directory.path().join("replacement.sock"))
@@ -746,49 +726,225 @@ mod tests {
     #[tokio::test]
     async fn concurrent_namespace_close_and_dispose_wait_for_one_join_completion() {
         /* Close-join table: C1=the publication task ignores cancellation at a
-         * barrier; C2=one close awaits its JoinHandle; C3=that close future is
-         * cancelled; C4=dispose arrives. E1=the JoinHandle remains recorded and
-         * C4 cannot remove/reopen; E2=dispose completes only after task exit.
-         * Rule N9 C1+C2+C3+C4=>E1+E2.
+         * barrier; C2=one registry dispose awaits its JoinHandle;
+         * C3=concurrent dispose; C4=cancel first disposal then retry.
+         * E1=all closers wait for task exit; E2=socket teardown follows join;
+         * E3=completed disposal never reopens. N9 C1+C2+C3=>E1;
+         * N10 C1+C2+C4=>E1+E2+E3 (not merely cancellation of direct task.close).
          */
         let registry = Arc::new(NamespaceControlPublicationRegistry::default());
         let directory = tempfile::tempdir().unwrap();
-        let (_, state) = registry
-            .reserve(directory.path().join("control.sock"))
+        let socket = directory.path().join("control.sock");
+        let (lease, state) = registry.reserve(socket.clone()).unwrap();
+        let (listener, identity) = bind_namespace_control_listener(&socket).await.unwrap();
+        registry
+            .record_owned_socket(&lease, &state, identity)
             .unwrap();
         let release = Arc::new(tokio::sync::Notify::new());
-        *state.task.lock().await = Some(tokio::spawn({
-            let release = release.clone();
-            async move { release.notified().await }
-        }));
+        state
+            .task
+            .start({
+                let release = release.clone();
+                async move { release.notified().await }
+            })
+            .unwrap();
         let first = tokio::spawn({
-            let state = state.clone();
-            async move { state.close_task().await }
+            let registry = registry.clone();
+            async move { registry.close_for_dispose().await }
         });
-        while state.task.try_lock().is_ok() {
-            tokio::task::yield_now().await;
+        state.task.cancellation().cancelled().await;
+        let disposal = registry.close_for_dispose();
+        tokio::pin!(disposal);
+        tokio::select! {
+            biased;
+            () = &mut disposal => panic!("N9 concurrent dispose returned before join"),
+            () = std::future::ready(()) => {}
         }
         first.abort();
         assert!(
             first.await.unwrap_err().is_cancelled(),
             "N9 cancelled close"
         );
-        assert!(state.task.lock().await.is_some(), "N9/E1");
-        let disposal = tokio::spawn({
-            let registry = registry.clone();
-            async move { registry.close_for_dispose().await }
-        });
-        tokio::task::yield_now().await;
-        assert!(!disposal.is_finished(), "N9/E1");
+        let retry = registry.close_for_dispose();
+        tokio::pin!(retry);
+        tokio::select! {
+            biased;
+            () = &mut retry => panic!("N10 retry returned before join"),
+            () = std::future::ready(()) => {}
+        }
+        assert!(socket.exists(), "N9/N10 no pre-join unlink");
         release.notify_one();
-        disposal.await.unwrap();
-        assert!(state.task.lock().await.is_none(), "N9/E2");
+        tokio::join!(disposal, retry);
+        assert!(!socket.exists(), "N10/E2");
+        assert!(registry.slot.close().is_none(), "N10 participant retired");
+        drop(listener);
         assert!(
             registry
                 .reserve(directory.path().join("replacement.sock"))
                 .is_err(),
             "N9 disposal remains irreversible"
         );
+    }
+
+    #[tokio::test]
+    async fn fenced_namespace_disposal_authorizes_then_joins_control_before_removing_root() {
+        // N13 invalid preparation => zero control cancellation/root mutation.
+        // N14 valid physical authorization + control task pending => original
+        // removal participant held, root/socket preserved. N15 cancel disposal
+        // and retry => both participants survive; only confirmed control exit
+        // permits root removal and the Removed terminal transition.
+        let base = tempfile::tempdir().unwrap();
+        let create =
+            pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
+        let terminal =
+            pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX).unwrap();
+        let foreign =
+            pc::SandboxEffectFence::new("foreign", "owner", "runtime", 1, u64::MAX).unwrap();
+        let sandbox = NamespaceProvider::new(base.path())
+            .create_sandbox_for_effect(&demanded_spec("namespace-terminal-order"), &create, None)
+            .await
+            .unwrap();
+        pc::Sandbox::prepare_disposal_for_effect(&sandbox, &terminal)
+            .await
+            .unwrap();
+        let socket = sandbox
+            .control_directory
+            .as_ref()
+            .unwrap()
+            .join("repository-git-credential.sock");
+        let (lease, state) = sandbox.control_publication.reserve(socket.clone()).unwrap();
+        let (listener, identity) = bind_namespace_control_listener(&socket).await.unwrap();
+        sandbox
+            .control_publication
+            .record_owned_socket(&lease, &state, identity)
+            .unwrap();
+        let release = Arc::new(tokio::sync::Notify::new());
+        state
+            .task
+            .start({
+                let release = release.clone();
+                async move { release.notified().await }
+            })
+            .unwrap();
+        assert!(
+            pc::Sandbox::dispose_for_effect(
+                &sandbox,
+                &crate::test_disposal_authorization(&foreign)
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            !state.task.cancellation().is_cancelled(),
+            "N13 no unauthorized shutdown"
+        );
+        let authorization = crate::test_disposal_authorization(&terminal);
+        let mut first = Box::pin(pc::Sandbox::dispose_for_effect(&sandbox, &authorization));
+        tokio::select! {
+            biased;
+            result = &mut first => panic!("N14 did not join control: {result:?}"),
+            () = std::future::ready(()) => {}
+        }
+        assert!(state.task.cancellation().is_cancelled());
+        assert!(sandbox.root.root().exists(), "N14 root before control join");
+        assert!(socket.exists(), "N14 socket before control join");
+        drop(first);
+        assert!(
+            sandbox.terminal_removal.lock().await.is_some(),
+            "N15 retained removal"
+        );
+        release.notify_one();
+        pc::Sandbox::dispose_for_effect(&sandbox, &authorization)
+            .await
+            .unwrap();
+        assert!(!sandbox.root.root().exists(), "N15 physical completion");
+        assert!(!socket.exists());
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn namespace_drop_and_dispose_drain_an_inflight_credential_request() {
+        // N11 real Unix codec has entered a pending request handler (JoinSet
+        // child); C2=publication Drop or explicit close; C3=registry dispose.
+        // E1=child future destroyed before disposal returns, not just parent
+        // aborted; E2=owned socket removed once; E3=repeat dispose cannot unlink
+        // a subsequently bound foreign socket. Rows N11 C1+C2+C3=>E1+E2;
+        // N12 completed+C3+replacement=>E3. No real credentials are used.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct PendingService {
+            entered: tokio::sync::Notify,
+            dropped: Arc<AtomicBool>,
+        }
+        struct RequestLifetime(Arc<AtomicBool>);
+        impl Drop for RequestLifetime {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        #[async_trait]
+        impl SandboxControlService for PendingService {
+            async fn handle(
+                &self,
+                _: awaken_sandbox_control::SandboxControlRequest,
+            ) -> awaken_sandbox_control::SandboxControlResponse {
+                let _lifetime = RequestLifetime(self.dropped.clone());
+                self.entered.notify_one();
+                std::future::pending().await
+            }
+        }
+        for drop_publication in [false, true] {
+            let base = tempfile::tempdir().unwrap();
+            let sandbox = NamespaceProvider::new(base.path())
+                .create_sandbox(&demanded_spec("namespace-drain"))
+                .await
+                .unwrap();
+            let service = Arc::new(PendingService {
+                entered: tokio::sync::Notify::new(),
+                dropped: Arc::new(AtomicBool::new(false)),
+            });
+            let publication = sandbox
+                .publish_sandbox_control_service(
+                    SandboxControlServiceKind::RepositoryGitCredential,
+                    service.clone(),
+                )
+                .await
+                .unwrap();
+            let socket = sandbox
+                .control_directory
+                .as_ref()
+                .unwrap()
+                .join("repository-git-credential.sock");
+            let mut channel = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            awaken_sandbox_control::write_frame(
+                &mut channel,
+                &awaken_sandbox_control::SandboxControlRequest::RepositoryGitCredentialGet {
+                    query: awaken_sandbox_control::RepositoryGitCredentialQuery {
+                        protocol: "https".into(),
+                        host: "gateway.test".into(),
+                        path: "git/repository".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+            service.entered.notified().await;
+            if !drop_publication {
+                publication.close().await;
+            }
+            drop(publication);
+            sandbox.control_publication.close_for_dispose().await;
+            assert!(
+                service.dropped.load(Ordering::SeqCst),
+                "N11 child destruction precedes return"
+            );
+            assert!(!socket.exists(), "N11 socket cleanup");
+            let replacement = tokio::net::UnixListener::bind(&socket).unwrap();
+            sandbox.control_publication.close_for_dispose().await;
+            assert!(socket.exists(), "N12 no repeated cleanup");
+            drop(replacement);
+            std::fs::remove_file(&socket).unwrap();
+            pc::Sandbox::dispose(&sandbox).await.unwrap();
+        }
     }
 
     #[tokio::test]

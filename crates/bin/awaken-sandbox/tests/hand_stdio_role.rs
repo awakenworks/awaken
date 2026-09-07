@@ -102,6 +102,10 @@ async fn explicit_mount_projection_survives_nested_cwd_and_separate_resource_roo
     // reads reach one tree; Bash inherits the exact physical cwd. This is the
     // same CLI consumed by TrustedHost's Session-owned Hand, without a mount
     // namespace or host-root symlinks.
+    // P4/P5/P7 require Ok(HandResult::Ok); P6 requires Ok(HandResult::Err).
+    // An outer Err means unavailable before dispatch, not a path denial, and
+    // HandResult::Indeterminate cannot establish either successful I/O or
+    // confinement. Both must fail every row rather than be flattened to Err.
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().canonicalize().unwrap();
     let cwd = root.join("workspace/深层 working dir/nested");
@@ -125,7 +129,7 @@ async fn explicit_mount_projection_survives_nested_cwd_and_separate_resource_roo
     let outside = root.join("outside-secret.txt");
     std::fs::write(&outside, "not-authorized").unwrap();
     std::fs::write(cwd.join("native.txt"), "workspace-bytes").unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_awaken-sandbox"))
+    let mut child = Command::new(binary_support::awaken_sandbox())
         .args(["hand", "--stdio", "--mount-root"])
         .arg(&mount)
         .arg("--workspace-root")
@@ -157,7 +161,7 @@ async fn explicit_mount_projection_survives_nested_cwd_and_separate_resource_roo
         .await
         .unwrap();
         assert!(
-            matches!(result, HandResult::Ok { ref output }
+            matches!(result, Ok(HandResult::Ok { ref output })
             if !output.is_error && output.text().contains("workspace-bytes")),
             "{result:?}"
         );
@@ -173,7 +177,7 @@ async fn explicit_mount_projection_survives_nested_cwd_and_separate_resource_roo
     .await
     .unwrap();
     assert!(
-        matches!(result, HandResult::Ok { ref output }
+        matches!(result, Ok(HandResult::Ok { ref output })
         if !output.is_error && output.text().contains("workspace-bytes")
             && output.text().contains("深层 working dir/nested")),
         "{result:?}"
@@ -190,7 +194,7 @@ async fn explicit_mount_projection_survives_nested_cwd_and_separate_resource_roo
         .await
         .unwrap();
         assert!(
-            matches!(result, HandResult::Ok { ref output }
+            matches!(result, Ok(HandResult::Ok { ref output })
             if !output.is_error && output.text().contains(expected)),
             "{result:?}"
         );
@@ -202,7 +206,7 @@ async fn explicit_mount_projection_survives_nested_cwd_and_separate_resource_roo
             arguments: serde_json::json!({"path": format!("/mnt/{relative}"), "content": "updated"}),
         })).await.unwrap();
         assert!(
-            matches!(result, HandResult::Ok { ref output } if !output.is_error),
+            matches!(result, Ok(HandResult::Ok { ref output }) if !output.is_error),
             "{result:?}"
         );
         assert_eq!(std::fs::read(mount.join(relative)).unwrap(), b"updated");
@@ -222,7 +226,7 @@ async fn explicit_mount_projection_survives_nested_cwd_and_separate_resource_roo
     .await
     .unwrap();
     assert!(
-        matches!(denied, HandResult::Err { ref error } if error.message.contains("escapes workdir")),
+        matches!(denied, Ok(HandResult::Err { ref error }) if error.message.contains("escapes workdir")),
         "{denied:?}"
     );
     drop(executor);

@@ -868,6 +868,7 @@ async fn native_memory_volume_seeds_and_harvests_through_the_same_mounter() {
 
 #[tokio::test]
 async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
+    use pc::Sandbox as _;
     /* Container disposal preparation/authorization table NM2. Causes: C1 a
      * fresh handle carries exact copy materialization M and a writable Secret;
      * C2 aggregate fence F is live; C3 acknowledgement is missing/exact/foreign;
@@ -900,7 +901,10 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
      * process-exit Secret tests: successful and failed writeback, replay, and
      * exact physical removal are all driven by the aggregate fence. A process
      * terminal status is deliberately absent from the causes because it owns
-     * neither source preparation nor Environment disposal. */
+     * neither source preparation nor Environment disposal.
+     * N7 current authority is revoked after an explicit Pending mount-lock
+     * poll: reject with Copy guards, ack and Secret state untouched. N8 an
+     * already successful ack replay under revoked authority also rejects. */
     let runtime = Arc::new(
         FakeRuntime::default()
             .with_native_memory_archive(Vec::new())
@@ -929,7 +933,7 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
         fail_teardown: false,
     }));
     let sandbox = provider
-        .create(&sandbox_spec)
+        .create_container(&sandbox_spec)
         .await
         .expect("NM2 create exact copy-backed Container");
     let handle = sandbox.handle();
@@ -967,9 +971,52 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
 
     let mut foreign = materializations.clone();
     foreign[0].store_id = "foreign-memory".into();
+
+    let authority = pc::test_support::EffectAuthority::new(&continuation);
+    let memory_locked = sandbox.lifecycle.memory.lock().await;
+    let copies_before = memory_locked.as_ref().unwrap().len();
+    let mut waiting = Box::pin(sandbox.acknowledge_memory_reconciliation(
+        &continuation,
+        &materializations,
+        &authority,
+    ));
+    std::future::poll_fn(|cx| {
+        assert!(
+            std::future::Future::poll(waiting.as_mut(), cx).is_pending(),
+            "N7 wait"
+        );
+        std::task::Poll::Ready(())
+    })
+    .await;
+    *authority.current.lock().unwrap() = None;
+    drop(memory_locked);
+    assert!(waiting.await.is_err(), "N7 recheck after wait");
+    assert_eq!(
+        sandbox
+            .lifecycle
+            .memory
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .len(),
+        copies_before,
+        "N7 Copy retained"
+    );
     assert!(
         sandbox
-            .acknowledge_memory_reconciliation(&continuation, &foreign)
+            .prepare_disposal_for_effect(&continuation)
+            .await
+            .is_err(),
+        "N7 no ack"
+    );
+    assert!(
+        sandbox
+            .acknowledge_memory_reconciliation(
+                &continuation,
+                &foreign,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&continuation)
+            )
             .await
             .is_err(),
         "N2 foreign materialization cannot unlock disposal"
@@ -986,13 +1033,28 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
     );
 
     sandbox
-        .acknowledge_memory_reconciliation(&continuation, &materializations)
+        .acknowledge_memory_reconciliation(
+            &continuation,
+            &materializations,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&continuation),
+        )
         .await
         .expect("N2 exact continuation reconciliation acknowledgement");
     sandbox
-        .acknowledge_memory_reconciliation(&continuation, &materializations)
+        .acknowledge_memory_reconciliation(
+            &continuation,
+            &materializations,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&continuation),
+        )
         .await
         .expect("N2 response-loss replay is idempotent");
+    assert!(
+        sandbox
+            .acknowledge_memory_reconciliation(&continuation, &materializations, &authority,)
+            .await
+            .is_err(),
+        "N8 cached success does not survive revocation"
+    );
     assert!(
         sandbox
             .prepare_disposal_for_effect(&continuation)
@@ -1029,13 +1091,21 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
     .unwrap();
     assert!(
         sandbox
-            .acknowledge_memory_reconciliation(&foreign_lease, &materializations)
+            .acknowledge_memory_reconciliation(
+                &foreign_lease,
+                &materializations,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&foreign_lease)
+            )
             .await
             .is_err(),
         "N6 a foreign realization lease cannot take over drained guards"
     );
     sandbox
-        .acknowledge_memory_reconciliation(&terminal, &materializations)
+        .acknowledge_memory_reconciliation(
+            &terminal,
+            &materializations,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("N4 same-lease terminal successor rebinds the acknowledgement");
     assert!(
@@ -1342,7 +1412,11 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
     .expect("E1 neutral port projects the same terminal owner")
     .expect("E1 terminal realization has a neutral lifecycle owner");
     adopted
-        .acknowledge_memory_reconciliation(&terminal_fence, evidence)
+        .acknowledge_memory_reconciliation(
+            &terminal_fence,
+            evidence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .expect("E2 exact terminal Memory acknowledgement gates physical cleanup");
     adopted
@@ -1806,6 +1880,7 @@ struct FakeState {
     control_binding_missing: bool,
     control_binding_calls: Vec<(bool, Option<String>)>,
     control_channel_opens: usize,
+    control_open_pending: Option<(Arc<tokio::sync::Notify>, Arc<AtomicBool>)>,
     control_peers: Vec<tokio::io::DuplexStream>,
     removals: Vec<(String, usize)>,
     inspections: usize,
@@ -1966,6 +2041,18 @@ impl ContainerRuntime for FakeRuntime {
         _binding: &pc::SandboxControlIncarnation,
         _kind: SandboxControlServiceKind,
     ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
+        let pending = self.st.lock().unwrap().control_open_pending.clone();
+        if let Some((entered, dropped)) = pending {
+            struct PendingOpen(Arc<AtomicBool>);
+            impl Drop for PendingOpen {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+            let _pending = PendingOpen(dropped);
+            entered.notify_one();
+            std::future::pending::<()>().await;
+        }
         let (host, peer) = tokio::io::duplex(64 * 1024);
         let mut state = self.st.lock().unwrap();
         state.control_channel_opens += 1;
@@ -2422,6 +2509,12 @@ impl ContainerRuntime for FakeRuntime {
     }
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
         let mut state = self.st.lock().unwrap();
+        if let Some((_, dropped)) = &state.control_open_pending {
+            assert!(
+                dropped.load(Ordering::SeqCst),
+                "B9/B10 setup must be reaped at the actual removal edge"
+            );
+        }
         let opens = state.control_channel_opens;
         state.removals.push((container_id.into(), opens));
         state.alive.insert(container_id.into(), false);
@@ -3149,6 +3242,71 @@ async fn control_publication_survives_idle_and_channel_failure_but_stops_before_
     );
     drop(lease);
     assert_eq!(runtime.st.lock().unwrap().control_channel_opens, 4, "B8/E4");
+}
+
+#[tokio::test]
+async fn control_disposal_and_publisher_cancellation_reap_initial_channel_setup() {
+    // B9 setup is awaiting its first runtime channel, before a publication
+    // handle has been returned. B10 caller is cancelled at that await.
+    // Cause/effect rows: B9+dispose => setup future dropped before removal;
+    // B9+B10+dispose => same, no lost reservation or detached setup task.
+    // In both rows: zero channels opened, exactly one removal, no later publish.
+    for cancel_publisher in [false, true] {
+        let runtime = Arc::new(FakeRuntime::default().with_sandbox_control());
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        runtime.st.lock().unwrap().control_open_pending = Some((entered.clone(), dropped.clone()));
+        let mut demanded = spec("publication-setup");
+        demanded
+            .control_services
+            .insert(SandboxControlServiceKind::RepositoryGitCredential);
+        let sandbox = Arc::new(
+            provider(runtime.clone())
+                .create_container(&demanded)
+                .await
+                .unwrap(),
+        );
+        let publishing = tokio::spawn({
+            let sandbox = sandbox.clone();
+            async move {
+                sandbox
+                    .publish_sandbox_control_service(
+                        SandboxControlServiceKind::RepositoryGitCredential,
+                        Arc::new(UnavailableControlService),
+                    )
+                    .await
+            }
+        });
+        entered.notified().await;
+        if cancel_publisher {
+            publishing.abort();
+        }
+        pc::Sandbox::dispose(sandbox.as_ref()).await.unwrap();
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "B9/B10 setup reaped before disposal return"
+        );
+        let result = publishing.await;
+        if cancel_publisher {
+            assert!(result.err().unwrap().is_cancelled());
+        } else {
+            assert!(result.unwrap().is_err());
+        }
+        {
+            let state = runtime.st.lock().unwrap();
+            assert_eq!(state.control_channel_opens, 0);
+            assert_eq!(state.removals, vec![("cid-publication-setup".into(), 0)]);
+        }
+        assert!(
+            sandbox
+                .publish_sandbox_control_service(
+                    SandboxControlServiceKind::RepositoryGitCredential,
+                    Arc::new(UnavailableControlService),
+                )
+                .await
+                .is_err()
+        );
+    }
 }
 
 #[tokio::test]

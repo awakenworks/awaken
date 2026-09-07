@@ -4592,7 +4592,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                 );
                 let ack = awaken_session_contract::AcknowledgeSessionRealization {
                     session_id: id.clone(),
-                    lease: directive.lease,
+                    lease: directive.authority.lease,
                     published: publish,
                     drained: drain,
                 };

@@ -6420,6 +6420,7 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
             let staged = app
                 .begin_session_realization(BeginSessionRealization {
                     session_id: "recovery-replacement".into(),
+                    expected_resources: None,
                     target: SessionRealizationTarget {
                         owner: lease.owner.clone(),
                         runtime_incarnation: if recovery {

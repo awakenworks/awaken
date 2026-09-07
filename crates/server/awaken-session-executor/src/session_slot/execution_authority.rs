@@ -36,6 +36,41 @@ impl CurrentExecutionAuthority for SessionExecutionAuthority {
     fn with_current(&self, effect: &mut dyn FnMut(Duration) -> io::Result<()>) -> io::Result<()> {
         self.with_current_session(&mut |_, remaining| effect(remaining))
     }
+
+    fn with_current_effect(
+        &self,
+        asserted: &SandboxEffectFence,
+        effect: &mut dyn FnMut(&SandboxEffectFence, Duration) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let initial = match &self.target {
+            SessionEffectTarget::Provider(initial) => initial,
+            #[cfg(target_os = "linux")]
+            SessionEffectTarget::Execution(_) => return Err(denied()),
+        };
+        if !initial.same_effect_identity(asserted)
+            || asserted.expires_at_unix_ms < initial.expires_at_unix_ms
+        {
+            return Err(denied());
+        }
+        let mut invoked = false;
+        self.with_current_session(&mut |lease, remaining| {
+            let current = lease
+                .sandbox_effect_fence(initial.operation_id.clone())
+                .map_err(io::Error::other)?;
+            if invoked
+                || !asserted.same_effect_identity(&current)
+                || current.expires_at_unix_ms < asserted.expires_at_unix_ms
+            {
+                return Err(denied());
+            }
+            invoked = true;
+            effect(&current, remaining)
+        })?;
+        if !invoked {
+            return Err(denied());
+        }
+        Ok(())
+    }
 }
 
 impl SessionExecutionAuthority {
@@ -125,36 +160,9 @@ impl ContainerEffectFenceSource for SessionExecutionAuthority {
         &self,
         asserted: &SandboxEffectFence,
     ) -> Result<SandboxEffectFence, SandboxError> {
-        let initial = match &self.target {
-            SessionEffectTarget::Provider(initial) => initial,
-            #[cfg(target_os = "linux")]
-            SessionEffectTarget::Execution(_) => {
-                return Err(SandboxError::new(
-                    "execution binding is not a provider effect source",
-                ));
-            }
-        };
-        if !initial.same_effect_identity(asserted)
-            || asserted.expires_at_unix_ms < initial.expires_at_unix_ms
-        {
-            return Err(SandboxError::new(
-                "Session effect retry changed its identity",
-            ));
-        }
         let mut current = None;
-        self.with_current_session(&mut |lease, _| {
-            let fence = lease
-                .sandbox_effect_fence(initial.operation_id.clone())
-                .map_err(io::Error::other)?;
-            if !asserted.same_effect_identity(&fence)
-                || fence.expires_at_unix_ms < asserted.expires_at_unix_ms
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "Session realization generation changed",
-                ));
-            }
-            current = Some(fence);
+        self.with_current_effect(asserted, &mut |fence, _| {
+            current = Some(fence.clone());
             Ok(())
         })
         .map_err(|error| SandboxError::new(error.to_string()))?;
@@ -579,7 +587,8 @@ mod tests {
             .unwrap();
         assert!(f.authority.current_effect_fence(&initial).is_err());
         let mut calls = 0;
-        let failure = provider.with_current(&mut |remaining| {
+        let failure = provider.with_current_effect(&initial, &mut |current, remaining| {
+            assert_eq!(current, &initial);
             calls += 1;
             assert_eq!(remaining, Duration::from_secs(30));
             assert!(matches!(
@@ -600,7 +609,7 @@ mod tests {
         assert!(f.current().is_err());
         assert_eq!(provider.current_effect_fence(&initial).unwrap(), initial);
         provider
-            .with_current(&mut |_| {
+            .with_current_effect(&initial, &mut |_, _| {
                 calls += 1;
                 Ok(())
             })
