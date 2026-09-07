@@ -6,6 +6,7 @@
 # second test manifest: the restored database row and content digest are the
 # only oracle, and check-all remains the sole release orchestrator.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/_postgres_recovery_root.sh"
 
 valid_lsn() {
   [[ "$1" =~ ^[0-9A-F]+/[0-9A-F]+$ ]]
@@ -21,6 +22,7 @@ self_test() {
   ! valid_lsn ''
   ! valid_lsn '0/16b6c50'
   ! valid_lsn "0/1'\nshared_preload_libraries='bad"
+  python3 "$(dirname "${BASH_SOURCE[0]}")/test_postgres_recovery_root.py"
 }
 
 if [ "${1:-}" = "--self-test" ]; then
@@ -37,19 +39,18 @@ PRIMARY_CONTAINER=$1
 OBJECT_CONTAINER=$2
 MC_IMAGE=$3
 RECOVERY_ROOT=${AWAKEN_RECOVERY_ROOT:-}
+RECOVERY_PARENT=$(postgres_recovery_parent) || exit 2
 POSTGRES_IMAGE=${AWAKEN_RECOVERY_POSTGRES_IMAGE:-postgres:16-alpine}
 RESTORE_CONTAINER="awaken-ci-pg-restore-$$"
 HOST_UID=$(id -u)
 HOST_GID=$(id -g)
 
-if [ -z "$RECOVERY_ROOT" ] || [ ! -d "$RECOVERY_ROOT/base" ] || [ ! -d "$RECOVERY_ROOT/wal" ]; then
+if ! valid_recovery_root "$RECOVERY_ROOT" \
+  || [ ! -d "$RECOVERY_ROOT/base" ] || [ -L "$RECOVERY_ROOT/base" ] \
+  || [ ! -d "$RECOVERY_ROOT/wal" ] || [ -L "$RECOVERY_ROOT/wal" ]; then
   echo "AWAKEN_RECOVERY_ROOT must name the exact pg_tests-owned recovery directory" >&2
   exit 2
 fi
-case "$RECOVERY_ROOT" in
-  /tmp/*|/var/tmp/*) ;;
-  *) echo "refusing non-temporary recovery root: $RECOVERY_ROOT" >&2; exit 2 ;;
-esac
 
 cleanup() {
   docker rm -f "$RESTORE_CONTAINER" >/dev/null 2>&1 || true
