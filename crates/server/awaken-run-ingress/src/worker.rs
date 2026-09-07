@@ -139,20 +139,6 @@ impl AttemptOwnershipVerifier for ClaimBoundOwnershipVerifier {
     }
 }
 
-enum CommittedTerminalSettlement {
-    Applied(RunId, RunState),
-    Fenced,
-}
-
-impl CommittedTerminalSettlement {
-    fn into_processed(self) -> Option<(RunId, RunState)> {
-        match self {
-            Self::Applied(run_id, state) => Some((run_id, state)),
-            Self::Fenced => None,
-        }
-    }
-}
-
 impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// Rebuild the sole durable causal scope from the exact claimed instruction.
     /// Every claim entry uses this helper so recovery, pre-execution failure, and
@@ -1338,57 +1324,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .then_some((run_id, state)))
     }
 
-    /// Settle one claim from committed terminal truth without invoking an
-    /// executor. This is the single owner of the crash-window inbox cleanup used
-    /// both before backend recovery and after an awaiting-ticket race.
-    async fn settle_from_committed_terminal(
-        &self,
-        claimed: &Claimed,
-        all_pending: &mut Vec<String>,
-        clock: &Arc<dyn Clock>,
-    ) -> Result<Option<CommittedTerminalSettlement>, Error> {
-        let run_id = claimed.request.run_id().clone();
-        let Some(state @ RunState::Ended(_)) = self.reader.run_state(&run_id) else {
-            return Ok(None);
-        };
-        let thread = claimed.request.thread_id().clone();
-        self.redeliver_terminal_observers(&run_id, &thread).await?;
-
-        // A recovered fresh run that already committed a terminal record may
-        // have drained unbound idle-thread input before dying prior to settle.
-        // Consume exactly rows whose ids exist in committed transcript truth;
-        // later, undelivered input remains available to the next Run.
-        let delivered: std::collections::HashSet<String> = self
-            .reader
-            .committed_messages(&thread)
-            .into_iter()
-            .map(|message| message.id.0)
-            .collect();
-        let consumed_unbound = self
-            .store
-            .list(&thread)
-            .await?
-            .into_iter()
-            .map(|record| record.input)
-            .filter(|input| input.run_id.0.is_empty() && delivered.contains(&input.message_id))
-            .map(|input| input.message_id);
-        all_pending.extend(consumed_unbound);
-        let settled = self
-            .settle(
-                claimed,
-                Some(&state),
-                DispatchOutcome::Done,
-                all_pending,
-                clock,
-            )
-            .await?;
-        Ok(Some(if settled.applied() {
-            CommittedTerminalSettlement::Applied(run_id, state)
-        } else {
-            CommittedTerminalSettlement::Fenced
-        }))
-    }
-
     /// Settle a claimed dispatch and record the operational `runs.settled` counter
     /// (labelled by outcome) on the runtime's metrics recorder. The single choke all
     /// of `drive_claimed`'s settle arms route through, so every settle is metered
@@ -1525,76 +1460,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         self.runtime
             .metrics()
             .record_dispatch_commit(commit_outcome, duration);
-    }
-
-    /// Convert a runtime-drive failure into a benign already-done when committed
-    /// truth shows the run has reached a terminal state.
-    ///
-    /// The commit coordinators enforce terminal-is-final: once a run's committed
-    /// state is `Ended`, a later commit for that run is rejected. That fence keeps
-    /// the committed LOG exactly-once when a *stale* owner (slow-but-alive, its
-    /// lease lapsed and superseded by a reclaimer that already drove the run to
-    /// `Ended`) re-executes and tries to append a duplicate transcript — its commit
-    /// fails. Surfacing that as a fatal error would strand the dispatch: it would
-    /// sit un-settled until its lease lapsed, then be re-driven into the same
-    /// rejected commit, burning crash-retries until exhaustion handling — even though
-    /// the run is already complete. Instead the worker treats the lost race as
-    /// already-done and settles the dispatch `Done` from committed truth, exactly
-    /// as the "terminal committed record" recovery branch does. Any other error is
-    /// a genuine fault and is re-raised unchanged.
-    async fn settle_if_terminal_or_raise(
-        &self,
-        claimed: &Claimed,
-        consumed: &[String],
-        err: impl Into<Error>,
-        clock: &Arc<dyn Clock>,
-    ) -> Result<Option<(RunId, RunState)>, Error> {
-        let run_id = claimed.request.run_id();
-        let thread_id = claimed.request.thread_id();
-        let err = err.into();
-        self.refresh_local_recovery_projection(thread_id, run_id)
-            .await?;
-        match self.reader.run_state(run_id) {
-            Some(state @ RunState::Ended(_)) => {
-                // This path lost a terminal-commit race. Redelivery is expected:
-                // the winning attempt may have crashed after commit and observers
-                // suppress duplicate effects by `(observer_id, run_id)`.
-                self.redeliver_terminal_observers(run_id, thread_id).await?;
-                Ok(self
-                    .settle(
-                        claimed,
-                        Some(&state),
-                        DispatchOutcome::Done,
-                        consumed,
-                        clock,
-                    )
-                    .await?
-                    .applied()
-                    .then_some((run_id.clone(), state)))
-            }
-            _ => {
-                // A stale attempt can lose ownership before replacement
-                // terminal truth is readable in this Worker's projection. The
-                // queue already rejected its authority, so meter that exact
-                // decision through the same choke as a stale settlement CAS.
-                // Ordinary Runs retain their original execution error; a
-                // coordinated Run quietly yields to its replacement because it
-                // must not manufacture an Error boundary for the parent Session.
-                let started = std::time::Instant::now();
-                let claim = RunClaim::from(&claimed.lease);
-                if !self.store.claim_is_current(&claim, clock.now_ms()).await? {
-                    self.record_settlement_outcome(
-                        SettleOutcome::Fenced,
-                        "done",
-                        started.elapsed(),
-                    );
-                    if claimed.request.session_activity_epoch.is_some() {
-                        return Ok(None);
-                    }
-                }
-                Err(err)
-            }
-        }
     }
 
     /// Drain the queue until no dispatch is runnable, returning every processed

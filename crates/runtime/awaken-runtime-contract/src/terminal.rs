@@ -62,6 +62,37 @@ pub enum CommittedTerminalProjection {
     IdentityConflict,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommittedTerminalAdmission {
+    Nonterminal,
+    Exact,
+    IdentityConflict,
+}
+
+/// Classify every scalar fact used by the committed-terminal projection.
+///
+/// Keeping this inside the Runtime contract prevents Worker, Host, and stable-id
+/// execution adapters from growing separate definitions of terminal recovery.
+#[must_use]
+const fn committed_terminal_admission(
+    record_present: bool,
+    run_identity_matches: bool,
+    thread_identity_matches: bool,
+    ended: bool,
+) -> CommittedTerminalAdmission {
+    if !record_present {
+        return CommittedTerminalAdmission::Nonterminal;
+    }
+    if !run_identity_matches || !thread_identity_matches {
+        return CommittedTerminalAdmission::IdentityConflict;
+    }
+    if ended {
+        CommittedTerminalAdmission::Exact
+    } else {
+        CommittedTerminalAdmission::Nonterminal
+    }
+}
+
 /// Project the one committed terminal fact for `run_id`.
 ///
 /// Stable-id executors and recovery callers share this predicate so neither a
@@ -72,20 +103,37 @@ pub fn committed_terminal_projection(
     run_id: &RunId,
     thread_id: &ThreadId,
 ) -> CommittedTerminalProjection {
-    let Some(record) = reader.run(run_id) else {
-        return CommittedTerminalProjection::Nonterminal;
-    };
-    if record.id != *run_id || record.thread_id != *thread_id {
-        return CommittedTerminalProjection::IdentityConflict;
+    let record = reader.run(run_id);
+    let admission = committed_terminal_admission(
+        record.is_some(),
+        record.as_ref().is_some_and(|record| record.id == *run_id),
+        record
+            .as_ref()
+            .is_some_and(|record| record.thread_id == *thread_id),
+        record.as_ref().is_some_and(|record| {
+            matches!(
+                record.state,
+                awaken_agent_contract::agent::run::RunState::Ended(_)
+            )
+        }),
+    );
+    match admission {
+        CommittedTerminalAdmission::Nonterminal => CommittedTerminalProjection::Nonterminal,
+        CommittedTerminalAdmission::IdentityConflict => {
+            CommittedTerminalProjection::IdentityConflict
+        }
+        CommittedTerminalAdmission::Exact => {
+            let record = record.expect("exact admission requires a present record");
+            let awaken_agent_contract::agent::run::RunState::Ended(cause) = record.state else {
+                unreachable!("exact admission requires terminal state")
+            };
+            CommittedTerminalProjection::Exact(CommittedTerminalRun {
+                run_id: record.id,
+                thread_id: record.thread_id,
+                cause,
+            })
+        }
     }
-    let awaken_agent_contract::agent::run::RunState::Ended(cause) = record.state else {
-        return CommittedTerminalProjection::Nonterminal;
-    };
-    CommittedTerminalProjection::Exact(CommittedTerminalRun {
-        run_id: run_id.clone(),
-        thread_id: thread_id.clone(),
-        cause,
-    })
 }
 
 /// Deliver a terminal fact with uniform error and panic isolation across native,
@@ -139,6 +187,33 @@ pub async fn redeliver_committed_terminal(
     Some(deliver_committed_terminal(observers, &terminal).await)
 }
 
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn committed_terminal_projection_admits_only_exact_ended_identity() {
+        let present: bool = kani::any();
+        let run_matches: bool = kani::any();
+        let thread_matches: bool = kani::any();
+        let ended: bool = kani::any();
+        let admission = committed_terminal_admission(present, run_matches, thread_matches, ended);
+
+        assert_eq!(
+            admission == CommittedTerminalAdmission::Exact,
+            present && run_matches && thread_matches && ended
+        );
+        assert_eq!(
+            admission == CommittedTerminalAdmission::IdentityConflict,
+            present && (!run_matches || !thread_matches)
+        );
+        assert_eq!(
+            admission == CommittedTerminalAdmission::Nonterminal,
+            !present || (run_matches && thread_matches && !ended)
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,11 +229,8 @@ mod tests {
             Vec::new()
         }
 
-        fn run(&self, run_id: &RunId) -> Option<RunRecord> {
-            self.0
-                .as_ref()
-                .filter(|record| record.id == *run_id)
-                .cloned()
+        fn run(&self, _run_id: &RunId) -> Option<RunRecord> {
+            self.0.clone()
         }
 
         fn latest_run(&self, _thread_id: &ThreadId) -> Option<RunRecord> {
@@ -215,12 +287,21 @@ mod tests {
 
     #[test]
     fn only_ended_committed_truth_projects_a_terminal_run() {
-        // Cause/effect graph: C1 the requested Run is present; C2 its committed
-        // thread identity is exact; C3 its state is Ended. E1 return the exact
-        // identity/cause; E2 return None. Decision table: R1 !C1 -> E2;
-        // R2 C1 && !C2 -> E2; R3 C1 && C2 && !C3 -> E2;
-        // R4 C1 && C2 && C3 -> E1. Redelivery consumes this same projection, so
-        // this table is the only terminal-admission algorithm.
+        // Cause/effect graph: C1 the requested Run is present; C2 its Run
+        // identity is exact; C3 its Thread identity is exact; C4 its state is
+        // Ended. Effects: E1 return the exact identity/cause; E2 return
+        // Nonterminal; E3 fail closed as IdentityConflict.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // |---|---|---|---|---|---|
+        // | R1 | no | any | any | any | E2 |
+        // | R2 | yes | no | any | any | E3 |
+        // | R3 | yes | yes | no | any | E3 |
+        // | R4 | yes | yes | yes | no | E2 |
+        // | R5 | yes | yes | yes | yes | E1 |
+        //
+        // Redelivery and every Worker recovery path consume this same
+        // projection, so this table is the only terminal-admission algorithm.
         let run_id = RunId("run".to_string());
         let thread_id = ThreadId("thread".to_string());
         for state in [None, Some(RunState::Running), Some(RunState::Awaiting)] {
@@ -232,9 +313,20 @@ mod tests {
             assert_eq!(
                 committed_terminal_projection(&view, &run_id, &thread_id),
                 CommittedTerminalProjection::Nonterminal,
-                "R1/R3"
+                "R1/R4"
             );
         }
+
+        let foreign_run = StateView(Some(RunRecord {
+            id: RunId("foreign-run".to_string()),
+            thread_id: thread_id.clone(),
+            state: RunState::Ended(EndCause::NaturalEnd),
+        }));
+        assert_eq!(
+            committed_terminal_projection(&foreign_run, &run_id, &thread_id),
+            CommittedTerminalProjection::IdentityConflict,
+            "R2"
+        );
 
         let foreign_thread = StateView(Some(RunRecord {
             id: run_id.clone(),
@@ -244,7 +336,7 @@ mod tests {
         assert_eq!(
             committed_terminal_projection(&foreign_thread, &run_id, &thread_id),
             CommittedTerminalProjection::IdentityConflict,
-            "R2"
+            "R3"
         );
 
         let view = StateView(Some(RunRecord {
@@ -259,7 +351,7 @@ mod tests {
                 thread_id,
                 cause: EndCause::MaxSteps,
             }),
-            "R4"
+            "R5"
         );
     }
 

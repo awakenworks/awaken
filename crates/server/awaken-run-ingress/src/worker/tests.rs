@@ -425,6 +425,110 @@ fn remote_projection_is_the_single_awaiting_resume_reader() {
 }
 
 #[tokio::test]
+async fn terminal_recovery_rejects_conflicting_committed_identity_before_settlement() {
+    struct ConflictingTerminalView(RunRecord);
+
+    impl CommittedThreadView for ConflictingTerminalView {
+        fn committed_messages(
+            &self,
+            _thread_id: &ThreadId,
+        ) -> Vec<awaken_agent_contract::agent::message::Message> {
+            Vec::new()
+        }
+
+        fn run(&self, _run_id: &RunId) -> Option<RunRecord> {
+            Some(self.0.clone())
+        }
+
+        fn latest_run(&self, _thread_id: &ThreadId) -> Option<RunRecord> {
+            Some(self.0.clone())
+        }
+
+        fn resume_ticket(&self, _run_id: &RunId) -> Option<ResumeTicket> {
+            None
+        }
+
+        fn open_wait_for_thread(&self, _thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+            None
+        }
+    }
+
+    // Cause/effect graph: C1 the dispatch claim names Run R and Thread T; C2
+    // committed terminal truth reports R vs another Run; C3 it reports T vs
+    // another Thread. Effects: E1 exact identity may enter terminal settlement;
+    // E2 either identity conflict is rejected; E3 rejection leaves the durable
+    // dispatch untouched and cannot enter an executor.
+    //
+    // | Rule | C2 Run | C3 Thread | Effect |
+    // |---|---|---|---|
+    // | R1 | foreign | exact | E2 + E3 |
+    // | R2 | exact | foreign | E2 + E3 |
+    //
+    // The exact R/T/Ended success partition is owned by the existing terminal
+    // recovery integration tests. These two rules cover the newly exposed
+    // identity-conflict mapping at the Worker boundary.
+    let run_id = RunId("terminal-identity-run".into());
+    let thread_id = ThreadId("terminal-identity-thread".into());
+    let activation = RunActivation::new(
+        run_id.clone(),
+        thread_id.clone(),
+        ExecutableAgentSnapshot::builder("terminal-identity-snapshot")
+            .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                "test", "test", "native",
+            ))
+            .build(),
+        Vec::new(),
+    );
+    let store = Arc::new(MemoryDispatchStore::new());
+    store
+        .enqueue(crate::RunDispatch::new(activation))
+        .await
+        .expect("enqueue terminal identity fixture");
+    let claimed = store
+        .claim("worker", 1_000, 0, &Default::default())
+        .await
+        .expect("claim terminal identity fixture")
+        .expect("terminal identity fixture is runnable");
+
+    for (record, rule) in [
+        (
+            RunRecord {
+                id: RunId("foreign-run".into()),
+                thread_id: thread_id.clone(),
+                state: RunState::Ended(EndCause::NaturalEnd),
+            },
+            "R1",
+        ),
+        (
+            RunRecord {
+                id: run_id.clone(),
+                thread_id: ThreadId("foreign-thread".into()),
+                state: RunState::Ended(EndCause::NaturalEnd),
+            },
+            "R2",
+        ),
+    ] {
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let reader: Arc<dyn CommittedThreadView> = Arc::new(ConflictingTerminalView(record));
+        let worker = DispatchWorker::from_parts(
+            Arc::new(Runtime::new()),
+            store.clone(),
+            commit,
+            reader,
+            "worker",
+        );
+        assert!(
+            matches!(
+                worker.committed_terminal_for_claim(&claimed),
+                Err(Error::Dispatch(crate::DispatchError::Rejected(_)))
+            ),
+            "{rule}/E2"
+        );
+        assert_eq!(store.dispatch_count(), 1, "{rule}/E3");
+    }
+}
+
+#[tokio::test]
 async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
     // Cause/effect graph: C1 the inherited parent context already contains a
     // parent-claim-fenced checkpoint; C2 the child Worker owns a distinct claim
