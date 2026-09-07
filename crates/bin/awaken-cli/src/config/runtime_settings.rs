@@ -47,6 +47,7 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
     let sandbox_defaults = SandboxSettings::default();
     let sandbox = SandboxSettings {
         trusted_host_enabled: file.sandbox_trusted_host_enabled.unwrap_or(false),
+        trusted_host_scoped_execution: file.sandbox_trusted_host_scoped_execution.unwrap_or(false),
         allow_local_fallback: file.sandbox_allow_local_fallback.unwrap_or(false),
         warm_pool_size: file.sandbox_warm_pool_size.unwrap_or(0),
         warm_pool_total_size: file
@@ -194,6 +195,39 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scoped_execution_file_selection_reaches_the_shared_admission_rule() {
+        // C1 omitted/false -> unchanged; C2 true+Local or explicit host -> Linux
+        // only; C3 true+isolated primary without host consent -> reject. Both
+        // file projection and complete CLI resolution consume the same typed
+        // DeploymentConfig validator, never another platform allowlist.
+        let home = tempfile::tempdir().unwrap();
+        for enabled in [None, Some(false), Some(true)] {
+            for (tier, trusted) in [("local", false), ("namespace", false), ("namespace", true)] {
+                let file = FileConfig {
+                    sandbox_tier: Some(tier.into()),
+                    sandbox_trusted_host_enabled: Some(trusted),
+                    sandbox_trusted_host_scoped_execution: enabled,
+                    ..Default::default()
+                };
+                let projected = resolve(&file, Path::new("/tmp/config-selection")).unwrap();
+                assert_eq!(
+                    projected.sandbox.trusted_host_scoped_execution,
+                    enabled.unwrap_or(false)
+                );
+                let complete = super::super::ResolvedDeployment::resolve_file(
+                    Default::default(),
+                    Some(home.path().into()),
+                    home.path().join("config.toml"),
+                    file,
+                );
+                let allowed = enabled != Some(true)
+                    || (cfg!(target_os = "linux") && (tier == "local" || trusted));
+                assert_eq!(complete.is_ok(), allowed, "{:?}", complete.as_ref().err());
+            }
+        }
+    }
 
     #[test]
     fn sandbox_default_follows_the_supported_platform_adapter() {

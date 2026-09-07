@@ -105,6 +105,7 @@ struct WorkerFileConfig {
     sandbox_tier: Option<String>,
     sandbox_dir: Option<PathBuf>,
     sandbox_trusted_host_enabled: Option<bool>,
+    sandbox_trusted_host_scoped_execution: Option<bool>,
     sandbox_allow_local_fallback: Option<bool>,
     k8s_namespace: Option<String>,
     k8s_continuation_volume: Option<awaken_sandbox_container::K8sContinuationVolume>,
@@ -170,6 +171,9 @@ impl WorkerDaemonConfig {
             .parse()?;
         runtime.sandbox_dir = file.sandbox_dir;
         runtime.sandbox.trusted_host_enabled = file.sandbox_trusted_host_enabled.unwrap_or(false);
+        runtime.sandbox.trusted_host_scoped_execution =
+            file.sandbox_trusted_host_scoped_execution.unwrap_or(false);
+        runtime.validate_local_execution()?;
         runtime.sandbox.allow_local_fallback = file.sandbox_allow_local_fallback.unwrap_or(false);
         if let Some(namespace) = file.k8s_namespace {
             if namespace.trim().is_empty() {
@@ -455,6 +459,27 @@ mod tests {
                 .trusted_host_enabled(),
             "S4"
         );
+        // S5 explicit scoped selection shares Host's platform/consent rule;
+        // S6 omitted selection stays off. No config value attests supervision.
+        for (tier, trusted) in [("local", false), ("namespace", false), ("namespace", true)] {
+            write(&format!(
+                "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='{tier}'\nsandbox_trusted_host_enabled={trusted}\nsandbox_trusted_host_scoped_execution=true\n"
+            ));
+            let result = WorkerDaemonConfig::load(&path, None);
+            let allowed = cfg!(target_os = "linux") && (tier == "local" || trusted);
+            assert_eq!(result.is_ok(), allowed, "S5 {tier} {trusted}");
+            if let Ok(config) = result {
+                assert!(config.runtime.sandbox.trusted_host_scoped_execution);
+                assert!(
+                    !config
+                        .runtime
+                        .trusted_host_support()
+                        .unwrap()
+                        .process_tree_supervision
+                );
+            }
+        }
+        assert!(!k8s.runtime.sandbox.trusted_host_scoped_execution, "S6");
         assert!(
             worker
                 .manifest()

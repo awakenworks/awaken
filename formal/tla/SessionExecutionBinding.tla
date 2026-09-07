@@ -8,15 +8,17 @@ EXTENDS WorkerExecutionAuthority
    is abstracted atomically here; LocalProcessDeadline/Boundary own physical
    cutoff and callback-delay bounds. This is not an OS or Rust refinement proof.
    The separate Session-expiry bit does NOT equate wall time with BOOTTIME. *)
+VARIABLES deploymentReady
 VARIABLES selection, boundSlot, boundGeneration, boundEnvironment,
           environmentIdentity, environmentPhase, sessionExpired,
           effectHeld, effectChecked, badEffect, effects, effectPhases, weakStarted
 bindingVars == <<selection, boundSlot, boundGeneration, boundEnvironment,
     environmentIdentity, environmentPhase, sessionExpired, effectHeld,
     effectChecked, badEffect, effects, effectPhases, weakStarted>>
-bindingAll == <<allVars, bindingVars>>
+bindingAll == <<allVars, bindingVars, deploymentReady>>
 
 BindingInit == RootInit
+  /\ deploymentReady = FALSE
   /\ selection = "unset" /\ boundSlot = 0 /\ boundGeneration = 0 /\ boundEnvironment = 0
   /\ environmentIdentity = 1 /\ environmentPhase = "candidate" /\ sessionExpired = FALSE
   /\ effectHeld = FALSE /\ effectChecked = FALSE /\ badEffect = FALSE
@@ -27,7 +29,7 @@ CurrentBinding == /\ RootCurrent /\ projection = "Live" /\ ~sessionExpired
   /\ boundGeneration = lease[1] /\ boundEnvironment = environmentIdentity
   /\ environmentPhase \in {"candidate", "resident"}
 
-Select == /\ selection = "unset" /\ selection' = "scoped"
+Select == /\ selection = "unset" /\ deploymentReady /\ selection' = "scoped"
   /\ UNCHANGED <<allVars, boundSlot, boundGeneration, boundEnvironment,
        environmentIdentity, environmentPhase, sessionExpired, effectHeld,
        effectChecked, badEffect, effects, effectPhases, weakStarted>>
@@ -80,16 +82,26 @@ EnvironmentChanges == /\ ~effectHeld
   /\ UNCHANGED <<allVars, selection, boundSlot, boundGeneration, boundEnvironment,
        effectHeld, effectChecked, badEffect, effects, effectPhases, weakStarted>>
 
-BindingNext == Select \/ WeakSpawn \/ Bind \/ CheckEffect \/ CommitEffect
-  \/ CancelEffect \/ AuthorityChanges \/ EnvironmentChanges
+\* Startup is sequential/owned before serving. Failure/stall leaves readiness
+\* false; only a complete private-handoff/tree-exit probe permits selection.
+\* The probe's OS truth is assumed here and exercised by the Linux binary test;
+\* LocalProcessBoundary owns its timeout/exit mechanics. No business lease is
+\* acquired by this action, and readiness alone cannot satisfy CurrentBinding.
+ProbeReady == /\ ~deploymentReady /\ deploymentReady' = TRUE
+  /\ UNCHANGED <<allVars, bindingVars>>
+BindingNext == ((Select \/ WeakSpawn \/ Bind \/ CheckEffect \/ CommitEffect
+  \/ CancelEffect \/ AuthorityChanges \/ EnvironmentChanges)
+  /\ UNCHANGED deploymentReady) \/ ProbeReady
 BindingSpec == BindingInit /\ [][BindingNext]_bindingAll
 BindingTypeOK == RootTypeOK /\ selection \in {"unset", "weak", "scoped"}
+  /\ deploymentReady \in BOOLEAN
   /\ boundSlot \in 0..2 /\ boundGeneration \in 0..2 /\ boundEnvironment \in 0..2
   /\ environmentIdentity \in 1..2 /\ environmentPhase \in {"candidate", "resident", "retiring"}
   /\ sessionExpired \in BOOLEAN /\ effectHeld \in BOOLEAN /\ effectChecked \in BOOLEAN
   /\ badEffect \in BOOLEAN /\ weakStarted \in BOOLEAN /\ effects \in 0..2
   /\ effectPhases \subseteq {"candidate", "resident", "retiring"}
 OnlyCurrentBindingCommits == ~badEffect
+OnlyProbedDeploymentSelected == selection = "scoped" => deploymentReady
 WeakExecutionCannotUpgrade == weakStarted => selection = "weak"
 BindingIsWriteOnce == [][boundSlot # 0 => UNCHANGED <<boundSlot, boundGeneration, boundEnvironment>>]_bindingAll
 NoCandidateEffectReached == "candidate" \notin effectPhases

@@ -544,14 +544,23 @@ struct WorkerProofGate(std::sync::Mutex<bool>);
 #[ignore = "required real Linux helper supplied by the portability supervision gate"]
 async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_lease() {
     use awaken_provisioning_contract::Sandbox as _;
-    // S22-S28 end-to-end: configured provider -> unbound candidate (both spawn
+    // S22-S28 end-to-end: typed deployment -> actual probe/install -> unbound candidate (both spawn
     // seams denied) -> existing publication owner binds -> real tree starts ->
     // idempotent preparation retry -> existing sweep with NO due Session lease
     // refreshes -> Worker close causes refresh and launch denial -> exact tree
     // stop. A real workload File survives denial/stop. No vendor/cloud claim.
     let base = tempfile::tempdir().unwrap();
     let gate = Arc::new(WorkerProofGate(std::sync::Mutex::new(true)));
-    let host = SharedHost::new(Arc::new(OkModel), "stub").with_execution_authority(gate.clone());
+    let mut deployment = crate::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = crate::SandboxTier::Local;
+    deployment.sandbox_dir = Some(base.path().into());
+    deployment.sandbox.trusted_host_scoped_execution = true;
+    let host = SharedHost::new_with_deployment(Arc::new(OkModel), "stub", deployment)
+        .with_session_environment_from_deployment(Some(Arc::new(
+            crate::session_environment::UnusedHandExecutorFactory,
+        )))
+        .await
+        .with_execution_authority(gate.clone());
     let lease = awaken_session_contract::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "runtime".into(),
@@ -560,29 +569,21 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     };
     host.install_session_realization_lease(SESSION, lease.clone())
         .unwrap();
-    let mut provider = awaken_sandbox_local::LocalProvider::trusted_host(base.path());
-    let binary = |key| {
-        std::path::PathBuf::from(std::env::var_os(key).expect("required Linux deployment binary"))
-    };
-    provider
-        .install_execution_deployment(
-            awaken_sandbox_local::LocalExecutionDeployment::new(
-                binary("AWAKEN_TEST_SCOPED_LAUNCHER"),
-                binary("AWAKEN_TEST_SCOPED_HELPER"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+    let provider = host.backend_owned_session_provider.as_ref().unwrap();
     let mut spec = crate::session_environment::environment_test_spec();
     spec.scope = SESSION.into();
     let fence = lease.sandbox_effect_fence("scoped-candidate").unwrap();
-    let sandbox = provider
-        .create_sandbox_for_effect(&spec, &fence, None)
+    let environment = provider
+        .create_effective_for_effect(
+            &spec,
+            Some(&fence),
+            None,
+            None,
+            awaken_sandbox_container::ContainerRealizationIntent::Create,
+        )
         .await
         .unwrap();
-    let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        sandbox,
-    ));
+    let environment = Arc::new(environment);
     let crate::session_environment::SessionEnvironment::Workdir { sandbox, .. } =
         environment.as_ref()
     else {

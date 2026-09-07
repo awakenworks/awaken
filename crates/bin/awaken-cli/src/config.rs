@@ -346,6 +346,7 @@ impl ResolvedDeployment {
             container_image: file.container_image.clone(),
             disable_local_pool: !run_local_pool,
         };
+        runtime.validate_local_execution()?;
         if role == Role::Worker {
             // The registered Worker receives durable claims through its injected
             // HTTP dispatch store. Everything it owns locally is ephemeral
@@ -985,6 +986,7 @@ mod tests {
             .runtime
             .sandbox;
         assert!(!defaults.trusted_host_enabled, "S1");
+        assert!(!defaults.trusted_host_scoped_execution, "S1");
         assert!(!defaults.allow_local_fallback, "S1");
         assert_eq!(defaults.warm_pool_size, 0, "S1");
         assert_eq!(defaults.warm_pool_total_size, 16, "S1");

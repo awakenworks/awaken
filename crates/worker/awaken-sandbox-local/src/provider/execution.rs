@@ -19,13 +19,67 @@ use pc::CurrentExecutionAuthority;
 
 /// Deployment bytes, not execution authority. Selection may precede Session
 /// binding; a selected scope cannot launch until its one authority is installed.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalExecutionDeployment {
     launcher: PathBuf,
     helper: PathBuf,
 }
 
 impl LocalExecutionDeployment {
+    /// Resolve once from operator PATH, not Agent environment. Retain the exact
+    /// executable used by the probe; later launches do not repeat PATH lookup.
+    pub fn discover(helper: PathBuf) -> Result<Self, pc::SandboxError> {
+        let paths = std::env::var_os("PATH").unwrap_or_default();
+        Self::from_operator_path(helper, &paths)
+    }
+
+    fn from_operator_path(
+        helper: PathBuf,
+        paths: &std::ffi::OsStr,
+    ) -> Result<Self, pc::SandboxError> {
+        use std::os::unix::fs::PermissionsExt;
+        let launcher = std::env::split_paths(paths)
+            .filter(|directory| directory.is_absolute())
+            .map(|directory| directory.join("bwrap"))
+            .find(|path| {
+                std::fs::metadata(path)
+                    .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            })
+            .and_then(|path| std::fs::canonicalize(path).ok())
+            .ok_or_else(|| {
+                err("TrustedHost scoped execution requires bwrap on an absolute operator PATH")
+            })?;
+        Self::new(launcher, helper)
+    }
+
+    /// Exercise the actual private handoff and exact-tree wait, not merely
+    /// --version or Namespace readiness. No Session, business data, credentials
+    /// or durable resource ownership is created by this disposable probe.
+    pub async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        let command = pc::MaterializedCommand::new(["/usr/bin/true"]);
+        let process = ScopedProcess::spawn_authorized(
+            &self.launcher,
+            &self.helper,
+            ScopedCommand {
+                materialized: &command,
+                cwd: Path::new("/"),
+                stdio: pc::Stdio::Null.into(),
+            },
+            ExecutionDeadline::after(CONTROL_TIMEOUT).map_err(err)?,
+            CONTROL_TIMEOUT,
+            |_, grant| grant.commit(),
+        )
+        .await
+        .map_err(|_| err("TrustedHost scoped execution probe could not launch"))?;
+        let status = tokio::time::timeout(CONTROL_TIMEOUT, process.wait())
+            .await
+            .map_err(|_| err("TrustedHost scoped execution probe timed out"))??;
+        if status.code != Some(0) || status.signaled {
+            return Err(err("TrustedHost scoped execution probe failed"));
+        }
+        Ok(())
+    }
+
     pub fn new(launcher: PathBuf, helper: PathBuf) -> Result<Self, pc::SandboxError> {
         if !launcher.is_absolute() || !helper.is_absolute() {
             return Err(err("execution deployment binaries must be absolute"));
@@ -418,5 +472,53 @@ impl pc::ProcessHandle for SharedScopedProcess {
     }
     async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
         self.0.signal(signal).await
+    }
+}
+
+#[cfg(test)]
+mod deployment_tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn deployment_discovery_is_absolute_executable_ordered_and_frozen() {
+        // P1 missing/relative/non-executable/directory PATH candidates -> reject;
+        // P2 first absolute executable wins and symlinks resolve once; P3 later
+        // PATH/file change never silently retargets the retained deployment.
+        // Pure input seam avoids mutating global PATH during parallel tests.
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let helper = root.path().join("helper");
+        let paths = std::env::join_paths([Path::new("."), &first, &second]).unwrap();
+        let lookup = || LocalExecutionDeployment::from_operator_path(helper.clone(), &paths);
+        assert!(lookup().is_err());
+        std::fs::write(first.join("bwrap"), "fixture").unwrap();
+        std::fs::set_permissions(first.join("bwrap"), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        assert!(lookup().is_err());
+        std::fs::write(second.join("bwrap"), "fixture").unwrap();
+        std::fs::set_permissions(second.join("bwrap"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let selected = lookup().unwrap();
+        assert_eq!(selected.launcher, second.join("bwrap"));
+        std::fs::remove_file(first.join("bwrap")).unwrap();
+        symlink(second.join("bwrap"), first.join("bwrap")).unwrap();
+        assert_eq!(lookup().unwrap(), selected);
+        std::fs::remove_file(first.join("bwrap")).unwrap();
+        std::fs::write(first.join("bwrap"), "different fixture").unwrap();
+        std::fs::set_permissions(first.join("bwrap"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        assert_eq!(lookup().unwrap().launcher, first.join("bwrap"));
+        assert_eq!(selected.launcher, second.join("bwrap"));
+        std::fs::remove_file(first.join("bwrap")).unwrap();
+        std::fs::create_dir(first.join("bwrap")).unwrap();
+        assert_eq!(lookup().unwrap(), selected);
+        std::fs::remove_file(second.join("bwrap")).unwrap();
+        assert!(lookup().is_err());
+        assert_eq!(selected.launcher, second.join("bwrap"));
+        assert!(LocalExecutionDeployment::new("relative".into(), helper).is_err());
     }
 }

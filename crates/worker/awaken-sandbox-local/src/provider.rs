@@ -159,8 +159,8 @@ impl LocalProvider {
     }
 
     /// Install immutable optional execution hardening before provider use.
-    /// This does not qualify `process_tree_supervision`: Managed Git and Worker
-    /// readiness still require complete integration. Only fenced realizations
+    /// This does not qualify `process_tree_supervision`: distributed lease and
+    /// selected-provider failure qualification remain required. Only fenced realizations
     /// are eligible, and their launches deny until the Session owner binds them.
     #[cfg(target_os = "linux")]
     pub fn install_execution_deployment(
@@ -175,6 +175,11 @@ impl LocalProvider {
         }
         self.execution_deployment = Some(deployment);
         Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn execution_deployment(&self) -> Option<&execution::LocalExecutionDeployment> {
+        self.execution_deployment.as_ref()
     }
 
     fn select_execution_boundary(&self, sandbox: &LocalSandbox) -> Result<(), pc::SandboxError> {
@@ -967,9 +972,13 @@ impl LocalProvider {
 
 #[async_trait]
 impl pc::SandboxProvider for LocalProvider {
-    /// Workdir isolation has no external daemon or kernel feature to attest;
-    /// construction already owns and validates its filesystem root.
+    /// Ordinary Workdir owns its filesystem root; a configured execution
+    /// boundary additionally attests the actual installed physical mechanism.
     async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        #[cfg(target_os = "linux")]
+        if let Some(execution) = &self.execution_deployment {
+            return execution.probe_ready().await;
+        }
         Ok(())
     }
 

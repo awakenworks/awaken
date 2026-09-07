@@ -1076,6 +1076,7 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
         ('/\\ ~effectHeld /\\ UNCHANGED bindingVars', '/\\ UNCHANGED bindingVars', "OnlyCurrentBindingCommits"),
         ('Select == /\\ selection = "unset"', 'Select == /\\ selection \\in {"unset", "weak"}', "WeakExecutionCannotUpgrade"),
         ('/\\ boundSlot = 0 /\\ projection', '/\\ projection', "BindingIsWriteOnce"),
+        ('/\\ deploymentReady /\\ selection\' = "scoped"', '/\\ selection\' = "scoped"', "OnlyProbedDeploymentSelected"),
     ]:
         if source.count(anchor) != 1:
             raise SystemExit(f"Session execution binding mutation anchor drifted: {anchor}")
@@ -1086,7 +1087,7 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "SessionExecutionBinding", source, config, mutations,
                               dependencies=("SessionRealizationAuthority", "WorkerExecutionAuthority"),
                               action_properties={"BindingIsWriteOnce"})
-    print("Session execution binding: 10/10 mutants killed; candidate/resident effects reachable")
+    print("Session execution binding: 11/11 mutants killed; candidate/resident effects reachable")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:

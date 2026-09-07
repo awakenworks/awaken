@@ -691,6 +691,32 @@ serializes launch against adoption, replay, checkpoint and terminal effects.
 Multiple live participants share that marker; only positively absent entries
 may be reclaimed. Rebuild source evidence retains the same participants.
 
+Operator selection is carried by the existing standalone Worker/all-in-one
+configuration key `sandbox_trusted_host_scoped_execution = true` (default
+false). It requires Linux plus the Local tier or the existing explicit
+TrustedHost opt-in. The one Deployment validator rejects unsupported combinations
+for file-based, typed Worker and direct Host construction. Host startup uses the
+existing release-companion locator and resolves bubblewrap once from absolute
+operator PATH entries, never Agent environment. A disposable real scoped command
+must complete private handoff and exact-tree exit before installation. Missing,
+incompatible or stalled binaries fail startup without direct-execution fallback.
+Repeated initialization preserves the exact installed deployment; configuration
+replacement is rejected, and provider readiness reuses the same probe.
+The existing `SessionExecutionBinding` model now distinguishes startup
+readiness from current business authority: selecting a scope requires a
+completed probe, but that fact alone can never authorize an effect. Its
+probe-bypass mutant and reachable candidate/resident effects guard both safety
+and non-vacuity. The probe's actual OS evidence remains a model assumption,
+exercised separately by real Linux tests rather than claimed as refinement.
+
+The existing Session preparation owner then binds current Worker/Session
+authority before its first effect; the probe grants no business authority.
+The startup and lease-refresh integration test follows this actual configuration
+path rather than manually configuring a test-only provider. This opt-in exposes
+the installed Local hardening path for qualification, not the full
+`process_tree_supervision` capability: that API/manifest guarantee remains
+false pending complete selected-provider and failure qualification.
+
 The same optional boundary wraps Local Repository realization/publication as
 one internal `repository-effect` helper operation. The existing Git transport
 remains the only clone/CAS/credential authority; its synchronous workflow and
@@ -866,9 +892,10 @@ The existing Session renewal sweep concurrently drives due Control lease
 writes and bounded physical cutoff refresh. A long Session lease no longer
 short-circuits refresh of a shorter Worker proof. Both lanes finish their peer
 work before reporting errors; current authority is reread at each physical
-effect. No second timer, process registry, lease store or deployment-mode flag
-is added. Native Hand, ACP and sandbox-stdio continue to share the provider
-spawn boundary. Managed Git preparation/publication is not yet inside it.
+effect. No second timer, process registry or lease store is added. Native Hand,
+ACP and sandbox-stdio continue to share the provider spawn boundary. Local
+Repository preparation/publication uses the internal helper described above;
+Namespace/Container host-side Git is not covered by that Local boundary.
 
 `SessionExecutionBinding` composes the Worker/Session kernel with one selected
 scope, two physical owner allocations and candidate/resident/retiring phases.
@@ -881,9 +908,12 @@ candidate test crosses unbound rejection, enrollment/retry, launch, no-due
 refresh, Worker closure and exact tree stop while preserving File bytes.
 Callback elapsed time and OS enforcement remain separate deadline/boundary
 obligations; this is not Rust refinement or unbounded distributed liveness.
-Automatic Worker deployment/readiness installation, supervised Managed Git,
-reboot recovery and real cross-platform/cloud qualification remain required
-before advertising full supervision.
+The opt-in deployment/probe installation described above is now production-wired.
+Startup still follows the existing panic-style composition policy: a probe
+failure after Worker registration has no demonstrated immediate deregistration
+path. Session lease wall-clock/monotonic correspondence, terminal Repository
+crash/retry integration, reboot recovery and real cross-platform/cloud
+qualification remain required before advertising full supervision.
 
 Native Linux readiness now executes the same `bubblewrap_argv` profile as a
 real Namespace launch, including PID/IPC/UTS/network namespaces and parent-death
