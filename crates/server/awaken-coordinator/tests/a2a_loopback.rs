@@ -25,7 +25,7 @@ use awaken_runtime_contract::{
     CredentialUsage,
 };
 use awaken_session_executor::ManagedHost;
-use awaken_scenario_host::{EchoModel, build_router};
+use awaken_scenario_host::{EchoModel, build_router, build_unmounted_host_with_agent_publications};
 use awaken_service_lifecycle::run_composed_async_test;
 use axum::Router;
 use axum::body::Body;
@@ -251,14 +251,18 @@ fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("parent and delegated remote publications are valid");
     let host = Arc::new(
-        SharedHost::new(Arc::new(NativeDelegatingModel), "parent")
-            .with_agent_publications(Arc::new(publications))
-            .with_remote_attempt_executor(awaken_session_executor::RemoteAttemptInstallation {
-                executor: Arc::new(A2aRunExecutor::new(Arc::new(FixedTransportResolver(
-                    transport,
-                )))),
-                credential_realization: Default::default(),
-            }),
+        Arc::into_inner(build_unmounted_host_with_agent_publications(
+            Arc::new(NativeDelegatingModel),
+            "parent",
+            Arc::new(publications),
+        ))
+        .expect("unmounted scenario host has one owner")
+        .with_remote_attempt_executor(awaken_session_executor::RemoteAttemptInstallation {
+            executor: Arc::new(A2aRunExecutor::new(Arc::new(FixedTransportResolver(
+                transport,
+            )))),
+            credential_realization: Default::default(),
+        }),
     );
     let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     host
@@ -296,11 +300,13 @@ fn published_delegating_host(
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("authenticated parent and child publications are valid");
     let host = Arc::new(
-        SharedHost::new(Arc::new(NativeDelegatingModel), "parent")
-            .with_agent_publications(Arc::new(publications))
-            .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(
-                materializer,
-            ))),
+        Arc::into_inner(build_unmounted_host_with_agent_publications(
+            Arc::new(NativeDelegatingModel),
+            "parent",
+            Arc::new(publications),
+        ))
+        .expect("unmounted scenario host has one owner")
+        .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(materializer))),
     );
     let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     host
@@ -319,6 +325,10 @@ fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
     // commit ordinary results; E5 C5=no result emits exactly agent_run, while
     // C5=result reports delegate said.
     //
+    // C6 the canonical unmounted Scenario Host installs one Resources application,
+    // including artifact capture. C6 + successful child/parent commits => no
+    // missing-publication error, even for an empty artifact set. Both anonymous
+    // and authenticated paths exercise this composition (no substitute publisher).
     // Constraints/invariants: RunDelegations and the parent transcript are the
     // committed relationship/report authorities; A2A owns only its wire projection.
     // Decision rule U1: C1+C2+C3+C4+C5(no result) => E1+E2+E3+E5;

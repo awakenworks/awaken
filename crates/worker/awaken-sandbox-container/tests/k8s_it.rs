@@ -945,13 +945,14 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         Ok(_) => panic!("KPV5a orphan live claim must fail closed"),
         Err(error) => error,
     };
-    // KPV5a is now rejected by the shared Pod/PVC observation classifier
-    // before the deletion-specific fallback. Keep the exact failure and the
-    // zero-delete, subsequent Rebuild and idempotent cleanup assertions below.
+    // KPV5a reaches the absent-Pod claim admission owner: an exact live PVC
+    // cannot be deleted because Rebuild may bind it after this observation.
+    // The error, unchanged UID, zero DELETE, Rebuild and replay effects jointly
+    // distinguish this rule from a generic observation mismatch.
     assert!(
-        error
-            .to_string()
-            .contains("continuation state differs from its durable handle"),
+        error.to_string().contains(
+            "live Kubernetes continuation PVC cannot be disposed after its source Pod is absent"
+        ),
         "KPV5a: {error}"
     );
     assert!(
@@ -963,6 +964,17 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
             .deletion_timestamp
             .is_none(),
         "KPV5a zero PVC deletion effect"
+    );
+    assert_eq!(
+        claims
+            .get(&claim_name)
+            .await
+            .unwrap()
+            .metadata
+            .uid
+            .as_deref(),
+        Some(claim_uid.as_str()),
+        "KPV5a rejected cleanup preserves the exact live claim incarnation"
     );
 
     let rebuild_fence = effect_fence(&scope, "rebuild", "claim-only-owner", 2);

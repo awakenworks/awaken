@@ -42,6 +42,48 @@ class EvidenceTests(unittest.TestCase):
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.root, stderr=subprocess.STDOUT)
 
+    def test_pinned_solver_selection_and_strict_missing_tool_policy(self):
+        # Z1 installed exact version + proof success => invoke the exact harness.
+        # Z2 wrong/unreadable version => fail before proof. Z3 missing solver =>
+        # mark missing, which fails strict mode and is explicit in diagnostic mode.
+        # Z4 proof failure => propagate. Execute the real runner selection and its
+        # final strict check with a solver process stub; this is not proof evidence.
+        source = (self.root / "scripts/ci/check_formal.sh").read_text()
+        selection = "  if command -v z3" + source.split("  if command -v z3", 1)[1].split("  run_kani awaken-protocol-managed \\\n", 1)[0]
+        strict_check = "\nif [ \"$require_tools\"" + source.rsplit("\nif [ \"$require_tools\"", 1)[1]
+        version = begin_record(self.root, True, 100)["proof_toolchain"]["z3"]
+        for installed, reported, version_exit, proof_exit, strict, expected in (
+            (True, version, 0, 0, 1, 0),
+            (True, "wrong", 0, 0, 1, 1),
+            (True, version, 31, 0, 1, 31),
+            (False, "", 0, 0, 1, 1),
+            (False, "", 0, 0, 0, 0),
+            (True, version, 0, 23, 1, 23),
+        ):
+            with self.subTest(installed=installed, reported=reported, strict=strict, proof_exit=proof_exit), tempfile.TemporaryDirectory() as temporary:
+                bindir = Path(temporary)
+                if installed:
+                    tool = bindir / "z3"
+                    tool.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote(reported) + f"\nexit {version_exit}\n")
+                    tool.chmod(0o755)
+                calls = bindir / "calls"
+                script = f"set -euo pipefail\nmissing=0\nrequire_tools={strict}\nz3_version={shlex.quote(version)}\n"
+                script += "run_kani() { printf '%s\\n' \"$*\" > \"$CALLS\"; return \"$PROOF_EXIT\"; }\n"
+                result = subprocess.run(["/bin/bash", "-c", script + selection + strict_check],
+                                        env=dict(os.environ, PATH=str(bindir), CALLS=str(calls), PROOF_EXIT=str(proof_exit)),
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                invoked = installed and reported == version and version_exit == 0
+                self.assertEqual(calls.exists(), invoked)
+                if invoked:
+                    self.assertEqual(calls.read_text().strip(), "awaken-protocol-managed --solver z3 --harness memory_time_filter_compares_visible_milliseconds_without_merging_them")
+                if not installed:
+                    self.assertIn("skipped Z3", result.stdout)
+        passed = finish_record(begin_record(self.root, True, 100), self.root, False, 110)
+        changed = dict(passed, proof_toolchain=dict(passed["proof_toolchain"], z3="wrong"))
+        with self.assertRaisesRegex(ValueError, "toolchain"):
+            validate_record(changed, self.root, 110)
+
     def test_artifact_success_failure_and_source_binding(self):
         # A1 unchanged source + exit 0 -> Passed; A2 exit 23 -> Failed with
         # identical raw/model/log bytes retained; A3 changed source -> Failed.

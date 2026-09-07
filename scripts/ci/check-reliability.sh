@@ -111,14 +111,17 @@ RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -p awaken-worker --lib \
 python3 scripts/ci/check_reliability.py --tsan-log "$tsan_log"
 trap cleanup_mutation_artifacts EXIT
 mutation_evidence="${AWAKEN_RELIABILITY_EVIDENCE_DIR:-$CARGO_TARGET_DIR/reliability}"
+mkdir -p "$mutation_evidence"
 cargo mutants --package awaken-mcp-wire \
   --output "$mutation_evidence/sse" \
   --file crates/runtime/awaken-mcp-wire/src/sse.rs --timeout 30 --no-times -- sse::tests
+python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/sse/mutants.out"
 cargo mutants --package awaken-runtime-contract \
   --output "$mutation_evidence/tool-batch" \
   --file crates/contract/awaken-runtime-contract/src/tool_batch.rs \
   --re 'permits_call_transition|next_execution_attempt' \
   --timeout 30 --no-times -- tool_batch::tests
+python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/tool-batch/mutants.out"
 # Shared production metadata/authorization reducers: every selected mutation
 # must be caught by the domain decision tables; baseline/build failures do not
 # qualify as kills. cargo-mutants owns isolation and the outcome artifact.
@@ -129,6 +132,7 @@ cargo mutants --package awaken-session-contract \
   --file crates/contract/awaken-session-contract/src/work_queue.rs \
   --re 'mark_processed_observation|realization_generation_authorizes|bounded_rfc3339_nanos' \
   --timeout 60 --no-times -- --lib
+python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-observations/mutants.out"
 cleanup_mutation_artifacts
 trap - EXIT
 

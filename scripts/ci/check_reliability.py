@@ -7,7 +7,10 @@ import argparse
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -48,6 +51,9 @@ REQUIRED_TOOL_GATES = (
     "cargo mutants",
     "cleanup_mutation_artifacts",
     "cleanup_mutation_artifacts\npython3 scripts/ci/check_reliability.py",
+    'python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/sse/mutants.out"',
+    'python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/tool-batch/mutants.out"',
+    'python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-observations/mutants.out"',
 )
 
 
@@ -59,6 +65,51 @@ def tsan_workload_passed(output: str) -> bool:
         re.MULTILINE,
     )
     return summaries == [("ok", "1", "0", "0")]
+
+
+def mutation_evidence_passed(directory: Path) -> bool:
+    """Qualify cargo-mutants' own receipt; build failures are not test kills."""
+    try:
+        receipt = json.loads((directory / "outcomes.json").read_text())
+        outcomes = receipt["outcomes"]
+        total = receipt["total_mutants"]
+        if type(total) is not int or total <= 0 or len(outcomes) != total + 1:
+            return False
+        planned = json.loads((directory / "mutants.json").read_text())
+        planned_names = {mutant["name"] for mutant in planned}
+        if len(planned) != total or len(planned_names) != total:
+            return False
+        if any(type(receipt[key]) is not int for key in ("caught", "missed", "timeout", "unviable", "success")):
+            return False
+        if receipt["caught"] != total or any(receipt[key] != 0 for key in ("missed", "timeout", "unviable", "success")):
+            return False
+        names = set()
+        for index, outcome in enumerate(outcomes):
+            baseline = index == 0
+            if baseline:
+                if outcome["scenario"] != "Baseline" or outcome["summary"] != "Success":
+                    return False
+            else:
+                name = outcome["scenario"]["Mutant"]["name"]
+                if not name or name in names or outcome["summary"] != "CaughtMutant":
+                    return False
+                names.add(name)
+            phases = outcome["phase_results"]
+            if [phase["phase"] for phase in phases] != ["Build", "Test"] or phases[0]["process_status"] != "Success":
+                return False
+            status = phases[1]["process_status"]
+            if (status != "Success" if baseline else status != {"Failure": 101}):
+                return False
+            log = (directory / outcome["log_path"]).read_text()
+            summaries = re.findall(r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;", log, re.MULTILINE)
+            if baseline:
+                if not summaries or not sum(int(row[1]) for row in summaries) or any(row[0] != "ok" or row[2] != "0" or row[3] != "0" for row in summaries):
+                    return False
+            elif not any(row[0] == "FAILED" and int(row[2]) > 0 for row in summaries):
+                return False
+        return names == planned_names
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return False
 
 
 def validation_errors(
@@ -138,6 +189,103 @@ def current_inputs() -> tuple[dict[str, object], str, set[str], dict[str, str]]:
 
 
 class ReliabilityCheckerTests(unittest.TestCase):
+    def test_mutant_receipts_require_executed_tests_and_complete_coverage(self) -> None:
+        # M1 complete nonempty batch + passing baseline + assertion failure for
+        # every mutant => accept. M2 baseline absent/failed/zero/ignored => reject.
+        # M3 missed/build-failed/timed-out/duplicate/incomplete batch => reject.
+        # These counterexamples change independent receipt AND execution facts;
+        # a reassuring summary cannot replace a real test result in the tool log.
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            baseline_log = "test result: ok. 2 passed; 0 failed; 0 ignored;"
+            mutant_log = "test result: FAILED. 1 passed; 1 failed; 0 ignored;"
+            baseline = {"scenario": "Baseline", "summary": "Success", "log_path": "baseline.log", "phase_results": [
+                {"phase": "Build", "process_status": "Success"}, {"phase": "Test", "process_status": "Success"}]}
+            mutant = {"scenario": {"Mutant": {"name": "one"}}, "summary": "CaughtMutant", "log_path": "mutant.log", "phase_results": [
+                {"phase": "Build", "process_status": "Success"}, {"phase": "Test", "process_status": {"Failure": 101}}]}
+            receipt = {"outcomes": [baseline, mutant], "total_mutants": 1, "caught": 1, "missed": 0, "timeout": 0, "unviable": 0, "success": 0}
+            (directory / "mutants.json").write_text(json.dumps([{"name": "one"}]))
+
+            def check(value: dict, base: str = baseline_log, killed: str = mutant_log) -> bool:
+                (directory / "outcomes.json").write_text(json.dumps(value))
+                (directory / "baseline.log").write_text(base)
+                (directory / "mutant.log").write_text(killed)
+                return mutation_evidence_passed(directory)
+
+            self.assertTrue(check(receipt), "M1")
+            for base in ("", baseline_log.replace("2 passed", "0 passed"), baseline_log.replace("0 ignored", "1 ignored"), mutant_log):
+                self.assertFalse(check(receipt, base=base), "M2")
+            for killed in ("", baseline_log, "process timed out"):
+                self.assertFalse(check(receipt, killed=killed), "M3 log")
+            for field in ("missed", "timeout", "unviable", "success", "total_mutants", "caught"):
+                changed = json.loads(json.dumps(receipt))
+                changed[field] += 1
+                self.assertFalse(check(changed), f"M3 {field}")
+            for index, phase in ((0, 1), (1, 0), (1, 1)):
+                changed = json.loads(json.dumps(receipt))
+                changed["outcomes"][index]["phase_results"][phase]["process_status"] = "Timeout"
+                self.assertFalse(check(changed), "M2/M3 phase")
+            self.assertFalse(check({**receipt, "outcomes": [mutant]}), "M2 absent baseline")
+            self.assertFalse(check({**receipt, "total_mutants": 0, "caught": 0, "outcomes": [baseline]}), "M3 empty")
+            self.assertFalse(check({**receipt, "total_mutants": 2, "caught": 2, "outcomes": [baseline, mutant, mutant]}), "M3 duplicate")
+            self.assertFalse(check({**receipt, "caught": True}), "M3 malformed count")
+            (directory / "mutants.json").write_text(json.dumps([{"name": "other"}]))
+            self.assertFalse(check(receipt), "M3 result for an unselected mutant")
+            (directory / "mutants.json").write_text(json.dumps([{"name": "one"}, {"name": "omitted"}]))
+            self.assertFalse(check(receipt), "M3 missing result cannot shrink planned coverage")
+
+    def test_actual_runner_owns_directory_and_propagates_tool_failure(self) -> None:
+        # Directory/tool graph: D1 output parent missing/existing/nested; D2 a
+        # regular file blocks creation; D3 a mutation command fails. Effects:
+        # D1 => initialize + run all 3 tools; D2 => zero mutation calls + failure;
+        # D3 => stop + failure + cleanup. The real script runs in a disposable
+        # checkout with process stubs: these prove orchestration, not Rust tests.
+        # Removing the mkdir line must kill the fresh-directory positive control.
+        for case in ("fresh", "existing", "nested", "blocked", "tool-failure", "missing-init"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                scripts = root / "scripts/ci"
+                scripts.mkdir(parents=True)
+                (root / "fuzz").mkdir()
+                for name in ("check-reliability.sh", "_cargo_target.sh", "_provider_environment.sh"):
+                    shutil.copyfile(ROOT / "scripts/ci" / name, scripts / name)
+                if case == "missing-init":
+                    runner = scripts / "check-reliability.sh"
+                    runner.write_text(runner.read_text().replace('mkdir -p "$mutation_evidence"\n', ""))
+                binary = root / "bin"
+                binary.mkdir()
+                cargo = '''#!/usr/bin/env bash
+echo "$*" >> "$CALL_LOG"
+case "$*" in
+  "install --list") echo 'cargo-fuzz 1'; echo 'cargo-mutants 1' ;;
+  "mutants "*)
+    while [ "$1" != '--output' ]; do shift; done
+    [ -d "$(dirname "$2")" ] || exit 9
+    [ "$FAIL_MUTANT" != 1 ] || exit 7 ;;
+  *"heartbeat_snapshot_never_mixes_concurrent_publication_batches"*)
+    echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
+esac
+'''
+                for name, body in {"cargo": cargo, "python3": "#!/bin/sh\nexit 0\n", "rustup": "#!/bin/sh\necho nightly-test\n", "rustc": "#!/bin/sh\necho 'host: x86_64-unknown-linux-gnu'\n"}.items():
+                    tool = binary / name
+                    tool.write_text(body)
+                    tool.chmod(0o755)
+                output = root / ("nested/output/evidence" if case == "nested" else "evidence")
+                if case == "existing":
+                    output.mkdir()
+                if case == "blocked":
+                    output.write_text("owned file must remain unchanged")
+                env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", CARGO_TARGET_DIR=str(root / "target"), AWAKEN_RELIABILITY_EVIDENCE_DIR=str(output), CALL_LOG=str(root / "calls"), FAIL_MUTANT=str(int(case == "tool-failure")))
+                result = subprocess.run(["bash", str(scripts / "check-reliability.sh"), "--require-tools"], env=env, capture_output=True, text=True, timeout=20)
+                calls = (root / "calls").read_text().splitlines()
+                mutations = [line for line in calls if line.startswith("mutants ")]
+                passed = case in ("fresh", "existing", "nested")
+                self.assertEqual(result.returncode == 0, passed, result.stderr)
+                self.assertEqual(len(mutations), 3 if passed else 0 if case == "blocked" else 1)
+                self.assertEqual(calls[-1], "clean -p awaken-session-contract", "D2/D3 cleanup")
+                if case == "blocked":
+                    self.assertEqual(output.read_text(), "owned file must remain unchanged")
+
     def test_tsan_requires_one_executed_passing_workload(self) -> None:
         # Cause/effect table: T1 exact target executes and passes => accept;
         # T2 renamed/filter-missed target executes zero => reject; T3 ignored,
@@ -203,7 +351,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--tsan-log", type=Path)
+    parser.add_argument("--mutants", type=Path)
     args = parser.parse_args(argv)
+    if args.mutants is not None:
+        if not mutation_evidence_passed(args.mutants):
+            print("ERROR: mutation evidence must contain a passing executed baseline and every mutant caught by tests", file=sys.stderr)
+            return 1
+        print("mutation evidence: complete nonempty batch caught by executed tests")
+        return 0
     if args.tsan_log is not None:
         if not tsan_workload_passed(args.tsan_log.read_text(encoding="utf-8")):
             print("ERROR: TSan must execute exactly one passing, non-ignored production workload", file=sys.stderr)

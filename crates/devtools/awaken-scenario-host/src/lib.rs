@@ -417,7 +417,18 @@ pub fn build_unmounted_host(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
 ) -> Arc<SharedHost> {
-    build_unmounted_host_from(resource_host(llm, model_ref))
+    build_unmounted_host_with_deployment(llm, model_ref, scenario_deployment())
+}
+
+/// The unmounted scenario composition with an explicit deployment. Resources
+/// and Runtime consume the same deployment before any stores or sandboxes open.
+/// No lifecycle or Session application is installed until the caller mounts it.
+pub fn build_unmounted_host_with_deployment(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    deployment: awaken_session_executor::DeploymentConfig,
+) -> Arc<SharedHost> {
+    build_unmounted_host_from(resource_host_with_deployment(llm, model_ref, deployment))
 }
 
 /// Scenario assembly whose Runtime and Managed adapters can share the exact

@@ -136,6 +136,7 @@ pub fn awaken_scenario_host::build_statemachine_rich_router() -> axum::routing::
 pub fn awaken_scenario_host::build_statemachine_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_unmounted_host(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>) -> alloc::sync::Arc<awaken_session_executor::host::SharedHost>
 pub fn awaken_scenario_host::build_unmounted_host_with_agent_publications(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>) -> alloc::sync::Arc<awaken_session_executor::host::SharedHost>
+pub fn awaken_scenario_host::build_unmounted_host_with_deployment(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, awaken_session_executor::deployment_config::DeploymentConfig) -> alloc::sync::Arc<awaken_session_executor::host::SharedHost>
 pub fn awaken_scenario_host::build_unscoped_resource_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_vision_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_worker_router() -> axum::routing::Router

@@ -160,14 +160,39 @@ impl StreamSink for EventForwardingSink {
     }
 }
 
+/// Millisecond value represented by the public UTC projection. Consumers that
+/// filter projected timestamps use this same normalization as the formatter.
+#[must_use]
+pub fn project_epoch_millis(epoch_millis: u128) -> u64 {
+    epoch_millis.min((crate::work_queue::MAX_RFC3339_NANOS / 1_000_000) as u128) as u64
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn public_millisecond_projection_is_exact_bounded_and_nonwrapping() {
+    // P1 every u128 at/below the UTC maximum is preserved; P2 every larger
+    // value saturates to that maximum before narrowing. No input assumptions.
+    // This numeric range lemma complements the Memory caller's exact
+    // quantization proof; formatter/parser correspondence has executable
+    // round-trip and independent calendar-boundary tests below.
+    let millis: u128 = kani::any();
+    let projected = project_epoch_millis(millis);
+    assert!(projected <= 253_402_300_799_999);
+    if millis <= 253_402_300_799_999 {
+        assert_eq!(u128::from(projected), millis);
+    } else {
+        assert_eq!(projected, 253_402_300_799_999);
+    }
+}
+
 /// Format epoch milliseconds without losing subsecond precision. Whole seconds
 /// retain their historical spelling. Calendar arithmetic is owned by the same
 /// UTC codec as Work receipts. Values after year 9999 saturate only in this
 /// display projection; persisted milliseconds and lease arithmetic are unchanged.
 #[must_use]
 pub fn epoch_millis_to_rfc3339(epoch_millis: u64) -> String {
-    let nanos = crate::work_queue::bounded_rfc3339_nanos(i128::from(epoch_millis) * 1_000_000);
-    let text = crate::work_queue::format_rfc3339_utc_nanos(nanos / 1_000_000 * 1_000_000);
+    let nanos = i128::from(project_epoch_millis(epoch_millis.into())) * 1_000_000;
+    let text = crate::work_queue::format_rfc3339_utc_nanos(nanos);
     let (whole, fraction) = text
         .strip_suffix('Z')
         .expect("UTC codec")
@@ -268,8 +293,11 @@ mod tests {
         // checks known dates independently of the round-trip oracle.
         #[test]
         fn timestamp_projection_round_trips_its_declared_domain(millis in proptest::prelude::any::<u64>()) {
+            // The filter's shared numeric projection and the wire codec must
+            // represent the same instant for legal and saturated input classes.
             let wire = epoch_millis_to_rfc3339(millis);
-            proptest::prop_assert_eq!(rfc3339_to_epoch_millis(&wire), Some(millis.min(253_402_300_799_999)));
+            proptest::prop_assert_eq!(project_epoch_millis(millis.into()), millis.min(253_402_300_799_999));
+            proptest::prop_assert_eq!(rfc3339_to_epoch_millis(&wire), Some(project_epoch_millis(millis.into())));
         }
     }
 
