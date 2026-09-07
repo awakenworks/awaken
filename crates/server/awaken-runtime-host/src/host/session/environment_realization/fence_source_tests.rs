@@ -51,6 +51,9 @@ fn provider_fence_source_decision_table_preserves_exact_live_authority() {
     // predicate -> E2 (MC/DC), with both topologies except Worker-only rows.
     // The ABA row restores byte-identical authority after removal, isolating
     // allocation identity from lease equality. Closed retains the exact bytes.
+    // The same captured value also implements CurrentExecutionAuthority:
+    // its callback must run once under live authority, never on denial. A bad
+    // retry assertion cannot revoke the valid original operation's port.
     for registered in [false, true] {
         for rule in [
             "exact",
@@ -155,6 +158,23 @@ fn provider_fence_source_decision_table_preserves_exact_live_authority() {
             if let Ok(fence) = result {
                 assert_eq!(fence, current.sandbox_effect_fence("create").unwrap());
             }
+            let mut effects = 0;
+            let result = source.with_current(&mut |remaining| {
+                effects += 1;
+                assert!(remaining > Duration::ZERO && remaining <= Duration::from_secs(60));
+                if registered {
+                    assert!(remaining <= Duration::from_secs(30));
+                }
+                Ok(())
+            });
+            let allowed = matches!(rule, "exact" | "renewed" | "renewed_assertion")
+                || rule.starts_with("asserted_");
+            assert_eq!(result.is_ok(), allowed, "{registered}/{rule}/effect");
+            assert_eq!(
+                effects,
+                usize::from(allowed),
+                "{registered}/{rule}/effect count"
+            );
         }
     }
 }
@@ -179,6 +199,62 @@ fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity() {
     install(&host, lease());
     assert!(
         host.session_environment_effect_fence_source("session", &invalid)
+            .is_err()
+    );
+
+    // C1 slot exists; C2 the capture has an installed live-kind lease;
+    // C3 initial generation matches; C4 initial expiry does not exceed it.
+    // Each false row rejects at capture, before any operation can use a port.
+    // This is distinct from the late replacement table above.
+    for rule in [
+        "uninstalled",
+        "closed",
+        "owner",
+        "incarnation",
+        "epoch",
+        "expiry",
+    ] {
+        let host = self::host();
+        install(&host, lease());
+        let mut initial = lease().sandbox_effect_fence("create").unwrap();
+        match rule {
+            "uninstalled" => host.session_slots.update("session", |slot| {
+                slot.realization_authority = SessionRealizationAuthority::Uninstalled;
+            }),
+            "closed" => {
+                host.session_slots.close_realization("session", None);
+            }
+            "owner" => initial.owner.push_str("-other"),
+            "incarnation" => initial.runtime_incarnation.push_str("-other"),
+            "epoch" => initial.epoch += 1,
+            "expiry" => initial.expires_at_unix_ms += 1,
+            _ => unreachable!(),
+        }
+        assert!(
+            host.session_environment_effect_fence_source("session", &initial)
+                .is_err(),
+            "{rule}"
+        );
+    }
+}
+
+#[test]
+fn provider_fence_source_cannot_retain_the_host_or_authorize_after_its_drop() {
+    // W1 capture a source while the exact Session exists; W2 drop its Host.
+    // Both the fence query and synchronous effect must deny, with zero effects.
+    // Owned opaque return + Weak slot reference makes this a real drop check,
+    // not a source that merely borrows a Host kept alive by the test itself.
+    let host = host();
+    install(&host, lease());
+    let initial = lease().sandbox_effect_fence("create").unwrap();
+    let source = host
+        .session_environment_effect_fence_source("session", &initial)
+        .unwrap();
+    drop(host);
+    assert!(source.current_effect_fence(&initial).is_err());
+    assert!(
+        source
+            .with_current(&mut |_| panic!("dropped Host"))
             .is_err()
     );
 }

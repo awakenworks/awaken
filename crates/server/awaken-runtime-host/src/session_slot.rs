@@ -13,7 +13,6 @@ use crate::provisioning::StagedResources;
 
 mod environment_owner;
 pub(crate) use environment_owner::*;
-#[cfg(target_os = "linux")]
 mod execution_authority;
 
 /// Host fixtures use the actual Control-clock coordinate for live replies.

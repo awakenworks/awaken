@@ -253,14 +253,27 @@ these tests or bounded models must not promote `process_tree_supervision`.
 
 The existing Container creation retry source now captures the operation and the
 two original Session slot lock allocations before cache preparation. Its
-projection reuses `authorize_worker_effect` and the slot's
-`remaining_for` decision under Worker -> Session guards. An absent, closed,
+projection and physical execution now reuse the same
+`SessionExecutionAuthority` implementation and the slot's `remaining_for`
+decision under Worker -> Session guards. Its closed target enum distinguishes
+the exact enrolled Environment required for execution from the immutable
+operation required before provider creation. The previous Host-specific
+slot/lease-checking closure has been removed. An absent, closed,
 expired or replaced slot cannot supply a fence; neither can a changed operation,
 owner, incarnation, epoch or regressed expiry. A zero Worker budget denies the
 shared effect callback. Preparation checks run before and after its await, and
 Container retries use that same captured source rather than looking up a new
 slot by Session id. No persistent fields, public interfaces or lease owners are
 added. The unfenced direct-provider entry remains unchanged.
+
+The captured provider target also exposes the existing synchronous
+`CurrentExecutionAuthority` port with the minimum current Worker/Session
+budget. Both interfaces use one held-lock decision; neither captures a copied
+deadline nor retains the Host or slot map. The common implementation is
+platform-neutral; only scoped process enrollment remains Linux-gated.
+This does not yet connect the port to Memory acknowledgement or every physical
+Provider boundary. Memory acknowledgement's contract-owned wall-clock sample
+and the provider marker/cleanup clock checks still need migration.
 
 The Host source decision table and barrier tests cover direct/registered
 topologies, same-byte slot replacement, renewal and closure during Worker,

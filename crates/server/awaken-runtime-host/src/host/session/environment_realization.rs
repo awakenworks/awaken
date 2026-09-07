@@ -992,65 +992,20 @@ impl SharedHost {
     /// renewals may replace the observation, never these identities. This
     /// returns durable Control coordinates, not a provider-local expiry or an
     /// authorization to perform asynchronous I/O after the guards are released.
-    fn session_environment_effect_fence_source<'a>(
-        &'a self,
-        thread: &'a str,
+    fn session_environment_effect_fence_source(
+        &self,
+        thread: &str,
         initial: &awaken_provisioning_contract::SandboxEffectFence,
-    ) -> Result<impl awaken_sandbox_container::ContainerEffectFenceSource + 'a, HostError> {
-        let initial = initial.clone();
-        initial
-            .validate_identity()
-            .map_err(|error| HostError::internal(error.to_string()))?;
-        let (realization, lifecycle) = self
-            .session_slots
-            .read(thread, |slot| {
-                (slot.realization.clone(), slot.lifecycle.clone())
-            })
-            .ok_or_else(|| HostError::internal("Session realization slot is absent"))?;
-        Ok(
-            move |asserted: &awaken_provisioning_contract::SandboxEffectFence| {
-                self.authorize_worker_effect(|| {
-                    if !initial.same_effect_identity(asserted)
-                        || asserted.expires_at_unix_ms < initial.expires_at_unix_ms
-                    {
-                        return Err(HostError::internal(
-                            "Session effect retry changed its identity",
-                        ));
-                    }
-                    self.session_slots
-                        .read(thread, |slot| {
-                            if !Arc::ptr_eq(&realization, &slot.realization)
-                                || !Arc::ptr_eq(&lifecycle, &slot.lifecycle)
-                            {
-                                return Err(HostError::internal(
-                                    "Session realization slot was replaced",
-                                ));
-                            }
-                            let authority = &slot.realization_authority;
-                            let lease = authority
-                                .lease()
-                                .filter(|lease| authority.remaining_for(lease).is_some())
-                                .ok_or_else(|| {
-                                    HostError::internal(
-                                        "Session realization proof is no longer live",
-                                    )
-                                })?;
-                            let current = lease
-                                .sandbox_effect_fence(initial.operation_id.clone())
-                                .map_err(|error| HostError::internal(error.to_string()))?;
-                            if !asserted.same_effect_identity(&current)
-                                || current.expires_at_unix_ms < asserted.expires_at_unix_ms
-                            {
-                                return Err(HostError::internal(
-                                    "Session realization generation changed",
-                                ));
-                            }
-                            Ok(current)
-                        })
-                        .ok_or_else(|| HostError::internal("Session realization slot is absent"))?
-                })
-                .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))
-            },
+    ) -> Result<
+        impl awaken_sandbox_container::ContainerEffectFenceSource
+        + awaken_provisioning_contract::CurrentExecutionAuthority
+        + use<>,
+        HostError,
+    > {
+        self.session_slots.provider_effect_authority(
+            thread,
+            initial,
+            self.execution_authority.as_ref(),
         )
     }
 
