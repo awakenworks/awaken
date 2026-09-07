@@ -909,9 +909,31 @@ refresh, Worker closure and exact tree stop while preserving File bytes.
 Callback elapsed time and OS enforcement remain separate deadline/boundary
 obligations; this is not Rust refinement or unbounded distributed liveness.
 The opt-in deployment/probe installation described above is now production-wired.
-Startup still follows the existing panic-style composition policy: a probe
-failure after Worker registration has no demonstrated immediate deregistration
-path. Session lease wall-clock/monotonic correspondence, terminal Repository
+Host composition now returns expected configuration/probe errors through its
+existing API. The Worker registration owner consumes startup (including dependency
+unwind or cooperative shutdown), then owns one bounded deregistration on every
+returned lifecycle path. Initial provider readiness has a five-second bound;
+claim polling starts only after successful local acceptance of the first Ready
+receipt. Cancellation may follow remote Ready delivery but cannot revive the
+dropped local startup future. Startup creates no heartbeat/probe/warmup tasks.
+The withdrawal result distinguishes applied/absent/replaced exact identity from
+rejection or unknown response; unknown withdrawal cannot turn an otherwise
+successful local stop into reported completion. The original startup failure
+remains primary when withdrawal also fails. There is no detached cleanup task
+or second registry owner; caller abort, process death and panic-abort builds
+still require lease expiry and physical process-cutoff qualification.
+
+`WorkerDrain` extends its existing admission/registry ordering with startup,
+separate initial Ready delivery/acceptance and one withdrawal. Its finite model
+checks failed-startup admission, single withdrawal, receipt-qualified remote
+death and eventual local return under owner/timeout polling fairness. Unknown
+responses are not proof of remote cleanup. Guard/liveness mutants and four
+reachability witnesses run in the existing lifecycle mutation gate. Real HTTP
+decision tables cover factory errors/unwinds, probe errors/unwinds/timeouts,
+shutdown success/error, initial receipt cancellation/expiry and withdrawal
+receipt/error/timeout outcomes. This is not Rust or transport refinement.
+
+Session lease wall-clock/monotonic correspondence, terminal Repository
 crash/retry integration, reboot recovery and real cross-platform/cloud
 qualification remain required before advertising full supervision.
 

@@ -965,6 +965,32 @@ def check_resource_preparation_model_mutant(tlc_jar: Path) -> None:
 
 
 def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
+    # S1-S9 extend the existing Worker lifecycle family: startup and withdrawal
+    # share the same registration owner as drain, not a second cleanup model.
+    source = (ROOT / "formal/tla/WorkerDrain.tla").read_text()
+    config = (ROOT / "formal/tla/WorkerDrain.cfg").read_text()
+    header = "SPECIFICATION Spec\nCONSTANT MaxClaims = 3\nCHECK_DEADLOCK FALSE\n"
+    mutations = []
+    for anchor, broken, invariant in [
+        ('AcceptInitialReady == /\\ startupPhase = "awaiting"',
+         'AcceptInitialReady == /\\ startupPhase = "probing"', "StartupAdmissionRequiresProbe"),
+        ('BeginWithdrawal == /\\ withdrawal = "none"',
+         'BeginWithdrawal == /\\ withdrawalCalls < 2', "OneWithdrawal"),
+        ('(IF outcome = "applied" THEN "Dead" ELSE registryState)',
+         '"Dead"', "RemoteDeathRequiresReceipt"),
+        ('(startupPhase = "failed" \\/ drainAcknowledged)',
+         'drainAcknowledged', "temporal:StartupFailureTerminates"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit("Worker startup/withdrawal mutation anchor drifted")
+        property_line = ("PROPERTIES " + invariant.removeprefix("temporal:")
+                         if invariant.startswith("temporal:") else "INVARIANTS " + invariant)
+        mutations.append((source.replace(anchor, broken), header + property_line, invariant))
+    for witness in ("NoFailedReturnReached", "NoReadyClaimReached",
+                    "NoUnknownWithdrawalReached", "NoPendingHeartbeatCancelled"):
+        mutations.append((source, header + "INVARIANTS " + witness, witness))
+    check_tlc_model_mutations(tlc_jar, "WorkerDrain", source, config, mutations)
+    print("Worker startup/withdrawal: 4/4 mutants killed; four lifecycle witnesses reachable")
     # L1: restore expiry-equality catch-up after a completed phase. Successful
     # renewals forever must expose a non-releasing cycle, not an oracle error.
     source = (ROOT / "formal/tla/SessionRealizationMutex.tla").read_text()

@@ -530,7 +530,7 @@ pub(super) async fn prepare_runtime_routers(
         let hand_factory = awaken_worker::relay_hand_executor_factory();
         host_builder
             .with_session_environment_from_deployment(Some(hand_factory))
-            .await
+            .await?
             .with_acp_from_deployment(credential_materializer.clone(), None)
             .await
     } else {

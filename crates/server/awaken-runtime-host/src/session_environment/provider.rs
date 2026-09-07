@@ -54,16 +54,15 @@ impl SessionEnvironmentProvider {
         hand_factory: Option<Arc<dyn HandExecutorFactory>>,
         namespace_hand_bin: impl Into<String>,
         hand_idle_after: std::time::Duration,
-    ) -> Option<Self> {
+    ) -> Result<Option<Self>, String> {
         let base = base.into();
-        match tier {
+        Ok(match tier {
             crate::SandboxTier::Local => {
                 Some(Self::workdir_with_agent_stderr(base, inherit_agent_stderr))
             }
             crate::SandboxTier::Namespace => {
-                let hand_factory = hand_factory.unwrap_or_else(|| {
-                    panic!("namespace Session environments require a hand executor factory")
-                });
+                let hand_factory = hand_factory
+                    .ok_or("namespace Session environments require a hand executor factory")?;
                 Some(Self::namespace_with_agent_stderr(
                     base,
                     inherit_agent_stderr,
@@ -75,7 +74,7 @@ impl SessionEnvironmentProvider {
             crate::SandboxTier::Docker | crate::SandboxTier::Podman | crate::SandboxTier::K8s => {
                 None
             }
-        }
+        })
     }
 
     pub(crate) fn supports_host_identity(&self) -> bool {

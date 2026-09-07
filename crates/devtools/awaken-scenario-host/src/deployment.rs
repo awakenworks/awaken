@@ -258,6 +258,7 @@ pub(crate) async fn runtime_resource_host_with_deployment(
                 awaken_worker::relay_hand_executor_factory(),
             ))
             .await
+            .expect("scenario Session environment must be available")
         })
         .await
 }

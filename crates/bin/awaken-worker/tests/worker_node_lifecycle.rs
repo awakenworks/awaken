@@ -70,12 +70,12 @@ fn http_status(address: &str, method: &str, path: &str) -> Option<u16> {
         .ok()
 }
 
-fn poll_status(address: &str, method: &str, path: &str, expected: u16) -> bool {
+async fn poll_status(address: &str, method: &str, path: &str, expected: u16) -> bool {
     for _ in 0..300 {
         if http_status(address, method, path) == Some(expected) {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     false
 }
@@ -83,8 +83,17 @@ fn poll_status(address: &str, method: &str, path: &str, expected: u16) -> bool {
 #[derive(Default)]
 struct ExternalSessionProvider {
     ready: Option<Arc<AtomicBool>>,
-    fault_after_first_probe: Option<ProbeFault>,
+    probe_fault: Option<(usize, ProbeFault)>,
     probe_calls: AtomicUsize,
+    active_probes: AtomicUsize,
+}
+
+struct ActiveProbe<'a>(&'a AtomicUsize);
+
+impl Drop for ActiveProbe<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -104,7 +113,7 @@ impl ExternalSessionProvider {
 
     fn stalling_after_startup() -> Self {
         Self {
-            fault_after_first_probe: Some(ProbeFault::Stall),
+            probe_fault: Some((1, ProbeFault::Stall)),
             ..Self::default()
         }
     }
@@ -195,13 +204,17 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionP
     }
 
     async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
-        let probe = self.probe_calls.fetch_add(1, Ordering::SeqCst);
-        if probe > 0 {
-            match self.fault_after_first_probe {
-                Some(ProbeFault::Stall) => std::future::pending::<()>().await,
-                Some(ProbeFault::StallOnce) if probe == 1 => std::future::pending::<()>().await,
-                Some(ProbeFault::Panic) => panic!("injected provider probe panic"),
-                _ => {}
+        self.active_probes.fetch_add(1, Ordering::SeqCst);
+        let _active = ActiveProbe(&self.active_probes);
+        let ordinal = self.probe_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some((after, fault)) = self.probe_fault
+            && ordinal >= after
+        {
+            match fault {
+                ProbeFault::Stall => std::future::pending::<()>().await,
+                ProbeFault::StallOnce if ordinal == after => std::future::pending::<()>().await,
+                ProbeFault::StallOnce => {},
+                ProbeFault::Panic => panic!("injected provider probe panic"),
             }
         }
         if self
@@ -757,50 +770,231 @@ async fn provider_evidence_drift_drains_the_incarnation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_failure_and_cancellation_share_one_registration_exit() {
+    // Cause/effect table, first failed stage wins (later stages cannot run):
+    // S1 decorator error/unwind; S2 Memory factory error/unwind; S3 provider
+    // error/unwind/stall; S4 shutdown success/error while S3 is pending.
+    // All -> one registration and one exact deregistration, zero Ready/claims/
+    // warmups. S4-success returns Ok; other rows return Err without an unwind.
+    // Existing normal/expired-receipt tests cover successful startup and late
+    // heartbeat delivery. Timeouts are failure, not a successful probe receipt.
+    for fault in [
+        "decorator-error",
+        "decorator-panic",
+        "memory-error",
+        "memory-panic",
+        "probe-error",
+        "probe-panic",
+        "probe-timeout",
+        "shutdown",
+        "shutdown-error",
+    ] {
+        let upstream = FakeWorkerUpstream::start();
+        let provider = Arc::new(ExternalSessionProvider {
+            ready: Some(Arc::new(AtomicBool::new(fault != "probe-error"))),
+            probe_fault: match fault {
+                "probe-panic" => Some((0, ProbeFault::Panic)),
+                "probe-timeout" | "shutdown" | "shutdown-error" => Some((0, ProbeFault::Stall)),
+                _ => None,
+            },
+            ..Default::default()
+        });
+        let mut builder =
+            lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id(fault))
+                .with_deployment_config(local_coordinator_deployment())
+                .with_session_container_provider("external-secure", provider.clone())
+                .with_manifest(manifest())
+                .without_admin_surface();
+        if fault.starts_with("decorator") {
+            builder = builder.with_attempt_decorator_factory(Arc::new(move |_| {
+                assert_ne!(fault, "decorator-panic", "injected startup factory unwind");
+                Err("injected decorator error".into())
+            }));
+        }
+        if fault.starts_with("memory") {
+            builder = builder.with_registered_memory_mounter_factory(Arc::new(move |_| {
+                assert_ne!(fault, "memory-panic", "injected startup factory unwind");
+                Err("injected Memory factory error".into())
+            }));
+        }
+        let result = tokio::time::timeout(
+            Duration::from_secs(8),
+            builder.build().unwrap().run_until(async {
+                if fault.starts_with("shutdown") {
+                    while provider.probe_calls.load(Ordering::SeqCst) == 0 {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    if fault == "shutdown-error" {
+                        return Err(std::io::Error::other("injected shutdown error").into());
+                    }
+                    return Ok(WorkerShutdown::Prompt);
+                }
+                std::future::pending().await
+            }),
+        )
+        .await
+        .expect("startup and withdrawal have bounded completion");
+        assert_eq!(result.is_ok(), fault == "shutdown", "{fault}");
+        assert_eq!(
+            provider.active_probes.load(Ordering::SeqCst),
+            0,
+            "startup future is consumed on every exit"
+        );
+        let requests = upstream.requests();
+        assert_eq!(
+            requests,
+            vec!["/v1/worker/register", "/v1/worker/deregister"],
+            "{fault}"
+        );
+        if fault.starts_with("decorator") || fault.starts_with("memory") {
+            assert_eq!(
+                provider.probe_calls.load(Ordering::SeqCst),
+                0,
+                "later stage must not run"
+            );
+        } else {
+            assert_eq!(
+                provider.probe_calls.load(Ordering::SeqCst),
+                1,
+                "startup cannot retry a failed probe"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registration_withdrawal_receipts_are_exact_bounded_and_preserve_primary_failure() {
+    // W1 local cooperative stop + applied/absent/replaced exact registration ->
+    // success; W2 rejected/malformed/missing reply -> Err, never false cleanup.
+    // W3 primary startup error crosses every withdrawal result unchanged.
+    // Each row sends one request; timeout permits local exit but is NOT a
+    // remote removal receipt. WorkerDrain models this as outcome="unknown".
+    for primary_failure in [false, true] {
+        for (reply, confirmed) in [
+            (Some(r#"{"mutation":"applied"}"#), true),
+            (Some(r#"{"mutation":"not_found"}"#), true),
+            (Some(r#"{"mutation":"stale_incarnation"}"#), true),
+            (Some(r#"{"mutation":"invalid_transition"}"#), false),
+            (Some(r#"{"mutation":"stale_sequence"}"#), false),
+            (Some("{}"), false),
+            (None, false),
+        ] {
+            let upstream = FakeWorkerUpstream::start();
+            upstream.set_deregistration_response(reply.map(str::to_owned));
+            let provider = Arc::new(ExternalSessionProvider {
+                probe_fault: Some((0, ProbeFault::Stall)),
+                ..Default::default()
+            });
+            let mut builder =
+                lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id("withdrawal"))
+                    .with_deployment_config(local_coordinator_deployment())
+                    .with_session_container_provider("external-secure", provider.clone())
+                    .with_manifest(manifest())
+                    .without_admin_surface();
+            if primary_failure {
+                builder = builder.with_attempt_decorator_factory(Arc::new(|_| {
+                    Err("primary failure sentinel".into())
+                }));
+            }
+            let result = tokio::time::timeout(
+                Duration::from_secs(8),
+                builder.build().unwrap().run_until(async {
+                    if primary_failure {
+                        return std::future::pending().await;
+                    }
+                    while provider.probe_calls.load(Ordering::SeqCst) == 0 {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    // Cancel the pending probe, not a race with a ready response.
+                    Ok(WorkerShutdown::Prompt)
+                }),
+            )
+            .await
+            .expect("one bounded withdrawal attempt");
+            assert_eq!(result.is_ok(), !primary_failure && confirmed, "{reply:?}");
+            if primary_failure {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("primary failure sentinel")
+                );
+            }
+            assert_eq!(
+                upstream.requests(),
+                vec!["/v1/worker/register", "/v1/worker/deregister"]
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expired_initial_heartbeat_cannot_start_dispatch() {
     // W15 real HTTP startup: registry applies sequence 1, but delays its response
     // beyond the request-anchored proof window. E1 reject before enabling claim
     // polling; E2 deregister exactly once; E3 no periodic heartbeat or warmup.
-    let upstream = FakeWorkerUpstream::start_with_expired_initial_receipt();
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        lifecycle_worker(
-            WorkerUpstream::new(upstream.url()).with_worker_id("expired-initial-receipt"),
+    // H1 expiry and H2 observed shutdown while the initial Ready response is
+    // pending both withdraw exactly once without enabling dispatch. Remote
+    // delivery before cancellation is allowed; it cannot revive the local task.
+    for cancelled in [false, true] {
+        let upstream = FakeWorkerUpstream::start_with_expired_initial_receipt();
+        upstream.block_initial_heartbeat(cancelled);
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            lifecycle_worker(
+                WorkerUpstream::new(upstream.url()).with_worker_id("expired-initial-receipt"),
+            )
+            .with_deployment_config(local_coordinator_deployment())
+            .with_manifest(manifest())
+            .without_admin_surface()
+            .build()
+            .unwrap()
+            .run_until(async {
+                if cancelled {
+                    while upstream.heartbeat_sequences().is_empty() {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    // The response was held until this shutdown branch wins;
+                    // no scheduler-speed assumption chooses the interleaving.
+                    upstream.block_initial_heartbeat(false);
+                    return Ok(WorkerShutdown::Prompt);
+                }
+                std::future::pending().await
+            }),
         )
-        .with_deployment_config(local_coordinator_deployment())
-        .with_manifest(manifest())
-        .without_admin_surface()
-        .build()
-        .unwrap()
-        .run_until(std::future::pending()),
-    )
-    .await
-    .unwrap();
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("authority is not current"),
-        "E1"
-    );
-    assert_eq!(upstream.heartbeat_sequences(), vec![1], "E3");
-    let requests = upstream.requests();
-    assert_eq!(
-        requests
-            .iter()
-            .filter(|path| path.as_str() == "/v1/worker/deregister")
-            .count(),
-        1,
-        "E2"
-    );
-    assert!(
-        !requests
-            .iter()
-            .any(|path| path.contains("/dispatch/") || path.contains("/warmups")),
-        "E1/E3"
-    );
+        .await
+        .unwrap();
+        if cancelled {
+            assert!(
+                result.is_ok(),
+                "cancelled startup withdraws without claiming"
+            );
+        } else {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("authority is not current")
+            );
+        }
+        assert_eq!(upstream.heartbeat_sequences(), vec![1], "E3");
+        let requests = upstream.requests();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|path| path.as_str() == "/v1/worker/deregister")
+                .count(),
+            1,
+            "E2"
+        );
+        assert!(
+            !requests
+                .iter()
+                .any(|path| path.contains("/dispatch/") || path.contains("/warmups")),
+            "E1/E3"
+        );
+    }
 }
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stalled_provider_probe_does_not_block_renewal_but_expires() {
     // Cause/effect rule P4: startup evidence succeeds, then the same provider
@@ -846,7 +1040,7 @@ async fn transient_provider_timeout_recovers_without_incarnation_restart() {
     // terminates. This contrasts P4 (all retries stall) and P3 (explicit loss).
     let upstream = FakeWorkerUpstream::start_with_short_registry_lease();
     let provider = Arc::new(ExternalSessionProvider {
-        fault_after_first_probe: Some(ProbeFault::StallOnce),
+        probe_fault: Some((1, ProbeFault::StallOnce)),
         ..Default::default()
     });
     tokio::time::timeout(
@@ -892,7 +1086,7 @@ async fn stalled_initial_provider_probe_never_publishes_ready() {
         .with_session_container_provider(
             "external-secure",
             Arc::new(ExternalSessionProvider {
-                fault_after_first_probe: Some(ProbeFault::Stall),
+                probe_fault: Some((1, ProbeFault::Stall)),
                 probe_calls: AtomicUsize::new(1),
                 ..Default::default()
             }),
@@ -927,7 +1121,7 @@ async fn panicking_heartbeat_probe_uses_authority_loss_and_requires_replacement(
             .with_session_container_provider(
                 "external-secure",
                 Arc::new(ExternalSessionProvider {
-                    fault_after_first_probe: Some(ProbeFault::Panic),
+                    probe_fault: Some((1, ProbeFault::Panic)),
                     ..ExternalSessionProvider::default()
                 }),
             )
@@ -1029,7 +1223,7 @@ async fn transient_heartbeat_failure_pauses_then_resumes_claim_admission() {
     .expect("valid Worker topology")
     .run_until(async {
         assert!(
-            poll_status(&admin_addr, "GET", "/readyz", 200),
+            poll_status(&admin_addr, "GET", "/readyz", 200).await,
             "H1 precondition"
         );
         for _ in 0..400 {
@@ -1040,7 +1234,7 @@ async fn transient_heartbeat_failure_pauses_then_resumes_claim_admission() {
         }
         assert_eq!(http_status(&admin_addr, "GET", "/readyz"), Some(503), "H1");
         recovery_release.store(true, Ordering::Release);
-        assert!(poll_status(&admin_addr, "GET", "/readyz", 200), "H2");
+        assert!(poll_status(&admin_addr, "GET", "/readyz", 200).await, "H2");
         Ok(WorkerShutdown::Prompt)
     })
     .await
@@ -1129,7 +1323,7 @@ async fn drain_closes_local_admission_before_control_acknowledges() {
         .expect("valid explicit Worker topology")
         .run_until(async {
             assert!(
-                poll_status(&admin_addr, "GET", "/readyz", 200),
+                poll_status(&admin_addr, "GET", "/readyz", 200).await,
                 "worker reaches accepting before drain"
             );
 
