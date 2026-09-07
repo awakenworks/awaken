@@ -554,6 +554,12 @@ impl ProviderCreationGuard {
 
 /// Serializes exact terminal cleanup and retains a Removed tombstone for
 /// delete/finish/receipt response-loss replay.
+/// Its terminal preparation/reconstruction/physical-removal methods validate
+/// identity/provenance, not a second clock. Production callers enter the
+/// existing current-effect guard before those synchronous mutations; Memory
+/// acknowledgement already holds it, so re-entering authority here would
+/// deadlock the original owner locks. Checkpoint WAL calls likewise enter
+/// through the provider's borrowed CurrentCheckpointParticipant adapter.
 pub(crate) struct RemovalGuard {
     root: PathBuf,
     marker: RealizationMarker,
@@ -566,7 +572,7 @@ impl RemovalGuard {
         let authorization = self.marker.disposal_authorization.as_ref().ok_or_else(|| {
             err("filesystem physical mutation has no aggregate authorization authority")
         })?;
-        validate_live_effect_fence(authorization.effect_fence())
+        authorization.validate()
     }
 
     pub(crate) fn completed_receipt(
@@ -592,7 +598,7 @@ impl RemovalGuard {
                 "filesystem realization already entered aggregate-authorized physical authorization",
             ));
         }
-        validate_live_effect_fence(effect_fence)?;
+        effect_fence.validate_identity()?;
         if !self.marker.effect_fence.authorizes_successor(effect_fence) {
             return Err(err(
                 "terminal disposal fence is stale, foreign, or regresses lease expiry",
@@ -610,13 +616,13 @@ impl RemovalGuard {
     /// Revalidate the one locked Removing participant immediately before an
     /// external reconstruction effect. Before aggregate authorization it reads
     /// (but never replaces) the durable prepared predecessor; after
-    /// authorization it accepts only a live successor of that physical-disposal
+    /// authorization it accepts only a structural successor of that physical-disposal
     /// authority. The exact marker and root identity are checked in both phases.
     pub(crate) fn validate_before_reconstruction(
         &self,
         effect_fence: &pc::SandboxEffectFence,
     ) -> Result<(), pc::SandboxError> {
-        validate_live_effect_fence(effect_fence)?;
+        effect_fence.validate_identity()?;
         let authority = self
             .marker
             .disposal_authorization
@@ -660,7 +666,7 @@ impl RemovalGuard {
                 "filesystem realization already entered aggregate-authorized physical authorization",
             ));
         }
-        validate_live_effect_fence(effect_fence)?;
+        effect_fence.validate_identity()?;
 
         if self
             .marker
@@ -705,7 +711,6 @@ impl RemovalGuard {
         authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), pc::SandboxError> {
         execution_participant::require_quiescent(&self.marker)?;
-        validate_live_effect_fence(authorization.effect_fence())?;
         authorization.validate()?;
 
         let advance = match self.marker.disposal_authorization.as_ref() {
@@ -787,7 +792,7 @@ impl RemovalGuard {
             .checkpoint_expected_effect_fence
             .as_ref()
             .ok_or_else(|| err("terminal checkpoint cleanup has no bound expected effect"))?;
-        validate_live_effect_fence(&self.marker.effect_fence)?;
+        self.marker.effect_fence.validate_identity()?;
         let marker = read_marker_locked(&self.root, &self.lock)?
             .ok_or_else(|| err("terminal checkpoint cleanup lost its realization marker"))?;
         let source = marker
@@ -1785,7 +1790,10 @@ pub(crate) fn begin_terminal_takeover(
     terminal_effect_fence: &pc::SandboxEffectFence,
     expected_preflight: Option<&TerminalReceiptObservation>,
 ) -> Result<Option<(RealizationEvidence, RemovalGuard)>, pc::SandboxError> {
-    validate_live_effect_fence(terminal_effect_fence)?;
+    // Both production entrances hold current Worker/Session authority across
+    // this synchronous function. Control expiry is an identity/order coordinate,
+    // never a value to compare with this machine's UTC.
+    terminal_effect_fence.validate_identity()?;
     if let Some(expected) = expected_effect_fence {
         expected.validate_identity()?;
     }
@@ -1829,10 +1837,8 @@ pub(crate) fn begin_terminal_takeover(
             tombstone.root = root_record(root, incarnation)?;
         }
         tombstone.terminal_source = Some(terminal_source);
-        // Scheduling, observation, and tombstone construction may outlive the
-        // entry validation even though acquisition itself is a nonblocking
-        // try-lock. Recheck immediately at the durable publication boundary.
-        validate_live_effect_fence(terminal_effect_fence)?;
+        // Publication remains inside the same current-authority callback and
+        // original nonblocking lifecycle lock as observation.
         publish_marker_locked(root, &lock, &tombstone)?;
         return Ok(None);
     };
@@ -1864,10 +1870,8 @@ pub(crate) fn begin_terminal_takeover(
     }
 
     if marker.phase != RealizationPhase::Removing {
-        // Source/receipt/root preflight is deliberately effect-free. Revalidate
-        // the terminal successor under the retained lock at the first durable
-        // phase mutation, closing expiry after the entry observation.
-        validate_live_effect_fence(terminal_effect_fence)?;
+        // Source/receipt/root preflight is deliberately effect-free. The held
+        // current-authority callback also spans this first durable phase write.
         let previous = marker.clone();
         marker.phase = RealizationPhase::Removing;
         marker.effect_fence = terminal_effect_fence.clone();
@@ -1894,7 +1898,6 @@ pub(crate) fn begin_terminal_takeover(
         }
         OwnedRealizationPath::Absent => {
             execution_participant::require_quiescent(&marker)?;
-            validate_live_effect_fence(&marker.effect_fence)?;
             let previous = marker.clone();
             marker.phase = RealizationPhase::Removed;
             replace_marker_locked(root, &lock, &previous, &marker)?;

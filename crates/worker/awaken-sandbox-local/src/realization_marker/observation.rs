@@ -453,7 +453,9 @@ pub(crate) fn observe_terminal_receipt(
     if let Some(expected) = expected_effect_fence {
         expected.validate_identity()?;
     }
-    validate_live_effect_fence(terminal_effect_fence)?;
+    // Terminal callers own response-relative current authority. This read-only
+    // preflight checks exact provenance, never a second Provider UTC clock.
+    terminal_effect_fence.validate_identity()?;
     let lock = acquire(root)?;
     let Some(marker) = read_marker_locked(root, &lock)? else {
         validate_absent_terminal_source(

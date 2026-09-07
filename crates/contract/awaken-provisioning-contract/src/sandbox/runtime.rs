@@ -1440,13 +1440,15 @@ pub trait Sandbox: Send + Sync {
 
     /// Persist a checkpoint only while the aggregate-owned realization fence
     /// still authorizes this exact physical Sandbox. Durable Session
-    /// continuation must use this edge: the legacy method cannot prevent an
-    /// expired or replaced owner from publishing bytes after root takeover.
+    /// continuation must use this edge. `effect_fence` retains Control
+    /// coordinates; `authority` owns current liveness. Re-enter it before WAL
+    /// and store effects, after awaited responses and on cached receipt replay.
     async fn checkpoint_for_effect(
         &self,
         _request: &SandboxCheckpointRequest,
         _store: &dyn SandboxCheckpointStore,
         _effect_fence: &SandboxEffectFence,
+        _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<SandboxCheckpointRef, SandboxError> {
         Err(SandboxError::new(
             "sandbox does not implement fenced filesystem checkpointing",

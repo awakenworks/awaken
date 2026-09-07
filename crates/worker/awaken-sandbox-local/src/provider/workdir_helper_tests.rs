@@ -1184,7 +1184,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         .dispose_for_effect(
             &disposal,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal).effect_fence(),
+                disposal.effect_fence(),
             ),
         )
         .await
@@ -1313,7 +1313,7 @@ async fn terminal_checkpoint_cancellation_reuses_the_original_guard_and_upload_j
             let authorization = crate::test_disposal_authorization(&terminal);
             let disposal_authority =
                 awaken_provisioning_contract::test_support::EffectAuthority::new(
-                    (&authorization).effect_fence(),
+                    authorization.effect_fence(),
                 );
             let mut disposal =
                 Box::pin(sandbox.dispose_for_effect(&authorization, &disposal_authority));
@@ -1353,7 +1353,7 @@ async fn terminal_checkpoint_cancellation_reuses_the_original_guard_and_upload_j
                 .dispose_for_effect(
                     &crate::test_disposal_authorization(&terminal),
                     &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                        (&crate::test_disposal_authorization(&terminal)).effect_fence(),
+                        crate::test_disposal_authorization(&terminal).effect_fence(),
                     ),
                 )
                 .await
@@ -1433,7 +1433,7 @@ async fn terminal_checkpoint_cleanup_uses_the_hot_ready_guard() {
         .dispose_for_effect(
             &crate::test_disposal_authorization(&terminal),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&crate::test_disposal_authorization(&terminal)).effect_fence(),
+                crate::test_disposal_authorization(&terminal).effect_fence(),
             ),
         )
         .await
@@ -1489,22 +1489,16 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
             .is_err(),
         "R4 input drift"
     );
-    let expired_terminal =
-        pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, 0).unwrap();
+    // Exhaust current proof while keeping successor order valid; an old
+    // regressing timestamp would test identity rejection instead of liveness.
+    let exhausted = awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal);
+    exhausted.current.lock().unwrap().as_mut().unwrap().1 = std::time::Duration::ZERO;
     assert!(
         terminal_sandbox
-            .cleanup_checkpoint_for_terminal(
-                &request,
-                &store,
-                &suspend,
-                &expired_terminal,
-                &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                    &expired_terminal
-                )
-            )
+            .cleanup_checkpoint_for_terminal(&request, &store, &suspend, &terminal, &exhausted)
             .await
             .is_err(),
-        "R4 expired terminal"
+        "R4 exhausted terminal authority"
     );
     terminal_sandbox
         .cleanup_checkpoint_for_terminal(
@@ -1538,7 +1532,7 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
         .dispose_for_effect(
             &crate::test_disposal_authorization(&terminal),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&crate::test_disposal_authorization(&terminal)).effect_fence(),
+                crate::test_disposal_authorization(&terminal).effect_fence(),
             ),
         )
         .await

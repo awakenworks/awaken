@@ -414,7 +414,7 @@ async fn terminal_takeover_disposes_incomplete_writable_memory_without_inventing
         .dispose_for_effect(
             &crate::test_disposal_authorization(&terminal),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&crate::test_disposal_authorization(&terminal)).effect_fence(),
+                crate::test_disposal_authorization(&terminal).effect_fence(),
             ),
         )
         .await
@@ -647,9 +647,7 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
     let disposal = crate::test_disposal_authorization_for_current(&terminal, &successor);
     cold.dispose_for_effect(
         &disposal,
-        &awaken_provisioning_contract::test_support::EffectAuthority::new(
-            (&disposal).effect_fence(),
-        ),
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(disposal.effect_fence()),
     )
     .await
     .expect("N5 aggregate-authorized physical disposal");
