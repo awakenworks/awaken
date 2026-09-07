@@ -17214,10 +17214,13 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         _spec: &pc::SandboxSpec,
         handle: Option<&pc::SandboxHandle>,
         _expected_effect_fence: Option<&pc::SandboxEffectFence>,
-        _terminal_effect_fence: &pc::SandboxEffectFence,
+        terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<Arc<dyn awaken_sandbox_container::ContainerEnvironment>>, pc::SandboxError>
     {
-        match self.scenario {
+        pc::with_current_sandbox_effect::<
+            Option<Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+        >(terminal_effect_fence, authority, || match self.scenario {
             TerminalRecoveryScenario::OrphanClaim => Err(pc::SandboxError::new(
                 "orphan-claim observation must fail before terminal preparation",
             )),
@@ -17276,7 +17279,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
             TerminalRecoveryScenario::Restoring => Err(pc::SandboxError::new(
                 "Restoring terminal cleanup must use exact target disposal",
             )),
-        }
+        })
     }
 
     async fn dispose_restored_environment(

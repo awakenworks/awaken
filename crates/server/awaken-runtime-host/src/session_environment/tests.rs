@@ -2531,6 +2531,7 @@ struct RestartMemoryMounter {
     mount_calls: Arc<std::sync::atomic::AtomicUsize>,
     teardown_calls: Arc<std::sync::atomic::AtomicUsize>,
     teardown_failures: Arc<std::sync::atomic::AtomicUsize>,
+    response_gate: std::sync::Mutex<Option<(usize, Arc<tokio::sync::Semaphore>)>>,
 }
 
 struct RestartMemoryMount {
@@ -2547,7 +2548,13 @@ impl pc::MemoryMounter for RestartMemoryMounter {
         host_path: &std::path::Path,
         _access: pc::MountAccess,
     ) -> Result<Box<dyn pc::MemoryMount>, pc::SandboxError> {
-        self.mount_calls.fetch_add(1, Ordering::SeqCst);
+        let call = self.mount_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let gate = self.response_gate.lock().unwrap().clone();
+        if let Some((pending_call, gate)) = gate
+            && call == pending_call
+        {
+            let _permit = gate.acquire().await.unwrap();
+        }
         let realization = self
             .outcomes
             .lock()
@@ -2611,6 +2618,7 @@ fn install_restart_memory_mounter(
         mount_calls,
         teardown_calls,
         teardown_failures,
+        response_gate: std::sync::Mutex::new(None),
     }));
     provider
 }
@@ -3088,6 +3096,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
                     request_handle,
                     Some(&create),
                     &foreign,
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(&foreign)
                 )
                 .await
                 .is_err(),
@@ -3096,7 +3105,13 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
         assert_eq!(mounts.load(Ordering::SeqCst), 1, "T3 {label} zero remount");
 
         let first = provider
-            .prepare_terminal_effective_for_effect(&spec, request_handle, Some(&create), &terminal)
+            .prepare_terminal_effective_for_effect(
+                &spec,
+                request_handle,
+                Some(&create),
+                &terminal,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+            )
             .await
             .expect("T2 Ready terminal preflight")
             .expect("T2 Ready participant");
@@ -3111,7 +3126,13 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
         drop(first); // response loss after Ready -> Removing and FUSE replay
 
         let second = provider
-            .prepare_terminal_effective_for_effect(&spec, request_handle, Some(&create), &terminal)
+            .prepare_terminal_effective_for_effect(
+                &spec,
+                request_handle,
+                Some(&create),
+                &terminal,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+            )
             .await
             .expect("T2 Removing terminal preflight")
             .expect("T2 Removing participant");
@@ -3154,6 +3175,9 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
                 request_handle,
                 Some(&create),
                 authorization.effect_fence(),
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    authorization.effect_fence(),
+                ),
             )
             .await
             .expect("T4 authorized Removing preflight")
@@ -3176,6 +3200,9 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
                     request_handle,
                     Some(&create),
                     authorization.effect_fence(),
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                        authorization.effect_fence()
+                    )
                 )
                 .await
                 .expect("T5 exact Removed observation")
@@ -3183,6 +3210,175 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
             "T5 {label}",
         );
         assert_eq!(mounts.load(Ordering::SeqCst), 4, "T5 {label} zero remount");
+    }
+}
+
+#[tokio::test]
+async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses() {
+    // Cause/effect table: Local/Namespace x first/last FUSE response x revoked,
+    // replaced, expired, renewed, cancelled = 20 actual Pending schedules.
+    // R1 entry denial => zero takeover/remount. R2 denial after response => no
+    // NEXT mount or successful reconstruction; returned guards use the existing
+    // compensation path. R3 renewal => both mounts and exact bytes. R4 dropped
+    // caller => no NEXT request; durable marker/source remain retryable. This
+    // cancellation row does not prove retention of an opaque mounter's internal
+    // in-flight resources or termination of its external mount operation.
+    // Copy zero-remount/Removed and corrupt-evidence rows remain in the existing
+    // replay tables. UTC is deliberately non-expiring; current proof owns R1/R2.
+    for namespace in [false, true] {
+        for pause_at in [3, 4] {
+            for change in ["revoke", "replace", "expire", "renew", "cancel"] {
+                let root = tempfile::tempdir().unwrap();
+                let provider = if namespace {
+                    SessionEnvironmentProvider::namespace_with_agent_stderr(
+                        root.path(),
+                        false,
+                        Arc::new(FakeHandExecutorFactory),
+                        "/bin/sh",
+                        std::time::Duration::ZERO,
+                    )
+                } else {
+                    SessionEnvironmentProvider::workdir(root.path())
+                };
+                let mounts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let teardowns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let mounter = Arc::new(RestartMemoryMounter {
+                    outcomes: std::sync::Mutex::new(
+                        std::iter::repeat_n(pc::Realization::Fuse, 8).collect(),
+                    ),
+                    mount_calls: mounts.clone(),
+                    teardown_calls: teardowns.clone(),
+                    teardown_failures: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    response_gate: std::sync::Mutex::new(None),
+                });
+                provider.install_memory_mounter(mounter.clone());
+                let (mut spec, memory) = restart_memory_spec("cold-current-memory");
+                let mut second = memory.clone();
+                second.mount_id = "memory-2".into();
+                second.mount_path = "/mnt/memory/second".into();
+                spec.mounts.push(second);
+                let spec = provider.effective_spec(&spec).unwrap();
+                let create =
+                    pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX - 1)
+                        .unwrap();
+                let terminal =
+                    pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX - 1)
+                        .unwrap();
+                let created = provider
+                    .create_effective_for_effect(
+                        &spec,
+                        Some(&create),
+                        None,
+                        None,
+                        awaken_sandbox_container::ContainerRealizationIntent::Create,
+                    )
+                    .await
+                    .unwrap();
+                let handle = created.handle();
+                drop(created);
+                assert_eq!(mounts.load(Ordering::SeqCst), 2);
+                let denied = pc::test_support::EffectAuthority::denied();
+                assert!(
+                    provider
+                        .prepare_terminal_effective_for_effect(
+                            &spec,
+                            Some(&handle),
+                            None,
+                            &terminal,
+                            &denied
+                        )
+                        .await
+                        .is_err()
+                );
+                assert_eq!(mounts.load(Ordering::SeqCst), 2, "R1");
+                let authority = pc::test_support::EffectAuthority::new(&terminal);
+                let gate = Arc::new(tokio::sync::Semaphore::new(0));
+                *mounter.response_gate.lock().unwrap() = Some((pause_at, gate.clone()));
+                let mut pending = Box::pin(provider.prepare_terminal_effective_for_effect(
+                    &spec,
+                    Some(&handle),
+                    None,
+                    &terminal,
+                    &authority,
+                ));
+                std::future::poll_fn(|cx| {
+                    assert!(std::future::Future::poll(pending.as_mut(), cx).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                assert_eq!(mounts.load(Ordering::SeqCst), pause_at);
+                {
+                    let mut current = authority.current.lock().unwrap();
+                    match change {
+                        "revoke" => *current = None,
+                        "replace" => current.as_mut().unwrap().0.epoch += 1,
+                        "expire" => current.as_mut().unwrap().1 = std::time::Duration::ZERO,
+                        "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                        _ => {}
+                    }
+                }
+                if change == "cancel" {
+                    drop(pending);
+                } else {
+                    gate.add_permits(1);
+                    assert_eq!(
+                        pending.await.is_ok(),
+                        change == "renew",
+                        "{namespace}/{pause_at}/{change}"
+                    );
+                }
+                assert_eq!(
+                    mounts.load(Ordering::SeqCst),
+                    if change == "renew" { 4 } else { pause_at }
+                );
+                if !matches!(change, "renew" | "cancel") {
+                    assert_eq!(
+                        teardowns.load(Ordering::SeqCst),
+                        pause_at - 2,
+                        "R2 returned guards compensated"
+                    );
+                }
+                *mounter.response_gate.lock().unwrap() = None;
+                *authority.current.lock().unwrap() =
+                    Some((terminal.clone(), std::time::Duration::from_secs(1)));
+                let replay = provider
+                    .prepare_terminal_effective_for_effect(
+                        &spec,
+                        Some(&handle),
+                        None,
+                        &terminal,
+                        &authority,
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                for mount in &spec.mounts {
+                    assert_eq!(
+                        replay
+                            .list_frozen_mount_files(&mount.mount_path)
+                            .await
+                            .unwrap(),
+                        vec![("value.txt".into(), b"durable-memory".to_vec())]
+                    );
+                }
+                replay
+                    .acknowledge_memory_reconciliation(&terminal, &[], &authority)
+                    .await
+                    .unwrap();
+                let prepared = replay
+                    .prepare_disposal_for_effect(&terminal, &authority)
+                    .await
+                    .unwrap();
+                let authorization = restart_disposal_authorization(prepared, "cold-current-memory");
+                replay
+                    .dispose_for_effect(
+                        &authorization,
+                        &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
     }
 }
 

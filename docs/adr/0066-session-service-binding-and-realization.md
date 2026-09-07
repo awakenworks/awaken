@@ -376,8 +376,33 @@ The existing model shares one provider wait across fixed preparation/disposal
 selectors; 26 semantic mutants and 12 reachability witnesses include disposal
 and cached completion. Its two-effect bound does not establish ordering across
 both aggregate phases, callback elapsed time or asynchronous remote commit
-fencing. Provider UTC validation, cold reconstruction authority and real
-cloud/platform qualification remain explicit open boundaries.
+fencing. Provider UTC validation and real cloud/platform qualification remain
+explicit open boundaries. Cold reconstruction now extends this same wiring:
+the Host captures its existing operation-bound Session/Worker authority before
+calling the Provider, and both public provider ports require it. Local and
+Namespace reuse `prepare_terminal_memory_replay`: exact marker takeover is
+synchronous under the current guard, and every FUSE response plus empty/Copy
+replay rechecks through the existing compensation owner. Container reuses its
+ordinary adoption implementation with a private admission callback, checking
+before/after observation, staging recovery and control binding. Its explicit
+ordinary adoption owner remains unchanged; no cold-only adoption engine is added.
+
+The existing Local/Namespace restart fixture adds a 2x2x5 Pending-response
+decision table; the Container fixture adds 5x5 observation/staging/control,
+absence and Disposing rows. They distinguish current-proof denial from immutable
+identity rejection, permit monotonic renewal, retain exact source bytes and
+retry the original handle. Reconstruction performs no Secret writeback or
+physical removal. The original model's fixed selector now names reconstruction,
+preparation or disposal, sharing the same wait and authority transitions; three
+cold-only mutants and two reconstruction/replay witnesses bring its total to
+29 mutants and 14 witnesses. This is still a two-effect admission abstraction,
+not a proof of aggregate ordering, backend commits, or cross-clock correspondence.
+Cold FUSE cancellation while the external mounter owns an unfinished operation,
+and process-lifetime retention after failed ownerless compensation, are not
+closed by these admission tests. Checkpoint cleanup and exact restored-target
+disposal also still require current-authority migration through their own
+existing participants. No new store, timer, lease, registry or state machine is
+introduced by this cold reconstruction change.
 
 ### Control-publication cleanup participant
 

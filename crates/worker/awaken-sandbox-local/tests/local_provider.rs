@@ -117,7 +117,13 @@ async fn execution_deployment_selects_once_and_never_claims_unqualified_supervis
     let terminal_fence =
         pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX).unwrap();
     let terminal = provider
-        .prepare_terminal_sandbox_for_effect(&spec, Some(&handle), Some(&fence), &terminal_fence)
+        .prepare_terminal_sandbox_for_effect(
+            &spec,
+            Some(&handle),
+            Some(&fence),
+            &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .unwrap()
         .unwrap();

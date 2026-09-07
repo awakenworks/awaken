@@ -1022,6 +1022,7 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         Some(&source_handle),
         Some(&create_fence),
         &terminal_fence,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
     )
     .await
     {
@@ -1125,6 +1126,9 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         Some(&replacement_handle),
         Some(&rebuild_fence),
         &replacement_terminal_fence,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(
+            &replacement_terminal_fence,
+        ),
     )
     .await
     .expect("KPV5c exact total-absence observation");
@@ -1549,6 +1553,7 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         Some(&source_handle),
         Some(&create_fence),
         &terminal_fence,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
     )
     .await
     .expect("KPV4d prepare exact Disposing cleanup")

@@ -634,6 +634,7 @@ impl LocalProvider {
         handle: Option<&pc::SandboxHandle>,
         expected_effect_fence: Option<&pc::SandboxEffectFence>,
         terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<LocalSandbox>, pc::SandboxError> {
         let fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
         let (id, outputs_path, durable_payload, owned_paths) = if let Some(handle) = handle {
@@ -686,6 +687,7 @@ impl LocalProvider {
             handle,
             expected_effect_fence,
             terminal_effect_fence,
+            authority,
             pc::Realization::Copy,
             &host_paths,
         )
@@ -715,7 +717,7 @@ impl LocalProvider {
             .lock()
             .expect("owned paths lock poisoned") = owned_paths;
         sandbox.memory_materializations = materializations;
-        *sandbox.memory_mounts.lock().await = memory_mounts;
+        *sandbox.memory_mounts.get_mut() = memory_mounts;
         Ok(Some(sandbox))
     }
 
@@ -1068,6 +1070,7 @@ impl pc::SandboxProvider for LocalProvider {
         handle: Option<&pc::SandboxHandle>,
         expected_effect_fence: Option<&pc::SandboxEffectFence>,
         terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<Box<dyn pc::Sandbox>>, pc::SandboxError> {
         Ok(self
             .prepare_terminal_sandbox_for_effect(
@@ -1075,6 +1078,7 @@ impl pc::SandboxProvider for LocalProvider {
                 handle,
                 expected_effect_fence,
                 terminal_effect_fence,
+                authority,
             )
             .await?
             .map(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))

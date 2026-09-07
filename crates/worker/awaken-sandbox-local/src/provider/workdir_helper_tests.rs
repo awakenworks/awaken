@@ -994,7 +994,13 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
     let missing = pc::SandboxHandle::local_v2(spec.scope.clone(), payload.clone());
     assert!(
         provider
-            .prepare_terminal_sandbox_for_effect(&spec, Some(&missing), None, &terminal,)
+            .prepare_terminal_sandbox_for_effect(
+                &spec,
+                Some(&missing),
+                None,
+                &terminal,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal)
+            )
             .await
             .is_err(),
         "M2 missing evidence"
@@ -1011,7 +1017,13 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         .with_memory_materializations(vec![evidence.clone()])
         .unwrap();
     let cold = provider
-        .prepare_terminal_sandbox_for_effect(&spec, Some(&handle), None, &terminal)
+        .prepare_terminal_sandbox_for_effect(
+            &spec,
+            Some(&handle),
+            None,
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .unwrap()
         .expect("M1");
@@ -1047,7 +1059,13 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
     drop(cold);
     assert!(root.is_dir(), "M3 root retained");
     let replay = provider
-        .prepare_terminal_sandbox_for_effect(&spec, Some(&handle), None, &terminal)
+        .prepare_terminal_sandbox_for_effect(
+            &spec,
+            Some(&handle),
+            None,
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .unwrap()
         .expect("M3 exact replay");
@@ -1438,7 +1456,13 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
     std::fs::write(sandbox.workspace_path().join("mutable"), b"state").unwrap();
     let handle = pc::Sandbox::handle(&sandbox);
     let terminal_sandbox = provider
-        .prepare_terminal_sandbox_for_effect(&spec, Some(&handle), None, &terminal)
+        .prepare_terminal_sandbox_for_effect(
+            &spec,
+            Some(&handle),
+            None,
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .unwrap()
         .expect("R1 Removing participant");
@@ -1626,7 +1650,13 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
         .expect("T1 checkpoint participant");
     drop(source);
     let terminal_sandbox = provider
-        .prepare_terminal_sandbox_for_effect(&spec, Some(&source_handle), None, &terminal)
+        .prepare_terminal_sandbox_for_effect(
+            &spec,
+            Some(&source_handle),
+            None,
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("T1 terminal prepare")
         .expect("T1 exact terminal participant");

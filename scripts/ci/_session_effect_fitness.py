@@ -668,6 +668,15 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "typed Sandbox disposal authorization",
         )
     )
+    errors.extend(
+        _require_ordered_function(
+            sources, RUNTIME_HOST_TERMINAL_PREPARATION,
+            "install_bound_environment_under_lifecycle",
+            ("self.session_slots.provider_effect_authority(",
+             ".prepare_terminal_effective_for_effect(", "&authority,"),
+            "cold terminal reconstruction authority",
+        )
+    )
     disposal_projection = _rust_function(
         sources.get(RUNTIME_HOST_TERMINAL_PREPARATION, ""),
         "terminal_cleanup_disposal_authorization",
@@ -1067,6 +1076,10 @@ fn terminal_cleanup_disposal_authorization() {
     let current = self.authorize_terminal_cleanup_lease(&effect.command.session_id, &effect.lease)?;
     effect.sandbox_disposal_authorization_for_current_generation(&current)
 }
+fn install_bound_environment_under_lifecycle() {
+    let authority = self.session_slots.provider_effect_authority(...);
+    provider.prepare_terminal_effective_for_effect(spec, handle, expected, effect, &authority,);
+}
 """
     canonical[RUNTIME_HOST_TERMINAL_CLEANUP] = """
 fn prepare_terminal_cleanup_effect() {
@@ -1239,6 +1252,14 @@ fn recover_terminal_receipts() {
         mutant = dict(canonical)
         mutant[RUNTIME_HOST_TERMINAL_CLEANUP] = mutant[RUNTIME_HOST_TERMINAL_CLEANUP].replace(marker, "", 1)
         assert session_effect_violations(mutant), f"removed current disposal wiring: {marker}"
+
+    # Cold reconstruction table: capture plus forwarding is mandatory in the
+    # same owner; either omission rejects even while hot-disposal wiring stays.
+    for marker in ("self.session_slots.provider_effect_authority(", "&authority,"):
+        mutant = dict(canonical)
+        mutant[RUNTIME_HOST_TERMINAL_PREPARATION] = mutant[RUNTIME_HOST_TERMINAL_PREPARATION].replace(marker, "", 1)
+        assert any("cold terminal reconstruction authority" in error
+                   for error in session_effect_violations(mutant)), marker
 
     # G48 authority/deadline removal rules: C1 each destructive Worker route
     # verifies the authenticated cleanup generation in its own function before

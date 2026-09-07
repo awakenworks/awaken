@@ -1653,6 +1653,7 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
         Some(&handle),
         None,
         &terminal_fence,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
     )
     .await
     .expect("E1 reconstruct exact terminal participants through adapter port")
@@ -1682,6 +1683,7 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
             Some(&handle),
             None,
             &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence)
         )
         .await
         .expect("E1 exact Ready remains disposable")
@@ -1698,6 +1700,7 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
             Some(&handle),
             None,
             &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence)
         )
         .await
         .expect("E5 exact absence is a closed outcome")
@@ -1711,6 +1714,7 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
             None,
             Some(&terminal_fence),
             &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence)
         )
         .await
         .is_err(),
@@ -1725,6 +1729,7 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
         Some(&handle),
         None,
         &terminal_fence,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
     )
     .await
     .expect("E1 neutral port projects the same terminal owner")
@@ -1884,6 +1889,7 @@ async fn disposing_terminal_preparation_reconstructs_only_physical_cleanup() {
         Some(&handle),
         None,
         &terminal,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
     )
     .await
     .expect("CN2 prepare exact disposing owner")
@@ -1949,6 +1955,7 @@ async fn cold_host_bind_terminal_preparation_fails_before_observation_or_removal
             Some(&handle),
             None,
             &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence)
         )
         .await
         .is_err(),
@@ -2012,6 +2019,7 @@ async fn cold_host_bind_terminal_recovery_requires_complete_participants() {
             Some(&handle),
             None,
             &fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence),
         )
         .await;
         if rule == "R7" {
@@ -2071,6 +2079,165 @@ async fn cold_host_bind_terminal_recovery_requires_complete_participants() {
 }
 
 #[tokio::test]
+async fn cold_terminal_reconstruction_rechecks_authority_after_each_provider_wait() {
+    use std::time::Duration;
+    // Cause/effect table: C1 Ready observation/staging/control response, exact
+    // absence response, or Disposing control response; C2 revoke/replace/expire/
+    // renew/cancel while the REAL future is Pending. R1 stale authority admits
+    // no NEXT staging/control effect or success (including None); R2 renewal
+    // completes; R3 cancellation retains original host bytes. R4 explicit
+    // restored fixture authority retries the exact handle. All 5x5 rows keep
+    // UTC non-expiring and assert zero removal/writeback: reconstruction is
+    // not disposal. These checks do not cancel already accepted backend work.
+    for (phase, boundary) in [
+        ("ready", "observation"),
+        ("ready", "staging"),
+        ("ready", "control"),
+        ("absent", "observation"),
+        ("disposing", "control"),
+    ] {
+        for change in ["revoke", "replace", "expire", "renew", "cancel"] {
+            let runtime = Arc::new(FakeRuntime::default().with_sandbox_control());
+            let broker = Arc::new(RecordingSecretBroker::default());
+            let provider =
+                provider_without_broker(runtime.clone()).with_secret_broker(broker.clone());
+            let mut spec = writable_credential_spec("cold-current-authority");
+            spec.control_services
+                .insert(SandboxControlServiceKind::RepositoryGitCredential);
+            let sandbox = provider.create_container(&spec).await.unwrap();
+            let handle = pc::Sandbox::handle(&sandbox);
+            let id = sandbox.container_id.clone();
+            let source = std::path::PathBuf::from(
+                &runtime.st.lock().unwrap().created_binds[&id][0].source_ref,
+            );
+            let root = source.parent().unwrap().to_path_buf();
+            let source = root.join("cold-authority-proof");
+            std::fs::write(&source, b"synthetic retained bytes").unwrap();
+            let bytes = std::fs::read(&source).unwrap();
+            drop(sandbox);
+            let terminal =
+                pc::SandboxEffectFence::new("terminal", "owner", "boot", 8, u64::MAX - 1).unwrap();
+            let authority = pc::test_support::EffectAuthority::new(&terminal);
+            let gate = Arc::new(tokio::sync::Semaphore::new(0));
+            let (observations, bindings) = {
+                let mut state = runtime.st.lock().unwrap();
+                state.host_live_input_bind = true;
+                state.recovered_staging = Some(root.clone());
+                state.observation = Some(match phase {
+                    "absent" => pc::SandboxObservation::DefinitivelyUnavailable {
+                        physical_incarnation: Some(id.clone()),
+                    },
+                    "disposing" => pc::SandboxObservation::Disposing {
+                        physical_incarnation: id.clone(),
+                    },
+                    _ => pc::SandboxObservation::Ready,
+                });
+                match boundary {
+                    "observation" => state.observation_response_gate = Some(gate.clone()),
+                    "staging" => state.staging_response_gate = Some(gate.clone()),
+                    _ => state.control_binding_response_gate = Some(gate.clone()),
+                }
+                (state.observations, state.control_binding_calls.len())
+            };
+            let denied = pc::test_support::EffectAuthority::denied();
+            assert!(
+                ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+                    &provider,
+                    &spec,
+                    Some(&handle),
+                    None,
+                    &terminal,
+                    &denied
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(
+                runtime.st.lock().unwrap().observations,
+                observations,
+                "entry denial has zero I/O"
+            );
+            let mut pending = Box::pin(
+                ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+                    &provider,
+                    &spec,
+                    Some(&handle),
+                    None,
+                    &terminal,
+                    &authority,
+                ),
+            );
+            std::future::poll_fn(|cx| {
+                assert!(
+                    std::future::Future::poll(pending.as_mut(), cx).is_pending(),
+                    "{phase}/{boundary}/{change}"
+                );
+                std::task::Poll::Ready(())
+            })
+            .await;
+            {
+                let mut current = authority.current.lock().unwrap();
+                match change {
+                    "revoke" => *current = None,
+                    "replace" => current.as_mut().unwrap().0.epoch += 1,
+                    "expire" => current.as_mut().unwrap().1 = Duration::ZERO,
+                    "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                    _ => {}
+                }
+            }
+            if change == "cancel" {
+                drop(pending);
+            } else {
+                gate.add_permits(1);
+                let result = pending.await;
+                assert_eq!(
+                    result.is_ok(),
+                    change == "renew",
+                    "{phase}/{boundary}/{change}"
+                );
+                if change == "renew" {
+                    assert_eq!(result.unwrap().is_none(), phase == "absent");
+                }
+            }
+            {
+                let mut state = runtime.st.lock().unwrap();
+                assert_eq!(state.observations, observations + 1);
+                assert_eq!(
+                    state.recovered_staging_calls,
+                    usize::from(
+                        phase == "ready" && (change == "renew" || boundary != "observation")
+                    )
+                );
+                assert_eq!(
+                    state.control_binding_calls.len() - bindings,
+                    usize::from(boundary == "control" || (change == "renew" && phase != "absent"))
+                );
+                assert!(state.removals.is_empty());
+                state.observation_response_gate = None;
+                state.staging_response_gate = None;
+                state.control_binding_response_gate = None;
+            }
+            assert_eq!(std::fs::read(&source).unwrap(), bytes, "retained bytes");
+            assert!(broker.writes.lock().unwrap().is_empty());
+            *authority.current.lock().unwrap() = Some((terminal.clone(), Duration::from_secs(1)));
+            let replay = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+                &provider,
+                &spec,
+                Some(&handle),
+                None,
+                &terminal,
+                &authority,
+            )
+            .await
+            .unwrap();
+            assert_eq!(replay.is_none(), phase == "absent");
+            drop(replay);
+            crate::restore_target::remove_host_staging_path(&root).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
 async fn effect_fenced_total_absence_has_no_terminal_environment() {
     /* Total-absence terminal preparation table CT1. Causes: C1 the durable
      * current handle carries exact physical identity; C2 adapter observation
@@ -2122,6 +2289,7 @@ async fn effect_fenced_total_absence_has_no_terminal_environment() {
         Some(&handle),
         None,
         &terminal_fence,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
     )
     .await
     .expect("CT1 exact total-absence observation");
@@ -2238,6 +2406,9 @@ struct FakeState {
     removals: Vec<(String, usize)>,
     removal_response_gate: Option<Arc<tokio::sync::Semaphore>>,
     observation_response_gate: Option<Arc<tokio::sync::Semaphore>>,
+    staging_response_gate: Option<Arc<tokio::sync::Semaphore>>,
+    control_binding_response_gate: Option<Arc<tokio::sync::Semaphore>>,
+    recovered_staging_calls: usize,
     inspections: usize,
     restore_targets: HashMap<String, pc::SandboxRestorationEvidence>,
     restore_plan_fingerprints: HashMap<String, String>,
@@ -2382,6 +2553,15 @@ impl ContainerRuntime for FakeRuntime {
             matches!(request, SandboxControlBindingRequest::Adopt { .. }),
             expected,
         ));
+        let gate = self
+            .st
+            .lock()
+            .unwrap()
+            .control_binding_response_gate
+            .clone();
+        if let Some(gate) = gate {
+            let _permit = gate.acquire().await.unwrap();
+        }
         if self.st.lock().unwrap().control_binding_missing {
             return Ok(None);
         }
@@ -2431,7 +2611,18 @@ impl ContainerRuntime for FakeRuntime {
         &self,
         _id: &str,
     ) -> Result<Option<std::path::PathBuf>, RuntimeError> {
-        Ok(self.st.lock().unwrap().recovered_staging.clone())
+        let (staging, gate) = {
+            let mut state = self.st.lock().unwrap();
+            state.recovered_staging_calls += 1;
+            (
+                state.recovered_staging.clone(),
+                state.staging_response_gate.clone(),
+            )
+        };
+        if let Some(gate) = gate {
+            let _permit = gate.acquire().await.unwrap();
+        }
+        Ok(staging)
     }
 
     fn uses_host_bind_materialization(&self) -> bool {

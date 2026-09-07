@@ -149,12 +149,18 @@ impl SharedHost {
                 ),
                 BoundEnvironmentPreparationMode::Terminal
                 | BoundEnvironmentPreparationMode::TerminalDisposal => {
+                    let authority = self.session_slots.provider_effect_authority(
+                        thread,
+                        effect_fence,
+                        self.execution_authority.as_ref(),
+                    )?;
                     let Some(environment) = provider
                         .prepare_terminal_effective_for_effect(
                             spec,
                             handle,
                             expected_effect_fence,
                             effect_fence,
+                            &authority,
                         )
                         .await
                         .map_err(|error| {

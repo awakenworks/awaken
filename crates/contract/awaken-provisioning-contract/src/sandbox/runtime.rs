@@ -1347,7 +1347,11 @@ pub trait SandboxProvider: Send + Sync {
     /// live Sandbox. A persisted `handle` proves an already-published physical
     /// incarnation. An in-flight restore has no aggregate binding yet, so its
     /// exact prior effect fence is instead supplied as immutable evidence while
-    /// `terminal_effect_fence` remains the sole mutation authority. Returning
+    /// `terminal_effect_fence` identifies the terminal effect; `authority`
+    /// supplies its current authorization. Re-enter that authority after every
+    /// reconstruction wait and before marker/mount/control effects or success,
+    /// including exact absence. Never treat the copied fence as a live grant.
+    /// Returning
     /// `None` is permitted only for provider-proved exact absence or a durable
     /// Removed tombstone; the default is fail closed.
     async fn prepare_terminal_for_effect(
@@ -1356,6 +1360,7 @@ pub trait SandboxProvider: Send + Sync {
         _handle: Option<&SandboxHandle>,
         _expected_effect_fence: Option<&SandboxEffectFence>,
         _terminal_effect_fence: &SandboxEffectFence,
+        _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<Option<Box<dyn Sandbox>>, SandboxError> {
         Err(SandboxError::new(
             "sandbox provider does not implement fenced terminal authorization",

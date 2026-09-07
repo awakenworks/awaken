@@ -868,6 +868,7 @@ impl SessionEnvironmentProvider {
         handle: Option<&pc::SandboxHandle>,
         expected_effect_fence: Option<&pc::SandboxEffectFence>,
         terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<SessionEnvironment>, pc::SandboxError> {
         match self {
             Self::Workdir { provider, hand } => provider
@@ -876,6 +877,7 @@ impl SessionEnvironmentProvider {
                     handle,
                     expected_effect_fence,
                     terminal_effect_fence,
+                    authority,
                 )
                 .await
                 .map(|sandbox| {
@@ -894,6 +896,7 @@ impl SessionEnvironmentProvider {
                     handle,
                     expected_effect_fence,
                     terminal_effect_fence,
+                    authority,
                 )
                 .await
                 .map(|sandbox| {
@@ -921,6 +924,7 @@ impl SessionEnvironmentProvider {
                         handle,
                         expected_effect_fence,
                         terminal_effect_fence,
+                        authority,
                     )
                     .await?;
                 let Some(environment) = environment else {
