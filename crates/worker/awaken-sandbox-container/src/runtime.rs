@@ -1866,7 +1866,7 @@ pub trait ContainerRuntime: Send + Sync {
     /// the immutable ID/UID carried by the handle.
     async fn dispose_authorized(
         &self,
-        expectation: crate::ContainerObservationExpectation<'_>,
+        mut expectation: crate::ContainerObservationExpectation<'_>,
         authorization: &pc::SandboxDisposalAuthorization,
     ) -> Result<(), RuntimeError> {
         let effect_fence = authorization.effect_fence();
@@ -1881,6 +1881,10 @@ pub trait ContainerRuntime: Send + Sync {
                     .map_err(|error| RuntimeError::Backend(error.to_string()))?,
             )
             .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+        // Disposal owns its observation purpose even if the caller constructed
+        // a recovery expectation. Process absence alone cannot acknowledge
+        // retained continuation bytes as deleted.
+        expectation.purpose = crate::ContainerObservationPurpose::TerminalCleanup;
         match exact_removal_decision(self.observe(expectation).await?)? {
             // Adapter observation may report absence only after every typed
             // physical participant is gone. Kubernetes keeps a live/terminating

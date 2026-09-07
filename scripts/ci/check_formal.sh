@@ -391,7 +391,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness continuation_claim_selection_is_total_exact_and_non_widening \
     --harness disabled_continuation_has_no_claim_api_obligation_without_durable_evidence \
     --harness continuation_claim_deletion_requires_exact_uid_and_resource_version \
-    --harness absent_pod_claim_admission_is_total_and_never_starts_deletion
+    --harness absent_pod_claim_admission_is_total_and_never_starts_deletion \
+    --harness absent_pod_observation_never_confuses_recovery_with_completed_cleanup
   run_kani awaken-store-schema \
     --harness dense_migration_versions_are_strictly_increasing \
     --harness migration_step_never_rolls_back_or_skips_a_version \
