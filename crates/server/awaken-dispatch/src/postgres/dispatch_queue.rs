@@ -1283,7 +1283,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let epoch_i64 = durable_i64("dispatch lease epoch", epoch)?;
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         let authority = sqlx::query(&format!(
-            "SELECT status, lease_owner, lease_epoch, cancel_requested, request, active_attempt_epoch \
+            "SELECT status, lease_owner, lease_epoch, cancel_requested, request, active_attempt_epoch, active_attempt_owner \
              FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
         ))
         .bind(&run_id.0)
@@ -1301,7 +1301,17 @@ impl DispatchQueue for PostgresDispatchStore {
         let active_attempt: Option<i64> = authority
             .try_get("active_attempt_epoch")
             .map_err(store_error)?;
-        if active_attempt.is_some() {
+        let attempt_owner: Option<String> = authority
+            .try_get("active_attempt_owner")
+            .map_err(store_error)?;
+        if !awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
+            attempt_owner.is_some(),
+            active_attempt.is_some(),
+            false,
+            false,
+        )
+        .permits_settlement()
+        {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         }

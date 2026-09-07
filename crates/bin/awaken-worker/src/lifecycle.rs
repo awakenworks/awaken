@@ -11,6 +11,10 @@ use awaken_coordinator_client::WorkerControlClient;
 
 use crate::credential_liveness::WorkerObservationCache;
 
+mod environment_evidence;
+
+pub(crate) use environment_evidence::proof_is_fresh as environment_proof_is_fresh;
+
 const SESSION_REALIZATION_LEASE_TTL_MS: u64 = 20_000;
 
 #[derive(Clone)]
@@ -267,7 +271,7 @@ pub(crate) fn spawn_heartbeat(
             biased;
             () = async {
                 if let Some(provider) = &lifecycle.session_environment_provider {
-                    monitor_environment_evidence(
+                    environment_evidence::monitor(
                         tokio::time::Instant::from_std(environment_proof_started),
                         timing,
                         || provider.probe_ready(),
@@ -280,59 +284,6 @@ pub(crate) fn spawn_heartbeat(
         }
         revoke_worker_session_authority(&lifecycle).await;
     })
-}
-
-/// A timeout means unknown evidence, not invalid evidence and not fresh
-/// evidence. Retry only inside the last successfully proven, finite window.
-/// Provider errors are deliberately fail-closed: the current provider contract
-/// does not distinguish transport errors from a violated security policy.
-async fn monitor_environment_evidence<Probe, ProbeFuture, Error>(
-    mut last_proof: tokio::time::Instant,
-    timing: AuthorityLeaseTiming,
-    mut probe: Probe,
-) where
-    Probe: FnMut() -> ProbeFuture,
-    ProbeFuture: std::future::Future<Output = Result<(), Error>>,
-    Error: std::fmt::Display,
-{
-    let mut next_attempt = last_proof + timing.renew_interval();
-    loop {
-        let deadline = last_proof + timing.proof_window();
-        tokio::time::sleep_until(next_attempt.min(deadline)).await;
-        let started = tokio::time::Instant::now();
-        if started >= deadline {
-            awaken_observability::record_worker_authority_loss("environment_evidence_expired");
-            tracing::error!("worker sandbox evidence expired; draining locally");
-            return;
-        }
-        let result =
-            tokio::time::timeout_at((started + timing.request_timeout()).min(deadline), probe())
-                .await;
-        // A response first observed after expiry cannot revive this incarnation,
-        // even if the executor polls a ready response before its overdue timer.
-        if tokio::time::Instant::now() >= deadline {
-            awaken_observability::record_worker_authority_loss("environment_evidence_expired");
-            tracing::error!("worker sandbox evidence expired during probe; draining locally");
-            return;
-        }
-        match result {
-            Ok(Ok(())) => {
-                last_proof = started;
-                next_attempt = started + timing.renew_interval();
-            }
-            Ok(Err(error)) => {
-                awaken_observability::record_worker_authority_loss("environment_evidence_lost");
-                tracing::error!(error = %error, "worker sandbox evidence no longer holds; draining locally");
-                return;
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "worker sandbox evidence probe timed out; retrying within existing proof"
-                );
-                next_attempt = tokio::time::Instant::now() + timing.retry_delay();
-            }
-        }
-    }
 }
 
 async fn renew_registry_authority(
@@ -850,7 +801,7 @@ mod tests {
                 self.0.fetch_sub(1, Ordering::SeqCst);
             }
         }
-        super::monitor_environment_evidence(started, timing, || async {
+        super::environment_evidence::monitor(started, timing, || async {
             calls.fetch_add(1, Ordering::SeqCst);
             assert_eq!(active.fetch_add(1, Ordering::SeqCst), 0, "T2 single flight");
             let _flight = Flight(&active);
@@ -877,7 +828,7 @@ mod tests {
         let timing =
             awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(600);
         let calls = AtomicUsize::new(0);
-        super::monitor_environment_evidence(
+        super::environment_evidence::monitor(
             tokio::time::Instant::now() - timing.proof_window(),
             timing,
             || async {
@@ -898,7 +849,7 @@ mod tests {
             awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(600);
         let started = tokio::time::Instant::now();
         let calls = AtomicUsize::new(0);
-        super::monitor_environment_evidence(started, timing, || async {
+        super::environment_evidence::monitor(started, timing, || async {
             if calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 Ok(())

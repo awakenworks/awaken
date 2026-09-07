@@ -400,7 +400,7 @@ impl PostgresDispatchStore {
         // keeps repair authority separate from ordinary execution authority.
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         let current: Option<ClaimEpochStorageRow<Json<RunDispatch>>> = sqlx::query_as(&format!(
-            "SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested \
+            "SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested, active_attempt_owner, active_attempt_epoch \
                  FROM {p}_dispatch WHERE run_id = $1 AND status = $2 FOR UPDATE"
         ))
         .bind(&claim.run_id.0)
@@ -410,7 +410,15 @@ impl PostgresDispatchStore {
         .map_err(store_error)?;
         let request = match current {
             None => None,
-            Some((epoch, owner, expires_ms, Json(request), cancellation_requested)) => {
+            Some((
+                epoch,
+                owner,
+                expires_ms,
+                Json(request),
+                cancellation_requested,
+                attempt_owner,
+                attempt_epoch,
+            )) => {
                 let epoch = durable_u64("dispatch lease epoch", epoch)?;
                 match classify_commit_epoch_admission(
                     true,
@@ -432,21 +440,29 @@ impl PostgresDispatchStore {
                             request,
                             durable_u64("dispatch lease expiry", expires_ms)?,
                             cancellation_requested != 0,
+                            awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
+                                attempt_owner.is_some(),
+                                attempt_epoch.is_some(),
+                                attempt_owner.as_deref() == Some(&claim.owner),
+                                attempt_epoch.and_then(|epoch| u64::try_from(epoch).ok())
+                                    == Some(claim.epoch),
+                            ),
                         ))
                     }
                 }
             }
         };
-        Ok(
-            request.map(|(request, expires_ms, cancellation_requested)| {
+        Ok(request.map(
+            |(request, expires_ms, cancellation_requested, physical_attempt)| {
                 CommitEpochGuard::new_releasing(
                     async move { tx.rollback().await.map_err(|error| error.to_string()) },
                     request,
                     expires_ms,
                     cancellation_requested,
+                    physical_attempt,
                 )
-            }),
-        )
+            },
+        ))
     }
 }
 

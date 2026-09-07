@@ -1561,6 +1561,99 @@ async fn cold_host_bind_terminal_preparation_fails_before_observation_or_removal
 }
 
 #[tokio::test]
+async fn cold_host_bind_terminal_recovery_requires_complete_participants() {
+    // Cause/effect graph: exact terminal identity + recoverable host staging +
+    // writable Secret broker => fenced cleanup and one writeback. Missing root,
+    // invalid root or missing broker => no removal and no writeback. The older
+    // CurrentAttemptOnly test owns runtimes with no reconstruction capability.
+    // R7=all evidence; R8a=root absent; R8b=root outside namespace; R8c=no broker.
+    for rule in ["R7", "R8a", "R8b", "R8c"] {
+        let runtime = Arc::new(FakeRuntime::default().with_live_credential(b"changed"));
+        let broker = Arc::new(RecordingSecretBroker::default());
+        *broker.current.lock().unwrap() = b"initial".to_vec();
+        let sandbox_spec = writable_credential_spec(&format!("cold-bind-{rule}"));
+        let original = provider_without_broker(runtime.clone()).with_secret_broker(broker.clone());
+        let sandbox = original.create_container(&sandbox_spec).await.unwrap();
+        let handle = pc::Sandbox::handle(&sandbox);
+        let id = sandbox.container_id.clone();
+        let source =
+            std::path::PathBuf::from(&runtime.st.lock().unwrap().created_binds[&id][0].source_ref);
+        let root = source.parent().unwrap().to_path_buf();
+        drop(sandbox);
+        drop(original);
+        {
+            let mut state = runtime.st.lock().unwrap();
+            state.host_live_input_bind = true;
+            state.recovered_staging = match rule {
+                "R8a" => None,
+                "R8b" => Some(std::env::temp_dir()),
+                _ => Some(root.clone()),
+            };
+        }
+        runtime.set_observation(pc::SandboxObservation::Terminal {
+            physical_incarnation: id.clone(),
+        });
+        let cold = provider_without_broker(runtime.clone());
+        if rule != "R8c" {
+            cold.install_secret_broker(broker.clone());
+        }
+        let fence =
+            pc::SandboxEffectFence::new("cold-cleanup", "owner", "incarnation", 8, u64::MAX)
+                .unwrap();
+        let result = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+            &cold,
+            &sandbox_spec,
+            Some(&handle),
+            None,
+            &fence,
+        )
+        .await;
+        if rule == "R7" {
+            let cleanup = result
+                .expect("R7 reconstruct existing participants")
+                .unwrap();
+            cleanup.prepare_disposal_for_effect(&fence).await.unwrap();
+            assert!(
+                runtime.st.lock().unwrap().alive[&id],
+                "preparation cannot remove the object"
+            );
+            cleanup
+                .dispose_for_effect(&disposal_authorization(&fence))
+                .await
+                .unwrap();
+            cleanup
+                .dispose_for_effect(&disposal_authorization(&fence))
+                .await
+                .unwrap();
+            assert_eq!(
+                broker.writes.lock().unwrap().len(),
+                1,
+                "R7 idempotent writeback"
+            );
+            assert!(!runtime.st.lock().unwrap().alive[&id]);
+            assert!(!root.exists(), "R7 remove exact retained staging");
+        } else {
+            assert!(result.is_err(), "{rule} must fail closed");
+            assert!(
+                runtime.st.lock().unwrap().alive[&id],
+                "{rule} no physical removal"
+            );
+            assert!(
+                broker.writes.lock().unwrap().is_empty(),
+                "{rule} no writeback"
+            );
+            // Fixture cleanup is outside the assertion and never earns success.
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        assert_eq!(
+            runtime.st.lock().unwrap().created_command.len(),
+            1,
+            "no reactivation"
+        );
+    }
+}
+
+#[tokio::test]
 async fn effect_fenced_total_absence_has_no_terminal_environment() {
     /* Total-absence terminal preparation table CT1. Causes: C1 the durable
      * current handle carries exact physical identity; C2 adapter observation
@@ -1702,6 +1795,8 @@ struct FakeState {
     runtime_path_observations: Vec<RuntimePathObservation>,
     process_secret_observations: Vec<(bool, bool)>,
     live_input_projection: bool,
+    host_live_input_bind: bool,
+    recovered_staging: Option<std::path::PathBuf>,
     live_inputs: HashMap<String, Vec<u8>>,
     native_memory: bool,
     memory_archive: Vec<u8>,
@@ -1883,6 +1978,17 @@ impl ContainerRuntime for FakeRuntime {
 
     fn has_native_memory_mounts(&self) -> bool {
         self.st.lock().unwrap().native_memory
+    }
+
+    fn uses_host_live_input_bind(&self) -> bool {
+        self.st.lock().unwrap().host_live_input_bind
+    }
+
+    async fn recovered_host_staging_root(
+        &self,
+        _id: &str,
+    ) -> Result<Option<std::path::PathBuf>, RuntimeError> {
+        Ok(self.st.lock().unwrap().recovered_staging.clone())
     }
 
     fn uses_host_bind_materialization(&self) -> bool {

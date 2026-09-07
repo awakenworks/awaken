@@ -405,7 +405,7 @@ impl SqliteDispatchStore {
             .with_conn_unlocked(move |conn, p| {
                 conn.query_row(
                     &format!(
-                        "SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested \
+                        "SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested, active_attempt_owner, active_attempt_epoch \
                          FROM {p}_dispatch WHERE run_id = ?1 AND status = ?2"
                     ),
                     params![run, required_status],
@@ -416,6 +416,8 @@ impl SqliteDispatchStore {
                             row.get(2)?,
                             row.get(3)?,
                             row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
                         ))
                     },
                 )
@@ -425,7 +427,15 @@ impl SqliteDispatchStore {
             .await?;
         let request = match current {
             None => None,
-            Some((epoch, owner, expires_ms, request, cancellation_requested)) => {
+            Some((
+                epoch,
+                owner,
+                expires_ms,
+                request,
+                cancellation_requested,
+                attempt_owner,
+                attempt_epoch,
+            )) => {
                 let epoch = durable_u64("dispatch lease epoch", epoch)?;
                 match classify_commit_epoch_admission(
                     true,
@@ -447,16 +457,29 @@ impl SqliteDispatchStore {
                             serde_json::from_str(&request).map_err(json_err)?,
                             durable_u64("dispatch lease expiry", expires_ms)?,
                             cancellation_requested != 0,
+                            awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
+                                attempt_owner.is_some(),
+                                attempt_epoch.is_some(),
+                                attempt_owner.as_deref() == Some(&claim.owner),
+                                attempt_epoch.and_then(|epoch| u64::try_from(epoch).ok())
+                                    == Some(claim.epoch),
+                            ),
                         ))
                     }
                 }
             }
         };
-        Ok(
-            request.map(|(request, expires_ms, cancellation_requested)| {
-                CommitEpochGuard::new(guard, request, expires_ms, cancellation_requested)
-            }),
-        )
+        Ok(request.map(
+            |(request, expires_ms, cancellation_requested, physical_attempt)| {
+                CommitEpochGuard::new(
+                    guard,
+                    request,
+                    expires_ms,
+                    cancellation_requested,
+                    physical_attempt,
+                )
+            },
+        ))
     }
 }
 

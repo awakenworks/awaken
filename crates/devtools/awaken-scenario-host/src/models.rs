@@ -31,6 +31,27 @@ impl LlmExecutor for EchoModel {
             .find(|m| m.role == Role::User)
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
+        // Worker-fleet fault barrier belongs only to this deterministic scenario
+        // executor. An observed marker proves actual inference admission; the
+        // fixture releases the replacement, never authors a claim or commit.
+        if let Some(key) = last_user.strip_prefix("worker-fault:")
+            && let Some(directory) = std::env::var_os("AWAKEN_ECHO_BARRIER_DIR")
+        {
+            assert!(!key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+            let root = std::path::PathBuf::from(directory);
+            tokio::fs::create_dir_all(&root)
+                .await
+                .expect("scenario barrier directory");
+            tokio::fs::write(root.join(format!("{key}.entered")), &last_user)
+                .await
+                .expect("scenario inference observation");
+            while !tokio::fs::try_exists(root.join("release"))
+                .await
+                .expect("scenario release observation")
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
         Ok(ChatResponse {
             output: AssistantOutput::text(format!("Echo: {last_user}")),
             usage: None,

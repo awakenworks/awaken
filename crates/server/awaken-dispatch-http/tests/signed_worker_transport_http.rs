@@ -2128,6 +2128,35 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         session_activity_epoch: 17,
         cancellation_requested: false,
     };
+    // T27a causes: valid signed claim + exact Session coordinates + occupied
+    // physical slot. Effect: reject before the Session application can advance
+    // activity or report a child result. T27b exact return ACK clears only this
+    // slot, after which the original idempotent boundary retries are admitted.
+    // Neither claim validity nor a caller's terminal assertion replaces ACK.
+    assert_eq!(
+        queue.begin_attempt(&child_claim, 10_000).await.unwrap(),
+        AttemptAdmission::Applied
+    );
+    assert!(
+        client
+            .settle_session_agent_boundary(
+                &registered.snapshot.identity,
+                &child_claim,
+                awaiting_boundary.clone(),
+            )
+            .await
+            .is_err(),
+        "T27a occupied slot"
+    );
+    assert!(
+        session_control.agent_boundaries.lock().unwrap().is_empty(),
+        "T27a no application effect"
+    );
+    assert_eq!(
+        queue.finish_attempt(&child_claim).await.unwrap(),
+        SettleOutcome::Applied,
+        "T27b exact return"
+    );
     client
         .settle_session_agent_boundary(
             &registered.snapshot.identity,

@@ -11,7 +11,15 @@ use awaken_dispatch_contract::{DispatchAdmissionShape, DispatchIdentityScope, Ru
 /// stores the request as JSON text and PostgreSQL decodes it through `Json<T>`,
 /// but both must interpret the remaining fence columns identically.
 #[cfg(feature = "durable")]
-pub(crate) type ClaimEpochStorageRow<T> = (i64, Option<String>, Option<i64>, T, i64);
+pub(crate) type ClaimEpochStorageRow<T> = (
+    i64,
+    Option<String>,
+    Option<i64>,
+    T,
+    i64,
+    Option<String>,
+    Option<i64>,
+);
 
 /// Persistence-independent evidence available when one caller-owned Run id is
 /// admitted. Backends load evidence; this function owns the one identity
