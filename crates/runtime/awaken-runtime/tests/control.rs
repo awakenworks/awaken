@@ -479,6 +479,10 @@ async fn live_cancel_aborts_a_hung_inference() {
     // Decision rule D1: C1 a direct attempt is active, C2 inference is pending,
     // and C3 exact live Cancel arrives => E1 cancellation aborts the provider
     // future and E2 the Run ends Cancelled without waiting for a loop boundary.
+    // D2 this response-only port cannot execute proposed tools after discard:
+    // actual local return may ACK its attempt. This does not assert provider
+    // computation/billing termination. Dropped external-tool futures have the
+    // opposite evidence rule in the Dispatch lease_semantics regression.
     let started = Arc::new(Notify::new());
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(HangingLlm {
         started: started.clone(),
@@ -486,6 +490,7 @@ async fn live_cancel_aborts_a_hung_inference() {
 
     let token = CancellationToken::new();
     let context = RuntimeRunContext::new().with_cancellation(token);
+    let quiescence = context.physical_quiescence.clone();
 
     let driver = DirectAttemptDriver::new(runtime.clone());
     let handle = tokio::spawn(async move { driver.start(activation(), context).await });
@@ -505,6 +510,10 @@ async fn live_cancel_aborts_a_hung_inference() {
         .expect("join")
         .expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::Cancelled));
+    assert!(
+        quiescence.can_acknowledge_return(),
+        "D2 local response-only return"
+    );
 }
 
 struct ToolCallingLlm;

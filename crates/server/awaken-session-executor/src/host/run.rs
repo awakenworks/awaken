@@ -3,6 +3,7 @@
 
 use super::types::VerifiedStepProjection;
 use super::*;
+use awaken_runtime_contract::control::{LiveCommand, LiveRunControl};
 
 mod projection;
 mod quiescence;
@@ -373,6 +374,31 @@ impl SharedHost {
                 .expect("active run mutex poisoned")
                 .clone()
         });
+        if self.upstream.is_some() {
+            // A Worker revokes its resident attempt, not the Coordinator's
+            // durable cancellation intent. Its transport deliberately cannot
+            // list/requeue/cancel the global queue. Reuse the installed claim
+            // and Runtime's existing local signal even after lease loss; this
+            // cannot authorize a replacement attempt or acknowledge return.
+            if let Some(ctx) = resident.as_ref() {
+                let run_id = active_run.or_else(|| {
+                    self.session_slots
+                        .read(thread, |slot| {
+                            slot.dispatch_claim
+                                .as_ref()
+                                .map(|claim| claim.run_id.clone())
+                        })
+                        .flatten()
+                });
+                if let Some(run_id) = run_id {
+                    let _ = ctx.runtime.deliver(LiveCommand::Cancel { run_id });
+                }
+                if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
+                    token.cancel();
+                }
+            }
+            return Ok(());
+        }
         if let (Some(ctx), Some(ingress), Some(run_id)) = (
             resident.as_ref(),
             resident
