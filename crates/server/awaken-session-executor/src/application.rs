@@ -1928,6 +1928,34 @@ mod resource_transition_install_tests {
             );
         }
     }
+
+    #[test]
+    fn terminal_install_retains_pending_generation_without_applying_live_effects() {
+        // T1 warm Worker already staged A -> B: complete cleanup projection is
+        // an exact replay. T2 cold Worker stages the same transition. T3 old
+        // active-only A -> A is rejected. None may enter live Resource effects.
+        use FrozenResourceTransitionInstallDecision::{Reject, Stage};
+        let active = transition("workspace", 0, None);
+        let pending = transition("workspace", 1, Some("pending"));
+        let complete = transition_from(active.desired().clone(), pending.desired().clone());
+        let mode = super::FrozenResourceProjectionMode::Terminal;
+        assert!(!mode.synchronizes());
+        assert!(!mode.allows_unattempted_amendment());
+        for (installed, incoming, expected) in [
+            (Some(&complete), &complete, Stage),
+            (None, &complete, Stage),
+            (Some(&complete), &active, Reject),
+        ] {
+            assert_eq!(
+                frozen_resource_transition_install_decision(
+                    installed,
+                    incoming,
+                    mode.allows_unattempted_amendment(),
+                ),
+                expected,
+            );
+        }
+    }
 }
 
 #[cfg(test)]

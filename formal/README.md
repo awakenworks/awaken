@@ -609,11 +609,28 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   Stage now carries an active or pending revision across root changes:
   retained-active reconstruction cannot consume pending replacement, commit
   uses the prepared revision, and a rejected stale Stage has no root effect.
+  Termination retains pending intent until the verified cleanup receipt;
+  terminal assignment projects active -> desired, never active -> active when
+  a replacement is pending. The strict mutation gate restores the active-only
+  adapter bug and a premature receipt and requires their named counterexamples.
+  Conditional cleanup liveness assumes fair recovery and an eventual verified
+  physical receipt; it does not establish that any provider can produce one.
   The bounded model does not prove manifest byte equality, lease identity, or
   physical IO. The production crossover/rollback/failure decision tables are
-  in `awaken-session-application/src/tests/resource_resume.rs`; signed dispatch
+  in `awaken-session-application/src/tests/resource_resume.rs`; terminal
+  assignment/cold-read coverage in `tests/realization.rs` binds the abstract
+  generation selection to the production Session adapter. Provider absence and
+  late-create fencing remain separate obligations. Signed dispatch
   transport and contract serialization are separately exercised tests, not a
   Rust-to-TLA refinement proof.
+- `SessionUnmaterializedCleanup.tla` distinguishes current handle-free container
+  uncertainty from the proposed physical-join contract. The ordinary config
+  keeps unsupported cleanup pending. The Target config checks conditional
+  convergence only under an exact physical join and fair adapter progress;
+  that join is not yet implemented by handle-free container preparation.
+  The mutation gate removes the join and finds an absent-query/late-create
+  counterexample. Neither configuration proves Kubernetes absence, identity
+  validation, API linearizability, or production adapter refinement.
 - `ResourceDispatch.tla` covers one-time configuration pinning, mutable content,
   worker capability admission, Workspace equality, explicit-empty revocation,
   and the live lifecycle deny evaluated at each activation attempt.
