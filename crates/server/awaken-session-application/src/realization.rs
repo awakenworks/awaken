@@ -139,11 +139,17 @@ struct LocalProjectionSynchronizer<'a> {
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionSynchronizer<'_> {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        self.runtime.observe_realization_request()
+    }
+
     async fn synchronize_session_projection(
         &self,
         session_id: &str,
         projection: &awaken_session_contract::FrozenSessionProjection,
-        lease: &SessionRealizationLease,
+        lease: &awaken_session_contract::ObservedSessionRealizationLease,
         prepare_session: bool,
     ) -> Result<(), RunError> {
         self.runtime
@@ -198,6 +204,7 @@ impl SessionApplication {
                 "Resident Environment has no exact realization lease",
             )
         })?;
+        let request_started = self.runtime().observe_realization_request()?;
         let projection = self
             .frozen_session_projection(owner_scope.to_string(), session, true)
             .await?;
@@ -207,7 +214,12 @@ impl SessionApplication {
             },
             &session.session_id,
             &projection,
-            lease,
+            &awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+                lease.clone(),
+                now_unix_ms(),
+            )
+            .map_err(|error| RunError::unavailable(error.to_string()))?
+            .observed(request_started),
             true,
         )
         .await
@@ -404,7 +416,7 @@ impl SessionApplication {
                 _ = tokio::time::sleep_until(next_recovery) => Some(SessionRecoveryTrigger::Scheduled),
                 _ = interval.tick() => {
                     if let Err(error) = self
-                        .renew_due_session_realizations(now_unix_ms())
+                        .renew_due_session_realizations()
                         .await
                     {
                         tracing::warn!(
@@ -500,6 +512,10 @@ impl SessionApplication {
         &self,
         session_id: &str,
     ) -> Result<PersistedSession, SessionRealizationError> {
+        let request_started = self
+            .runtime()
+            .observe_realization_request()
+            .map_err(SessionRealizationError::Effect)?;
         let lease_expires_at_unix_ms = now_unix_ms()
             .checked_add(LOCAL_SESSION_REALIZATION_LEASE_MS)
             .ok_or_else(|| {
@@ -518,7 +534,8 @@ impl SessionApplication {
             })
             .await
             .map_err(SessionRealizationError::Control)?;
-        self.drive_local_realization(session_id, directive).await?;
+        self.drive_local_realization(session_id, directive, request_started)
+            .await?;
         self.session_repository()
             .get(session_id)
             .await
@@ -530,6 +547,7 @@ impl SessionApplication {
         &self,
         session_id: &str,
         directive: SessionRealizationDirective,
+        request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
     ) -> Result<(), SessionRealizationError> {
         let control = RefreshedSessionRealizationControl(self);
         awaken_session_contract::drive_session_realization(
@@ -541,6 +559,7 @@ impl SessionApplication {
             },
             self.mcp_realizer(),
             directive,
+            request_started,
         )
         .await
         .map_err(|error| match error {
@@ -557,49 +576,18 @@ impl SessionApplication {
     }
 
     /// Renew due local projections through the lease-only root-CAS command.
-    pub async fn renew_due_session_realizations(
-        &self,
-        now_unix_ms: u64,
-    ) -> Result<usize, SessionRealizationError> {
-        const RENEW_BEFORE_MS: u64 = 150_000;
-        let renew_before = now_unix_ms.saturating_add(RENEW_BEFORE_MS);
-        let requested_expiry = now_unix_ms.saturating_add(LOCAL_SESSION_REALIZATION_LEASE_MS);
-        let sessions = super::scan_all_reconcilable_sessions(self.session_repository())
+    pub async fn renew_due_session_realizations(&self) -> Result<usize, SessionRealizationError> {
+        self.runtime()
+            .renew_session_realization_projections(
+                &RefreshedSessionRealizationControl(self),
+                self.local_realization_owner(),
+                self.runtime_incarnation(),
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                    LOCAL_SESSION_REALIZATION_LEASE_MS,
+                ),
+            )
             .await
-            .map_err(|error| SessionRealizationError::Control(unavailable(error)))?;
-        let mut renewed = 0;
-        for scoped in sessions.sessions {
-            let Some(lease) = scoped.session.realization.clone() else {
-                continue;
-            };
-            if scoped.session.is_hidden()
-                || lease.owner != self.local_realization_owner()
-                || lease.runtime_incarnation != self.runtime_incarnation()
-                || lease.expires_at_unix_ms > renew_before
-                || !scoped
-                    .session
-                    .mcp
-                    .attachments
-                    .iter()
-                    .any(|attachment| attachment.state == McpAttachmentState::Active)
-            {
-                continue;
-            }
-            let renewed_lease = self
-                .renew_session_realization_after_load(RenewSessionRealization {
-                    session_id: scoped.session.session_id.clone(),
-                    asserted_lease: lease,
-                    requested_expires_at_unix_ms: requested_expiry,
-                })
-                .await
-                .map_err(SessionRealizationError::Control)?;
-            self.runtime()
-                .renew_session_realization_lease(&scoped.session.session_id, renewed_lease)
-                .await
-                .map_err(SessionRealizationError::Effect)?;
-            renewed += 1;
-        }
-        Ok(renewed)
+            .map_err(SessionRealizationError::Effect)
     }
 
     /// Recover the one local Runtime projection for every Session that lost its
@@ -765,10 +753,13 @@ impl SessionApplication {
         .map_err(|error| unavailable(error.to_string()))?;
         Ok(SessionRealizationDirective {
             projection,
-            lease: session
-                .realization
-                .clone()
-                .ok_or(SessionRealizationControlFailure::NotReady)?,
+            authority: awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+                session
+                    .realization
+                    .clone()
+                    .ok_or(SessionRealizationControlFailure::NotReady)?,
+                now_unix_ms(),
+            )?,
             action,
         })
     }

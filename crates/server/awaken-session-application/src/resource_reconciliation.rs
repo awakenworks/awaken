@@ -226,8 +226,7 @@ impl SessionApplication {
         let action = bind_terminal_restore_target(&owner_scope, &session, action)?;
         let assignment = self
             .terminal_cleanup_assignment_from_snapshot(&owner_scope, &session)
-            .await
-            .map_err(|error| SessionRealizationControlFailure::Unavailable(error.to_string()))?;
+            .await?;
         Ok(Some(awaken_session_contract::SessionTerminalCleanupWork {
             assignment,
             action,

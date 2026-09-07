@@ -248,11 +248,11 @@ async fn root_terminal_cleanup_effect(
         .terminal_cleanup
         .command_for(session_id, session_id)
         .unwrap();
-    host.install_terminal_cleanup_projection(
+    host.install_test_terminal_cleanup_projection(
         &awaken_session_contract::SessionTerminalCleanupAssignment {
             session_id: session_id.into(),
             projection,
-            lease: lease.clone(),
+            authority: crate::session_slot::test_lease_receipt(lease.clone()),
         },
     )
     .await

@@ -19,6 +19,31 @@ mod terminal_preparation;
 pub(super) use state::committed_identity;
 use state::{RetirementSelection, checkpoint_source_identity, projected_environment_owner};
 
+impl crate::session_slot::SessionRuntimeSlot {
+    /// Stage only the rebuildable owner coordinates. No physical owner is
+    /// retired or published until the caller commits under this same slot lock.
+    pub(crate) fn projected_environment_owner(
+        &self,
+        thread: &str,
+        workspace_id: &str,
+        state: &awaken_session_contract::SessionEnvironmentState,
+    ) -> Result<SessionEnvironmentOwner, HostError> {
+        let projected = projected_environment_owner(state, workspace_id, thread)?;
+        let mut owner = self.environment_owner.clone();
+        owner.install_projection(projected)?;
+        Ok(owner)
+    }
+
+    pub(crate) fn install_projected_environment_owner(
+        &mut self,
+        owner: SessionEnvironmentOwner,
+        state: &awaken_session_contract::SessionEnvironmentState,
+    ) {
+        self.environment_owner = owner;
+        self.reopen_mcp_realization_admission_from_projection(state);
+    }
+}
+
 /// One atomic process-local retirement transition. A successful transition
 /// detaches the Runtime together with its Environment owner; an unmatched
 /// exact-selection leaves both untouched.
@@ -239,25 +264,16 @@ impl SharedHost {
         // operations, including legacy fingerprints, replay opaquely; Runtime
         // validates the current realization fence and exact source owner rather
         // than deriving a competing effect identity.
-        let current = self
+        let authorized = self
             .session_slots
-            .read(thread, |slot| slot.realization_authority.lease().cloned())
-            .flatten();
-        let now_unix_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-            .unwrap_or_default();
-        let authorized = match (current.as_ref(), operation.realization.as_ref()) {
-            (Some(current), Some(asserted)) => {
-                awaken_session_contract::realization_lease_authorizes(
-                    current,
-                    asserted,
-                    now_unix_ms,
-                )
-            }
-            (None, None) => true,
-            _ => false,
-        };
+            .read(thread, |slot| match operation.realization.as_ref() {
+                Some(asserted) => slot.realization_authority.remaining_for(asserted).is_some(),
+                None => matches!(
+                    slot.realization_authority,
+                    crate::session_slot::SessionRealizationAuthority::Uninstalled
+                ),
+            })
+            .unwrap_or(operation.realization.is_none());
         if !authorized {
             return Err(HostError::internal(
                 "checkpoint continuation operation lost its exact realization lease",
@@ -310,16 +326,16 @@ impl SharedHost {
     /// Install only the process-local projection of durable Environment truth.
     /// It may supply an adoption expectation or the exact request-bound restore
     /// fence; it never creates a physical Environment or owns a restored handle.
+    #[cfg(test)]
     pub(crate) fn install_session_environment_owner_projection(
         &self,
         thread: &str,
         workspace_id: &str,
         state: &awaken_session_contract::SessionEnvironmentState,
     ) -> Result<(), HostError> {
-        let projected = projected_environment_owner(state, workspace_id, thread)?;
         self.session_slots.update(thread, |slot| {
-            slot.environment_owner.install_projection(projected)?;
-            slot.reopen_mcp_realization_admission_from_projection(state);
+            let owner = slot.projected_environment_owner(thread, workspace_id, state)?;
+            slot.install_projected_environment_owner(owner, state);
             Ok(())
         })
     }

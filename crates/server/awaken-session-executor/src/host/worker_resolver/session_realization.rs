@@ -34,6 +34,8 @@ impl HostWorkerResolver {
             session_id,
             directive,
             synchronizer,
+            awaken_local_process::authority_proof_started()
+                .map_err(|error| Self::execution_error(error.to_string()))?,
         )
         .await
         .map_err(Self::map_session_realization_drive_error)
@@ -47,6 +49,7 @@ impl HostWorkerResolver {
         session_id: &str,
         directive: awaken_session_contract::SessionRealizationDirective,
         claimed: Option<&awaken_dispatch::Claimed>,
+        request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
     ) -> Result<(), awaken_dispatch::Error> {
         let claim = claimed.map(|claimed| awaken_dispatch::RunClaim::from(&claimed.lease));
         let published_snapshot = claimed.and_then(|claimed| {
@@ -71,6 +74,7 @@ impl HostWorkerResolver {
             session_id,
             directive,
             synchronizer,
+            request_started,
         )
         .await
         .map_err(Self::map_session_realization_drive_error)
@@ -83,6 +87,7 @@ impl HostWorkerResolver {
         session_id: &str,
         directive: awaken_session_contract::SessionRealizationDirective,
         synchronizer: WorkerProjectionSynchronizer<'_>,
+        request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
     ) -> Result<(), awaken_session_contract::SessionRealizationDriveError> {
         let host = synchronizer.host;
         awaken_session_contract::drive_session_realization(
@@ -92,6 +97,7 @@ impl HostWorkerResolver {
             &synchronizer,
             &WorkerMcpEffects(host),
             directive,
+            request_started,
         )
         .await
     }
@@ -515,7 +521,7 @@ mod tests {
             &self,
             command: awaken_session_contract::RenewSessionRealization,
         ) -> Result<
-            awaken_session_contract::SessionRealizationLease,
+            awaken_session_contract::SessionRealizationLeaseReceipt,
             awaken_session_contract::SessionRealizationControlFailure,
         > {
             self.renewal_calls
@@ -531,7 +537,7 @@ mod tests {
                 );
             }
             lease.expires_at_unix_ms = command.requested_expires_at_unix_ms;
-            Ok(lease.clone())
+            Ok(crate::session_slot::test_lease_receipt(lease.clone()))
         }
 
         async fn activate_session_realization(
@@ -544,7 +550,9 @@ mod tests {
             if self.repeat_stage_without_progress {
                 return Ok(awaken_session_contract::SessionRealizationDirective {
                     projection: self.projection.clone(),
-                    lease: self.lease.lock().unwrap().clone(),
+                    authority: crate::session_slot::test_lease_receipt(
+                        self.lease.lock().unwrap().clone(),
+                    ),
                     action: awaken_session_contract::SessionRealizationAction::Stage {
                         prepare_session: false,
                         mcp_stages: vec![self.stage.clone()],
@@ -586,7 +594,7 @@ mod tests {
             };
             Ok(awaken_session_contract::SessionRealizationDirective {
                 projection: self.projection.clone(),
-                lease,
+                authority: crate::session_slot::test_lease_receipt(lease),
                 action,
             })
         }
@@ -615,7 +623,7 @@ mod tests {
                 };
             Ok(awaken_session_contract::SessionRealizationDirective {
                 projection: self.projection.clone(),
-                lease,
+                authority: crate::session_slot::test_lease_receipt(lease),
                 action,
             })
         }
@@ -725,6 +733,7 @@ mod tests {
             session_id,
             directive,
             synchronizer,
+            awaken_local_process::authority_proof_started().unwrap(),
         )
         .await
     }
@@ -750,7 +759,7 @@ mod tests {
         > {
             Ok(awaken_session_contract::SessionRealizationDirective {
                 projection: self.current_projection(),
-                lease: command.lease,
+                authority: crate::session_slot::test_lease_receipt(command.lease),
                 action: awaken_session_contract::SessionRealizationAction::Publish {
                     publish: command
                         .mcp_receipts
@@ -771,7 +780,7 @@ mod tests {
         > {
             Ok(awaken_session_contract::SessionRealizationDirective {
                 projection: self.current_projection(),
-                lease: command.lease,
+                authority: crate::session_slot::test_lease_receipt(command.lease),
                 action: awaken_session_contract::SessionRealizationAction::Complete,
             })
         }
@@ -912,7 +921,12 @@ mod tests {
             claimed_environment_binding: None,
         };
         synchronizer
-            .synchronize_session_projection(thread, &remote, &lease, false)
+            .synchronize_session_projection(
+                thread,
+                &remote,
+                &crate::session_slot::test_observed_lease(lease.clone()),
+                false,
+            )
             .await
             .expect("M1 lease-only renewal reuses resident projection");
         assert!(host.thread_resource_manifest(thread).is_none(), "M1");
@@ -932,13 +946,23 @@ mod tests {
             requires_runtime_before_effects: false,
             claimed_environment_binding: None,
         }
-        .synchronize_session_projection("cold-renewal-resources", &remote, &lease, false)
+        .synchronize_session_projection(
+            "cold-renewal-resources",
+            &remote,
+            &crate::session_slot::test_observed_lease(lease.clone()),
+            false,
+        )
         .await
         .expect_err("M2 cold renewal must fail closed");
         assert!(cold.to_string().contains("cannot cold-materialize"), "M2");
 
         let preparing = synchronizer
-            .synchronize_session_projection(thread, &remote, &lease, true)
+            .synchronize_session_projection(
+                thread,
+                &remote,
+                &crate::session_slot::test_observed_lease(lease.clone()),
+                true,
+            )
             .await
             .expect_err("M3 preparation needs a material source");
         assert!(preparing.to_string().contains("Skill"), "M3: {preparing}");
@@ -982,7 +1006,12 @@ mod tests {
             requires_runtime_before_effects: false,
             claimed_environment_binding: None,
         }
-        .synchronize_session_projection(thread, &projection, &lease, true)
+        .synchronize_session_projection(
+            thread,
+            &projection,
+            &crate::session_slot::test_observed_lease(lease.clone()),
+            true,
+        )
         .await
         .expect("projection publication realizes the Session before a Run claim");
 
@@ -996,7 +1025,12 @@ mod tests {
             requires_runtime_before_effects: false,
             claimed_environment_binding: None,
         }
-        .synchronize_session_projection(thread, &compatibility_renewal, &lease, false)
+        .synchronize_session_projection(
+            thread,
+            &compatibility_renewal,
+            &crate::session_slot::test_observed_lease(lease.clone()),
+            false,
+        )
         .await
         .expect("lease renewal reuses the retained immutable publication");
         let retained = host
@@ -1026,7 +1060,12 @@ mod tests {
             requires_runtime_before_effects: false,
             claimed_environment_binding: None,
         }
-        .synchronize_session_projection(thread, &projection, &lease, false)
+        .synchronize_session_projection(
+            thread,
+            &projection,
+            &crate::session_slot::test_observed_lease(lease.clone()),
+            false,
+        )
         .await
         .expect("P3 Session-effective Run snapshot shares the frozen coordinates");
         assert_eq!(
@@ -1048,7 +1087,12 @@ mod tests {
             requires_runtime_before_effects: false,
             claimed_environment_binding: None,
         }
-        .synchronize_session_projection(thread, &projection, &lease, false)
+        .synchronize_session_projection(
+            thread,
+            &projection,
+            &crate::session_slot::test_observed_lease(lease.clone()),
+            false,
+        )
         .await
         .expect_err("P4 foreign claimed coordinates are rejected");
         assert_eq!(error.code, "session_runtime_publication_conflict", "P4");
@@ -1063,7 +1107,12 @@ mod tests {
             requires_runtime_before_effects: false,
             claimed_environment_binding: None,
         }
-        .synchronize_session_projection("publication-missing", &missing, &lease, true)
+        .synchronize_session_projection(
+            "publication-missing",
+            &missing,
+            &crate::session_slot::test_observed_lease(lease.clone()),
+            true,
+        )
         .await
         .expect_err("a cold pinned Worker projection must carry its publication");
         assert_eq!(error.code, "session_runtime_publication_missing");
@@ -1096,7 +1145,12 @@ mod tests {
                 requires_runtime_before_effects: false,
                 claimed_environment_binding: None,
             }
-            .synchronize_session_projection(session_id, &conflicting, &lease, true)
+            .synchronize_session_projection(
+                session_id,
+                &conflicting,
+                &crate::session_slot::test_observed_lease(lease.clone()),
+                true,
+            )
             .await
             .expect_err("mismatched Worker publication must fail closed");
             assert_eq!(error.code, "session_runtime_publication_conflict");
@@ -1120,8 +1174,8 @@ mod tests {
     #[tokio::test]
     async fn heartbeat_renewal_does_not_duplicate_an_in_flight_realization_driver() {
         let thread = "renew-during-stage";
-        let initial_expiry = 1_000;
-        let renewed_expiry = 2_000;
+        let initial_expiry = crate::terminal_repository_publication::runtime_unix_now_ms() + 5_000;
+        let renewed_expiry = initial_expiry + 10_000;
         let (projection, lease, stage) = renewal_stage_fixture(thread, initial_expiry);
         let control = Arc::new(RenewalDuringStageControl {
             projection: projection.clone(),
@@ -1146,7 +1200,7 @@ mod tests {
             .install_dispatch_session_runtime();
         let directive = awaken_session_contract::SessionRealizationDirective {
             projection,
-            lease,
+            authority: crate::session_slot::test_lease_receipt(lease),
             action: awaken_session_contract::SessionRealizationAction::Stage {
                 prepare_session: true,
                 mcp_stages: vec![stage],
@@ -1174,9 +1228,8 @@ mod tests {
             tokio::time::timeout(
                 std::time::Duration::from_secs(1),
                 host.renew_due_session_realizations(
-                    0,
                     awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
-                        renewed_expiry,
+                        30_000,
                     ),
                 ),
             )
@@ -1233,7 +1286,10 @@ mod tests {
     #[tokio::test]
     async fn sustained_renewal_progress_converges_and_exact_repetition_fails_closed() {
         let thread = "sustained-renewal-progress";
-        let (projection, lease, stage) = renewal_stage_fixture(thread, 1_000);
+        let (projection, lease, stage) = renewal_stage_fixture(
+            thread,
+            crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+        );
         let control = Arc::new(RenewalDuringStageControl {
             projection: projection.clone(),
             stage: stage.clone(),
@@ -1255,7 +1311,7 @@ mod tests {
             thread,
             awaken_session_contract::SessionRealizationDirective {
                 projection,
-                lease,
+                authority: crate::session_slot::test_lease_receipt(lease),
                 action: awaken_session_contract::SessionRealizationAction::Stage {
                     prepare_session: false,
                     mcp_stages: vec![stage],
@@ -1273,7 +1329,10 @@ mod tests {
         );
 
         let thread = "repeated-renewal-directive";
-        let (projection, lease, stage) = renewal_stage_fixture(thread, 1_000);
+        let (projection, lease, stage) = renewal_stage_fixture(
+            thread,
+            crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+        );
         let control = Arc::new(RenewalDuringStageControl {
             projection: projection.clone(),
             stage: stage.clone(),
@@ -1295,7 +1354,7 @@ mod tests {
             thread,
             awaken_session_contract::SessionRealizationDirective {
                 projection,
-                lease,
+                authority: crate::session_slot::test_lease_receipt(lease),
                 action: awaken_session_contract::SessionRealizationAction::Stage {
                     prepare_session: false,
                     mcp_stages: vec![stage],
@@ -1377,7 +1436,7 @@ mod tests {
             thread,
             original_projection,
             awaken_session_contract::SessionProjectionInstallMode::Realization {
-                lease: lease.clone(),
+                lease: crate::session_slot::test_observed_lease(lease.clone()),
                 prepare_session: true,
             },
         )
@@ -1433,7 +1492,7 @@ mod tests {
         };
         let directive = awaken_session_contract::SessionRealizationDirective {
             projection: frozen.clone(),
-            lease,
+            authority: crate::session_slot::test_lease_receipt(lease),
             action: awaken_session_contract::SessionRealizationAction::Stage {
                 prepare_session: true,
                 mcp_stages: vec![stage.clone()],
@@ -1632,12 +1691,14 @@ mod tests {
         };
         let first_use_directive = awaken_session_contract::SessionRealizationDirective {
             projection: first_use_projection.clone(),
-            lease: awaken_session_contract::SessionRealizationLease {
-                owner: "worker-a".into(),
-                runtime_incarnation: "worker-a".into(),
-                epoch: 1,
-                expires_at_unix_ms: u64::MAX,
-            },
+            authority: crate::session_slot::test_lease_receipt(
+                awaken_session_contract::SessionRealizationLease {
+                    owner: "worker-a".into(),
+                    runtime_incarnation: "worker-a".into(),
+                    epoch: 1,
+                    expires_at_unix_ms: u64::MAX,
+                },
+            ),
             action: awaken_session_contract::SessionRealizationAction::Stage {
                 prepare_session: true,
                 mcp_stages: vec![first_use_stage],
@@ -1756,12 +1817,14 @@ mod tests {
         rebuild_frozen.environment = committed_resident_environment(rebuild_thread, missing);
         let rebuild_directive = awaken_session_contract::SessionRealizationDirective {
             projection: rebuild_frozen.clone(),
-            lease: awaken_session_contract::SessionRealizationLease {
-                owner: "worker-a".into(),
-                runtime_incarnation: "worker-a".into(),
-                epoch: 2,
-                expires_at_unix_ms: u64::MAX,
-            },
+            authority: crate::session_slot::test_lease_receipt(
+                awaken_session_contract::SessionRealizationLease {
+                    owner: "worker-a".into(),
+                    runtime_incarnation: "worker-a".into(),
+                    epoch: 2,
+                    expires_at_unix_ms: u64::MAX,
+                },
+            ),
             action: awaken_session_contract::SessionRealizationAction::Complete,
         };
         let rebuild_host = Arc::new(
@@ -1814,12 +1877,14 @@ mod tests {
         continuity_frozen.environment = committed_resident_environment(continuity_thread, missing);
         let continuity_directive = awaken_session_contract::SessionRealizationDirective {
             projection: continuity_frozen.clone(),
-            lease: awaken_session_contract::SessionRealizationLease {
-                owner: "worker-a".into(),
-                runtime_incarnation: "worker-a".into(),
-                epoch: 3,
-                expires_at_unix_ms: u64::MAX,
-            },
+            authority: crate::session_slot::test_lease_receipt(
+                awaken_session_contract::SessionRealizationLease {
+                    owner: "worker-a".into(),
+                    runtime_incarnation: "worker-a".into(),
+                    epoch: 3,
+                    expires_at_unix_ms: u64::MAX,
+                },
+            ),
             action: awaken_session_contract::SessionRealizationAction::Complete,
         };
         let continuity_host = Arc::new(

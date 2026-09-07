@@ -26,8 +26,9 @@ impl<'a> ResourcePreparation<'a> {
     pub(super) fn begin(
         host: &'a crate::SharedHost,
         session: &'a str,
-        asserted: awaken_session_contract::SessionRealizationLease,
+        proof: awaken_session_contract::ObservedSessionRealizationLease,
     ) -> Result<Self, crate::HostError> {
+        let asserted = proof.lease.clone();
         let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
         let (introduced_lease, changed) = host.authorize_worker_effect(|| {
             host.session_slots.update(session, |slot| {
@@ -37,7 +38,9 @@ impl<'a> ResourcePreparation<'a> {
                     ));
                 }
                 let introduced = slot.realization_authority.lease().is_none();
-                slot.install_realization_lease(asserted.clone());
+                if !slot.install_realization_lease(proof) {
+                    return Err(Self::ended());
+                }
                 slot.resource_preparation = Some(cancellation.clone());
                 Ok((introduced, slot.realization_changed.clone()))
             })
@@ -58,10 +61,7 @@ impl<'a> ResourcePreparation<'a> {
         slot.resource_preparation
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, &self.cancellation))
-            && slot.resource_preparation_authorized(
-                &self.asserted,
-                crate::terminal_repository_publication::runtime_unix_now_ms(),
-            )
+            && slot.resource_preparation_authorized(&self.asserted)
     }
 
     fn ended() -> crate::HostError {
@@ -107,26 +107,21 @@ impl<'a> ResourcePreparation<'a> {
             let notified = changed.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            let expiry = self
+            let remaining = self
                 .host
                 .session_slots
                 .read(self.session, |slot| {
-                    self.authorized(slot).then(|| {
-                        slot.realization_authority
-                            .lease()
-                            .expect("authorized lease")
-                            .expires_at_unix_ms
-                    })
+                    self.authorized(slot)
+                        .then(|| slot.realization_authority.remaining())
+                        .flatten()
                 })
                 .flatten();
-            let Some(expiry) = expiry else {
+            let Some(remaining) = remaining else {
                 return Self::ended();
             };
-            let remaining = expiry
-                .saturating_sub(crate::terminal_repository_publication::runtime_unix_now_ms());
             tokio::select! {
                 () = self.cancellation.cancelled() => return Self::ended(),
-                () = tokio::time::sleep(std::time::Duration::from_millis(remaining)) => {},
+                () = tokio::time::sleep(remaining) => {},
                 () = &mut notified => {},
             }
         }
@@ -180,7 +175,9 @@ impl crate::SharedHost {
         // All rules require the asserted projection to remain current at
         // completion. A changed/removed projection discards the obsolete reply;
         // revocation rechecks after its owner locks before interrupting a Run.
-        // | R1 | yes | renewed | any | E1 |
+        // | R1 | yes | renewed/live response | live | E1 |
+        // | R1b | yes | renewed | expired | E4 (never revive) |
+        // | R1c | yes | expired response | live | no install; retry |
         // | R2 | yes | explicit loss | any | E2 |
         // | R3 | yes | temporary failure | live | E3 |
         // | R4 | yes | temporary failure | expired | E4 |
@@ -201,6 +198,8 @@ impl crate::SharedHost {
                     == RenewalFailureDisposition::RevokeImmediately;
                 (crate::HostError::internal(error.to_string()), revoke)
             };
+            let request_started = awaken_local_process::authority_proof_started()
+                .map_err(|error| (crate::HostError::internal(error.to_string()), true))?;
             let renewed_lease = match control
                 .renew_session_realization(awaken_session_contract::RenewSessionRealization {
                     session_id: session_id.clone(),
@@ -209,7 +208,7 @@ impl crate::SharedHost {
                 })
                 .await
             {
-                Ok(renewed_lease) => renewed_lease,
+                Ok(renewed_lease) => renewed_lease.observed(request_started),
                 Err(error) => return Err(control_failure(error)),
             };
             // The response belongs to the snapshot sent before I/O. Compare
@@ -231,6 +230,19 @@ impl crate::SharedHost {
         }
         .await;
         match renewal {
+            Ok(false)
+                if self
+                    .session_slots
+                    .read(&session_id, |slot| {
+                        slot.realization_authority.lease() == Some(&lease)
+                            && slot.realization_authority.remaining().is_none()
+                    })
+                    .unwrap_or(false) =>
+            {
+                self.revoke_session_realization(&session_id, Some(&lease))
+                    .await?;
+                Ok(false)
+            }
             Ok(applied) => Ok(applied),
             Err(_)
                 if !self
@@ -245,10 +257,12 @@ impl crate::SharedHost {
             }
             Err((error, revoke_immediately))
                 if !revoke_immediately
-                    && awaken_session_contract::realization_lease_is_live_at(
-                        lease.expires_at_unix_ms,
-                        crate::terminal_repository_publication::runtime_unix_now_ms(),
-                    ) =>
+                    && self
+                        .session_slots
+                        .read(&session_id, |slot| {
+                            slot.realization_authority.remaining().is_some()
+                        })
+                        .unwrap_or(false) =>
             {
                 Err(error)
             }
@@ -278,7 +292,22 @@ impl crate::SharedHost {
     /// earliest-deadline ordering prevents one Session from starving another.
     pub async fn renew_due_session_realizations(
         &self,
-        now_unix_ms: u64,
+        timing: AuthorityLeaseTiming,
+    ) -> Result<usize, crate::HostError> {
+        self.renew_session_realization_projections(
+            self.session_control
+                .as_deref()
+                .map(|control| control as &dyn awaken_session_contract::SessionRealizationControl),
+            None,
+            timing,
+        )
+        .await
+    }
+
+    pub(crate) async fn renew_session_realization_projections(
+        &self,
+        control: Option<&dyn awaken_session_contract::SessionRealizationControl>,
+        owner: Option<(&str, &str)>,
         timing: AuthorityLeaseTiming,
     ) -> Result<usize, crate::HostError> {
         #[cfg(target_os = "linux")]
@@ -287,7 +316,7 @@ impl crate::SharedHost {
             // cutoff delivery. A long Session lease must not suppress refresh
             // of its shorter Worker proof. Neither lane may starve its peers.
             let (renewal, refresh) = tokio::join!(
-                self.renew_due_session_projection_leases(now_unix_ms, timing),
+                self.renew_due_session_projection_leases(control, owner, timing),
                 self.refresh_session_execution(),
             );
             let renewed = renewal?;
@@ -295,7 +324,7 @@ impl crate::SharedHost {
             Ok(renewed)
         }
         #[cfg(not(target_os = "linux"))]
-        self.renew_due_session_projection_leases(now_unix_ms, timing)
+        self.renew_due_session_projection_leases(control, owner, timing)
             .await
     }
 
@@ -321,47 +350,58 @@ impl crate::SharedHost {
 
     async fn renew_due_session_projection_leases(
         &self,
-        now_unix_ms: u64,
+        control: Option<&dyn awaken_session_contract::SessionRealizationControl>,
+        owner: Option<(&str, &str)>,
         timing: AuthorityLeaseTiming,
     ) -> Result<usize, crate::HostError> {
-        let renew_before_unix_ms = now_unix_ms
-            .saturating_add(u64::try_from(timing.proof_window().as_millis()).unwrap_or(u64::MAX));
+        let now = awaken_local_process::authority_proof_started()
+            .map_err(|error| crate::HostError::internal(error.to_string()))?;
         let mut due = self
             .session_slots
             .realization_leases()
             .into_iter()
-            .filter(|(_, lease)| lease.expires_at_unix_ms <= renew_before_unix_ms)
+            .filter(|(_, proof)| {
+                owner.is_none_or(|(owner, incarnation)| {
+                    proof.lease.owner == owner && proof.lease.runtime_incarnation == incarnation
+                })
+            })
+            .map(|(session, proof)| {
+                let remaining = proof.remaining_at(now).unwrap_or_default();
+                (session, proof.lease, remaining)
+            })
+            .filter(|(_, _, remaining)| *remaining <= timing.renew_interval())
             .collect::<Vec<_>>();
         if due.is_empty() {
             return Ok(0);
         }
-        let control = self.session_control.as_ref().ok_or_else(|| {
-            crate::HostError::internal(
-                "active Worker Session projection has no Control renewal client",
-            )
+        let control = control.ok_or_else(|| {
+            crate::HostError::internal("due Session projection has no Control renewal client")
         })?;
-        let requested_expiry_unix_ms = now_unix_ms
-            .saturating_add(u64::try_from(timing.lease_ttl().as_millis()).unwrap_or(u64::MAX));
-        let control: Arc<dyn awaken_session_contract::SessionRealizationControl> = Arc::new(
-            DeadlineSessionRealizationControl::new(Arc::clone(control), timing.request_timeout()),
-        );
+        let control = DeadlineSessionRealizationControl::new(control, timing.request_timeout());
         // This cadence owns only due lease writes. The independent lifecycle
         // lane owns cold claim-next recovery and complete effect execution.
-        let order =
-            |left: &(String, awaken_session_contract::SessionRealizationLease),
-             right: &(String, awaken_session_contract::SessionRealizationLease)| {
-                left.1
-                    .expires_at_unix_ms
-                    .cmp(&right.1.expires_at_unix_ms)
-                    .then_with(|| left.0.cmp(&right.0))
-            };
+        let order = |left: &(
+            String,
+            awaken_session_contract::SessionRealizationLease,
+            std::time::Duration,
+        ),
+                     right: &(
+            String,
+            awaken_session_contract::SessionRealizationLease,
+            std::time::Duration,
+        )| { left.2.cmp(&right.2).then_with(|| left.0.cmp(&right.0)) };
         due.sort_by(order);
         let outcomes = stream::iter(due)
-            .map(|(session_id, lease)| {
-                let control = Arc::clone(&control);
+            .map(|(session_id, lease, _)| {
+                let control = &control;
+                // The exact asserted expiry is a Control-clock coordinate.
+                // Extend that coordinate, never add a Worker wall-clock value.
+                let requested_expiry_unix_ms = lease.expires_at_unix_ms.saturating_add(
+                    u64::try_from(timing.renew_interval().as_millis()).unwrap_or(u64::MAX),
+                );
                 async move {
                     self.reconcile_one_session_realization(
-                        control.as_ref(),
+                        control,
                         session_id,
                         lease,
                         requested_expiry_unix_ms,

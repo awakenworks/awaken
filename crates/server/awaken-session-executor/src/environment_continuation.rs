@@ -11,6 +11,79 @@ use awaken_session_contract::RunError;
 
 use crate::{ManagedHost, to_run_error};
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn continuation_fence_keeps_control_coordinates_but_requires_current_local_proof() {
+        use crate::session_slot::SessionRealizationAuthority as Authority;
+        use awaken_session_contract::{SessionRealizationLease, SessionRealizationLeaseReceipt};
+        // F1 exact live receipt with Control expiry older than local wall time
+        // -> return the unchanged Control fence. F2 missing root, F3 expired
+        // observation, F4 closed root, F5 replaced incarnation -> reject before
+        // lowering a fence. These are adapter/call-path checks of the shared
+        // slot rule; provider-side expiry semantics are intentionally not mocked
+        // into a claim of end-to-end clock-skew compatibility.
+        let lease = SessionRealizationLease {
+            owner: "control".into(),
+            runtime_incarnation: "boot".into(),
+            epoch: 1,
+            expires_at_unix_ms: 30_000,
+        };
+        for (rule, admitted) in [
+            ("F1", true),
+            ("F2", false),
+            ("F3", false),
+            ("F4", false),
+            ("F5", false),
+        ] {
+            let host = Arc::new(crate::SharedHost::new(
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                "stub",
+            ));
+            let mut current = lease.clone();
+            if rule == "F5" {
+                current.runtime_incarnation.push_str("-new");
+            }
+            let authority = match rule {
+                "F2" => Authority::Uninstalled,
+                "F3" => Authority::Live(crate::session_slot::test_expired_observed_lease(current)),
+                "F4" => Authority::Closed(Some(current)),
+                _ => Authority::Live(
+                    SessionRealizationLeaseReceipt::issued_at(current, 0)
+                        .unwrap()
+                        .observed(awaken_local_process::authority_proof_started().unwrap()),
+                ),
+            };
+            host.session_slots
+                .update(rule, |slot| slot.realization_authority = authority);
+            let managed = ManagedHost::new(host);
+            let generation =
+                awaken_session_contract::SandboxGeneration::new(rule, 1, 30_000, "env", "image");
+            let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+                "workspace",
+                rule,
+                "suspend",
+                &generation,
+                1,
+                Some(lease.clone()),
+                None,
+            );
+            let fence = managed.continuation_effect_fence(rule, &operation);
+            assert_eq!(fence.is_ok(), admitted, "{rule}");
+            if let Ok(fence) = fence {
+                assert_eq!(
+                    fence,
+                    lease.sandbox_effect_fence(&operation.effect_id).unwrap(),
+                    "{rule}/no rewritten expiry or identity"
+                );
+            }
+        }
+    }
+}
+
 /// The Runtime Host is the sole adapter from aggregate checkpoint intent to
 /// provider byte-custody input. Ordinary suspension and terminal takeover both
 /// call this projection so metadata, expiry, and effect identity cannot drift.
@@ -32,6 +105,42 @@ pub(super) fn provisioning_checkpoint_request(
 }
 
 impl ManagedHost {
+    /// All continuation effects read the same Session slot admission decision.
+    /// The returned fence remains in Control coordinates; provider validation
+    /// is a separate boundary, not a reason to reinterpret expiry locally.
+    fn continuation_current_lease(
+        &self,
+        thread: &str,
+        asserted: &awaken_session_contract::SessionRealizationLease,
+        stale_code: &'static str,
+    ) -> Result<awaken_session_contract::SessionRealizationLease, RunError> {
+        let (current, live) = self
+            .host
+            .session_slots
+            .read(thread, |slot| {
+                slot.realization_authority.lease().map(|current| {
+                    (
+                        current.clone(),
+                        slot.realization_authority.remaining_for(asserted).is_some(),
+                    )
+                })
+            })
+            .flatten()
+            .ok_or_else(|| {
+                RunError::unavailable_classified(
+                    "session_environment_continuation_projection_missing",
+                    "Session Environment continuation has no installed realization generation",
+                )
+            })?;
+        if !live {
+            return Err(RunError::unavailable_classified(
+                stale_code,
+                "Session Environment continuation realization was replaced or expired",
+            ));
+        }
+        Ok(current)
+    }
+
     /// Revalidate the continuation operation against the process projection's
     /// current live realization and project the one neutral provider fence. A
     /// same-epoch renewal may extend the physical deadline; owner,
@@ -47,24 +156,11 @@ impl ManagedHost {
                 "Session Environment continuation has no realization fence",
             )
         })?;
-        let current = self
-            .host
-            .session_slots
-            .read(thread, |slot| slot.realization_authority.lease().cloned())
-            .flatten()
-            .ok_or_else(|| {
-                RunError::unavailable_classified(
-                    "session_environment_continuation_projection_missing",
-                    "Session Environment continuation has no installed realization generation",
-                )
-            })?;
-        let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
-        if !awaken_session_contract::realization_lease_authorizes(&current, asserted, now_unix_ms) {
-            return Err(RunError::unavailable_classified(
-                "session_environment_continuation_generation_stale",
-                "Session Environment continuation realization was replaced or expired",
-            ));
-        }
+        let current = self.continuation_current_lease(
+            thread,
+            asserted,
+            "session_environment_continuation_generation_stale",
+        )?;
         current
             .sandbox_effect_fence(&operation.effect_id)
             .map_err(|error| RunError::internal(error.to_string()))
@@ -79,33 +175,16 @@ impl ManagedHost {
         thread: &str,
         preparation: &awaken_session_contract::SourceReleasePreparationEffect,
     ) -> Result<awaken_provisioning_contract::SandboxEffectFence, RunError> {
-        let current = self
-            .host
-            .session_slots
-            .read(thread, |slot| slot.realization_authority.lease().cloned())
-            .flatten()
-            .ok_or_else(|| {
-                RunError::unavailable_classified(
-                    "session_environment_continuation_projection_missing",
-                    "Session Environment preparation has no installed realization generation",
-                )
-            })?;
-        let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
-        if !awaken_session_contract::realization_lease_authorizes(
-            &current,
+        self.continuation_current_lease(
+            thread,
             preparation.lease(),
-            now_unix_ms,
-        ) {
-            return Err(RunError::unavailable_classified(
-                "session_environment_continuation_preparation_generation_stale",
-                "Session Environment preparation is not authorized by the current realization",
-            ));
-        }
+            "session_environment_continuation_preparation_generation_stale",
+        )?;
         let effect_fence = preparation
             .sandbox_effect_fence()
             .map_err(|error| RunError::internal(error.to_string()))?;
         effect_fence
-            .validate_live_at(now_unix_ms)
+            .validate_live_at(crate::terminal_repository_publication::runtime_unix_now_ms())
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         Ok(effect_fence)
     }
@@ -119,34 +198,17 @@ impl ManagedHost {
         thread: &str,
         disposal: &awaken_session_contract::SourceReleaseDisposal,
     ) -> Result<awaken_provisioning_contract::SandboxDisposalAuthorization, RunError> {
-        let current = self
-            .host
-            .session_slots
-            .read(thread, |slot| slot.realization_authority.lease().cloned())
-            .flatten()
-            .ok_or_else(|| {
-                RunError::unavailable_classified(
-                    "session_environment_continuation_projection_missing",
-                    "Session Environment disposal has no installed realization generation",
-                )
-            })?;
-        let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
-        if !awaken_session_contract::realization_lease_authorizes(
-            &current,
+        self.continuation_current_lease(
+            thread,
             disposal.current_realization(),
-            now_unix_ms,
-        ) {
-            return Err(RunError::unavailable_classified(
-                "session_environment_continuation_disposal_generation_stale",
-                "Session Environment disposal is not authorized by the current realization",
-            ));
-        }
+            "session_environment_continuation_disposal_generation_stale",
+        )?;
         let provider_authorization = disposal
             .sandbox_disposal_authorization()
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         provider_authorization
             .effect_fence()
-            .validate_live_at(now_unix_ms)
+            .validate_live_at(crate::terminal_repository_publication::runtime_unix_now_ms())
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         Ok(provider_authorization)
     }

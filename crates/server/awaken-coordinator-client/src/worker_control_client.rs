@@ -650,7 +650,7 @@ impl WorkerControlClient {
         identity: &WorkerIdentity,
         command: awaken_session_contract::RenewSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationLease,
+        awaken_session_contract::SessionRealizationLeaseReceipt,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
         let body = self
@@ -659,7 +659,7 @@ impl WorkerControlClient {
                 json!({ "identity": identity, "command": command }),
             )
             .await?;
-        serde_json::from_value(body.get("lease").cloned().unwrap_or(Value::Null)).map_err(|error| {
+        serde_json::from_value(body).map_err(|error| {
             awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
                 "Session realization lease decode: {error}"
             ))

@@ -83,6 +83,102 @@ fn generation(thread: &str) -> awaken_session_contract::SandboxGeneration {
     awaken_session_contract::SandboxGeneration::new(thread, 1, u64::MAX, "environment", "image")
 }
 
+#[test]
+fn suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_slots() {
+    use crate::session_slot::SessionRealizationAuthority as Authority;
+    use awaken_session_contract::{SessionRealizationLease, SessionRealizationLeaseReceipt};
+
+    // Cause/effect table: C1 absent/Uninstalled/Live/Closed root; C2 operation
+    // fenced/unfenced; C3 exact/foreign/older/newer assertion; C4 observed proof
+    // live/expired. E1 unfenced suspension is legacy-only on absent/Uninstalled;
+    // E2 a fenced suspension or terminal effect requires C1 Live + C3 authorized
+    // + C4 live; E3 all rejection rows leave the root unchanged (no resurrection).
+    // The authority's absolute expiry is deliberately in the distant past of
+    // this host's wall clock: receipt-relative liveness, not clock agreement,
+    // decides E2. This covers Host admission, not provider fence acceptance.
+    let current = SessionRealizationLease {
+        owner: "control-owner".into(),
+        runtime_incarnation: "control-incarnation".into(),
+        epoch: 2,
+        expires_at_unix_ms: 30_000,
+    };
+    for (rule, state, assertion, suspension, terminal) in [
+        ("S1", "absent", "none", true, false),
+        ("S2", "uninstalled", "none", true, false),
+        ("S3", "closed-empty", "none", false, false),
+        ("S4", "closed", "none", false, false),
+        ("S5", "live", "none", false, true),
+        ("S6", "live", "same", true, true),
+        ("S7", "live", "older", true, true),
+        ("S8", "live", "newer", false, false),
+        ("S9", "live", "owner", false, false),
+        ("S10", "live", "incarnation", false, false),
+        ("S11", "live", "epoch", false, false),
+        ("S12", "expired", "same", false, false),
+        ("S13", "closed", "same", false, false),
+        ("S14", "uninstalled", "same", false, false),
+        ("S15", "absent", "same", false, false),
+    ] {
+        let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+        let root = match state {
+            "absent" | "uninstalled" => Authority::Uninstalled,
+            "closed-empty" => Authority::Closed(None),
+            "closed" => Authority::Closed(Some(current.clone())),
+            "expired" => Authority::Live(crate::session_slot::test_expired_observed_lease(
+                current.clone(),
+            )),
+            "live" => Authority::Live(
+                SessionRealizationLeaseReceipt::issued_at(current.clone(), 0)
+                    .unwrap()
+                    .observed(awaken_local_process::authority_proof_started().unwrap()),
+            ),
+            _ => unreachable!(),
+        };
+        if state != "absent" {
+            host.session_slots
+                .update(rule, |slot| slot.realization_authority = root.clone());
+        }
+        let mut asserted = current.clone();
+        match assertion {
+            "older" => asserted.expires_at_unix_ms -= 1,
+            "newer" => asserted.expires_at_unix_ms += 1,
+            "owner" => asserted.owner.push_str("-foreign"),
+            "incarnation" => asserted.runtime_incarnation.push_str("-foreign"),
+            "epoch" => asserted.epoch += 1,
+            "none" | "same" => (),
+            _ => unreachable!(),
+        }
+        let generation = generation(rule);
+        let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+            "workspace",
+            rule,
+            "suspend",
+            &generation,
+            1,
+            (assertion != "none").then_some(asserted.clone()),
+            None,
+        );
+        assert_eq!(
+            host.validate_suspend_operation(rule, &operation, &generation)
+                .is_ok(),
+            suspension,
+            "{rule}/suspend"
+        );
+        assert_eq!(
+            host.authorize_terminal_cleanup_lease(rule, &asserted)
+                .is_ok(),
+            terminal,
+            "{rule}/terminal"
+        );
+        assert_eq!(
+            host.session_slots
+                .read(rule, |slot| slot.realization_authority.clone()),
+            (state != "absent").then_some(root),
+            "{rule}/no root mutation"
+        );
+    }
+}
+
 fn identity(thread: &str) -> BoundSessionEnvironmentIdentity {
     BoundSessionEnvironmentIdentity::Durable {
         effect_id: format!("effect-{thread}"),
@@ -2076,11 +2172,11 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         // Real takeover ordering: revocation first clears the old realization
         // generation while retaining the exact physical owner; only then does
         // Control's terminal assignment install its new cleanup lease.
-        host.install_terminal_cleanup_projection(
+        host.install_test_terminal_cleanup_projection(
             &awaken_session_contract::SessionTerminalCleanupAssignment {
                 session_id: thread.into(),
                 projection: projection.clone(),
-                lease: lease.clone(),
+                authority: crate::session_slot::test_lease_receipt(lease.clone()),
             },
         )
         .await
@@ -2598,8 +2694,10 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         )),
         "E4"
     );
-    host.install_session_realization_lease(thread, lease)
-        .unwrap();
+    assert!(
+        host.install_session_realization_lease(thread, lease)
+            .is_err()
+    );
     assert!(
         host.session_slots.realization_leases().is_empty(),
         "E4 replay stays closed"
@@ -2677,7 +2775,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
             thread,
             projection.clone(),
             awaken_session_contract::SessionProjectionInstallMode::Realization {
-                lease: lease.clone(),
+                lease: crate::session_slot::test_observed_lease(lease.clone()),
                 prepare_session: true,
             },
         ),
@@ -2710,7 +2808,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
             thread,
             projection,
             awaken_session_contract::SessionProjectionInstallMode::Realization {
-                lease,
+                lease: crate::session_slot::test_observed_lease(lease),
                 prepare_session: true,
             },
         ),

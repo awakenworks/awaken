@@ -114,6 +114,12 @@ pub(super) struct RecordingResourceRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingResourceRuntime {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        crate::tests::test_realization_request_started()
+    }
+
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -910,7 +916,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
         .expect("R1 begin");
     app.fail_session_realization(awaken_session_contract::FailSessionRealization {
         session_id: "retry-budget".into(),
-        lease: first.lease,
+        lease: first.authority.lease,
         prepared_resource_revision: None,
         retryable: true,
         source_run_id: None,
@@ -939,7 +945,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
         })
         .await
         .expect("R2 reclaim");
-    assert_eq!(second.lease.epoch, 2, "R2/E2");
+    assert_eq!(second.authority.lease.epoch, 2, "R2/E2");
     assert_eq!(
         repo.get("retry-budget")
             .await
@@ -951,7 +957,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
     );
     app.fail_session_realization(awaken_session_contract::FailSessionRealization {
         session_id: "retry-budget".into(),
-        lease: second.lease,
+        lease: second.authority.lease,
         prepared_resource_revision: None,
         retryable: true,
         source_run_id: None,
@@ -1013,7 +1019,7 @@ async fn lease_renewal_is_a_projection_free_root_cas() {
         })
         .await
         .expect("R1 renewal bypasses projection refresh");
-    assert_eq!(renewed.expires_at_unix_ms, u64::MAX - 1, "R1/E1");
+    assert_eq!(renewed.lease.expires_at_unix_ms, u64::MAX - 1, "R1/E1");
     assert_eq!(refresh.calls.load(Ordering::SeqCst), 0, "R1/E5");
     let after_first = repo.get("lease-only-renewal").await.unwrap();
 
@@ -1025,7 +1031,8 @@ async fn lease_renewal_is_a_projection_free_root_cas() {
         })
         .await
         .expect("R2 response-loss replay");
-    assert_eq!(replayed, renewed, "R2/E2");
+    // R2 replay preserves the durable fence; response-time metadata may age.
+    assert_eq!(replayed.lease, renewed.lease, "R2/E2");
     assert_eq!(
         repo.get("lease-only-renewal").await.unwrap(),
         after_first,
@@ -1141,8 +1148,12 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
     )
     .await
     .expect("L4 claim-authorized reassignment");
-    assert_eq!(reassigned.lease.epoch, replaced_lease.epoch + 1, "L4/E4");
-    assert_eq!(reassigned.lease.owner, "other-worker", "L4/E4");
+    assert_eq!(
+        reassigned.authority.lease.epoch,
+        replaced_lease.epoch + 1,
+        "L4/E4"
+    );
+    assert_eq!(reassigned.authority.lease.owner, "other-worker", "L4/E4");
 }
 
 /// Reference-projection FMECA and cause/effect decision table. C1 the
@@ -1417,7 +1428,10 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup_case() {
         .await
         .unwrap()
         .expect("W2 terminal fence");
-    assert_eq!(work.assignment.lease, terminal_lease, "W2 exact root lease");
+    assert_eq!(
+        work.assignment.authority.lease, terminal_lease,
+        "W2 exact root lease"
+    );
     let commands = terminal_prepare_commands(work);
     assert_eq!(commands.len(), 1, "W2/E2");
     assert_eq!(commands[0].thread_id, "worker-terminal", "W2/E2");
@@ -1532,7 +1546,10 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
         .expect("W1 exact lease")
         .expect("W1 terminal fence");
     assert_eq!(work.assignment.session_id, "remote-cleanup", "W1/E2");
-    assert_eq!(work.assignment.lease, lease, "W1/E2 current lease");
+    assert_eq!(
+        work.assignment.authority.lease, lease,
+        "W1/E2 current lease"
+    );
     let commands = terminal_prepare_commands(work);
     assert_eq!(commands.len(), 1, "W1/E2 child phase");
     assert_eq!(commands[0].thread_id, "remote-cleanup-child", "W1/E2");
@@ -1923,7 +1940,10 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         .await
         .expect("P1 exact lease")
         .expect("P1 terminal fence");
-    assert_eq!(child_work.assignment.lease, exact_lease, "P1 current lease");
+    assert_eq!(
+        child_work.assignment.authority.lease, exact_lease,
+        "P1 current lease"
+    );
     let child_commands = terminal_prepare_commands(child_work);
     assert_eq!(child_commands.len(), 1, "P1/E1");
     assert_eq!(child_commands[0].thread_id, "publication-child", "P1/E1");
@@ -2007,7 +2027,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     assert!(
         matches!(
             application
-                .terminal_cleanup_work(&assignment.session_id, &assignment.lease)
+                .terminal_cleanup_work(&assignment.session_id, &assignment.authority.lease)
                 .await
                 .unwrap()
                 .unwrap()
@@ -2018,7 +2038,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     );
     let expired_assertion = awaken_session_contract::SessionRealizationLease {
         expires_at_unix_ms: 1,
-        ..assignment.lease.clone()
+        ..assignment.authority.lease.clone()
     };
     let publication = application
         .terminal_repository_publication_command(&assignment.session_id, &expired_assertion)
@@ -2027,7 +2047,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         .expect("P3c publication projection");
     assert_eq!(publication.workspace_id, "workspace", "P3c/E7");
     assert_eq!(
-        publication.current_lease, assignment.lease,
+        publication.current_lease, assignment.authority.lease,
         "P3c/E8 projection carries the current live same-generation root"
     );
     let publication = publication.command;
@@ -2053,7 +2073,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
             application
                 .record_terminal_repository_publication_receipt(
                     &assignment.session_id,
-                    &assignment.lease,
+                    &assignment.authority.lease,
                     wrong,
                 )
                 .await,
@@ -2084,7 +2104,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     application
         .record_terminal_repository_publication_receipt(
             &assignment.session_id,
-            &assignment.lease,
+            &assignment.authority.lease,
             exact.clone(),
         )
         .await
@@ -2092,7 +2112,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     application
         .record_terminal_repository_publication_receipt(
             &assignment.session_id,
-            &assignment.lease,
+            &assignment.authority.lease,
             exact.clone(),
         )
         .await
@@ -2109,14 +2129,17 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     );
     assert!(
         application
-            .terminal_repository_publication_command(&assignment.session_id, &assignment.lease)
+            .terminal_repository_publication_command(
+                &assignment.session_id,
+                &assignment.authority.lease
+            )
             .await
             .unwrap()
             .is_none(),
         "P5/E6"
     );
     let root_work = application
-        .terminal_cleanup_work(&assignment.session_id, &assignment.lease)
+        .terminal_cleanup_work(&assignment.session_id, &assignment.authority.lease)
         .await
         .unwrap()
         .unwrap();
@@ -2125,7 +2148,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         "P5 current assignment Session"
     );
     assert_eq!(
-        root_work.assignment.lease, assignment.lease,
+        root_work.assignment.authority.lease, assignment.authority.lease,
         "P5 current assignment generation"
     );
     assert!(
@@ -2138,7 +2161,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     let root_worker = RecordingCleanupRuntime::default();
     awaken_session_contract::drive_session_terminal_cleanup(
         &assignment.session_id,
-        &assignment.lease,
+        &assignment.authority.lease,
         &application,
         &root_worker,
     )
@@ -2164,7 +2187,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     let projection = application
         .terminal_repository_publication_command(
             &rejected_assignment.session_id,
-            &rejected_assignment.lease,
+            &rejected_assignment.authority.lease,
         )
         .await
         .unwrap()
@@ -2177,7 +2200,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     application
         .record_terminal_repository_publication_rejection(
             &rejected_assignment.session_id,
-            &rejected_assignment.lease,
+            &rejected_assignment.authority.lease,
             rejection.clone(),
         )
         .await
@@ -2185,7 +2208,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     application
         .record_terminal_repository_publication_rejection(
             &rejected_assignment.session_id,
-            &rejected_assignment.lease,
+            &rejected_assignment.authority.lease,
             rejection.clone(),
         )
         .await
@@ -2194,7 +2217,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         application
             .terminal_repository_publication_command(
                 &rejected_assignment.session_id,
-                &rejected_assignment.lease,
+                &rejected_assignment.authority.lease,
             )
             .await
             .unwrap()
@@ -2202,7 +2225,10 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         "P6/E8 no second Git command"
     );
     let root_work = application
-        .terminal_cleanup_work(&rejected_assignment.session_id, &rejected_assignment.lease)
+        .terminal_cleanup_work(
+            &rejected_assignment.session_id,
+            &rejected_assignment.authority.lease,
+        )
         .await
         .unwrap()
         .expect("P6 ordinary root work");
@@ -2219,7 +2245,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     let rejected_worker = RecordingCleanupRuntime::default();
     awaken_session_contract::drive_session_terminal_cleanup(
         &rejected_assignment.session_id,
-        &rejected_assignment.lease,
+        &rejected_assignment.authority.lease,
         &application,
         &rejected_worker,
     )
@@ -2328,7 +2354,10 @@ async fn cold_terminal_cleanup_claim_pages_past_a_saturated_invalid_batch() {
         .expect("H2 typed pagination skips the saturated invalid page")
         .expect("H2 healthy row remains visible");
     assert_eq!(assignment.session_id, "hol-z-healthy", "H2/E2/E3");
-    assert_eq!(assignment.lease.epoch, 1, "H2/E5 exact CAS readback");
+    assert_eq!(
+        assignment.authority.lease.epoch, 1,
+        "H2/E5 exact CAS readback"
+    );
     assert!(
         workers.list_calls.load(Ordering::SeqCst) >= 2,
         "H2/E5 retries revalidate the Worker before traversing the keyset again"
@@ -2504,10 +2533,13 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
             .expect(rule)
             .expect(rule);
         assert_eq!(assignment.session_id, expected_id, "{rule}/E1");
-        assert_eq!(assignment.lease.epoch, expected_epoch, "{rule}/E1");
-        assert_eq!(assignment.lease.owner, target.owner, "{rule}/E1");
         assert_eq!(
-            assignment.lease.runtime_incarnation, target.runtime_incarnation,
+            assignment.authority.lease.epoch, expected_epoch,
+            "{rule}/E1"
+        );
+        assert_eq!(assignment.authority.lease.owner, target.owner, "{rule}/E1");
+        assert_eq!(
+            assignment.authority.lease.runtime_incarnation, target.runtime_incarnation,
             "{rule}/E1"
         );
         assert_eq!(
@@ -2582,7 +2614,10 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         .expect("C8 ambiguous CAS replay")
         .expect("C8 assignment");
     assert_eq!(replayed.session_id, "claim-conflict", "C8/E4");
-    assert_eq!(replayed.lease.epoch, 1, "C8/E4 does not allocate twice");
+    assert_eq!(
+        replayed.authority.lease.epoch, 1,
+        "C8/E4 does not allocate twice"
+    );
     assert!(
         workers.list_calls.load(Ordering::SeqCst) >= 2,
         "C8 recomputes Worker eligibility after the root CAS conflict"
@@ -2742,7 +2777,10 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         terminal_session("terminal-authority-expired", Some(asserted.clone())),
     )
     .await;
-    let application = application(repo, Arc::new(RecordingEnvironmentSource::default()));
+    let application = application(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
 
     let effect_for =
         |session_id: &str,
@@ -2812,12 +2850,32 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         "A1/E1 disposal Workspace authority"
     );
 
-    let expired_work = application
-        .terminal_cleanup_work("terminal-authority-expired", &asserted)
+    // A2 an expired root cannot mint a fresh assignment time proof. Retained
+    // commands still derive from the canonical durable action; constructing
+    // that fixture is not runtime admission. Every effect gate below must
+    // reject it, while an already-completed preparation may still be recorded.
+    assert!(matches!(
+        application
+            .terminal_cleanup_work("terminal-authority-expired", &asserted)
+            .await,
+        Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership)
+    ));
+    let expired_action = repo
+        .get("terminal-authority-expired")
         .await
-        .expect("A2 exact generation")
-        .expect("A2 pending work");
-    let expired_effect = effect_for("terminal-authority-expired", expired_work, asserted.clone());
+        .unwrap()
+        .terminal_cleanup_work_action()
+        .unwrap()
+        .unwrap();
+    let awaken_session_contract::SessionTerminalCleanupAction::Prepare { commands } =
+        expired_action
+    else {
+        panic!("A2 retained preparation command");
+    };
+    let expired_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
+        commands.into_iter().next().unwrap(),
+        asserted.clone(),
+    );
     assert!(
         matches!(
             application
@@ -2854,12 +2912,19 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
         .record_terminal_cleanup_preparation(&asserted, expired_preparation)
         .await
         .expect("A2 admitted preparation receipt remains generation-based");
-    let expired_disposal = match application
-        .terminal_cleanup_work("terminal-authority-expired", &asserted)
+    assert!(matches!(
+        application
+            .terminal_cleanup_work("terminal-authority-expired", &asserted)
+            .await,
+        Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership)
+    ));
+    let expired_disposal = match repo
+        .get("terminal-authority-expired")
         .await
-        .expect("A2 exact disposal generation")
-        .expect("A2 pending disposal")
-        .action
+        .unwrap()
+        .terminal_cleanup_work_action()
+        .unwrap()
+        .unwrap()
     {
         awaken_session_contract::SessionTerminalCleanupAction::Dispose { command } => {
             awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(
@@ -3535,33 +3600,43 @@ async fn local_terminal_cleanup_claim_reads_the_exact_root_beyond_the_recovery_b
         .await
         .expect("X2 exact local assignment");
     assert_eq!(assignment.session_id, target_id, "X2/E1");
-    assert_eq!(assignment.lease.epoch, 1, "X2/E1");
-    assert_eq!(assignment.lease.owner, "embedded-terminal-worker", "X2/E1");
+    assert_eq!(assignment.authority.lease.epoch, 1, "X2/E1");
+    assert_eq!(
+        assignment.authority.lease.owner, "embedded-terminal-worker",
+        "X2/E1"
+    );
     let replay = application
         .claim_local_terminal_cleanup_assignment(target_id)
         .await
         .expect("X3 exact replay");
-    assert_eq!(replay.lease, assignment.lease, "X3/E3");
+    assert_eq!(replay.authority.lease, assignment.authority.lease, "X3/E3");
     let requested_expiry_unix_ms = assignment
+        .authority
         .lease
         .expires_at_unix_ms
         .saturating_add(crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS);
     let renewed = application
         .renew_session_realization(awaken_session_contract::RenewSessionRealization {
             session_id: target_id.into(),
-            asserted_lease: assignment.lease.clone(),
+            asserted_lease: assignment.authority.lease.clone(),
             requested_expires_at_unix_ms: requested_expiry_unix_ms,
         })
         .await
         .expect("X5 exact local generation renewal");
-    assert_eq!(renewed.owner, assignment.lease.owner, "X5/E5");
     assert_eq!(
-        renewed.runtime_incarnation, assignment.lease.runtime_incarnation,
+        renewed.lease.owner, assignment.authority.lease.owner,
         "X5/E5"
     );
-    assert_eq!(renewed.epoch, assignment.lease.epoch, "X5/E5");
     assert_eq!(
-        renewed.expires_at_unix_ms, requested_expiry_unix_ms,
+        renewed.lease.runtime_incarnation, assignment.authority.lease.runtime_incarnation,
+        "X5/E5"
+    );
+    assert_eq!(
+        renewed.lease.epoch, assignment.authority.lease.epoch,
+        "X5/E5"
+    );
+    assert_eq!(
+        renewed.lease.expires_at_unix_ms, requested_expiry_unix_ms,
         "X5/E5"
     );
     let replacement = application_with_configuration(
@@ -3812,13 +3887,13 @@ async fn terminal_cleanup_acknowledges_a_committed_completion_after_response_los
         "A1 installs Prepare and Dispose under one terminal generation"
     );
     assert_eq!(
-        assignments[0].lease, assignments[1].lease,
+        assignments[0].authority.lease, assignments[1].authority.lease,
         "A1 one generation"
     );
     let acknowledgements = runtime.acknowledged_completed.lock().unwrap();
     assert_eq!(acknowledgements.len(), 1, "A1/E3");
     assert_eq!(
-        acknowledgements[0].1, assignments[0].lease,
+        acknowledgements[0].1, assignments[0].authority.lease,
         "A1/E3 reuses the durable terminal generation"
     );
     assert_eq!(
@@ -4557,7 +4632,11 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
             .active_frozen_session_projection(owner.clone(), &initial, true)
             .await
             .unwrap(),
-        lease: initial.realization.clone().unwrap(),
+        authority: awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+            initial.realization.clone().unwrap(),
+            crate::activity::now_unix_ms(),
+        )
+        .unwrap(),
         action: awaken_session_contract::SessionRealizationAction::Stage {
             prepare_session: false,
             mcp_stages: vec![
@@ -4593,7 +4672,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     .activate_session_realization(
                         awaken_session_contract::ActivateSessionRealization {
                             session_id: id.into(),
-                            lease: directive.lease,
+                            lease: directive.authority.lease,
                             prepared_resource_revision: None,
                             mcp_receipts: receipts,
                         },
@@ -4607,7 +4686,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     .acknowledge_session_realization(
                         awaken_session_contract::AcknowledgeSessionRealization {
                             session_id: id.into(),
-                            lease: directive.lease,
+                            lease: directive.authority.lease,
                             published: publish,
                             drained: drain,
                         },

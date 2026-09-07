@@ -1,7 +1,8 @@
 ------------------------- MODULE SessionRealizationMutex -------------------------
 EXTENDS Naturals, FiniteSets, Sequences
 
-CONSTANTS DriverA, DriverB, NoDriver, Sessions, MaxCompleted, MaxConcurrent, MaxRenewals
+CONSTANTS DriverA, DriverB, NoDriver, Sessions, MaxCompleted, MaxConcurrent, MaxRenewals,
+          CheckPublicationRecovery
 ASSUME /\ DriverA # DriverB
        /\ NoDriver \notin {DriverA, DriverB}
        /\ Sessions # {}
@@ -10,10 +11,22 @@ ASSUME /\ DriverA # DriverB
        /\ MaxConcurrent \in Nat \ {0}
        /\ MaxConcurrent <= Cardinality(Sessions)
        /\ MaxRenewals \in Nat
+       /\ CheckPublicationRecovery \in BOOLEAN
 
 Drivers == {DriverA, DriverB}
-VARIABLES owner, phase, completed, remainingRenewals, leaseVisible, receiptCurrent, publishSet, drainSet
-vars == <<owner, phase, completed, remainingRenewals, leaseVisible, receiptCurrent, publishSet, drainSet>>
+VARIABLES owner, phase, completed, remainingRenewals, leaseVisible, receiptCurrent,
+          publication
+vars == <<owner, phase, completed, remainingRenewals, leaseVisible, receiptCurrent,
+          publication>>
+
+(* One bounded refinement of this same phase driver, not another realization
+   owner. Stage may recover an old generation while its replacement activates.
+   Names represent immutable generation identities; expiry equality remains
+   the existing receiptCurrent abstraction. Fingerprints, CAS conflicts, real
+   transport and arbitrary generations are checked elsewhere, not proved here. *)
+Generations == {"old", "new", "keep"}
+ActiveGenerations == {"new", "keep"}
+EmptyPublication == [staged |-> {}, publish |-> {}, drain |-> {}, lost |-> FALSE]
 
 ActiveSessions == {session \in Sessions : owner[session] # NoDriver}
 
@@ -23,8 +36,7 @@ Init == /\ owner = [session \in Sessions |-> NoDriver]
         /\ remainingRenewals = [session \in Sessions |-> 0]
         /\ leaseVisible = [session \in Sessions |-> FALSE]
         /\ receiptCurrent = [session \in Sessions |-> FALSE]
-        /\ publishSet = [session \in Sessions |-> {}]
-        /\ drainSet = [session \in Sessions |-> {}]
+        /\ publication = [session \in Sessions |-> EmptyPublication]
 
 Acquire(session, d) ==
   /\ session \in Sessions
@@ -35,7 +47,8 @@ Acquire(session, d) ==
   /\ owner' = [owner EXCEPT ![session] = d]
   /\ phase' = [phase EXCEPT ![session] = "WaitingForControl"]
   /\ remainingRenewals' = [remainingRenewals EXCEPT ![session] = MaxRenewals]
-  /\ UNCHANGED <<completed, leaseVisible, receiptCurrent, publishSet, drainSet>>
+  /\ publication' = [publication EXCEPT ![session] = EmptyPublication]
+  /\ UNCHANGED <<completed, leaseVisible, receiptCurrent>>
 
 ControlRespond(session, d) ==
   /\ session \in Sessions
@@ -43,7 +56,11 @@ ControlRespond(session, d) ==
   /\ phase[session] = "WaitingForControl"
   /\ phase' = [phase EXCEPT ![session] = "PreparingResources"]
   /\ leaseVisible' = [leaseVisible EXCEPT ![session] = TRUE]
-  /\ UNCHANGED <<owner, completed, remainingRenewals, receiptCurrent, publishSet, drainSet>>
+  /\ \E recovering \in IF CheckPublicationRecovery THEN BOOLEAN ELSE {FALSE} :
+       publication' = [publication EXCEPT ![session] =
+         [staged |-> IF recovering THEN Generations ELSE {"new"},
+          publish |-> {}, drain |-> {}, lost |-> FALSE]]
+  /\ UNCHANGED <<owner, completed, remainingRenewals, receiptCurrent>>
 
 ControlTimeout(session, d) ==
   /\ session \in Sessions
@@ -52,7 +69,7 @@ ControlTimeout(session, d) ==
   /\ owner' = [owner EXCEPT ![session] = NoDriver]
   /\ phase' = [phase EXCEPT ![session] = "Idle"]
   /\ remainingRenewals' = [remainingRenewals EXCEPT ![session] = 0]
-  /\ UNCHANGED <<completed, leaseVisible, receiptCurrent, publishSet, drainSet>>
+  /\ UNCHANGED <<completed, leaseVisible, receiptCurrent, publication>>
 
 (* Reads hold the existing driver lock but not renewal capacity. A temporary
    failure is stuttering; explicit loss/expiry cancels before lock-wait cleanup.
@@ -63,14 +80,14 @@ PrepareResources(session, d) ==
   /\ phase[session] = "PreparingResources"
   /\ leaseVisible[session]
   /\ phase' = [phase EXCEPT ![session] = "Driving"]
-  /\ UNCHANGED <<owner, completed, remainingRenewals, leaseVisible, receiptCurrent, publishSet, drainSet>>
+  /\ UNCHANGED <<owner, completed, remainingRenewals, leaseVisible, receiptCurrent, publication>>
 
 LosePreparationAuthority(session, d) ==
   /\ owner[session] = d
   /\ phase[session] = "PreparingResources"
   /\ phase' = [phase EXCEPT ![session] = "CancellingResources"]
   /\ leaseVisible' = [leaseVisible EXCEPT ![session] = FALSE]
-  /\ UNCHANGED <<owner, completed, remainingRenewals, receiptCurrent, publishSet, drainSet>>
+  /\ UNCHANGED <<owner, completed, remainingRenewals, receiptCurrent, publication>>
 
 AbortPreparation(session, d) ==
   /\ owner[session] = d
@@ -79,7 +96,7 @@ AbortPreparation(session, d) ==
   /\ phase' = [phase EXCEPT ![session] = "Idle"]
   /\ remainingRenewals' = [remainingRenewals EXCEPT ![session] = 0]
   /\ leaseVisible' = [leaseVisible EXCEPT ![session] = FALSE]
-  /\ UNCHANGED <<completed, receiptCurrent, publishSet, drainSet>>
+  /\ UNCHANGED <<completed, receiptCurrent, publication>>
 
 Renew(session, d) ==
   /\ session \in Sessions
@@ -92,7 +109,7 @@ Renew(session, d) ==
      only equality versus an authorized older expiry, not epoch arithmetic. *)
   /\ remainingRenewals' = [remainingRenewals EXCEPT ![session] = IF @ = 0 THEN MaxRenewals ELSE @ - 1]
   /\ receiptCurrent' = [receiptCurrent EXCEPT ![session] = FALSE]
-  /\ UNCHANGED <<owner, phase, completed, leaseVisible, publishSet, drainSet>>
+  /\ UNCHANGED <<owner, phase, completed, leaseVisible, publication>>
 
 PublicationCandidates(staged, active) == staged \cap active
 
@@ -106,10 +123,11 @@ Advance(session, d) ==
   /\ phase[session] = "Driving"
   /\ phase' = [phase EXCEPT ![session] = "Publishing"]
   /\ receiptCurrent' = [receiptCurrent EXCEPT ![session] = TRUE]
-  \* The regression witness: Stage returned both old and new generations.
-  \* Activate durably retires old; Publish partitions those exact receipts.
-  /\ publishSet' = [publishSet EXCEPT ![session] = PublicationCandidates({"old", "new"}, {"new"})]
-  /\ drainSet' = [drainSet EXCEPT ![session] = {"old"}]
+  /\ \E lost \in IF CheckPublicationRecovery THEN BOOLEAN ELSE {FALSE} :
+       publication' = [publication EXCEPT ![session] =
+         [staged |-> @.staged,
+           publish |-> PublicationCandidates(@.staged, ActiveGenerations),
+          drain |-> {"old"}, lost |-> lost]]
   /\ UNCHANGED <<owner, completed, remainingRenewals, leaseVisible>>
 
 (* Completed physical evidence remains valid under live same-generation
@@ -118,8 +136,20 @@ Acknowledge(session, d) ==
   /\ session \in Sessions
   /\ owner[session] = d
   /\ phase[session] = "Publishing"
+  /\ ~publication[session].lost
   /\ phase' = [phase EXCEPT ![session] = "Committing"]
-  /\ UNCHANGED <<owner, completed, remainingRenewals, leaseVisible, receiptCurrent, publishSet, drainSet>>
+  /\ UNCHANGED <<owner, completed, remainingRenewals, leaseVisible, receiptCurrent, publication>>
+
+(* Retrying activation after its committed response was lost must validate
+   retained old receipts against Draining claims, without publishing them. *)
+RetryActivation(session, d) ==
+  /\ owner[session] = d
+  /\ phase[session] = "Publishing"
+  /\ publication[session].lost
+  /\ publication[session].staged \subseteq
+       (publication[session].publish \cup publication[session].drain)
+  /\ publication' = [publication EXCEPT ![session].lost = FALSE]
+  /\ UNCHANGED <<owner, phase, completed, remainingRenewals, leaseVisible, receiptCurrent>>
 
 Release(session, d) ==
   /\ session \in Sessions
@@ -131,7 +161,7 @@ Release(session, d) ==
   /\ completed' = [completed EXCEPT ![session] = @ + 1]
   /\ remainingRenewals' = [remainingRenewals EXCEPT ![session] = 0]
   /\ leaseVisible' = [leaseVisible EXCEPT ![session] = FALSE]
-  /\ UNCHANGED <<receiptCurrent, publishSet, drainSet>>
+  /\ UNCHANGED <<receiptCurrent, publication>>
 
 ControlSettles(session, d) ==
   ControlRespond(session, d) \/ ControlTimeout(session, d)
@@ -146,6 +176,7 @@ Next == \E session \in Sessions, d \in Drivers :
           \/ Renew(session, d)
           \/ Advance(session, d)
           \/ Acknowledge(session, d)
+          \/ RetryActivation(session, d)
           \/ Release(session, d)
 
 Fairness ==
@@ -153,6 +184,7 @@ Fairness ==
   /\ \A session \in Sessions, d \in Drivers : WF_vars(PrepareResources(session, d) \/ AbortPreparation(session, d))
   /\ \A session \in Sessions, d \in Drivers : WF_vars(Advance(session, d))
   /\ \A session \in Sessions, d \in Drivers : WF_vars(Acknowledge(session, d))
+  /\ \A session \in Sessions, d \in Drivers : WF_vars(RetryActivation(session, d))
   /\ \A session \in Sessions, d \in Drivers : WF_vars(Release(session, d))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
@@ -163,6 +195,9 @@ TypeOK == /\ owner \in [Sessions -> Drivers \cup {NoDriver}]
           /\ remainingRenewals \in [Sessions -> 0..MaxRenewals]
           /\ leaseVisible \in [Sessions -> BOOLEAN]
           /\ receiptCurrent \in [Sessions -> BOOLEAN]
+          /\ publication \in [Sessions ->
+                [staged : SUBSET Generations, publish : SUBSET Generations,
+                 drain : SUBSET Generations, lost : BOOLEAN]]
 OneDriverPerSession ==
   \A session \in Sessions :
     phase[session] = "Idle" <=> owner[session] = NoDriver
@@ -170,15 +205,33 @@ BoundedCrossSessionConcurrency ==
   Cardinality(ActiveSessions) <= MaxConcurrent
 PublicationExcludesRetiredGenerations ==
   \A session \in Sessions :
-    /\ publishSet[session] \subseteq {"new"}
-    /\ publishSet[session] \cap drainSet[session] = {}
-    /\ (phase[session] \in {"Publishing", "Committing"} => publishSet[session] = {"new"})
+    /\ publication[session].publish \subseteq ActiveGenerations
+    /\ publication[session].publish \cap publication[session].drain = {}
+    /\ (phase[session] \in {"Publishing", "Committing"} =>
+          publication[session].publish = (publication[session].staged \cap ActiveGenerations))
 Safety == TypeOK /\ OneDriverPerSession /\ BoundedCrossSessionConcurrency
           /\ PublicationExcludesRetiredGenerations
 
 ResourcesHaveRenewableAuthority ==
   \A session \in Sessions :
     (phase[session] \in {"PreparingResources", "Driving", "Publishing", "Committing"}) = leaseVisible[session]
+
+PublicationUsesActiveReceipts ==
+  \A session \in Sessions : phase[session] \in {"Publishing", "Committing"} =>
+    /\ publication[session].publish = (publication[session].staged \cap ActiveGenerations)
+    /\ publication[session].drain = {"old"}
+    /\ publication[session].publish \cap publication[session].drain = {}
+
+LostActivationCanReplay ==
+  \A session \in Sessions :
+    phase[session] = "Publishing" /\ publication[session].lost =>
+      ENABLED RetryActivation(session, owner[session])
+
+NoRecoveredPublicationReached ==
+  \A session \in Sessions :
+    ~(phase[session] = "Publishing" /\ "old" \in publication[session].staged)
+NoLostActivationReached ==
+  \A session \in Sessions : ~publication[session].lost
 
 (* A bounded Control request cannot retain scheduler capacity forever. Under
    weak process fairness, each acquired slot either times out or completes its

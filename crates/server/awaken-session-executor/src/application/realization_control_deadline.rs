@@ -1,16 +1,14 @@
 //! Authority-derived request deadline decoration for Session realization Control.
 
-use std::sync::Arc;
-
 #[derive(Clone)]
-pub(super) struct DeadlineSessionRealizationControl {
-    inner: Arc<dyn awaken_dispatch_contract::ClaimedSessionControl>,
+pub(super) struct DeadlineSessionRealizationControl<'a> {
+    inner: &'a dyn awaken_session_contract::SessionRealizationControl,
     request_timeout: std::time::Duration,
 }
 
-impl DeadlineSessionRealizationControl {
+impl<'a> DeadlineSessionRealizationControl<'a> {
     pub(super) fn new(
-        inner: Arc<dyn awaken_dispatch_contract::ClaimedSessionControl>,
+        inner: &'a dyn awaken_session_contract::SessionRealizationControl,
         request_timeout: std::time::Duration,
     ) -> Self {
         Self {
@@ -39,7 +37,7 @@ impl DeadlineSessionRealizationControl {
 /// Deadline decoration only bounds transport waiting. The wrapped Control
 /// remains the sole owner of leases, phases, cleanup commands, and receipts.
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionRealizationControl for DeadlineSessionRealizationControl {
+impl awaken_session_contract::SessionRealizationControl for DeadlineSessionRealizationControl<'_> {
     async fn begin_session_realization(
         &self,
         command: awaken_session_contract::BeginSessionRealization,
@@ -55,7 +53,7 @@ impl awaken_session_contract::SessionRealizationControl for DeadlineSessionReali
         &self,
         command: awaken_session_contract::RenewSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationLease,
+        awaken_session_contract::SessionRealizationLeaseReceipt,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
         self.call("renew", self.inner.renew_session_realization(command))

@@ -553,8 +553,14 @@ impl crate::host::SharedHost {
     /// beside the immutable publication/host executor.
     pub(crate) fn register_thread_backend_projection(&self, thread: &str, backend_ref: &str) {
         self.session_slots.update(thread, |slot| {
-            slot.backend_ref = (backend_ref != "default").then(|| backend_ref.to_string());
+            slot.register_backend_projection(backend_ref);
         });
+    }
+}
+
+impl crate::session_slot::SessionRuntimeSlot {
+    pub(crate) fn register_backend_projection(&mut self, backend_ref: &str) {
+        self.backend_ref = (backend_ref != "default").then(|| backend_ref.to_string());
     }
 }
 

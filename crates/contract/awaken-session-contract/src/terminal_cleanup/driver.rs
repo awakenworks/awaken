@@ -39,11 +39,19 @@ fn workspace_matches(expected: &str, authorized: &str) -> Result<(), SessionReal
 
 async fn next_work(
     control: &dyn SessionRealizationControl,
+    runtime: &dyn SessionRuntime,
     session_id: &str,
     lease: &crate::SessionRealizationLease,
-) -> Result<Option<SessionTerminalCleanupWork>, SessionRealizationDriveError> {
+) -> Result<
+    Option<(
+        SessionTerminalCleanupWork,
+        awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+    )>,
+    SessionRealizationDriveError,
+> {
+    let started = runtime.observe_realization_request()?;
     match control.terminal_cleanup_work(session_id, lease).await {
-        Ok(work) => Ok(work),
+        Ok(work) => Ok(work.map(|work| (work, started))),
         Err(SessionRealizationControlFailure::NotFound) => Ok(None),
         Err(error) => Err(error.into()),
     }
@@ -62,7 +70,9 @@ pub async fn drive_session_terminal_cleanup(
     control: &dyn SessionRealizationControl,
     runtime: &dyn SessionRuntime,
 ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
-    let Some(mut work) = next_work(control, session_id, asserted_lease).await? else {
+    let Some((mut work, mut started)) =
+        next_work(control, runtime, session_id, asserted_lease).await?
+    else {
         runtime
             .acknowledge_completed_terminal_cleanup(session_id, asserted_lease)
             .await;
@@ -75,9 +85,12 @@ pub async fn drive_session_terminal_cleanup(
             ));
         }
         runtime
-            .install_terminal_cleanup_assignment(&work.assignment)
+            .install_terminal_cleanup_assignment(
+                &work.assignment,
+                work.assignment.authority.clone().observed(started),
+            )
             .await?;
-        let lease = work.assignment.lease.clone();
+        let lease = work.assignment.authority.lease.clone();
         let expected_workspace = work.assignment.projection.workspace_id.clone();
 
         match work.action {
@@ -247,13 +260,15 @@ pub async fn drive_session_terminal_cleanup(
             }
         }
 
-        let Some(next) = next_work(control, session_id, &lease).await? else {
+        let Some((next, next_started)) = next_work(control, runtime, session_id, &lease).await?
+        else {
             runtime
                 .acknowledge_completed_terminal_cleanup(session_id, &lease)
                 .await;
             return Ok(SessionTerminalCleanupDriveOutcome::Completed);
         };
         work = next;
+        started = next_started;
     }
     Err(SessionRealizationDriveError::DidNotConverge)
 }
@@ -391,7 +406,8 @@ mod tests {
             assignment: SessionTerminalCleanupAssignment {
                 session_id: "session".into(),
                 projection: projection(),
-                lease: lease.clone(),
+                authority: crate::SessionRealizationLeaseReceipt::issued_at(lease.clone(), 0)
+                    .unwrap(),
             },
             action,
         }
@@ -542,6 +558,20 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SessionRuntime for RecordingRuntime {
+        fn observe_realization_request(
+            &self,
+        ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError>
+        {
+            // The ordering fixture uses a fixed model clock; elapsed-time
+            // decisions and real OS sampling have separate executable tests.
+            Ok(
+                awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
+                    std::time::Instant::now(),
+                    std::time::Duration::ZERO,
+                ),
+            )
+        }
+
         fn model(&self) -> String {
             "test-model".into()
         }
@@ -577,6 +607,7 @@ mod tests {
         async fn install_terminal_cleanup_assignment(
             &self,
             _assignment: &SessionTerminalCleanupAssignment,
+            _proof: crate::ObservedSessionRealizationLease,
         ) -> Result<(), RunError> {
             self.events.lock().unwrap().push("install".into());
             Ok(())

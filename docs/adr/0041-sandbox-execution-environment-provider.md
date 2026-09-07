@@ -868,6 +868,23 @@ clock implementation before Session receipt integration; it does not yet fix
 the Session projection's absolute-expiry clock correspondence or qualify a
 direct all-in-one Host's execution authority.
 
+The Session response-relative evidence contract, shared renewal lane and final
+projection publication are owned by the
+[ADR-0066 amendment](0066-session-service-binding-and-realization.md#2026-09-07-amendment-request-relative-realization-evidence).
+Provider absolute-time correspondence and complete platform qualification
+remain open; this provider ADR does not define another Session clock policy.
+
+The existing `SessionExecutionBinding` model now checks both fixed deployment
+topologies. A registered Worker requires its live root proof; a direct
+unregistered Host requires its actual Session owner without synthesizing a
+Worker lease. Both retain the same scope readiness, Session generation, slot
+allocation, Environment identity and held-lock constraints. The bounded check
+explores 1,909,674 distinct states at depth 30; eleven guard/lock mutants fail
+their independent oracle, and candidate/resident plus local/registered effect
+witnesses are reachable. Deployment classification and OS truth remain trusted
+inputs. The abstract Session-expiry bit does not prove the new receipt clock
+adapter, complete-projection field atomicity, or unbounded cleanup liveness.
+
 Adjacent cause/effect tests cover the initial/renewal latency boundary,
 irreversible close, clock regression, Linux suspend, callback error/unwind,
 root-lock contention, late complete projection with/without Resources, both

@@ -50,6 +50,22 @@ async fn install_complete_test_projection<R: SessionRuntime + ?Sized>(
 
 struct NoopRuntime;
 
+/// Application fakes model protocol ordering, not the platform suspend clock.
+/// One explicit process-local clock supplies advancing request observations;
+/// production Runtime's unsupported default must remain fail-closed.
+pub(crate) fn test_realization_request_started()
+-> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let origin = *ORIGIN.get_or_init(std::time::Instant::now);
+    let now = std::time::Instant::now();
+    Ok(
+        awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
+            now,
+            now.duration_since(origin),
+        ),
+    )
+}
+
 #[derive(Default)]
 struct ToggleProjectionRefresh {
     calls: AtomicUsize,
@@ -645,6 +661,12 @@ impl awaken_resource_contract::FileCatalog for UnusedFileCatalog {
 
 #[async_trait::async_trait]
 impl SessionRuntime for NoopRuntime {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        crate::tests::test_realization_request_started()
+    }
+
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -692,6 +714,7 @@ impl SessionRuntime for NoopRuntime {
     async fn install_terminal_cleanup_assignment(
         &self,
         _assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+        _proof: awaken_session_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         Ok(())
     }
@@ -750,6 +773,12 @@ impl SessionRuntime for NoopRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingReplyRuntime {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        crate::tests::test_realization_request_started()
+    }
+
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -916,6 +945,12 @@ impl SessionRuntime for RecordingReplyRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingAgentAdmissionRuntime {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        crate::tests::test_realization_request_started()
+    }
+
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -1132,6 +1167,12 @@ impl SessionRuntime for RecordingAgentAdmissionRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingBoundaryBudgetRuntime {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        crate::tests::test_realization_request_started()
+    }
+
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -1281,6 +1322,11 @@ impl SessionRuntime for RecordingCleanupRuntime {
     ) {
         *self.binding_sink.lock().unwrap() = Some(sink);
     }
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        crate::tests::test_realization_request_started()
+    }
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -1317,6 +1363,7 @@ impl SessionRuntime for RecordingCleanupRuntime {
     async fn install_terminal_cleanup_assignment(
         &self,
         assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+        _proof: awaken_session_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         self.terminal_assignments
             .lock()
@@ -1340,7 +1387,9 @@ impl SessionRuntime for RecordingCleanupRuntime {
             .last()
             .cloned()
             .ok_or_else(|| RunError::internal("terminal effect has no installed assignment"))?;
-        if assignment.session_id != effect.command.session_id || assignment.lease != effect.lease {
+        if assignment.session_id != effect.command.session_id
+            || assignment.authority.lease != effect.lease
+        {
             return Err(RunError::internal(
                 "terminal effect does not match its installed assignment",
             ));
@@ -1416,7 +1465,7 @@ impl SessionRuntime for RecordingCleanupRuntime {
             .lock()
             .unwrap()
             .last()
-            .is_some_and(|assignment| assignment.lease == *lease);
+            .is_some_and(|assignment| assignment.authority.lease == *lease);
         if !exact {
             return Err(RunError::internal(
                 "terminal Repository effect does not match its installed assignment",

@@ -4,11 +4,11 @@
 use super::*;
 use crate::session_environment::SessionEnvironment;
 use awaken_provisioning_contract::CurrentExecutionAuthority;
-use awaken_session_contract::{SessionRealizationLease, realization_lease_generation_authorizes};
+use awaken_session_contract::SessionRealizationLease;
 use std::{io, sync::Weak, time::Duration};
 
 struct SessionExecutionAuthority {
-    worker: Arc<dyn CurrentExecutionAuthority>,
+    worker: Option<Arc<dyn CurrentExecutionAuthority>>,
     slots: Weak<Mutex<HashMap<String, SessionRuntimeSlot>>>,
     session: String,
     realization: Arc<tokio::sync::Mutex<()>>,
@@ -23,36 +23,47 @@ fn denied() -> io::Error {
 
 impl CurrentExecutionAuthority for SessionExecutionAuthority {
     fn with_current(&self, effect: &mut dyn FnMut(Duration) -> io::Result<()>) -> io::Result<()> {
-        self.worker.with_current(&mut |worker_remaining| {
-            let slots = self.slots.upgrade().ok_or_else(denied)?;
-            let slots = slots.lock().map_err(|_| denied())?;
-            let slot = slots.get(&self.session).ok_or_else(denied)?;
-            let environment = self.environment.upgrade().ok_or_else(denied)?;
-            let current = slot.realization_authority.lease().ok_or_else(denied)?;
-            let owned = slot
-                .environment_owner
-                .execution_environment()
-                .ok_or_else(denied)?;
-            if !Arc::ptr_eq(&self.realization, &slot.realization)
-                || !Arc::ptr_eq(&self.lifecycle, &slot.lifecycle)
-                || !Arc::ptr_eq(&environment, owned)
-                || !realization_lease_generation_authorizes(current, &self.asserted)
-            {
-                return Err(denied());
-            }
-            let remaining = worker_remaining.min(Duration::from_millis(
-                current
-                    .expires_at_unix_ms
-                    .saturating_sub(crate::terminal_repository_publication::runtime_unix_now_ms()),
-            ));
-            if remaining.is_zero() {
-                return Err(denied());
-            }
-            // Both original guards remain held through the synchronous effect.
-            // Provider conversion anchors BOOTTIME before this callback, so a
-            // wait for either mutex cannot mint additional physical lifetime.
-            effect(remaining)
-        })
+        match &self.worker {
+            Some(worker) => worker
+                .with_current(&mut |remaining| self.with_session_current(effect, Some(remaining))),
+            None => self.with_session_current(effect, None),
+        }
+    }
+}
+
+impl SessionExecutionAuthority {
+    fn with_session_current(
+        &self,
+        effect: &mut dyn FnMut(Duration) -> io::Result<()>,
+        worker_remaining: Option<Duration>,
+    ) -> io::Result<()> {
+        if worker_remaining.is_some_and(|remaining| remaining.is_zero()) {
+            return Err(denied());
+        }
+        let slots = self.slots.upgrade().ok_or_else(denied)?;
+        let slots = slots.lock().map_err(|_| denied())?;
+        let slot = slots.get(&self.session).ok_or_else(denied)?;
+        let environment = self.environment.upgrade().ok_or_else(denied)?;
+        let owned = slot
+            .environment_owner
+            .execution_environment()
+            .ok_or_else(denied)?;
+        if !Arc::ptr_eq(&self.realization, &slot.realization)
+            || !Arc::ptr_eq(&self.lifecycle, &slot.lifecycle)
+            || !Arc::ptr_eq(&environment, owned)
+        {
+            return Err(denied());
+        }
+        let Some(session_remaining) = slot.realization_authority.remaining_for(&self.asserted)
+        else {
+            return Err(denied());
+        };
+        let remaining =
+            worker_remaining.map_or(session_remaining, |worker| worker.min(session_remaining));
+        // Both original guards remain held through the synchronous effect.
+        // Provider conversion anchors BOOTTIME before this callback, so a
+        // wait for either mutex cannot mint additional physical lifetime.
+        effect(remaining)
     }
 }
 
@@ -87,12 +98,12 @@ impl SessionRuntimeSlots {
         if !sandbox.needs_execution_authority() {
             return Ok(());
         }
-        let (Some(worker), Some(asserted)) = (worker, slot.realization_authority.lease()) else {
+        let Some(asserted) = slot.realization_authority.lease() else {
             return Ok(());
         };
         sandbox
             .bind_execution_authority(Arc::new(SessionExecutionAuthority {
-                worker: worker.clone(),
+                worker: worker.cloned(),
                 slots: Arc::downgrade(&self.0),
                 session: session.into(),
                 realization: slot.realization.clone(),
@@ -146,10 +157,12 @@ mod tests {
                     + 60_000,
             };
             let authority = slots.update("session", |slot| {
-                slot.realization_authority = SessionRealizationAuthority::Live(asserted.clone());
+                slot.realization_authority = SessionRealizationAuthority::Live(
+                    crate::session_slot::test_observed_lease(asserted.clone()),
+                );
                 slot.environment_owner = Self::candidate(environment.clone());
                 Arc::new(SessionExecutionAuthority {
-                    worker: worker.clone(),
+                    worker: Some(worker.clone()),
                     slots: Arc::downgrade(&slots.0),
                     session: "session".into(),
                     realization: slot.realization.clone(),
@@ -323,7 +336,12 @@ mod tests {
                         "ok" | "short_session" => {}
                         _ => unreachable!(),
                     }
-                    slot.realization_authority = SessionRealizationAuthority::Live(lease);
+                    slot.realization_authority =
+                        SessionRealizationAuthority::Live(if rule == "expired" {
+                            crate::session_slot::test_expired_observed_lease(lease)
+                        } else {
+                            crate::session_slot::test_observed_lease(lease)
+                        });
                 }),
             }
             let mut calls = 0;
@@ -345,6 +363,40 @@ mod tests {
             assert_eq!(result.is_ok(), allowed, "{rule}");
             assert_eq!(calls, usize::from(allowed), "{rule}");
         }
+    }
+
+    #[tokio::test]
+    async fn direct_local_authority_requires_the_real_session_without_a_worker_receipt() {
+        // L1 unregistered local Host has no Worker aggregate; live exact Session
+        // plus exact Environment admits one bounded effect under the slot lock.
+        // L2 closing that Session denies with zero further effects. Registered
+        // Worker missing/zero/closed proof rows remain in S2/S3 above; absence
+        // here is a topology fact, never a synthesized infinite root grant.
+        let mut f = Fixture::new().await;
+        Arc::get_mut(&mut f.authority).unwrap().worker = None;
+        let mut calls = 0;
+        f.authority
+            .with_current(&mut |remaining| {
+                calls += 1;
+                assert!(remaining > Duration::ZERO && remaining <= Duration::from_secs(40));
+                assert!(matches!(
+                    f.slots.0.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(calls, 1, "L1");
+        f.slots.close_realization("session", None);
+        assert!(
+            f.authority
+                .with_current(&mut |_| {
+                    calls += 1;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert_eq!(calls, 1, "L2");
     }
 
     #[tokio::test]

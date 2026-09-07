@@ -2399,6 +2399,7 @@ dependencies = [
  "awaken-ext-skills",
  "awaken-ext-state-machine",
  "awaken-file-store",
+ "awaken-local-process",
  "awaken-memory-store",
  "awaken-observability",
  "awaken-provisioning-contract",

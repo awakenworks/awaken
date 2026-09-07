@@ -959,12 +959,14 @@ impl awaken_dispatch_contract::ClaimedSessionControl for RecordingSessionControl
         Ok(self.projection.lock().unwrap().clone().map(|projection| {
             awaken_session_contract::SessionRealizationDirective {
                 projection,
-                lease: awaken_session_contract::SessionRealizationLease {
-                    owner: claim.owner.clone(),
-                    runtime_incarnation: claim.owner.clone(),
-                    epoch: claim.epoch,
-                    expires_at_unix_ms: u64::MAX,
-                },
+                authority: crate::session_slot::test_lease_receipt(
+                    awaken_session_contract::SessionRealizationLease {
+                        owner: claim.owner.clone(),
+                        runtime_incarnation: claim.owner.clone(),
+                        epoch: claim.epoch,
+                        expires_at_unix_ms: u64::MAX,
+                    },
+                ),
                 action: awaken_session_contract::SessionRealizationAction::Complete,
             }
         }))
@@ -998,12 +1000,14 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         stage.stage_idempotency_key = format!("renew:{}", command.target.lease_expires_at_unix_ms);
         Ok(awaken_session_contract::SessionRealizationDirective {
             projection,
-            lease: awaken_session_contract::SessionRealizationLease {
-                owner: command.target.owner,
-                runtime_incarnation: command.target.runtime_incarnation,
-                epoch: 1,
-                expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
-            },
+            authority: crate::session_slot::test_lease_receipt(
+                awaken_session_contract::SessionRealizationLease {
+                    owner: command.target.owner,
+                    runtime_incarnation: command.target.runtime_incarnation,
+                    epoch: 1,
+                    expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
+                },
+            ),
             action: awaken_session_contract::SessionRealizationAction::Stage {
                 prepare_session: false,
                 mcp_stages: vec![stage],
@@ -1026,7 +1030,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
                 .unwrap()
                 .clone()
                 .expect("frozen Session projection"),
-            lease: command.lease,
+            authority: crate::session_slot::test_lease_receipt(command.lease),
             action: awaken_session_contract::SessionRealizationAction::Publish {
                 publish: command
                     .mcp_receipts
@@ -1053,7 +1057,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
                 .unwrap()
                 .clone()
                 .expect("frozen Session projection"),
-            lease: command.lease,
+            authority: crate::session_slot::test_lease_receipt(command.lease),
             action: awaken_session_contract::SessionRealizationAction::Complete,
         })
     }

@@ -415,12 +415,30 @@ impl SessionApplication {
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
         let (owner_scope, mut session) = self.session_for_realization(&command.session_id).await?;
         verify_lease(&session, &command.lease)?;
-        let expected = Self::realization_stage_requests(&owner_scope, &session)?;
+        let mut expected = Self::realization_stage_requests(&owner_scope, &session)?;
         let receipt_generations = command
             .mcp_receipts
             .iter()
             .map(|receipt| receipt.generation.clone())
             .collect::<Vec<_>>();
+        // Recovery can Stage an old Active generation together with its
+        // replacement. After activation commits, that old claim is Draining.
+        // An exact activation retry may still carry its completed receipt;
+        // reconstruct and verify it from the same durable claim, without
+        // requiring unrelated drains or authorizing their publication.
+        for attachment in &session.mcp.attachments {
+            if attachment.state == McpAttachmentState::Draining
+                && receipt_generations.iter().any(|generation| {
+                    generation.attachment_id == attachment.attachment_id
+                        && generation.generation == attachment.generation
+                })
+            {
+                expected.push(
+                    projection::stage_mcp_request(&owner_scope, &session.session_id, attachment)
+                        .map_err(unavailable)?,
+                );
+            }
+        }
         let expected_generations = expected
             .iter()
             .map(|request| request.generation.clone())
@@ -871,20 +889,22 @@ impl SessionApplication {
         &self,
         owner_scope: &str,
         session: &PersistedSession,
-    ) -> Result<SessionTerminalCleanupAssignment, RunError> {
-        let lease = session.realization.clone().ok_or_else(|| {
-            RunError::unavailable_classified(
-                "session_terminal_cleanup_realization_missing",
-                "terminal Session snapshot has no current realization lease",
-            )
-        })?;
+    ) -> Result<SessionTerminalCleanupAssignment, SessionRealizationControlFailure> {
+        let lease = session
+            .realization
+            .clone()
+            .ok_or(SessionRealizationControlFailure::StaleOwnership)?;
         let projection = self
             .active_frozen_session_projection(owner_scope.to_string(), session, false)
-            .await?;
+            .await
+            .map_err(unavailable)?;
         Ok(SessionTerminalCleanupAssignment {
             session_id: session.session_id.clone(),
             projection,
-            lease,
+            authority: awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+                lease,
+                now_unix_ms(),
+            )?,
         })
     }
 
@@ -1138,7 +1158,7 @@ impl SessionApplication {
                 }
                 return match assignment {
                     Ok(assignment) => TerminalCleanupRootClaim::Assignment(Box::new(assignment)),
-                    Err(error) => TerminalCleanupRootClaim::Failed(unavailable(error)),
+                    Err(error) => TerminalCleanupRootClaim::Failed(error),
                 };
             }
             // External recovery may advance an exact current incarnation only
@@ -1239,7 +1259,7 @@ impl SessionApplication {
             Ok(assignment) => TerminalCleanupRootClaim::Assignment(Box::new(assignment)),
             // The claim is already durable. An exact local retry reuses this
             // lease; an external scan skips it until expiry.
-            Err(error) => TerminalCleanupRootClaim::Failed(unavailable(error)),
+            Err(error) => TerminalCleanupRootClaim::Failed(error),
         }
     }
 
@@ -1508,8 +1528,13 @@ impl SessionRealizationControl for RefreshedSessionRealizationControl<'_> {
     async fn renew_session_realization(
         &self,
         command: RenewSessionRealization,
-    ) -> Result<SessionRealizationLease, SessionRealizationControlFailure> {
-        self.0.renew_session_realization_after_load(command).await
+    ) -> Result<
+        awaken_session_contract::SessionRealizationLeaseReceipt,
+        SessionRealizationControlFailure,
+    > {
+        // Lease-only renewal performs no executable refresh. Reuse its public
+        // entry so local and remote callers share one receipt-publication rule.
+        self.0.renew_session_realization(command).await
     }
 }
 
@@ -1529,8 +1554,14 @@ impl SessionRealizationControl for SessionApplication {
     async fn renew_session_realization(
         &self,
         command: RenewSessionRealization,
-    ) -> Result<SessionRealizationLease, SessionRealizationControlFailure> {
-        self.renew_session_realization_after_load(command).await
+    ) -> Result<
+        awaken_session_contract::SessionRealizationLeaseReceipt,
+        SessionRealizationControlFailure,
+    > {
+        awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+            self.renew_session_realization_after_load(command).await?,
+            now_unix_ms(),
+        )
     }
 
     async fn activate_session_realization(
