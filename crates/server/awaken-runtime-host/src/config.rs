@@ -130,25 +130,15 @@ pub(crate) fn effective_ruleset(
     }
 }
 
-fn toolset_permission_rules(
+fn agent_toolset_permission_rules(
     toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
 ) -> Vec<PermissionRule> {
     use awaken_runtime_contract::agent_bindings::{ToolPermissionRequirement, ToolsetSource};
-    let behavior = |enabled: bool, permission: ToolPermissionRequirement| {
-        if !enabled {
-            ToolPermissionBehavior::Deny
-        } else {
-            match permission {
-                ToolPermissionRequirement::AlwaysAllow => ToolPermissionBehavior::Allow,
-                ToolPermissionRequirement::AlwaysAsk => ToolPermissionBehavior::RequireConfirmation,
-            }
-        }
-    };
     let rule =
         |pattern: String, policy: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy| {
             PermissionRule::new(
                 ToolCallPattern::parse(&pattern).expect("typed toolset produces a valid pattern"),
-                behavior(policy.enabled, policy.permission),
+                policy.into(),
             )
         };
     let mut rules = Vec::new();
@@ -180,30 +170,27 @@ fn toolset_permission_rules(
                         .map(|entry| rule(entry.name.clone(), entry.policy)),
                 );
             }
-            ToolsetSource::Mcp { server_name } => {
-                rules.push(rule(format!("mcp__{server_name}__*"), toolset.default));
-                rules.extend(toolset.overrides.iter().map(|entry| {
-                    rule(format!("mcp__{server_name}__{}", entry.name), entry.policy)
-                }));
-            }
+            // Open MCP membership is resolved by the canonical typed lookup
+            // per invocation, not by overlapping wildcard/exact permission rules.
+            ToolsetSource::Mcp { .. } => {}
         }
     }
     rules
 }
 
-pub(crate) fn effective_ruleset_with_toolsets(
+pub(crate) fn effective_policy_with_toolsets(
     authored: Option<PermissionRuleset>,
     extra_allowed: &[String],
     toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
-) -> PermissionRuleset {
+) -> RuleBasedToolPermissionPolicy {
     let mut resolved = effective_ruleset(authored, extra_allowed);
     // Put exact toolset rules first so they are authoritative over the built-in
     // baseline on equal specificity. Compile rejects a second authored permission
     // section when toolsets exist.
-    let mut rules = toolset_permission_rules(toolsets);
+    let mut rules = agent_toolset_permission_rules(toolsets);
     rules.extend(resolved.rules);
     resolved.rules = rules;
-    resolved
+    RuleBasedToolPermissionPolicy::new(resolved).with_mcp_toolsets(toolsets)
 }
 
 #[cfg(test)]
@@ -244,8 +231,10 @@ pub(crate) fn effective_tool_authorization(
 ) -> EffectiveToolAuthorization {
     let authored = config_permission_ruleset(configuration.plugins());
     let explicit = authored.is_some() || !toolsets.is_empty() || !extra_allowed.is_empty();
-    let policy: Arc<dyn ToolPermissionPolicy> = Arc::new(RuleBasedToolPermissionPolicy::new(
-        effective_ruleset_with_toolsets(authored, extra_allowed, toolsets),
+    let policy: Arc<dyn ToolPermissionPolicy> = Arc::new(effective_policy_with_toolsets(
+        authored,
+        extra_allowed,
+        toolsets,
     ));
     EffectiveToolAuthorization {
         gate: Arc::new(PermissionGate::new(policy.clone())),
@@ -867,8 +856,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn toolset_policy_controls_execution_gate_behavior() {
+    #[tokio::test]
+    async fn toolset_policy_controls_execution_gate_behavior() {
         // Cause graph: normalized exact toolset policy -> permission rules at
         // runtime construction -> gate decision before RawTool invocation.
         // Visibility is tested at request assembly; this table proves execution
@@ -925,27 +914,40 @@ mod tests {
                 )],
             },
         ];
-        let rules = effective_ruleset_with_toolsets(None, &[], &toolsets);
-        assert_eq!(
-            rules.decide("read", &serde_json::json!({})),
-            ToolPermissionBehavior::Deny
-        );
-        assert_eq!(
-            rules.decide("write", &serde_json::json!({})),
-            ToolPermissionBehavior::RequireConfirmation
-        );
-        assert_eq!(
-            rules.decide("bash", &serde_json::json!({})),
-            ToolPermissionBehavior::Allow
-        );
-        assert_eq!(
-            rules.decide("mcp__docs__search", &serde_json::json!({})),
-            ToolPermissionBehavior::Allow
-        );
-        assert_eq!(
-            rules.decide("mcp__docs__fetch", &serde_json::json!({})),
-            ToolPermissionBehavior::RequireConfirmation
-        );
+        let policy = effective_policy_with_toolsets(None, &[], &toolsets);
+        for (tool_id, expected) in [
+            (
+                "read",
+                awaken_runtime_contract::permission::GateOutcomeKind::Block,
+            ),
+            (
+                "write",
+                awaken_runtime_contract::permission::GateOutcomeKind::RequireConfirmation,
+            ),
+            (
+                "bash",
+                awaken_runtime_contract::permission::GateOutcomeKind::Allow,
+            ),
+            (
+                "mcp__docs__search",
+                awaken_runtime_contract::permission::GateOutcomeKind::Allow,
+            ),
+            (
+                "mcp__docs__fetch",
+                awaken_runtime_contract::permission::GateOutcomeKind::RequireConfirmation,
+            ),
+        ] {
+            let call = awaken_runtime_contract::llm::ToolCall {
+                call_id: "typed-policy".into(),
+                tool_id: tool_id.into(),
+                arguments: serde_json::json!({}),
+            };
+            assert_eq!(
+                policy.evaluate(&call).await.kind().gate_outcome_kind(),
+                expected,
+                "{tool_id}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1037,6 +1039,94 @@ mod tests {
                 expected,
                 "{rule}/E2 {tool_id}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_defaults_and_exact_overrides_have_one_native_and_acp_verdict() {
+        // Cause graph: C1 default enabled/disabled; C2 default allow/ask;
+        // C3 exact override absent/disabled/allow/ask; C4 server matches or not.
+        // E1 resolved typed policy; E2 Native gate and ACP verdict agree.
+        // Decision table is the Cartesian product below (2*2*4*2 = 32 rules):
+        // matching source -> exact override replaces default, disabled denies;
+        // another source -> ordinary unmatched ask, with no cross-server grant.
+        // This includes the live Cowork counterexample: default disabled plus
+        // an enabled attest override must allow; a fallback is not a deny rule.
+        use awaken_runtime_contract::agent_bindings::{
+            ResolvedConfiguration, ToolExecutionPolicy, ToolPermissionRequirement,
+            ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+        };
+        use awaken_runtime_contract::permission::GateOutcomeKind;
+        let allow = ToolExecutionPolicy::default();
+        let ask = ToolExecutionPolicy {
+            permission: ToolPermissionRequirement::AlwaysAsk,
+            ..allow
+        };
+        let deny = ToolExecutionPolicy {
+            enabled: false,
+            ..allow
+        };
+        for enabled in [false, true] {
+            for permission in [
+                ToolPermissionRequirement::AlwaysAllow,
+                ToolPermissionRequirement::AlwaysAsk,
+            ] {
+                let default = ToolExecutionPolicy {
+                    enabled,
+                    permission,
+                };
+                for exact in [None, Some(deny), Some(allow), Some(ask)] {
+                    let toolset = ToolsetPolicy {
+                        source: ToolsetSource::Mcp {
+                            server_name: "context".into(),
+                        },
+                        default,
+                        overrides: exact
+                            .map(|policy| ToolPolicyOverride::new("attest", policy))
+                            .into_iter()
+                            .collect(),
+                    };
+                    let authorization = effective_tool_authorization(
+                        &ResolvedConfiguration::default(),
+                        &[],
+                        &[toolset],
+                    );
+                    for server in ["context", "context_other"] {
+                        let selected = if server == "context" {
+                            exact.unwrap_or(default)
+                        } else {
+                            ask
+                        };
+                        let expected = if !selected.enabled {
+                            GateOutcomeKind::Block
+                        } else if selected.permission == ToolPermissionRequirement::AlwaysAsk {
+                            GateOutcomeKind::RequireConfirmation
+                        } else {
+                            GateOutcomeKind::Allow
+                        };
+                        let call = awaken_runtime_contract::llm::ToolCall {
+                            call_id: "mcp-matrix".into(),
+                            tool_id: format!("mcp__{server}__attest"),
+                            arguments: serde_json::json!({}),
+                        };
+                        let native = authorization
+                            .gate
+                            .gate(&call, &awaken_agent_contract::agent::state::Store::new())
+                            .await;
+                        let acp = authorization.policy.evaluate(&call).await;
+                        assert_eq!(
+                            native.kind(),
+                            expected,
+                            "Native: {default:?} {exact:?} {server}"
+                        );
+                        assert_eq!(
+                            acp.kind().gate_outcome_kind(),
+                            expected,
+                            "ACP: {default:?} {exact:?} {server}"
+                        );
+                    }
+                }
+            }
         }
     }
 
