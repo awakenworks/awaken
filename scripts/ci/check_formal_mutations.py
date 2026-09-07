@@ -1967,13 +1967,15 @@ def check_checkpoint_recovery_model_mutants(tlc_jar: Path) -> None:
                       header + "INVARIANTS UncertainOutcomeVetoesPhysicalReturn\n", "UncertainOutcomeVetoesPhysicalReturn"))
     mutations.append((source.replace('ReadDeadline == ObserveRead("deadline")', 'ReadDeadline == FALSE'),
                       header + "CHECK_DEADLOCK FALSE\nPROPERTIES RecoveryReadSettles\n", "temporal:RecoveryReadSettles"))
+    mutations.append((source.replace('phase = "controlled" /\\ ~recovery.acknowledged', 'phase \\in {"crashed", "blocked", "controlled"} /\\ ~recovery.acknowledged'),
+                      header + "INVARIANTS ControlAckRequiresObservedEvidence\n", "ControlAckRequiresObservedEvidence"))
     for witness in ("NoExactResume", "NoAbsentResume", "NoStorageBlock", "NoFenceBlock", "NoDeadlineReadBlock",
                     "NoRunMismatchBlock", "NoThreadMismatchBlock", "NoCancelledReadBlock",
                     "NoUnknownResumeBlock", "NoUnknownHandoffBlock", "NoUnknownCancelBlock",
-                    "NoUnknownStopBlock", "NoKnownControlReturn"):
+                    "NoUnknownStopBlock", "NoKnownControlReturn", "NoControlAckReached"):
         mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "CheckpointRecovery", source, config, mutations)
-    print("Checkpoint recovery: 14/14 mutants killed; thirteen entry/observation witnesses reachable")
+    print("Checkpoint recovery: 15/15 mutants killed; fourteen entry/observation witnesses reachable")
 
 
 

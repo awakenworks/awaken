@@ -115,8 +115,9 @@ impl WorkerDirectory for ConfiguredWorkerDirectory {
 }
 
 fn configured_worker() -> (WorkerIdentity, Arc<dyn WorkerDirectory>) {
-    // The active/active claim requires an explicitly current incarnation.
-    // ANY is historical absence of evidence, not a valid registered protocol.
+    // P1 the two processes serve the current binary => explicitly advertise its
+    // execution protocol. ANY/omitted is intentionally not positive evidence;
+    // the transport admission decision table covers rejection of those peers.
     let mut manifest = WorkerManifest::default();
     manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
@@ -371,20 +372,32 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
     let base_a = format!("http://127.0.0.1:{port_a}");
     let base_b = format!("http://127.0.0.1:{port_b}");
 
-    let (identity, _) = configured_worker();
+    let (identity, directory) = configured_worker();
 
     let queue_a = HttpDispatchQueue::new(&base_a, identity.clone());
     let queue_b = HttpDispatchQueue::new(&base_b, identity.clone());
     let run_id = RunId("active-active-run".into());
     let thread_id = ThreadId("active-active-thread".into());
+    // P2 a newly authored remote dispatch and this current Worker must share
+    // the same execution protocol. RunDispatch::new preserves the legacy v0
+    // decoder posture; that is not the request this acceptance scenario tests.
+    let mut dispatch = RunDispatch::new(activation(&run_id, &thread_id));
+    dispatch.placement = awaken_dispatch::PlacementRequirements::remote_preferred();
+    dispatch.placement.runtime_protocol_version =
+        awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    awaken_dispatch::can_claim(
+        &directory
+            .current(WORKER_ID)
+            .await
+            .unwrap()
+            .unwrap()
+            .snapshot
+            .manifest,
+        &dispatch.placement,
+    )
+    .expect("P1/P2 current fixture passes the authoritative compatibility kernel");
     queue_a
-        // Current registration and current dispatch are both prerequisites.
-        // Legacy default rows remain protocol 1 and must not be claimed by this
-        // current-only incarnation; compatibility rejection has its own matrix.
-        .enqueue(
-            RunDispatch::new(activation(&run_id, &thread_id))
-                .with_placement(awaken_dispatch::PlacementRequirements::remote_required()),
-        )
+        .enqueue(dispatch)
         .await
         .expect("enqueue through Control A");
     let claimed = queue_b
