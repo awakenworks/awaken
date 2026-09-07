@@ -693,8 +693,12 @@ impl SessionEnvironmentProvider {
             ));
         }
         match (self, retained) {
-            (Self::Workdir(_), SessionEnvironment::Workdir(sandbox)) => {
-                Ok(SessionEnvironment::Workdir(sandbox.clone()))
+            (Self::Workdir { hand, .. }, SessionEnvironment::Workdir { sandbox, .. }) => {
+                Ok(SessionEnvironment::Workdir {
+                    sandbox: sandbox.clone(),
+                    hand: None,
+                }
+                .with_workdir_hand(hand.as_ref()))
             }
             (
                 Self::Namespace {

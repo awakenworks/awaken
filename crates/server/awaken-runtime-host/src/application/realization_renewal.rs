@@ -186,7 +186,8 @@ impl crate::SharedHost {
         let Some(realization) = self
             .session_slots
             .read(&session_id, |slot| {
-                (slot.realization_lease.as_ref() == Some(&lease)).then(|| slot.realization.clone())
+                (slot.realization_authority.lease() == Some(&lease))
+                    .then(|| slot.realization.clone())
             })
             .flatten()
         else {
@@ -221,7 +222,7 @@ impl crate::SharedHost {
                         .session_slots
                         .modify(&session_id, |slot| {
                             Arc::ptr_eq(&slot.realization, &realization)
-                                 && slot.renew_realization_lease(&lease, renewed_lease)
+                                && slot.renew_realization_lease(&lease, renewed_lease)
                         })
                         .unwrap_or(false))
                 })
@@ -234,12 +235,13 @@ impl crate::SharedHost {
                 if self
                     .session_slots
                     .read(&session_id, |slot| {
-                        slot.realization_authority.lease() == Some(&lease)
+                        Arc::ptr_eq(&slot.realization, &realization)
+                            && slot.realization_authority.lease() == Some(&lease)
                             && slot.realization_authority.remaining().is_none()
                     })
                     .unwrap_or(false) =>
             {
-                self.revoke_session_realization(&session_id, Some(&lease))
+                self.revoke_session_realization(&session_id, Some((&lease, &realization)))
                     .await?;
                 Ok(false)
             }

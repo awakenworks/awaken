@@ -261,6 +261,8 @@ async fn recovery_without_temp_child() {
         let gate = Arc::new(Gate {
             after,
             error: false,
+            detached: false,
+            completed: tokio::sync::Notify::new(),
             ordinal: 0,
             calls: AtomicUsize::new(0),
             reached: tokio::sync::Notify::new(),
@@ -362,7 +364,8 @@ impl MemoryRepository for FaultRepository {
         s: &str,
         candidate: &awaken_resource_contract::MemoryCopyConflict,
     ) -> Result<(), MemErr> {
-        self.mutate(self.inner.preserve_copy_conflict(s, candidate))
+        let (inner, s, candidate) = (self.inner.clone(), s.to_owned(), candidate.clone());
+        self.mutate(async move { inner.preserve_copy_conflict(&s, &candidate).await })
             .await
     }
     async fn snapshot_heads(&self, s: &str) -> Result<Vec<Memory>, MemErr> {
@@ -410,8 +413,20 @@ impl MemoryRepository for FaultRepository {
         content: &str,
         base: &str,
     ) -> Result<Memory, MemErr> {
-        self.mutate(self.inner.update_materialized(s, path, id, content, base))
-            .await
+        let (inner, s, path, id, content, base) = (
+            self.inner.clone(),
+            s.to_owned(),
+            path.to_owned(),
+            id.to_owned(),
+            content.to_owned(),
+            base.to_owned(),
+        );
+        self.mutate(async move {
+            inner
+                .update_materialized(&s, &path, &id, &content, &base)
+                .await
+        })
+        .await
     }
     async fn rename(&self, s: &str, a: &str, b: &str) -> Result<Memory, MemErr> {
         self.inner.rename(s, a, b).await
@@ -497,6 +512,8 @@ async fn interrupted_conflict_retention_retries_without_losing_the_proposal() {
                 let gate = Arc::new(Gate {
                     after,
                     error,
+                    detached: false,
+                    completed: tokio::sync::Notify::new(),
                     ordinal: 1,
                     calls: AtomicUsize::new(0),
                     reached: tokio::sync::Notify::new(),
@@ -599,7 +616,9 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
     for operation in ["create", "update", "delete"] {
         // F5 queued mutation outlives caller cancellation; F6 a newer writer
         // wins before that queued mutation runs => stale CAS must not overwrite
-        // it, and both same-guard and recovered-copy retries must conflict.
+        // it. Live same-guard retry remains a conflict; terminal recovered-copy
+        // retry may finish only after preserving the loser in the Memory
+        // aggregate, with unchanged winner/history and idempotent conflict data.
         for (after, detached, competitor) in [
             (false, false, false),
             (true, false, false),
@@ -747,19 +766,31 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                         files.push(("z.md".into(), b"edit".to_vec()));
                     }
                     let recovered = MemoryStoreMounter::copy_only(repository.clone());
-                    assert_eq!(
+                    for _ in 0..2 {
                         recovered
                             .reconcile_recovered_copy(
                                 "s",
                                 &evidence,
                                 &files,
-                                MountAccess::ReadWrite
+                                MountAccess::ReadWrite,
                             )
                             .await
-                            .is_err(),
-                        competitor,
-                        "F4/F6 recovered retry"
+                            .expect("F4/F6 terminal retry retains any losing proposal");
+                    }
+                    let conflicts = repository.list_copy_conflicts("s").await.unwrap();
+                    assert_eq!(
+                        conflicts.len(),
+                        usize::from(competitor),
+                        "F6 exact conflict retention"
                     );
+                    if competitor {
+                        assert_eq!(conflicts[0].path, "/z.md");
+                        assert_eq!(
+                            conflicts[0].content.as_deref(),
+                            (operation != "delete").then_some("edit")
+                        );
+                        assert_eq!(conflicts[0].base.is_none(), operation == "create");
+                    }
                     assert_eq!(repository.snapshot_heads("s").await.unwrap(), expected);
                     assert_eq!(repository.list_versions("s").await.unwrap(), history);
                 }

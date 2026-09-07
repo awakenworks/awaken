@@ -21061,6 +21061,8 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
 /// matrix). R4 current + ownership loss -> wait for realization admission, then
 /// recheck the exact tuple before revocation. Claim installation has its own
 /// two-case admission test; this test drives real asynchronous Control replies.
+/// A 5s receipt has at most 3.334s of proof; a 30s cadence gives a 10s
+/// due threshold, so every row enters Control without a rounding-boundary race.
 #[tokio::test]
 async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
     use awaken_session_contract::SessionRealizationControlFailure as Failure;
@@ -21098,9 +21100,8 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                 let host = host.clone();
                 tokio::spawn(async move {
                     host.renew_due_session_realizations(
-                        now,
                         awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
-                            10_000,
+                            30_000,
                         ),
                     )
                     .await
@@ -21133,7 +21134,8 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                 if changed == "replaced_slot" {
                     host.session_slots.remove("renew-race");
                 }
-                host.install_session_realization_lease("renew-race", replacement.clone());
+                host.install_session_realization_lease("renew-race", replacement.clone())
+                    .unwrap();
                 host.session_slots.update("renew-race", |slot| {
                     slot.dispatch_claim = Some(claim.clone());
                     slot.workspace = Some("new-workspace".into());
@@ -21155,7 +21157,7 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
             } else {
                 assert_eq!(
                     host.session_slots.read("renew-race", |slot| (
-                        slot.realization_lease.clone(),
+                        slot.realization_authority.lease().cloned(),
                         slot.dispatch_claim.clone(),
                         slot.workspace.clone()
                     )),
@@ -21172,6 +21174,7 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
     // R4a conclusive loss while Stage holds admission -> no destructive effects
     // until Stage releases. R4b Stage installs a new lease while revocation waits
     // -> recheck absorbs the obsolete response and preserves the new projection.
+    // The 30s cadence makes the 5s receipt unambiguously due, as in R1 above.
     for replaced in [false, true] {
         let control = Arc::new(RemoteTerminalCleanupControl::default());
         *control.renewal_failure.lock().unwrap() =
@@ -21193,9 +21196,8 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
             let host = host.clone();
             tokio::spawn(async move {
                 host.renew_due_session_realizations(
-                    now,
                     awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
-                        10_000,
+                        30_000,
                     ),
                 )
                 .await
@@ -21217,7 +21219,8 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
         let mut next = lease;
         next.epoch += 1;
         if replaced {
-            host.install_session_realization_lease("renew-revoke", next.clone());
+            host.install_session_realization_lease("renew-revoke", next.clone())
+                .unwrap();
         }
         drop(guard);
         assert_eq!(
@@ -21230,7 +21233,10 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
         );
         assert_eq!(
             host.session_slots
-                .read("renew-revoke", |slot| slot.realization_lease.clone())
+                .read("renew-revoke", |slot| slot
+                    .realization_authority
+                    .lease()
+                    .cloned())
                 .flatten(),
             replaced.then_some(next),
             "R4 exact replacement protection"

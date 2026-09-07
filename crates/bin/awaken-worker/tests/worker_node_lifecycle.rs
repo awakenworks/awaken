@@ -216,7 +216,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionP
             match fault {
                 ProbeFault::Stall => std::future::pending::<()>().await,
                 ProbeFault::StallOnce if ordinal == after => std::future::pending::<()>().await,
-                ProbeFault::StallOnce => {},
+                ProbeFault::StallOnce => {}
                 ProbeFault::Panic => panic!("injected provider probe panic"),
             }
         }
@@ -1017,6 +1017,9 @@ async fn expired_initial_heartbeat_cannot_start_dispatch() {
     // H1 expiry and H2 observed shutdown while the initial Ready response is
     // pending both withdraw exactly once without enabling dispatch. Remote
     // delivery before cancellation is allowed; it cannot revive the local task.
+    // The bounded startup request now expires BEFORE the delayed receipt can
+    // be installed. This HTTP row owns timeout/withdrawal ordering, not receipt
+    // arithmetic (the WorkerAuthorityProof decision table owns that boundary).
     for cancelled in [false, true] {
         let upstream = FakeWorkerUpstream::start_with_expired_initial_receipt();
         upstream.block_initial_heartbeat(cancelled);
@@ -1051,11 +1054,10 @@ async fn expired_initial_heartbeat_cannot_start_dispatch() {
                 "cancelled startup withdraws without claiming"
             );
         } else {
+            let error = result.unwrap_err().to_string();
             assert!(
-                result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("authority is not current")
+                error.contains("initial worker heartbeat timed out"),
+                "unexpected startup failure: {error}"
             );
         }
         assert_eq!(upstream.heartbeat_sequences(), vec![1], "E3");

@@ -170,6 +170,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
             custom_rootfs: false,
             package_provisioning: false,
             control_services: Default::default(),
+            process_tree_supervision: false,
         }
     }
 
@@ -559,6 +560,39 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
         crate::managed_resource_projection::AgentPathView::workdir_relative("/workspace")
     );
     let handle = environment.handle();
+    // H5 retained TrustedHost + installed Hand + revoked old wrapper => reuse
+    // the exact physical Sandbox, create a fresh lazy Hand, and retain the
+    // mandatory launch failure (never fall back to direct filesystem access).
+    // H5 shares H2's missing executable so no platform-specific helper is needed.
+    environment.stop_bound_processes().await.unwrap();
+    let rebound = provider
+        .rebind_retained(&handle, &environment)
+        .await
+        .unwrap();
+    let (
+        SessionEnvironment::Workdir {
+            sandbox: before,
+            hand: Some(old_hand),
+        },
+        SessionEnvironment::Workdir {
+            sandbox: after,
+            hand: Some(new_hand),
+        },
+    ) = (&environment, &rebound)
+    else {
+        panic!("H5 mandatory Hand survives retained rebind");
+    };
+    assert!(Arc::ptr_eq(before, after), "H5 same physical workspace");
+    assert!(!Arc::ptr_eq(old_hand, new_hand), "H5 fresh Hand wrapper");
+    assert!(rebound.tool_executor().invoke(&call).await.is_err());
+    assert!(
+        !before
+            .workspace_path()
+            .join("workspace/must-not-exist")
+            .exists()
+    );
+    rebound.stop_bound_processes().await.unwrap();
+    drop(rebound);
     drop(executor);
     drop(environment);
     let adopted = provider
@@ -807,8 +841,12 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
             .rebind_retained(&environment.handle(), &environment)
             .await
             .unwrap();
-        let (SessionEnvironment::Workdir(before), SessionEnvironment::Workdir(after)) =
-            (&environment, &rebound)
+        let (
+            SessionEnvironment::Workdir {
+                sandbox: before, ..
+            },
+            SessionEnvironment::Workdir { sandbox: after, .. },
+        ) = (&environment, &rebound)
         else {
             unreachable!()
         };

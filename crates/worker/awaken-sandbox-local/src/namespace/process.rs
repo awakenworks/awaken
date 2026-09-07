@@ -12,10 +12,8 @@ impl LaunchInfo {
         #[cfg(target_os = "linux")]
         {
             use command_fds::{CommandFdExt, FdMapping};
-            // Namespace processes cannot be reattached after their owning handle
-            // is lost. If startup/binding is cancelled, killing this monitor also
-            // closes its PID namespace through --die-with-parent.
-            command.kill_on_drop(true);
+            // LocalProcess::spawn owns process-group and cancellation policy;
+            // this adapter only supplies the trusted namespace identity report.
             let (read, write) = std::os::unix::net::UnixStream::pair().map_err(err)?;
             read.set_nonblocking(true).map_err(err)?;
             command

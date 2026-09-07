@@ -101,7 +101,7 @@ impl AgentSandbox for SessionEnvironment {
             Self::Container { hand, .. } | Self::Namespace { hand, .. } => {
                 Some(hand.binary_path().to_string())
             }
-            Self::Workdir(_) => None,
+            Self::Workdir { .. } => None,
         }
     }
     fn is_container(&self) -> bool {
