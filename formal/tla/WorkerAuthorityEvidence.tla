@@ -46,10 +46,15 @@ Spec == Init /\ [][Next]_vars /\ WF_vars(Tick)
 TypeOK == /\ registryAge \in 0..Window /\ evidenceAge \in 0..Window
           /\ probeAge \in 0..Window /\ probing \in BOOLEAN /\ open \in BOOLEAN
 BothProofsRequired == open => registryAge < Window /\ evidenceAge < Window
+\* F1 successful slow probe => the new proof includes its request latency.
+\* F2 registry-only or evidence-only progress cannot mask the other expiry.
+ProbeLatencyIncluded == ~probing => probeAge <= evidenceAge
 ProbeCannotBlockHeartbeat == open => ENABLED Heartbeat
 NoProofResurrection == [](~open => []~open)
 \* Conditional liveness: if successful environment evidence stops arriving,
 \* fair passage of time closes admission despite arbitrarily many heartbeats.
 MissingEvidenceEventuallyCloses ==
     (<>[][~ProbeSuccess]_vars) => <>[]~open
+MissingRegistryEventuallyCloses ==
+    (<>[][~Heartbeat]_vars) => <>[]~open
 =============================================================================

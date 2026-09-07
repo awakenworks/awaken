@@ -7,6 +7,16 @@ use super::canonical_order::{
 use super::*;
 
 impl ManagedState {
+    pub(super) fn append_aggregate_running_once(record: &mut SessionRecord, id: String) {
+        if record.events.iter().all(|event| event.id != id) {
+            record.events.push(Event {
+                id,
+                kind: OutboundKind::SessionStatusRunning {},
+                processed_at: None,
+            });
+        }
+    }
+
     pub(super) fn replace_interval_aggregate_projections(
         record: &mut SessionRecord,
         persisted: &awaken_session_contract::PersistedSession,
@@ -17,15 +27,6 @@ impl ManagedState {
         >,
         price_snapshot: Option<&awaken_session_contract::ManagedListPriceSnapshot>,
     ) -> Result<(), StateError> {
-        let append_running_once = |record: &mut SessionRecord, id: String| {
-            if record.events.iter().all(|event| event.id != id) {
-                record.events.push(Event {
-                    id,
-                    kind: OutboundKind::SessionStatusRunning {},
-                    processed_at: None,
-                });
-            }
-        };
         // Session-level Usage/Idle belongs to the root-owned interval, while
         // Running belongs to the exact lifecycle opening already visible to a
         // client. Closing an interval must never replace that issued cursor.
@@ -237,7 +238,7 @@ impl ManagedState {
                 .transpose()?
                 .unwrap_or(StopReason::EndTurn);
             if let Some(running_id) = running_id {
-                append_running_once(record, running_id);
+                Self::append_aggregate_running_once(record, running_id);
             }
             let budget_transition_owns_pause = matches!(stop_reason, StopReason::BudgetReached)
                 && persisted
@@ -290,7 +291,7 @@ impl ManagedState {
                         cursor: opening.cursor.0,
                     },
                 );
-                append_running_once(record, running_id);
+                Self::append_aggregate_running_once(record, running_id);
             }
         }
         Ok(())

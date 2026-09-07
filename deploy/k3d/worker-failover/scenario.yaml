@@ -20,6 +20,7 @@ spec:
           imagePullPolicy: Never
           env:
             - { name: AWAKEN_SCENARIO_ROLE, value: worker }
+            - { name: AWAKEN_ECHO_BARRIER_DIR, value: /tmp/worker-fault }
             - name: AWAKEN_WORKER_ID
               valueFrom:
                 fieldRef: { fieldPath: metadata.name }

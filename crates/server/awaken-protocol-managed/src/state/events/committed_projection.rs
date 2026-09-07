@@ -512,11 +512,10 @@ impl ManagedState {
         let aggregate_running_transition =
             Self::should_append_aggregate_running(record, persisted_status);
         if aggregate_running_transition && let Some(id) = aggregate_running_event_id.clone() {
-            record.events.push(Event {
-                id,
-                kind: OutboundKind::SessionStatusRunning {},
-                processed_at: None,
-            });
+            // A recovery refresh may see the same opening while the aggregate
+            // status and lifecycle prefix catch up independently. Reuse the one
+            // interval projection identity owner; repeated reads are not events.
+            Self::append_aggregate_running_once(record, id);
         }
         // A warm reader or a restarted replica may first observe a Run only
         // after its terminal commit and the aggregate has already returned to
@@ -533,11 +532,10 @@ impl ManagedState {
             && Self::needs_aggregate_running_edge(record)
             && let Some(id) = aggregate_running_event_id
         {
-            record.events.push(Event {
-                id,
-                kind: OutboundKind::SessionStatusRunning {},
-                processed_at: None,
-            });
+            // A recovery refresh may see the same opening while the aggregate
+            // status and lifecycle prefix catch up independently. Reuse the one
+            // interval projection identity owner; repeated reads are not events.
+            Self::append_aggregate_running_once(record, id);
         }
         // Root Thread lifecycle is projected from the same accepted lifecycle
         // prefix as the aggregate Session edges. A foreground command already

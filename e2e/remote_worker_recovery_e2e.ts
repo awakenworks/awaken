@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort } from './harness.mjs';
+import { spawnServer, stopServer, hardKillServer, waitForPort } from './harness.mjs';
 import { closeHttpServer } from './http_server.mjs';
 // @ts-ignore -- shared JavaScript fixture intentionally serves TS scenarios.
 import { withoutAmbientProviderKeys } from './process_environment.mjs';
@@ -145,6 +145,7 @@ async function startFaultProxy(): Promise<{
   identity: (workerId: string) => any;
   failNextRunActivityAdmission: () => void;
   awaitingSettle: Promise<void>;
+  awaitingDone: Promise<void>;
   close: () => Promise<void>;
 }> {
   let claimed: any;
@@ -158,6 +159,9 @@ async function startFaultProxy(): Promise<{
   const recoverySnapshots: Array<{ workerId: string; snapshot: any }> = [];
   let firstOperationId: string | undefined;
   let blockedAwaitingSettle = false;
+  let blockedDone = false;
+  let signalDone!: () => void;
+  const awaitingDone = new Promise<void>(resolve => {signalDone = resolve;});
   let signalAwaitingSettle!: () => void;
   const requestCounts = new Map<string, number>();
   let registration: any;
@@ -198,6 +202,16 @@ async function startFaultProxy(): Promise<{
     ) {
       blockedAwaitingSettle = true;
       signalAwaitingSettle();
+      request.once('close', () => response.destroy());
+      return;
+    }
+
+    // D1 terminal effects have committed, but Dispatch settlement is held.
+    // Killing this owner tests a SECOND crash after recovery, at a distinct
+    // persistence boundary. D2 canonical settlement consumes the committed terminal.
+    if (request.method === 'POST' && request.url === '/v1/worker/dispatch/settle'
+        && parsed.outcome === 'Done' && !blockedDone) {
+      blockedDone = true; signalDone();
       request.once('close', () => response.destroy());
       return;
     }
@@ -291,6 +305,7 @@ async function startFaultProxy(): Promise<{
       failedRunActivityAdmissions += 1;
     },
     awaitingSettle,
+    awaitingDone,
     close: () => closeHttpServer(server),
   };
 }
@@ -1044,6 +1059,25 @@ async function main(): Promise<void> {
       'both Worker processes decoded the canonical Environment warmup response',
     );
 
+    // D3 A dies at Awaiting, B recovers and commits terminal truth, then B
+    // dies before settlement. C must recover the same Run with a greater epoch,
+    // observe canonical settlement of its committed terminal prefix, and never
+    // resend either remote call.
+    // Cause constraints: await exact Done request before killing B; real process
+    // signal, SQLite authority and claimed HTTP routes remain the same owners.
+    await Promise.race([proxy.awaitingDone, sleep(30_000).then(() => {throw new Error('B never reached held Done settlement');})]);
+    const peerBeforeSecondCrash = [...peer.sent];
+    await hardKillServer(workerB, 'D3 second Worker crash after terminal commit');
+    workerB = spawnCredentialIsolatedWorker('recovery-worker-c', proxy.url);
+    await waitForReplacementClaim(proxy,'recovery-worker-c',runId,storage);
+    const claimC = proxy.claims().find(entry=>entry.workerId === 'recovery-worker-c' && entry.claimed?.lease?.run_id === runId)!.claimed;
+    assert.ok(claimC.lease.epoch > epochB,'D3 second recovery advances epoch again');
+    // The Coordinator's existing terminal scanner may also settle Ended truth;
+    // the committed queue outcome is authoritative, not which observer won HTTP.
+    await waitForDispatchGone(thread,runId,CRASH_RECOVERY_TIMEOUT_MS);
+    assert.deepEqual(peer.sent,peerBeforeSecondCrash,'D3 no external re-execution after committed terminal');
+    assert.equal((await waitForTerminalMessage(thread,()=>({claims:proxy.claims()}))).filter(message=>String(message.text ?? '').includes(TERMINAL_MARKER)).length,1,'D3 one terminal effect');
+
     // Reservation recovery R1 cause/effect design:
     // C1 one canonical, self-affine, epochless RunDispatch is already durable;
     // C2 its pre-activity reservation deadline expired; C3 the registered
@@ -1060,7 +1094,7 @@ async function main(): Promise<void> {
     // | R1 | yes | no | Admitted(epoch>0) | current claim | E1-E4 |
     // | R3 | yes | no | Unavailable, then Admitted | Retry, then current claim | no execution before higher-epoch E1-E4 |
     await waitForDispatchGone(thread, runId);
-    const identityB = proxy.identity('recovery-worker-b');
+    const identityB = proxy.identity('recovery-worker-c');
     assert.ok(identityB, 'R1 replacement exposed its registered incarnation');
     let workerBPaused = false;
     try {
@@ -1171,7 +1205,7 @@ async function main(): Promise<void> {
     }
 
     console.log(
-      'REMOTE WORKER RECOVERY TS E2E PASS: warmup decode, lost receipt retry, crash/reclaim, snapshot resume, stale-epoch fence, and exactly-one terminal effect.',
+      'REMOTE WORKER RECOVERY TS E2E PASS: warmup decode, lost receipt retry, crash/reclaim, snapshot resume, second crash before terminal settlement, stale-epoch fence, and exactly-one terminal effect.',
     );
   } finally {
     if (workerA) await stopServer(workerA).catch(() => {});
