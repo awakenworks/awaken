@@ -63,6 +63,17 @@ Forbidden inputs are:
 - local absolute paths as authority;
 - provider health as an authorization grant.
 
+Typed MCP toolsets keep their source default and exact overrides until the
+concrete tool invocation is known. `AgentBindings::tool_policy` resolves the
+matching source and calls `ToolsetPolicy::policy_for`: an exact override replaces
+the source default. `RuleBasedToolPermissionPolicy` inserts only that resolved
+exact decision into its ordinary rule fold. A disabled source default must not
+be flattened into a wildcard deny that also matches explicitly enabled tools.
+Explicit authored deny rules still win under ordinary modes. Closed Agent-tool
+membership continues to be projected by the host from its canonical roster.
+Native `PermissionGate` and ACP consume the same `EffectiveToolAuthorization`;
+neither backend owns a second evaluator or approval state.
+
 ## Permission Policy Role Catalog
 
 | Name | Kind | Owns | Uses | Must Not Own | Failure Mode | Guardrail/Test |
