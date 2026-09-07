@@ -349,6 +349,36 @@ remote commit, unbounded retries or eventual dependency availability.
 The independent Provider wall-clock checks and real backend effect-boundary
 authority remain unresolved by this amendment.
 
+Physical disposal now consumes the same current authority port. Reused unchanged:
+Session preparation/authorization CAS, exact marker/UID identity, retained
+cleanup participants and provider dependency teardown. Modified: both Host
+terminal/checkpoint callers, the existing Sandbox disposal method, Local/Namespace
+physical cleanup and Container runtime observation/removal. The former Memory
+authorization helper moves to the existing provisioning authority contract as
+`with_current_sandbox_effect`; acknowledgement, preparation and physical cleanup
+reuse this single kernel. No new registry, clock, lease or lifecycle is added.
+
+Dynamic order is captured current authority -> retained participant lock ->
+current admission -> quiescence/observation -> re-admission -> physical/dependency
+effects -> current completion. Local synchronous shredding, exact root deletion
+and Removed publication execute inside the current guard. Container rechecks
+after observation before deleting, after a removal response, after the Memory
+lock and each teardown; staging release and cached/initial completion consume
+the same guard. Failure or cancellation keeps the original participants for
+retry. A committed remote delete remains committed even when its response is
+lost or authority is revoked; a late response grants no next operation.
+
+Adjacent Local 5x5 and Container 6x5 decision tables cover actual Pending
+participant/control/observation/removal/Memory waits crossed with revocation,
+replacement, exhausted current budget, renewal and cancellation. They check
+zero next effects, retained bytes/guards, exact retry and cached-result denial.
+The existing model shares one provider wait across fixed preparation/disposal
+selectors; 26 semantic mutants and 12 reachability witnesses include disposal
+and cached completion. Its two-effect bound does not establish ordering across
+both aggregate phases, callback elapsed time or asynchronous remote commit
+fencing. Provider UTC validation, cold reconstruction authority and real
+cloud/platform qualification remain explicit open boundaries.
+
 ### Control-publication cleanup participant
 
 The disposal preflight must not mistake caller cancellation or a concurrent

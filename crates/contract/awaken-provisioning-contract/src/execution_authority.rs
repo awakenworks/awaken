@@ -27,6 +27,36 @@ pub trait CurrentExecutionAuthority: Send + Sync {
     }
 }
 
+/// Run one synchronous Sandbox effect under its current operation-bound guard.
+/// Shared by Memory acknowledgement/preparation and physical disposal. Durable
+/// expiry stays in Control coordinates; this edge consumes the current local
+/// proof. Re-enter after asynchronous waits: success cannot authorize an
+/// in-flight remote commit or a later effect. Faulty ports cannot omit/repeat
+/// the callback, widen its identity, or turn an after-effect error into success.
+pub fn with_current_sandbox_effect<T>(
+    asserted: &crate::SandboxEffectFence,
+    authority: &dyn CurrentExecutionAuthority,
+    apply: impl FnOnce() -> Result<T, crate::SandboxError>,
+) -> Result<T, crate::SandboxError> {
+    asserted.validate_identity()?;
+    let mut apply = Some(apply);
+    let mut result = None;
+    authority
+        .with_current_effect(asserted, &mut |current, remaining| {
+            if remaining.is_zero()
+                || !asserted.same_effect_identity(current)
+                || current.expires_at_unix_ms < asserted.expires_at_unix_ms
+            {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            let apply = apply.take().ok_or(io::ErrorKind::PermissionDenied)?;
+            result = Some(apply().map_err(io::Error::other)?);
+            Ok(())
+        })
+        .map_err(|error| crate::SandboxError::new(error.to_string()))?;
+    result.ok_or_else(|| crate::SandboxError::new("Sandbox authority omitted the effect"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

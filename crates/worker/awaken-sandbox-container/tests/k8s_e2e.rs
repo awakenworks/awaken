@@ -1009,7 +1009,12 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
         .expect("KLI2/E4 prepare source-dependent effects");
     assert_pod_present(&pod, "KLI2/E4 preparation has zero physical effect");
     recovered
-        .dispose_for_effect(&disposal_authorization(&terminal_fence))
+        .dispose_for_effect(
+            &disposal_authorization(&terminal_fence),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&terminal_fence)).effect_fence(),
+            ),
+        )
         .await
         .expect("KLI2/E5 exact physical cleanup");
 }
@@ -1228,7 +1233,12 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
     let pod = container_id(&handle);
     assert_pod_present(&pod, "R4 provider preparation has zero physical effect");
     sandbox
-        .dispose_for_effect(&disposal_authorization(&terminal_fence))
+        .dispose_for_effect(
+            &disposal_authorization(&terminal_fence),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&terminal_fence)).effect_fence(),
+            ),
+        )
         .await
         .expect("R4 physical disposal runs only after preparation");
 

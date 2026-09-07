@@ -167,7 +167,12 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         "K1c/E4 preparation has zero physical effect"
     );
     retried
-        .dispose_for_effect(&disposal_authorization(&terminal_fence))
+        .dispose_for_effect(
+            &disposal_authorization(&terminal_fence),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&terminal_fence)).effect_fence(),
+            ),
+        )
         .await
         .expect("K1c/E5 delete the exact Pod UID");
     assert_eq!(runtime.inspect(&id).await.unwrap(), ContainerState::Gone);
@@ -593,7 +598,12 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
         .await
         .expect("KTR2 prepare replacement disposal");
     replacement_environment
-        .dispose_for_effect(&disposal_authorization(&terminal_fence))
+        .dispose_for_effect(
+            &disposal_authorization(&terminal_fence),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&terminal_fence)).effect_fence(),
+            ),
+        )
         .await
         .expect("KTR2 delete replacement and retained claim");
 }
@@ -644,7 +654,12 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         .await
         .unwrap();
     first_environment
-        .dispose_for_effect(&disposal_authorization(&first_terminal))
+        .dispose_for_effect(
+            &disposal_authorization(&first_terminal),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&first_terminal)).effect_fence(),
+            ),
+        )
         .await
         .unwrap();
 
@@ -687,7 +702,12 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         .await
         .unwrap();
     second_environment
-        .dispose_for_effect(&disposal_authorization(&second_terminal))
+        .dispose_for_effect(
+            &disposal_authorization(&second_terminal),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&second_terminal)).effect_fence(),
+            ),
+        )
         .await
         .unwrap();
     assert_eq!(runtime.inspect(&first).await.unwrap(), ContainerState::Gone);
@@ -834,7 +854,12 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         .await
         .expect("KPV3c source-dependent preparation");
     recovered
-        .dispose_for_effect(&disposal_authorization(&terminal_fence))
+        .dispose_for_effect(
+            &disposal_authorization(&terminal_fence),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&terminal_fence)).effect_fence(),
+            ),
+        )
         .await
         .expect("KPV3c exact cleanup");
     assert!(
@@ -1078,7 +1103,12 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         .await
         .expect("KPV5c source-dependent preparation");
     replacement
-        .dispose_for_effect(&disposal_authorization(&replacement_terminal_fence))
+        .dispose_for_effect(
+            &disposal_authorization(&replacement_terminal_fence),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&replacement_terminal_fence)).effect_fence(),
+            ),
+        )
         .await
         .expect("KPV5c Pod-gated B+P cleanup");
     assert!(pods.get_opt(&pod_name).await.unwrap().is_none(), "KPV5c");
@@ -1279,8 +1309,16 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
     }
 
     let authorization = disposal_authorization(&terminal_fence);
-    let stale_cleanup =
-        tokio::spawn(async move { source.dispose_for_effect(&authorization).await });
+    let stale_cleanup = tokio::spawn(async move {
+        source
+            .dispose_for_effect(
+                &authorization,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    (&authorization).effect_fence(),
+                ),
+            )
+            .await
+    });
     let cleanup_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     while !stale_cleanup.is_finished()
         && claims
@@ -1326,7 +1364,12 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
             .await
             .expect("KPV6 E4 prepare exact replacement cleanup");
         replacement
-            .dispose_for_effect(&disposal_authorization(&replacement_terminal))
+            .dispose_for_effect(
+                &disposal_authorization(&replacement_terminal),
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    (&disposal_authorization(&replacement_terminal)).effect_fence(),
+                ),
+            )
             .await
             .expect("KPV6 E4 exact replacement cleanup");
     }
@@ -1458,7 +1501,16 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         "KPV4e/E0 preparation has zero PVC deletion effect"
     );
     let authorization = disposal_authorization(&terminal_fence);
-    let disposal = tokio::spawn(async move { source.dispose_for_effect(&authorization).await });
+    let disposal = tokio::spawn(async move {
+        source
+            .dispose_for_effect(
+                &authorization,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    (&authorization).effect_fence(),
+                ),
+            )
+            .await
+    });
     let early_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     let deletion_started_while_source_present = loop {
         let pod = pods.get_opt(&pod_name).await.unwrap();
@@ -1619,7 +1671,12 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
             .await
             .unwrap();
         owner_environment
-            .dispose_for_effect(&disposal_authorization(&terminal_fence))
+            .dispose_for_effect(
+                &disposal_authorization(&terminal_fence),
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    (&disposal_authorization(&terminal_fence)).effect_fence(),
+                ),
+            )
             .await
             .unwrap();
         return;
@@ -1679,7 +1736,12 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
         .await
         .expect("KPV2 E3 prepare exact V2 cleanup");
     owner_environment
-        .dispose_for_effect(&disposal_authorization(&terminal_fence))
+        .dispose_for_effect(
+            &disposal_authorization(&terminal_fence),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&disposal_authorization(&terminal_fence)).effect_fence(),
+            ),
+        )
         .await
         .expect("KPV2 E3 exact V2 cleanup");
 }

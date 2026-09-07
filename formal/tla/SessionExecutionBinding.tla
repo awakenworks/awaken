@@ -25,32 +25,36 @@ EXTENDS WorkerExecutionAuthority
    replay still needs current authority but never drains twice. This models
    the local acknowledgement only; MemoryCAS owns durable reconciliation and
    retention. No fairness/termination of an unavailable mount is assumed. *)
-VARIABLES deploymentReady, registeredWorker, providerSource
-(* Preparation uses the same current-effect kernel after control/credential
-   waits. preparationWait=1 is an admitted pending call, =2 its response. An
+VARIABLES deploymentReady, registeredWorker, providerSource, physicalDisposal
+(* Preparation and physical disposal share one wait transition, not two
+   authorization protocols. physicalDisposal fixes the phase at initialization;
+   this proves admission within that phase, not aggregate preparation ordering.
+   Both use the same current-effect kernel after control/credential/removal
+   waits. providerWait=1 is an admitted pending call, =2 its response. An
    admitted backend may finish after revocation; its response is NOT a grant
    for the next operation or a successful preparation receipt. This finite
    model abstracts one such wait and two effects, not backend commit fencing. *)
-VARIABLES memoryWait, memoryDrains, preparationWait
-memoryVars == <<memoryWait, memoryDrains, preparationWait>>
+VARIABLES memoryWait, memoryDrains, providerWait
+memoryVars == <<memoryWait, memoryDrains, providerWait>>
 VARIABLES selection, boundSlot, boundGeneration, boundEnvironment,
           environmentIdentity, environmentPhase, sessionExpired,
           effectHeld, effectChecked, badEffect, effects, effectPhases, weakStarted
 bindingVars == <<selection, boundSlot, boundGeneration, boundEnvironment,
     environmentIdentity, environmentPhase, sessionExpired, effectHeld,
     effectChecked, badEffect, effects, effectPhases, weakStarted>>
-bindingAll == <<allVars, bindingVars, deploymentReady, registeredWorker, providerSource, memoryVars>>
+bindingAll == <<allVars, bindingVars, deploymentReady, registeredWorker, providerSource, physicalDisposal, memoryVars>>
 
 BindingInit == RootInit
   /\ registeredWorker \in BOOLEAN
   /\ providerSource \in BOOLEAN
+  /\ physicalDisposal \in BOOLEAN
   /\ deploymentReady = FALSE
   /\ selection = "unset" /\ boundSlot = 0 /\ boundGeneration = 0 /\ boundEnvironment = 0
   /\ environmentIdentity = 1 /\ environmentPhase = "candidate" /\ sessionExpired = FALSE
   /\ effectHeld = FALSE /\ effectChecked = FALSE /\ badEffect = FALSE
   /\ effects = 0 /\ effectPhases = {} /\ weakStarted = FALSE
   /\ memoryWait = 0 /\ memoryDrains = 0
-  /\ preparationWait = 0
+  /\ providerWait = 0
 
 ExecutionRootCurrent == ~registeredWorker \/ RootCurrent
 CurrentBinding == /\ ExecutionRootCurrent /\ projection = "Live" /\ ~sessionExpired
@@ -77,7 +81,7 @@ Bind == /\ (providerSource \/ selection = "scoped") /\ boundSlot = 0 /\ projecti
        sessionExpired, effectHeld, effectChecked, badEffect, effects, effectPhases, weakStarted>>
 CheckEffect == /\ ~effectHeld /\ effects < 2 /\ CurrentBinding
   /\ memoryWait # 1
-  /\ preparationWait # 1
+  /\ providerWait # 1
   /\ effectHeld' = TRUE /\ effectChecked' = TRUE
   /\ UNCHANGED memoryVars
   /\ UNCHANGED <<allVars, selection, boundSlot, boundGeneration, boundEnvironment,
@@ -87,7 +91,7 @@ CommitEffect == /\ effectHeld /\ effectChecked /\ effects < 2
   \* weaken the assertion against which that mutant is checked.
   /\ badEffect' = (badEffect \/ (registeredWorker /\ ~RootCurrent)
        \/ memoryWait = 1
-       \/ preparationWait = 1
+       \/ providerWait = 1
        \/ projection # "Live" \/ sessionExpired
        \/ boundSlot # slotIdentity \/ boundGeneration # lease[1]
        \/ (~providerSource /\ (selection # "scoped"
@@ -95,11 +99,14 @@ CommitEffect == /\ effectHeld /\ effectChecked /\ effects < 2
   /\ effects' = effects + 1
   /\ effectPhases' = effectPhases \cup {IF memoryWait = 2 THEN
        (IF memoryDrains = 0 THEN "memory" ELSE "memory-replay")
-       ELSE IF preparationWait = 2 THEN "preparation"
+       ELSE IF providerWait = 2 THEN
+         (IF physicalDisposal THEN
+           (IF "disposal" \in effectPhases THEN "disposal-replay" ELSE "disposal")
+          ELSE "preparation")
        ELSE IF providerSource THEN "provider" ELSE environmentPhase}
   /\ memoryDrains' = (IF memoryWait = 2 THEN 1 ELSE memoryDrains)
   /\ memoryWait' = 0
-  /\ preparationWait' = 0
+  /\ providerWait' = 0
   /\ effectHeld' = FALSE /\ effectChecked' = FALSE
   /\ UNCHANGED <<allVars, selection, boundSlot, boundGeneration, boundEnvironment,
        environmentIdentity, environmentPhase, sessionExpired, weakStarted>>
@@ -141,29 +148,29 @@ MemoryWaitChanges == /\ providerSource /\ boundSlot # 0 /\ ~effectHeld /\ effect
   /\ \/ (memoryWait = 0 /\ memoryWait' = 1)
      \/ (memoryWait = 1 /\ memoryWait' = 2)
      \/ (memoryWait # 0 /\ memoryWait' = 0)
-  /\ UNCHANGED <<allVars, bindingVars, deploymentReady, memoryDrains, preparationWait>>
-PreparationWaitChanges == /\ providerSource /\ boundSlot # 0 /\ ~effectHeld /\ effects < 2
+  /\ UNCHANGED <<allVars, bindingVars, deploymentReady, memoryDrains, providerWait>>
+ProviderWaitChanges == /\ providerSource /\ boundSlot # 0 /\ ~effectHeld /\ effects < 2
   /\ memoryWait = 0
-  /\ \/ (preparationWait = 0 /\ CurrentBinding /\ preparationWait' = 1)
-     \/ (preparationWait = 1 /\ preparationWait' = 2)
-     \/ (preparationWait # 0 /\ preparationWait' = 0)
+  /\ \/ (providerWait = 0 /\ CurrentBinding /\ providerWait' = 1)
+     \/ (providerWait = 1 /\ providerWait' = 2)
+     \/ (providerWait # 0 /\ providerWait' = 0)
   /\ UNCHANGED <<allVars, bindingVars, deploymentReady, memoryWait, memoryDrains>>
 BindingNext == (((((Select \/ WeakSpawn \/ Bind
   \/ CancelEffect \/ AuthorityChanges \/ EnvironmentChanges) /\ UNCHANGED memoryVars)
   \/ CheckEffect \/ CommitEffect) /\ UNCHANGED deploymentReady)
-  \/ (ProbeReady /\ UNCHANGED memoryVars) \/ MemoryWaitChanges \/ PreparationWaitChanges)
-  /\ UNCHANGED <<registeredWorker, providerSource>>
+  \/ (ProbeReady /\ UNCHANGED memoryVars) \/ MemoryWaitChanges \/ ProviderWaitChanges)
+  /\ UNCHANGED <<registeredWorker, providerSource, physicalDisposal>>
 BindingSpec == BindingInit /\ [][BindingNext]_bindingAll
 BindingTypeOK == RootTypeOK /\ selection \in {"unset", "weak", "scoped"}
   /\ deploymentReady \in BOOLEAN /\ registeredWorker \in BOOLEAN
-  /\ providerSource \in BOOLEAN
+  /\ providerSource \in BOOLEAN /\ physicalDisposal \in BOOLEAN
   /\ boundSlot \in 0..2 /\ boundGeneration \in 0..2 /\ boundEnvironment \in 0..2
   /\ environmentIdentity \in 1..2 /\ environmentPhase \in {"candidate", "resident", "retiring"}
   /\ sessionExpired \in BOOLEAN /\ effectHeld \in BOOLEAN /\ effectChecked \in BOOLEAN
   /\ badEffect \in BOOLEAN /\ weakStarted \in BOOLEAN /\ effects \in 0..2
-  /\ effectPhases \subseteq {"candidate", "resident", "retiring", "provider", "memory", "memory-replay", "preparation"}
+  /\ effectPhases \subseteq {"candidate", "resident", "retiring", "provider", "memory", "memory-replay", "preparation", "disposal", "disposal-replay"}
   /\ memoryWait \in 0..2 /\ memoryDrains \in 0..2
-  /\ preparationWait \in 0..2
+  /\ providerWait \in 0..2
 MemoryCopyDrainedOnce == memoryDrains <= 1
 OnlyCurrentBindingCommits == ~badEffect
 OnlyProbedDeploymentSelected == selection = "scoped" => deploymentReady
@@ -179,4 +186,6 @@ NoMemoryAckReached == "memory" \notin effectPhases
 NoMemoryReplayReached == "memory-replay" \notin effectPhases
 NoEmptyPreparationReached == memoryDrains # 0 \/ "preparation" \notin effectPhases
 NoCachedPreparationReached == memoryDrains # 1 \/ "preparation" \notin effectPhases
+NoPhysicalDisposalReached == "disposal" \notin effectPhases
+NoCachedDisposalReached == "disposal-replay" \notin effectPhases
 =============================================================================

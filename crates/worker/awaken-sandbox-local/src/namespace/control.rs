@@ -833,7 +833,10 @@ mod tests {
         assert!(
             pc::Sandbox::dispose_for_effect(
                 &sandbox,
-                &crate::test_disposal_authorization(&foreign)
+                &crate::test_disposal_authorization(&foreign),
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    (&crate::test_disposal_authorization(&foreign)).effect_fence()
+                )
             )
             .await
             .is_err()
@@ -843,7 +846,14 @@ mod tests {
             "N13 no unauthorized shutdown"
         );
         let authorization = crate::test_disposal_authorization(&terminal);
-        let mut first = Box::pin(pc::Sandbox::dispose_for_effect(&sandbox, &authorization));
+        let disposal_authority = awaken_provisioning_contract::test_support::EffectAuthority::new(
+            (&authorization).effect_fence(),
+        );
+        let mut first = Box::pin(pc::Sandbox::dispose_for_effect(
+            &sandbox,
+            &authorization,
+            &disposal_authority,
+        ));
         tokio::select! {
             biased;
             result = &mut first => panic!("N14 did not join control: {result:?}"),
@@ -858,9 +868,15 @@ mod tests {
             "N15 retained removal"
         );
         release.notify_one();
-        pc::Sandbox::dispose_for_effect(&sandbox, &authorization)
-            .await
-            .unwrap();
+        pc::Sandbox::dispose_for_effect(
+            &sandbox,
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                (&authorization).effect_fence(),
+            ),
+        )
+        .await
+        .unwrap();
         assert!(!sandbox.root.root().exists(), "N15 physical completion");
         assert!(!socket.exists());
         drop(listener);

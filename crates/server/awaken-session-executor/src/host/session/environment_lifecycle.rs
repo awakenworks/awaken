@@ -1116,9 +1116,14 @@ impl SharedHost {
                 "checkpoint source Disposal does not match its retained Preparation owner",
             ));
         }
+        let authority = self.session_slots.provider_effect_authority(
+            thread,
+            authorization.effect_fence(),
+            self.execution_authority.as_ref(),
+        )?;
         owned
             .environment
-            .dispose_for_effect(authorization)
+            .dispose_for_effect(authorization, &authority)
             .await
             .map_err(|error| HostError::unavailable(error.to_string()))?;
         if !self.confirm_terminated_retirement(thread, &retirement) {

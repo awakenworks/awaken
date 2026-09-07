@@ -17462,10 +17462,13 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
 
     async fn dispose_for_effect(
         &self,
-        _authorization: &pc::SandboxDisposalAuthorization,
+        authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
-        self.events.lock().unwrap().push("dispose-physical");
-        Ok(())
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
+            self.events.lock().unwrap().push("dispose-physical");
+            Ok(())
+        })
     }
 }
 
