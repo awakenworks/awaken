@@ -8,6 +8,7 @@ use awaken_sql_storage::StoredU64;
 use awaken_tenancy::ScopeId;
 
 use crate::codec::decode_publication_value;
+use crate::management_effect_retirement_is_admitted;
 use crate::schema::{BUNDLE_ID, converged_config_bundle, selected_config_bundle};
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
@@ -384,12 +385,17 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .fetch_optional(&mut *tx)
         .await
         .map_err(reject)?;
-        let Some(row) = row else {
-            return Ok(false);
-        };
-        let Json(pending): Json<ManagementEffect> = row.try_get("payload").map_err(reject)?;
-        pending.validate_index(effect.kind(), effect.key())?;
-        if !receipt.matches_pending(&pending) {
+        let pending = row
+            .map(|row| {
+                let Json(pending): Json<ManagementEffect> =
+                    row.try_get("payload").map_err(reject)?;
+                Ok::<_, ConfigStoreError>(pending)
+            })
+            .transpose()?;
+        if let Some(pending) = &pending {
+            pending.validate_index(effect.kind(), effect.key())?;
+        }
+        if !management_effect_retirement_is_admitted(receipt, pending.as_ref()) {
             return Ok(false);
         }
         let removed = sqlx::query(&format!(

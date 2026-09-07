@@ -40,3 +40,6 @@ schema = ["awaken-agent-config/schema"]
 [[test]]
 name = "integration"
 required-features = ["test-support"]
+
+[lints]
+workspace = true
