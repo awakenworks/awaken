@@ -12,6 +12,13 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::Id as RunId;
 use serde::{Deserialize, Serialize};
 
+fn current_epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 const SESSION_EVENT_BATCH_OPERATION_PREFIX: &str = "session-event-batch-v1:";
 const SESSION_ROOT_REVISION_BATCH_PREFIX: &str = "session-root-revision-v1:";
 pub const MAX_SESSION_INITIAL_EVENTS: usize = 50;
@@ -365,6 +372,10 @@ pub struct SessionEventEntry {
     pub event: SessionEventCommand,
     #[serde(default)]
     pub processed: bool,
+    /// Wall-clock time at which this command acquired its immutable projection
+    /// anchor. Zero is reserved for historical rows that only stored the flag.
+    #[serde(default)]
+    pub processed_at_unix_ms: u64,
     /// Absent for unprocessed and legacy commands. Such entries remain durable
     /// provenance but are not listable until the existing effect owner supplies
     /// one immutable commit coordinate.
@@ -447,6 +458,7 @@ impl SessionEventBatch {
         }
         entry.projection_anchor = Some(projection_anchor);
         entry.processed = true;
+        entry.processed_at_unix_ms = current_epoch_millis();
         Ok(true)
     }
 
@@ -459,10 +471,12 @@ impl SessionEventBatch {
         projection_anchor: Option<SessionEventProjectionAnchor>,
     ) -> usize {
         let mut resolved = 0;
+        let processed_at_unix_ms = current_epoch_millis();
         for entry in &mut self.events {
             if !entry.processed {
                 entry.projection_anchor = projection_anchor;
                 entry.processed = true;
+                entry.processed_at_unix_ms = processed_at_unix_ms;
                 resolved += 1;
             }
         }
@@ -542,6 +556,7 @@ impl SessionEventBatch {
                             data_subject_id: data_subject_id.clone(),
                         },
                         processed: false,
+                        processed_at_unix_ms: 0,
                         projection_anchor: None,
                     });
                 }
@@ -555,6 +570,7 @@ impl SessionEventBatch {
                             content,
                         },
                         processed: false,
+                        processed_at_unix_ms: 0,
                         projection_anchor: None,
                     });
                 }
@@ -582,6 +598,7 @@ impl SessionEventBatch {
                             max_iterations,
                         },
                         processed: false,
+                        processed_at_unix_ms: 0,
                         projection_anchor: None,
                     });
                 }
@@ -599,6 +616,7 @@ impl SessionEventBatch {
                             reply,
                         },
                         processed: false,
+                        processed_at_unix_ms: 0,
                         projection_anchor: None,
                     });
                 }
@@ -627,6 +645,7 @@ impl SessionEventBatch {
                             interrupt,
                         },
                         processed: false,
+                        processed_at_unix_ms: 0,
                         projection_anchor: None,
                     });
                 }
@@ -816,6 +835,26 @@ mod tests {
             "R3/E4"
         );
         assert!(progress.events[0].processed, "R3/E4");
+        assert_ne!(
+            progress.events[0].processed_at_unix_ms, 0,
+            "R3/E4 records a durable real processing time"
+        );
+        let processed_at = progress.events[0].processed_at_unix_ms;
+        assert!(
+            !progress
+                .mark_processed(
+                    &retained,
+                    SessionEventProjectionAnchor {
+                        source_commit_cursor: 9,
+                    },
+                )
+                .unwrap(),
+            "R3/E4 exact replay is a no-op"
+        );
+        assert_eq!(
+            progress.events[0].processed_at_unix_ms, processed_at,
+            "R3/E4 exact replay preserves the original time"
+        );
         assert_eq!(
             progress.events[0]
                 .projection_anchor

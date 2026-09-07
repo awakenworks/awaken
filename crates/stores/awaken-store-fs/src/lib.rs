@@ -355,5 +355,13 @@ impl StreamCheckpointStore for FsStreamCheckpointStore {
 }
 
 fn sync_directory(dir: &Path) -> std::io::Result<()> {
-    File::open(dir)?.sync_all()
+    #[cfg(unix)]
+    {
+        File::open(dir)?.sync_all()
+    }
+    #[cfg(windows)]
+    {
+        let _ = dir;
+        Ok(())
+    }
 }

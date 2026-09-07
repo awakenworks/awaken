@@ -17147,6 +17147,7 @@ fn terminal_test_session(
 ) -> awaken_session_contract::PersistedSession {
     let mut session = awaken_session_contract::PersistedSession::frozen_with_budget(
         session_id,
+        1_700_000_000_000,
         projection.baseline.clone(),
         awaken_session_contract::SessionResourceState::from_active(projection.resources.clone()),
         Default::default(),

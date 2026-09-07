@@ -12,6 +12,13 @@ authority = "sandbox-filesystem"
 [dependencies]
 cap-std = "4"
 rustix = { version = "1", features = ["fs"] }
+same-file = "1"
+
+[target.'cfg(windows)'.dependencies]
+atomicwrites = "0.4.4"
+fs_at = "0.2.1"
+winapi-util = "0.1.11"
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [lints]
 workspace = true

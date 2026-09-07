@@ -6,6 +6,60 @@ use awaken_provisioning_contract::{
 
 struct Broker;
 
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_disposal_finishes_when_registered_secret_or_parent_is_missing() {
+    for missing_parent in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::new(tmp.path()).with_blob("broker://k", b"secret".to_vec());
+        let sandbox = provider
+            .create_sandbox(&secret_spec("missing-credential"))
+            .await
+            .unwrap();
+        let root = sandbox.root.root().to_owned();
+        let path = sandbox.secret_paths[0].clone();
+        if missing_parent {
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        } else {
+            std::fs::remove_file(&path).unwrap();
+        }
+        sandbox.shred_secrets().unwrap();
+        sandbox.shred_secrets().unwrap();
+        sandbox.dispose().await.unwrap();
+        assert!(
+            !root.exists(),
+            "missing credentials must not leave cleanup pending"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_disposal_rejects_hard_link_then_can_retry_after_alias_removal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path()).with_blob("broker://k", b"secret".to_vec());
+    let sandbox = provider
+        .create_sandbox(&secret_spec("aliased-credential"))
+        .await
+        .unwrap();
+    let root = sandbox.root.root().to_owned();
+    let path = sandbox.secret_paths[0].clone();
+    let outside = tmp.path().join("external-sentinel");
+    std::fs::write(&outside, b"must survive").unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::hard_link(&outside, &path).unwrap();
+    assert!(sandbox.dispose().await.is_err());
+    assert!(
+        root.exists(),
+        "failed shred must retain the realization for retry"
+    );
+    assert_eq!(std::fs::read(&outside).unwrap(), b"must survive");
+    std::fs::remove_file(&path).unwrap();
+    sandbox.dispose().await.unwrap();
+    assert!(!root.exists());
+    assert_eq!(std::fs::read(outside).unwrap(), b"must survive");
+}
+
 #[async_trait]
 impl pc::SecretBroker for Broker {
     async fn materialize(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {

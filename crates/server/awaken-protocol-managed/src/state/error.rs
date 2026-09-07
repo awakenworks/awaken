@@ -56,6 +56,20 @@ impl StateError {
             Self::Run(error) if error.code == SESSION_PROJECTION_RECOVERY_REQUIRED_CODE
         )
     }
+
+    /// A freshly-created local Session can briefly race the creation of its
+    /// SQLite-backed execution directory on Windows. Only this exact, known
+    /// pre-admission failure is safe to retry: no Event batch has been retained
+    /// and therefore no model or tool side effect can have started.
+    pub(crate) fn is_transient_sqlite_initialization_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Run(error)
+                if matches!(error.kind, RunErrorKind::Internal | RunErrorKind::Unavailable)
+                    && error.message.contains("sqlite_migration_begin")
+                    && error.message.contains("unable to open database file")
+        )
+    }
 }
 
 impl From<awaken_session_contract::SessionRepositoryError> for StateError {
@@ -141,6 +155,24 @@ mod tests {
         assert!(
             !StateError::Run(RunError::bad_request("ordinary")).is_projection_recovery_required(),
             "P2"
+        );
+    }
+
+    #[test]
+    fn only_the_known_pre_admission_sqlite_race_is_retryable() {
+        let transient = StateError::Run(RunError::internal(
+            "migrate: migration backend operation 'sqlite_migration_begin' failed: unable to open database file",
+        ));
+        assert!(transient.is_transient_sqlite_initialization_failure());
+        assert!(
+            !StateError::Run(RunError::internal("database is corrupt"))
+                .is_transient_sqlite_initialization_failure()
+        );
+        assert!(
+            !StateError::Run(RunError::bad_request(
+                "sqlite_migration_begin: unable to open database file"
+            ))
+            .is_transient_sqlite_initialization_failure()
         );
     }
 }

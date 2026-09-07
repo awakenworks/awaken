@@ -38,6 +38,7 @@ pub(super) fn validated_create_replay(
 pub struct CreateSessionCommand {
     pub owner_scope: String,
     pub session_id: String,
+    pub created_at_unix_ms: u64,
     pub intent: SessionCreationIntent,
     pub title: Option<String>,
     pub metadata: std::collections::BTreeMap<String, String>,
@@ -120,6 +121,7 @@ impl SessionCreationError {
 impl SessionApplication {
     fn compile_session_root(
         session_id: String,
+        created_at_unix_ms: u64,
         title: Option<String>,
         metadata: std::collections::BTreeMap<String, String>,
         tools: SessionToolConfiguration,
@@ -140,6 +142,7 @@ impl SessionApplication {
             .map_err(|error| SessionCreationError::Unavailable(error.to_string()))?;
         Ok(PersistedSession::frozen_with_budget(
             session_id,
+            created_at_unix_ms,
             compiled.baseline,
             resources,
             mcp,
@@ -188,6 +191,7 @@ impl SessionApplication {
         let CreateSessionCommand {
             owner_scope,
             session_id,
+            created_at_unix_ms,
             intent,
             title,
             metadata,
@@ -243,6 +247,7 @@ impl SessionApplication {
         }
         let mut persisted = match Self::compile_session_root(
             session_id.clone(),
+            created_at_unix_ms,
             title,
             metadata,
             tools,

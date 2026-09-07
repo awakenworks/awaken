@@ -453,6 +453,9 @@ impl FsSkillStore {
             .truncate(false)
             .open(root.join(".awaken-skill.lock"))?
             .sync_all()?;
+        // Opening a directory as a File is not supported on Windows. The lock
+        // file is already synced above; retain the directory fsync on Unix.
+        #[cfg(unix)]
         File::open(&root)?.sync_all()?;
         let store = Self { root };
         Ok(store)

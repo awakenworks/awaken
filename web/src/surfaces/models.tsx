@@ -510,7 +510,7 @@ export default function ModelsSurface() {
                 <td data-label={app.t("Context", "上下文")} className="mut">
                   {c?.model_attributes?.[o.model_id]?.context_window
                     ? `${fmtTokens(c.model_attributes[o.model_id].context_window!)}`
-                    : "—"}
+                    : app.t("Not reported", "供应商未提供")}
                   {c?.model_attributes?.[o.model_id]?.provenance?.context_window?.source && (
                     <div style={{ fontSize: 11 }}>
                       {c.model_attributes[o.model_id].provenance!.context_window.source}
@@ -520,7 +520,7 @@ export default function ModelsSurface() {
                 <td data-label={app.t("Max output", "最大输出")} className="mut">
                   {c?.model_attributes?.[o.model_id]?.max_output_tokens
                     ? `${fmtTokens(c.model_attributes[o.model_id].max_output_tokens!)}`
-                    : "—"}
+                    : app.t("Not reported", "供应商未提供")}
                   {c?.model_attributes?.[o.model_id]?.provenance?.max_output_tokens?.source && (
                     <div style={{ fontSize: 11 }}>
                       {c.model_attributes[o.model_id].provenance!.max_output_tokens.source}

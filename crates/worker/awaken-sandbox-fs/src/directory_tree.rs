@@ -130,17 +130,28 @@ pub fn remove_relative_entry_exact(
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn remove_relative_entry_exact(
     root: &Path,
-    _expected_root: DirectoryIdentity,
-    _relative: &Path,
+    expected_root: DirectoryIdentity,
+    relative: &Path,
 ) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        format!(
-            "descriptor-relative removal is unsupported for `{}` on this platform",
-            root.display()
-        ),
-    ))
+    if directory_identity_nofollow(root)? != expected_root {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "sandbox root identity changed",
+        ));
+    }
+    validate_relative_tree_path(relative, false)?;
+    let path = root.join(relative);
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
 }

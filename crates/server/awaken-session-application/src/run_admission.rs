@@ -933,6 +933,10 @@ impl SessionApplication {
             CreateSessionCommand {
                 owner_scope,
                 session_id,
+                created_at_unix_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
                 intent,
                 title,
                 metadata,

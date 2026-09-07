@@ -900,6 +900,7 @@ impl ManagedState {
         let creation = awaken_session_application::CreateSessionCommand {
             owner_scope: owner_scope.clone(),
             session_id: id.clone(),
+            created_at_unix_ms: super::constants::now_unix_ms(),
             intent: creation_intent,
             title: req.title.clone(),
             metadata: req.metadata.clone(),
@@ -916,6 +917,7 @@ impl ManagedState {
         let session_tools = project::managed_tools(&effective_tools);
         let session_multiagent =
             self.resolved_session_multiagent(&owner_scope, config_view.as_ref(), &caps)?;
+        let created_at = super::constants::session_created_at(persisted.created_at_unix_ms);
         let mut session = Session {
             id: id.clone(),
             kind: "session",
@@ -955,8 +957,8 @@ impl ManagedState {
                 .max_list_cost_minor()
                 .map(crate::types::BudgetLimit::from_minor),
             environment_id: environment_id.clone(),
-            created_at: PROCESSED_AT.to_string(),
-            updated_at: PROCESSED_AT.to_string(),
+            created_at: created_at.clone(),
+            updated_at: created_at,
             archived_at: None,
             title: req.title,
             metadata: req.metadata,
@@ -1045,6 +1047,7 @@ impl ManagedState {
         purpose: RehydrationPurpose,
     ) -> Result<Session, StateError> {
         let caps = self.application.capabilities_for(id);
+        let created_at = super::constants::session_created_at(persisted.created_at_unix_ms);
         let projected_budget = persisted
             .budget
             .max_list_cost_minor()
@@ -1173,8 +1176,8 @@ impl ManagedState {
             },
             budget: projected_budget,
             environment_id,
-            created_at: PROCESSED_AT.to_string(),
-            updated_at: PROCESSED_AT.to_string(),
+            created_at: created_at.clone(),
+            updated_at: created_at,
             archived_at,
             title,
             metadata,
@@ -1373,8 +1376,13 @@ impl ManagedState {
             owner.clone(),
             lifecycle_event::SESSION_TERMINATED,
         );
+        let archived_at = awaken_session_contract::epoch_millis_to_rfc3339(
+            u64::try_from(terminated_fact.timestamp)
+                .unwrap_or_default()
+                .saturating_mul(1_000),
+        );
         self.application
-            .terminate_session(id, PROCESSED_AT, terminated_fact)
+            .terminate_session(id, &archived_at, terminated_fact)
             .await
             .map_err(Self::map_preparation_error)?;
         // No direct cache mutation or bespoke terminal append belongs here. The

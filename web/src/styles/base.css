@@ -1512,7 +1512,27 @@ textarea.input {
 .unused-agents { padding: 13px 14px; }
 .trace-tool-summary { display: grid; gap: 9px; margin: 8px 0 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--soft); }
 .trace-tool-summary-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
-.trace-event { scroll-margin: 80px; border-radius: var(--r-sm); }
+.trace-event {
+  /* EventItem's default rail is sized for a dot. TraceView places a text pill
+     in that slot, so reserve a real gutter instead of letting the pill cover
+     the event name. */
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  column-gap: 10px;
+  scroll-margin: 80px;
+  border-radius: var(--r-sm);
+}
+.trace-event > .ui-event-list__rail {
+  width: 64px;
+  justify-content: flex-start;
+}
+.trace-event > .ui-event-list__rail::after { left: 7px; }
+.trace-event > .ui-event-list__rail > .ui-event-list__marker {
+  width: auto;
+  height: auto;
+  margin-block-start: 0;
+  background: transparent;
+}
+.trace-event .ui-event-list__title { overflow-wrap: anywhere; }
 .trace-event-selected { outline: 2px solid color-mix(in srgb, var(--brand) 48%, transparent); outline-offset: 2px; background: var(--brand-soft); }
 .trace-event-link { flex: none; padding: 0 4px; color: var(--fg3); text-decoration: none; }
 .trace-event-link:hover, .trace-event-link:focus-visible { color: var(--brand); }

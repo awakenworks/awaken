@@ -1,0 +1,40 @@
+name: windows-sandbox
+
+on:
+  pull_request:
+    paths:
+      - 'crates/worker/awaken-sandbox-fs/**'
+      - 'crates/worker/awaken-sandbox-local/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/windows-sandbox.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.96.0
+          components: clippy,rustfmt
+      - name: Check filesystem formatting
+        run: cargo fmt -p awaken-sandbox-fs -- --check
+      - name: Check filesystem warnings
+        run: cargo clippy -p awaken-sandbox-fs --all-targets --locked -- -D warnings
+      - name: Exercise Windows filesystem failure and race paths
+        run: cargo test -p awaken-sandbox-fs --locked
+      - name: Exercise provider cleanup completion and retry
+        run: cargo test -p awaken-sandbox-local --lib --locked windows_disposal
