@@ -1,6 +1,9 @@
 //! The execution loop runs one model step, commits durable facts, and streams
 //! live progress that is independent of committed truth (G1/G13).
 
+#[path = "execution/checkpoint_observation.rs"]
+mod checkpoint_observation;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

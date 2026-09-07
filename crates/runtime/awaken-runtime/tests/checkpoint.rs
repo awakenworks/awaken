@@ -1,7 +1,7 @@
 //! Durable interrupted-stream checkpoints, driven end-to-end through `execute`
 //! (not the inference call in isolation): the engine flushes a partial at an
-//! interruption boundary and clears it once the step concludes, and a partial
-//! retained partial can resume only with independent invocation evidence.
+//! interruption boundary and clears it once the step concludes. A retained
+//! partial can resume only with independent invocation evidence.
 //! An unjournaled historical checkpoint must not authorize a fresh call.
 
 use std::sync::Arc;

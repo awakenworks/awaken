@@ -191,6 +191,14 @@ is not equivalent to a fresh call when an interrupted partial exists. Such
 historical checkpoints remain retained and cannot authorize model continuation
 or tool salvage. Fresh inference without a checkpoint still starts normally.
 
+Checkpoint observation precedes Native drive tool-batch recovery and inference.
+Only a successful absent read or a matching Run/Thread checkpoint may reach
+those boundaries. Storage/fence errors and foreign identity end Indeterminate;
+cancellation during the read returns Cancelled through the existing cancellable
+read boundary. All three retain the checkpoint and the physical veto rather
+than fabricating absence. This does not make a blocking synchronous storage
+operation preemptible, nor prove an unjournaled historical Run stopped.
+
 Trusted adapters annotate pre-I/O validation/materialization errors as
 NotDispatched, and errors after validated protocol completion as Terminated.
 Transport EOF, local deadlines, unparsed bodies and HTTP failure statuses remain

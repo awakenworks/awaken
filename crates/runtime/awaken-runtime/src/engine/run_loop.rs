@@ -476,13 +476,39 @@ pub(super) async fn drive(
             model: resolved.spec.model_binding.model_ref.clone(),
         });
     let mut resume_checkpoint = match &checkpoint_ctx {
-        Some(ctx) => match ctx.store.get(&ctx.run_id).await {
-            Ok(checkpoint) => checkpoint,
-            Err(error) => {
-                tracing::warn!(run_id = %ctx.run_id, %error, "failed to load stream checkpoint");
-                None
+        Some(ctx) => {
+            match inference::model_read(context.cancellation.as_ref(), ctx.store.get(&ctx.run_id))
+                .await
+            {
+                Some(Ok(checkpoint))
+                    if checkpoint.as_ref().is_none_or(|checkpoint| {
+                        checkpoint.run_id == ctx.run_id && checkpoint.thread_id == ctx.thread_id
+                    }) =>
+                {
+                    checkpoint
+                }
+                observation => {
+                    // An unavailable or foreign partial is not evidence of absence.
+                    // Decide before tool-batch recovery as well as model entry; even
+                    // a known prior model return cannot validate an unread checkpoint.
+                    let cause = match observation {
+                        None => EndCause::Cancelled,
+                        Some(Err(error)) => {
+                            tracing::warn!(run_id = %ctx.run_id, %error, "failed to load stream checkpoint");
+                            EndCause::Indeterminate
+                        }
+                        Some(Ok(_)) => {
+                            tracing::warn!(run_id = %ctx.run_id, "stream checkpoint identity mismatch");
+                            EndCause::Indeterminate
+                        }
+                    };
+                    context.physical_quiescence.mark_uncertain();
+                    return Ok(
+                        ledger.into_step_result(RunDisposition::ended(run_id.clone(), cause))
+                    );
+                }
             }
-        },
+        }
         None => None,
     };
 
