@@ -150,10 +150,13 @@ physical disposal; observing the container alone is not a complete cleanup recei
 The executable cause/effect rules live beside `lease_semantics`, the shared
 Dispatch recovery history, signed/unsigned HTTP settlement tests and container
 host-staging tests. Existing Kani slot harnesses cover empty/occupied/torn
-classification. `SessionDeletion` composes the existing cleanup kernel with
-quiescence, participant preparation and both physical removal targets. Its
-liveness assumes an eventual actual return and recoverable participants; the
-finite model does not verify OS mount identity or provider cancellation APIs.
+classification. The Runtime-contract terminal projection harness additionally
+proves that only an exact Run/Thread identity already in `Ended` can enter the
+Worker's single observer-and-`Done` recovery helper. `SessionDeletion` composes
+the existing cleanup kernel with quiescence, participant preparation and both
+physical removal targets. Its liveness assumes an eventual actual return and
+recoverable participants; the finite model does not verify OS mount identity or
+provider cancellation APIs.
 `SessionDeletionUnconfirmed.cfg` separately explores permanent absence of a
 return receipt with no return fairness assumption: cleanup cannot complete,
 participants cannot be prepared, and physical targets cannot be removed. This

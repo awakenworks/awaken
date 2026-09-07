@@ -68,6 +68,9 @@ The named harnesses in the strict gate invoke production pure functions directly
     replaceable slot cannot accept a late heartbeat, and an applied heartbeat
     requires exact live incarnation plus a newer sequence.
 - `awaken-runtime-contract`
+  - committed terminal projection requires a present exact Run/Thread identity
+    in `Ended`; missing and nonterminal truth stays ineligible, while identity
+    disagreement fails closed;
   - an anchored compaction window grows with the transcript and therefore never
     moves past the prefix represented by summary plus bridge;
   - a legacy unanchored window fails open to the full transcript instead of
