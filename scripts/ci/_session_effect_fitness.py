@@ -664,12 +664,22 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             (
                 "self.authorize_terminal_cleanup_lease(&effect.command.session_id, &effect.lease)?",
                 ".sandbox_disposal_authorization_for_current_generation(&current)",
-                ".effect_fence()",
-                ".validate_live_at(",
             ),
             "typed Sandbox disposal authorization",
         )
     )
+    disposal_projection = _rust_function(
+        sources.get(RUNTIME_HOST_TERMINAL_PREPARATION, ""),
+        "terminal_cleanup_disposal_authorization",
+    )
+    if disposal_projection is not None and any(
+        marker in disposal_projection
+        for marker in ("validate_live_at", "runtime_unix_now_ms", "SystemTime::")
+    ):
+        errors.append(
+            f"{RUNTIME_HOST_TERMINAL_PREPARATION}: terminal disposal projection "
+            "must not compare Control expiry with Worker wall time"
+        )
     errors.extend(
         _require_ordered_function(
             sources,
@@ -1054,8 +1064,7 @@ async fn record_terminal_repository_publication_rejection() {
     canonical[RUNTIME_HOST_TERMINAL_PREPARATION] = """
 fn terminal_cleanup_disposal_authorization() {
     let current = self.authorize_terminal_cleanup_lease(&effect.command.session_id, &effect.lease)?;
-    let authorization = effect.sandbox_disposal_authorization_for_current_generation(&current);
-    authorization.effect_fence().validate_live_at(now);
+    effect.sandbox_disposal_authorization_for_current_generation(&current)
 }
 """
     canonical[RUNTIME_HOST_TERMINAL_CLEANUP] = """
@@ -1450,6 +1459,38 @@ fn recover_terminal_receipts() {
         "provider.authorize_delete()",
     )
     assert session_effect_violations(untyped_disposal), "T4 typed disposal authority required"
+
+    # T8-T10 cause/effect table: C1 current slot authority precedes typed
+    # lowering; C2 the SAME function adds a Worker-UTC decision; C3 unrelated
+    # sibling code samples UTC. C1&&!C2 => accept even with C3; !C1 or C2 =>
+    # reject. Require the exact oracle so another fixture failure cannot count.
+    # This source fitness rule complements the executable R4/R5 clock matrix;
+    # it is not Rust semantic refinement or a Provider commit-time proof.
+    missing_current = dict(canonical)
+    missing_current[RUNTIME_HOST_TERMINAL_PREPARATION] = missing_current[
+        RUNTIME_HOST_TERMINAL_PREPARATION
+    ].replace(
+        "self.authorize_terminal_cleanup_lease(&effect.command.session_id, &effect.lease)?",
+        "effect.lease.clone()",
+    )
+    assert any("typed Sandbox disposal authorization" in error
+               for error in session_effect_violations(missing_current)), "T8 current slot required"
+    for clock in (
+        "authorization.effect_fence().validate_live_at(now);",
+        "let now = runtime_unix_now_ms();",
+        "let now = std::time::SystemTime::now();",
+    ):
+        duplicate_clock = dict(canonical)
+        duplicate_clock[RUNTIME_HOST_TERMINAL_PREPARATION] = duplicate_clock[
+            RUNTIME_HOST_TERMINAL_PREPARATION
+        ].replace("    effect.sandbox_disposal", f"    {clock}\n    effect.sandbox_disposal")
+        assert any("must not compare Control expiry with Worker wall time" in error
+                   for error in session_effect_violations(duplicate_clock)), "T9 duplicate UTC rejected"
+    sibling_clock = dict(canonical)
+    sibling_clock[RUNTIME_HOST_TERMINAL_PREPARATION] += (
+        "\nfn unrelated_durable_timestamp() { runtime_unix_now_ms(); }\n"
+    )
+    assert session_effect_violations(sibling_clock) == [], "T10 rule remains function-scoped"
 
     foreign_generation = dict(canonical)
     foreign_generation[SESSION_CLEANUP_EFFECTS] = foreign_generation[

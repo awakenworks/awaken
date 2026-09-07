@@ -214,6 +214,17 @@ lane still runs for retained execution trees when no live leases or Control
 client remain. A closed slot is not an uninstalled legacy slot and cannot admit
 an unfenced suspension.
 
+Terminal preparation and disposal projections also reuse the same slot's
+`authorize_terminal_cleanup_lease` decision. Disposal no longer repeats a
+Worker-UTC expiry check after that request-relative proof. The aggregate's
+immutable preparation and current-generation fence lowering remain unchanged;
+there is no new timer, owner or persisted field. The adjacent R1-R6 table
+separates absolute Control expiry from local proof lifetime, including fresh
+proof with past Worker-UTC expiry, exhausted proof with future expiry, replaced
+generation and closed/uninstalled slots. This synchronous projection is not a
+grant across subsequent async work: Provider wall clocks and backend commit
+fencing remain the separate unresolved boundaries described below.
+
 This is a wire contract change, not a Lease rename: renewal responses include
 `lease` and required positive `remaining_ms`; directives and terminal
 assignments flatten the same envelope. New clients reject missing, zero or
