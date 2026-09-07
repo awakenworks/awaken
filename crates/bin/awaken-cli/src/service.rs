@@ -568,15 +568,11 @@ async fn serve_prepared_process(
     let result = tokio::select! {
         mode = shutdown_mode_signal() => {
             let _ = worker_shutdown_tx.send(Some(mode));
-            let worker_result = local_worker_result((&mut worker).await);
-            if let Some(tx) = server_shutdown_tx.take() {
-                let _ = tx.send(());
-            }
-            let server_result = (&mut server)
-                .await
-                .map_err(|error| format!("server stopped: {error}"));
-            worker_result?;
-            server_result
+            finish_local_worker_before_surfaces(
+                async { local_worker_result((&mut worker).await) },
+                &mut server,
+                server_shutdown_tx.take().expect("one surface shutdown owner"),
+            ).await
         }
         result = &mut server => {
             let _ = worker_shutdown_tx.send(Some(awaken_worker::WorkerShutdown::Prompt));
@@ -585,27 +581,19 @@ async fn serve_prepared_process(
             worker_result
         }
         result = &mut worker => {
-            let worker_result = local_worker_result(result);
-            if let Some(tx) = server_shutdown_tx.take() {
-                let _ = tx.send(());
-            }
-            let server_result = (&mut server)
-                .await
-                .map_err(|error| format!("server stopped: {error}"));
-            worker_result?;
-            server_result
+            finish_local_worker_before_surfaces(
+                std::future::ready(local_worker_result(result)),
+                &mut server,
+                server_shutdown_tx.take().expect("one surface shutdown owner"),
+            ).await
         }
         failure = service_lifecycle.wait_for_failure() => {
             let _ = worker_shutdown_tx.send(Some(awaken_worker::WorkerShutdown::Prompt));
-            let worker_result = local_worker_result((&mut worker).await);
-            if let Some(tx) = server_shutdown_tx.take() {
-                let _ = tx.send(());
-            }
-            let server_result = (&mut server)
-                .await
-                .map_err(|error| format!("server stopped: {error}"));
-            worker_result?;
-            server_result?;
+            finish_local_worker_before_surfaces(
+                async { local_worker_result((&mut worker).await) },
+                &mut server,
+                server_shutdown_tx.take().expect("one surface shutdown owner"),
+            ).await?;
             let failure = failure.expect("process task wait ends only for failure before cancellation");
             Err(format!(
                 "critical process task `{}` stopped: {}",
@@ -664,6 +652,24 @@ async fn wait_for_surface_shutdown(mut receiver: tokio::sync::watch::Receiver<bo
         return;
     }
     let _ = receiver.changed().await;
+}
+
+// Worker drain uses the co-located HTTP authority for cancellation and exact
+// attempt-return receipts. Merely keeping the listener alive is insufficient:
+// its service future must keep being polled until Worker cleanup has returned.
+async fn finish_local_worker_before_surfaces(
+    worker: impl std::future::Future<Output = Result<(), String>>,
+    server: impl std::future::Future<Output = Result<(), String>>,
+    shutdown: tokio::sync::oneshot::Sender<()>,
+) -> Result<(), String> {
+    let finish_worker = async {
+        let result = worker.await;
+        let _ = shutdown.send(());
+        result
+    };
+    let (worker, server) = tokio::join!(finish_worker, server);
+    worker?;
+    server
 }
 
 async fn serve_application_surfaces<Shutdown>(
@@ -1418,6 +1424,61 @@ mod tests {
             tokio::net::TcpStream::connect(private_addr).await.is_err(),
             "R2 private closed"
         );
+    }
+
+    #[tokio::test]
+    async fn local_worker_cleanup_keeps_both_http_surfaces_serving_until_return() {
+        // Cause/effect graph: C1 shutdown requested; C2 Worker cleanup needs a
+        // fresh HTTP receipt from each surface; C3 Worker returns success/error.
+        // D1 C1+C2+success => both receipts, then both listeners close, Ok.
+        // D2 C1+C2+error => the same cleanup completes, original error retained.
+        // The server future is intentionally NOT spawned: serially awaiting the
+        // Worker (the former bug) deadlocks this real TCP request and times out.
+        // External-provider termination is outside this transport-liveness test.
+        for failed in [false, true] {
+            let public = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let public_addr = public.local_addr().unwrap();
+            let private = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let private_addr = private.local_addr().unwrap();
+            let app = axum::Router::new().route(
+                "/receipt",
+                axum::routing::get(|| async { axum::Json(serde_json::json!({"returned": true})) }),
+            );
+            let (shutdown, stopped) = tokio::sync::oneshot::channel();
+            let server =
+                serve_application_surfaces(public, app.clone(), Some((private, app)), async move {
+                    let _ = stopped.await;
+                });
+            let worker = async {
+                for address in [public_addr, private_addr] {
+                    let (status, receipt) = tcp_get_json(address, "/receipt").await;
+                    assert_eq!(status, 200);
+                    assert_eq!(receipt, serde_json::json!({"returned": true}));
+                }
+                if failed {
+                    Err("worker cleanup failed".to_string())
+                } else {
+                    Ok(())
+                }
+            };
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                finish_local_worker_before_surfaces(worker, server, shutdown),
+            )
+            .await
+            .expect("Worker HTTP receipts must remain serviceable during shutdown");
+            assert_eq!(
+                result,
+                if failed {
+                    Err("worker cleanup failed".to_string())
+                } else {
+                    Ok(())
+                }
+            );
+            for address in [public_addr, private_addr] {
+                assert!(tokio::net::TcpStream::connect(address).await.is_err());
+            }
+        }
     }
 
     #[tokio::test]

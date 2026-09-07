@@ -1319,8 +1319,10 @@ impl crate::SharedHost {
         let session_ids = self.session_slots.session_ids();
         let mut interrupted = 0;
         for session_id in session_ids {
-            if self.interrupt(&session_id).await.is_ok() {
-                interrupted += 1;
+            match self.interrupt(&session_id).await {
+                Ok(()) => interrupted += 1,
+                Err(error) => tracing::warn!(session_id, %error,
+                    "Worker could not request Session interruption before local revocation"),
             }
         }
         interrupted

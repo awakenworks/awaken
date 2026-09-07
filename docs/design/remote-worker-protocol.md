@@ -133,6 +133,19 @@ Neither logical cancellation, process/Pod death, lease expiry nor future Drop
 manufactures a physical ACK. Permanent absence of an authoritative return receipt
 therefore remains a blocked physical outcome, not successful automatic recovery.
 
+Graceful shutdown preserves the observer of that return: after closing admission,
+Worker waits its configured grace, then uses its existing cancellation and bounded
+local-revocation sequence if work remains. AllInOne polls its HTTP service while
+awaiting Worker cleanup so cancellation/finish requests can still be accepted.
+Worker-local interruption uses the already installed claim and Runtime token;
+it does not invoke Coordinator-only global queue listing/requeue/cancellation.
+User cancellation remains the Coordinator's durable intent. Local cancellation
+only nudges execution; the existing executor return and commit/settlement path
+continues to own the outcome and physical acknowledgement.
+A live Native response-only inference may cancel locally and return before any
+tool effect; this does not attest provider compute termination. An uncertain tool
+or an executor lost to SIGKILL still cannot manufacture the missing exact receipt.
+
 The one warm/cold Managed lifecycle projector lowers this committed outcome into
 an existing `session.error` event with a stable lifecycle identity. It neither
 publishes a new protocol status nor releases the Session aggregate. The shared

@@ -1530,6 +1530,70 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
 }
 
 #[tokio::test]
+async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operations() {
+    // Cause/effect graph: C1 Worker transport has no global queue authority;
+    // C2 resident attempt is selected by direct active hint or installed claim;
+    // C3 a different Run is registered in the same Runtime; C4 scope is absent.
+    // D1 direct hint + C1 -> cancel that token, no transport I/O.
+    // D2 no direct hint + claim + C1 -> cancel that token, never list/requeue.
+    // D3 D1/D2 + C3 -> unrelated token unchanged; no physical ACK fabricated.
+    // D4 C4 -> idempotent no-op, no cold Runtime or Session materialization.
+    // Coordinator user interruption keeps its existing durable-intent tests.
+    let local = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let _managed = install_test_dispatch_runtime(&local);
+    let ctx = local.ctx_for("worker-stop", None).await.unwrap();
+    let worker = SharedHost::new(Arc::new(OkModel), "stub").with_worker_upstream(
+        awaken_worker_transport_security::WorkerUpstream::new("http://127.0.0.1:1"),
+    );
+    for direct in [true, false] {
+        let run_id = RunId(format!("worker-stop-{direct}"));
+        let cancelled = awaken_runtime_contract::CancellationToken::new();
+        let unrelated = awaken_runtime_contract::CancellationToken::new();
+        let mut context = awaken_runtime_contract::RuntimeRunContext::new();
+        context.cancellation = Some(cancelled.clone());
+        let physical = context.physical_quiescence.clone();
+        let scope = ctx.runtime.begin_active_attempt(
+            &run_id,
+            &ctx.thread_id,
+            context,
+            awaken_runtime_contract::execution::LiveInput::None,
+        );
+        let mut other = awaken_runtime_contract::RuntimeRunContext::new();
+        other.cancellation = Some(unrelated.clone());
+        let other_scope = ctx.runtime.begin_active_attempt(
+            &RunId("foreign".into()),
+            &ctx.thread_id,
+            other,
+            awaken_runtime_contract::execution::LiveInput::None,
+        );
+        *ctx.active_run.lock().unwrap() = direct.then(|| run_id.clone());
+        worker.session_slots.update("worker-stop", |slot| {
+            slot.runtime = Some(ctx.clone());
+            slot.dispatch_claim = Some(awaken_dispatch::RunClaim {
+                run_id,
+                owner: "worker-old".into(),
+                epoch: 1,
+            });
+        });
+        // The local signal must not clear pre-existing nested uncertainty.
+        physical.mark_uncertain();
+        worker.interrupt("worker-stop").await.unwrap();
+        assert!(cancelled.is_cancelled(), "D1/D2 target attempt");
+        assert!(!unrelated.is_cancelled(), "D3 foreign Run");
+        assert!(
+            !physical.can_acknowledge_return(),
+            "D3 no fabricated return"
+        );
+        drop((scope, other_scope));
+    }
+    worker.interrupt("absent-worker-session").await.unwrap();
+    assert!(
+        !worker.session_slots.contains("absent-worker-session"),
+        "D4 no materialization"
+    );
+}
+
+#[tokio::test]
 async fn interrupt_is_a_noop_when_nothing_runs() {
     let host = SharedHost::new(
         Arc::new(GatedModel {

@@ -6,12 +6,13 @@ CONSTANT MaxClaims
 VARIABLE gate, claimInProgress, claimAttempts, claims,
          drainRequested, registryState, drainAcknowledged,
          attemptsAtRegistryDrain, claimsAtDrain
+VARIABLE shutdown
 VARIABLE startupPhase, probePassed, withdrawal, withdrawalCalls, returned
 VARIABLE protocolCompatible, ttlPositive, protocolAccepted
 
 drainVars == <<gate, claimInProgress, claimAttempts, claims,
           drainRequested, registryState, drainAcknowledged,
-          attemptsAtRegistryDrain, claimsAtDrain>>
+          attemptsAtRegistryDrain, claimsAtDrain, shutdown>>
 startupVars == <<startupPhase, probePassed, withdrawal, withdrawalCalls, returned>>
 protocolVars == <<protocolCompatible, ttlPositive, protocolAccepted>>
 vars == <<drainVars, startupVars, protocolVars>>
@@ -21,6 +22,9 @@ Init == /\ gate = "Closed" /\ claimInProgress = FALSE
         /\ drainRequested = FALSE /\ registryState = "Starting"
         /\ drainAcknowledged = FALSE
         /\ attemptsAtRegistryDrain = 0 /\ claimsAtDrain = 0
+        /\ shutdown = [active |-> {}, graceExpired |-> FALSE,
+                        cancelRequested |-> FALSE, cleanupExpired |-> FALSE,
+                        cleanupFinished |-> FALSE, quiesced |-> FALSE]
         /\ startupPhase = "checking_protocol" /\ probePassed = FALSE
         /\ protocolCompatible \in BOOLEAN /\ protocolAccepted = FALSE
         /\ ttlPositive \in BOOLEAN
@@ -32,10 +36,11 @@ StartClaim == /\ gate = "Open" /\ ~claimInProgress
               /\ claimAttempts' = claimAttempts + 1
               /\ UNCHANGED <<gate, claims, drainRequested, registryState,
                               drainAcknowledged, attemptsAtRegistryDrain,
-                              claimsAtDrain>>
+                              claimsAtDrain, shutdown>>
 
 FinishClaim == /\ claimInProgress
                /\ claimInProgress' = FALSE /\ claims' = claims + 1
+               /\ shutdown' = [shutdown EXCEPT !.active = @ \cup {claims + 1}]
                /\ UNCHANGED <<gate, claimAttempts, drainRequested,
                                registryState, drainAcknowledged,
                                attemptsAtRegistryDrain, claimsAtDrain>>
@@ -44,14 +49,14 @@ RequestDrain == /\ ~drainRequested
                 /\ drainRequested' = TRUE
                 /\ UNCHANGED <<gate, claimInProgress, claimAttempts, claims,
                                 registryState, drainAcknowledged,
-                                attemptsAtRegistryDrain, claimsAtDrain>>
+                                attemptsAtRegistryDrain, claimsAtDrain, shutdown>>
 
 CloseAdmission == /\ drainRequested /\ gate = "Open" /\ ~claimInProgress
                   /\ gate' = "Closed"
                   /\ UNCHANGED <<claimInProgress, claimAttempts, claims,
                                   drainRequested, registryState,
                                   drainAcknowledged, attemptsAtRegistryDrain,
-                                  claimsAtDrain>>
+                                  claimsAtDrain, shutdown>>
 
 PublishRegistryDrain == /\ drainRequested /\ gate = "Closed"
                         /\ registryState = "Ready"
@@ -59,7 +64,7 @@ PublishRegistryDrain == /\ drainRequested /\ gate = "Closed"
                         /\ attemptsAtRegistryDrain' = claimAttempts
                         /\ UNCHANGED <<gate, claimInProgress, claimAttempts,
                                         claims, drainRequested,
-                                        drainAcknowledged, claimsAtDrain>>
+                                        drainAcknowledged, claimsAtDrain, shutdown>>
 
 AcknowledgeDrain == /\ registryState = "Draining"
                     /\ ~drainAcknowledged
@@ -67,13 +72,39 @@ AcknowledgeDrain == /\ registryState = "Draining"
                     /\ claimsAtDrain' = claims
                     /\ UNCHANGED <<gate, claimInProgress, claimAttempts,
                                     claims, drainRequested, registryState,
-                                    attemptsAtRegistryDrain>>
+                                    attemptsAtRegistryDrain, shutdown>>
 
 RepeatDrain == /\ drainRequested /\ gate = "Closed"
                /\ UNCHANGED vars
 
+\* G1 actual return before grace -> cleanup finished; G2 expiry with active
+\* work -> cancellation plus bounded observation; G3 no return -> finish local
+\* cleanup unquiesced. The existing withdrawal owner alone returns the process.
+controlVars == <<gate, claimInProgress, claimAttempts, claims, drainRequested,
+                 registryState, drainAcknowledged, attemptsAtRegistryDrain,
+                 claimsAtDrain>>
+AttemptReturns(id) == /\ ~returned /\ id \in shutdown.active
+                     /\ shutdown' = [shutdown EXCEPT !.active = @ \ {id}]
+                     /\ UNCHANGED controlVars
+ExpireGrace == /\ ~returned /\ drainAcknowledged /\ ~shutdown.graceExpired
+               /\ shutdown' = [shutdown EXCEPT !.graceExpired = TRUE]
+               /\ UNCHANGED controlVars
+CancelSurvivors == /\ ~returned /\ shutdown.graceExpired /\ ~shutdown.cancelRequested
+                   /\ shutdown' = [shutdown EXCEPT !.cancelRequested = TRUE]
+                   /\ UNCHANGED controlVars
+ExpireCleanup == /\ ~returned /\ shutdown.cancelRequested /\ ~shutdown.cleanupExpired
+                 /\ shutdown' = [shutdown EXCEPT !.cleanupExpired = TRUE]
+                 /\ UNCHANGED controlVars
+FinishCleanup == /\ ~returned /\ drainAcknowledged /\ ~shutdown.cleanupFinished
+                 /\ (shutdown.active = {} \/ (shutdown.cancelRequested /\ shutdown.cleanupExpired))
+                 /\ shutdown' = [shutdown EXCEPT !.cleanupFinished = TRUE,
+                                     !.quiesced = (shutdown.active = {})]
+                 /\ UNCHANGED controlVars
+
 DrainNext == StartClaim \/ FinishClaim \/ RequestDrain \/ CloseAdmission
         \/ PublishRegistryDrain \/ AcknowledgeDrain \/ RepeatDrain
+        \/ (\E id \in 1..MaxClaims: AttemptReturns(id))
+        \/ ExpireGrace \/ CancelSurvivors \/ ExpireCleanup \/ FinishCleanup
 
 (* Extend the one registration/drain owner. Expected error, dependency unwind,
    probe timeout and observed shutdown all consume startup before withdrawal.
@@ -106,18 +137,18 @@ SendInitialReady == /\ startupPhase = "requesting" /\ registryState' = "Ready"
                    /\ startupPhase' = "awaiting"
                    /\ UNCHANGED <<gate, claimInProgress, claimAttempts, claims,
                         drainRequested, drainAcknowledged, attemptsAtRegistryDrain,
-                        claimsAtDrain, probePassed, withdrawal, withdrawalCalls, returned>>
+                        claimsAtDrain, probePassed, withdrawal, withdrawalCalls, returned, shutdown>>
 AcceptInitialReady == /\ startupPhase = "awaiting" /\ gate' = "Open"
                      /\ startupPhase' = "serving"
                      /\ UNCHANGED <<claimInProgress, claimAttempts, claims,
                         drainRequested, registryState, drainAcknowledged,
                         attemptsAtRegistryDrain, claimsAtDrain, probePassed,
-                        withdrawal, withdrawalCalls, returned>>
+                        withdrawal, withdrawalCalls, returned, shutdown>>
 FailStartup == /\ startupPhase \in {"probing", "requesting", "awaiting"}
                /\ startupPhase' = "failed"
                /\ UNCHANGED <<drainVars, probePassed, withdrawal, withdrawalCalls, returned>>
 BeginWithdrawal == /\ withdrawal = "none"
-                   /\ (startupPhase = "failed" \/ drainAcknowledged)
+                   /\ (startupPhase = "failed" \/ shutdown.cleanupFinished)
                    /\ gate = "Closed" /\ ~claimInProgress
                    /\ withdrawal' = "pending" /\ withdrawalCalls' = withdrawalCalls + 1
                    /\ UNCHANGED <<drainVars, startupPhase, probePassed, returned, protocolVars>>
@@ -126,10 +157,10 @@ CompleteWithdrawal(outcome) == /\ withdrawal = "pending"
     /\ registryState' = (IF outcome = "applied" THEN "Dead" ELSE registryState)
     /\ UNCHANGED <<gate, claimInProgress, claimAttempts, claims, drainRequested,
         drainAcknowledged, attemptsAtRegistryDrain, claimsAtDrain,
-        startupPhase, probePassed, withdrawalCalls, protocolVars>>
+        startupPhase, probePassed, withdrawalCalls, protocolVars, shutdown>>
 FinishWithdrawal == \E outcome \in {"applied", "unknown"} : CompleteWithdrawal(outcome)
 Next == (UNCHANGED protocolVars /\
-        ((startupPhase = "serving" /\ DrainNext /\ UNCHANGED startupVars)
+        ((startupPhase = "serving" /\ ~returned /\ DrainNext /\ UNCHANGED startupVars)
         \/ ProbeCompletes \/ SendInitialReady \/ AcceptInitialReady \/ FailStartup
         \/ BeginWithdrawal \/ FinishWithdrawal
         \/ (returned /\ UNCHANGED vars)))
@@ -148,6 +179,14 @@ TypeOK == /\ gate \in {"Open", "Closed"} /\ claimInProgress \in BOOLEAN
           /\ probePassed \in BOOLEAN /\ returned \in BOOLEAN
           /\ withdrawal \in {"none", "pending", "applied", "unknown"}
           /\ withdrawalCalls \in 0..2
+ShutdownTypeOK == shutdown \in [active: SUBSET (1..MaxClaims),
+    graceExpired: BOOLEAN, cancelRequested: BOOLEAN, cleanupExpired: BOOLEAN,
+    cleanupFinished: BOOLEAN, quiesced: BOOLEAN]
+ShutdownDoesNotDiscardUncancelledWork ==
+    (returned /\ shutdown.active # {})
+        => (shutdown.cancelRequested /\ shutdown.cleanupExpired)
+NoFabricatedQuiescence == shutdown.quiesced => shutdown.active = {}
+ShutdownEventuallyExits == drainAcknowledged ~> returned
 DrainIsAbsorbing == drainAcknowledged => gate = "Closed"
 NoClaimAfterDrainAcknowledgement == drainAcknowledged => claims = claimsAtDrain
 RegistryDrainFollowsLocalFence == registryState = "Draining" => gate = "Closed"
@@ -185,5 +224,7 @@ Spec == Init /\ [][Next]_vars /\ WF_vars(ResolveProtocol)
 \* unconstrained startup/protocol next-state values after model composition.
 ProgressSpec == Spec /\ WF_drainVars(FinishClaim) /\ WF_drainVars(CloseAdmission)
                     /\ WF_drainVars(PublishRegistryDrain) /\ WF_drainVars(AcknowledgeDrain)
+                    /\ WF_drainVars(ExpireGrace) /\ WF_drainVars(CancelSurvivors)
+                    /\ WF_drainVars(ExpireCleanup) /\ WF_drainVars(FinishCleanup)
 DrainEventuallyAcknowledged == drainRequested ~> drainAcknowledged
 =============================================================================
