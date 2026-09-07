@@ -446,6 +446,23 @@ pub awaken_agent_contract::audit::run_event::RunEvent::StateChanged
 pub awaken_agent_contract::audit::run_event::RunEvent::StateChanged::commands: usize
 impl core::convert::From<awaken_agent_contract::audit::run_event::RunEvent> for awaken_agent_contract::audit::draft::Draft
 pub fn awaken_agent_contract::audit::draft::Draft::from(awaken_agent_contract::audit::run_event::RunEvent) -> Self
+pub mod awaken_agent_contract::clock
+pub struct awaken_agent_contract::clock::ManualClock
+impl awaken_agent_contract::clock::ManualClock
+pub fn awaken_agent_contract::clock::ManualClock::advance(&self, u64)
+pub fn awaken_agent_contract::clock::ManualClock::new(u64) -> Self
+pub fn awaken_agent_contract::clock::ManualClock::set(&self, u64)
+impl awaken_agent_contract::clock::Clock for awaken_agent_contract::clock::ManualClock
+pub fn awaken_agent_contract::clock::ManualClock::now_ms(&self) -> u64
+pub struct awaken_agent_contract::clock::SystemClock
+impl awaken_agent_contract::clock::Clock for awaken_agent_contract::clock::SystemClock
+pub fn awaken_agent_contract::clock::SystemClock::now_ms(&self) -> u64
+pub trait awaken_agent_contract::clock::Clock: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_contract::clock::Clock::now_ms(&self) -> u64
+impl awaken_agent_contract::clock::Clock for awaken_agent_contract::clock::ManualClock
+pub fn awaken_agent_contract::clock::ManualClock::now_ms(&self) -> u64
+impl awaken_agent_contract::clock::Clock for awaken_agent_contract::clock::SystemClock
+pub fn awaken_agent_contract::clock::SystemClock::now_ms(&self) -> u64
 pub mod awaken_agent_contract::event
 pub mod awaken_agent_contract::event::agent
 pub enum awaken_agent_contract::event::agent::AgentEvent
@@ -795,6 +812,19 @@ pub fn awaken_agent_contract::thread::commit::coordinator::OperationCoordinator:
 pub mod awaken_agent_contract::thread::commit::operation
 pub enum awaken_agent_contract::thread::commit::operation::CommitHashError
 pub awaken_agent_contract::thread::commit::operation::CommitHashError::Serialize(alloc::string::String)
+pub enum awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError
+pub awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError::OrdinalConflict
+pub awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError::OrdinalConflict::current: u64
+pub awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError::OrdinalConflict::expected: u64
+pub awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError::PayloadMismatch
+pub awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError::PayloadMismatch::ordinal: u64
+pub awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError::PayloadMismatch::run_id: alloc::string::String
+pub awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError::ReceiptIdentityMismatch
+pub awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError::RunIdentityMismatch
+pub awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError::ThreadVersionConflict
+pub awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError::ThreadVersionConflict::current: u64
+pub awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError::ThreadVersionConflict::expected: u64
+pub awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError::ThreadVersionOverflow
 pub struct awaken_agent_contract::thread::commit::operation::CommitOperation
 pub awaken_agent_contract::thread::commit::operation::CommitOperation::commit: awaken_agent_contract::thread::commit::staged::ThreadCommit
 pub awaken_agent_contract::thread::commit::operation::CommitOperation::expected_thread_version: u64
@@ -814,7 +844,13 @@ pub awaken_agent_contract::thread::commit::operation::CommitReceipt::payload_has
 pub awaken_agent_contract::thread::commit::operation::CommitReceipt::thread_version: u64
 impl awaken_agent_contract::thread::commit::operation::CommitReceipt
 pub fn awaken_agent_contract::thread::commit::operation::CommitReceipt::commit_record(&self) -> awaken_agent_contract::thread::commit::staged::CommitRecord
+pub fn awaken_agent_contract::thread::commit::operation::admit_commit_operation_append(&awaken_agent_contract::thread::commit::operation::CommitOperation, u64, u64) -> core::result::Result<u64, awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError>
+pub fn awaken_agent_contract::thread::commit::operation::applied_commit_receipt(awaken_agent_contract::thread::commit::operation::CommitOperationId, awaken_agent_contract::thread::commit::operation::CommitPayloadHash, u64, u64) -> awaken_agent_contract::thread::commit::operation::CommitReceipt
 pub fn awaken_agent_contract::thread::commit::operation::commit_payload_hash(&awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::result::Result<awaken_agent_contract::thread::commit::operation::CommitPayloadHash, awaken_agent_contract::thread::commit::operation::CommitHashError>
+pub fn awaken_agent_contract::thread::commit::operation::next_commit_thread_version(u64) -> core::result::Result<u64, awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError>
+pub fn awaken_agent_contract::thread::commit::operation::replay_commit_operation_receipt(&awaken_agent_contract::thread::commit::operation::CommitOperation, core::option::Option<&awaken_agent_contract::thread::commit::operation::CommitReceipt>) -> core::result::Result<core::option::Option<awaken_agent_contract::thread::commit::operation::CommitReceipt>, awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError>
+pub fn awaken_agent_contract::thread::commit::operation::require_commit_operation_identity(&awaken_agent_contract::thread::commit::operation::CommitOperation) -> core::result::Result<(), awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError>
+pub fn awaken_agent_contract::thread::commit::operation::require_commit_operation_receipt(&awaken_agent_contract::thread::commit::operation::CommitOperation, &awaken_agent_contract::thread::commit::operation::CommitReceipt) -> core::result::Result<(), awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError>
 pub mod awaken_agent_contract::thread::commit::run
 pub async fn awaken_agent_contract::thread::commit::run::commit_run(&dyn awaken_agent_contract::thread::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::commit::staged::RunDisposition, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>
 pub mod awaken_agent_contract::thread::commit::run_fact
@@ -955,6 +991,7 @@ pub awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError::Ru
 pub awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError::ThreadMismatch
 pub struct awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot
 pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::claimed_run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::commit_timestamps: alloc::collections::btree::map::BTreeMap<u64, u64>
 pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::events: alloc::vec::Vec<awaken_agent_contract::audit::record::Record>
 pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::latest_run_id: core::option::Option<awaken_agent_contract::agent::run::Id>
 pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::message_commit_cursors: alloc::vec::Vec<u64>

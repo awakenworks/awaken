@@ -5,6 +5,7 @@ impl awaken_mcp_wire::jsonrpc::JsonRpcNotifier
 pub async fn awaken_mcp_wire::jsonrpc::JsonRpcNotifier::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), awaken_mcp_wire::McpTransportError>
 pub struct awaken_mcp_wire::jsonrpc::JsonRpcPeer
 impl awaken_mcp_wire::jsonrpc::JsonRpcPeer
+pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::close(&self)
 pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::closed(&self)
 pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::is_alive(&self) -> bool
 pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::new<R, W>(R, W, core::option::Option<alloc::sync::Arc<dyn awaken_mcp_wire::jsonrpc::ServerRequestHandler>>) -> (Self, tokio::sync::mpsc::bounded::Receiver<awaken_mcp_wire::jsonrpc::ServerNotification>) where R: tokio::io::async_read::AsyncRead + core::marker::Unpin + core::marker::Send + 'static, W: tokio::io::async_write::AsyncWrite + core::marker::Unpin + core::marker::Send + 'static
@@ -145,6 +146,7 @@ impl awaken_mcp_wire::jsonrpc::JsonRpcNotifier
 pub async fn awaken_mcp_wire::jsonrpc::JsonRpcNotifier::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), awaken_mcp_wire::McpTransportError>
 pub struct awaken_mcp_wire::JsonRpcPeer
 impl awaken_mcp_wire::jsonrpc::JsonRpcPeer
+pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::close(&self)
 pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::closed(&self)
 pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::is_alive(&self) -> bool
 pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::new<R, W>(R, W, core::option::Option<alloc::sync::Arc<dyn awaken_mcp_wire::jsonrpc::ServerRequestHandler>>) -> (Self, tokio::sync::mpsc::bounded::Receiver<awaken_mcp_wire::jsonrpc::ServerNotification>) where R: tokio::io::async_read::AsyncRead + core::marker::Unpin + core::marker::Send + 'static, W: tokio::io::async_write::AsyncWrite + core::marker::Unpin + core::marker::Send + 'static

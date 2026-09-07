@@ -43,7 +43,6 @@ pub use awaken_dispatch_contract::can_assign
 pub use awaken_dispatch_contract::can_claim
 pub use awaken_dispatch_contract::can_claim_locally
 pub use awaken_dispatch_contract::place_assignment
-pub use awaken_dispatch_contract::verify_attempt_credential_bindings
 pub use awaken_dispatch_contract::verify_credential_realization_receipt
 pub mod awaken_dispatch_contract::dispatch
 pub use awaken_dispatch_contract::dispatch::AttemptCredentialBinding
@@ -51,7 +50,6 @@ pub use awaken_dispatch_contract::dispatch::AttemptCredentialBindingError
 pub use awaken_dispatch_contract::dispatch::CandidateFingerprint
 pub use awaken_dispatch_contract::dispatch::CredentialRealizationReceipt
 pub use awaken_dispatch_contract::dispatch::CredentialReceiptError
-pub use awaken_dispatch_contract::dispatch::verify_attempt_credential_bindings
 pub use awaken_dispatch_contract::dispatch::verify_credential_realization_receipt
 pub enum awaken_dispatch_contract::dispatch::AttemptAdmission
 pub awaken_dispatch_contract::dispatch::AttemptAdmission::AlreadyApplied
@@ -62,6 +60,10 @@ pub enum awaken_dispatch_contract::dispatch::CasOutcome
 pub awaken_dispatch_contract::dispatch::CasOutcome::Applied
 pub awaken_dispatch_contract::dispatch::CasOutcome::NotFound
 pub awaken_dispatch_contract::dispatch::CasOutcome::RevisionMismatch
+pub enum awaken_dispatch_contract::dispatch::CommitEpochAdmission
+pub awaken_dispatch_contract::dispatch::CommitEpochAdmission::Corrupt
+pub awaken_dispatch_contract::dispatch::CommitEpochAdmission::Fenced
+pub awaken_dispatch_contract::dispatch::CommitEpochAdmission::Guarded
 pub enum awaken_dispatch_contract::dispatch::CommitEpochCompletion
 pub awaken_dispatch_contract::dispatch::CommitEpochCompletion::FailRelease
 pub awaken_dispatch_contract::dispatch::CommitEpochCompletion::ReturnInner
@@ -269,6 +271,7 @@ pub fn awaken_dispatch_contract::dispatch::Outbox::relay_and_enqueue<'life0, 'as
 pub fn awaken_dispatch_contract::dispatch::Outbox::stage<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::Outbox::stage_session_resume<'life0, 'life1, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput, &'life1 awaken_agent_contract::agent::thread::Id, core::option::Option<u64>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::can_admit_attempt_credentials(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> bool
+pub const fn awaken_dispatch_contract::dispatch::classify_commit_epoch_admission(bool, bool, bool, bool, bool) -> awaken_dispatch_contract::dispatch::CommitEpochAdmission
 pub fn awaken_dispatch_contract::dispatch::compile_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_dispatch_contract::DispatchCredentialAdmissionError>
 pub const fn awaken_dispatch_contract::dispatch::session_run_replacement_candidate_is_safe(awaken_dispatch_contract::dispatch::DispatchState) -> bool
 pub fn awaken_dispatch_contract::dispatch::verify_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64, &[awaken_runtime_contract::credential::AttemptCredentialBinding]) -> core::result::Result<(), awaken_dispatch_contract::DispatchCredentialAdmissionError>
@@ -392,6 +395,10 @@ pub enum awaken_dispatch_contract::CasOutcome
 pub awaken_dispatch_contract::CasOutcome::Applied
 pub awaken_dispatch_contract::CasOutcome::NotFound
 pub awaken_dispatch_contract::CasOutcome::RevisionMismatch
+pub enum awaken_dispatch_contract::CommitEpochAdmission
+pub awaken_dispatch_contract::CommitEpochAdmission::Corrupt
+pub awaken_dispatch_contract::CommitEpochAdmission::Fenced
+pub awaken_dispatch_contract::CommitEpochAdmission::Guarded
 pub enum awaken_dispatch_contract::CommitEpochCompletion
 pub awaken_dispatch_contract::CommitEpochCompletion::FailRelease
 pub awaken_dispatch_contract::CommitEpochCompletion::ReturnInner
@@ -841,6 +848,7 @@ pub fn awaken_dispatch_contract::Outbox::relay_and_enqueue<'life0, 'async_trait>
 pub fn awaken_dispatch_contract::Outbox::stage<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::Outbox::stage_session_resume<'life0, 'life1, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput, &'life1 awaken_agent_contract::agent::thread::Id, core::option::Option<u64>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub const fn awaken_dispatch_contract::begin_physical_attempt(bool, awaken_dispatch_contract::PhysicalAttemptSlot) -> awaken_dispatch_contract::PhysicalAttemptTransition
+pub const fn awaken_dispatch_contract::classify_commit_epoch_admission(bool, bool, bool, bool, bool) -> awaken_dispatch_contract::dispatch::CommitEpochAdmission
 pub fn awaken_dispatch_contract::compile_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_dispatch_contract::DispatchCredentialAdmissionError>
 pub const fn awaken_dispatch_contract::finish_physical_attempt(awaken_dispatch_contract::PhysicalAttemptSlot) -> awaken_dispatch_contract::PhysicalAttemptTransition
 pub const fn awaken_dispatch_contract::handoff_physical_attempt(bool, awaken_dispatch_contract::PhysicalAttemptSlot) -> awaken_dispatch_contract::PhysicalAttemptTransition

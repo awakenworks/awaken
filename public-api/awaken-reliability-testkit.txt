@@ -5,3 +5,4 @@ pub fn awaken_reliability_testkit::CrashProcess::env(self, impl core::convert::A
 pub fn awaken_reliability_testkit::CrashProcess::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_reliability_testkit::CrashProcess::run(self) -> core::result::Result<std::process::ExitStatus, alloc::string::String>
 pub fn awaken_reliability_testkit::CrashProcess::timeout(self, core::time::Duration) -> Self
+pub fn awaken_reliability_testkit::write_observation_trace(&str, &str, serde_json::value::Value)

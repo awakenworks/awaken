@@ -41,10 +41,6 @@ pub awaken_run_executor_acp::BackendModelInterface::Flag::flag: &'static str
 pub awaken_run_executor_acp::BackendModelInterface::SessionConfigOption
 pub awaken_run_executor_acp::BackendModelInterface::SessionConfigOption::config_id: &'static str
 pub awaken_run_executor_acp::BackendModelInterface::Unsupported
-pub enum awaken_run_executor_acp::BackendOwnedStateIsolation
-pub awaken_run_executor_acp::BackendOwnedStateIsolation::SessionDirectory
-pub awaken_run_executor_acp::BackendOwnedStateIsolation::SessionDirectory::env: &'static str
-pub awaken_run_executor_acp::BackendOwnedStateIsolation::SharedHost
 pub enum awaken_run_executor_acp::CredentialArtifactCodec
 pub awaken_run_executor_acp::CredentialArtifactCodec::CodexAuthJson
 pub enum awaken_run_executor_acp::ManagedCredentialDelivery
@@ -101,7 +97,6 @@ pub struct awaken_run_executor_acp::AcpCli
 pub awaken_run_executor_acp::AcpCli::acquisition: awaken_run_executor_acp::AcpAcquisition
 pub awaken_run_executor_acp::AcpCli::auth_method_id: core::option::Option<&'static str>
 pub awaken_run_executor_acp::AcpCli::backend_model_interface: awaken_run_executor_acp::BackendModelInterface
-pub awaken_run_executor_acp::AcpCli::backend_owned_state_isolation: awaken_run_executor_acp::BackendOwnedStateIsolation
 pub awaken_run_executor_acp::AcpCli::capability_probe_auth_method_id: core::option::Option<&'static str>
 pub awaken_run_executor_acp::AcpCli::config_home_aliases: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::config_home_env: core::option::Option<&'static str>
@@ -123,6 +118,7 @@ pub awaken_run_executor_acp::AcpCli::model_api_dialects: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::model_delivery: core::option::Option<awaken_run_executor_acp::ModelDelivery>
 pub awaken_run_executor_acp::AcpCli::session_export_excludes: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::session_persistence: awaken_run_executor_acp::SessionPersistence
+pub awaken_run_executor_acp::AcpCli::supports_tool_aliases: bool
 impl awaken_run_executor_acp::AcpCli
 pub fn awaken_run_executor_acp::AcpCli::admits_mcp_client_credential(&self, core::option::Option<awaken_credential_contract::realization_capabilities::McpCredentialDelivery>, bool) -> bool
 pub fn awaken_run_executor_acp::AcpCli::remediation(self, core::option::Option<&str>) -> core::option::Option<&'static str>
@@ -150,8 +146,10 @@ pub awaken_run_executor_acp::AcpLaunch::session_config_options: alloc::vec::Vec<
 pub awaken_run_executor_acp::AcpLaunch::session_mode: core::option::Option<alloc::string::String>
 pub awaken_run_executor_acp::AcpLaunch::session_model: core::option::Option<alloc::string::String>
 pub awaken_run_executor_acp::AcpLaunch::session_working_directory: core::option::Option<alloc::string::String>
+pub awaken_run_executor_acp::AcpLaunch::tool_aliases: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 impl awaken_run_executor_acp::AcpLaunch
 pub fn awaken_run_executor_acp::AcpLaunch::custom(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> Self
+pub fn awaken_run_executor_acp::AcpLaunch::project_tool_aliases(&mut self, &awaken_run_executor_acp::AcpCli, &awaken_runtime_contract::resolved::ToolPresentation) -> core::result::Result<(), awaken_run_executor_acp::OpenError>
 pub struct awaken_run_executor_acp::AcpLoginProbe
 pub awaken_run_executor_acp::AcpLoginProbe::command: awaken_run_executor_acp::AcpProbeCommand
 pub awaken_run_executor_acp::AcpLoginProbe::remediation: &'static str
@@ -170,6 +168,7 @@ pub fn awaken_run_executor_acp::AcpRunExecutor::for_session_servers(&self, alloc
 pub fn awaken_run_executor_acp::AcpRunExecutor::for_session_servers_with_grant_observer(&self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>, &[awaken_protocol_acp::SessionMcpServer], core::option::Option<alloc::sync::Arc<dyn awaken_run_executor_acp::PermissionGrantObserver>>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::new(alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::with_launch_observer(self, alloc::sync::Arc<dyn awaken_protocol_acp::LaunchObserver>) -> Self
+pub fn awaken_run_executor_acp::AcpRunExecutor::with_owned_tool_continuation(self, core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::resume::OwnedToolContinuation>>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::with_permission_grant_observer(self, alloc::sync::Arc<dyn awaken_run_executor_acp::PermissionGrantObserver>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::with_permission_policy(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::with_session_home(self, alloc::sync::Arc<dyn awaken_run_executor_acp::SessionHomeProvider>) -> Self
@@ -195,6 +194,7 @@ pub awaken_run_executor_acp::AgentSession::process: alloc::sync::Arc<dyn awaken_
 pub awaken_run_executor_acp::AgentSession::session_config_options: alloc::vec::Vec<awaken_protocol_acp::SessionConfigOptionSelection>
 pub awaken_run_executor_acp::AgentSession::session_mode: core::option::Option<alloc::string::String>
 pub awaken_run_executor_acp::AgentSession::session_model: core::option::Option<alloc::string::String>
+pub awaken_run_executor_acp::AgentSession::tool_aliases: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_run_executor_acp::AgentSession::workspace_cwd: core::option::Option<alloc::string::String>
 pub struct awaken_run_executor_acp::ConfigHome
 impl awaken_run_executor_acp::ConfigHome

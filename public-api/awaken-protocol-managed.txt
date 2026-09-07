@@ -544,17 +544,17 @@ pub awaken_protocol_managed::types::resource::ResourceManifestPhase::Active
 pub awaken_protocol_managed::types::resource::ResourceManifestPhase::Applying
 pub enum awaken_protocol_managed::types::resource::SessionResource
 pub awaken_protocol_managed::types::resource::SessionResource::File
-pub awaken_protocol_managed::types::resource::SessionResource::File::created_at: &'static str
+pub awaken_protocol_managed::types::resource::SessionResource::File::created_at: alloc::string::String
 pub awaken_protocol_managed::types::resource::SessionResource::File::file_id: alloc::string::String
 pub awaken_protocol_managed::types::resource::SessionResource::File::id: alloc::string::String
 pub awaken_protocol_managed::types::resource::SessionResource::File::mount_path: alloc::string::String
-pub awaken_protocol_managed::types::resource::SessionResource::File::updated_at: &'static str
+pub awaken_protocol_managed::types::resource::SessionResource::File::updated_at: alloc::string::String
 pub awaken_protocol_managed::types::resource::SessionResource::GithubRepository
 pub awaken_protocol_managed::types::resource::SessionResource::GithubRepository::checkout: core::option::Option<awaken_protocol_managed::types::resource::RepositoryCheckout>
-pub awaken_protocol_managed::types::resource::SessionResource::GithubRepository::created_at: &'static str
+pub awaken_protocol_managed::types::resource::SessionResource::GithubRepository::created_at: alloc::string::String
 pub awaken_protocol_managed::types::resource::SessionResource::GithubRepository::id: alloc::string::String
 pub awaken_protocol_managed::types::resource::SessionResource::GithubRepository::mount_path: alloc::string::String
-pub awaken_protocol_managed::types::resource::SessionResource::GithubRepository::updated_at: &'static str
+pub awaken_protocol_managed::types::resource::SessionResource::GithubRepository::updated_at: alloc::string::String
 pub awaken_protocol_managed::types::resource::SessionResource::GithubRepository::url: alloc::string::String
 pub awaken_protocol_managed::types::resource::SessionResource::MemoryStore
 pub awaken_protocol_managed::types::resource::SessionResource::MemoryStore::access: core::option::Option<awaken_protocol_managed::types::resource::ResourceAccess>
