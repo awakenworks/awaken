@@ -17443,7 +17443,16 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
     async fn prepare_disposal_for_effect(
         &self,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<pc::SandboxEffectFence, pc::SandboxError> {
+        // The fixture consumes the actual captured Host authority too; a stale
+        // slot must not record successful provider preparation.
+        pc::MemoryReconciliationAck::default().require_for_disposal(
+            &[],
+            effect_fence,
+            authority,
+            || Ok(()),
+        )?;
         self.events.lock().unwrap().push("prepare-source");
         if let Some(probe) = &self.fence_refresh_probe {
             probe.record("provider", effect_fence);

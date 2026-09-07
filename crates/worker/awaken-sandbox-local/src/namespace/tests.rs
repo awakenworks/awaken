@@ -398,7 +398,10 @@ async fn terminal_takeover_disposes_incomplete_writable_memory_without_inventing
     .await
     .expect("R1 zero-head reconciliation");
     terminal_sandbox
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("R1 preparation");
     terminal_sandbox
@@ -503,7 +506,12 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
         .expect("N1");
     assert!(cold.memory_mounts.lock().await.is_empty(), "N1");
     assert!(
-        cold.prepare_disposal_for_effect(&terminal).await.is_err(),
+        cold.prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal)
+        )
+        .await
+        .is_err(),
         "N3 preparation requires ack"
     );
     let mismatched = pc::MemoryMaterializationEvidence::new(
@@ -556,11 +564,17 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
     .await
     .expect("N1 replay");
     let prepared = cold
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("N3 exact preparation");
     let replayed = cold
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("N3 preparation response-loss replay");
     assert_eq!(prepared, terminal, "N3 exact durable predecessor");
@@ -587,16 +601,29 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
     );
     assert!(root.is_dir(), "N4 rejected effects are non-destructive");
     let renewed_replay = cold
-        .prepare_disposal_for_effect(&successor)
+        .prepare_disposal_for_effect(
+            &successor,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&successor),
+        )
         .await
         .expect("N4 successor preparation");
     assert_eq!(renewed_replay, terminal, "N4 C/D CAS orders share C");
     assert!(
-        cold.prepare_disposal_for_effect(&stale).await.is_err(),
+        cold.prepare_disposal_for_effect(
+            &stale,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&stale)
+        )
+        .await
+        .is_err(),
         "N4 shorter retry"
     );
     assert!(
-        cold.prepare_disposal_for_effect(&foreign).await.is_err(),
+        cold.prepare_disposal_for_effect(
+            &foreign,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&foreign)
+        )
+        .await
+        .is_err(),
         "N4 foreign retry"
     );
     assert!(root.is_dir(), "N4 preparation cannot dispose the root");

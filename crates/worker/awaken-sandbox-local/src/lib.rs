@@ -779,11 +779,22 @@ mod memory_mount_release_tests {
         assert_eq!(mounts.lock().await.len(), 1, "A3/A4");
         assert_eq!(fuse_drops.load(Ordering::SeqCst), 0, "A3/A4");
         assert!(
-            super::require_memory_reconciliation_ack(&ack, &expected, &live).is_err(),
+            ack.require_for_disposal(
+                &expected,
+                &live,
+                &pc::test_support::EffectAuthority::new(&live),
+                || Ok(())
+            )
+            .is_err(),
             "A4 supersedes prior effect"
         );
-        super::require_memory_reconciliation_ack(&ack, &expected, &takeover)
-            .expect("A4 disposal gate");
+        ack.require_for_disposal(
+            &expected,
+            &takeover,
+            &pc::test_support::EffectAuthority::new(&takeover),
+            || Ok(()),
+        )
+        .expect("A4 disposal gate");
         assert!(
             super::acknowledge_memory_reconciliation(
                 &ack,
@@ -849,14 +860,6 @@ pub(crate) async fn acknowledge_memory_reconciliation(
             Ok(())
         },
     )
-}
-
-pub(crate) fn require_memory_reconciliation_ack(
-    acknowledgement: &awaken_provisioning_contract::MemoryReconciliationAck,
-    expected_materializations: &[awaken_provisioning_contract::MemoryMaterializationEvidence],
-    effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
-) -> Result<(), awaken_provisioning_contract::SandboxError> {
-    acknowledgement.require_for_disposal(expected_materializations, effect_fence)
 }
 
 pub(crate) use provider::terminal_disposal::{

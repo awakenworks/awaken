@@ -1027,7 +1027,12 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
     assert_eq!(pc::Sandbox::handle(&cold), handle, "C6/M6 exact handle");
 
     assert!(
-        cold.prepare_disposal_for_effect(&terminal).await.is_err(),
+        cold.prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal)
+        )
+        .await
+        .is_err(),
         "M3 provider preparation is fenced until Host reconciliation"
     );
     assert!(root.is_dir(), "M3 failed removal retains exact root");
@@ -1096,11 +1101,17 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
     .await
     .expect("M1 response-loss replay");
     let prepared = replay
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("M3 exact preparation");
     let replayed = replay
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("M3 preparation response-loss replay");
     assert_eq!(prepared, terminal, "M3 exact durable predecessor");
@@ -1127,16 +1138,31 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
     );
     assert!(root.is_dir(), "M4 rejected effects are non-destructive");
     let renewed_replay = replay
-        .prepare_disposal_for_effect(&successor)
+        .prepare_disposal_for_effect(
+            &successor,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&successor),
+        )
         .await
         .expect("M4 successor preparation");
     assert_eq!(renewed_replay, terminal, "M4 C/D CAS orders share C");
     assert!(
-        replay.prepare_disposal_for_effect(&stale).await.is_err(),
+        replay
+            .prepare_disposal_for_effect(
+                &stale,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&stale)
+            )
+            .await
+            .is_err(),
         "M4 shorter retry"
     );
     assert!(
-        replay.prepare_disposal_for_effect(&foreign).await.is_err(),
+        replay
+            .prepare_disposal_for_effect(
+                &foreign,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&foreign)
+            )
+            .await
+            .is_err(),
         "M4 foreign retry"
     );
     assert!(root.is_dir(), "M4 preparation cannot dispose the root");
@@ -1223,7 +1249,12 @@ async fn terminal_checkpoint_cancellation_reuses_the_original_guard_and_upload_j
             );
             if prepared {
                 sandbox
-                    .prepare_disposal_for_effect(&terminal)
+                    .prepare_disposal_for_effect(
+                        &terminal,
+                        &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                            &terminal,
+                        ),
+                    )
                     .await
                     .unwrap();
             }
@@ -1248,7 +1279,12 @@ async fn terminal_checkpoint_cancellation_reuses_the_original_guard_and_upload_j
             store.paused.notified().await;
             assert!(
                 sandbox
-                    .prepare_disposal_for_effect(&terminal)
+                    .prepare_disposal_for_effect(
+                        &terminal,
+                        &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                            &terminal
+                        )
+                    )
                     .await
                     .is_err(),
                 "C3 preparation is busy"
@@ -1280,7 +1316,10 @@ async fn terminal_checkpoint_cancellation_reuses_the_original_guard_and_upload_j
                 .unwrap();
             assert!(store.objects.lock().unwrap().is_empty());
             sandbox
-                .prepare_disposal_for_effect(&terminal)
+                .prepare_disposal_for_effect(
+                    &terminal,
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+                )
                 .await
                 .unwrap();
             sandbox
@@ -1340,7 +1379,10 @@ async fn terminal_checkpoint_cleanup_uses_the_hot_ready_guard() {
         .await
         .expect("Rule H delete response-loss replay");
     sandbox
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("Rule H source-dependent preparation has zero physical effect");
     sandbox
@@ -1405,7 +1447,10 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
         .expect("R2");
     assert!(store.objects.lock().unwrap().is_empty(), "R2");
     terminal_sandbox
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("R1 durable preparation precedes physical disposal");
     terminal_sandbox
@@ -1556,7 +1601,10 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
         .expect("T1 terminal prepare")
         .expect("T1 exact terminal participant");
     terminal_sandbox
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("T1 durable P precedes physical Disposal");
     terminal_sandbox

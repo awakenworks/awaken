@@ -33,7 +33,11 @@ cargo test -p awaken-session-executor --lib resource_prompt_tests
 cargo test -p awaken-session-executor --lib trusted_host_repository_projection_preserves_the_exact_tier
 cargo test -p awaken-session-executor --lib trusted_host_live_resource_admission_keeps_readonly_advisory
 cargo test -p awaken-session-executor --lib local_and_namespace_restart_replay_exact_memory_participants_before_late_mounts
-cargo test -p awaken-session-executor --lib resident_and_cold_terminal_memory_use_one_terminal_v2_authority
+# Terminal cause/effect tables include hot/cold Memory, cancelled recovery,
+# same-generation renewal and Control/Worker clock disagreement. Select the
+# existing terminal group once; it includes the former single Memory row and
+# the provider-fence regression, without a parallel list of disposal cases.
+cargo test -p awaken-session-executor --lib terminal_
 cargo test -p awaken-session-executor --lib \
   trusted_host_filesystem_view_maps_workspace_relative_cwd_once
 cargo test -p awaken-session-executor --lib trusted_host_installed_hand
@@ -53,7 +57,11 @@ cargo test -p awaken-cli --lib acp_local_credentials
 # adapter races on every matrix runner; Namespace's Unix-socket rows remain
 # Linux-gated inside the Local suite. No container daemon is needed here.
 cargo test -p awaken-sandbox-control --lib
-cargo test -p awaken-sandbox-container --lib control
+# Include the neutral provider/Memory preparation decision tables and actual
+# credential-response wait faults, not only control publication. This expands
+# the existing provider invocation; it does not run the control group twice.
+cargo test -p awaken-provisioning-contract --lib
+cargo test -p awaken-sandbox-container --lib
 cargo test -p awaken-sandbox-local --lib
 cargo test -p awaken-local-process --lib
 # Run the actual Hand binary with an explicit resource root and a nested cwd,

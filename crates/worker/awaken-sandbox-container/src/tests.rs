@@ -953,7 +953,10 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
 
     assert!(
         sandbox
-            .prepare_disposal_for_effect(&continuation)
+            .prepare_disposal_for_effect(
+                &continuation,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&continuation)
+            )
             .await
             .is_err(),
         "N1 missing acknowledgement rejects preparation"
@@ -1005,7 +1008,10 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
     );
     assert!(
         sandbox
-            .prepare_disposal_for_effect(&continuation)
+            .prepare_disposal_for_effect(
+                &continuation,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&continuation)
+            )
             .await
             .is_err(),
         "N7 no ack"
@@ -1057,7 +1063,10 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
     );
     assert!(
         sandbox
-            .prepare_disposal_for_effect(&continuation)
+            .prepare_disposal_for_effect(
+                &continuation,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&continuation)
+            )
             .await
             .is_err(),
         "N3 Secret rejection keeps the physical realization"
@@ -1110,7 +1119,10 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
         .expect("N4 same-lease terminal successor rebinds the acknowledgement");
     assert!(
         sandbox
-            .prepare_disposal_for_effect(&continuation)
+            .prepare_disposal_for_effect(
+                &continuation,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&continuation)
+            )
             .await
             .is_err(),
         "N5 only the latest authorized successor may prepare"
@@ -1125,13 +1137,19 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
     )
     .expect("N5 canonical Secret effect");
     let prepared = sandbox
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("N4 exact successor prepares every source-dependent effect");
     assert_eq!(prepared, terminal, "N4/E8 exact input predecessor");
     let live_reads_after_prepare = runtime.st.lock().unwrap().live_credential_reads;
     let replayed = sandbox
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("N4 preparation response-loss replay");
     assert_eq!(replayed, terminal, "N4/E8 exact replay predecessor");
@@ -1187,6 +1205,113 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
         &[expected_secret_effect.writeback_id().to_string()],
         "N5 Secret idempotency is bound to the exact credential reference and physical Sandbox, not the aggregate operation",
     );
+}
+
+#[tokio::test]
+async fn disposal_preparation_rechecks_current_authority_after_each_credential_wait() {
+    use pc::Sandbox as _;
+    // C1 authority changes while awaiting writeback lock / live read / committed
+    // write response; C2 revoked / same-generation renewal / new generation.
+    // R1 revoked or replaced => Err, no NEXT read/write/prepared receipt, and
+    // retain the exact environment. R2 renewal => success, one write. R3 a write
+    // already committed before revocation may complete; retry uses the same
+    // stable writeback ID. This proves admission between waits, NOT remote CAS
+    // fencing inside an admitted broker request. Poll Pending before changing
+    // authority; R4 caller cancellation at the same waits retains the exact
+    // environment and retries with the original writeback identity. The 3x4
+    // table uses no sleeps or guessed timing; dropping Pending is not a receipt.
+    for boundary in ["lock", "read", "write"] {
+        for change in ["revoke", "renew", "replace", "cancel"] {
+            let runtime =
+                Arc::new(FakeRuntime::default().with_live_credential(b"synthetic-rotated"));
+            let broker = Arc::new(RecordingSecretBroker::default());
+            *broker.current.lock().unwrap() = b"synthetic-initial".to_vec();
+            let sandbox = provider_without_broker(runtime.clone())
+                .with_secret_broker(broker.clone())
+                .create_container(&writable_credential_spec("preparation-waits"))
+                .await
+                .unwrap();
+            let fence =
+                pc::SandboxEffectFence::new("prepare", "owner", "boot", 1, u64::MAX - 1).unwrap();
+            let authority = pc::test_support::EffectAuthority::new(&fence);
+            let gate = Arc::new(tokio::sync::Semaphore::new(0));
+            match boundary {
+                "read" => {
+                    runtime.st.lock().unwrap().live_credential_response_gate = Some(gate.clone())
+                }
+                "write" => *broker.writeback_response_gate.lock().unwrap() = Some(gate.clone()),
+                _ => {}
+            }
+            let held = if boundary == "lock" {
+                Some(sandbox.lifecycle.writeback_done.lock().await)
+            } else {
+                None
+            };
+            let mut pending = Box::pin(sandbox.prepare_disposal_for_effect(&fence, &authority));
+            std::future::poll_fn(|cx| {
+                assert!(
+                    std::future::Future::poll(pending.as_mut(), cx).is_pending(),
+                    "{boundary}/{change}"
+                );
+                std::task::Poll::Ready(())
+            })
+            .await;
+            assert_eq!(
+                runtime.st.lock().unwrap().live_credential_reads,
+                usize::from(boundary != "lock")
+            );
+            assert_eq!(
+                broker.writes.lock().unwrap().len(),
+                usize::from(boundary == "write")
+            );
+            let mut successor = fence.clone();
+            successor.expires_at_unix_ms += 1;
+            if change == "replace" {
+                successor.epoch += 1;
+            }
+            if change != "cancel" {
+                *authority.current.lock().unwrap() = if change == "revoke" {
+                    None
+                } else {
+                    Some((successor, std::time::Duration::from_secs(1)))
+                };
+            }
+            drop(held);
+            gate.add_permits(1);
+            if change == "cancel" {
+                drop(pending);
+            } else {
+                let result = pending.await;
+                assert_eq!(result.is_ok(), change == "renew", "{boundary}/{change}");
+            }
+            assert_eq!(
+                broker.writes.lock().unwrap().len(),
+                usize::from(change == "renew" || boundary == "write")
+            );
+            assert!(!*sandbox.lifecycle.remove_done.lock().await);
+            assert_eq!(
+                runtime
+                    .st
+                    .lock()
+                    .unwrap()
+                    .alive
+                    .get("cid-preparation-waits"),
+                Some(&true)
+            );
+            runtime.st.lock().unwrap().live_credential_response_gate = None;
+            *broker.writeback_response_gate.lock().unwrap() = None;
+            // Retry only under restored exact fixture authority, not a new
+            // Sandbox or invented successful preparation after the rejection.
+            *authority.current.lock().unwrap() =
+                Some((fence.clone(), std::time::Duration::from_secs(1)));
+            sandbox
+                .prepare_disposal_for_effect(&fence, &authority)
+                .await
+                .unwrap();
+            let ids = broker.writeback_ids.lock().unwrap();
+            assert!(ids.iter().all(|id| id == &ids[0]));
+        }
+    }
 }
 
 #[tokio::test]
@@ -1420,7 +1545,10 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
         .await
         .expect("E2 exact terminal Memory acknowledgement gates physical cleanup");
     adopted
-        .prepare_disposal_for_effect(&terminal_fence)
+        .prepare_disposal_for_effect(
+            &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .expect("E2 source-dependent preparation precedes aggregate admission");
     assert_eq!(
@@ -1865,6 +1993,7 @@ struct FakeState {
     live_credential: Option<Vec<u8>>,
     live_credential_error: Option<String>,
     live_credential_reads: usize,
+    live_credential_response_gate: Option<Arc<tokio::sync::Semaphore>>,
     credential_source: Option<std::path::PathBuf>,
     spawned: Vec<(String, Vec<String>)>,
     runtime_path_observations: Vec<RuntimePathObservation>,
@@ -2135,12 +2264,19 @@ impl ContainerRuntime for FakeRuntime {
         _container_id: &str,
         _path: &str,
     ) -> Result<Option<Vec<u8>>, RuntimeError> {
-        let mut state = self.st.lock().unwrap();
-        state.live_credential_reads += 1;
-        match &state.live_credential_error {
-            Some(error) => Err(RuntimeError::Backend(error.clone())),
-            None => Ok(state.live_credential.clone()),
+        let (result, gate) = {
+            let mut state = self.st.lock().unwrap();
+            state.live_credential_reads += 1;
+            let result = match &state.live_credential_error {
+                Some(error) => Err(RuntimeError::Backend(error.clone())),
+                None => Ok(state.live_credential.clone()),
+            };
+            (result, state.live_credential_response_gate.clone())
+        };
+        if let Some(gate) = gate {
+            gate.acquire().await.unwrap().forget();
         }
+        result
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
@@ -2678,6 +2814,7 @@ struct RecordingSecretBroker {
     effect_operations: Mutex<Vec<String>>,
     writeback_ids: Mutex<Vec<String>>,
     reject_writeback: AtomicBool,
+    writeback_response_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
 }
 
 impl RecordingSecretBroker {
@@ -2719,6 +2856,10 @@ impl pc::SecretBroker for RecordingSecretBroker {
             .lock()
             .unwrap()
             .push(effect.writeback_id().to_string());
+        let gate = self.writeback_response_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.acquire().await.unwrap().forget();
+        }
         Ok(())
     }
 }
@@ -3389,9 +3530,13 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
     // then removal happens once. A6 response replay adds neither observation
     // nor removal. The shared runtime matrix still owns cold/wrong-proof and
     // foreign/expired-fence rejection; preparation alone never grants deletion.
-    pc::Sandbox::prepare_disposal_for_effect(&sandbox, &fence)
-        .await
-        .unwrap();
+    pc::Sandbox::prepare_disposal_for_effect(
+        &sandbox,
+        &fence,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence),
+    )
+    .await
+    .unwrap();
     let authorization = disposal_authorization(&fence);
     pc::Sandbox::dispose_for_effect(&sandbox, &authorization)
         .await
@@ -4374,7 +4519,10 @@ async fn canonical_environment_spawns_agent_without_process_owning_terminal_clea
     .unwrap();
     assert_eq!(
         environment
-            .prepare_disposal_for_effect(&terminal)
+            .prepare_disposal_for_effect(
+                &terminal,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal)
+            )
             .await
             .expect("L3 aggregate-owned terminal preparation"),
         terminal,
@@ -4627,7 +4775,10 @@ async fn durable_writable_secret_waits_for_explicit_environment_disposal() {
     )
     .unwrap();
     environment
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("W2 aggregate-owned terminal preparation");
     environment
@@ -4693,7 +4844,10 @@ async fn remote_runtime_harvests_live_credential_only_at_environment_disposal() 
     )
     .unwrap();
     environment
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .expect("S2 aggregate-owned terminal preparation");
     environment

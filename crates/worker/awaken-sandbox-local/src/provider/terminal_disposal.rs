@@ -1,10 +1,7 @@
 //! Shared Local/Namespace terminal disposal, under the original marker participant.
 //! Session owns durable authorization; this adapter serializes physical effects.
 
-use crate::{
-    IsolatedRoot, realization_marker, release_memory_mounts, require_memory_reconciliation_ack,
-    shred_secret_paths_at,
-};
+use crate::{IsolatedRoot, realization_marker, release_memory_mounts, shred_secret_paths_at};
 use std::path::{Path, PathBuf};
 
 /// Admit or refresh one exact filesystem removal participant. Both Local and
@@ -62,12 +59,14 @@ pub(crate) fn prepare_terminal_disposal(
     realization: &realization_marker::LiveRealization,
     terminal_removal: &tokio::sync::Mutex<Option<realization_marker::RemovalGuard>>,
     effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
+    authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
 ) -> Result<
     awaken_provisioning_contract::SandboxEffectFence,
     awaken_provisioning_contract::SandboxError,
 > {
-    require_memory_reconciliation_ack(acknowledgement, expected_materializations, effect_fence)?;
-    authorize_terminal_disposal(root, realization, terminal_removal, effect_fence)
+    acknowledgement.require_for_disposal(expected_materializations, effect_fence, authority, || {
+        authorize_terminal_disposal(root, realization, terminal_removal, effect_fence)
+    })
 }
 
 /// Borrow the original prepared participant through every await. Cancellation

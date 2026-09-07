@@ -176,7 +176,10 @@ async fn cross_node_adopt(tier: Tier, can_exec: bool) {
     // only the subsequent physical-disposal call may remove that participant.
     let terminal = fence("cross-node-terminal");
     sandbox_b
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .unwrap();
     sandbox_b

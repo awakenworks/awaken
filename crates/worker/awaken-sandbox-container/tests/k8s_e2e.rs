@@ -1001,7 +1001,10 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
 
     let terminal_fence = effect_fence(&scope, "terminal", "manifest-owner", 2);
     recovered
-        .prepare_disposal_for_effect(&terminal_fence)
+        .prepare_disposal_for_effect(
+            &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .expect("KLI2/E4 prepare source-dependent effects");
     assert_pod_present(&pod, "KLI2/E4 preparation has zero physical effect");
@@ -1216,7 +1219,10 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
         .await
         .expect("R4 acknowledge the complete reconciled evidence set");
     sandbox
-        .prepare_disposal_for_effect(&terminal_fence)
+        .prepare_disposal_for_effect(
+            &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .expect("R4 prepare source-dependent cleanup after Memory is durable");
     let pod = container_id(&handle);

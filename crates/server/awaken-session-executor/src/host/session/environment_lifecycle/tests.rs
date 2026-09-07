@@ -66,7 +66,12 @@ async fn dispose_current_environment(
     // exact create-effect predecessor. E1 prepare that current predecessor,
     // derive the typed aggregate authorization, then perform physical disposal.
     let prepared = environment
-        .prepare_disposal_for_effect(&environment_effect_fence(thread))
+        .prepare_disposal_for_effect(
+            &environment_effect_fence(thread),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                &environment_effect_fence(thread),
+            ),
+        )
         .await
         .expect("prepare current Environment disposal");
     let authorization = disposal_authorization(
