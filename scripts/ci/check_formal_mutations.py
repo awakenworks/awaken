@@ -1933,7 +1933,7 @@ def check_checkpoint_recovery_model_mutants(tlc_jar: Path) -> None:
     anchor = 'Recover == /\\ phase = "crashed"\n           /\\ readStatus \\in AcceptedReads'
     if source.count(anchor) != 1:
         raise SystemExit("checkpoint observation mutation anchor drifted")
-    for outcome in ("storage", "fenced", "wrong-run", "wrong-thread", "pending", "cancelled"):
+    for outcome in ("storage", "fenced", "wrong-run", "wrong-thread", "pending", "cancelled", "deadline"):
         broken = anchor.replace("AcceptedReads", f'AcceptedReads \\cup {{"{outcome}"}}')
         mutations.append((source.replace(anchor, broken),
                           header + "INVARIANTS UnknownObservationNeverExecutes\n",
@@ -1965,13 +1965,15 @@ def check_checkpoint_recovery_model_mutants(tlc_jar: Path) -> None:
     broken = broken.replace("savedValid, recovery>>", "savedValid>>")
     mutations.append((source.replace(reject, broken),
                       header + "INVARIANTS UncertainOutcomeVetoesPhysicalReturn\n", "UncertainOutcomeVetoesPhysicalReturn"))
-    for witness in ("NoExactResume", "NoAbsentResume", "NoStorageBlock", "NoFenceBlock",
+    mutations.append((source.replace('ReadDeadline == ObserveRead("deadline")', 'ReadDeadline == FALSE'),
+                      header + "CHECK_DEADLOCK FALSE\nPROPERTIES RecoveryReadSettles\n", "temporal:RecoveryReadSettles"))
+    for witness in ("NoExactResume", "NoAbsentResume", "NoStorageBlock", "NoFenceBlock", "NoDeadlineReadBlock",
                     "NoRunMismatchBlock", "NoThreadMismatchBlock", "NoCancelledReadBlock",
                     "NoUnknownResumeBlock", "NoUnknownHandoffBlock", "NoUnknownCancelBlock",
                     "NoUnknownStopBlock", "NoKnownControlReturn"):
         mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "CheckpointRecovery", source, config, mutations)
-    print("Checkpoint recovery: 12/12 mutants killed; twelve entry/observation witnesses reachable")
+    print("Checkpoint recovery: 14/14 mutants killed; thirteen entry/observation witnesses reachable")
 
 
 

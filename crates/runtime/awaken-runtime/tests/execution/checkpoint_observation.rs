@@ -7,6 +7,7 @@ enum ReadOutcome {
     Storage,
     Fenced,
     Value(Option<StreamCheckpoint>),
+    DelayedAbsence(std::time::Duration),
     Pending,
 }
 
@@ -78,6 +79,10 @@ impl StreamCheckpointStore for CheckpointObservation {
             ReadOutcome::Storage => Err(StreamCheckpointError::Storage("injected".into())),
             ReadOutcome::Fenced => Err(StreamCheckpointError::Fenced("injected".into())),
             ReadOutcome::Value(value) => Ok(value.clone()),
+            ReadOutcome::DelayedAbsence(delay) => {
+                tokio::time::sleep(*delay).await;
+                Ok(None)
+            }
             ReadOutcome::Pending => std::future::pending().await,
         }
     }
@@ -229,6 +234,111 @@ async fn confirmed_checkpoint_absence_allows_fresh_execution() {
     assert_eq!(model_operations(&durable).last().unwrap().ordinal.get(), 1);
     assert!(quiescence.can_acknowledge_return());
     assert_eq!(checkpoints.reads.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn stalled_checkpoint_observation_has_a_deadline_without_cancelling_the_run() {
+    // C1 execution/cancel/stop; C2 absent/Terminated predecessor; C3 no token/
+    // live uncancelled token; C4 read stays Pending. R1..R12=C1 x C2 x C3:
+    // bounded local decision, physical veto, zero model calls or checkpoint
+    // writes, unchanged journal. Logical cancel/stop retain their own outcome;
+    // execution ends Indeterminate. The read deadline must not cancel the Run
+    // token or imply remote stop. Virtual time makes the deadline deterministic.
+    for entry in ["execute", "cancel", "stop"] {
+        for terminated in [false, true] {
+            for with_token in [false, true] {
+                let durable = Arc::new(MemoryCommitCoordinator::new());
+                if terminated {
+                    commit_terminated_model(&durable).await;
+                }
+                let before = model_operations(&durable);
+                let checkpoints = Arc::new(CheckpointObservation::new(ReadOutcome::Pending));
+                let model = Arc::new(MaxTokensThenTextLlm(AtomicUsize::new(0)));
+                let token = tokio_util::sync::CancellationToken::new();
+                let mut context = RuntimeRunContext::new()
+                    .with_commit(durable.clone())
+                    .with_reader(durable.clone())
+                    .with_stream_checkpoint(checkpoints.clone());
+                if with_token {
+                    context = context.with_cancellation(token.clone());
+                }
+                let quiescence = context.physical_quiescence.clone();
+                let runtime = Runtime::new().with_llm(model.clone());
+                let began = tokio::time::Instant::now();
+                let result = tokio::time::timeout(std::time::Duration::from_secs(40), async {
+                    match entry {
+                        "execute" => runtime.execute(activation("catalog-a"), context).await,
+                        "cancel" => {
+                            runtime
+                                .cancel_run(
+                                    RunId("run-1".into()),
+                                    ThreadId("thread-1".into()),
+                                    context,
+                                )
+                                .await
+                        }
+                        _ => {
+                            runtime
+                                .stop_run(
+                                    RunId("run-1".into()),
+                                    ThreadId("thread-1".into()),
+                                    "budget".into(),
+                                    context,
+                                )
+                                .await
+                        }
+                    }
+                })
+                .await
+                .expect("recovery read must settle without an external cancellation")
+                .unwrap();
+                assert_eq!(began.elapsed(), std::time::Duration::from_secs(30));
+                assert_eq!(
+                    result,
+                    RunState::Ended(match entry {
+                        "execute" => EndCause::Indeterminate,
+                        "cancel" => EndCause::Cancelled,
+                        _ => EndCause::Stopped("budget".into()),
+                    })
+                );
+                assert!(!token.is_cancelled());
+                assert!(!quiescence.can_acknowledge_return());
+                assert_eq!(model.0.load(Ordering::SeqCst), 0);
+                assert_eq!(model_operations(&durable), before);
+                checkpoints.assert_untouched();
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn successful_slow_checkpoint_observation_preserves_execution_admission() {
+    // Positive rules D1..D3: confirmed absence before the 30s deadline is not
+    // denied merely for being asynchronous. The response itself ends the read,
+    // no fixed sleep, polling, journal fabrication or premature model entry.
+    for seconds in [0, 5, 29] {
+        let checkpoints = Arc::new(CheckpointObservation::new(ReadOutcome::DelayedAbsence(
+            std::time::Duration::from_secs(seconds),
+        )));
+        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let context = RuntimeRunContext::new()
+            .with_commit(durable.clone())
+            .with_reader(durable.clone())
+            .with_stream_checkpoint(checkpoints.clone());
+        let quiescence = context.physical_quiescence.clone();
+        let began = tokio::time::Instant::now();
+        let result = Runtime::new()
+            .with_llm(Arc::new(TextLlm("done")))
+            .execute(activation("catalog-a"), context)
+            .await
+            .unwrap();
+        assert_eq!(result, RunState::Ended(EndCause::NaturalEnd));
+        assert!(began.elapsed() < std::time::Duration::from_secs(30));
+        assert!(began.elapsed() >= std::time::Duration::from_secs(seconds));
+        assert!(quiescence.can_acknowledge_return());
+        assert_eq!(model_operations(&durable).last().unwrap().ordinal.get(), 1);
+        assert_eq!(checkpoints.reads.load(Ordering::SeqCst), 1);
+    }
 }
 
 #[tokio::test]

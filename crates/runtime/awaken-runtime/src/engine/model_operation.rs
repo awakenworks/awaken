@@ -7,6 +7,10 @@ use awaken_runtime_contract::model_operation::{
 };
 use awaken_runtime_contract::resolved::ModelBinding;
 
+// Observation budget only: independent of Run execution, lease and provider
+// deadlines. Expiry may discard this read, never a durable write or stop proof.
+const CHECKPOINT_OBSERVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The one predecessor decision, shared by initial recovery and every subsequent
 /// invocation. Malformed evidence vetoes physical return just like Unknown.
 fn verify_reentry(
@@ -62,9 +66,16 @@ pub(super) async fn recover_checkpoint(
     let checkpoint = match context.stream_checkpoint.as_ref() {
         None => None,
         Some(checkpoints) => {
-            match inference::model_read(context.cancellation.as_ref(), checkpoints.get(&run_id.0))
-                .await
-            {
+            let read = async {
+                tokio::time::timeout(CHECKPOINT_OBSERVATION_TIMEOUT, checkpoints.get(&run_id.0))
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(awaken_agent_contract::stream::checkpoint::StreamCheckpointError::Storage(
+                            "checkpoint observation deadline exceeded".into(),
+                        ))
+                    })
+            };
+            match inference::model_read(context.cancellation.as_ref(), read).await {
                 Some(Ok(checkpoint))
                     if checkpoint.as_ref().is_none_or(|checkpoint| {
                         checkpoint.run_id == run_id.0 && checkpoint.thread_id == thread_id.0
@@ -73,8 +84,14 @@ pub(super) async fn recover_checkpoint(
                     checkpoint
                 }
                 observation => {
-                    if let Some(Err(error)) = observation {
-                        tracing::warn!(run_id = %run_id.0, %error, "failed to load stream checkpoint");
+                    match observation {
+                        Some(Err(error)) => {
+                            tracing::warn!(run_id = %run_id.0, %error, "failed to load stream checkpoint")
+                        }
+                        Some(Ok(_)) => {
+                            tracing::warn!(run_id = %run_id.0, "stream checkpoint identity mismatch")
+                        }
+                        None => {}
                     }
                     return Ok(RecoveryObservation::End(uncertain()));
                 }

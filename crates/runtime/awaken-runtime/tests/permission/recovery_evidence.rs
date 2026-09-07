@@ -9,7 +9,12 @@ use awaken_runtime_contract::model_operation::{
 use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatchPhase};
 use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
 
-struct UnavailableCheckpoint;
+#[derive(Clone, Copy)]
+enum RecoveryFault {
+    UnknownModel,
+    UnavailableCheckpoint,
+    StalledCheckpoint,
+}
 
 async fn make_model_unknown(fixture: &PermissionHandoffFixture) {
     let mut prior = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
@@ -34,8 +39,12 @@ async fn make_model_unknown(fixture: &PermissionHandoffFixture) {
 }
 
 #[async_trait::async_trait]
-impl StreamCheckpointStore for UnavailableCheckpoint {
+impl StreamCheckpointStore for RecoveryFault {
     async fn get(&self, _: &str) -> Result<Option<StreamCheckpoint>, StreamCheckpointError> {
+        if matches!(self, Self::StalledCheckpoint) {
+            return std::future::pending().await;
+        }
+        assert!(matches!(self, Self::UnavailableCheckpoint));
         Err(StreamCheckpointError::Storage(
             "injected read failure".into(),
         ))
@@ -48,22 +57,26 @@ impl StreamCheckpointStore for UnavailableCheckpoint {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn permission_resume_checks_recovery_before_approval_and_tool_entry() {
     // Causes: C1 Native/tool-batch continuation; C2 unknown prior model /
-    // terminated prior with unread checkpoint; C3 context reader absent/current/stale.
+    // terminated prior with failed/stalled checkpoint; C3 context reader absent/current/stale.
     // Effects: Indeterminate, physical veto, sealed batch, no approval/
     // ResumeApplied event and zero real tool effects. The explicit resume reader
     // must own both recovery and terminal sealing, even without context.reader.
-    // R1..R12=C1 x C2 x C3. Existing handoff and Native permission tests supply the
+    // R1..R18=C1 x C2 x C3. Existing handoff and Native permission tests supply the
     // positive controls with committed Terminated evidence and readable absence.
     for native in [false, true] {
-        for (unavailable, context_reader) in [false, true]
-            .into_iter()
-            .flat_map(|unavailable| (0..3).map(move |reader| (unavailable, reader)))
+        for (fault, context_reader) in [
+            RecoveryFault::UnknownModel,
+            RecoveryFault::UnavailableCheckpoint,
+            RecoveryFault::StalledCheckpoint,
+        ]
+        .into_iter()
+        .flat_map(|fault| (0..3).map(move |reader| (fault, reader)))
         {
             let fixture = PermissionHandoffFixture::awaiting(false).await;
-            if !unavailable {
+            if matches!(fault, RecoveryFault::UnknownModel) {
                 make_model_unknown(&fixture).await;
             }
             let before = audited_decisions(&fixture.commit);
@@ -73,21 +86,29 @@ async fn permission_resume_checks_recovery_before_approval_and_tool_entry() {
                 1 => context.with_reader(fixture.commit.clone()),
                 _ => context.with_reader(Arc::new(MemoryCommitCoordinator::new())),
             };
-            if unavailable {
-                context = context.with_stream_checkpoint(Arc::new(UnavailableCheckpoint));
+            if !matches!(fault, RecoveryFault::UnknownModel) {
+                context = context.with_stream_checkpoint(Arc::new(fault));
             }
             let quiescence = context.physical_quiescence.clone();
-            let result = if native {
-                fixture
-                    .runtime
-                    .resume(fixture.command.clone(), fixture.commit.as_ref(), context)
-                    .await
-            } else {
-                fixture
-                    .runtime
-                    .resume_tool_batch(fixture.command.clone(), fixture.commit.as_ref(), context)
-                    .await
-            };
+            let result = tokio::time::timeout(std::time::Duration::from_secs(40), async {
+                if native {
+                    fixture
+                        .runtime
+                        .resume(fixture.command.clone(), fixture.commit.as_ref(), context)
+                        .await
+                } else {
+                    fixture
+                        .runtime
+                        .resume_tool_batch(
+                            fixture.command.clone(),
+                            fixture.commit.as_ref(),
+                            context,
+                        )
+                        .await
+                }
+            })
+            .await
+            .expect("resume observation is bounded without approving a tool");
             assert_eq!(result.unwrap(), RunState::Ended(EndCause::Indeterminate));
             assert!(fixture.calls.lock().unwrap().is_empty());
             assert_eq!(audited_decisions(&fixture.commit), before);

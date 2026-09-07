@@ -287,6 +287,12 @@ together with permitting model evidence, may reach those effect boundaries.
 Storage/fence errors and foreign identity end Indeterminate; cancellation during
 the read returns Cancelled through the existing cancellable read boundary. These
 failures retain the checkpoint and physical veto rather than fabricate absence.
+The same read has one 30-second observation budget, even when no cancellation
+token is supplied. Expiry maps to the existing unavailable-read decision;
+it neither cancels the Run token nor times out a provider or durable evidence
+write. Successful slow reads before the deadline still admit normal execution.
+Cancel/stop preserve their requested logical outcome after read expiry while
+retaining the physical veto. No new retry loop or recovery authority is added.
 Malformed owned model evidence retains its Commit error classification and veto.
 Cancel, stop and coordinated tool interruption restore that same veto before
 returning their logical outcome, including terminal interruption replay.
@@ -296,10 +302,12 @@ implementation instead of depending on the optional context reader.
 
 The existing CheckpointRecovery model covers five entry classes and four prior
 evidence classes within MaxChunks=3, including control return without evidence,
-resume/handoff before observation, retained unknown checkpoints and fair read
-settlement. Twelve semantic mutations and twelve reachability witnesses guard
+resume/handoff before observation, retained unknown checkpoints and read
+settlement under fair local timer/scheduler progress even for a pending store.
+Fourteen semantic mutations and thirteen reachability witnesses guard
 the model. Runtime tests separately cover actual permission/tool/child calls and
-control replay. This is bounded abstract-model evidence, not Rust refinement or
+control replay, deadline expiry without cancellation, and successful slow reads.
+This is bounded abstract-model evidence, not Rust refinement or
 provider termination proof. It does not make blocking synchronous storage
 preemptible, prove an unjournaled historical Run stopped, or add independent
 execution-domain receipts. Invalid resume commands are rejected before recovery

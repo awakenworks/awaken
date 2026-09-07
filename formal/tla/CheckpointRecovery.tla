@@ -10,7 +10,7 @@ vars == <<durable, staged, checkpoint, checkpointValid, phase,
           lastKind, lastBefore, lastAfter, readStatus, savedCheckpoint, savedValid, recovery>>
 
 AcceptedReads == {"absent", "exact"}
-RejectedReads == {"storage", "fenced", "wrong-run", "wrong-thread", "cancelled"}
+RejectedReads == {"storage", "fenced", "wrong-run", "wrong-thread", "cancelled", "deadline"}
 EffectEntries == {"execute", "resume", "handoff"}
 ControlEntries == {"cancel", "stop"}
 EvidencePermits == recovery.evidence = "terminated" \/
@@ -82,6 +82,11 @@ ObserveRead(outcome) ==
   /\ UNCHANGED <<durable, staged, checkpoint, checkpointValid, phase,
                  lastKind, lastBefore, lastAfter, savedCheckpoint, savedValid, recovery>>
 
+\* Abstract finite observation timer, not a provider completion event. Fairness
+\* assumes a yielding executor and a scheduled local timer; it cannot preempt
+\* blocking synchronous code or confer authority on the abandoned operation.
+ReadDeadline == ObserveRead("deadline")
+
 Recover == /\ phase = "crashed"
            /\ readStatus \in AcceptedReads
            /\ EvidencePermits /\ recovery.entry \in EffectEntries
@@ -128,8 +133,8 @@ DoneStutter == /\ phase \in {"done", "blocked", "controlled"}
                /\ UNCHANGED vars
 
 Next == Produce \/ CommitWatermark \/ FlushCheckpoint \/ Crash
-     \/ (\E outcome \in AcceptedReads \cup RejectedReads : ObserveRead(outcome))
-     \/ Recover \/ RejectRead \/ ControlReturn \/ Complete \/ DoneStutter
+     \/ (\E outcome \in (AcceptedReads \cup RejectedReads) \ {"deadline"} : ObserveRead(outcome))
+     \/ ReadDeadline \/ Recover \/ RejectRead \/ ControlReturn \/ Complete \/ DoneStutter
 
 TypeOK == /\ durable \in 0..MaxChunks
           /\ staged \in 0..MaxChunks
@@ -162,9 +167,10 @@ RecoveredPartialRequiresEvidence == lastKind = "recover" /\ savedValid =>
 UncertainOutcomeVetoesPhysicalReturn == phase = "blocked" => ~recovery.quiescent
 ControlReturnRequiresEvidence == phase = "controlled" => EvidencePermits
 
-\* Fair local scheduling after an observation suffices to decide. No progress
-\* claim is made while a read stays pending or about a remote stop provider.
+\* Decision progress includes an unresponsive store under fair local scheduling.
+\* Neither property promises that an opaque remote operation terminates.
 ObservationSettles == [](phase = "crashed" /\ readStatus # "pending" => <>(phase # "crashed"))
+RecoveryReadSettles == [](phase = "crashed" => <>(phase # "crashed"))
 
 \* Negated witnesses for the shared mutation runner; failure proves reachability.
 NoExactResume == ~(lastKind = "recover" /\ readStatus = "exact")
@@ -174,11 +180,12 @@ NoFenceBlock == ~(phase = "blocked" /\ readStatus = "fenced")
 NoRunMismatchBlock == ~(phase = "blocked" /\ readStatus = "wrong-run")
 NoThreadMismatchBlock == ~(phase = "blocked" /\ readStatus = "wrong-thread")
 NoCancelledReadBlock == ~(phase = "blocked" /\ readStatus = "cancelled" /\ checkpointValid)
+NoDeadlineReadBlock == ~(phase = "blocked" /\ readStatus = "deadline" /\ checkpointValid)
 NoUnknownResumeBlock == ~(phase = "blocked" /\ recovery.entry = "resume" /\ recovery.evidence = "unknown")
 NoUnknownHandoffBlock == ~(phase = "blocked" /\ recovery.entry = "handoff" /\ recovery.evidence = "unknown")
 NoUnknownCancelBlock == ~(phase = "blocked" /\ recovery.entry = "cancel" /\ recovery.evidence = "unknown")
 NoUnknownStopBlock == ~(phase = "blocked" /\ recovery.entry = "stop" /\ recovery.evidence = "unknown")
 NoKnownControlReturn == ~(phase = "controlled" /\ recovery.evidence = "terminated")
 
-Spec == Init /\ [][Next]_vars /\ WF_vars(Recover) /\ WF_vars(RejectRead) /\ WF_vars(ControlReturn)
+Spec == Init /\ [][Next]_vars /\ WF_vars(Recover) /\ WF_vars(RejectRead) /\ WF_vars(ControlReturn) /\ WF_vars(ReadDeadline)
 =============================================================================
