@@ -1456,7 +1456,7 @@ impl ContainerRuntime for DockerRuntime {
         .map_err(backend)?;
         // Reuse ordinary immutable-incarnation removal; never delete the
         // mutable restore name after identity observation.
-        self.remove_exact_incarnation(&container_id, None, authorization)
+        self.remove_exact_incarnation(&container_id, None, authorization, authority)
             .await?;
         admit()
     }
@@ -1780,14 +1780,19 @@ impl ContainerRuntime for DockerRuntime {
         &self,
         container_id: &str,
         runtime_handle: Option<&pc::ContainerContinuationHandle>,
-        _authorization: &pc::SandboxDisposalAuthorization,
+        authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {
         if runtime_handle.is_some() {
             return Err(backend(
                 "Docker exact removal received foreign continuation evidence",
             ));
         }
-        self.remove(container_id).await
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+            .map_err(backend)?;
+        self.remove(container_id).await?;
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+            .map_err(backend)
     }
 }
 

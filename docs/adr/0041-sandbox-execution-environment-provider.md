@@ -874,6 +874,29 @@ projection publication are owned by the
 Provider absolute-time correspondence and complete platform qualification
 remain open; this provider ADR does not define another Session clock policy.
 
+Compound Kubernetes terminal and restored-target removal forward that same
+current-effect authority through the existing immutable-incarnation port. The
+Pod/PVC UID/resourceVersion protocol and cleanup finalizer remain the sole
+physical interlock. A borrowed admission callback rechecks authority after
+asynchronous responses, before subsequent mutations and during deletion waits,
+including projected ConfigMap/Secret deletion and finalizer conflict retries.
+It owns no new lease, registry or cleanup job. Lost authority returns failure
+without issuing the next request; an already accepted remote mutation is not
+rolled back. The existing aggregate retry supplies a new successor over the
+original preparation and exact handle, preserving the durable finalizer until
+the existing cleanup protocol can complete. Rebuild's separate exact-identity
+deletion retains its existing admission owner; it does not infer a terminal
+disposal grant.
+
+The adjacent Kubernetes cleanup test owns the response-cut decision table:
+normal and finalizer-conflict paths cross every actual kube HTTP response with
+renewal, revocation, replacement, expiry and cancellation, assert the committed
+mutation prefix, and retry under a fresh successor to exact total absence.
+The existing `SessionExecutionBinding` two-effect wait/check model owns the
+corresponding admission obligation. This is deterministic adapter evidence,
+not real API-server/controller, credential, unbounded-liveness or Rust-refinement
+proof; in-flight remote commits remain outside the local authority lock.
+
 The existing `SessionExecutionBinding` model now checks both fixed deployment
 topologies. A registered Worker requires its live root proof; a direct
 unregistered Host requires its actual Session owner without synthesizing a

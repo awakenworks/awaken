@@ -286,7 +286,7 @@ pub(super) async fn dispose(
         admit()?;
         let handle = continuation::handle_extra(&observation.pod)?;
         runtime
-            .remove_exact_incarnation(&name, handle.as_ref(), authorization)
+            .remove_exact_incarnation(&name, handle.as_ref(), authorization, authority)
             .await?;
         return admit();
     }
@@ -324,7 +324,7 @@ pub(super) async fn dispose(
         if let Some(pending) = continuation::absent_pod_claim_deletion(&claims, &name, &uid).await?
         {
             admit()?;
-            continuation::await_claim_deletion(&claims, &pending).await?;
+            continuation::await_claim_deletion(&claims, &pending, &admit).await?;
         }
     }
     admit()

@@ -37,7 +37,8 @@ fn helper_fixture(root: &Path, body: &str) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let helper = root.join("helper");
     std::fs::write(&helper, format!(
-        "#!/usr/bin/python3\nimport os,sys,time,json\nif sys.argv[1]=='scoped-exec':\n os.execv({HELPER:?},[{HELPER:?}]+sys.argv[1:])\nrequest_bytes=sys.stdin.buffer.read()\nassert 'REPOSITORY_AGENT_ONLY' not in os.environ\n{body}\n",
+        "#!/usr/bin/python3\nimport os,sys,time,json\nif sys.argv[1]=='scoped-exec':\n os.execv({binary:?},[{binary:?}]+sys.argv[1:])\nrequest_bytes=sys.stdin.buffer.read()\nassert 'REPOSITORY_AGENT_ONLY' not in os.environ\n{body}\n",
+        binary = sandbox_binary(),
     )).unwrap();
     std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
     helper
@@ -77,7 +78,7 @@ async fn scoped_repository_reuses_clone_publication_and_exact_resource_paths() {
     sandbox
         .install_scoped_execution(
             Path::new("/usr/bin/bwrap"),
-            Path::new(HELPER),
+            Path::new(sandbox_binary()),
             Authority::live(),
         )
         .unwrap();
