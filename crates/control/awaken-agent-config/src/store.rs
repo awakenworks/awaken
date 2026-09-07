@@ -165,6 +165,31 @@ fn management_effect_confirmation(revision: i64, exact: bool) -> bool {
     revision > 0 && exact
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagementEffectEnqueueDecision {
+    Insert,
+    Replay,
+    Conflict,
+    InvalidRevision,
+}
+
+#[must_use]
+const fn management_effect_enqueue_decision(
+    revision_is_positive: bool,
+    pending_exists: bool,
+    pending_is_exact: bool,
+) -> ManagementEffectEnqueueDecision {
+    if !revision_is_positive {
+        ManagementEffectEnqueueDecision::InvalidRevision
+    } else if !pending_exists {
+        ManagementEffectEnqueueDecision::Insert
+    } else if pending_is_exact {
+        ManagementEffectEnqueueDecision::Replay
+    } else {
+        ManagementEffectEnqueueDecision::Conflict
+    }
+}
+
 impl ManagementEffectReceipt {
     #[must_use]
     pub fn scope(&self) -> &ScopeId {
@@ -219,16 +244,18 @@ impl ManagementEffect {
     /// Return whether to insert. A pending logical key cannot be overwritten;
     /// exact retry is semantic equality, not equality of JSON whitespace/order.
     pub fn requires_enqueue(&self, pending: Option<&Self>) -> Result<bool, ConfigStoreError> {
-        if !management_effect_confirmation(self.revision(), true) {
-            return Err(ConfigStoreError(
-                "management effect requires a positive input revision".into(),
-            ));
-        }
-        match pending {
-            None => Ok(true),
-            Some(pending) if pending == self => Ok(false),
-            Some(_) => Err(ConfigStoreError(
+        match management_effect_enqueue_decision(
+            self.revision() > 0,
+            pending.is_some(),
+            pending == Some(self),
+        ) {
+            ManagementEffectEnqueueDecision::Insert => Ok(true),
+            ManagementEffectEnqueueDecision::Replay => Ok(false),
+            ManagementEffectEnqueueDecision::Conflict => Err(ConfigStoreError(
                 "stable management effect key was reused with different content".into(),
+            )),
+            ManagementEffectEnqueueDecision::InvalidRevision => Err(ConfigStoreError(
+                "management effect requires a positive input revision".into(),
             )),
         }
     }
@@ -617,6 +644,36 @@ fn management_effect_confirmation_requires_positive_exact_readback() {
     assert_eq!(
         management_effect_confirmation(revision, exact),
         revision >= 1 && exact
+    );
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn management_effect_enqueue_is_exact_replay_or_absent_insert() {
+    // Causes: C1 the effect revision is positive; C2 a pending effect exists;
+    // C3 its complete typed payload is identical. Effects: E1 insert only for
+    // C1+!C2; E2 replay only for C1+C2+C3; E3 reject a changed stable identity;
+    // E4 reject every nonpositive revision. Decision rules R1-R4 are exactly
+    // those four disjoint partitions; C3 is irrelevant when C2 is false.
+    let positive: bool = kani::any();
+    let present: bool = kani::any();
+    let exact: bool = kani::any();
+    let decision = management_effect_enqueue_decision(positive, present, exact);
+    assert_eq!(
+        decision == ManagementEffectEnqueueDecision::Insert,
+        positive && !present
+    );
+    assert_eq!(
+        decision == ManagementEffectEnqueueDecision::Replay,
+        positive && present && exact
+    );
+    assert_eq!(
+        decision == ManagementEffectEnqueueDecision::Conflict,
+        positive && present && !exact
+    );
+    assert_eq!(
+        decision == ManagementEffectEnqueueDecision::InvalidRevision,
+        !positive
     );
 }
 

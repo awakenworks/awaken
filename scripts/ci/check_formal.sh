@@ -299,6 +299,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-agent-config \
     --harness management_audit_admission_requires_exact_intent_and_closed_state \
     --harness management_effect_confirmation_requires_positive_exact_readback \
+    --harness management_effect_enqueue_is_exact_replay_or_absent_insert \
     --harness processing_geography_requires_exact_evidence_from_every_candidate \
     --harness publication_revision_decision_is_target_safe_fail_closed_and_replay_first
   run_kani awaken-config-store \
