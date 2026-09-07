@@ -67,6 +67,17 @@ commit is visible.
    roll back an already committed runtime fact unless the store transaction has
    not committed.
 
+Session inbound visibility and processing completion are distinct observations
+of the same retained command. While a User Run is Running, the Session application
+may anchor its exact committed input Message under the existing root CAS. This
+does not set `processed` or its observation time, release the next User Run, or
+create another replay store. Once retained, the anchor is immutable through
+processing and terminal cleanup. Missing input remains pending; conflicting input
+or invalid commit coordinates fail closed. The Managed projector continues to
+enforce its existing unanchored-command barrier, so a later queued unanchored
+command can still withhold Runtime-derived history; anchoring one Running input
+alone is not a claim that this broader queued-history limitation is resolved.
+
 ## Time observations
 
 Wall time is display evidence attached to the existing durable owner, never a

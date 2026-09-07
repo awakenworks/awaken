@@ -193,6 +193,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run \
     --harness accepted_managed_budget_cost_never_wraps \
     --harness source_preparation_and_disposal_require_distinct_durable_phases \
+    --harness resource_materialization_selects_only_active_or_pending_root_generation \
+    --harness failed_resource_replacement_never_promotes_the_pending_manifest \
+    --harness resource_retry_reuses_exact_pending_revision \
     --harness terminal_execution_never_reopens \
     --harness realization_renewal_never_widens_owner_epoch_or_expiry_authority \
     --harness session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an_epoch \
@@ -223,6 +226,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness environment_owner_topology_is_exact_and_frozen \
     --harness only_an_applied_awaited_create_may_enter_post_create_effects \
     --harness session_recovery_backoff_is_bounded_monotonic_and_saturating \
+    --harness terminal_session_never_enters_ordinary_resource_reconciliation \
     --harness dependency_wake_never_postpones_the_single_existing_deadline
   run_kani awaken-tenancy \
     --harness successful_scope_resolution_never_widens_authority \
@@ -452,6 +456,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness trace_capture_clamp_is_exact_and_never_widens_persisted_content \
     --harness configured_capture_redactor_selection_is_total_and_exact \
     --harness session_resource_replacement_requires_newer_or_authority_amended_generation \
+    --harness explicit_empty_resource_manifest_revokes_without_activation \
     --harness session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed \
     --harness container_hand_residency_recovery_mapping_is_total_exact_and_non_widening \
     --harness mcp_credential_realization_preserves_the_request_target_exactly \

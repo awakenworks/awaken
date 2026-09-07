@@ -48,6 +48,8 @@ fn one_recovery_cycle_scans_candidates_once_before_the_final_audit() {
 #[derive(Default)]
 pub(super) struct RecordingResourceRuntime {
     applied: Mutex<Vec<(u64, awaken_session_contract::ResolvedSessionResources)>>,
+    repository: Option<Arc<dyn ManagedSessionRepository>>,
+    roots_observed_before_apply: Mutex<Vec<PersistedSession>>,
     pub(super) replaced_tools:
         Mutex<Vec<(String, awaken_session_contract::SessionToolConfiguration)>>,
 }
@@ -65,9 +67,16 @@ impl SessionRuntime for RecordingResourceRuntime {
 
     async fn apply_session_inputs(
         &self,
-        _thread: &str,
+        thread: &str,
         transition: &awaken_session_contract::SessionResourceTransition,
     ) -> Result<(), RunError> {
+        if let Some(repository) = &self.repository {
+            let root = repository
+                .get(thread)
+                .await
+                .map_err(|error| RunError::internal(error.to_string()))?;
+            self.roots_observed_before_apply.lock().unwrap().push(root);
+        }
         self.applied.lock().unwrap().push((
             transition.desired().revision,
             transition.desired().resources.clone(),
@@ -229,12 +238,19 @@ async fn rolled_back_resource_generation_recovers_only_the_installed_pair() {
 #[tokio::test]
 async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
     // Cause/effect graph: C1 Session Running/Idle; C2 valid complete desired
-    // manifest; C3 no prior pending attempt. Effects: E1 Running commits pending
-    // with attempts=0 and preserves active; E2 the later Idle reconciler fences
-    // one attempt and commits pending to active. Decision rules M1
-    // Running+C2+C3=>E1; M2 Idle+pending=>E2. FMECA: mutating mounts during a
-    // Run can invalidate files observed by that execution (S9/O5/D6); deferring only
-    // the effect, not the intent, preserves both execution safety and visibility.
+    // manifest; C3 no prior pending attempt; C4 Runtime external application
+    // observes the repository root. Effects: E1 Running commits pending with
+    // attempts=0, preserves active, and performs no Runtime IO; E2 the later
+    // Idle reconciler first commits attempts=1; E3 the Runtime observes that
+    // exact durable pending generation before applying it once; E4 settlement
+    // promotes it to active. FMECA: mutating mounts during a Run can invalidate
+    // files observed by that execution (S9/O5/D6); applying before the attempt
+    // CAS would leave an untracked external effect after a crash.
+    //
+    // | Rule | execution | pending | attempt | Runtime IO | Effect |
+    // |---|---|---|---|---|---|
+    // | M1 | Running | absent | none | none | E1 |
+    // | M2 | Idle | present | committed | once | E2 + E3 + E4 |
     let repo: Arc<dyn ManagedSessionRepository> =
         Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
     create(
@@ -242,7 +258,12 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
         persisted("running-manifest", false, "running"),
     )
     .await;
-    let app = application(
+    let runtime = Arc::new(RecordingResourceRuntime {
+        repository: Some(repo.clone()),
+        ..Default::default()
+    });
+    let app = application_with_runtime(
+        runtime.clone(),
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     )
@@ -283,6 +304,15 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
             .all(|activation| activation.attempts == 0),
         "M1/E1"
     );
+    assert!(runtime.applied.lock().unwrap().is_empty(), "M1/E1");
+    assert!(
+        runtime
+            .roots_observed_before_apply
+            .lock()
+            .unwrap()
+            .is_empty(),
+        "M1/E1"
+    );
 
     let mut idle = outcome.session;
     idle.execution = SessionExecutionState::Idle;
@@ -293,7 +323,32 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
     assert!(reconciliation.failures.is_empty(), "M2/E2");
     let committed = repo.get("running-manifest").await.unwrap();
     assert!(committed.resources.pending.is_none(), "M2/E2");
-    assert_eq!(committed.resources.active, desired, "M2/E2");
+    assert_eq!(committed.resources.active, desired, "M2/E4");
+    let observed = runtime.roots_observed_before_apply.lock().unwrap();
+    assert_eq!(observed.len(), 1, "M2/E3");
+    assert_eq!(
+        observed[0].resources.pending.as_ref(),
+        Some(&desired),
+        "M2/E3"
+    );
+    assert_eq!(
+        observed[0]
+            .resources
+            .activations
+            .iter()
+            .filter(|activation| {
+                activation.state == awaken_session_contract::ActivationState::Prepared
+            })
+            .map(|activation| activation.attempts)
+            .collect::<Vec<_>>(),
+        [1],
+        "M2/E2/E3"
+    );
+    assert_eq!(
+        runtime.applied.lock().unwrap().as_slice(),
+        [(1, desired)].as_slice(),
+        "M2/E3"
+    );
 }
 
 /// Resource-staging authorization cause/effect graph: C1 the Session

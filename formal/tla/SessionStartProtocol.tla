@@ -248,6 +248,18 @@ ClaimRun(worker) ==
     /\ UNCHANGED <<rootVars, workRowPresent, workVars,
                    realizationWorkEpoch>>
 
+ObserveCommittedInput(worker, epoch) ==
+    /\ SessionExecutable
+    /\ CurrentWork(worker)
+    /\ Event!ObserveCommittedInput(worker, epoch)
+    /\ UNCHANGED <<rootVars, workRowPresent, workVars,
+                   realizationWorkEpoch>>
+
+AnchorCommittedInput ==
+    /\ Event!AnchorCommittedInput
+    /\ UNCHANGED <<rootVars, workRowPresent, workVars,
+                   realizationWorkEpoch>>
+
 ObserveCommittedRun(worker, epoch, disposition) ==
     /\ SessionExecutable
     /\ CurrentWork(worker)
@@ -311,6 +323,9 @@ OtherNext ==
     \/ \E worker \in Workers: RegisterRunActivity(worker)
     \/ \E worker \in Workers: ActivateRun(worker)
     \/ \E worker \in Workers: ClaimRun(worker)
+    \/ \E worker \in Workers, epoch \in 0..MaxEpoch:
+         ObserveCommittedInput(worker, epoch)
+    \/ AnchorCommittedInput
     \/ \E worker \in Workers, epoch \in 0..MaxEpoch,
           disposition \in {"Awaiting", "Ended"}:
          ObserveCommittedRun(worker, epoch, disposition)
@@ -347,6 +362,9 @@ HappyOtherNext ==
     \/ \E worker \in Workers: RegisterRunActivity(worker)
     \/ \E worker \in Workers: ActivateRun(worker)
     \/ \E worker \in Workers: ClaimRun(worker)
+    \/ \E worker \in Workers, epoch \in 0..MaxEpoch:
+         ObserveCommittedInput(worker, epoch)
+    \/ AnchorCommittedInput
     \/ \E worker \in Workers, epoch \in 0..MaxEpoch,
           disposition \in {"Awaiting", "Ended"}:
          ObserveCommittedRun(worker, epoch, disposition)
