@@ -290,6 +290,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness publication_revision_decision_is_target_safe_fail_closed_and_replay_first
   run_kani awaken-credential-contract \
     --harness credential_envelope_issuance_accepts_exactly_the_complete_claim \
+    --harness durable_credential_material_source_has_no_inline_plaintext_class \
     --harness environment_credential_custody_selects_exactly_one_authorized_profile \
     --harness named_material_shape_is_exact_and_non_widening \
     --harness mcp_delivery_selection_has_only_the_explicit_pair_classes \
