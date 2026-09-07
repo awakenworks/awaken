@@ -38,6 +38,160 @@ use harness::{
 type MemWorker = DispatchWorker<MemoryDispatchStore>;
 type FlakyWorker = DispatchWorker<FlakyDispatchStore>;
 
+struct DetachedInference {
+    return_unknown_error: bool,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Semaphore>,
+    calls: std::sync::atomic::AtomicUsize,
+    live: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl awaken_runtime_contract::llm::LlmExecutor for DetachedInference {
+    async fn infer(
+        &self,
+        _: awaken_runtime_contract::llm::ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse> {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.calls.fetch_add(1, SeqCst);
+        let release = self.release.clone();
+        let live = self.live.clone();
+        let entered = self.entered.clone();
+        // This independent test task models a provider that continues computing
+        // after its HTTP client Future is dropped. The test explicitly releases
+        // it; dropping a JoinHandle deliberately does not cancel remote work.
+        let remote = tokio::spawn(async move {
+            live.fetch_add(1, SeqCst);
+            entered.notify_one();
+            release.acquire().await.unwrap().forget();
+            live.fetch_sub(1, SeqCst);
+        });
+        if self.return_unknown_error {
+            tokio::time::timeout(Duration::from_millis(5), remote)
+                .await
+                .map_err(|_| {
+                    awaken_runtime_contract::llm::Error::Timeout(
+                        "adapter deadline before remote termination".into(),
+                    )
+                })?
+                .unwrap();
+        } else {
+            remote.await.unwrap();
+        }
+        Ok(awaken_runtime_contract::llm::ChatResponse {
+            output: awaken_runtime_contract::llm::AssistantOutput::text("late response"),
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn native_watchdog_retains_slot_while_detached_provider_is_still_running() {
+    assert_native_uncertainty_retains_physical_slot(false).await;
+}
+
+#[tokio::test]
+async fn native_returned_error_retains_slot_while_detached_provider_is_still_running() {
+    assert_native_uncertainty_retains_physical_slot(true).await;
+}
+
+async fn assert_native_uncertainty_retains_physical_slot(return_unknown_error: bool) {
+    // Q1 Native model entered; Q2 remote execution outlives local watchdog;
+    // Q2b adapter's own deadline returns Err normally while remote work lives.
+    // Q3 inner retry and outer tolerance enabled; Q4 new owner reclaims lease.
+    // E1 exactly one physical provider invocation; E2 durable slot retained;
+    // E3 replacement cannot begin, even after logical Indeterminate commits.
+    // Rules: Q1+(Q2|Q2b)+Q3=>E1/E2; Q4+E2=>E3. Unlike a blocking custom Attempt,
+    // this crosses the actual Native inference/timeout/journal/Worker seam.
+    use std::sync::atomic::Ordering::SeqCst;
+    let model = Arc::new(DetachedInference {
+        return_unknown_error,
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Semaphore::new(0)),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        live: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+    let runtime = Arc::new(
+        Runtime::new()
+            .with_llm(model.clone())
+            .with_max_consecutive_inference_failures(3)
+            .with_retry_policy(awaken_runtime::LlmRetryPolicy {
+                attempt_timeout: Duration::from_millis(30),
+                max_retries: 3,
+                ..Default::default()
+            }),
+    );
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker =
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-a").with_lease_ms(90);
+    store
+        .enqueue(RunDispatch::new(activation("native-unconfirmed")))
+        .await
+        .unwrap();
+    let claim = store
+        .claim("owner-a", 90, 0, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let driven = tokio::spawn(async move {
+        worker
+            .drive_claimed(claim, Arc::new(ManualClock::new(0)))
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), model.entered.notified())
+        .await
+        .unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(2), driven)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        outcome, None,
+        "physical exclusion prevents final Dispatch settlement"
+    );
+    assert_eq!(
+        commit.committed().latest_run.unwrap().state,
+        awaken_agent_contract::agent::run::RunState::Ended(
+            awaken_agent_contract::agent::run::EndCause::Indeterminate
+        ),
+        "logical uncertainty is committed while external work remains live"
+    );
+    assert_eq!(model.calls.load(SeqCst), 1);
+    assert_eq!(
+        model.live.load(SeqCst),
+        1,
+        "provider is still executing, not merely a retained claim"
+    );
+    assert!(store.list_dispatches().await.unwrap()[0].physical_attempt_active);
+    let replacement = store
+        .claim("owner-b", 90, 91, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store
+            .begin_attempt(&RunClaim::from(&replacement.lease), 91)
+            .await
+            .unwrap(),
+        awaken_dispatch::AttemptAdmission::Blocked
+    );
+    model.release.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while model.live.load(SeqCst) != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        store.list_dispatches().await.unwrap()[0].physical_attempt_active,
+        "test-observed provider completion is not an authenticated recovery receipt"
+    );
+}
+
 struct BlackholeWake;
 
 #[async_trait]
@@ -980,8 +1134,8 @@ async fn physical_return_ack_retries_transport_without_reexecuting_the_attempt()
         assert_eq!(infers.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(
             commit.commit_count(),
-            2,
-            "one input and one terminal commit, no replay"
+            4,
+            "input, model entry/return evidence, terminal; no replay"
         );
         assert_eq!(
             store.finish_claims(),

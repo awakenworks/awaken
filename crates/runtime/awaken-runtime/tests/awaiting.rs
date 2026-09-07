@@ -251,7 +251,9 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
     // The fact log keeps the full progression in order — Running (input),
     // Running (the Requested tool batch committed before execution), Awaiting,
     // Running (approved -> Executing, committed before invocation), Running (the
-    // resumed result/batch publication), Ended — and the latest fact is the
+    // resumed result/batch publication), Ended. Each actual model invocation
+    // adds Entered/Returned Running evidence before its output is consumed.
+    // The latest fact is the
     // authority replay derives (ADR-0006 D1).
     let states: Vec<_> = committed
         .run_facts
@@ -264,7 +266,11 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
         vec![
             RunState::Running,
             RunState::Running,
+            RunState::Running,
+            RunState::Running,
             RunState::Awaiting,
+            RunState::Running,
+            RunState::Running,
             RunState::Running,
             RunState::Running,
             RunState::Ended(EndCause::NaturalEnd)

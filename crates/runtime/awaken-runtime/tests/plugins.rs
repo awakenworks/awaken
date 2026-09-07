@@ -533,7 +533,15 @@ async fn inactive_plugin_contributes_nothing() {
         .await
         .expect("runs");
 
-    assert!(commit.committed().state.is_empty());
+    // No plugin state exists; only the model's two recovery evidence records.
+    assert_eq!(commit.committed().state.len(), 2);
+    assert!(
+        commit
+            .committed()
+            .state
+            .iter()
+            .all(|command| command.key.0 == "runtime.model_operation.v1")
+    );
     assert_eq!(resolves.load(Ordering::SeqCst), 0);
 }
 

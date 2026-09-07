@@ -85,6 +85,7 @@ mod delegation;
 mod dispatch;
 mod finalize;
 mod inference;
+mod model_operation;
 mod progress;
 mod resume;
 pub(crate) mod run_commands;

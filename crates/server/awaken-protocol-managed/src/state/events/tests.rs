@@ -20,6 +20,194 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt as _;
 
+#[tokio::test]
+async fn indeterminate_root_projects_one_standard_error_across_warm_and_cold_reads() {
+    // A7.4: committed Indeterminate, repeated warm read, cold reconstruction.
+    // E1 one stable session.error unknown_error/terminal before terminal idle;
+    // E2 identical event identity and payload, without resending the Run.
+    // This closes the silent end_turn projection of a watchdog-abandoned model.
+    let runtime = LifecycleRuntime::default();
+    let repository = Arc::new(ephemeral_session_repo());
+    let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+    let session = warm
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let run = RunId("unconfirmed-model".into());
+    let activity = warm.application.begin_activity(&session.id).await.unwrap();
+    runtime.lifecycle.lock().unwrap().extend([
+        lifecycle(
+            1,
+            &session.id,
+            &run,
+            RunLifecycleEventKind::Running,
+            RunState::Running,
+        ),
+        lifecycle(
+            2,
+            &session.id,
+            &run,
+            RunLifecycleEventKind::Failed,
+            RunState::Ended(EndCause::Indeterminate),
+        ),
+    ]);
+    warm.application
+        .settle_activity_observed(
+            &session.id,
+            activity.activity_epoch,
+            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                activity_epoch: activity.activity_epoch,
+                thread_id: ThreadId(session.id.clone()),
+                run_id: run,
+                lifecycle_cursor: lifecycle_cursor(2),
+                source_commit_cursor: 2,
+            }),
+        )
+        .await
+        .unwrap();
+    let cold = ManagedState::new(runtime).with_session_repo(repository);
+    let mut previous = None;
+    for state in [&warm, &warm, &cold] {
+        state.refresh_committed_events(&session.id).await.unwrap();
+        let events = state
+            .list_events(&session.id, None, None, false)
+            .unwrap()
+            .data;
+        let errors: Vec<_> = events
+            .iter()
+            .filter(|event| matches!(event.kind, OutboundKind::SessionError { .. }))
+            .collect();
+        assert_eq!(errors.len(), 1);
+        let wire = serde_json::to_value(errors[0]).unwrap();
+        assert_eq!(wire["error"]["type"], "unknown_error");
+        assert_eq!(wire["error"]["retry_status"]["type"], "terminal");
+        if let Some(previous) = &previous {
+            assert_eq!(&wire, previous);
+        }
+        previous = Some(wire);
+        let error_index = events
+            .iter()
+            .position(|event| matches!(event.kind, OutboundKind::SessionError { .. }))
+            .unwrap();
+        let idle_index = events
+            .iter()
+            .position(|event| matches!(event.kind, OutboundKind::SessionStatusIdle { .. }))
+            .unwrap();
+        assert!(error_index < idle_index);
+    }
+}
+
+#[tokio::test]
+async fn shared_history_page_preserves_filtered_cursor_contract_with_large_payloads() {
+    // C1 ascending/descending; C2 filtered/unfiltered; C3 empty/known/unknown
+    // cursor; C4 limit 0/1/2/50. E1 complete ordered traversal without repeats;
+    // E2 next_page exists iff more matching records; E3 unknown OR filtered-out
+    // cursor is an error; E4 primary Thread and Session use one projection.
+    // P1=C1*C2*C4=>E1+E2; P2=unknown=>E3; P3=filtered-out=>E3; P4=>E4.
+    // Large payloads complement the borrowed-allocation assertion in threads.rs.
+    let state = ManagedState::new(LifecycleRuntime::default());
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent": "coder", "environment_id": "env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    {
+        let mut sessions = state.sessions.lock().unwrap();
+        let record = sessions.get_mut(&session.id).unwrap();
+        record.events = (0..12)
+            .map(|i| Event {
+                id: format!("evt-{i}"),
+                processed_at: None,
+                kind: OutboundKind::AgentMessage {
+                    content: vec![ContentBlock::text("x".repeat(64 * 1024))],
+                },
+            })
+            .collect();
+    }
+    for descending in [false, true] {
+        for filtered in [false, true] {
+            for limit in [0, 1, 2, 50] {
+                let include = |event: &Event| {
+                    !filtered || event.id[4..].parse::<usize>().unwrap().is_multiple_of(2)
+                };
+                let mut expected: Vec<_> = (0..12)
+                    .filter(|i| !filtered || i % 2 == 0)
+                    .map(|i| format!("evt-{i}"))
+                    .collect();
+                if descending {
+                    expected.reverse();
+                }
+                let mut cursor = None;
+                let mut actual = Vec::new();
+                for _ in 0..13 {
+                    let page = state
+                        .list_events_filtered(
+                            &session.id,
+                            cursor.as_deref(),
+                            Some(limit),
+                            descending,
+                            include,
+                        )
+                        .unwrap();
+                    actual.extend(page.data.iter().map(|event| event.id.clone()));
+                    assert_eq!(page.next_page.is_some(), actual.len() < expected.len());
+                    cursor = page.next_page;
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
+                assert_eq!(actual, expected, "P1 {descending}/{filtered}/{limit}");
+                assert!(
+                    state
+                        .list_events_filtered(
+                            &session.id,
+                            Some("missing"),
+                            Some(limit),
+                            descending,
+                            include
+                        )
+                        .is_err()
+                );
+                if filtered {
+                    assert!(
+                        state
+                            .list_events_filtered(
+                                &session.id,
+                                Some("evt-1"),
+                                Some(limit),
+                                descending,
+                                include
+                            )
+                            .is_err()
+                    );
+                }
+            }
+        }
+    }
+    let primary = super::super::threads::public_thread_id(&session.id, &session.id);
+    let session_page = state
+        .list_events(&session.id, Some("evt-3"), Some(2), false)
+        .unwrap();
+    let thread_page = state
+        .list_thread_events(&session.id, &primary, Some("evt-3"), Some(2))
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(session_page).unwrap(),
+        serde_json::to_value(thread_page).unwrap()
+    );
+}
+
 async fn persist_batch_projection_anchors(
     state: &ManagedState,
     session_id: &str,

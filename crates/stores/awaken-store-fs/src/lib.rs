@@ -301,8 +301,9 @@ impl RunRecoverySource for FsCommitCoordinator {
 /// writes a temp file and atomically renames it over the target (a crash mid-write
 /// leaves the prior checkpoint intact, never a torn one), and `delete` removes it.
 /// Durable across process restarts — this is the backend that makes an interrupted
-/// inference step resumable in a fresh process. Best-effort per the port contract:
-/// every error is swallowed (a `get` fault reads as "no checkpoint").
+/// inference step recoverable in a fresh process. Only a missing file reads as
+/// `None`; I/O and decoding errors remain explicit so Runtime cannot mistake
+/// unavailable recovery evidence for a fresh invocation.
 pub struct FsStreamCheckpointStore {
     dir: PathBuf,
 }

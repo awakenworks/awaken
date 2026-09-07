@@ -425,6 +425,75 @@ async fn direct_ingress_never_enters_two_external_attempts_for_one_thread() {
     assert_eq!(active.load(Ordering::SeqCst), 0, "all attempts returned");
 }
 
+#[tokio::test]
+async fn aborted_direct_executor_blocks_queued_and_later_delivery() {
+    // D4 causes: opaque executor entered; same-Thread delivery polled Pending;
+    // caller task aborted without executor return. Effects: shared observer
+    // vetoes both queued and fresh delivery before entry, removes live controls,
+    // and leaves other Threads usable. An abort is not a terminal receipt.
+    use std::future::Future as _;
+    let entered = Arc::new(Notify::new());
+    let runtime = Arc::new(Runtime::new());
+    let driver = DirectAttemptDriver::with_attempt_executor(
+        runtime.clone(),
+        Arc::new(BlockingExternalAttempt {
+            entered: entered.clone(),
+        }),
+    );
+    let first = tokio::spawn({
+        let driver = driver.clone();
+        async move {
+            driver
+                .start(
+                    activation(),
+                    RuntimeRunContext::new().with_cancellation(CancellationToken::new()),
+                )
+                .await
+        }
+    });
+    entered.notified().await;
+    let mut queued = Box::pin(driver.start(
+        activation_on("queued", "thread-1"),
+        RuntimeRunContext::new(),
+    ));
+    std::future::poll_fn(|cx| {
+        assert!(queued.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+    for result in [
+        tokio::time::timeout(std::time::Duration::from_secs(1), queued)
+            .await
+            .unwrap(),
+        driver
+            .start(activation_on("fresh", "thread-1"), RuntimeRunContext::new())
+            .await,
+    ] {
+        assert!(matches!(result, Err(Error::Execution(ref message))
+            if message.contains("no termination evidence")));
+    }
+    assert_eq!(
+        runtime.deliver(LiveCommand::Cancel {
+            run_id: RunId("run-1".into())
+        }),
+        Err(ControlError::NotActive)
+    );
+    let token = CancellationToken::new();
+    token.cancel();
+    assert_eq!(
+        driver
+            .start(
+                activation_on("unrelated", "thread-2"),
+                RuntimeRunContext::new().with_cancellation(token)
+            )
+            .await
+            .unwrap(),
+        RunState::Ended(EndCause::Cancelled)
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_pause_awaits_an_in_flight_run_at_the_next_boundary() {
     use awaken_runtime_contract::pause::PauseSignal;
@@ -479,10 +548,9 @@ async fn live_cancel_aborts_a_hung_inference() {
     // Decision rule D1: C1 a direct attempt is active, C2 inference is pending,
     // and C3 exact live Cancel arrives => E1 cancellation aborts the provider
     // future and E2 the Run ends Cancelled without waiting for a loop boundary.
-    // D2 this response-only port cannot execute proposed tools after discard:
-    // actual local return may ACK its attempt. This does not assert provider
-    // computation/billing termination. Dropped external-tool futures have the
-    // opposite evidence rule in the Dispatch lease_semantics regression.
+    // D2 discarding a response-only future still does not prove the remote
+    // model stopped. Preserve the physical veto, just as for an abandoned
+    // external tool; local return and provider termination are distinct facts.
     let started = Arc::new(Notify::new());
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(HangingLlm {
         started: started.clone(),
@@ -490,8 +558,6 @@ async fn live_cancel_aborts_a_hung_inference() {
 
     let token = CancellationToken::new();
     let context = RuntimeRunContext::new().with_cancellation(token);
-    let quiescence = context.physical_quiescence.clone();
-
     let driver = DirectAttemptDriver::new(runtime.clone());
     let handle = tokio::spawn(async move { driver.start(activation(), context).await });
 
@@ -510,9 +576,22 @@ async fn live_cancel_aborts_a_hung_inference() {
         .expect("join")
         .expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::Cancelled));
+    // D2: logical cancellation does not prove the abandoned remote request
+    // stopped. The same queue-less Thread must reject a subsequent executor,
+    // even after its first guard and active control registration disappeared.
+    // Inspect the actual admission effect, not a clone of the caller's latch:
+    // DirectAttemptDriver intentionally creates a fresh attempt-local latch.
+    let driver = DirectAttemptDriver::new(runtime.clone());
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        driver.start(activation(), RuntimeRunContext::new()),
+    )
+    .await
+    .expect("D2 reject before entering the hung executor");
     assert!(
-        quiescence.can_acknowledge_return(),
-        "D2 local response-only return"
+        matches!(second, Err(awaken_runtime_contract::execution::Error::Execution(ref message))
+            if message.contains("no termination evidence")),
+        "D2 direct cancellation retains its execution veto"
     );
 }
 

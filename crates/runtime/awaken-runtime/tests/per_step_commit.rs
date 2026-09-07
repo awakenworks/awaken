@@ -166,8 +166,9 @@ async fn each_continuing_step_commits_under_a_running_fact() {
 
     // The input commits first. Each tool step then commits Requested before any
     // executor entry, Executing before the side effect, and Finalized with its
-    // result; the terminal text step commits through finish.
-    assert_eq!(commit.commit_count(), 8);
+    // result; each of the three model invocations adds Entered/Returned
+    // evidence. The terminal text step commits through finish.
+    assert_eq!(commit.commit_count(), 14);
 
     let committed = commit.committed();
     // The durable state history walked Running → Running → Ended.
@@ -178,7 +179,7 @@ async fn each_continuing_step_commits_under_a_running_fact() {
         .collect();
     assert_eq!(
         states,
-        vec![RunState::Running; 7]
+        vec![RunState::Running; 13]
             .into_iter()
             .chain([RunState::Ended(EndCause::NaturalEnd)])
             .collect::<Vec<_>>()
@@ -273,6 +274,7 @@ async fn text_only_run_commits_input_then_terminal() {
     let outcome = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     // A text-only run: the input commits at the first step boundary (durable
-    // Running before inference), then the terminal Step commits via finish.
-    assert_eq!(commit.commit_count(), 2);
+    // Running before inference), Entered/Returned evidence surrounds invocation,
+    // then the terminal Step commits via finish. All four share one coordinator.
+    assert_eq!(commit.commit_count(), 4);
 }

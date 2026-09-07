@@ -10,6 +10,22 @@ use awaken_runtime_contract::resilience::{
     Classify, RETRY_ACTIVE_STATE, RetryDecision, bounded_retry_decision,
 };
 
+/// Cancellation may discard a read/provider future, never an in-flight durable
+/// evidence write. This is the model seam's one cancellable-await boundary.
+pub(super) async fn model_read<T>(
+    token: Option<&tokio_util::sync::CancellationToken>,
+    future: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    match token {
+        Some(token) => tokio::select! {
+            biased;
+            _ = token.cancelled() => None,
+            result = future => Some(result),
+        },
+        None => Some(future.await),
+    }
+}
+
 /// Rebuild a request that carries the confirmed partial as an assistant prefix
 /// followed by a continuation prompt, so the model continues rather than
 /// regenerates. Request-only: these two messages are never committed to the
@@ -55,7 +71,7 @@ fn stitch_prefix(response: ChatResponse, prefix: &str) -> ChatResponse {
 /// the call fails fast as a retryable provider error instead of burning the
 /// retry budget against a provider that is already down.
 ///
-/// A stream cut off mid-flight is recovered from its partial rather than
+/// Only after positive termination evidence, an interrupted stream is recovered from its partial rather than
 /// regenerated: text-only continues from an assistant prefix + continuation
 /// prompt (R1); a still-open tool call is dropped and the text continues (R3);
 /// tool calls that finished before the drop are executed without re-inferring
@@ -98,6 +114,7 @@ pub(super) async fn infer_with_retry(
         content_sink,
         metrics,
         None,
+        None,
     )
     .await
     .result
@@ -139,7 +156,11 @@ pub(super) async fn infer_with_retry_observed(
     content_sink: content::SinkTarget<'_>,
     metrics: &dyn awaken_runtime_contract::metrics::MetricsRecorder,
     ownership: Option<&dyn awaken_runtime_contract::AttemptOwnershipVerifier>,
+    mut journal: Option<&mut super::model_operation::ModelOperationJournal<'_>>,
 ) -> ObservedModelRequest {
+    let cancellation = journal
+        .as_deref()
+        .and_then(|journal| journal.context.cancellation.clone());
     let span = tracing::Span::current();
     // The routing model id, captured before `request` moves into the retry loop —
     // it labels both the span and the metric (structure only, never content).
@@ -151,15 +172,22 @@ pub(super) async fn infer_with_retry_observed(
         format!("chat {}", request.model_binding.model_ref).as_str(),
     );
     // Content telemetry (ADR-0050): gated + scrubbed; before the request moves.
-    content::emit_content(
-        capture,
-        content_sink,
-        awaken_runtime_contract::ContentKind::InputMessages,
-        "gen_ai.input.messages",
-        &content::render_chat_messages(&request.messages),
+    model_read(
+        cancellation.as_ref(),
+        content::emit_content(
+            capture,
+            content_sink,
+            awaken_runtime_contract::ContentKind::InputMessages,
+            "gen_ai.input.messages",
+            &content::render_chat_messages(&request.messages),
+        ),
     )
     .await;
     let mut retry_count = 0;
+    let quiescence = journal
+        .as_deref()
+        .map(|journal| journal.context.physical_quiescence.clone())
+        .unwrap_or_default();
     let result = infer_with_retry_inner(
         llm,
         request,
@@ -171,12 +199,20 @@ pub(super) async fn infer_with_retry_observed(
         metrics,
         &mut retry_count,
         ownership,
+        journal.as_deref_mut(),
+        cancellation.as_ref(),
+        &quiescence,
     )
     .await;
-    // Any return means recovery concluded in-process, so the checkpoint (if any)
-    // is spent. It survives only a crash *before* this line — mid-recovery —
-    // which is exactly the cross-process window Phase 3 guards.
+    // A cancelled observation or failed evidence write has not concluded
+    // recovery. Preserve its prior checkpoint instead of deleting the only
+    // retained partial merely because the enclosing Rust future returned.
     if let Some(ctx) = checkpoint
+        && !cancellation
+            .as_ref()
+            .is_some_and(|token| token.is_cancelled())
+        && !journal.as_deref().is_some_and(|journal| journal.failed())
+        && quiescence.can_acknowledge_return()
         && let Err(error) = ctx.store.delete(&ctx.run_id).await
     {
         tracing::warn!(run_id = %ctx.run_id, %error, "failed to delete spent stream checkpoint");
@@ -194,12 +230,15 @@ pub(super) async fn infer_with_retry_observed(
                 );
             }
             // Content telemetry (ADR-0050): completion, gated + redactor-scrubbed.
-            content::emit_content(
-                capture,
-                content_sink,
-                awaken_runtime_contract::ContentKind::OutputMessages,
-                "gen_ai.output.messages",
-                &response.output.text_content(),
+            model_read(
+                cancellation.as_ref(),
+                content::emit_content(
+                    capture,
+                    content_sink,
+                    awaken_runtime_contract::ContentKind::OutputMessages,
+                    "gen_ai.output.messages",
+                    &response.output.text_content(),
+                ),
             )
             .await;
         }
@@ -254,7 +293,15 @@ async fn infer_with_retry_inner(
     metrics: &dyn awaken_runtime_contract::metrics::MetricsRecorder,
     retry_count: &mut u32,
     ownership: Option<&dyn awaken_runtime_contract::AttemptOwnershipVerifier>,
+    mut journal: Option<&mut super::model_operation::ModelOperationJournal<'_>>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+    quiescence: &awaken_runtime_contract::runtime_context::AttemptQuiescence,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
+    // Recovery must check the committed invocation before even salvaging a
+    // checkpoint's tool arguments. A fresh process has no in-memory latch.
+    if let Some(journal) = journal.as_deref_mut() {
+        journal.verify_reentry(resume.is_some())?;
+    }
     let model = request.model_binding.model_ref.clone();
     let sink = ContinuationSink::new(sink);
     // Text confirmed from prior interrupted attempts; grows as continuation
@@ -278,6 +325,11 @@ async fn infer_with_retry_inner(
 
     let mut attempt = 0;
     loop {
+        if cancellation.is_some_and(|token| token.is_cancelled()) {
+            return Err(awaken_runtime_contract::llm::Error::Unauthorized(
+                "model observation cancelled".into(),
+            ));
+        }
         let permit = breaker
             .check(&model, metrics)
             .map_err(awaken_runtime_contract::llm::Error::Provider)?;
@@ -298,17 +350,68 @@ async fn infer_with_retry_inner(
                     "model request attempt no longer owns execution: {error}"
                 ))
             })?;
-        let attempt_result = tokio::time::timeout(
-            policy.attempt_timeout,
-            llm.infer_streaming(attempt_request, &sink),
+        if let Some(journal) = journal.as_deref_mut() {
+            journal.enter(&attempt_request.model_binding).await?;
+            // Persistence may have waited past a lease boundary. The original
+            // ownership port remains the only permission to enter the executor.
+            awaken_runtime_contract::execution::verify_attempt_ownership(ownership)
+                .await
+                .map_err(|error| {
+                    awaken_runtime_contract::llm::Error::Unauthorized(error.to_string())
+                })?;
+        }
+        let outcome = model_read(
+            cancellation,
+            tokio::time::timeout(
+                policy.attempt_timeout,
+                quiescence.observe_return(llm.infer_streaming(attempt_request, &sink)),
+            ),
         )
-        .await
-        .unwrap_or_else(|_| {
+        .await;
+        let Some(outcome) = outcome else {
+            // A dropped provider future leaves Entered evidence. Do not forge
+            // Returned merely because the caller stopped observing.
+            return Err(awaken_runtime_contract::llm::Error::Unauthorized(
+                "model observation cancelled".into(),
+            ));
+        };
+        use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
+        let execution = match &outcome {
+            Ok(Ok(_)) => ModelExecutionEvidence::Terminated,
+            Ok(Err(error)) => error.execution_evidence(),
+            Err(_) => ModelExecutionEvidence::Unknown,
+        };
+        // The adapter can drop its own transport future and RETURN an error.
+        // The outer return observer cannot detect that abandonment. Latch the
+        // explicit evidence before any awaited commit, retry or checkpoint work.
+        if !execution.permits_reentry() {
+            quiescence.mark_uncertain();
+        }
+        if let Some(journal) = journal.as_deref_mut() {
+            journal.returned(outcome.is_err(), execution).await?;
+        }
+        if cancellation.is_some_and(|token| token.is_cancelled()) {
+            // Cancellation may have arrived while the return write was held.
+            // Do not consume/update a stream checkpoint for a retry that will
+            // never be entered.
+            return Err(awaken_runtime_contract::llm::Error::Unauthorized(
+                "model observation cancelled".into(),
+            ));
+        }
+        let attempt_result = outcome.unwrap_or_else(|_| {
             Err(awaken_runtime_contract::llm::Error::Timeout(format!(
                 "inference attempt exceeded {}ms",
                 policy.attempt_timeout.as_millis()
             )))
         });
+        if !quiescence.can_acknowledge_return() {
+            // The watchdog abandoned an in-flight executor. Neither a retry,
+            // continuation, nor synthesized tool call may cross this boundary.
+            if let Err(error) = &attempt_result {
+                permit.failure(error.is_retryable());
+            }
+            return attempt_result;
+        }
         match attempt_result {
             Ok(response) => {
                 permit.success();
@@ -374,7 +477,11 @@ async fn infer_with_retry_inner(
                     // clean restart); any still-open tool call is dropped.
                     prefix = combined_text;
                     *retry_count = retry_count.saturating_add(1);
-                    tokio::time::sleep(policy.delay_before_retry(&err, attempt)).await;
+                    model_read(
+                        cancellation,
+                        tokio::time::sleep(policy.delay_before_retry(&err, attempt)),
+                    )
+                    .await;
                     attempt += 1;
                 } else {
                     return Err(err);

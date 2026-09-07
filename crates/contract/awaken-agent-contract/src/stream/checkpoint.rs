@@ -13,10 +13,10 @@
 //! deleted the moment recovery concludes, so it survives only the narrow window
 //! between an interruption and its resolution — exactly the crash it guards.
 //!
-//! Storage failures are explicit. A runtime may deliberately degrade to
-//! best-effort recovery, but that policy belongs at the call site where it can
-//! be logged and measured; a backend must never turn failed persistence into an
-//! apparent successful acknowledgement.
+//! Storage failures are explicit. A failed or interrupted read is not evidence
+//! that no checkpoint exists. Runtime validates the recovered Run/Thread identity
+//! and independent invocation evidence before using the partial; neither a
+//! backend nor its caller may manufacture successful absence from a read error.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -24,8 +24,9 @@ use serde::{Deserialize, Serialize};
 /// One tool call as it stood when the stream was interrupted. `raw_arguments` is
 /// the provider's accumulated-so-far argument text — raw, unparsed JSON that may
 /// be syntactically incomplete if the drop landed mid-arguments. Whether it
-/// parses is the completion signal: parseable ⇒ the model finished emitting this
-/// call (replay it); unparseable ⇒ it was still in flight (drop it and continue).
+/// parses is only a syntax signal. Parseable arguments may be salvaged only
+/// after Runtime separately establishes model termination and tool recovery
+/// permission; neither valid JSON nor this checkpoint proves quiescence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartialToolCall {
     pub call_id: String,
@@ -63,7 +64,7 @@ pub enum StreamCheckpointError {
 
 /// Where the runtime flushes and reads an interrupted step's partial. Keyed by
 /// `run_id`; `delete` is idempotent. Every method reports storage/fencing errors;
-/// callers choose whether a failed recovery optimization should fail the run.
+/// callers must not treat an unread checkpoint as permission for fresh execution.
 #[async_trait]
 pub trait StreamCheckpointStore: Send + Sync {
     /// The checkpoint for `run_id`, or `None` if there is none.

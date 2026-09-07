@@ -750,6 +750,25 @@ pub struct SessionError {
 }
 
 impl SessionError {
+    /// One classifier for committed root and child Run failures. An unknown
+    /// physical result is not ordinary retry exhaustion and must not disappear
+    /// behind an otherwise normal end_turn event.
+    pub(crate) fn from_run_state(
+        state: &awaken_agent_contract::agent::run::RunState,
+    ) -> Option<Self> {
+        use awaken_agent_contract::agent::run::{EndCause, RunState};
+        match state {
+            RunState::Ended(EndCause::Error(failure)) => Some(Self::classify(failure.code(), failure.message())),
+            RunState::Ended(EndCause::Indeterminate) => Some(Self {
+                kind: "unknown_error",
+                message: "The execution result is unknown. This operation will not be automatically repeated. Do not repeat external actions until their outcome is verified.".into(),
+                retry_status: RetryStatus::Terminal,
+                mcp_server_name: None,
+            }),
+            _ => None,
+        }
+    }
+
     /// Classify a neutral runtime fault `(code, message)` into an SDK error object.
     /// The `code` is the stable snake_case class from `Failure::Inference`
     /// (`rate_limited` / `context_overflow` / `unauthorized` / …), or the Session
@@ -1771,6 +1790,52 @@ mod tests {
         assert_eq!(connection.kind, "mcp_connection_failed_error");
         assert_eq!(connection.mcp_server_name.as_deref(), Some("offline"));
         assert_eq!(connection.retry_status, RetryStatus::Retrying);
+    }
+
+    #[test]
+    fn committed_uncertainty_uses_standard_terminal_error_not_retry_exhaustion() {
+        // C1 Indeterminate / C2 ordinary classified failure / C3 non-error.
+        // A7.1=C1=>unknown_error+terminal using existing SDK fields;
+        // A7.2=C2=>reuse existing classifier; A7.3=C3=>no invented error.
+        use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
+        let error =
+            SessionError::from_run_state(&RunState::Ended(EndCause::Indeterminate)).unwrap();
+        let wire = serde_json::to_value(error).unwrap();
+        assert_eq!(wire["type"], "unknown_error");
+        assert_eq!(wire["retry_status"], serde_json::json!({"type":"terminal"}));
+        assert!(
+            wire["message"]
+                .as_str()
+                .unwrap()
+                .contains("result is unknown")
+        );
+        assert!(
+            wire["message"]
+                .as_str()
+                .unwrap()
+                .contains("not be automatically repeated")
+        );
+        assert_eq!(
+            wire.as_object().unwrap().len(),
+            3,
+            "no internal recovery fields"
+        );
+        let error =
+            SessionError::from_run_state(&RunState::Ended(EndCause::Error(Failure::Inference {
+                code: "rate_limited".into(),
+                message: "slow down".into(),
+            })))
+            .unwrap();
+        assert_eq!(error.kind, "model_rate_limited_error");
+        assert_eq!(error.retry_status, RetryStatus::Exhausted);
+        for state in [
+            RunState::Running,
+            RunState::Awaiting,
+            RunState::Ended(EndCause::NaturalEnd),
+            RunState::Ended(EndCause::Cancelled),
+        ] {
+            assert!(SessionError::from_run_state(&state).is_none());
+        }
     }
 
     /// Cause graph: resolved Session agent snapshot -> thread-specific projection

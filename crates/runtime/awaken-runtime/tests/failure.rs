@@ -19,6 +19,7 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error as LlmError, LlmExecutor, StopReason,
     ThreadUsage, TokenUsage,
 };
+use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
 };
@@ -38,7 +39,8 @@ fn fast_retries(max_retries: usize) -> LlmRetryPolicy {
     }
 }
 
-/// Always returns the same error.
+/// Always rejects before model dispatch. These fixtures test retry policy only;
+/// execution.rs covers the independent Unknown physical-evidence veto.
 struct FailingLlm {
     retryable: bool,
     calls: Arc<AtomicUsize>,
@@ -55,9 +57,13 @@ impl LlmExecutor for FailingLlm {
             Err(LlmError::Overloaded {
                 message: "overloaded".to_string(),
                 retry_after: None,
-            })
+            }
+            .with_execution_evidence(ModelExecutionEvidence::NotDispatched))
         } else {
-            Err(LlmError::Unauthorized("bad api key".to_string()))
+            Err(
+                LlmError::Unauthorized("bad api key before dispatch".to_string())
+                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched),
+            )
         }
     }
 }
@@ -78,7 +84,10 @@ impl LlmExecutor for PermanentThenOkLlm {
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         if n < self.fail_times {
-            Err(LlmError::Unauthorized("bad api key".to_string()))
+            Err(
+                LlmError::Unauthorized("bad api key before dispatch".to_string())
+                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched),
+            )
         } else {
             Ok(ChatResponse {
                 output: AssistantOutput::text("recovered".to_string()),
@@ -103,7 +112,10 @@ impl LlmExecutor for FlakyLlm {
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         if n < self.fail_times {
-            Err(LlmError::Provider("503".to_string()))
+            Err(
+                LlmError::Provider("unavailable before dispatch".to_string())
+                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched),
+            )
         } else {
             Ok(ChatResponse {
                 output: AssistantOutput::text("recovered".to_string()),

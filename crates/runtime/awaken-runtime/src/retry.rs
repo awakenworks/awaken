@@ -50,7 +50,7 @@ impl LlmRetryPolicy {
     /// exponential backoff for the error class, or the server's `Retry-After`
     /// when that is longer (adopted verbatim, capped at [`MAX_RETRY_AFTER`]).
     pub(crate) fn delay_before_retry(&self, err: &Error, retry: usize) -> Duration {
-        let base = match err {
+        let base = match err.classification() {
             Error::Overloaded { .. } => self.overloaded_backoff_base_ms,
             _ => self.backoff_base_ms,
         };
