@@ -19,6 +19,9 @@
 //! deny is absolute and a more specific allow overrides a broader ask.
 
 use async_trait::async_trait;
+use awaken_runtime_contract::agent_bindings::{
+    AgentBindings, ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
+};
 use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
 use awaken_tool_pattern::{
     ArgMatcher, MatchOp, MatchResult, Specificity, ToolMatcher, parse_pattern, pattern_matches,
@@ -93,6 +96,19 @@ pub enum ToolPermissionBehavior {
     #[serde(rename = "ask")]
     RequireConfirmation,
     Deny,
+}
+
+impl From<ToolExecutionPolicy> for ToolPermissionBehavior {
+    fn from(policy: ToolExecutionPolicy) -> Self {
+        if !policy.enabled {
+            Self::Deny
+        } else {
+            match policy.permission {
+                ToolPermissionRequirement::AlwaysAllow => Self::Allow,
+                ToolPermissionRequirement::AlwaysAsk => Self::RequireConfirmation,
+            }
+        }
+    }
 }
 
 /// The Claude Code permission mode, shaping the default for unmatched calls.
@@ -188,12 +204,21 @@ impl PermissionRuleset {
     /// Decide one tool call. Deny is absolute; otherwise the most specific
     /// matching allow/ask wins; an unmatched call falls to the mode default.
     pub fn decide(&self, tool_id: &str, args: &Value) -> ToolPermissionBehavior {
+        self.decide_with_rule(tool_id, args, None)
+    }
+
+    fn decide_with_rule(
+        &self,
+        tool_id: &str,
+        args: &Value,
+        exact: Option<&PermissionRule>,
+    ) -> ToolPermissionBehavior {
         if self.mode == Mode::BypassPermissions {
             return ToolPermissionBehavior::Allow;
         }
 
         let mut best: Option<(Specificity, ToolPermissionBehavior)> = None;
-        for rule in &self.rules {
+        for rule in exact.into_iter().chain(&self.rules) {
             let Some(spec) = rule.pattern.matches(tool_id, args) else {
                 continue;
             };
@@ -282,18 +307,46 @@ mod kani_proofs {
 /// The runtime [`ToolPermissionPolicy`] backed by a [`PermissionRuleset`].
 pub struct RuleBasedToolPermissionPolicy {
     ruleset: PermissionRuleset,
+    mcp_bindings: AgentBindings,
 }
 
 impl RuleBasedToolPermissionPolicy {
     pub fn new(ruleset: PermissionRuleset) -> Self {
-        Self { ruleset }
+        Self {
+            ruleset,
+            mcp_bindings: AgentBindings::default(),
+        }
+    }
+
+    /// Keep open MCP toolsets typed until a concrete invocation is known.
+    /// An override replaces its source default; flattening a disabled default
+    /// into a wildcard deny would incorrectly deny every enabled override.
+    /// Closed Agent membership is projected by the host. Exact MCP resolution
+    /// reuses the same contract lookup as tool advertisement, then enters the
+    /// ordinary rule fold so authored denies and mode semantics remain intact.
+    pub fn with_mcp_toolsets(mut self, toolsets: &[ToolsetPolicy]) -> Self {
+        self.mcp_bindings.toolsets = toolsets
+            .iter()
+            .filter(|toolset| matches!(toolset.source, ToolsetSource::Mcp { .. }))
+            .cloned()
+            .collect();
+        self
     }
 }
 
 #[async_trait]
 impl ToolPermissionPolicy for RuleBasedToolPermissionPolicy {
     async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
-        match self.ruleset.decide(&call.tool_id, &call.arguments) {
+        let exact = self.mcp_bindings.tool_policy(&call.tool_id).map(|policy| {
+            PermissionRule::new(
+                ToolCallPattern(awaken_tool_pattern::ToolCallPattern::tool(&call.tool_id)),
+                policy.into(),
+            )
+        });
+        match self
+            .ruleset
+            .decide_with_rule(&call.tool_id, &call.arguments, exact.as_ref())
+        {
             ToolPermissionBehavior::Allow => ToolPermissionVerdict::Allow,
             ToolPermissionBehavior::Deny => ToolPermissionVerdict::Deny {
                 reason: format!("tool {} denied by policy", call.tool_id),
@@ -582,6 +635,129 @@ mod tests {
                 assert_eq!(correlation_id, "perm-c1")
             }
             other => panic!("expected ask, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_mcp_resolution_preserves_rule_precedence_and_mode_contract() {
+        // C1 typed exact allow/ask/disabled; C2 legacy wildcard allow/ask/deny;
+        // C3 mode default/acceptEdits/plan/bypass. E1 exact typed policy replaces
+        // the MCP disabled default, E2 any matching authored deny remains
+        // absolute outside explicit bypass, E3 bypass retains its documented
+        // authority. Decision table: all 3*3*4=36 combinations, plus argument-
+        // scoped deny (matching/nonmatching) and literal, unparsed tool ids.
+        // This is runtime policy coverage, not a proof of publication validation.
+        let allow = ToolExecutionPolicy::default();
+        let ask = ToolExecutionPolicy {
+            permission: ToolPermissionRequirement::AlwaysAsk,
+            ..allow
+        };
+        let disabled = ToolExecutionPolicy {
+            enabled: false,
+            ..allow
+        };
+        for typed in [allow, ask, disabled] {
+            for legacy in [
+                ToolPermissionBehavior::Allow,
+                ToolPermissionBehavior::RequireConfirmation,
+                ToolPermissionBehavior::Deny,
+            ] {
+                for mode in [
+                    Mode::Default,
+                    Mode::AcceptEdits,
+                    Mode::Plan,
+                    Mode::BypassPermissions,
+                ] {
+                    let policy = RuleBasedToolPermissionPolicy::new(PermissionRuleset {
+                        mode,
+                        rules: vec![rule("mcp__context__*", legacy)],
+                        ..PermissionRuleset::default()
+                    })
+                    .with_mcp_toolsets(&[ToolsetPolicy {
+                        source: ToolsetSource::Mcp {
+                            server_name: "context".into(),
+                        },
+                        default: disabled,
+                        overrides: vec![
+                            awaken_runtime_contract::agent_bindings::ToolPolicyOverride::new(
+                                "attest", typed,
+                            ),
+                        ],
+                    }]);
+                    let call = ToolCall {
+                        call_id: "typed-mcp".into(),
+                        tool_id: "mcp__context__attest".into(),
+                        arguments: json!({}),
+                    };
+                    let expected = if mode == Mode::BypassPermissions {
+                        ToolPermissionBehavior::Allow
+                    } else if legacy == ToolPermissionBehavior::Deny {
+                        ToolPermissionBehavior::Deny
+                    } else {
+                        typed.into()
+                    };
+                    let actual = policy.evaluate(&call).await;
+                    match (expected, actual) {
+                        (ToolPermissionBehavior::Allow, ToolPermissionVerdict::Allow) => {}
+                        (ToolPermissionBehavior::Deny, ToolPermissionVerdict::Deny { .. }) => {}
+                        (
+                            ToolPermissionBehavior::RequireConfirmation,
+                            ToolPermissionVerdict::RequireConfirmation { correlation_id },
+                        ) => assert_eq!(correlation_id, "perm-typed-mcp"),
+                        (expected, actual) => panic!(
+                            "{typed:?} {legacy:?} {mode:?}: expected {expected:?}, got {actual:?}"
+                        ),
+                    }
+                }
+            }
+        }
+        let policy = RuleBasedToolPermissionPolicy::new(PermissionRuleset {
+            rules: vec![rule(
+                r#"mcp__context__attest(scope = "secret")"#,
+                ToolPermissionBehavior::Deny,
+            )],
+            ..PermissionRuleset::default()
+        })
+        .with_mcp_toolsets(&[ToolsetPolicy {
+            source: ToolsetSource::Mcp {
+                server_name: "context".into(),
+            },
+            default: disabled,
+            overrides: vec![
+                awaken_runtime_contract::agent_bindings::ToolPolicyOverride::new("attest", allow),
+            ],
+        }]);
+        for scope in ["public", "secret"] {
+            let call = ToolCall {
+                call_id: "scope".into(),
+                tool_id: "mcp__context__attest".into(),
+                arguments: json!({"scope":scope}),
+            };
+            assert_eq!(
+                matches!(
+                    policy.evaluate(&call).await,
+                    ToolPermissionVerdict::Deny { .. }
+                ),
+                scope == "secret"
+            );
+        }
+        for tool_id in [
+            "mcp__context__*",
+            "mcp__context__attest(",
+            "mcp__context__attest__other",
+        ] {
+            let call = ToolCall {
+                call_id: "literal".into(),
+                tool_id: tool_id.into(),
+                arguments: json!({}),
+            };
+            assert!(
+                matches!(
+                    policy.evaluate(&call).await,
+                    ToolPermissionVerdict::Deny { .. }
+                ),
+                "{tool_id}"
+            );
         }
     }
 
