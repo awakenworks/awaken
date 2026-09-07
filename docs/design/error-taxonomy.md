@@ -48,6 +48,26 @@ Every stable error class should expose:
 6. Indeterminate remote execution is explicit; it is never silently converted to
    success.
 
+## Provider stream completion boundary
+
+The provider SDK owns wire parsing; `GenaiExecutor::infer_streaming` maps its
+protocol `End` into a neutral response. Runtime alone owns retry, continuation,
+tool execution and commit. The adapter's consumption loop returns the `End`
+value itself: only that branch can reach response assembly. HTTP EOF before
+`End` returns a retryable `Provider` error, including after text/tool deltas;
+explicit stream errors and idle/total timeouts retain their existing mapping.
+Conversely, `End` completes consumption without requiring transport EOF. Live
+deltas remain observations, not completed responses or authorization to execute
+partial tools. Existing interrupted-stream checkpoints retain their own
+continuation semantics; this rule does not forbid checkpointing live progress.
+
+The cause/effect matrix in provider `tests/stall.rs` exercises both Anthropic
+and OpenAI through the pinned SDK over real local HTTP, with text/tool content,
+present/absent `End`, and complete/truncated transport bodies. It complements
+the existing stall, heartbeat, empty-response and open-connection tests.
+These are executable boundary checks, not a formal proof of the SDK/network or
+evidence that an unrelated live provider decoding failure has been resolved.
+
 ## First Vertical Slice
 
 1. Define one neutral error from each owner: activation, capability, permission,

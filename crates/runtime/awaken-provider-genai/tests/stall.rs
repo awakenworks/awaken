@@ -1,18 +1,24 @@
-//! An incomplete provider stream must surface as a retryable `Timeout`, not hang
-//! the run. The per-event idle bound owns silent stalls; the fixed total call
-//! deadline owns streams that stay active forever without completing a response.
+//! An incomplete provider stream must fail retryably, never become a partial
+//! success or hang the run. Protocol End owns completion; the per-event idle
+//! bound owns silent stalls; the fixed total deadline bounds active streams.
 
 use std::time::Duration;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::{AdapterKind, GenaiExecutor};
-use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, DeltaSink, LlmExecutor};
+use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, DeltaSink, LlmExecutor, StopReason};
 use awaken_runtime_contract::resolved::ModelBinding;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Clone, Copy)]
 enum StreamFixture {
+    Boundary {
+        anthropic: bool,
+        tool: bool,
+        terminal: bool,
+        broken_body: bool,
+    },
     AnthropicStall,
     AnthropicHeartbeat,
     OpenAiEmptyChoiceStall,
@@ -35,9 +41,33 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
                 // Drain the request head; the response does not depend on it.
                 let mut buf = [0u8; 8192];
                 let _ = socket.read(&mut buf).await;
+                if let StreamFixture::Boundary {
+                    anthropic,
+                    tool,
+                    terminal,
+                    broken_body,
+                } = fixture
+                {
+                    let body = boundary_events(anthropic, tool, terminal);
+                    let length = body.len() + if broken_body { 100 } else { 0 };
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {length}\r\nconnection: close\r\n\r\n"
+                    );
+                    socket
+                        .write_all(head.as_bytes())
+                        .await
+                        .expect("boundary headers");
+                    socket
+                        .write_all(body.as_bytes())
+                        .await
+                        .expect("boundary body");
+                    socket.shutdown().await.expect("boundary close");
+                    return;
+                }
                 let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n";
                 let _ = socket.write_all(head.as_bytes()).await;
                 match fixture {
+                    StreamFixture::Boundary { .. } => unreachable!("handled at HTTP boundary"),
                     StreamFixture::AnthropicStall => {
                         let events = concat!(
                             "event: message_start\n",
@@ -114,12 +144,135 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
         }
     });
     let suffix = match fixture {
+        StreamFixture::Boundary {
+            anthropic: true, ..
+        } => "/",
+        StreamFixture::Boundary {
+            anthropic: false, ..
+        } => "/v1",
         StreamFixture::AnthropicStall | StreamFixture::AnthropicHeartbeat => "/",
         StreamFixture::OpenAiEmptyChoiceStall
         | StreamFixture::OpenAiEmptyTerminal
         | StreamFixture::OpenAiCompleteAfterEmptyChoices => "/v1",
     };
     format!("http://{addr}{suffix}")
+}
+
+fn boundary_events(anthropic: bool, tool: bool, terminal: bool) -> String {
+    use serde_json::json;
+    if anthropic {
+        let mut events = vec![
+            json!({"type":"message_start","message":{"id":"msg_boundary","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}),
+            json!({"type":"content_block_start","index":0,"content_block": if tool {
+                json!({"type":"tool_use","id":"call_boundary","name":"measure","input":{}})
+            } else { json!({"type":"text","text":""}) }}),
+            json!({"type":"content_block_delta","index":0,"delta": if tool {
+                json!({"type":"input_json_delta","partial_json":"{\"x\":1}"})
+            } else { json!({"type":"text_delta","text":"partial answer"}) }}),
+        ];
+        if terminal {
+            events.extend([
+                json!({"type":"content_block_stop","index":0}),
+                json!({"type":"message_delta","delta":{"stop_reason":if tool {"tool_use"} else {"end_turn"}},"usage":{"output_tokens":1}}),
+                json!({"type":"message_stop"}),
+            ]);
+        }
+        events
+            .iter()
+            .map(|event| {
+                format!(
+                    "event: {}\ndata: {event}\n\n",
+                    event["type"].as_str().expect("event type")
+                )
+            })
+            .collect()
+    } else {
+        let delta = if tool {
+            json!({"tool_calls":[{"index":0,"id":"call_boundary","type":"function","function":{"name":"measure","arguments":"{\"x\":1}"}}]})
+        } else {
+            json!({"content":"partial answer"})
+        };
+        let chunk = json!({"id":"chatcmpl-boundary","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":delta,"finish_reason":null}]});
+        let mut body = format!("data: {chunk}\n\n");
+        if terminal {
+            let end = json!({"id":"chatcmpl-boundary","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":if tool {"tool_calls"} else {"stop"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}});
+            body.push_str(&format!("data: {end}\n\ndata: [DONE]\n\n"));
+        }
+        body
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_protocol_end_not_http_eof_owns_response_success() {
+    // Cause/effect table: C1 Anthropic/OpenAI wire; C2 text/typed tool progress;
+    // C3 protocol End present/absent; C4 HTTP body complete/truncated. Rules:
+    // E1 !C3 => retryable error, never a committed partial response/tool;
+    // E2 C3 => exact captured response without waiting for EOF, even if the
+    // server closes a longer declared body after that terminal. Every C1/C2/C4
+    // combination is exercised for both C3 values through the real pinned SDK.
+    // This proves a provider boundary, not the cause of a live network failure.
+    for anthropic in [true, false] {
+        for tool in [false, true] {
+            for terminal in [false, true] {
+                for broken_body in [false, true] {
+                    let base_url = spawn_sse_server(StreamFixture::Boundary {
+                        anthropic,
+                        tool,
+                        terminal,
+                        broken_body,
+                    })
+                    .await;
+                    let adapter = if anthropic {
+                        AdapterKind::Anthropic
+                    } else {
+                        AdapterKind::OpenAI
+                    };
+                    let executor =
+                        GenaiExecutor::from_materialized_endpoint(adapter, base_url, "test-key")
+                            .expect("boundary client")
+                            .with_idle_timeout(Duration::from_secs(1));
+                    let result = tokio::time::timeout(
+                        Duration::from_secs(3),
+                        executor.infer_streaming(request(), &NullSink),
+                    )
+                    .await
+                    .expect("boundary settles without a stalled read");
+                    if terminal {
+                        let response = result.expect("protocol End permits success");
+                        assert_eq!(
+                            response.stop_reason,
+                            Some(if tool {
+                                StopReason::ToolUse
+                            } else {
+                                StopReason::NaturalEnd
+                            })
+                        );
+                        assert!(response.usage.is_some(), "terminal usage is retained");
+                        if tool {
+                            let calls = response.output.tool_calls();
+                            assert_eq!(calls.len(), 1);
+                            assert_eq!(calls[0].call_id, "call_boundary");
+                            assert_eq!(calls[0].tool_id, "measure");
+                            assert_eq!(calls[0].arguments, serde_json::json!({"x":1}));
+                        } else {
+                            assert_eq!(response.output.text_content(), "partial answer");
+                        }
+                    } else {
+                        let error =
+                            result.expect_err("HTTP EOF cannot authorize a partial answer or tool");
+                        assert_eq!(error.code(), "provider_error");
+                        if !broken_body {
+                            assert!(error.to_string().contains("before protocol completion"));
+                        }
+                        assert!(
+                            error.is_retryable(),
+                            "{adapter:?}, tool={tool}, broken={broken_body}: {error}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn openai_empty_choice() -> &'static [u8] {
