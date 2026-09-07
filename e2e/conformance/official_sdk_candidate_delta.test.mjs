@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   assertLatestRuntimeOwnsCandidateDelta,
+  assertRetainedOfficialSdkBehaviorOwners,
   officialSdkCandidateDeltaCoordinates,
   officialSdkCandidateDeltaFingerprint,
   qualifyOfficialSdkCandidateDelta,
@@ -189,4 +190,39 @@ test('same-version candidate evidence must be byte-equivalent to the current anc
     /same-version SDK package content differs/u,
     'S2',
   );
+});
+
+test('promotion retains prior behavior obligations without importing future requirements', () => {
+  // Cause/effect graph: C1 A->B->C and A->C reviewed upgrades; C2 C is promoted so its
+  // immediate candidate delta is empty; C3 an owner occurs in both upgrades;
+  // C4 a future/unrelated edge exists; C5 an earlier owner did not complete.
+  // Rules P1 C1+C2+C3 -> require the union once; P2 C4 -> no added requirement;
+  // P3 C5 -> reject even with an empty current delta. Tests use literal expected
+  // owners independently of the traversal, including each single missing owner.
+  const entry = (baseline, candidate, owners) => ({
+    baseline_version: baseline, candidate_version: candidate,
+    evidence_groups: owners.map(owner => ({ owner })),
+  });
+  const catalog = [
+    entry('A', 'B', ['stream', 'transport']),
+    entry('B', 'C', ['workspace', 'transport']),
+    entry('A', 'C', ['transport']),
+    entry('C', 'D', ['future']),
+    entry('X', 'Y', ['unrelated']),
+  ];
+  const expected = ['stream', 'transport', 'workspace'];
+  const sameVersion = {
+    currentVersion: 'C', candidateVersion: 'C',
+    operations: empty(), declarations: empty(), runtime: empty(), exports: empty(),
+  };
+  assert.deepEqual(qualifyOfficialSdkCandidateDelta(sameVersion, catalog).requiredBehaviorOwners, []);
+  assert.deepEqual(assertRetainedOfficialSdkBehaviorOwners('C', catalog, new Set(expected)), expected, 'P1/P2');
+  for (const missing of expected) {
+    assert.throws(
+      () => assertRetainedOfficialSdkBehaviorOwners('C', catalog, new Set(expected.filter(owner => owner !== missing))),
+      { message: `retained SDK behavior owner did not complete: ${missing}` },
+      `P3 ${missing}`,
+    );
+  }
+  assert.deepEqual(assertRetainedOfficialSdkBehaviorOwners('B', catalog, new Set(['stream', 'transport'])), ['stream', 'transport']);
 });

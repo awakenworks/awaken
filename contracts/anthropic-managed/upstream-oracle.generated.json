@@ -95,9 +95,9 @@
       "operation_fingerprint": "701ee5399eb5cdc42aaa4606904862d73bed85a39de5e1fa5f1e9feb28050f8c",
       "role": "current_oracle",
       "runtime_file_count": 113,
-      "runtime_fingerprint": "f134d5efde08ae4c3f3e44972938b8b568db4715a4984ff3cb7246b9214d5a0c",
-      "type_fingerprint": "f3392e76f49314fbd117bf4ae6fea86690fd756e2c699644f5ac430f44c7cebc",
-      "version": "0.123.0"
+      "runtime_fingerprint": "9e90cdd70c02f9123a1f884896d817d75beed16e5896812c4bae5684928c399e",
+      "type_fingerprint": "9d039bc2d72a42baabe8032391cc90cc682f4f9999342136cf6ae34141991525",
+      "version": "0.124.0"
     }
   ],
   "current": {
@@ -1339,9 +1339,9 @@
     ],
     "role": "current_oracle",
     "runtime_file_count": 113,
-    "runtime_fingerprint": "f134d5efde08ae4c3f3e44972938b8b568db4715a4984ff3cb7246b9214d5a0c",
-    "type_fingerprint": "f3392e76f49314fbd117bf4ae6fea86690fd756e2c699644f5ac430f44c7cebc",
-    "version": "0.123.0",
+    "runtime_fingerprint": "9e90cdd70c02f9123a1f884896d817d75beed16e5896812c4bae5684928c399e",
+    "type_fingerprint": "9d039bc2d72a42baabe8032391cc90cc682f4f9999342136cf6ae34141991525",
+    "version": "0.124.0",
     "wire_contract": {
       "events": {
         "inbound": [
