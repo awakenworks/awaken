@@ -318,16 +318,55 @@ impl SessionApplication {
     /// root CAS so a delayed request can never arrive after quota is released.
     pub async fn close_session_event_admission(
         &self,
+        owner_scope: &str,
         session_id: &str,
         key: String,
         request_fingerprint: String,
-    ) -> Result<SessionEventBatch, RunError> {
-        self.resolve_session_event_batch(
-            session_id,
-            EventBatchAdmission::Close,
-            Some((key, request_fingerprint)),
-        )
-        .await
+    ) -> Result<awaken_session_contract::SessionEventAdmission, RunError> {
+        if let Some(deleted) = self
+            .session_repository()
+            .deleted_event_admissions(owner_scope, session_id)
+            .await
+            .map_err(repository_failure)
+            .map_err(mutation_run_error)?
+        {
+            return deleted.resolve(&key, &request_fingerprint);
+        }
+        match self.owner(session_id).await {
+            Ok(owner) if owner == owner_scope => {}
+            Ok(_) | Err(SessionMutationError::NotFound) => {
+                return Err(RunError {
+                    message: "Session was not found".into(),
+                    kind: awaken_session_contract::RunErrorKind::BadRequest,
+                    code: "session_not_found".into(),
+                });
+            }
+            Err(error) => return Err(mutation_run_error(error)),
+        }
+        let result = self
+            .resolve_session_event_batch(
+                session_id,
+                EventBatchAdmission::Close,
+                Some((key.clone(), request_fingerprint.clone())),
+            )
+            .await;
+        match result {
+            Ok(batch) => Ok((&batch).into()),
+            Err(error) => {
+                // Delete may win between the live lookup and root CAS. Read
+                // the SAME owner-bound deletion authority before classifying.
+                match self
+                    .session_repository()
+                    .deleted_event_admissions(owner_scope, session_id)
+                    .await
+                    .map_err(repository_failure)
+                    .map_err(mutation_run_error)?
+                {
+                    Some(deleted) => deleted.resolve(&key, &request_fingerprint),
+                    None => Err(error),
+                }
+            }
+        }
     }
 
     async fn resolve_session_event_batch(
@@ -352,13 +391,7 @@ impl SessionApplication {
                 ) {
                     SessionEventBatchIdempotency::Exact(batch) => return Ok(batch),
                     SessionEventBatchIdempotency::Conflict => {
-                        return Err(RunError {
-                            message:
-                                "Idempotency-Key was already used for another Session Event batch"
-                                    .into(),
-                            kind: awaken_session_contract::RunErrorKind::BadRequest,
-                            code: "idempotency_conflict".into(),
-                        });
+                        return Err(awaken_session_contract::event_admission_conflict());
                     }
                     SessionEventBatchIdempotency::Absent => {}
                 }

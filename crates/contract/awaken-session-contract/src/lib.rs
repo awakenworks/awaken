@@ -19,7 +19,12 @@ mod budget;
 mod coordination;
 mod dream;
 mod environment;
+mod event_admission;
 mod event_batches;
+pub use event_admission::{
+    DeletedSessionEventAdmissions, RetainedEventAdmission, SessionEventAdmission,
+    event_admission_conflict,
+};
 mod lifecycle;
 mod mcp_attachment;
 mod mcp_probe;

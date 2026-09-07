@@ -963,10 +963,17 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
             .unwrap();
         }
         let first = app
-            .close_session_event_admission(session, "key".into(), "fingerprint".into())
+            .close_session_event_admission("workspace", session, "key".into(), "fingerprint".into())
             .await
             .unwrap();
-        assert_eq!(first.admission_closed, !accept_first, "F1/F2");
+        assert_eq!(
+            matches!(
+                first,
+                awaken_session_contract::SessionEventAdmission::Closed { .. }
+            ),
+            !accept_first,
+            "F1/F2"
+        );
         let revision = repository.get(session).await.unwrap().revision;
         // Reopen the actual database, not merely a new application over the
         // old in-memory connection; response-loss proof must survive restart.
@@ -984,7 +991,7 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
             Arc::new(RecordingEnvironmentSource::default()),
         );
         let replay = restarted
-            .close_session_event_admission(session, "key".into(), "fingerprint".into())
+            .close_session_event_admission("workspace", session, "key".into(), "fingerprint".into())
             .await
             .unwrap();
         assert_eq!(first, replay, "F3 stable receipt after reconstruction");
@@ -992,15 +999,20 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
             .append_session_event_batch_idempotent(session, input, None, None, key)
             .await;
         if accept_first {
-            assert_eq!(late.unwrap(), first, "F1 no duplicate acceptance");
+            assert_eq!(
+                awaken_session_contract::SessionEventAdmission::from(&late.unwrap()),
+                first,
+                "F1 no duplicate acceptance"
+            );
         } else {
             assert_eq!(
                 late.unwrap_err().code,
                 "event_admission_closed",
                 "F2 late request fenced"
             );
+            let batch = &repository.get(session).await.unwrap().event_batches[0];
             assert!(
-                first.is_complete() && first.events.is_empty(),
+                batch.is_complete() && batch.events.is_empty(),
                 "F2 no unfinished execution intent"
             );
             restarted
@@ -1013,7 +1025,7 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
             );
         }
         let conflict = restarted
-            .close_session_event_admission(session, "key".into(), "changed".into())
+            .close_session_event_admission("workspace", session, "key".into(), "changed".into())
             .await
             .unwrap_err();
         assert_eq!(conflict.code, "idempotency_conflict", "F4");
@@ -1055,24 +1067,39 @@ async fn final_event_admission_close_competes_atomically_with_acceptance() {
             None,
             Some(("key".into(), "fingerprint".into()))
         ),
-        b.close_session_event_admission("admission-race", "key".into(), "fingerprint".into()),
+        b.close_session_event_admission(
+            "workspace",
+            "admission-race",
+            "key".into(),
+            "fingerprint".into()
+        ),
     );
     let resolved = resolved.unwrap();
-    if resolved.admission_closed {
+    if matches!(
+        resolved,
+        awaken_session_contract::SessionEventAdmission::Closed { .. }
+    ) {
         assert_eq!(
             accepted.unwrap_err().code,
             "event_admission_closed",
             "F5 close won"
         );
     } else {
-        assert_eq!(accepted.unwrap(), resolved, "F5 acceptance won");
+        assert_eq!(
+            awaken_session_contract::SessionEventAdmission::from(&accepted.unwrap()),
+            resolved,
+            "F5 acceptance won"
+        );
     }
     assert_eq!(
         repository
             .get("admission-race")
             .await
             .unwrap()
-            .event_batches,
+            .event_batches
+            .iter()
+            .map(awaken_session_contract::SessionEventAdmission::from)
+            .collect::<Vec<_>>(),
         vec![resolved],
         "F5 one root receipt"
     );

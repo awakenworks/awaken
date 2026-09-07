@@ -332,6 +332,19 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// [`SessionRepositoryError::NotFound`] case, never a storage fallback.
     async fn get(&self, session_id: &str) -> Result<PersistedSession, SessionRepositoryError>;
 
+    /// Read deletion evidence only inside its persisted owner partition. None
+    /// means no matching tombstone, not proof of non-admission. Unsupported
+    /// adapters fail closed rather than inventing a complete empty snapshot.
+    async fn deleted_event_admissions(
+        &self,
+        _owner_scope: &str,
+        _session_id: &str,
+    ) -> Result<Option<crate::DeletedSessionEventAdmissions>, SessionRepositoryError> {
+        Err(SessionRepositoryError::Unavailable(
+            "Session repository does not support retained deletion admission evidence".into(),
+        ))
+    }
+
     /// Every visible aggregate owned by one Workspace. Collection reads must
     /// come from durable truth so a process restart cannot make existing
     /// Sessions disappear merely because the protocol projection cache is cold.

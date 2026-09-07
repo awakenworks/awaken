@@ -1054,18 +1054,22 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             if current_owner != owner_scope || current_revision != mutation.expected_revision {
                 return Ok(SessionMutationResult::Conflict { current_revision });
             }
-            if matches!(&mutation.payload, SessionMutationPayload::Delete(_)) {
-                let current_session = decode(current_row).map_err(corrupt)?;
-                let SessionMutationPayload::Delete(tombstone) = &mutation.payload else {
-                    unreachable!("guarded above")
-                };
-                if !current_session.admits_tombstone(&session_id, tombstone.deleted_revision) {
-                    return Err(SessionRepositoryError::InvalidMutation(
+            let deleted_admissions =
+                if matches!(&mutation.payload, SessionMutationPayload::Delete(_)) {
+                    let current_session = decode(current_row).map_err(corrupt)?;
+                    let SessionMutationPayload::Delete(tombstone) = &mutation.payload else {
+                        unreachable!("guarded above")
+                    };
+                    if !current_session.admits_tombstone(&session_id, tombstone.deleted_revision) {
+                        return Err(SessionRepositoryError::InvalidMutation(
                     "Session tombstone requires hidden terminal disposition and completed cleanup"
                         .into(),
                 ));
-                }
-            }
+                    }
+                    Some(super::event_admissions::encode(&current_session)?)
+                } else {
+                    None
+                };
             match &mutation.payload {
                 SessionMutationPayload::Replace(replacement) => {
                     let mut replacement = replacement.clone();
@@ -1102,13 +1106,14 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                     }
                     tx.execute(
                         "INSERT INTO managed_session_tombstone
-                        (session_id, scope_id, deleted_revision, deleted_at)
-                     VALUES (?1, ?2, ?3, ?4)",
+                        (session_id, scope_id, deleted_revision, deleted_at, event_admissions_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
                         params![
                             tombstone.session_id,
                             owner_scope,
                             db_revision(tombstone.deleted_revision)?,
                             tombstone.deleted_at,
+                            deleted_admissions,
                         ],
                     )
                     .map_err(storage)?;
@@ -1487,6 +1492,23 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             .transpose()
         })
         .await
+    }
+
+    async fn deleted_event_admissions(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+    ) -> Result<
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+        SessionRepositoryError,
+    > {
+        let owner_scope = owner_scope.to_string();
+        let session_id = session_id.to_string();
+        self.with_connection(move |conn| {
+            conn.query_row("SELECT deleted_revision, event_admissions_json FROM managed_session_tombstone WHERE session_id=?1 AND scope_id=?2",
+                params![session_id, owner_scope], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)))
+                .optional().map_err(storage)?.map(|(revision, data)| super::event_admissions::decode(revision, data)).transpose()
+        }).await
     }
 
     async fn owner(&self, session_id: &str) -> Result<String, SessionRepositoryError> {

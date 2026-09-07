@@ -855,12 +855,25 @@ The durable codec rejects closed receipts containing executable events,
 activity or trace state; omitted flags on historical accepted batches mean
 accepted, not closed.
 
-The implementation/model evidence currently covers retained roots. **Deletion
-remains an open recovery boundary:** existing Session tombstones discard the
-root's Event-batch receipts. After deletion this endpoint cannot distinguish an
-earlier accepted request from an absent one and must not authorize quota
-release from a 404. Extending the existing tombstone with minimal admission
-provenance, together with application reconciliation, is required before
-claiming complete response-loss convergence. ToolResultProtocol checks the
-absorbing alternatives under root CAS, not this missing deletion transition,
-Classroom quota liveness, or universal Rust/SQL refinement.
+Deletion extends the existing tombstone, not a second receipt registry. Both
+stores derive the minimal key/fingerprint/batch/outcome inventory from the root
+locked by the successful delete CAS. Message content, tool inputs, and trace
+material are not retained. Lookup is scoped by the persisted Workspace owner.
+An existing receipt survives deletion unchanged (`proof: event_batch`); an
+absent key in a complete inventory returns Closed with `proof: session_deleted`
+and the positive deletion revision, never an invented batch id. Late sends are
+excluded by the same permanent Session tombstone. Nullable legacy inventories
+remain unavailable/unknown; NULL must never be interpreted as an empty list.
+Changing the original fingerprint remains a conflict even after deletion.
+
+The shared current DDL tail appends a nullable column inside the selected
+table-owning Session lineage without rewriting historical checksums. The old
+convergence marker stays unchanged and owns no table DDL. Deploy the migration and deleting
+writers as a coordinated cutover: an old writer can still create NULL evidence.
+SQLite/PostgreSQL conformance, a cold HTTP adapter test with actual cleanup,
+and retained-proof codec decision tables cover the implementation boundary.
+Classroom's bounded SessionCommandConvergence model includes effective lookup
+after deletion and rejects receipt-erasure and unknown-release mutations.
+ToolResultProtocol still checks root-CAS alternatives, not cross-product quota
+liveness or universal Rust/SQL refinement. Historical missing evidence cannot
+be reconstructed by these fixes and requires an explicit reconciliation decision.
