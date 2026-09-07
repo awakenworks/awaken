@@ -87,6 +87,43 @@ struct ClaimBoundCredentialRecorder {
     claim: RunClaim,
 }
 
+/// Process-local proof that this drive selected its committed read authority
+/// for the exact claim before any physical executor can be entered. It carries
+/// no second lifecycle state: the durable claim and recovery source remain the
+/// authorities, while this value makes their required call ordering structural.
+struct ClaimedSnapshotAuthority {
+    run_id: RunId,
+    thread_id: ThreadId,
+    epoch: u64,
+}
+
+#[must_use]
+const fn claimed_snapshot_execution_admission(
+    run_matches: bool,
+    thread_matches: bool,
+    epoch_matches: bool,
+) -> bool {
+    run_matches && thread_matches && epoch_matches
+}
+
+impl ClaimedSnapshotAuthority {
+    fn installed(claim: &RunClaim, thread_id: &ThreadId) -> Self {
+        Self {
+            run_id: claim.run_id.clone(),
+            thread_id: thread_id.clone(),
+            epoch: claim.epoch,
+        }
+    }
+
+    fn admits(&self, claim: &RunClaim, thread_id: &ThreadId) -> bool {
+        claimed_snapshot_execution_admission(
+            self.run_id == claim.run_id,
+            self.thread_id == *thread_id,
+            self.epoch == claim.epoch,
+        )
+    }
+}
+
 #[async_trait::async_trait]
 impl CredentialRealizationRecorder for ClaimBoundCredentialRecorder {
     async fn record(
@@ -159,7 +196,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         claim: &RunClaim,
         thread_id: &ThreadId,
-    ) -> Result<(), Error> {
+    ) -> Result<ClaimedSnapshotAuthority, Error> {
         if let Some(projection) = &self.recovery_projection {
             let snapshot = match &self.recovery_source {
                 Some(source) => source
@@ -171,12 +208,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 None => self.store.load_recovery_snapshot(claim).await?,
             };
             projection
-                .install(&claim.run_id, snapshot)
+                .install(&claim.run_id, thread_id, snapshot)
                 .map_err(|error| {
                     crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
                 })?;
         }
-        Ok(())
+        Ok(ClaimedSnapshotAuthority::installed(claim, thread_id))
     }
 
     async fn refresh_local_recovery_projection(
@@ -194,9 +231,11 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .map_err(|error| {
                 crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
             })?;
-        projection.install(run_id, snapshot).map_err(|error| {
-            crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
-        })
+        projection
+            .install(run_id, thread_id, snapshot)
+            .map_err(|error| {
+                crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
+            })
     }
 
     /// Persist the queue-authorized retry edge before any replacement attempt
@@ -837,7 +876,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         if let Ok(Some(depth)) = self.store.runnable_depth(now_ms).await {
             self.runtime.metrics().record_dispatch_queue_depth(depth);
         }
-        self.install_claimed_recovery_projection(&claim, &thread_id)
+        let claimed_snapshot = self
+            .install_claimed_recovery_projection(&claim, &thread_id)
             .await?;
         let mut all_pending: Vec<String> = claimed
             .pending
@@ -906,6 +946,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 .run_physical_attempt(
                     PhysicalAttemptRequest {
                         claimed: &claimed,
+                        claimed_snapshot: &claimed_snapshot,
                         context: &context,
                         live_input: awaken_runtime_contract::execution::LiveInput::None,
                         recovery_mode,
@@ -1078,6 +1119,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     .run_physical_attempt(
                         PhysicalAttemptRequest {
                             claimed: &claimed,
+                            claimed_snapshot: &claimed_snapshot,
                             context: &execution_context,
                             live_input: awaken_runtime_contract::execution::LiveInput::None,
                             recovery_mode: AttemptRecoveryMode::RequirePredecessorQuiescence,
@@ -1126,6 +1168,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                             .run_physical_attempt(
                                 PhysicalAttemptRequest {
                                     claimed: &claimed,
+                                    claimed_snapshot: &claimed_snapshot,
                                     context: &execution_context,
                                     live_input: attempt_executor.capabilities().live_input,
                                     recovery_mode:
@@ -1239,6 +1282,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         .run_physical_attempt(
                             PhysicalAttemptRequest {
                                 claimed: &claimed,
+                                claimed_snapshot: &claimed_snapshot,
                                 context: &execution_context,
                                 live_input: attempt_executor.capabilities().live_input,
                                 recovery_mode,
@@ -1280,6 +1324,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         .run_physical_attempt(
                             PhysicalAttemptRequest {
                                 claimed: &claimed,
+                                claimed_snapshot: &claimed_snapshot,
                                 context: &execution_context,
                                 live_input: awaken_runtime_contract::execution::LiveInput::None,
                                 recovery_mode: AttemptRecoveryMode::RequirePredecessorQuiescence,
@@ -1580,6 +1625,24 @@ fn settle_outcome(state: &RunState) -> Result<DispatchOutcome, Error> {
             ),
         )),
     }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn claimed_snapshot_execution_requires_exact_identity() {
+    // Causes: C1 Run identity matches; C2 Thread identity matches; C3 claim
+    // epoch matches. Effect E1 permits the already claim-fenced physical
+    // executor boundary. Every other combination is E2 rejection. Decision
+    // rule R1=C1+C2+C3=>E1; the seven complementary Boolean combinations all
+    // imply E2. Token construction remains private to the successful recovery
+    // installation path, so no caller can bypass this production reducer.
+    let run_matches: bool = kani::any();
+    let thread_matches: bool = kani::any();
+    let epoch_matches: bool = kani::any();
+    assert_eq!(
+        claimed_snapshot_execution_admission(run_matches, thread_matches, epoch_matches),
+        run_matches && thread_matches && epoch_matches
+    );
 }
 
 #[cfg(test)]
