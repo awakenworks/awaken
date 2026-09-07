@@ -634,6 +634,16 @@ runtime and commit capabilities without changing the child's first-class Thread
 identity. Store conformance and a durable host integration test link this path
 to the independently owned child state modeled by `Delegation.tla`.
 
+A failed nonterminal Session realization closes its Host lease generation and
+expires that assignment in the same durable failure CAS. The existing assignment
+Kani harness proves an expired assignment must advance its epoch, including the
+same owner/incarnation (or fail closed at u64 exhaustion). SQLite application
+rows cover initial retry, terminal initial failure, Idle hot-replacement failure,
+and stale replay; HTTP MCP hot-swap drives the retained Active server after both
+failed replacement and retry. Together these connect the root write to the
+already-modeled closed-generation fence. The scalar proof does not prove SQL
+atomicity or an arbitrary transport outage's eventual recovery.
+
 Local coordination admission and child execution reuse one `AbortOnDropTask`
 owner. The local Session application call installs a child projection before
 execution begins, so it needs the same poll-stack boundary as direct and durable
