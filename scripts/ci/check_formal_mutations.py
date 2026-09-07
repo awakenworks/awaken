@@ -303,6 +303,20 @@ def mutate_disconnected_product_feature(case_root: Path) -> None:
 
 
 class MutationOracleTests(unittest.TestCase):
+    def test_tlc_launch_keeps_the_resource_bound_and_strict_timeout(self) -> None:
+        # R1 same collector as check_formal.sh + explicit 512m/60s bounds:
+        # run the full model, never substitute a smaller state configuration.
+        # R2 a timeout still escapes as a failed run, never a semantic kill.
+        green = subprocess.CompletedProcess([], 0, "Model checking completed. No error has been found.")
+        with patch("subprocess.run", return_value=green) as run:
+            check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config", [])
+        args, kwargs = run.call_args
+        self.assertEqual(args[0][:4], ["java", "-Xmx512m", "-XX:+UseParallelGC", "-jar"])
+        self.assertEqual(kwargs["timeout"], 60)
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("java", 60)):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config", [])
+
     def test_constant_trace_refutation_requires_exact_name_and_status(self) -> None:
         # Q1 TLC rejects a false constant invariant before state exploration:
         # exact 151+named false relation is a kill. Q2 unrelated syntax/tool
@@ -965,6 +979,32 @@ def check_resource_preparation_model_mutant(tlc_jar: Path) -> None:
 
 
 def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
+    # S1-S9 extend the existing Worker lifecycle family: startup and withdrawal
+    # share the same registration owner as drain, not a second cleanup model.
+    source = (ROOT / "formal/tla/WorkerDrain.tla").read_text()
+    config = (ROOT / "formal/tla/WorkerDrain.cfg").read_text()
+    header = "SPECIFICATION Spec\nCONSTANT MaxClaims = 3\nCHECK_DEADLOCK FALSE\n"
+    mutations = []
+    for anchor, broken, invariant in [
+        ('AcceptInitialReady == /\\ startupPhase = "awaiting"',
+         'AcceptInitialReady == /\\ startupPhase = "probing"', "StartupAdmissionRequiresProbe"),
+        ('BeginWithdrawal == /\\ withdrawal = "none"',
+         'BeginWithdrawal == /\\ withdrawalCalls < 2', "OneWithdrawal"),
+        ('(IF outcome = "applied" THEN "Dead" ELSE registryState)',
+         '"Dead"', "RemoteDeathRequiresReceipt"),
+        ('(startupPhase = "failed" \\/ drainAcknowledged)',
+         'drainAcknowledged', "temporal:StartupFailureTerminates"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit("Worker startup/withdrawal mutation anchor drifted")
+        property_line = ("PROPERTIES " + invariant.removeprefix("temporal:")
+                         if invariant.startswith("temporal:") else "INVARIANTS " + invariant)
+        mutations.append((source.replace(anchor, broken), header + property_line, invariant))
+    for witness in ("NoFailedReturnReached", "NoReadyClaimReached",
+                    "NoUnknownWithdrawalReached", "NoPendingHeartbeatCancelled"):
+        mutations.append((source, header + "INVARIANTS " + witness, witness))
+    check_tlc_model_mutations(tlc_jar, "WorkerDrain", source, config, mutations)
+    print("Worker startup/withdrawal: 4/4 mutants killed; four lifecycle witnesses reachable")
     # L1: restore expiry-equality catch-up after a completed phase. Successful
     # renewals forever must expose a non-releasing cycle, not an oracle error.
     source = (ROOT / "formal/tla/SessionRealizationMutex.tla").read_text()
@@ -1028,7 +1068,7 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "WorkerAuthorityExit", source, config, mutations,
                               dependencies=("SessionRealizationAuthority",))
     print("Worker authority exit: 3/3 mutants killed; panic/completion reachability witnessed")
-    # W1-W7 and A1-A6: one root proof, request-start latency, irreversible
+    # W1-W11 and A1-A6: one root proof, request-start latency, irreversible
     # closure and atomic Session installation. Each removed guard must produce
     # the exact semantic counterexample; admission/renewal witnesses exclude
     # configurations that deny every useful action.
@@ -1041,7 +1081,9 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
          '(rootPhase # "Closed")', "ReceiptNeverRevivesExpiredProof"),
         ('(rootPhase = "Starting" \\/ RootCurrent)',
          'TRUE', "ClosedRootNeverReopens"),
-        ("/\\ bootNow < heartbeatRequest + 2", "/\\ TRUE",
+        ("/\\ observed < heartbeatRequest + 2", "/\\ TRUE",
+         "ReceiptNeverRevivesExpiredProof"),
+        ("/\\ observed >= heartbeatRequest", "/\\ TRUE",
          "ReceiptNeverRevivesExpiredProof"),
         ("InstallReplacement ==\n  /\\ RootCurrent /\\ Replace",
          "InstallReplacement ==\n  /\\ Replace", "SessionInstallationRequiresCurrentRoot"),
@@ -1055,9 +1097,14 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
         mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
     for witness in ("NoAdmissionReached", "NoRenewedRootReached"):
         mutations.append((source, header + "INVARIANTS " + witness, witness))
+    # The negative elapsed branch must be reachable, not merely a guard over
+    # impossible inputs. NoRegressionResponse is an action property, so the
+    # existing oracle demands its named temporal counterexample.
+    mutations.append((source, header + "PROPERTY NoRegressionResponse", "NoRegressionResponse"))
     check_tlc_model_mutations(tlc_jar, "WorkerExecutionAuthority", source, config, mutations,
-                              dependencies=("SessionRealizationAuthority",))
-    print("Worker execution authority: 6/6 mutants killed; admission/renewal reachability witnessed")
+                              dependencies=("SessionRealizationAuthority",),
+                              action_properties={"NoRegressionResponse"})
+    print("Worker execution authority: 7/7 mutants killed; admission/renewal/regression reachable")
     # S1-S21: independently remove each authority/identity guard; release the
     # original mutex between check and effect; permit a late weak upgrade or
     # rebinding. The receipt oracle is independent of the mutated predicate.
@@ -1666,10 +1713,10 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
                     if source_path.is_file(): shutil.copy2(source_path, artifact_directory / source_path.name)
             try:
                 result = subprocess.run(
-                    ["java", "-Xmx512m", "-jar", str(tlc_jar.resolve()),
+                    ["java", "-Xmx512m", "-XX:+UseParallelGC", "-jar", str(tlc_jar.resolve()),
                      "-metadir", str(directory / "states"), "-config", str(config_path), str(model)],
                     cwd=directory, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    timeout=30, check=False,
+                    timeout=60, check=False,
                 )
             except (subprocess.TimeoutExpired, OSError) as error:
                 if artifact_directory: (artifact_directory / "tlc.log").write_text(f"proof tool failed: {error}")

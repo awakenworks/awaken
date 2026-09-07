@@ -13,6 +13,8 @@ pub struct FakeWorkerUpstream {
     #[allow(dead_code)] // Only the lifecycle integration test asserts client provenance.
     request_headers: Arc<Mutex<Vec<String>>>,
     environment_warmups: Arc<Mutex<String>>,
+    deregistration_response: Arc<Mutex<Option<String>>>,
+    initial_heartbeat_blocked: Arc<AtomicBool>,
     heartbeat_sequences: Arc<Mutex<Vec<u64>>>,
     applied_heartbeat_sequence: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
@@ -100,13 +102,18 @@ impl FakeWorkerUpstream {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let request_headers = Arc::new(Mutex::new(Vec::new()));
         let environment_warmups = Arc::new(Mutex::new("[]".to_owned()));
+        let deregistration_response =
+            Arc::new(Mutex::new(Some(r#"{"mutation":"applied"}"#.to_owned())));
         let heartbeat_sequences = Arc::new(Mutex::new(Vec::new()));
+        let initial_heartbeat_blocked = Arc::new(AtomicBool::new(false));
         let applied_heartbeat_sequence = Arc::new(AtomicU64::new(0));
         let thread_stop = stop.clone();
         let thread_requests = requests.clone();
         let thread_request_headers = request_headers.clone();
         let thread_environment_warmups = environment_warmups.clone();
+        let thread_deregistration_response = deregistration_response.clone();
         let thread_heartbeat_sequences = heartbeat_sequences.clone();
+        let thread_initial_heartbeat_blocked = initial_heartbeat_blocked.clone();
         let thread_applied_heartbeat_sequence = applied_heartbeat_sequence.clone();
         let thread_drain_release = drain_release;
         let thread_recovery_release = recovery_release;
@@ -132,8 +139,10 @@ impl FakeWorkerUpstream {
                                 recovery_release: thread_recovery_release.as_deref(),
                                 heartbeat_count: &heartbeat_count,
                                 heartbeat_sequences: &thread_heartbeat_sequences,
+                                initial_heartbeat_blocked: &thread_initial_heartbeat_blocked,
                                 applied_heartbeat_sequence: &thread_applied_heartbeat_sequence,
                                 environment_warmups: &thread_environment_warmups,
+                                deregistration_response: &thread_deregistration_response,
                             },
                         );
                     }
@@ -150,7 +159,9 @@ impl FakeWorkerUpstream {
             requests,
             request_headers,
             environment_warmups,
+            deregistration_response,
             heartbeat_sequences,
+            initial_heartbeat_blocked,
             applied_heartbeat_sequence,
             thread: Some(thread),
         }
@@ -171,6 +182,15 @@ impl FakeWorkerUpstream {
 
     pub fn set_environment_warmups_json(&self, warmups: impl Into<String>) {
         *self.environment_warmups.lock().unwrap() = warmups.into();
+    }
+
+    pub fn set_deregistration_response(&self, response: Option<String>) {
+        *self.deregistration_response.lock().unwrap() = response;
+    }
+
+    pub fn block_initial_heartbeat(&self, blocked: bool) {
+        self.initial_heartbeat_blocked
+            .store(blocked, Ordering::Release);
     }
 
     pub fn heartbeat_sequences(&self) -> Vec<u64> {
@@ -195,6 +215,8 @@ impl Drop for FakeWorkerUpstream {
 }
 
 struct HandleContext<'a> {
+    initial_heartbeat_blocked: &'a AtomicBool,
+    deregistration_response: &'a Mutex<Option<String>>,
     requests: &'a Mutex<Vec<String>>,
     request_headers: &'a Mutex<Vec<String>>,
     stop: &'a AtomicBool,
@@ -211,6 +233,8 @@ struct HandleContext<'a> {
 
 fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
     let HandleContext {
+        initial_heartbeat_blocked,
+        deregistration_response,
         requests,
         request_headers,
         stop,
@@ -264,6 +288,12 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
             let ordinal = heartbeat_count.fetch_add(1, Ordering::AcqRel);
             let sequence = json_u64_field(body, "sequence");
             heartbeat_sequences.lock().unwrap().push(sequence);
+            while ordinal == 0
+                && initial_heartbeat_blocked.load(Ordering::Acquire)
+                && !stop.load(Ordering::Acquire)
+            {
+                std::thread::sleep(Duration::from_millis(2));
+            }
             if ordinal == 0 && heartbeat_fault == HeartbeatFault::DelayInitial {
                 std::thread::sleep(Duration::from_millis(registry_ttl_ms));
             }
@@ -299,9 +329,19 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
         "/v1/worker/environment/warmups" => {
             format!(r#"{{"warmups":{}}}"#, environment_warmups.lock().unwrap())
         }
-        "/v1/worker/drain" | "/v1/worker/quiesced" | "/v1/worker/deregister" => {
-            r#"{"mutation":"applied"}"#.to_string()
+        "/v1/worker/deregister" => {
+            let response = deregistration_response.lock().unwrap().clone();
+            match response {
+                Some(response) => response,
+                None => {
+                    while !stop.load(Ordering::Acquire) {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    return;
+                }
+            }
         }
+        "/v1/worker/drain" | "/v1/worker/quiesced" => r#"{"mutation":"applied"}"#.to_string(),
         "/v1/worker/dispatch/claim" => r#"{"claimed":null}"#.to_string(),
         _ => format!(r#"{{"error":"unexpected startup-test path: {path}"}}"#),
     };

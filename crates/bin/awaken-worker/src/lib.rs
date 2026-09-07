@@ -16,6 +16,7 @@
 //! is only an inert construction placeholder: because the materializer is installed,
 //! an unavailable publication pin fails closed before that executor can run.
 
+use futures_util::FutureExt as _;
 use std::sync::Arc;
 
 mod acp_capability;
@@ -1141,13 +1142,19 @@ impl WorkerNode {
         // used by the remote dispatch and Session Work protocols.
         deployment.dispatch_owner = registration.snapshot.identity.lease_owner();
         let control = WorkerControlClient::new(upstream.clone());
+        let identity = registration.snapshot.identity.clone();
+        // Registration has one exit owner. All startup errors, cooperative
+        // cancellation and ordinary shutdown reach the same bounded withdrawal;
+        // no early-return branch maintains a second deregistration policy.
+        let result = async {
+        let (host, lifecycle, heartbeat_timing, environment_proof_started) = {
+        let startup = std::panic::AssertUnwindSafe(async {
         let registered_context =
             RegisteredWorkerContext::new(registration.clone(), upstream.clone());
         let attempt_decorator = match self.attempt_decorator_factory {
             Some(factory) => match factory(&registered_context) {
                 Ok(application) => Some(application),
                 Err(error) => {
-                    let _ = control.deregister(&registration.snapshot.identity).await;
                     return Err(std::io::Error::other(format!(
                         "registered attempt decorator factory failed: {error}"
                     ))
@@ -1160,7 +1167,6 @@ impl WorkerNode {
             Some(factory) => match factory(&registered_context) {
                 Ok(mounter) => Some(mounter),
                 Err(error) => {
-                    let _ = control.deregister(&registration.snapshot.identity).await;
                     return Err(std::io::Error::other(format!(
                         "registered Memory mounter factory failed: {error}"
                     ))
@@ -1271,6 +1277,7 @@ impl WorkerNode {
         host = host
             .with_session_environment_from_deployment(self.hand_executor_factory)
             .await
+            .map_err(std::io::Error::other)?
             .with_acp_from_deployment(self.credential_materializer, self.brokered_acp_model_access)
             .await;
 
@@ -1315,30 +1322,17 @@ impl WorkerNode {
         // still fails closed for any Run that needs their evidence.
         let environment_proof_started = std::time::Instant::now();
         if let Some(provider) = &lifecycle.session_environment_provider {
-            let evidence =
-                tokio::time::timeout(startup_timing.request_timeout(), provider.probe_ready())
-                    .await;
-            let error = match evidence {
-                Ok(Ok(())) => None,
-                Ok(Err(error)) => Some(error.to_string()),
-                Err(_) => Some("sandbox readiness evidence timed out before Ready".to_owned()),
-            };
-            if let Some(error) = error {
-                let _ = tokio::time::timeout(
-                    startup_timing.request_timeout(),
-                    control.deregister(&lifecycle.identity),
-                )
-                .await;
-                return Err(std::io::Error::other(format!(
+            tokio::time::timeout(startup_timing.request_timeout(), provider.probe_ready())
+                .await
+                .map_err(|_| std::io::Error::other("sandbox readiness evidence timed out before Ready"))?
+                .map_err(|error| std::io::Error::other(format!(
                     "sandbox readiness evidence failed before Ready: {error}"
-                ))
-                .into());
-            }
+                )))?;
         }
         // A lease receipt proves no more time than remained when the request
         // started. Anchoring locally before I/O prevents response latency from
         // extending the Coordinator-owned expiry in the Worker process.
-        let initial_heartbeat_started = lifecycle::ProofStarted::now()?;
+        let initial_heartbeat_started = lifecycle::authority_proof_started()?;
         let initial_heartbeat = lifecycle.observations.snapshot().into_heartbeat(
             1,
             awaken_worker_contract::process_ready_after_startup(
@@ -1357,16 +1351,10 @@ impl WorkerNode {
         let initial = match initial {
             Ok(initial) => initial,
             Err(error) => {
-                let _ = tokio::time::timeout(
-                    startup_timing.request_timeout(),
-                    control.deregister(&lifecycle.identity),
-                )
-                .await;
                 return Err(std::io::Error::other(error).into());
             }
         };
         if initial.mutation != RegistryMutation::Applied {
-            let _ = control.deregister(&lifecycle.identity).await;
             return Err(std::io::Error::other(format!(
                 "initial worker heartbeat rejected: {:?}",
                 initial.mutation
@@ -1385,11 +1373,6 @@ impl WorkerNode {
                 heartbeat_timing.proof_window(),
             )
         {
-            let _ = tokio::time::timeout(
-                startup_timing.request_timeout(),
-                control.deregister(&lifecycle.identity),
-            )
-            .await;
             return Err(
                 std::io::Error::other("sandbox evidence expired before pool admission").into(),
             );
@@ -1398,9 +1381,21 @@ impl WorkerNode {
             .authority
             .apply(initial_heartbeat_started, heartbeat_timing)
         {
-            let _ = control.deregister(&lifecycle.identity).await;
             return Err(error.into());
         }
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((host, lifecycle, heartbeat_timing, environment_proof_started))
+        }).catch_unwind();
+        tokio::pin!(startup);
+        tokio::select! {
+            result = &mut startup => result.map_err(|_| std::io::Error::other(
+                "Worker startup dependency panicked; registration will be withdrawn"
+            ))??,
+            request = &mut shutdown => {
+                request?;
+                return Ok(());
+            }
+        }
+        };
         host.ensure_dispatch_pool();
         let credential_probe = credential_liveness::spawn_probe(
             lifecycle.observations.clone(),
@@ -1504,16 +1499,6 @@ impl WorkerNode {
             )
             .await;
         }
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            control.deregister(&lifecycle.identity),
-        )
-        .await
-        {
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => eprintln!("awaken-worker deregistration failed: {error}"),
-            Err(_) => eprintln!("awaken-worker deregistration exceeded 5s"),
-        }
         shutdown?;
         if authority_lost {
             return Err(std::io::Error::other(
@@ -1521,7 +1506,32 @@ impl WorkerNode {
             )
             .into());
         }
-        Ok(())
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        }.await;
+        let withdrawal = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            control.deregister(&identity),
+        )
+        .await
+        {
+            // Absence or a newer incarnation also proves that this exact
+            // registration cannot retain authority; never touch its replacement.
+            Ok(Ok(
+                RegistryMutation::Applied
+                | RegistryMutation::NotFound
+                | RegistryMutation::StaleIncarnation,
+            )) => Ok(()),
+            Ok(Ok(other)) => Err(format!("worker deregistration rejected: {other:?}")),
+            Ok(Err(error)) => Err(format!("worker deregistration unconfirmed: {error}")),
+            Err(_) => Err("worker deregistration unconfirmed after 5s".to_string()),
+        };
+        if let Err(error) = &withdrawal {
+            eprintln!("awaken-worker {error}");
+        }
+        // Preserve the primary startup/shutdown failure. A successful local
+        // stop cannot be reported as complete when remote withdrawal is unknown.
+        result?;
+        withdrawal.map_err(|error| std::io::Error::other(error).into())
     }
 }
 

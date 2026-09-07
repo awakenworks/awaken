@@ -1515,6 +1515,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-provisioning-contract",
+ "awaken-runtime-contract",
  "nix 0.29.0",
  "rustix 1.1.4",
  "serde",

@@ -6,7 +6,40 @@
 //! Run-claim supervisors share it so the two distinct aggregates cannot drift
 //! into different liveness arithmetic.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// Process-local observation taken before an authority request. The platform
+/// adapter supplies the elapsed clock; this value object performs no clock I/O,
+/// owns no lease, and is deliberately not serializable. Scheduling Instant and
+/// authority elapsed time need not advance together (for example on suspend).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthorityProofStarted {
+    scheduled: Instant,
+    elapsed: Duration,
+}
+
+impl AuthorityProofStarted {
+    #[must_use]
+    pub const fn from_clock_sample(scheduled: Instant, elapsed: Duration) -> Self {
+        Self { scheduled, elapsed }
+    }
+
+    #[must_use]
+    pub const fn scheduled(self) -> Instant {
+        self.scheduled
+    }
+
+    #[must_use]
+    pub const fn elapsed_clock(self) -> Duration {
+        self.elapsed
+    }
+
+    /// Regression is missing evidence, never a zero-latency observation.
+    #[must_use]
+    pub fn elapsed_at(self, now: Self) -> Option<Duration> {
+        now.elapsed.checked_sub(self.elapsed)
+    }
+}
 
 /// Validated timing derived from one positive durable lease TTL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,11 +99,76 @@ impl AuthorityLeaseTiming {
     pub fn remaining_proof_after(self, request_elapsed: Duration) -> Duration {
         self.proof_window.saturating_sub(request_elapsed)
     }
+
+    /// Compose the same timing policy with a request-anchored clock sample.
+    /// Neither a regressed clock nor an exhausted proof grants any lifetime.
+    #[must_use]
+    pub fn remaining_proof_at(
+        self,
+        started: AuthorityProofStarted,
+        now: AuthorityProofStarted,
+    ) -> Option<Duration> {
+        let remaining = self.remaining_proof_after(started.elapsed_at(now)?);
+        (!remaining.is_zero()).then_some(remaining)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proof_observation_uses_elapsed_clock_and_rejects_regression() {
+        // C1 elapsed clock equal/forward/backward; C2 scheduler unchanged/forward.
+        // E1 exact submillisecond elapsed for equal/forward C1, regardless of C2;
+        // E2 None for backward C1, never saturating into renewed authority.
+        // This pure decision table is platform-neutral; the Local process
+        // adapter separately checks that Linux samples the existing BOOTTIME.
+        let scheduled = Instant::now();
+        let start = AuthorityProofStarted::from_clock_sample(scheduled, Duration::from_secs(1));
+        for scheduling in [Duration::ZERO, Duration::from_secs(2)] {
+            for (elapsed, expected) in [
+                (Duration::from_micros(999_999), None),
+                (Duration::from_secs(1), Some(Duration::ZERO)),
+                (
+                    Duration::from_micros(1_019_999),
+                    Some(Duration::from_micros(19_999)),
+                ),
+            ] {
+                let now = AuthorityProofStarted::from_clock_sample(scheduled + scheduling, elapsed);
+                assert_eq!(start.elapsed_at(now), expected);
+                assert_eq!(now.scheduled(), scheduled + scheduling);
+                assert_eq!(now.elapsed_clock(), elapsed);
+            }
+        }
+    }
+
+    #[test]
+    fn anchored_proof_never_grants_latency_expiry_or_clock_regression() {
+        // P1 TTL=30ms yields 20ms proof; P2 elapsed is below/equal/above that
+        // boundary; P3 elapsed clock regresses; P4 scheduler does not advance.
+        // Only P1+below yields the exact remainder. Equal/above/regression deny;
+        // P4 never weakens that decision. No float conversion or upward rounding.
+        let timing = AuthorityLeaseTiming::from_ttl_ms(30);
+        let scheduled = Instant::now();
+        let started = AuthorityProofStarted::from_clock_sample(scheduled, Duration::from_secs(1));
+        for (elapsed_micros, remaining_micros) in [
+            (999_999, None),
+            (1_000_000, Some(20_000)),
+            (1_019_999, Some(1)),
+            (1_020_000, None),
+            (1_020_001, None),
+        ] {
+            let now = AuthorityProofStarted::from_clock_sample(
+                scheduled,
+                Duration::from_micros(elapsed_micros),
+            );
+            assert_eq!(
+                timing.remaining_proof_at(started, now),
+                remaining_micros.map(Duration::from_micros)
+            );
+        }
+    }
 
     #[test]
     fn timing_is_total_and_preserves_a_recovery_margin() {

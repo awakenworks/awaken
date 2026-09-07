@@ -858,6 +858,16 @@ Session registry is added. Linux uses the same suspend-inclusive BOOTTIME source
 as the execution cutoff, retaining submillisecond precision; other platforms
 retain their existing Instant timing and do not gain a supervision claim.
 
+Request-start observations and conservative remaining-time arithmetic now live
+in the existing neutral `authority_lease` value objects. The Local process adapter
+is the single platform sampler and reuses the existing physical cutoff clock on
+Linux; Worker startup and heartbeat both consume it. Observations contain no
+wall-clock value, are not serializable, and confer no ownership independently
+of the existing guarded receipt. This extraction removes the Worker-private
+clock implementation before Session receipt integration; it does not yet fix
+the Session projection's absolute-expiry clock correspondence or qualify a
+direct all-in-one Host's execution authority.
+
 Adjacent cause/effect tests cover the initial/renewal latency boundary,
 irreversible close, clock regression, Linux suspend, callback error/unwind,
 root-lock contention, late complete projection with/without Resources, both
@@ -865,8 +875,14 @@ renewal entrances, and cancellation during a real gated Resource read. A real
 HTTP Worker fixture rejects an aged first receipt before dispatch. The bounded
 `WorkerExecutionAuthority` model composes the existing Session slot/cleanup
 kernel with one root receipt, one outstanding response and a finite boot clock.
-It checks late responses, fresh admission, generation replacement and renewal;
-six guard mutants plus admission/renewal reachability witnesses run in CI.
+It checks late responses, fresh admission, generation replacement and renewal.
+It also admits an invalid response observation before its request start;
+removing that lower-bound guard must violate the independent receipt oracle.
+Seven guard mutants plus admission/renewal/rejected-response reachability
+witnesses run in CI. Adjacent Rust rows W10/W11 cover initial and renewal
+responses and verify that later valid receipts cannot reopen a closed proof.
+One outstanding request and boot time 0..3 exclude response reordering and
+general clock rollback detection from the model's claim.
 Its atomic callback abstraction does not prove arbitrary callback duration,
 physical GO/cutoff refresh, OS clock correctness, Rust refinement or cleanup
 liveness.
@@ -909,9 +925,31 @@ refresh, Worker closure and exact tree stop while preserving File bytes.
 Callback elapsed time and OS enforcement remain separate deadline/boundary
 obligations; this is not Rust refinement or unbounded distributed liveness.
 The opt-in deployment/probe installation described above is now production-wired.
-Startup still follows the existing panic-style composition policy: a probe
-failure after Worker registration has no demonstrated immediate deregistration
-path. Session lease wall-clock/monotonic correspondence, terminal Repository
+Host composition now returns expected configuration/probe errors through its
+existing API. The Worker registration owner consumes startup (including dependency
+unwind or cooperative shutdown), then owns one bounded deregistration on every
+returned lifecycle path. Initial provider readiness has a five-second bound;
+claim polling starts only after successful local acceptance of the first Ready
+receipt. Cancellation may follow remote Ready delivery but cannot revive the
+dropped local startup future. Startup creates no heartbeat/probe/warmup tasks.
+The withdrawal result distinguishes applied/absent/replaced exact identity from
+rejection or unknown response; unknown withdrawal cannot turn an otherwise
+successful local stop into reported completion. The original startup failure
+remains primary when withdrawal also fails. There is no detached cleanup task
+or second registry owner; caller abort, process death and panic-abort builds
+still require lease expiry and physical process-cutoff qualification.
+
+`WorkerDrain` extends its existing admission/registry ordering with startup,
+separate initial Ready delivery/acceptance and one withdrawal. Its finite model
+checks failed-startup admission, single withdrawal, receipt-qualified remote
+death and eventual local return under owner/timeout polling fairness. Unknown
+responses are not proof of remote cleanup. Guard/liveness mutants and four
+reachability witnesses run in the existing lifecycle mutation gate. Real HTTP
+decision tables cover factory errors/unwinds, probe errors/unwinds/timeouts,
+shutdown success/error, initial receipt cancellation/expiry and withdrawal
+receipt/error/timeout outcomes. This is not Rust or transport refinement.
+
+Session lease wall-clock/monotonic correspondence, terminal Repository
 crash/retry integration, reboot recovery and real cross-platform/cloud
 qualification remain required before advertising full supervision.
 

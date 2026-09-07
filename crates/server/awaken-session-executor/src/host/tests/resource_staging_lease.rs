@@ -560,6 +560,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
             crate::session_environment::UnusedHandExecutorFactory,
         )))
         .await
+        .unwrap()
         .with_execution_authority(gate.clone());
     let lease = awaken_session_contract::SessionRealizationLease {
         owner: "worker".into(),
