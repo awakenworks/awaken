@@ -56,6 +56,7 @@ impl AnyDispatchStore {
     }
 
     /// Open an in-memory SQLite backend for tests and scenario fixtures.
+    #[cfg(feature = "durable")]
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_sqlite_in_memory() -> Result<Self, String> {
         SqliteDispatchStore::open_in_memory()
