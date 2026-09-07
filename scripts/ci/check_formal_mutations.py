@@ -21,6 +21,7 @@ import unittest
 from unittest.mock import patch
 
 from formal_model_mutation_runner import check_tlc_model_mutations
+from formal_memory_mutations import check_memory_invalidation_model_mutants, check_memory_participant_model_mutants
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -493,6 +494,7 @@ def main() -> None:
     model_selection.add_argument("--background-completion-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--sandbox-control-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--memory-invalidation-model-mutants", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--memory-participant-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--audit-commit-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--effect-retirement-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--credential-removal-model-mutant", type=Path, metavar="TLC_JAR")
@@ -507,6 +509,9 @@ def main() -> None:
     model_selection.add_argument("--local-recovery-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--checkpoint-recovery-model-mutants", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
+    if arguments.memory_participant_model_mutants is not None:
+        check_memory_participant_model_mutants(arguments.memory_participant_model_mutants)
+        return
     if arguments.checkpoint_recovery_model_mutants is not None:
         check_checkpoint_recovery_model_mutants(arguments.checkpoint_recovery_model_mutants)
         return
@@ -1353,32 +1358,6 @@ def check_config_cas_model_mutant(tlc_jar: Path) -> None:
     print("Config CAS mutation score: 2/2 killed (absent-row predicate, exhaustion)")
 
 
-def check_memory_invalidation_model_mutants(tlc_jar: Path) -> None:
-    # MI1 missing stop; MI2 return before exit; MI3 detached rather than joined;
-    # MI4 stop a peer; MI5 cleanup cannot finish. The real baseline must pass,
-    # and exact invariants/liveness must fail (never parser/timeout credit).
-    source = (ROOT / "formal/tla/MemoryInvalidationLifecycle.tla").read_text()
-    config = (ROOT / "formal/tla/MemoryInvalidationLifecycle.cfg").read_text()
-    header = config.split("INVARIANTS\n", 1)[0]
-    mutations = []
-    for anchor, broken, oracle in [
-        ("stop' = [stop EXCEPT ![i] = TRUE]", "stop' = stop", "StoppingRequestsStop"),
-        ('/\\ task[i] = "Exited"\n    /\\ phase\'', '/\\ TRUE\n    /\\ phase\'', "ReturnRequiresJoin"),
-        ("joined' = [joined EXCEPT ![i] = TRUE]", "joined' = joined", "ReturnRequiresJoin"),
-        ("stop' = [stop EXCEPT ![i] = TRUE]", "stop' = [j \\in Owners |-> TRUE]", "NoPeerStop"),
-        ('Finish(i) ==\n    /\\ phase[i] = "Stopping"',
-         'Finish(i) ==\n    /\\ FALSE\n    /\\ phase[i] = "Stopping"', "temporal:CleanupEventuallyReturns"),
-    ]:
-        if source.count(anchor) != 1:
-            raise SystemExit(f"Memory invalidation mutation anchor drifted: {oracle}")
-        kind = "PROPERTIES" if oracle.startswith("temporal:") else "INVARIANTS"
-        mutations.append((source.replace(anchor, broken),
-                          header + f"{kind} {oracle.removeprefix('temporal:')}\n", oracle))
-    for witness in ("NoFailedSetupReturned", "NoSuccessfulMountReturned",
-                    "NoPeerMountsActive", "NoEarlyExitReached"):
-        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
-    check_tlc_model_mutations(tlc_jar, "MemoryInvalidationLifecycle", source, config, mutations)
-    print("Memory invalidation mutation score: 5/5 killed; 4 lifecycle schedules reachable")
 
 
 def check_sandbox_control_model_mutants(tlc_jar: Path) -> None:

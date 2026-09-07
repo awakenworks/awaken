@@ -743,6 +743,11 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     formal/tla/MemoryInvalidationLifecycle.tla
   python3 scripts/ci/check_formal_mutations.py --memory-invalidation-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/memory-participant-ownership" \
+    -config formal/tla/MemoryParticipantOwnership.cfg \
+    formal/tla/MemoryParticipantOwnership.tla
+  python3 scripts/ci/check_formal_mutations.py --memory-participant-model-mutants "$tla_jar"
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/eval-evidence" \
     -config formal/tla/EvalEvidence.cfg formal/tla/EvalEvidence.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \

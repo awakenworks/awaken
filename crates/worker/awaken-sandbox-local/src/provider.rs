@@ -127,6 +127,7 @@ pub struct LocalProvider {
     /// Optional memory-store realizer (FUSE / copy). Absent → a `MemoryStore` mount
     /// fails loud rather than being faked as an empty file (ADR-0053 item 1).
     memory_mounter: Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
+    memory_mounts: crate::MemoryMountRegistry,
 }
 
 impl LocalProvider {
@@ -141,6 +142,7 @@ impl LocalProvider {
             file_store: None,
             secret_broker: Arc::new(std::sync::RwLock::new(None)),
             memory_mounter: Arc::new(std::sync::RwLock::new(None)),
+            memory_mounts: crate::MemoryMountRegistry::default(),
         }
     }
 
@@ -395,10 +397,11 @@ impl LocalProvider {
                 .collect::<Result<Vec<_>, _>>()?;
             let memory_mounts = crate::replay_memory_mount_guards(
                 &self.memory_mounter,
+                sandbox.memory_mounts.clone(),
                 spec,
                 &realized,
                 &host_paths,
-                || realization_guard.validate_before_mutation(),
+                || realization_guard.validate_memory_replay(),
             )
             .await?;
             sandbox.realized = realized;
@@ -406,7 +409,11 @@ impl LocalProvider {
             sandbox.realization = match realization_guard.complete(&receipt) {
                 Ok(realization) => realization,
                 Err(cause) => {
-                    let teardown = crate::compensate_memory_mounts(memory_mounts).await;
+                    let teardown = memory_mounts
+                        .lock()
+                        .await
+                        .release_unconfirmed(|| realization_guard.validate_memory_replay())
+                        .await;
                     return Err(match teardown {
                         Ok(()) => cause,
                         Err(teardown) => err(format!(
@@ -415,13 +422,15 @@ impl LocalProvider {
                     });
                 }
             };
-            *sandbox.memory_mounts.lock().await = memory_mounts;
+            sandbox.memory_mounts = memory_mounts;
             self.select_execution_boundary(&sandbox)?;
             return Ok(sandbox);
         }
         // A retry must shred credential bytes left by the previous interrupted
         // attempt before the marker guard clears that exact root. Missing paths
         // are idempotent; any shred fault retains the Creating/Recreating evidence.
+        crate::memory_mount::prepare_memory_before_root(&sandbox.memory_mounts, &realization_guard)
+            .await?;
         if realization_guard.is_incomplete() {
             crate::shred_secret_paths_at(
                 &sandbox.root,
@@ -481,7 +490,10 @@ impl LocalProvider {
         let receipt = match realization {
             Ok(receipt) => receipt,
             Err(cause) => {
-                let teardown = sandbox.compensate_failed_creation_memory_mounts().await;
+                let teardown = crate::release_memory_mounts(&sandbox.memory_mounts, || {
+                    realization_guard.validate_before_mutation()
+                })
+                .await;
                 let shredding = if realization_guard.is_incomplete() {
                     crate::shred_secret_paths_at(
                         &sandbox.root,
@@ -515,7 +527,10 @@ impl LocalProvider {
         sandbox.realization = match realization_guard.complete(&receipt) {
             Ok(realization) => realization,
             Err(cause) => {
-                let teardown = sandbox.compensate_failed_creation_memory_mounts().await;
+                let teardown = crate::release_memory_mounts(&sandbox.memory_mounts, || {
+                    realization_guard.validate_before_mutation()
+                })
+                .await;
                 let shredding = if realization_guard.is_incomplete() {
                     crate::shred_secret_paths_at(
                         &sandbox.root,
@@ -546,6 +561,7 @@ impl LocalProvider {
                 return Err(cause);
             }
         };
+        sandbox.memory_mounts.lock().await.confirm_all();
         self.select_execution_boundary(&sandbox)?;
         Ok(sandbox)
     }
@@ -681,6 +697,7 @@ impl LocalProvider {
         // its root/path projection and wraps the returned physical participant.
         let terminal = crate::prepare_terminal_memory_replay(
             &self.memory_mounter,
+            sandbox.memory_mounts.clone(),
             sandbox.root.root(),
             &fingerprint,
             spec,
@@ -717,7 +734,7 @@ impl LocalProvider {
             .lock()
             .expect("owned paths lock poisoned") = owned_paths;
         sandbox.memory_materializations = materializations;
-        *sandbox.memory_mounts.get_mut() = memory_mounts;
+        sandbox.memory_mounts = memory_mounts;
         Ok(Some(sandbox))
     }
 
@@ -796,6 +813,7 @@ impl LocalProvider {
                 memory_mounts,
             } = crate::prepare_adoption_memory_replay(
                 &self.memory_mounter,
+                sandbox.memory_mounts.clone(),
                 sandbox.root.root(),
                 current_evidence.as_ref(),
                 effect_fence,
@@ -808,7 +826,7 @@ impl LocalProvider {
             .await?;
             sandbox.realized = realized;
             sandbox.memory_materializations = materializations;
-            *sandbox.memory_mounts.lock().await = memory_mounts;
+            sandbox.memory_mounts = memory_mounts;
         } else {
             sandbox.memory_materializations = handle
                 .memory_materializations()?
@@ -829,7 +847,7 @@ impl LocalProvider {
         root: &IsolatedRoot,
         root_identity: awaken_sandbox_fs::DirectoryIdentity,
         req: &pc::MountRequirement,
-        retained_mounts: &tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
+        retained_mounts: &tokio::sync::Mutex<crate::MemoryMountState>,
         mutation_guard: &crate::realization_marker::ProviderCreationGuard,
     ) -> Result<(pc::RealizedMount, Option<pc::MemoryMaterializationEvidence>), pc::SandboxError>
     {
@@ -840,21 +858,12 @@ impl LocalProvider {
         // with an empty file that misleads the agent into thinking it has a store.
         if matches!(&req.source, pc::MountSource::MemoryStore { .. }) {
             mutation_guard.validate_before_mutation()?;
-            let mut acquired = Vec::new();
+            let mut retained = retained_mounts.lock().await;
+            mutation_guard.validate_before_mutation()?;
             let mounted =
-                crate::mount_memory_requirement(&self.memory_mounter, req, &host, &mut acquired)
-                    .await;
-            let mounted = match mounted {
-                Ok(mounted) => {
-                    retained_mounts.lock().await.extend(acquired);
-                    mutation_guard.validate_before_mutation()?;
-                    mounted
-                }
-                Err(cause) => {
-                    retained_mounts.lock().await.extend(acquired);
-                    return Err(cause);
-                }
-            };
+                crate::mount_memory_requirement(&self.memory_mounter, req, &host, &mut retained)
+                    .await?;
+            mutation_guard.validate_before_mutation()?;
             return mounted.ok_or_else(|| {
                 err("Memory requirement did not reach the canonical Memory mount adapter")
             });
@@ -945,6 +954,7 @@ impl LocalProvider {
         dir: PathBuf,
         adopted_handle: Option<pc::SandboxHandle>,
     ) -> LocalSandbox {
+        let memory_mounts = self.memory_mounts.owner(&dir);
         LocalSandbox {
             id: id.to_string(),
             root: IsolatedRoot::new(dir),
@@ -956,7 +966,7 @@ impl LocalProvider {
             secret_broker: self.secret_broker.clone(),
             realized: Vec::new(),
             secret_paths: Vec::new(),
-            memory_mounts: tokio::sync::Mutex::new(Vec::new()),
+            memory_mounts,
             memory_materializations: Vec::new(),
             memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             continuation_excluded_paths: Vec::new(),
@@ -1140,7 +1150,7 @@ pub struct LocalSandbox {
     secret_paths: Vec<PathBuf>,
     /// Live memory-store mounts (FUSE / copy), torn down (unmount / harvest) at
     /// [`dispose`](pc::Sandbox::dispose) before the sandbox directory is reaped.
-    memory_mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
+    memory_mounts: crate::MemoryMountOwner,
     /// Canonical durable heads captured from copy-backed mounts at create, or
     /// recovered verbatim from a validated current handle at adoption.
     memory_materializations: Vec<pc::MemoryMaterializationEvidence>,
@@ -1242,18 +1252,6 @@ impl LocalSandbox {
     /// copy back to its store. Drains the guard list so a later dispose is a no-op.
     pub async fn release_memory_mounts(&self) -> Result<(), pc::SandboxError> {
         crate::release_memory_mounts(&self.memory_mounts, || Ok(())).await
-    }
-
-    /// Creation failure has no live Sandbox owner to retain a failed teardown.
-    /// Transfer the complete guard set into the shared all-or-leak compensation
-    /// before this temporary wrapper can drop; normal/terminal disposal keeps
-    /// using the retryable `release_memory_mounts` path above.
-    async fn compensate_failed_creation_memory_mounts(&self) -> Result<(), pc::SandboxError> {
-        let mounts = {
-            let mut retained = self.memory_mounts.lock().await;
-            std::mem::take(&mut *retained)
-        };
-        crate::compensate_memory_mounts(mounts).await
     }
 
     /// Remove only the runtime-owned resource projection, preserving the rest of
@@ -1894,4 +1892,4 @@ mod shred_tests;
 /// on a `LocalSandbox` built through the pc `SandboxProvider` path.
 #[cfg(test)]
 #[path = "provider/workdir_helper_tests.rs"]
-mod workdir_helper_tests;
+pub(crate) mod workdir_helper_tests;

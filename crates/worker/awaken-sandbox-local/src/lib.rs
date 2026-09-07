@@ -27,10 +27,12 @@ use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutionTarget, Too
 
 #[path = "namespace/memory_mount.rs"]
 mod memory_mount;
+mod memory_mount_owner;
 pub(crate) use memory_mount::{
-    AdoptionMemoryReplay, TerminalMemoryReplay, compensate_memory_mounts, mount_memory_requirement,
+    AdoptionMemoryReplay, TerminalMemoryReplay, mount_memory_requirement,
     prepare_adoption_memory_replay, prepare_terminal_memory_replay, replay_memory_mount_guards,
 };
+pub(crate) use memory_mount_owner::{MemoryMountOwner, MemoryMountRegistry, MemoryMountState};
 
 /// Validate and project the one provider-neutral Ready receipt against the
 /// frozen effective spec. Local and Namespace intentionally share this code so
@@ -209,7 +211,7 @@ pub(crate) fn terminal_copy_materializations(
 }
 
 pub(crate) async fn teardown_memory_mounts(
-    mounts: &[Box<dyn awaken_provisioning_contract::MemoryMount>],
+    mounts: &[&dyn awaken_provisioning_contract::MemoryMount],
     mut authorize: impl FnMut() -> Result<(), awaken_provisioning_contract::SandboxError>,
 ) -> Result<(), awaken_provisioning_contract::SandboxError> {
     let mut failure = None;
@@ -234,6 +236,12 @@ mod memory_mount_release_tests {
 
     use async_trait::async_trait;
     use awaken_provisioning_contract as pc;
+
+    fn retained(
+        mounts: Vec<Box<dyn pc::MemoryMount>>,
+    ) -> tokio::sync::Mutex<crate::MemoryMountState> {
+        tokio::sync::Mutex::new(mounts.into())
+    }
 
     struct CountedMount {
         calls: Arc<AtomicUsize>,
@@ -299,21 +307,20 @@ mod memory_mount_release_tests {
         // marker removal in both Local and Namespace providers.
         let successful_calls = Arc::new(AtomicUsize::new(0));
         let retry_calls = Arc::new(AtomicUsize::new(0));
-        let mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>> =
-            tokio::sync::Mutex::new(vec![
-                Box::new(CountedMount {
-                    calls: successful_calls.clone(),
-                    drops: Arc::new(AtomicUsize::new(0)),
-                    fail_first: false,
-                    realization: pc::Realization::Copy,
-                }),
-                Box::new(CountedMount {
-                    calls: retry_calls.clone(),
-                    drops: Arc::new(AtomicUsize::new(0)),
-                    fail_first: true,
-                    realization: pc::Realization::Copy,
-                }),
-            ]);
+        let mounts = retained(vec![
+            Box::new(CountedMount {
+                calls: successful_calls.clone(),
+                drops: Arc::new(AtomicUsize::new(0)),
+                fail_first: false,
+                realization: pc::Realization::Copy,
+            }),
+            Box::new(CountedMount {
+                calls: retry_calls.clone(),
+                drops: Arc::new(AtomicUsize::new(0)),
+                fail_first: true,
+                realization: pc::Realization::Copy,
+            }),
+        ]);
 
         assert!(
             super::release_memory_mounts(&mounts, || Ok(()))
@@ -343,20 +350,19 @@ mod memory_mount_release_tests {
             for denied in (0..=count).map(Some).chain(std::iter::once(None)) {
                 let calls: Vec<_> = (0..count).map(|_| Arc::new(AtomicUsize::new(0))).collect();
                 let drops = Arc::new(AtomicUsize::new(0));
-                let mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>> =
-                    tokio::sync::Mutex::new(
-                        calls
-                            .iter()
-                            .map(|calls| {
-                                Box::new(CountedMount {
-                                    calls: calls.clone(),
-                                    drops: drops.clone(),
-                                    fail_first: false,
-                                    realization: pc::Realization::Fuse,
-                                }) as Box<dyn pc::MemoryMount>
-                            })
-                            .collect(),
-                    );
+                let mounts = retained(
+                    calls
+                        .iter()
+                        .map(|calls| {
+                            Box::new(CountedMount {
+                                calls: calls.clone(),
+                                drops: drops.clone(),
+                                fail_first: false,
+                                realization: pc::Realization::Fuse,
+                            }) as Box<dyn pc::MemoryMount>
+                        })
+                        .collect(),
+                );
                 let mut checks = 0;
                 let result = super::release_memory_mounts(&mounts, || {
                     let current = checks;
@@ -389,12 +395,12 @@ mod memory_mount_release_tests {
     }
 
     #[tokio::test]
-    async fn temporary_compensation_failure_never_drops_the_only_guard_set() {
+    async fn failed_compensation_survives_wrapper_drop_and_retries_the_same_guard_set() {
         // Temporary-compensation decision table: C1 every teardown is Ok / at
         // least one is Err; E1 all-Ok permits normal guard drop; E2 any Err
-        // returns failure and retains the complete ownerless set for process
-        // lifetime. This test owns E2; the retryable Mutex test above owns the
-        // distinct case where a Sandbox still exists to retain and retry E2.
+        // returns failure and retains the complete set in the Provider. E3
+        // dropping the temporary wrapper cannot lose that set; a fresh lookup
+        // retries the original guards and all-Ok drops each exactly once.
         let successful_calls = Arc::new(AtomicUsize::new(0));
         let failed_calls = Arc::new(AtomicUsize::new(0));
         let successful_drops = Arc::new(AtomicUsize::new(0));
@@ -414,7 +420,17 @@ mod memory_mount_release_tests {
             }),
         ];
 
-        assert!(super::compensate_memory_mounts(mounts).await.is_err(), "E2");
+        let root = tempfile::tempdir().unwrap();
+        let registry = crate::MemoryMountRegistry::default();
+        let owner = registry.owner(root.path());
+        *owner.lock().await = mounts.into();
+        assert!(
+            super::release_memory_mounts(&owner, || Ok(()))
+                .await
+                .is_err(),
+            "E2"
+        );
+        drop(owner);
         assert_eq!(successful_calls.load(Ordering::SeqCst), 1, "E2 all tried");
         assert_eq!(
             failed_calls.load(Ordering::SeqCst),
@@ -431,6 +447,22 @@ mod memory_mount_release_tests {
             0,
             "E2 full set retained"
         );
+        let retry = registry.owner(root.path());
+        super::release_memory_mounts(&retry, || Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(
+            successful_calls.load(Ordering::SeqCst),
+            2,
+            "E3 same successful guard"
+        );
+        assert_eq!(
+            failed_calls.load(Ordering::SeqCst),
+            2,
+            "E3 same failed guard"
+        );
+        assert_eq!(successful_drops.load(Ordering::SeqCst), 1, "E3");
+        assert_eq!(failed_drops.load(Ordering::SeqCst), 1, "E3");
     }
 
     #[tokio::test]
@@ -438,9 +470,9 @@ mod memory_mount_release_tests {
         // Replay decision table: C1 the held lifecycle validator is exact
         // before mount and remains exact / changes while the external mount is
         // in flight; C2 compensation succeeds/fails. R1 stable+exact publishes
-        // the guard; R2 post-mount drift rejects and compensates; R3 R2+failed
-        // teardown reports both causes and retains the only guard rather than
-        // dropping it. This row proves the second validation is not cosmetic.
+        // the guard; R2 post-mount drift rejects with zero unauthorized teardown;
+        // R3 a newly admitted retry may compensate, but a teardown failure still
+        // retains the same guard. This row proves post-await admission is real.
         let mount_calls = Arc::new(AtomicUsize::new(0));
         let teardown_calls = Arc::new(AtomicUsize::new(0));
         let drops = Arc::new(AtomicUsize::new(0));
@@ -488,14 +520,16 @@ mod memory_mount_release_tests {
             content_hash: None,
         }];
         let root = tempfile::tempdir().unwrap();
+        let registry = crate::MemoryMountRegistry::default();
         let validations = AtomicUsize::new(0);
         let error = match super::replay_memory_mount_guards(
             &mounter,
+            registry.owner(root.path()),
             &spec,
             &realized,
             &[root.path().join("memory")],
             || {
-                if validations.fetch_add(1, Ordering::SeqCst) == 0 {
+                if validations.fetch_add(1, Ordering::SeqCst) < 2 {
                     Ok(())
                 } else {
                     Err(pc::SandboxError::new("post-mount fence changed"))
@@ -513,6 +547,18 @@ mod memory_mount_release_tests {
             "R3",
         );
         assert_eq!(mount_calls.load(Ordering::SeqCst), 1, "R2");
+        assert_eq!(
+            teardown_calls.load(Ordering::SeqCst),
+            0,
+            "R2 no lost-authority teardown"
+        );
+        let retry = registry.owner(root.path());
+        assert!(
+            super::release_memory_mounts(&retry, || Ok(()))
+                .await
+                .is_err(),
+            "R3"
+        );
         assert_eq!(teardown_calls.load(Ordering::SeqCst), 1, "R3");
         assert_eq!(drops.load(Ordering::SeqCst), 0, "R3 retained");
     }
@@ -542,13 +588,12 @@ mod memory_mount_release_tests {
             let ack = pc::MemoryReconciliationAck::default();
             let drops = Arc::new(AtomicUsize::new(0));
             let teardowns = Arc::new(AtomicUsize::new(0));
-            let mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>> =
-                tokio::sync::Mutex::new(vec![Box::new(CountedMount {
-                    calls: teardowns.clone(),
-                    drops: drops.clone(),
-                    fail_first: false,
-                    realization: pc::Realization::Copy,
-                })]);
+            let mounts = retained(vec![Box::new(CountedMount {
+                calls: teardowns.clone(),
+                drops: drops.clone(),
+                fail_first: false,
+                realization: pc::Realization::Copy,
+            })]);
             let locked = mounts.lock().await;
             let mut pending = Box::pin(super::acknowledge_memory_reconciliation(
                 &ack,
@@ -658,27 +703,26 @@ mod memory_mount_release_tests {
         let copy_drops = Arc::new(AtomicUsize::new(0));
         let fuse_drops = Arc::new(AtomicUsize::new(0));
         let teardown_calls = Arc::new(AtomicUsize::new(0));
-        let mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>> =
-            tokio::sync::Mutex::new(vec![
-                Box::new(CountedMount {
-                    calls: teardown_calls.clone(),
-                    drops: copy_drops.clone(),
-                    fail_first: false,
-                    realization: pc::Realization::Copy,
-                }),
-                Box::new(CountedMount {
-                    calls: teardown_calls.clone(),
-                    drops: fuse_drops.clone(),
-                    fail_first: false,
-                    realization: pc::Realization::Fuse,
-                }),
-                Box::new(CountedMount {
-                    calls: teardown_calls.clone(),
-                    drops: copy_drops.clone(),
-                    fail_first: false,
-                    realization: pc::Realization::Copy,
-                }),
-            ]);
+        let mounts = retained(vec![
+            Box::new(CountedMount {
+                calls: teardown_calls.clone(),
+                drops: copy_drops.clone(),
+                fail_first: false,
+                realization: pc::Realization::Copy,
+            }),
+            Box::new(CountedMount {
+                calls: teardown_calls.clone(),
+                drops: fuse_drops.clone(),
+                fail_first: false,
+                realization: pc::Realization::Fuse,
+            }),
+            Box::new(CountedMount {
+                calls: teardown_calls.clone(),
+                drops: copy_drops.clone(),
+                fail_first: false,
+                realization: pc::Realization::Copy,
+            }),
+        ]);
         let ack = pc::MemoryReconciliationAck::default();
         let live =
             pc::SandboxEffectFence::new("terminal", "owner", "runtime", 2, u64::MAX).unwrap();
@@ -820,13 +864,11 @@ mod memory_mount_release_tests {
 /// succeeds, so a partial transport/unmount failure remains retryable and can
 /// never be converted into successful root deletion.
 pub(crate) async fn release_memory_mounts(
-    mounts: &tokio::sync::Mutex<Vec<Box<dyn awaken_provisioning_contract::MemoryMount>>>,
+    mounts: &tokio::sync::Mutex<MemoryMountState>,
     authorize: impl FnMut() -> Result<(), awaken_provisioning_contract::SandboxError>,
 ) -> Result<(), awaken_provisioning_contract::SandboxError> {
     let mut retained = mounts.lock().await;
-    teardown_memory_mounts(&retained, authorize).await?;
-    retained.clear();
-    Ok(())
+    retained.release(authorize).await
 }
 
 /// Serialize the provider's complete Copy-guard snapshot with the shared
@@ -835,7 +877,7 @@ pub(crate) async fn release_memory_mounts(
 /// evidence atomically in the same lock order.
 pub(crate) async fn acknowledge_memory_reconciliation(
     acknowledgement: &awaken_provisioning_contract::MemoryReconciliationAck,
-    mounts: &tokio::sync::Mutex<Vec<Box<dyn awaken_provisioning_contract::MemoryMount>>>,
+    mounts: &tokio::sync::Mutex<MemoryMountState>,
     effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
     authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
     supplied_materializations: &[awaken_provisioning_contract::MemoryMaterializationEvidence],
@@ -845,8 +887,6 @@ pub(crate) async fn acknowledge_memory_reconciliation(
     >,
     authorize: impl FnOnce() -> Result<(), awaken_provisioning_contract::SandboxError>,
 ) -> Result<(), awaken_provisioning_contract::SandboxError> {
-    use awaken_provisioning_contract as pc;
-
     let mut retained = mounts.lock().await;
     let expected_materializations = expected_materializations()?;
     acknowledgement.acknowledge(
@@ -856,8 +896,7 @@ pub(crate) async fn acknowledge_memory_reconciliation(
         supplied_materializations,
         || {
             authorize()?;
-            retained.retain(|mount| mount.realization() != pc::Realization::Copy);
-            Ok(())
+            retained.acknowledge_copy_reconciliation()
         },
     )
 }

@@ -577,7 +577,12 @@ mod tests {
                 let before = socket_identity(&socket).ok();
                 let result = bind_namespace_control_listener(&socket).await;
                 if matches!(state, "absent" | "stale") {
-                    let (listener, identity) = result.unwrap();
+                    let (listener, identity) = result.unwrap_or_else(|error| {
+                        panic!(
+                            "N11 {length}/{state}: {error:?}; before={before:?}; after={:?}",
+                            socket_identity(&socket)
+                        )
+                    });
                     let _client = tokio::net::UnixStream::connect(address.path())
                         .await
                         .unwrap();

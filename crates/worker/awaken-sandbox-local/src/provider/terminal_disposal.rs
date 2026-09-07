@@ -75,7 +75,7 @@ pub(crate) fn prepare_terminal_disposal(
 /// credentials, remove the exact root and publish Removed. Only success forgets
 /// the participant; no take/restore compensation path owns a second lifecycle.
 pub(crate) async fn dispose_terminal_realization(
-    memory_mounts: &tokio::sync::Mutex<Vec<Box<dyn awaken_provisioning_contract::MemoryMount>>>,
+    memory_mounts: &tokio::sync::Mutex<crate::MemoryMountState>,
     sandbox_root: &Path,
     secret_paths: &[PathBuf],
     terminal_removal: &tokio::sync::Mutex<Option<realization_marker::RemovalGuard>>,

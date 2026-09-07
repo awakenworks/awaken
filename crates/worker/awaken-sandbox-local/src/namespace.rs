@@ -362,6 +362,7 @@ pub struct NamespaceProvider {
     /// without `/dev/fuse`: the store is materialized to files that bind in, harvested on
     /// dispose. The FUSE-preferring mounter degrades to copy automatically off `/dev/fuse`.
     memory_mounter: Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
+    memory_mounts: crate::MemoryMountRegistry,
 }
 
 impl NamespaceProvider {
@@ -385,6 +386,7 @@ impl NamespaceProvider {
             file_store: None,
             secret_broker: Arc::new(std::sync::RwLock::new(None)),
             memory_mounter: Arc::new(std::sync::RwLock::new(None)),
+            memory_mounts: crate::MemoryMountRegistry::default(),
         }
     }
 
@@ -479,7 +481,7 @@ impl NamespaceProvider {
         root: &IsolatedRoot,
         host_workspace: &std::path::Path,
         spec: &pc::SandboxSpec,
-        memory_mounts: &mut Vec<Box<dyn pc::MemoryMount>>,
+        memory_mounts: &mut crate::MemoryMountState,
         memory_materializations: &mut Vec<pc::MemoryMaterializationEvidence>,
         mutation_guard: &crate::realization_marker::ProviderCreationGuard,
     ) -> Result<(Vec<RenderMount>, Vec<pc::RealizedMount>), pc::SandboxError> {
@@ -769,6 +771,7 @@ impl NamespaceProvider {
         let base_env = spec.env.clone();
 
         let raw_root = crate::sandbox_dir(&self.base, &spec.scope);
+        let memory_mounts = self.memory_mounts.owner(&raw_root);
         let realization_fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
         let mut realization_guard = match effect_fence {
             Some(effect_fence) => crate::realization_marker::ProviderCreationGuard::Current(
@@ -837,10 +840,11 @@ impl NamespaceProvider {
                 .collect::<Vec<_>>();
             let memory_mounts = crate::replay_memory_mount_guards(
                 &self.memory_mounter,
+                memory_mounts,
                 spec,
                 &realized,
                 &host_paths,
-                || realization_guard.validate_before_mutation(),
+                || realization_guard.validate_memory_replay(),
             )
             .await?;
             let control_directory = layout
@@ -850,7 +854,11 @@ impl NamespaceProvider {
             let realization = match realization_guard.complete(&receipt) {
                 Ok(realization) => realization,
                 Err(cause) => {
-                    let teardown = crate::compensate_memory_mounts(memory_mounts).await;
+                    let teardown = memory_mounts
+                        .lock()
+                        .await
+                        .release_unconfirmed(|| realization_guard.validate_memory_replay())
+                        .await;
                     return Err(match teardown {
                         Ok(()) => cause,
                         Err(teardown) => err(format!(
@@ -876,7 +884,7 @@ impl NamespaceProvider {
                 layout: std::sync::RwLock::new(layout),
                 realized,
                 secret_paths,
-                memory_mounts: tokio::sync::Mutex::new(memory_mounts),
+                memory_mounts,
                 memory_materializations: std::sync::Mutex::new(memory_materializations),
                 memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
                 memory_mounter: self.memory_mounter.clone(),
@@ -891,6 +899,7 @@ impl NamespaceProvider {
                 adopted_handle: None,
             });
         }
+        crate::memory_mount::prepare_memory_before_root(&memory_mounts, &realization_guard).await?;
         if realization_guard.is_incomplete() {
             crate::shred_secret_paths_at(
                 &raw_isolated_root,
@@ -899,7 +908,7 @@ impl NamespaceProvider {
             )?;
         }
         realization_guard.prepare_root()?;
-        let mut memory_mounts = Vec::new();
+        let mut memory_state = memory_mounts.lock().await;
         let mut memory_materializations = Vec::new();
         let realization = async {
             // `/var` is a symlink to `/private/var` on macOS. Seatbelt evaluates some
@@ -947,7 +956,7 @@ impl NamespaceProvider {
                     &root,
                     &host_workspace,
                     spec,
-                    &mut memory_mounts,
+                    &mut memory_state,
                     &mut memory_materializations,
                     &realization_guard,
                 )
@@ -987,8 +996,9 @@ impl NamespaceProvider {
         ) = match realization {
             Ok(realization) => realization,
             Err(cause) => {
-                let teardown =
-                    crate::compensate_memory_mounts(std::mem::take(&mut memory_mounts)).await;
+                let teardown = memory_state
+                    .release(|| realization_guard.validate_before_mutation())
+                    .await;
                 let shredding = if realization_guard.is_incomplete() {
                     crate::shred_secret_paths_at(
                         &raw_isolated_root,
@@ -1022,8 +1032,9 @@ impl NamespaceProvider {
         let realization = match realization_guard.complete(&receipt) {
             Ok(realization) => realization,
             Err(cause) => {
-                let teardown =
-                    crate::compensate_memory_mounts(std::mem::take(&mut memory_mounts)).await;
+                let teardown = memory_state
+                    .release(|| realization_guard.validate_before_mutation())
+                    .await;
                 let shredding = if realization_guard.is_incomplete() {
                     crate::shred_secret_paths_at(
                         &raw_isolated_root,
@@ -1055,6 +1066,8 @@ impl NamespaceProvider {
             }
         };
 
+        memory_state.confirm_all();
+        drop(memory_state);
         Ok(NamespaceSandbox {
             id: spec.scope.clone(),
             realization_root: raw_root,
@@ -1072,7 +1085,7 @@ impl NamespaceProvider {
             layout: std::sync::RwLock::new(layout),
             realized,
             secret_paths,
-            memory_mounts: tokio::sync::Mutex::new(memory_mounts),
+            memory_mounts,
             memory_materializations: std::sync::Mutex::new(memory_materializations),
             memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             memory_mounter: self.memory_mounter.clone(),
@@ -1182,6 +1195,7 @@ impl NamespaceProvider {
         // supplies its root/path projection and wraps the returned participant.
         let terminal = crate::prepare_terminal_memory_replay(
             &self.memory_mounter,
+            self.memory_mounts.owner(&raw_root),
             &raw_root,
             &fingerprint,
             spec,
@@ -1226,7 +1240,7 @@ impl NamespaceProvider {
             layout: std::sync::RwLock::new(layout),
             realized,
             secret_paths,
-            memory_mounts: tokio::sync::Mutex::new(memory_mounts),
+            memory_mounts,
             memory_materializations: std::sync::Mutex::new(materializations),
             memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             memory_mounter: self.memory_mounter.clone(),
@@ -1337,6 +1351,7 @@ impl NamespaceProvider {
                 memory_mounts,
             } = crate::prepare_adoption_memory_replay(
                 &self.memory_mounter,
+                self.memory_mounts.owner(&raw_root),
                 &raw_root,
                 current_evidence.as_ref(),
                 effect_fence,
@@ -1355,7 +1370,7 @@ impl NamespaceProvider {
                     .memory_materializations()?
                     .unwrap_or_default()
                     .to_vec(),
-                Vec::new(),
+                self.memory_mounts.owner(&raw_root),
             )
         };
         let control_directory = layout
@@ -1385,7 +1400,7 @@ impl NamespaceProvider {
             layout: std::sync::RwLock::new(layout),
             realized,
             secret_paths,
-            memory_mounts: tokio::sync::Mutex::new(memory_mounts),
+            memory_mounts,
             memory_materializations: std::sync::Mutex::new(materializations),
             memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             memory_mounter: self.memory_mounter.clone(),
@@ -1425,7 +1440,7 @@ pub struct NamespaceSandbox {
     /// Live memory-store mounts, harvested / unmounted at dispose before the
     /// tree is reaped. Exact spec-aware adoption reacquires Ready FUSE guards;
     /// unfenced adoption rejects FUSE because it cannot reconstruct one.
-    memory_mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
+    memory_mounts: crate::MemoryMountOwner,
     /// Canonical durable heads for copy-backed Memory mounts.
     memory_materializations: std::sync::Mutex<Vec<pc::MemoryMaterializationEvidence>>,
     /// One process-local exact-evidence/effect acknowledgement. Durable Memory

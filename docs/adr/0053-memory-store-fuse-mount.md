@@ -217,6 +217,54 @@ keeps one production realization path across Workdir and Namespace providers.
   reuse that port and the same repository authority; it must not add another store or
   mount coordinator.
 
+#### Live Provider ownership across cancellation
+
+Local and Namespace now retain physical Memory operations in one shared private
+`memory_mount_owner` implementation. Reused unchanged: the MemoryMounter/MemoryMount
+ports, Memoryd Copy CAS and FUSE realization, marker/Session authorization, and
+Host reconciliation acknowledgement. Modified: existing create, Ready replay,
+adoption, Namespace attach and disposal borrow the same participant. Added: a
+Provider-owned physical-root index containing the pending mount future, exact
+requirement/path key, root identity and returned guards. It replaces temporary
+guard vectors and Local/Namespace's all-or-leak compensation; it is not a durable
+registry, new aggregate, lease, background cleanup service or source of permission.
+Container staging owns a different physical incarnation and is not merged into it.
+
+Dynamic order: register owner -> admit through existing marker/current proof ->
+retain and poll the mount future -> retain returned guard -> revalidate -> publish
+receipt. Cancellation drops only the caller's borrow. An admitted retry resumes
+that same future, then compensates unpublished mounts before resetting an incomplete
+root. Failed/denied cleanup preserves the complete selected set; another wrapper
+can retry while the Provider lives. Empty, unreferenced owners alone are pruned.
+Root replacement denies resumption and teardown; it does not authorize deleting
+the foreign root. Namespace attachment locks this owner before checking the
+destination, so competing callers cannot each publish a different Memory guard.
+
+Exact confirmed FUSE requirements reuse their guard. Changed references retire the
+old FUSE projection under the same admission before reacquisition. Confirmed Copy
+participants retain Agent edits and original heads through Ready replay/adoption;
+only ordinary disposal or the Host's existing successful reconciliation ACK retires
+them. ACK rejects unfinished participants. Replay compensation never harvests a
+confirmed Copy just because publication failed. Unfenced Copy adoption remains
+zero-effect and rejects unfinished work rather than opportunistically cleaning it.
+
+Adjacent test comments own the decision tables: pending-before/after-guard cuts,
+failed compensation, wrapper Drop, root replacement, concurrent cleanup, exact
+FUSE reuse/reference change, both Provider entrypoints and Namespace attachment.
+Real Memoryd Copy tests verify original bytes/heads, recovered CAS and no second
+harvest after ACK. Host replay tests distinguish wrapper loss (reuse) from actual
+Provider replacement (cold reacquisition). Its first/last mount-response table
+checks twenty revoke/replace/expire/renew/cancel schedules: denial cannot authorize
+compensation, and a fresh retry resumes the original cancelled mount future.
+`MemoryParticipantOwnership` bounds one root/Copy-or-FUSE
+participant and two callers; ten semantic mutants and five witnesses cover its
+ownership/admission cuts. It is an abstract safety model, not a Rust refinement or
+an unconditional liveness proof. A non-returning mounter, process/Provider death,
+backend acceptance followed by ambiguous Err, hostile-host identity races,
+Container compensation and real multi-platform/cloud credential qualification
+remain outside this process-local closure. Actual kernel FUSE tests are separate
+from fake-guard timing fixtures; cross-compilation is not platform execution.
+
 ### D6 — The unit of work is the provisioning-contract mount, not a legacy bolt-on
 
 The FUSE mount is implemented as a **realization of the
