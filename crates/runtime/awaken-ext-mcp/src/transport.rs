@@ -136,9 +136,10 @@ impl RevocableMcpTransport {
         T: Send,
         F: Future<Output = Result<T, McpTransportError>> + Send,
     {
-        let guard = self.fence.try_enter().ok_or_else(|| {
-            McpTransportError::TransportError("MCP generation is draining".into())
-        })?;
+        let guard = self
+            .fence
+            .try_enter()
+            .ok_or_else(|| McpTransportError::NotDispatched("MCP generation is draining".into()))?;
         tokio::select! {
             biased;
             _ = guard.cancelled() => Err(
@@ -187,8 +188,9 @@ pub trait McpToolTransport: Send + Sync {
 
     /// Invoke one tool (`tools/call`). A returned [`CallToolResult`] with
     /// `is_error` set is a *tool* error (model-visible, run continues); an `Err`
-    /// is a *transport* error (aborts the call). This three-state distinction is
-    /// mapped to the neutral result in [`McpRawTool`](crate::tool::McpRawTool).
+    /// is a *transport* error. Only `NotDispatched` proves that no send was
+    /// admitted; all other errors conservatively leave execution unknown.
+    /// [`McpRawTool`](crate::tool::McpRawTool) owns the neutral mapping.
     async fn call_tool(
         &self,
         tool_name: &str,
@@ -451,7 +453,7 @@ mod tests {
         );
         assert_eq!(fence.in_flight(), 0, "R2/E2");
         assert!(
-            matches!(transport.list_tools().await, Err(McpTransportError::TransportError(message)) if message.contains("draining")),
+            matches!(transport.list_tools().await, Err(McpTransportError::NotDispatched(message)) if message.contains("draining")),
             "R3/E3"
         );
         assert!(transport.supports_task_tools_call(), "R4/E4");
@@ -461,6 +463,46 @@ mod tests {
     /// A tools-only transport: it implements only the two mandatory methods, so the
     /// prompt/resource/progress/liveness surfaces exercise the trait defaults.
     struct ToolsOnly;
+
+    #[tokio::test]
+    async fn revoked_generation_preserves_effect_uncertainty_at_the_raw_tool_boundary() {
+        use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError};
+        // G1 enter call then revoke => Indeterminate despite local drain.
+        // G2 call the same closed generation => known pre-dispatch rejection.
+        // G3 a separate generation remains callable. This verifies generation
+        // isolation, not attempt-local cancellation within a shared generation.
+        let entered = Arc::new(Notify::new());
+        let (transport, fence) = revocable_transport(Arc::new(BlockingTransport {
+            entered: entered.clone(),
+            release: Arc::new(Notify::new()),
+        }));
+        let tool = Arc::new(crate::tool::McpRawTool::new("srv", "busy", transport).unwrap());
+        let call = || ToolCall {
+            call_id: "one".into(),
+            tool_id: "mcp__srv__busy".into(),
+            arguments: Value::Null,
+        };
+        let pending = tokio::spawn({
+            let tool = tool.clone();
+            let call = call();
+            async move { tool.invoke(call).await }
+        });
+        entered.notified().await;
+        fence.close_and_wait().await;
+        assert!(
+            matches!(pending.await.unwrap(), Err(ToolError::Indeterminate(_))),
+            "G1"
+        );
+        assert!(
+            matches!(
+                tool.invoke(call()).await,
+                Err(ToolError::UnavailableBeforeDispatch(_))
+            ),
+            "G2"
+        );
+        let (other, _) = revocable_transport(Arc::new(ToolsOnly));
+        assert!(other.call_tool("busy", Value::Null).await.is_ok(), "G3");
+    }
 
     #[async_trait]
     impl McpToolTransport for ToolsOnly {

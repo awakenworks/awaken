@@ -4,14 +4,17 @@
 //! by the namespaced id `mcp__<server>__<tool>`. It maps the MCP three-state
 //! result onto the neutral one:
 //!
-//! - a transport failure is a [`ToolError`] (aborts the call);
+//! - only proved pre-dispatch rejection is safe to report as unavailable;
+//! - an effectful request's other transport failures remain Indeterminate;
 //! - an MCP `isError` result is a model-visible [`ToolOutput::error`];
 //! - a normal result is [`ToolOutput::ok`].
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_mcp_wire::{McpTask, McpToolDefinition, TaskStatus, TaskSupport, ToolContent};
+use awaken_mcp_wire::{
+    McpTask, McpToolDefinition, McpTransportError, TaskStatus, TaskSupport, ToolContent,
+};
 use awaken_runtime_contract::ContentBlock;
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
 use awaken_runtime_contract::tool::{
@@ -106,7 +109,7 @@ impl McpRawTool {
             .transport
             .call_tool(&self.tool_name, arguments)
             .await
-            .map_err(|error| ToolError::Execution(error.to_string()))?;
+            .map_err(effect_error)?;
         Ok(result_to_output(&call.call_id, result))
     }
 
@@ -130,7 +133,7 @@ impl McpRawTool {
                     .transport
                     .get_task_result(expected_task_id)
                     .await
-                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                    .map_err(observation_error)?;
                 Ok(ToolTaskPoll::Completed(result_to_output(
                     &call.call_id,
                     result,
@@ -173,7 +176,7 @@ impl RawTool for McpRawTool {
             .transport
             .call_tool_as_task(&self.tool_name, arguments, None)
             .await
-            .map_err(|error| ToolError::Execution(error.to_string()))?;
+            .map_err(effect_error)?;
         self.task_handle(created.task).map(ToolTaskStart::Pending)
     }
 
@@ -187,7 +190,7 @@ impl RawTool for McpRawTool {
             .transport
             .get_task(&task.task_id)
             .await
-            .map_err(|error| ToolError::Execution(error.to_string()))?;
+            .map_err(observation_error)?;
         self.map_task_status(call, &task.task_id, status).await
     }
 
@@ -206,9 +209,25 @@ impl RawTool for McpRawTool {
             .transport
             .cancel_task(&task.task_id)
             .await
-            .map_err(|error| ToolError::Execution(error.to_string()))?;
+            .map_err(effect_error)?;
         self.map_task_status(call, &task.task_id, status).await
     }
+}
+
+// One adapter-owned classification for effectful MCP calls. Error strings,
+// HTTP status and protocol error responses are not termination evidence.
+fn effect_error(error: McpTransportError) -> ToolError {
+    match error {
+        McpTransportError::NotDispatched(message) => ToolError::UnavailableBeforeDispatch(message),
+        other => ToolError::Indeterminate(other.to_string()),
+    }
+}
+
+// These operations only observe the same persisted handle. A failed read may
+// be retried by the existing Host observer, never by recreating the remote task.
+// Exhaustion remains the BackgroundTask aggregate's Indeterminate outcome.
+fn observation_error(error: McpTransportError) -> ToolError {
+    ToolError::Execution(error.to_string())
 }
 
 fn normalized_arguments(arguments: Value) -> Value {
@@ -233,7 +252,7 @@ fn validate_remote_task(task: &McpTask, expected_id: Option<&str>) -> Result<(),
         || task.poll_interval == Some(0)
         || expected_id.is_some_and(|expected| expected != task.task_id.as_str())
     {
-        return Err(ToolError::Execution(
+        return Err(ToolError::Indeterminate(
             "MCP server returned invalid or mismatched task coordinates".into(),
         ));
     }
@@ -411,12 +430,26 @@ mod tests {
         negotiated: bool,
         cancel: bool,
         polls: AtomicUsize,
+        fault: Option<&'static str>,
     }
 
     impl TaskTransport {
+        fn check(&self, operation: &str) -> Result<(), McpTransportError> {
+            if self.fault == Some(operation) {
+                Err(McpTransportError::TransportError("response lost".into()))
+            } else {
+                Ok(())
+            }
+        }
+
         fn task(&self, status: TaskStatus) -> McpTask {
             McpTask {
-                task_id: "remote-1".to_string(),
+                task_id: if self.fault == Some("malformed") {
+                    " "
+                } else {
+                    "remote-1"
+                }
+                .to_string(),
                 status,
                 status_message: None,
                 created_at: "2026-08-30T00:00:00Z".to_string(),
@@ -458,6 +491,7 @@ mod tests {
             assert_eq!(tool_name, "echo");
             assert_eq!(arguments, serde_json::json!({"q": "hi"}));
             assert_eq!(ttl_ms, None);
+            self.check("start")?;
             Ok(CreateTaskResult {
                 task: self.task(TaskStatus::Working),
             })
@@ -465,6 +499,7 @@ mod tests {
 
         async fn get_task(&self, task_id: &str) -> Result<McpTask, McpTransportError> {
             assert_eq!(task_id, "remote-1");
+            self.check("poll")?;
             let status = if self.polls.fetch_add(1, Ordering::SeqCst) == 0 {
                 TaskStatus::Working
             } else {
@@ -478,6 +513,7 @@ mod tests {
             task_id: &str,
         ) -> Result<CallToolResult, McpTransportError> {
             assert_eq!(task_id, "remote-1");
+            self.check("result")?;
             Ok(CallToolResult {
                 content: vec![ToolContent::Text {
                     text: "done".to_string(),
@@ -491,6 +527,7 @@ mod tests {
 
         async fn cancel_task(&self, task_id: &str) -> Result<McpTask, McpTransportError> {
             assert_eq!(task_id, "remote-1");
+            self.check("cancel")?;
             Ok(self.task(TaskStatus::Cancelled))
         }
     }
@@ -541,7 +578,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transport_failure_maps_to_tool_error() {
+    async fn transport_failure_preserves_unknown_execution() {
+        // E1 a tools/call response is lost after dispatch -> typed unknown,
+        // not model-visible completion. Definitive results/isError are the
+        // adjacent positive partitions; strings never establish certainty.
         let tool = McpRawTool::new(
             "srv",
             "echo",
@@ -549,7 +589,7 @@ mod tests {
         )
         .expect("builds");
         let err = tool.invoke(call()).await.expect_err("transport fails");
-        assert!(matches!(err, ToolError::Execution(msg) if msg.contains("connection reset")));
+        assert!(matches!(err, ToolError::Indeterminate(msg) if msg.contains("connection reset")));
     }
 
     #[tokio::test]
@@ -573,6 +613,77 @@ mod tests {
     }
 
     #[test]
+    fn only_explicit_no_dispatch_evidence_allows_an_effect_error_to_be_available() {
+        // Decision table E0: explicit transport rejection before send =>
+        // UnavailableBeforeDispatch. E1: every other error class => unknown.
+        // HTTP/server errors and invalid JSON do not prove that upstream effects
+        // did not happen; no string parsing or generic retry policy is allowed.
+        assert!(matches!(
+            effect_error(McpTransportError::NotDispatched("closed".into())),
+            ToolError::UnavailableBeforeDispatch(_)
+        ));
+        for error in [
+            McpTransportError::UnknownTool("x".into()),
+            McpTransportError::ServerNotFound("x".into()),
+            McpTransportError::ServerError("auth challenge".into()),
+            McpTransportError::TransportError("lost".into()),
+            McpTransportError::IoError(std::io::Error::other("lost")),
+            McpTransportError::JsonError(serde_json::from_str::<Value>("{").unwrap_err()),
+            McpTransportError::Timeout("late".into()),
+            McpTransportError::ProtocolError("bad response".into()),
+            McpTransportError::NotSupported("remote method".into()),
+            McpTransportError::ConnectionClosed,
+            McpTransportError::ServerRestarting("x".into()),
+        ] {
+            assert!(
+                matches!(effect_error(error), ToolError::Indeterminate(_)),
+                "E1"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn task_failures_distinguish_effects_from_existing_handle_observation() {
+        // Causes: operation=start/poll/result/cancel; failure=response loss or
+        // malformed creation handle; an exact handle is already durable except
+        // during start. Effects: T1 start/cancel loss or malformed coordinates
+        // -> Indeterminate (no creation replay); T2 poll/result loss -> ordinary
+        // observation failure, allowing only reads of the same existing handle.
+        // Task completion/status positives and foreign local handle rejection
+        // are owned by the adjacent lifecycle tests, not a second task model.
+        for fault in ["start", "cancel", "poll", "result", "malformed"] {
+            let transport = Arc::new(TaskTransport {
+                negotiated: true,
+                cancel: true,
+                polls: AtomicUsize::new(1), // completed status enters tasks/result
+                fault: Some(fault),
+            });
+            let tool = McpRawTool::from_definition(
+                "srv",
+                &task_tool_def("echo", TaskSupport::Required),
+                transport,
+            )
+            .unwrap();
+            let handle = ToolTaskHandle {
+                owner: MCP_TASK_OWNER.into(),
+                binding: tool.id.clone(),
+                task_id: "remote-1".into(),
+                poll_interval_ms: Some(25),
+            };
+            let error = match fault {
+                "start" | "malformed" => tool.start_task(call()).await.unwrap_err(),
+                "cancel" => tool.cancel_task(&call(), &handle).await.unwrap_err(),
+                _ => tool.poll_task(&call(), &handle).await.unwrap_err(),
+            };
+            if matches!(fault, "poll" | "result") {
+                assert!(matches!(error, ToolError::Execution(_)), "T2 {fault}");
+            } else {
+                assert!(matches!(error, ToolError::Indeterminate(_)), "T1 {fault}");
+            }
+        }
+    }
+
+    #[test]
     fn task_capability_matrix_controls_projection_without_inventing_replay_safety() {
         // Cause/effect graph: C1=tool taskSupport forbidden/optional/required;
         // C2=server negotiated task tools/call. Effects: E1=ordinary Regular
@@ -585,11 +696,13 @@ mod tests {
             negotiated: false,
             cancel: false,
             polls: AtomicUsize::new(0),
+            fault: None,
         };
         let tasks = TaskTransport {
             negotiated: true,
             cancel: true,
             polls: AtomicUsize::new(0),
+            fault: None,
         };
 
         let forbidden = mcp_tool_descriptor_for_transport(
@@ -643,6 +756,7 @@ mod tests {
             negotiated: true,
             cancel: true,
             polls: AtomicUsize::new(0),
+            fault: None,
         });
         let tool = McpRawTool::from_definition(
             "srv",
@@ -713,6 +827,7 @@ mod tests {
             negotiated: true,
             cancel: false,
             polls: AtomicUsize::new(0),
+            fault: None,
         });
         let tool = McpRawTool::from_definition(
             "srv",
@@ -728,6 +843,7 @@ mod tests {
             negotiated: true,
             cancel: false,
             polls: AtomicUsize::new(0),
+            fault: None,
         }
         .task(TaskStatus::InputRequired);
         input_required.status_message = Some("approval needed".into());

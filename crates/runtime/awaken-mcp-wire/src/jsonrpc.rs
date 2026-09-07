@@ -271,7 +271,9 @@ impl JsonRpcPeer {
         timeout: Duration,
     ) -> Result<Value, McpTransportError> {
         if !self.is_alive() {
-            return Err(McpTransportError::ConnectionClosed);
+            return Err(McpTransportError::NotDispatched(
+                "connection closed before send".into(),
+            ));
         }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
@@ -282,7 +284,9 @@ impl JsonRpcPeer {
         );
         if self.write_tx.send(line).await.is_err() {
             self.pending.lock().await.remove(&id);
-            return Err(McpTransportError::ConnectionClosed);
+            return Err(McpTransportError::NotDispatched(
+                "writer rejected request".into(),
+            ));
         }
         let received = tokio::select! {
             biased;
@@ -704,23 +708,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_after_stream_close_returns_connection_closed() {
-        // Once the stream is closed, a new request fails fast with
-        // ConnectionClosed rather than queuing and hanging until timeout.
-        let (peer, _notif, server_r, server_w) = wired(None);
-        drop(server_w);
-        drop(server_r);
-        tokio::time::timeout(Duration::from_secs(5), peer.closed())
-            .await
-            .expect("closed resolves");
-        let err = peer
-            .request("ping", json!({}), Duration::from_secs(5))
-            .await
-            .expect_err("request on a closed peer fails");
-        assert!(matches!(err, McpTransportError::ConnectionClosed));
-    }
-
-    #[tokio::test]
     async fn concurrent_requests_resolve_out_of_order_to_the_right_id() {
         // The peer's core job: several in-flight requests are demuxed by id
         // through the `pending` map. Fire three concurrently, then answer them in
@@ -770,6 +757,8 @@ mod tests {
     async fn notifications_and_requests_reject_a_closed_peer() {
         // Decision C1 peer EOF -> E1 request and notification both fail closed;
         // a previously obtained notifier shares that exact connection lifetime.
+        // This request has not entered the writer: its rejection proves no
+        // dispatch, unlike close after send in the adjacent outstanding test.
         let (peer, _notif, server_r, server_w) = wired(None);
         drop(server_w);
         drop(server_r);
@@ -782,11 +771,31 @@ mod tests {
             .request("ping", json!({}), Duration::from_secs(5))
             .await
             .expect_err("request rejected on a closed peer");
-        assert!(matches!(err, McpTransportError::ConnectionClosed));
+        assert!(matches!(err, McpTransportError::NotDispatched(_)));
 
         assert!(matches!(
             peer.notify("notifications/progress", json!({})).await,
             Err(McpTransportError::ConnectionClosed)
         ));
+    }
+
+    #[tokio::test]
+    async fn writer_rejection_is_known_before_dispatch_and_removes_the_pending_slot() {
+        // W1 peer is live but its writer rejects admission => NotDispatched,
+        // no pending response slot remains. W2 accepted request followed by
+        // closure remains unknown in explicit_close_releases_both_streams...
+        // This injects queue admission failure, not an OS delivery guarantee.
+        let (mut peer, _notifications, _remote, _remote_writer) = wired(None);
+        let _retained_notifier = peer.notifier();
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+        peer.write_tx = sender;
+        assert!(peer.is_alive());
+        assert!(matches!(
+            peer.request("tools/call", json!({}), Duration::from_secs(5))
+                .await,
+            Err(McpTransportError::NotDispatched(_))
+        ));
+        assert!(peer.pending.lock().await.is_empty());
     }
 }

@@ -1321,7 +1321,8 @@ mod native_mcp_wiring_tests {
         // Causes: C1 Runtime Host materializes native HTTP MCP; C2 initialize and
         // tools/list finish normally; C3 tools/call exceeds the injected tool
         // deadline. Effects: E1 staging succeeds through the unchanged control
-        // deadline; E2 the discovered executable reports a transport failure;
+        // deadline; E2 the discovered executable preserves typed Indeterminate
+        // (timeout cannot prove provider termination or safe model reentry);
         // E3 upstream observes exactly one tools/call. Rule H1 C1+C2+C3 ->
         // E1+E2+E3. Constraint: production calls the same helper with the private
         // 300s policy; neither attachment desired state nor probe wiring carries
@@ -1352,7 +1353,7 @@ mod native_mcp_wiring_tests {
         assert!(
             matches!(
                 &error,
-                awaken_runtime_contract::tool::ToolError::Execution(_)
+                awaken_runtime_contract::tool::ToolError::Indeterminate(_)
             ),
             "{error}"
         );

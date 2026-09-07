@@ -275,6 +275,10 @@ pub enum ToolContent {
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpTransportError {
+    /// The transport rejected the request before admitting any send. Other
+    /// errors (including server/protocol errors) do not prove no side effects.
+    #[error("Request not dispatched: {0}")]
+    NotDispatched(String),
     #[error("Unknown tool: {0}")]
     UnknownTool(String),
     #[error("Server not found: {0}")]
