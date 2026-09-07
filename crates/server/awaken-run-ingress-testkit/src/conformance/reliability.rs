@@ -29,7 +29,11 @@ pub async fn record_dispatch_recovery_history(
      * newer epoch; E2 B is blocked while C4; E3 A's stale settlement is fenced;
      * E4 C5 clears only A's physical slot; E5 B then enters and settles once;
      * E6 no live dispatch remains. Decision trace R1=C1+C2; R2=C3+C4->E1-E3;
-     * R3=C5->E4-E6. */
+     * R3=C5->E4-E6. Retry dimension C6 duplicates begin/finish after a lost
+     * response. R4=C2+C6 -> AlreadyApplied, without a second execution slot;
+     * R5=C5+C6 before B enters -> Applied (empty-slot ACK is idempotent);
+     * R6=C5+C6 after B enters -> Fenced, preserving B's slot. This is one
+     * shared trace for durable store adapters, not another state model. */
     let request = dispatch(namespace, "history", "history-thread");
     let run_id = request.run_id().clone();
     clock.set(0);
@@ -44,6 +48,11 @@ pub async fn record_dispatch_recovery_history(
         .begin_attempt(&first_claim, 0)
         .await
         .expect("R1 begin attempt");
+    assert_eq!(
+        store.begin_attempt(&first_claim, 0).await.unwrap(),
+        AttemptAdmission::AlreadyApplied,
+        "R4 lost begin response retries admission, not execution"
+    );
     let recovery_now = first.lease.expires_ms.saturating_add(1);
     // Deterministic adapters advance immediately; a live PostgreSQL adapter
     // waits for its authoritative database/wall clock to cross the persisted
@@ -91,6 +100,11 @@ pub async fn record_dispatch_recovery_history(
         .finish_attempt(&first_claim)
         .await
         .expect("R3 predecessor finish");
+    assert_eq!(
+        store.finish_attempt(&first_claim).await.unwrap(),
+        SettleOutcome::Applied,
+        "R5 lost finish response is an idempotent ACK"
+    );
     let guard = store
         .lock_commit_epoch(&recovered_claim)
         .await
@@ -105,6 +119,19 @@ pub async fn record_dispatch_recovery_history(
         .begin_attempt(&recovered_claim, recovery_now)
         .await
         .expect("R3 successor admission");
+    assert_eq!(
+        store.finish_attempt(&first_claim).await.unwrap(),
+        SettleOutcome::Fenced,
+        "R6 a delayed old ACK cannot clear the successor slot"
+    );
+    assert_eq!(
+        store
+            .begin_attempt(&recovered_claim, recovery_now)
+            .await
+            .unwrap(),
+        AttemptAdmission::AlreadyApplied,
+        "R6 the successor slot survives the delayed old ACK"
+    );
     let successor_finish = store
         .finish_attempt(&recovered_claim)
         .await

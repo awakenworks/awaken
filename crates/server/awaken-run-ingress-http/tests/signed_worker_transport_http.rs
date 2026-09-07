@@ -1081,6 +1081,13 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         SettleOutcome::Applied,
         "P4 exact owner quiescence"
     );
+    // P5: an ACK committed but its HTTP response was lost. Retrying the same
+    // authenticated command sees Empty -> Applied, with no executor re-entry.
+    assert_eq!(
+        queue.finish_attempt(&claim).await.expect("P5 ACK retry"),
+        SettleOutcome::Applied,
+        "P5 transport preserves the store's idempotent empty-slot ACK"
+    );
 
     // Cause graph: signed exact incarnation -> live registry lease -> identity
     // owns the exact Run claim -> guarded Run thread equals Session -> resume the
