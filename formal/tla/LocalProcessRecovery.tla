@@ -140,9 +140,22 @@ CancelCleanup ==
   /\ UNCHANGED <<allBoundaryVars, renewalVars, markerVars,
                  cleanupFenceLive, controlQuiescent, mountsReleased, cleanupQueued>>
 
+\* Refine the existing checkpoint borrow, not a second recovery owner. A put
+\* or delete already accepted by the store can finish after authority loss.
+\* Its response is not permission to record the WAL, delete, or acknowledge.
+\* Cached receipt replay starts at delete-ready; truthful durable receipt
+\* identity and Ready-vs-Removing Rust wiring remain adapter obligations.
+CheckpointStep(from, into, needsCurrent) ==
+  /\ cleanupCaller \in Waiters /\ cleanupStage = from
+  /\ (~needsCurrent \/ cleanupFenceLive)
+  /\ cleanupStage' = into
+  /\ UNCHANGED <<allBoundaryVars, renewalVars, markerVars, cleanupCaller,
+                 cleanupFenceLive, controlQuiescent, mountsReleased, cleanupQueued>>
+
 CompleteCheckpoint ==
-  /\ cleanupCaller \in Waiters /\ cleanupStage = "checkpoint"
-  /\ cleanupCaller' = NoLock /\ cleanupStage' = "idle"
+  /\ cleanupCaller \in Waiters /\ cleanupStage = "checkpoint-finish"
+  /\ cleanupFenceLive
+  /\ cleanupCaller' = NoLock /\ cleanupStage' = "checkpoint-complete"
   /\ UNCHANGED <<allBoundaryVars, renewalVars, markerVars,
                  cleanupFenceLive, controlQuiescent, mountsReleased, cleanupQueued>>
 
@@ -237,7 +250,12 @@ RecoveryNext == RecoveryBoundary \/ PersistBeforeGo \/ ReleaseLaunch
   \/ ObserveRecovery \/ RecoveryRetry \/ LoseObserver \/ ApplyRecovery
   \/ ObserveHandQuiescence \/ ReceiveSessionStop
   \/ (\E c \in Waiters: QueueCleanup(c)
-        \/ (\E operation \in {"checkpoint", "control", "finish"}: EnterCleanup(c, operation)))
+        \/ (\E operation \in {"checkpoint", "checkpoint-delete-ready", "control", "finish"}: EnterCleanup(c, operation)))
+  \/ CheckpointStep("checkpoint", "checkpoint-put", TRUE)
+  \/ CheckpointStep("checkpoint-put", "checkpoint-receipt", FALSE)
+  \/ CheckpointStep("checkpoint-receipt", "checkpoint-delete-ready", TRUE)
+  \/ CheckpointStep("checkpoint-delete-ready", "checkpoint-delete", TRUE)
+  \/ CheckpointStep("checkpoint-delete", "checkpoint-finish", FALSE)
   \/ CancelCleanup \/ CompleteCheckpoint \/ CompleteControl \/ BeginMountRelease
   \/ (\E last \in BOOLEAN: CompleteMountRelease(last)) \/ FinishMountSet
   \/ ApplyRemoval \/ PublishRemoved \/ FinishRemoval
@@ -251,7 +269,7 @@ RecoveryTypeOK == BoundaryTypeOK
   /\ rootPresent \in BOOLEAN /\ resourceEffect \in BOOLEAN /\ deletion \in BOOLEAN
   /\ handQuiescent \in BOOLEAN /\ sessionReceipt \in BOOLEAN
   /\ cleanupCaller \in Waiters \cup {NoLock}
-  /\ cleanupStage \in {"idle", "checkpoint", "control", "memory-admit", "memory-next", "memory", "memory-finish", "physical", "finish", "receipt"}
+  /\ cleanupStage \in {"idle", "checkpoint", "checkpoint-put", "checkpoint-receipt", "checkpoint-delete-ready", "checkpoint-delete", "checkpoint-finish", "checkpoint-complete", "control", "memory-admit", "memory-next", "memory", "memory-finish", "physical", "finish", "receipt"}
   /\ cleanupFenceLive \in BOOLEAN /\ controlQuiescent \in BOOLEAN
   /\ mountsReleased \in BOOLEAN /\ cleanupQueued \subseteq Waiters
 GoRequiresDurableParticipant == goIssued => markerRecorded
@@ -269,8 +287,16 @@ CleanupCancellationRetainsParticipant ==
 CleanupBorrowIsExclusive ==
   [][(cleanupCaller \in Waiters) => cleanupCaller' \in {cleanupCaller, NoLock}]_allVars
 CleanupEffectRequiresFreshFence ==
-  [][(cleanupStage' \in {"control", "checkpoint", "memory", "physical", "finish", "receipt"}
+  [][(cleanupStage' \in {"control", "checkpoint", "checkpoint-put", "checkpoint-delete-ready", "checkpoint-delete", "memory", "physical", "finish", "receipt"}
       /\ cleanupStage' # cleanupStage) => cleanupFenceLive]_allVars
+CheckpointSuccessRequiresCurrent ==
+  [][(cleanupStage' = "checkpoint-complete" /\ cleanupStage' # cleanupStage)
+     => cleanupFenceLive /\ cleanupStage = "checkpoint-finish"]_allVars
+NoCheckpointSuccessReached == cleanupStage # "checkpoint-complete"
+NoExpiredCheckpointPutResponseReached ==
+  ~(cleanupStage = "checkpoint-receipt" /\ ~cleanupFenceLive)
+NoExpiredCheckpointDeleteResponseReached ==
+  ~(cleanupStage = "checkpoint-finish" /\ ~cleanupFenceLive)
 NoCancelledCleanupReached == ~(cleanupCaller = NoLock /\ markerLock = "remove" /\ controlQuiescent)
 NoQueuedCheckpointReached == ~(cleanupStage = "checkpoint" /\ cleanupQueued # {})
 NoUnrecordedRemovalReached == ~(~rootPresent /\ markerPhase = "removing")

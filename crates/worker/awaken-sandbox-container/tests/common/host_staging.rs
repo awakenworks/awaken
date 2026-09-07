@@ -161,7 +161,13 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
     drop(peer);
     let cold = ContainerProvider::new(peer_runtime.clone(), image);
     let cleanup = cold
-        .prepare_terminal_for_effect(&spec, Some(&handle), Some(&initial_fence), &terminal_fence)
+        .prepare_terminal_for_effect(
+            &spec,
+            Some(&handle),
+            Some(&initial_fence),
+            &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .expect("R7 cold terminal reconstruction")
         .expect("exact object exists");
@@ -171,16 +177,22 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
         "R7 no replacement or reactivation"
     );
     cleanup
-        .prepare_disposal_for_effect(&terminal_fence)
+        .prepare_disposal_for_effect(
+            &terminal_fence,
+            &pc::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .expect("R7 source preparation");
     let authorization = super::disposal::disposal_authorization(&terminal_fence);
+    // R3/R7 preparation and physical disposal carry different operation ids;
+    // the shared authority fixture binds the exact effect at each boundary.
+    let disposal_authority = pc::test_support::EffectAuthority::new(authorization.effect_fence());
     cleanup
-        .dispose_for_effect(&authorization)
+        .dispose_for_effect(&authorization, &disposal_authority)
         .await
         .expect("R3 canonical terminal disposal");
     cleanup
-        .dispose_for_effect(&authorization)
+        .dispose_for_effect(&authorization, &disposal_authority)
         .await
         .expect("R3 disposal replay");
     assert_eq!(

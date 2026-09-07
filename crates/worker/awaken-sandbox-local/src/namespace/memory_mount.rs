@@ -249,9 +249,11 @@ pub(crate) async fn prepare_terminal_memory_replay(
     handle: Option<&pc::SandboxHandle>,
     expected_effect_fence: Option<&pc::SandboxEffectFence>,
     terminal_effect_fence: &pc::SandboxEffectFence,
+    authority: &dyn pc::CurrentExecutionAuthority,
     ordinary_realization: pc::Realization,
     host_paths: &[PathBuf],
 ) -> Result<Option<TerminalMemoryReplay>, pc::SandboxError> {
+    pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(()))?;
     let rebuild_source = handle
         .map(super::realization_marker::rebuild_source)
         .transpose()?;
@@ -286,14 +288,16 @@ pub(crate) async fn prepare_terminal_memory_replay(
     // exact session-scoped partial realization with zero materializations.
     // A durable handle above remains contradictory and is rejected.
 
-    let terminal = super::realization_marker::begin_terminal_takeover(
-        root,
-        fingerprint,
-        rebuild_source,
-        expected_effect_fence,
-        terminal_effect_fence,
-        Some(&terminal_observation),
-    )?;
+    let terminal = pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+        super::realization_marker::begin_terminal_takeover(
+            root,
+            fingerprint,
+            rebuild_source,
+            expected_effect_fence,
+            terminal_effect_fence,
+            Some(&terminal_observation),
+        )
+    })?;
     let Some((realization, removal)) = terminal else {
         return Ok(None);
     };
@@ -317,10 +321,12 @@ pub(crate) async fn prepare_terminal_memory_replay(
     };
     let owned_root_present = removal.owned_root()?.is_some();
     let memory_mounts = if realized.is_empty() || !owned_root_present {
-        Vec::new()
+        pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(Vec::new()))?
     } else {
         replay_memory_mount_guards(memory_mounter, spec, &realized, host_paths, || {
-            removal.validate_before_reconstruction(terminal_effect_fence)
+            pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+                removal.validate_before_reconstruction(terminal_effect_fence)
+            })
         })
         .await?
     };
@@ -383,7 +389,9 @@ where
                 ));
             }
         }
-        Ok(())
+        // Empty/Copy-only replay also requires admission. Keep this final
+        // check inside the same compensation owner as individual FUSE waits.
+        validate_before_mount()
     }
     .await;
     match replay {

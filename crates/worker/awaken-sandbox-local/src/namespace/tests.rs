@@ -378,7 +378,13 @@ async fn terminal_takeover_disposes_incomplete_writable_memory_without_inventing
     drop(creation);
 
     let terminal_sandbox = provider
-        .prepare_terminal_sandbox_for_effect(&spec, None, Some(&create), &terminal)
+        .prepare_terminal_sandbox_for_effect(
+            &spec,
+            None,
+            Some(&create),
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .unwrap()
         .expect("R1 exact incomplete participant");
@@ -505,7 +511,13 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
     .with_memory_materializations(vec![evidence.clone()])
     .unwrap();
     let cold = provider
-        .prepare_terminal_sandbox_for_effect(&spec, Some(&handle), None, &terminal)
+        .prepare_terminal_sandbox_for_effect(
+            &spec,
+            Some(&handle),
+            None,
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .unwrap()
         .expect("N1");

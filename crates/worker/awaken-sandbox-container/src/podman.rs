@@ -998,6 +998,7 @@ impl ContainerRuntime for PodmanRuntime {
         plan_fingerprint: &str,
         evidence: &pc::SandboxRestorationEvidence,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {
         authorization
             .validate()
@@ -1005,22 +1006,35 @@ impl ContainerRuntime for PodmanRuntime {
         if restoration_plan_fingerprint(plan) != plan_fingerprint {
             return Err(backend("Podman restore cleanup plan fingerprint mismatch"));
         }
+        let admit = || {
+            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+                .map_err(backend)
+        };
+        admit()?;
         let name = restore_container_name(id);
         if !self.container_exists(&name).await? {
-            return Ok(());
+            return admit();
         }
+        admit()?;
         // Terminal cleanup owns the exact unpublished target regardless of
         // process state. A failed start must not make the durable target
         // undisposable; identity and immutable-plan evidence remain mandatory.
-        self.exact_restoration_id_with_state(&name, plan_fingerprint, evidence)
+        let (container_id, _) = self
+            .exact_restoration_id_with_state(&name, plan_fingerprint, evidence)
             .await?;
-        let live_inputs = self.live_inputs_root(&name).await?;
+        admit()?;
+        let live_inputs = self.live_inputs_root(&container_id).await?;
         let staging_root = live_inputs
             .parent()
             .ok_or_else(|| backend("Podman restored live-input root has no staging parent"))?;
-        crate::remove_host_staging_path(staging_root)?;
-        self.run(&["rm".into(), "-f".into(), name]).await?;
-        Ok(())
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
+            crate::remove_host_staging_path(staging_root)
+                .map_err(|error| pc::SandboxError::new(error.to_string()))
+        })
+        .map_err(backend)?;
+        self.remove_exact_incarnation(&container_id, None, authorization)
+            .await?;
+        admit()
     }
 
     async fn handle_extra(

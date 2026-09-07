@@ -288,7 +288,14 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
         let authorization = authorization.clone();
         tokio::spawn(async move {
             provider
-                .dispose_restored_environment(&spec, &request, &authorization)
+                .dispose_restored_environment(
+                    &spec,
+                    &request,
+                    &authorization,
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                        authorization.effect_fence(),
+                    ),
+                )
                 .await
         })
     };
@@ -371,7 +378,14 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
         .expect("KR5 join replay")
         .expect("KR4 product cleanup succeeds");
     retry
-        .dispose_restored_environment(&spec, &request, &authorization)
+        .dispose_restored_environment(
+            &spec,
+            &request,
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                authorization.effect_fence(),
+            ),
+        )
         .await
         .expect("KR5 D3 absent replay");
 
@@ -1006,7 +1020,11 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         )
         .unwrap();
     let rejected = runtime
-        .dispose_authorized(expectation, &disposal)
+        .dispose_authorized(
+            expectation,
+            &disposal,
+            &pc::test_support::EffectAuthority::new(disposal.effect_fence()),
+        )
         .await
         .expect_err("KPV5d physical disposal must own terminal observation purpose");
     assert!(
@@ -1022,6 +1040,7 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         Some(&source_handle),
         Some(&create_fence),
         &terminal_fence,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
     )
     .await
     {
@@ -1125,6 +1144,9 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         Some(&replacement_handle),
         Some(&rebuild_fence),
         &replacement_terminal_fence,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(
+            &replacement_terminal_fence,
+        ),
     )
     .await
     .expect("KPV5c exact total-absence observation");
@@ -1549,6 +1571,7 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         Some(&source_handle),
         Some(&create_fence),
         &terminal_fence,
+        &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
     )
     .await
     .expect("KPV4d prepare exact Disposing cleanup")

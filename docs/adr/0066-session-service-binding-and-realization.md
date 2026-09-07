@@ -376,8 +376,83 @@ The existing model shares one provider wait across fixed preparation/disposal
 selectors; 26 semantic mutants and 12 reachability witnesses include disposal
 and cached completion. Its two-effect bound does not establish ordering across
 both aggregate phases, callback elapsed time or asynchronous remote commit
-fencing. Provider UTC validation, cold reconstruction authority and real
-cloud/platform qualification remain explicit open boundaries.
+fencing. Provider UTC validation and real cloud/platform qualification remain
+explicit open boundaries. Cold reconstruction now extends this same wiring:
+the Host captures its existing operation-bound Session/Worker authority before
+calling the Provider, and both public provider ports require it. Local and
+Namespace reuse `prepare_terminal_memory_replay`: exact marker takeover is
+synchronous under the current guard, and every FUSE response plus empty/Copy
+replay rechecks through the existing compensation owner. Container reuses its
+ordinary adoption implementation with a private admission callback, checking
+before/after observation, staging recovery and control binding. Its explicit
+ordinary adoption owner remains unchanged; no cold-only adoption engine is added.
+
+The existing Local/Namespace restart fixture adds a 2x2x5 Pending-response
+decision table; the Container fixture adds 5x5 observation/staging/control,
+absence and Disposing rows. They distinguish current-proof denial from immutable
+identity rejection, permit monotonic renewal, retain exact source bytes and
+retry the original handle. Reconstruction performs no Secret writeback or
+physical removal. The original model's fixed selector now names reconstruction,
+preparation or disposal, sharing the same wait and authority transitions; three
+cold-only mutants and two reconstruction/replay witnesses bring its total to
+29 mutants and 14 witnesses. This is still a two-effect admission abstraction,
+not a proof of aggregate ordering, backend commits, or cross-clock correspondence.
+Cold FUSE cancellation while the external mounter owns an unfinished operation,
+and process-lifetime retention after failed ownerless compensation, are not
+closed by these admission tests. Exact restored-target disposal now uses the
+current-authority port described below; terminal checkpoint cleanup is wired
+below. No new store, timer, lease, registry or state machine is
+introduced by this cold reconstruction change.
+
+### Exact unpublished restore-target disposal
+
+This closes the admission gap between the retained `Restoring` request and its
+provider cleanup, not every backend's internal asynchronous commit boundary.
+
+Reused unchanged: the Session root's aggregate preparation/disposal authorization
+and acknowledgement, captured Worker/Session authority, exact restore tuple,
+Local process-shared target lock and sidecar, Container immutable plan evidence,
+and ordinary immutable-incarnation removal. Modified: the existing Host,
+SandboxProvider, ContainerEnvironmentProvider and ContainerRuntime forwarding
+ports, and Local/Docker/Podman/Kubernetes adapters. Added production owners,
+stores, clocks and lifecycles: none. The Local restored-handle `dispose()`
+shortcut is removed: the exact request and current authority must reach the
+existing provider port before any mount, credential or filesystem cleanup.
+Docker restoration reuses ordinary exact-ID removal; Podman no longer verifies
+an immutable ID and then deletes by mutable name, nor substitutes a missing or
+empty observed ID with that name.
+
+Dynamic order: retain the original Restoring owner -> capture current authority
+-> await original target lock or exact backend observation -> re-admit ->
+delete only the exact target -> re-admit completion -> retain the same request
+until aggregate acknowledgement. Local binding inspection, exact directory
+deletion and sidecar removal occur under the target lock and current-authority
+guard together. The stable lock inode survives deletion for existing waiters.
+Absence is replayable but never an authorization bypass. A lost or late remote
+delete response does not undo the commit and does not authorize success or a
+later operation; retry must use the original immutable identity.
+
+Adjacent decision tables cover ten actual Local target-lock waits (bound/absent
+crossed with revoke/replace/expire/renew/cancel), thirty Container provider
+schedules (both existing public ports, observation/committed-response/absence),
+seven Host response/lease schedules, and twenty-two scripted Podman adapter
+response/identity rows. They assert retained bytes, zero next effects on denial,
+exact replay and immutable-ID commands, rather than only error presence. The
+restore tests move to their existing target owner's child module instead of
+duplicating checkpoint fixtures. The shared `SessionExecutionBinding` selector
+adds restored disposal and replay, with 32 semantic mutants and 16 reachability
+witnesses in total. This remains a two-effect admission abstraction, not Rust
+refinement, real lock correctness, remote commit atomicity or cleanup liveness.
+
+Explicit remaining boundaries: Kubernetes `remove_bound` is a multi-request
+Pod/PVC finalizer/CAS protocol. The current adapter's checks before/after that
+existing port do not re-authorize each internal API mutation. Extend that same
+owner, not a restore-only deletion implementation, to finish this boundary.
+Docker/Podman staging release precedes the remote delete; an already-admitted
+delete can commit after revocation. Provider wall-clock migration, cold FUSE
+cancellation/failed ownerless compensation, and real backend, credential,
+hybrid-fault and Windows/macOS qualification remain separate work. Compilation
+of real-provider test targets and scripted adapters is not live-provider proof.
 
 ### Control-publication cleanup participant
 
@@ -433,6 +508,35 @@ upload journal. Removed publication changes the in-memory marker only after the
 durable write succeeds; a lost acknowledgement is replayed against the exact
 intended tombstone, never a foreign value. These are extensions to the existing
 Provider and marker, not another store, cleanup service or lifecycle.
+
+Terminal checkpoint cleanup now consumes the same current-authority port.
+Reused unchanged: Ready/Removing ownership, checkpoint object identity, snapshot
+encoding and upload WAL. Modified: the existing Host terminal branch, Sandbox
+port and Local forwarding. The private borrowed `CurrentCheckpointParticipant`
+adapts that original participant to `with_current_sandbox_effect`; it owns no
+lock, lease, journal or cached state and does not add another upload algorithm.
+Dynamic order is capture Worker/Session authority -> await the retained slot ->
+current marker admission -> current WAL/put admission -> put response -> current
+receipt publication -> current delete admission -> delete response -> current
+completion. Cached receipts use the same path without uploading again.
+Committed checkpoint deletion independently captures the same Host authority
+before calling the existing store and rechecks it after the response.
+
+Adjacent Local tests cross Ready/Removing, slot/put/delete response waits and
+revocation/replacement/expiry/renewal/cancellation (30 schedules). They inspect
+the original WAL before retry, require zero next mutations, and distinguish
+lost-put replay from cached-receipt replay. Six Host schedules separately check
+Worker/Session loss after committed-object deletion without invoking a mock
+Sandbox. Both reuse existing store fixtures. `LocalProcessRecovery` refines its
+existing checkpoint borrow into upload-response, WAL, delete-response and
+acknowledgement cuts; 23 semantic mutants and eight reachability witnesses
+cover the combined recovery model, including expired backend responses and
+successful checkpoint completion. Its fresh-authority Boolean still assumes
+the shared Session/Worker admission contract: exact WAL identity, Ready-phase
+Rust wiring, clocks, in-flight backend atomicity and OS progress are not proved
+by this abstraction. Provider UTC migration, exact restored-target disposal
+and cold FUSE ownership remain open; a committed remote delete is not rolled
+back by a rejected late response.
 
 Adjacent decision tables exercise competing disposers, cancellation during
 control/Memory/checkpoint waits, expiry across lock and per-mount waits, partial

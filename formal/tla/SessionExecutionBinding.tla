@@ -25,9 +25,12 @@ EXTENDS WorkerExecutionAuthority
    replay still needs current authority but never drains twice. This models
    the local acknowledgement only; MemoryCAS owns durable reconciliation and
    retention. No fairness/termination of an unavailable mount is assumed. *)
-VARIABLES deploymentReady, registeredWorker, providerSource, physicalDisposal
-(* Preparation and physical disposal share one wait transition, not two
-   authorization protocols. physicalDisposal fixes the phase at initialization;
+VARIABLES deploymentReady, registeredWorker, providerSource, providerPhase
+physicalDisposal == providerPhase = "disposal"
+coldReconstruction == providerPhase = "reconstruction"
+restoredDisposal == providerPhase = "restore-disposal"
+(* Reconstruction, preparation and physical disposal share one wait transition,
+   not independent authorization protocols. providerPhase is fixed at initialization;
    this proves admission within that phase, not aggregate preparation ordering.
    Both use the same current-effect kernel after control/credential/removal
    waits. providerWait=1 is an admitted pending call, =2 its response. An
@@ -42,12 +45,12 @@ VARIABLES selection, boundSlot, boundGeneration, boundEnvironment,
 bindingVars == <<selection, boundSlot, boundGeneration, boundEnvironment,
     environmentIdentity, environmentPhase, sessionExpired, effectHeld,
     effectChecked, badEffect, effects, effectPhases, weakStarted>>
-bindingAll == <<allVars, bindingVars, deploymentReady, registeredWorker, providerSource, physicalDisposal, memoryVars>>
+bindingAll == <<allVars, bindingVars, deploymentReady, registeredWorker, providerSource, providerPhase, memoryVars>>
 
 BindingInit == RootInit
   /\ registeredWorker \in BOOLEAN
   /\ providerSource \in BOOLEAN
-  /\ physicalDisposal \in BOOLEAN
+  /\ providerPhase \in {"preparation", "disposal", "reconstruction", "restore-disposal"}
   /\ deploymentReady = FALSE
   /\ selection = "unset" /\ boundSlot = 0 /\ boundGeneration = 0 /\ boundEnvironment = 0
   /\ environmentIdentity = 1 /\ environmentPhase = "candidate" /\ sessionExpired = FALSE
@@ -101,7 +104,11 @@ CommitEffect == /\ effectHeld /\ effectChecked /\ effects < 2
        (IF memoryDrains = 0 THEN "memory" ELSE "memory-replay")
        ELSE IF providerWait = 2 THEN
          (IF physicalDisposal THEN
-           (IF "disposal" \in effectPhases THEN "disposal-replay" ELSE "disposal")
+          (IF "disposal" \in effectPhases THEN "disposal-replay" ELSE "disposal")
+          ELSE IF coldReconstruction THEN
+           (IF "reconstruction" \in effectPhases THEN "reconstruction-replay" ELSE "reconstruction")
+          ELSE IF restoredDisposal THEN
+           (IF "restore-disposal" \in effectPhases THEN "restore-disposal-replay" ELSE "restore-disposal")
           ELSE "preparation")
        ELSE IF providerSource THEN "provider" ELSE environmentPhase}
   /\ memoryDrains' = (IF memoryWait = 2 THEN 1 ELSE memoryDrains)
@@ -159,16 +166,16 @@ BindingNext == (((((Select \/ WeakSpawn \/ Bind
   \/ CancelEffect \/ AuthorityChanges \/ EnvironmentChanges) /\ UNCHANGED memoryVars)
   \/ CheckEffect \/ CommitEffect) /\ UNCHANGED deploymentReady)
   \/ (ProbeReady /\ UNCHANGED memoryVars) \/ MemoryWaitChanges \/ ProviderWaitChanges)
-  /\ UNCHANGED <<registeredWorker, providerSource, physicalDisposal>>
+  /\ UNCHANGED <<registeredWorker, providerSource, providerPhase>>
 BindingSpec == BindingInit /\ [][BindingNext]_bindingAll
 BindingTypeOK == RootTypeOK /\ selection \in {"unset", "weak", "scoped"}
   /\ deploymentReady \in BOOLEAN /\ registeredWorker \in BOOLEAN
-  /\ providerSource \in BOOLEAN /\ physicalDisposal \in BOOLEAN
+  /\ providerSource \in BOOLEAN /\ providerPhase \in {"preparation", "disposal", "reconstruction", "restore-disposal"}
   /\ boundSlot \in 0..2 /\ boundGeneration \in 0..2 /\ boundEnvironment \in 0..2
   /\ environmentIdentity \in 1..2 /\ environmentPhase \in {"candidate", "resident", "retiring"}
   /\ sessionExpired \in BOOLEAN /\ effectHeld \in BOOLEAN /\ effectChecked \in BOOLEAN
   /\ badEffect \in BOOLEAN /\ weakStarted \in BOOLEAN /\ effects \in 0..2
-  /\ effectPhases \subseteq {"candidate", "resident", "retiring", "provider", "memory", "memory-replay", "preparation", "disposal", "disposal-replay"}
+  /\ effectPhases \subseteq {"candidate", "resident", "retiring", "provider", "memory", "memory-replay", "preparation", "disposal", "disposal-replay", "reconstruction", "reconstruction-replay", "restore-disposal", "restore-disposal-replay"}
   /\ memoryWait \in 0..2 /\ memoryDrains \in 0..2
   /\ providerWait \in 0..2
 MemoryCopyDrainedOnce == memoryDrains <= 1
@@ -188,4 +195,12 @@ NoEmptyPreparationReached == memoryDrains # 0 \/ "preparation" \notin effectPhas
 NoCachedPreparationReached == memoryDrains # 1 \/ "preparation" \notin effectPhases
 NoPhysicalDisposalReached == "disposal" \notin effectPhases
 NoCachedDisposalReached == "disposal-replay" \notin effectPhases
+NoColdReconstructionReached == "reconstruction" \notin effectPhases
+NoColdReconstructionReplayReached == "reconstruction-replay" \notin effectPhases
+(* Unpublished target cleanup has the same current-effect owner even when
+   observation proves absence. This phase models target-lock/backend response
+   admission and its retry, not restoration tuple bytes, filesystem locking,
+   remote compare-and-delete, or proof that a cancelled remote commit stops. *)
+NoRestoredDisposalReached == "restore-disposal" \notin effectPhases
+NoRestoredDisposalReplayReached == "restore-disposal-replay" \notin effectPhases
 =============================================================================
