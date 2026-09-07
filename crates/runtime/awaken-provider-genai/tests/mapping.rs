@@ -10,6 +10,7 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::{
     AdapterKind, GenaiExecutor, classify_error, from_genai_response, from_genai_tool_call,
     map_assistant_output, map_usage, to_genai_request, to_genai_request_for_adapter,
+    to_genai_request_for_provider,
 };
 use awaken_runtime_contract::llm::{AssistantOutput, ChatMessage, ChatRequest};
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
@@ -242,6 +243,124 @@ fn assistant_reasoning_is_replayed_with_its_tool_call() {
             .any(|part| matches!(part, ContentPart::ToolCall(call) if call.call_id == "call-1")),
         "R2/E2"
     );
+}
+
+#[test]
+fn deepseek_tool_history_retains_explicit_empty_reasoning() {
+    // Cause/effect table: D1 exact DeepSeek + OpenAI dialect + advertised tools
+    // + replayable assistant without Thinking -> one empty reasoning field.
+    // D2 existing reasoning (empty, whitespace, or nonempty) -> byte-exact once.
+    // D3 another/unknown provider, another dialect, or no tools -> unchanged.
+    // D4 text-only assistant and tool-call assistant both obey D1-D3; User and
+    // Tool rows never acquire reasoning. Missing and empty are wire-distinct:
+    // the live synthetic-history probe returned HTTP 400 vs 200 respectively.
+    // This projection does not alter stored history, routing, or tool arguments.
+    for provider in [Some("deepseek"), Some("compatible"), None] {
+        for adapter in [AdapterKind::OpenAI, AdapterKind::Anthropic] {
+            for with_tools in [false, true] {
+                for reasoning in [
+                    None,
+                    Some(""),
+                    Some(" \n"),
+                    Some("synthetic fixture reasoning"),
+                ] {
+                    for with_call in [false, true] {
+                        // Anthropic independently requires a signature; using a
+                        // valid synthetic pair keeps D3 about unchanged projection.
+                        let mut content = reasoning
+                            .map(|text| {
+                                ContentBlock::signed_thinking(
+                                    text,
+                                    Some("fixture-signature".into()),
+                                )
+                            })
+                            .into_iter()
+                            .collect::<Vec<_>>();
+                        content.push(if with_call {
+                            ContentBlock::tool_use("call-1", "read_fixture", serde_json::json!({}))
+                        } else {
+                            ContentBlock::text("synthetic answer")
+                        });
+                        let request = ChatRequest {
+                            model_binding: binding("deepseek-v4-pro"),
+                            inference: Default::default(),
+                            messages: vec![
+                                ChatMessage {
+                                    role: Role::User,
+                                    content: vec![ContentBlock::text("read status")],
+                                },
+                                ChatMessage {
+                                    role: Role::Assistant,
+                                    content,
+                                },
+                                ChatMessage {
+                                    role: Role::Tool,
+                                    content: vec![ContentBlock::tool_result(
+                                        "call-1",
+                                        vec![ContentBlock::text("ready")],
+                                    )],
+                                },
+                            ],
+                            tools: if with_tools {
+                                vec![ToolDescriptor::pinned(
+                                    "fixture",
+                                    "read_fixture",
+                                    "Read synthetic status",
+                                    serde_json::json!({"type":"object"}),
+                                )]
+                            } else {
+                                Vec::new()
+                            },
+                        };
+                        let projected = match provider {
+                            Some(provider) => {
+                                to_genai_request_for_provider(&request, provider, adapter)
+                            }
+                            None => to_genai_request_for_adapter(&request, adapter),
+                        }
+                        .unwrap();
+                        let required = provider == Some("deepseek")
+                            && adapter == AdapterKind::OpenAI
+                            && with_tools;
+                        let expected = reasoning.or(required.then_some(""));
+                        assert_eq!(projected.messages.len(), 3);
+                        assert_eq!(
+                            projected.messages[1]
+                                .content
+                                .joined_reasoning_content()
+                                .as_deref(),
+                            expected,
+                            "provider={provider:?}, adapter={adapter:?}, tools={with_tools}, call={with_call}, present={}",
+                            reasoning.is_some()
+                        );
+                        let count = projected.messages[1]
+                            .content
+                            .parts()
+                            .iter()
+                            .filter(|part| matches!(part, ContentPart::ReasoningContent(_)))
+                            .count();
+                        assert_eq!(count, usize::from(expected.is_some()));
+                        assert!(
+                            projected.messages[0]
+                                .content
+                                .joined_reasoning_content()
+                                .is_none()
+                        );
+                        assert!(
+                            projected.messages[2]
+                                .content
+                                .joined_reasoning_content()
+                                .is_none()
+                        );
+                        if with_call {
+                            assert!(projected.messages[1].content.parts().iter().any(|part| matches!(part,
+                                ContentPart::ToolCall(call) if call.call_id == "call-1" && call.fn_arguments == serde_json::json!({}))));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]
