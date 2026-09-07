@@ -4,6 +4,131 @@
 
 pub use awaken_dispatch_contract::dispatch::*;
 
+/// Translate the existing physical-attempt kernel once for every backend.
+/// Stores provide one locked snapshot and apply only the returned mutation;
+/// neither the result/error policy nor the handoff exception belongs to SQL.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn decide_physical_attempt_admission(
+    current: bool,
+    slot: awaken_dispatch_contract::PhysicalAttemptSlot,
+    handoff: bool,
+) -> Result<
+    (
+        awaken_dispatch_contract::PhysicalAttemptTransition,
+        AttemptAdmission,
+    ),
+    DispatchError,
+> {
+    use awaken_dispatch_contract::{
+        PhysicalAttemptTransition as T, begin_physical_attempt, handoff_physical_attempt,
+    };
+    let transition = if handoff {
+        handoff_physical_attempt(current, slot)
+    } else {
+        begin_physical_attempt(current, slot)
+    };
+    let outcome = match transition {
+        T::Install | T::Replace => AttemptAdmission::Applied,
+        T::Stutter => AttemptAdmission::AlreadyApplied,
+        T::Blocked => AttemptAdmission::Blocked,
+        T::Fenced => AttemptAdmission::Fenced,
+        T::Corrupt => return Err(corrupt_physical_attempt()),
+        T::Clear => unreachable!("attempt admission never clears a slot"),
+    };
+    Ok((transition, outcome))
+}
+
+/// The same exact-old-slot ACK decision for Memory, SQLite and PostgreSQL.
+/// The caller may have lost its lease: finishing grants no new execution or
+/// commit authority. Read failures must be returned before calling this helper.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn decide_physical_attempt_finish(
+    slot: awaken_dispatch_contract::PhysicalAttemptSlot,
+) -> Result<
+    (
+        awaken_dispatch_contract::PhysicalAttemptTransition,
+        SettleOutcome,
+    ),
+    DispatchError,
+> {
+    use awaken_dispatch_contract::{PhysicalAttemptTransition as T, finish_physical_attempt};
+    let transition = finish_physical_attempt(slot);
+    let outcome = match transition {
+        T::Clear | T::Stutter => SettleOutcome::Applied,
+        T::Fenced => SettleOutcome::Fenced,
+        T::Corrupt => return Err(corrupt_physical_attempt()),
+        T::Install | T::Replace | T::Blocked => unreachable!("finish never admits an attempt"),
+    };
+    Ok((transition, outcome))
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+fn corrupt_physical_attempt() -> DispatchError {
+    DispatchError::Rejected(
+        "persisted physical attempt slot is not an owner/epoch pair".to_string(),
+    )
+}
+
+#[cfg(test)]
+mod physical_attempt_tests {
+    use super::*;
+    use awaken_dispatch_contract::{PhysicalAttemptSlot as S, PhysicalAttemptTransition as T};
+
+    #[test]
+    fn every_backend_uses_the_same_admission_and_finish_result_policy() {
+        // Causes: C1 current/stale claim; C2 empty/exact/other/torn slot;
+        // C3 ordinary admission/verified continuation handoff.
+        // Effects and decision table (all 16 admission combinations):
+        // R1 stale + any + any -> Fenced without inspecting corrupt state.
+        // R2 current + empty + any -> Install / Applied.
+        // R3 current + exact + any -> Stutter / AlreadyApplied.
+        // R4 current + other + ordinary -> Blocked / Blocked.
+        // R5 current + other + handoff -> Replace / Applied.
+        // R6 current + torn + any -> Rejected; never silently clear the slot.
+        // Finish has no lease precondition: R7 empty -> Stutter / Applied;
+        // R8 exact -> Clear / Applied; R9 other -> Fenced; R10 torn -> Rejected.
+        // The explicit table is independent of the production kernel; testing
+        // against another call to that kernel would merely repeat its verdict.
+        for current in [false, true] {
+            for handoff in [false, true] {
+                for slot in [S::Empty, S::ExactClaim, S::OtherClaim, S::Corrupt] {
+                    let expected = match (current, slot, handoff) {
+                        (false, _, _) => Some((T::Fenced, AttemptAdmission::Fenced)),
+                        (true, S::Empty, _) => Some((T::Install, AttemptAdmission::Applied)),
+                        (true, S::ExactClaim, _) => {
+                            Some((T::Stutter, AttemptAdmission::AlreadyApplied))
+                        }
+                        (true, S::OtherClaim, false) => {
+                            Some((T::Blocked, AttemptAdmission::Blocked))
+                        }
+                        (true, S::OtherClaim, true) => {
+                            Some((T::Replace, AttemptAdmission::Applied))
+                        }
+                        (true, S::Corrupt, _) => None,
+                    };
+                    let actual = decide_physical_attempt_admission(current, slot, handoff);
+                    match expected {
+                        Some(expected) => assert_eq!(actual.unwrap(), expected),
+                        None => assert!(matches!(actual, Err(DispatchError::Rejected(_)))),
+                    }
+                }
+            }
+        }
+        for (slot, expected) in [
+            (S::Empty, Some((T::Stutter, SettleOutcome::Applied))),
+            (S::ExactClaim, Some((T::Clear, SettleOutcome::Applied))),
+            (S::OtherClaim, Some((T::Fenced, SettleOutcome::Fenced))),
+            (S::Corrupt, None),
+        ] {
+            let actual = decide_physical_attempt_finish(slot);
+            match expected {
+                Some(expected) => assert_eq!(actual.unwrap(), expected),
+                None => assert!(matches!(actual, Err(DispatchError::Rejected(_)))),
+            }
+        }
+    }
+}
+
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 use awaken_dispatch_contract::{DispatchAdmissionShape, DispatchIdentityScope, RunDispatch};
 

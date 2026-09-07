@@ -45,7 +45,7 @@ use crate::{
 };
 use awaken_dispatch_contract::{
     CommitEpochAdmission, PhysicalAttemptSlot, PhysicalAttemptTransition, RunDispatch,
-    begin_physical_attempt, classify_commit_epoch_admission, handoff_physical_attempt,
+    classify_commit_epoch_admission,
 };
 
 mod claim;

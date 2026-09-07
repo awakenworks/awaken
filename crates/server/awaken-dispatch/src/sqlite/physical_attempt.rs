@@ -64,35 +64,21 @@ impl SqliteDispatchStore {
                 current.active_owner.as_deref() == Some(&claim.owner),
                 active_epoch == Some(claim.epoch),
             );
-            let transition = if handoff {
-                handoff_physical_attempt(live, slot)
-            } else {
-                begin_physical_attempt(live, slot)
-            };
-            let admission = match transition {
-                PhysicalAttemptTransition::Stutter => AttemptAdmission::AlreadyApplied,
-                PhysicalAttemptTransition::Blocked => AttemptAdmission::Blocked,
-                PhysicalAttemptTransition::Fenced => AttemptAdmission::Fenced,
-                PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace => {
-                    tx.execute(
-                        &format!(
-                            "UPDATE {p}_dispatch SET active_attempt_owner = ?2, \
+            let (transition, admission) =
+                crate::dispatch::decide_physical_attempt_admission(live, slot, handoff)?;
+            if matches!(
+                transition,
+                PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace
+            ) {
+                tx.execute(
+                    &format!(
+                        "UPDATE {p}_dispatch SET active_attempt_owner = ?2, \
                              active_attempt_epoch = ?3 WHERE run_id = ?1"
-                        ),
-                        params![claim.run_id.0, claim.owner, epoch],
-                    )
-                    .map_err(store_error)?;
-                    AttemptAdmission::Applied
-                }
-                PhysicalAttemptTransition::Corrupt => {
-                    return Err(DispatchError::Rejected(
-                        "persisted physical attempt slot is not an owner/epoch pair".to_string(),
-                    ));
-                }
-                PhysicalAttemptTransition::Clear => {
-                    unreachable!("attempt admission never clears a slot")
-                }
-            };
+                    ),
+                    params![claim.run_id.0, claim.owner, epoch],
+                )
+                .map_err(store_error)?;
+            }
             tx.commit().map_err(store_error)?;
             Ok(admission)
         })

@@ -136,14 +136,12 @@ pub const fn handoff_physical_attempt(
     claim_is_current: bool,
     slot: PhysicalAttemptSlot,
 ) -> PhysicalAttemptTransition {
-    if !claim_is_current {
-        return PhysicalAttemptTransition::Fenced;
-    }
-    match slot {
-        PhysicalAttemptSlot::Empty => PhysicalAttemptTransition::Install,
-        PhysicalAttemptSlot::ExactClaim => PhysicalAttemptTransition::Stutter,
-        PhysicalAttemptSlot::OtherClaim => PhysicalAttemptTransition::Replace,
-        PhysicalAttemptSlot::Corrupt => PhysicalAttemptTransition::Corrupt,
+    // Handoff changes only the disposition of a complete predecessor. Current
+    // authority, exact replay, empty admission and corruption use the ordinary
+    // kernel so that adding a guard cannot leave a parallel recovery bypass.
+    match begin_physical_attempt(claim_is_current, slot) {
+        PhysicalAttemptTransition::Blocked => PhysicalAttemptTransition::Replace,
+        transition => transition,
     }
 }
 
@@ -734,6 +732,17 @@ mod proofs {
         let handoff = handoff_physical_attempt(current, slot);
         let finish = finish_physical_attempt(slot);
 
+        // Normalization rule: continuation changes only the disposition of a
+        // complete predecessor. Every other admission guard/result is shared,
+        // including a stale claim combined with corrupt persisted evidence.
+        assert_eq!(
+            handoff,
+            if begin == PhysicalAttemptTransition::Blocked {
+                PhysicalAttemptTransition::Replace
+            } else {
+                begin
+            }
+        );
         assert_eq!(
             begin == PhysicalAttemptTransition::Install,
             current && slot == PhysicalAttemptSlot::Empty

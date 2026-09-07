@@ -40,6 +40,10 @@ fn allow_resume() -> ResumeCommand {
 
 #[tokio::test]
 async fn postgres_commit_backs_execute_resume_and_survives_restart() {
+    // R1 execute -> input, model Entered/Returned, Requested batch and Awaiting
+    // are durable before restart; R2 reopen -> the same ticket and zero tool
+    // effects; R3 approved resume -> one tool effect and terminal truth.
+    // Commit cardinality includes infrastructure evidence, not just Run phases.
     let Some(pool) = harness::schema_pool("t_rt").await else {
         return;
     };
