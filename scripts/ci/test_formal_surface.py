@@ -21,6 +21,35 @@ SPEC.loader.exec_module(MODULE)
 
 
 class FormalSurfaceProductionSourceTests(unittest.TestCase):
+    def test_each_surface_has_one_classification_even_when_owners_agree(self) -> None:
+        # C1 one reachable source; C2 a second classification for that source;
+        # C3 the duplicate names the same or a different valid requirement.
+        # R1 C1+!C2 -> one owner; R2 C1+C2+same -> reject redundancy;
+        # R3 C1+C2+different -> reject competing owners, never last-writer-wins.
+        # Removal of only the duplicate restores R1 without increasing proof grade.
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "policy.rs").write_text("fn decide() {}")
+            classifications = root / "classifications.json"
+            first = {"path": "policy.rs", "requirement_id": "domain", "reason": "owner"}
+            with mock.patch.multiple(MODULE, ROOT=root, CLASSIFICATIONS=classifications):
+                for second_owner in [None, "domain", "protocol", None]:
+                    entries = [first]
+                    if second_owner is not None:
+                        entries.append({**first, "requirement_id": second_owner})
+                    classifications.write_text(json.dumps({
+                        "version": 1, "classifications": entries,
+                    }))
+                    if second_owner is None:
+                        self.assertEqual(MODULE.load_classifications(set(), {"domain", "protocol"}),
+                                         {"policy.rs": first}, "R1")
+                    else:
+                        message = io.StringIO()
+                        with contextlib.redirect_stderr(message), self.assertRaises(SystemExit) as error:
+                            MODULE.load_classifications(set(), {"domain", "protocol"})
+                        self.assertEqual(error.exception.code, 1, "R2/R3")
+                        self.assertIn("duplicate surface classification policy.rs", message.getvalue())
+
     def test_explicit_targets_survive_disabled_cargo_auto_discovery(self) -> None:
         # T1 auto roots disabled -> conventional unregistered lib/bin files do
         # not earn evidence. T2 explicit custom library/binary paths and named
