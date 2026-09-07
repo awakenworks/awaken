@@ -1559,6 +1559,9 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     ])
     # W4 drain request + fair completion/ack progress => acknowledgement.
     # Reopening admission after acknowledgement must violate the existing fence.
+    # Composition table: W4a reopening -> safety violation; W4b no ACK action
+    # -> liveness violation even with startup/withdrawal fairness; W4c a valid
+    # registration can reach ACK. The positive baseline checks both families.
     source = (ROOT / "formal/tla/WorkerDrain.tla").read_text()
     config = (ROOT / "formal/tla/WorkerDrain.cfg").read_text()
     check_tlc_model_mutations(tlc_jar, "WorkerDrain", source, config, [
@@ -1567,6 +1570,14 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
                         '               /\\ gate\' = "Open"\n'
                         '               /\\ UNCHANGED <<claimInProgress, claimAttempts, claims, drainRequested, registryState, drainAcknowledged, attemptsAtRegistryDrain, claimsAtDrain>>'),
          config, "RegistryDrainFollowsLocalFence"),
+        (source.replace('AcknowledgeDrain == /\\ registryState = "Draining"',
+                        'AcknowledgeDrain == /\\ FALSE /\\ registryState = "Draining"'),
+         "SPECIFICATION ProgressSpec\nCONSTANT MaxClaims = 3\n"
+         "PROPERTIES DrainEventuallyAcknowledged\n",
+         "temporal:DrainEventuallyAcknowledged"),
+        (source, "SPECIFICATION ProgressSpec\nCONSTANT MaxClaims = 3\n"
+                 "INVARIANTS NoDrainAcknowledgedReached\n",
+         "NoDrainAcknowledgedReached"),
     ])
     # C1 restore timeout-as-observer-drop; C2 TERM-as-ACK; C3 crash-as-ACK;
     # C4 first-target-as-complete-fanout. Each mutant must fail its independent
@@ -1628,7 +1639,7 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
                         'CanSend == phase', 1),
          config, "ActiveAggregateNeverAdmits"),
     ])
-    print("Cowork lifecycle mutation score: 15/15 killed (worker evidence 3, drain 1, ACP/composition/rollout 5, cleanup evidence 4, presentation/admission 2)")
+    print("Cowork lifecycle mutation score: 16/16 killed (worker evidence 3, drain 2, ACP/composition/rollout 5, cleanup evidence 4, presentation/admission 2); drain ACK witness reachable")
 
 
 def check_observation_rule_mutants(trace_dir: Path, manifest: dict) -> None:

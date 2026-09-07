@@ -172,6 +172,7 @@ NoUnknownWithdrawalReached == withdrawal # "unknown"
 NoPendingHeartbeatCancelled == ~(startupPhase = "failed" /\ registryState = "Ready")
 NoIncompatibleReturnReached == ~(~protocolCompatible /\ returned)
 NoZeroTtlReturnReached == ~(~ttlPositive /\ returned)
+NoDrainAcknowledgedReached == ~drainAcknowledged
 
 (* Fairness represents polling the owner and the bounded withdrawal timeout,
    not successful remote cleanup. An unknown response still permits local exit. *)
@@ -179,7 +180,10 @@ Spec == Init /\ [][Next]_vars /\ WF_vars(ResolveProtocol)
         /\ WF_vars(BeginWithdrawal) /\ WF_vars(FinishWithdrawal)
 \* F3 a requested drain converges if in-flight claims and the existing drain
 \* acknowledgements can progress. Permanent I/O failure is outside this bound.
-ProgressSpec == Spec /\ WF_vars(FinishClaim) /\ WF_vars(CloseAdmission)
-                    /\ WF_vars(PublishRegistryDrain) /\ WF_vars(AcknowledgeDrain)
+\* Drain actions frame only drainVars; Next supplies the unchanged startup and
+\* protocol frame. Their fairness must use that same owned tuple, not evaluate
+\* unconstrained startup/protocol next-state values after model composition.
+ProgressSpec == Spec /\ WF_drainVars(FinishClaim) /\ WF_drainVars(CloseAdmission)
+                    /\ WF_drainVars(PublishRegistryDrain) /\ WF_drainVars(AcknowledgeDrain)
 DrainEventuallyAcknowledged == drainRequested ~> drainAcknowledged
 =============================================================================

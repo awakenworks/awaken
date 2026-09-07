@@ -2018,17 +2018,28 @@ async fn cold_host_bind_terminal_recovery_requires_complete_participants() {
             let cleanup = result
                 .expect("R7 reconstruct existing participants")
                 .unwrap();
-            cleanup.prepare_disposal_for_effect(&fence).await.unwrap();
+            // R7 joins the existing operation-bound authority contract: the
+            // preparation fence and physical disposal fence name distinct
+            // effects. Reuse the shared fixture, never infer authority from a
+            // successful reconstruction or add a permissive compatibility path.
+            let preparation_authority = pc::test_support::EffectAuthority::new(&fence);
+            cleanup
+                .prepare_disposal_for_effect(&fence, &preparation_authority)
+                .await
+                .unwrap();
             assert!(
                 runtime.st.lock().unwrap().alive[&id],
                 "preparation cannot remove the object"
             );
+            let authorization = disposal_authorization(&fence);
+            let disposal_authority =
+                pc::test_support::EffectAuthority::new(authorization.effect_fence());
             cleanup
-                .dispose_for_effect(&disposal_authorization(&fence))
+                .dispose_for_effect(&authorization, &disposal_authority)
                 .await
                 .unwrap();
             cleanup
-                .dispose_for_effect(&disposal_authorization(&fence))
+                .dispose_for_effect(&authorization, &disposal_authority)
                 .await
                 .unwrap();
             assert_eq!(
