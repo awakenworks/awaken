@@ -138,9 +138,14 @@ returned errors with unknown remote execution before any awaited journal write.
 Cancellation, task abort and
 watchdog expiry retain the physical slot. A watchdog ends the logical Run as
 Indeterminate without inner retry, continuation, failover or outer failure
-tolerance. Cancellation retains its logical Cancelled outcome; neither outcome
-is physical-termination evidence. Managed's shared root/child lifecycle classifier reads the
-same Run's model evidence at the cancellation commit and exposes Unknown as the
+tolerance. Cooperative cancellation under the current execution claim retains
+its logical Cancelled outcome. Durable cancellation that replaces the claim while
+the predecessor remains unconfirmed instead commits Indeterminate through the
+existing Worker pre-execution terminal path; it cannot enter a second physical
+cancel attempt. Neither logical outcome is physical-termination evidence, and
+neither clears the predecessor's occupied slot. Managed's shared root/child
+lifecycle classifier reads the same Run's model evidence at the cancellation
+commit and exposes Unknown as the
 existing execution-unknown error. It never clears a Dispatch slot or rewrites
 Run state. The browser retains that current error across same-activity idle;
 a new committed working boundary moves it to history. ACP's fixed business
