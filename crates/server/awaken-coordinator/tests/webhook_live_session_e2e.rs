@@ -17,7 +17,7 @@ use awaken_coordinator::{install_managed_lifecycle_delivery, webhooks};
 use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
 use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor};
-use awaken_session_executor::{ManagedHost, SharedHost};
+use awaken_session_executor::ManagedHost;
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_webhook::{generate_secret, verify};
 use axum::body::Body;
@@ -110,7 +110,7 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     // delivery transport admits this in-process loopback receiver; notifier and
     // replay ownership remain identical to production.
     let delivery = webhooks::loopback_lifecycle_delivery(store, secrets, None);
-    let host = Arc::new(SharedHost::new(Arc::new(DeadModel), "test"));
+    let host = awaken_scenario_host::build_unmounted_host(Arc::new(DeadModel), "test");
     let managed = Arc::new(
         ManagedState::new(ManagedHost::new(host).install_dispatch_session_runtime())
             .with_session_repo(sessions),

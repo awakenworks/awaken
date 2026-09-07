@@ -339,6 +339,7 @@ def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
     errors: list[str] = []
     quality = workflows.get(QUALITY_WORKFLOW, "")
     release = workflows.get(RELEASE_WORKFLOW, "")
+    full_job = re.search(r"^  full_quality:\n(?:(?!^  \S).|\n)*", quality, re.MULTILINE)
     for trigger in ("workflow_call:", "pull_request:", "push:", "workflow_dispatch:"):
         if trigger not in quality:
             errors.append(f"quality workflow does not declare {trigger}")
@@ -349,15 +350,28 @@ def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
         'test "$(git rev-parse HEAD)" = "$source_revision"',
         "AWAKEN_TEST_TIMINGS_FILE: target/test-timings/check-all.tsv",
         "run: scripts/ci/check-all.sh",
-        "if: always()",
-        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
         "pnpm install --frozen-lockfile",
         "npm ci --prefix e2e",
     )
     for marker in required_quality:
-        if marker not in quality:
+        if not full_job or marker not in full_job.group(0):
             errors.append(f"quality workflow does not require: {marker}")
-    full_job = re.search(r"^  full_quality:\n(?:(?!^  \S).|\n)*", quality, re.MULTILINE)
+    evidence_step = re.search(
+        r"^      - name: Retain exact-SHA quality evidence\n"
+        r"(?:(?!^      - ).|\n)*",
+        full_job.group(0) if full_job else "",
+        re.MULTILINE,
+    )
+    for marker in (
+        "        if: always()",
+        "        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+        "          name: quality-${{ github.sha }}-${{ github.run_attempt }}",
+        "            target/test-timings/",
+        "            web/test-results/",
+        "          if-no-files-found: error",
+    ):
+        if not evidence_step or marker not in [line.split(" #", 1)[0] for line in evidence_step.group(0).splitlines()]:
+            errors.append(f"full quality evidence step does not require: {marker.strip()}")
     gate_step = re.search(
         r"^      - name: Run the one complete repository gate\n"
         r"(?:(?!^      - ).|\n)*",
@@ -867,11 +881,12 @@ def self_test() -> None:
     }
     assert not workflow_gate_errors(workflows), "W1"
     quality = workflows[QUALITY_WORKFLOW]
+    prefix, full_quality = quality.split("  full_quality:\n", 1)
     workflow_mutations = (
         quality.replace('test "$(git rev-parse HEAD)" = "$source_revision"', "true", 1),
         quality.replace("run: scripts/ci/check-all.sh", "run: scripts/ci/check-all.sh --group rust", 1),
         quality.replace("pull_request:", "pull_request_removed:", 1),
-        quality.replace("if: always()", "if: success()", 1),
+        prefix + "  full_quality:\n" + full_quality.replace("if: always()", "if: success()", 1),
         quality.replace("awaken-full-gate", "generic-runner", 1),
         quality.replace("run: scripts/ci/check-all.sh", "run: scripts/ci/check-all.sh || true", 1),
         quality.replace("run: scripts/ci/check-all.sh", "if: false\n        run: scripts/ci/check-all.sh", 1),
@@ -881,6 +896,27 @@ def self_test() -> None:
         changed = dict(workflows)
         changed[QUALITY_WORKFLOW] = mutated
         assert workflow_gate_errors(changed), f"W{rule}"
+    # W10 cause/effect table: C1 exact full-quality upload exists; C2 its
+    # condition is unconditional-on-result; C3 its artifact binds SHA/attempt
+    # and includes both evidence owners; C4 another job also uploads evidence.
+    # W10a C1+C2+C3, either C4 => accept. W10b !C1|!C2|!C3 => reject even
+    # with C4. Target the owning step, never the first matching token: the
+    # portability job must neither mask a broken upload nor make a valid one fail.
+    evidence_name = "      - name: Retain exact-SHA quality evidence\n"
+    before_evidence, evidence = full_quality.split(evidence_name, 1)
+    for condition in ("if: success()", "if: always() && false", "if: false"):
+        changed = dict(workflows)
+        changed[QUALITY_WORKFLOW] = prefix + "  full_quality:\n" + before_evidence + evidence_name + evidence.replace("if: always()", condition)
+        assert workflow_gate_errors(changed), f"W10b {condition}"
+    for marker in (evidence_name, "target/test-timings/", "web/test-results/", "${{ github.sha }}", "${{ github.run_attempt }}", "if-no-files-found: error", "actions/upload-artifact@"):
+        changed = dict(workflows)
+        changed[QUALITY_WORKFLOW] = prefix + "  full_quality:\n" + before_evidence + (evidence_name + evidence).replace(marker, "removed")
+        assert workflow_gate_errors(changed), f"W10b missing {marker}"
+    changed = dict(workflows)
+    changed[QUALITY_WORKFLOW] = prefix.replace("if: always()", "if: success()") + "  full_quality:\n" + full_quality
+    assert not workflow_gate_errors(changed), "W10a unrelated job condition"
+    changed[QUALITY_WORKFLOW] = "\n".join(quality.splitlines()[:quality.splitlines().index("  trusted_host_portability:")]) + "\n  full_quality:\n" + full_quality
+    assert not workflow_gate_errors(changed), "W10a full upload alone"
     duplicate = dict(workflows)
     duplicate[".github/workflows/parallel-quality.yml"] = quality
     assert workflow_gate_errors(duplicate), "W3 duplicate owner"

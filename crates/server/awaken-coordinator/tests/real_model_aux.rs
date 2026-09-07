@@ -37,7 +37,14 @@ fn live_host() -> Option<(SharedHost, String)> {
         key,
     )
     .expect("explicit client construction");
-    Some((SharedHost::new(Arc::new(executor), model.clone()), model))
+    Some((
+        Arc::into_inner(awaken_scenario_host::build_unmounted_host(
+            Arc::new(executor),
+            model.clone(),
+        ))
+        .expect("unmounted scenario host has one owner"),
+        model,
+    ))
 }
 
 fn user(text: &str) -> Vec<Message> {

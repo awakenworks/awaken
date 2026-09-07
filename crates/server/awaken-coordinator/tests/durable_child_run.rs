@@ -1,6 +1,8 @@
 //! Production link for independently scheduled child Runs: a parent invokes the
 //! ordinary `agent_run` tool, the child receives its own durable dispatch claim,
-//! and the result returns through the parent Run.
+//! and the result returns through the parent Run. This composition test belongs
+//! to Coordinator: it reuses the Scenario Host's complete Resources assembly
+//! instead of reopening resource ports inside a Runtime library fixture.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,7 +18,7 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::resolved::{ModelBinding, ToolKind};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
-use awaken_session_executor::{HostResume, ManagedHost, SharedHost};
+use awaken_session_executor::{HostResume, ManagedHost};
 
 struct ParentChildModel {
     parent_calls: AtomicUsize,
@@ -58,7 +60,7 @@ impl LlmExecutor for ParentChildModel {
         let output = match (is_child, call) {
             (false, 0) => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "delegate-1".into(),
-                tool_id: awaken_ext_builtin_tools::AGENT_RUN.into(),
+                tool_id: "agent_run".into(),
                 arguments: serde_json::json!({
                     "agent_id": "researcher",
                     "input": "investigate"
@@ -132,13 +134,14 @@ async fn durable_child_run_scenario() {
         },
     ];
     let host = Arc::new(
-        SharedHost::new(
+        Arc::into_inner(awaken_scenario_host::build_unmounted_host(
             Arc::new(ParentChildModel {
                 parent_calls: AtomicUsize::new(0),
                 child_calls: AtomicUsize::new(0),
             }),
             "stub",
-        )
+        ))
+        .expect("unmounted scenario host has one owner")
         .with_dispatch_store(dispatch)
         .with_store_dir(storage.path())
         .with_agent_publications(Arc::new(

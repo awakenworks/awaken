@@ -647,8 +647,9 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .file_ids,
-            [a.id.clone()],
+                .file_ids
+                .as_slice(),
+            std::slice::from_ref(&a.id),
             "A3"
         );
         assert!(

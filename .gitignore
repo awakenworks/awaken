@@ -3,7 +3,8 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-target/
+# Cargo targets may be symlinks to the dedicated build disk.
+target
 node_modules/
 dist/
 build/

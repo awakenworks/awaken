@@ -1,6 +1,8 @@
 // Black-box ADR-0071 driver. Every operation uses the one public Ingress URL;
 // private Control/Coordinator/Worker addresses are intentionally unknowable here.
 import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 // The shared E2E harness is intentionally JavaScript-owned and has no parallel
 // declaration shim; Node executes this import directly in the K3D lane.
@@ -142,7 +144,7 @@ async function expectStableSession(
   assert.fail(`Session ${sessionId} did not remain readable for ${consecutive} probes: ${last}`);
 }
 
-async function awaitResponsiveCoordinatorSet(
+async function awaitResponsivePublicReads(
   client: Anthropic,
   sessionIds: string[],
   timeoutMs = 30_000,
@@ -151,9 +153,9 @@ async function awaitResponsiveCoordinatorSet(
   const deadline = performance.now() + timeoutMs;
   let last = 'no probe completed';
   while (performance.now() < deadline) {
-    // Use two reads per Session so the public edge opens enough upstream
-    // connections to exercise both replicated Coordinator pools without naming
-    // or calling a private Pod. Reads are repeatable and carry no business effect.
+    // Repeated public reads bound observed recovery latency without business
+    // effects. Load balancing does not prove every replica was selected; this
+    // is a public-read precondition, not per-replica pool-convergence evidence.
     const probes = sessionIds.flatMap((sessionId) => [sessionId, sessionId]);
     const results = await Promise.all(
       probes.map((sessionId) => retrieveSessionProbe(client, sessionId)),
@@ -164,7 +166,7 @@ async function awaitResponsiveCoordinatorSet(
     if (statuses.length === 1 && statuses[0] === 200 && slowest <= maxReadMs) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  assert.fail(`replicated Coordinator pools did not converge: ${last}`);
+  assert.fail(`public Session reads did not recover: ${last}`);
 }
 
 async function uploadFile(base: string, marker: string) {
@@ -249,6 +251,7 @@ async function sendAndWaitForAgentMarker(
     events: [{ type: 'user.message', content: [{ type: 'text', text: marker }] }],
     betas: BETAS,
   });
+  const acceptedAt = performance.now();
   assert.equal(receipt.data?.length, 1, `one exact Event receipt for ${marker}`);
   const receiptId = receipt.data?.[0]?.id;
   assert.equal(typeof receiptId, 'string', `SDK receipt id for ${marker}`);
@@ -261,7 +264,8 @@ async function sendAndWaitForAgentMarker(
     `Event ${marker} receipt to reach its exact Provider marker and later idle`,
     { timeoutMs, pollMs: 500 },
   );
-  return { ...observation, elapsed: performance.now() - started };
+  const observedAt = performance.now();
+  return { ...observation, elapsed: observedAt - started, admissionMs: acceptedAt - started, observationMs: observedAt - acceptedAt };
 }
 
 function providerResponseCounts(events: any[]) {
@@ -495,6 +499,41 @@ async function batch(
   console.log(`OK batch ${prefix} ${count}`);
 }
 
+export function auditLoadResults(
+  histories: any[][],
+  markersBySession: string[][],
+  latencies: number[],
+  p95Limit: number,
+) {
+  // L5 independent effects: performance and durable-history failures must all
+  // be retained. A p95 breach cannot skip the exactly-once audit; a missing
+  // sample or malformed latency cannot silently reduce the measured workload.
+  const errors: string[] = [];
+  const expected = markersBySession.flat().length;
+  if (expected === 0 || latencies.length !== expected) errors.push(`completion samples ${latencies.length} != nonempty planned count ${expected}`);
+  if (histories.length !== markersBySession.length) errors.push('history count differs from planned Sessions');
+  for (let index = 0; index < markersBySession.length; index += 1) {
+    const history = histories[index] ?? [];
+    for (const marker of markersBySession[index]) {
+      try { assertProviderResponseCount(history, marker); }
+      catch (error) { errors.push(String(error)); }
+    }
+    try { assertProviderResponsesAreUnique(history); }
+    catch (error) { errors.push(String(error)); }
+  }
+  const sorted = [...latencies].sort((left, right) => left - right);
+  const percentile = (fraction: number) => sorted[Math.ceil(sorted.length * fraction) - 1] ?? null;
+  const p50 = percentile(0.50);
+  const p95 = percentile(0.95);
+  const max = sorted.at(-1) ?? null;
+  if (!Number.isFinite(p95Limit) || p95Limit <= 0 || latencies.some((value) => !Number.isFinite(value) || value < 0)) {
+    errors.push('invalid latency measurement or performance limit');
+  } else if (p95 !== null && p95 > p95Limit) {
+    errors.push(`completed turn p95 ${p95.toFixed(1)}ms > ${p95Limit}ms (p50=${p50}ms max=${max}ms)`);
+  }
+  return { errors, expected, completed: latencies.length, p50, p95, max };
+}
+
 async function load(base: string, environmentId: string) {
   // Cause/effect graph: C1 a new Resource-bearing K8s Session has no reusable
   // Pod because its projected mounts are Session-specific -> first execution
@@ -511,9 +550,9 @@ async function load(base: string, environmentId: string) {
   // | Rule | Resource Pod resident | Concurrent load | Effect |
   // |---|---|---|---|
   // | L1 | no | one per Session | complete once within cold-start bound |
-  // | L2 | yes + DB failover pools not converged | read-only public probes |
+  // | L2 | yes + public reads not responsive | read-only public probes |
   // |    | expose recovery latency; never start the steady-state timer |
-  // | L3 | yes + every replica responsive | bounded receipt-scoped turns | zero
+  // | L3 | yes + public reads responsive | bounded receipt-scoped turns | zero
   // |    | errors and marker+idle completion p95 <= configured limit |
   // | L4 | yes | bounded + active/active | every full-history marker exactly once |
   const count = Number(process.env.ADR71_LOAD_REQUESTS ?? 48);
@@ -544,42 +583,45 @@ async function load(base: string, environmentId: string) {
     assertProviderResponseCount(observation.events, coldMarkers[index]);
     assertProviderResponsesAreUnique(observation.events);
   });
-  // The promoted standby preserves accepted facts, but each replicated SQLx pool
-  // discovers its old idle socket independently. Converge them with repeatable
-  // public reads before measuring the separate steady-state SLO; using one
-  // successful write here would warm only its randomly selected Coordinator.
-  await awaitResponsiveCoordinatorSet(managed, sessions);
+  // Keep cold start and observed read recovery outside the steady-state timer.
+  // These public probes intentionally make no per-replica coverage claim.
+  await awaitResponsivePublicReads(managed, sessions);
   const latencies: number[] = [];
+  const samples: { marker: string; admissionMs: number; observationMs: number }[] = [];
   async function runClient(clientIndex: number) {
     for (let index = clientIndex; index < markers.length; index += concurrency) {
       const observation = await sendAndWaitForAgentMarker(
         managed, sessions[clientIndex], markers[index], 300_000,
       );
       latencies.push(observation.elapsed);
+      samples.push({ marker: markers[index], admissionMs: observation.admissionMs, observationMs: observation.observationMs });
       histories[clientIndex] = observation.events;
     }
   }
-  await Promise.all(Array.from({ length: concurrency }, (_, index) => runClient(index)));
-  latencies.sort((left, right) => left - right);
-  const p50 = latencies[Math.min(latencies.length - 1, Math.ceil(latencies.length * 0.50) - 1)];
-  const p95 = latencies[Math.min(latencies.length - 1, Math.ceil(latencies.length * 0.95) - 1)];
-  const max = latencies[latencies.length - 1];
-  assert.ok(
-    p95 <= p95Limit,
-    `completed turn p95 ${p95.toFixed(1)}ms > ${p95Limit}ms `
-      + `(p50=${p50.toFixed(1)}ms max=${max.toFixed(1)}ms)`,
-  );
+  // A failed Session stops its own dependent sends. Join the independent
+  // clients before auditing; do not replay an ambiguously accepted write.
+  const clients = await Promise.allSettled(Array.from({ length: concurrency }, (_, index) => runClient(index)));
   const markersBySession = sessions.map(() => [] as string[]);
   markers.forEach((marker, index) => markersBySession[index % concurrency].push(marker));
-  for (let index = 0; index < sessions.length; index += 1) {
-    for (const marker of markersBySession[index]) {
-      assertProviderResponseCount(histories[index], marker);
-    }
-    assertProviderResponsesAreUnique(histories[index]);
-  }
+  // Refresh durable history after all clients settle, including those whose
+  // response was lost. Cached successful observations cannot establish the
+  // outcome of the last failed request. A failed read remains an audit error.
+  const finalReads = await Promise.allSettled(sessions.map((session) => listSessionEvents(managed, session)));
+  finalReads.forEach((read, index) => {
+    if (read.status === 'fulfilled') histories[index] = read.value;
+  });
+  const audit = auditLoadResults(histories, markersBySession, latencies, p95Limit);
+  finalReads.forEach((read, index) => {
+    if (read.status === 'rejected') audit.errors.push(`Session ${index} final history: ${String(read.reason)}`);
+  });
+  clients.forEach((client, index) => {
+    if (client.status === 'rejected') audit.errors.push(`Session ${index}: ${String(client.reason)}`);
+  });
+  console.log(`LOAD AUDIT ${JSON.stringify({ ...audit, coldMs: coldElapsed, samples })}`);
+  assert.deepEqual(audit.errors, [], 'L3-L5 complete latency and durable-history audit');
   console.log(
     `OK load requests=${count} concurrency=${concurrency} cold_ms=${coldElapsed.toFixed(1)} `
-      + `turn_p50_ms=${p50.toFixed(1)} turn_p95_ms=${p95.toFixed(1)} turn_max_ms=${max.toFixed(1)}`,
+      + `turn_p50_ms=${audit.p50} turn_p95_ms=${audit.p95} turn_max_ms=${audit.max}`,
   );
 }
 
@@ -596,7 +638,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

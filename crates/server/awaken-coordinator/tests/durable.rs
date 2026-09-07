@@ -12,7 +12,9 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_coordinator::{HostResume, ManagedHost, SharedHost};
-use awaken_scenario_host::CustomToolModel;
+use awaken_scenario_host::{
+    CustomToolModel, build_unmounted_host, build_unmounted_host_with_deployment,
+};
 
 fn user(id: &str, text: &str) -> Message {
     Message::text(MessageId(id.into()), Role::User, text)
@@ -45,8 +47,13 @@ async fn host_over(dir: &std::path::Path, process: &str) -> Arc<SharedHost> {
     let mut worker_deployment = awaken_session_executor::DeploymentConfig::ephemeral();
     worker_deployment.sandbox_dir = Some(dir.join(format!("sandbox-{process}")));
     host_with_client_tool(
-        SharedHost::new_with_deployment(Arc::new(CustomToolModel), "custom", worker_deployment)
-            .with_runtime_authority(authority),
+        Arc::into_inner(build_unmounted_host_with_deployment(
+            Arc::new(CustomToolModel),
+            "custom",
+            worker_deployment,
+        ))
+        .expect("unmounted scenario host has one owner")
+        .with_runtime_authority(authority),
     )
 }
 
@@ -64,6 +71,9 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     let _ = std::fs::remove_dir_all(&dir);
     let thread = "durable-1";
 
+    // Both durable and ephemeral cases use the same Resources-complete Scenario
+    // composition. Empty artifact capture must succeed before the tested pause;
+    // only the injected runtime authority determines restart recovery.
     // Restart-recovery FMECA / cause-effect decision table:
     // C1=Coordinator injects an authority and the canonical dispatch Session
     // Runtime, C2=the replacement opens the same durable root, C3=each simulated
@@ -159,14 +169,20 @@ async fn in_memory_host_does_not_recover_an_awaiting_run_across_a_rebuild() {
     let thread = "ephemeral-1";
 
     {
-        let host = host_with_client_tool(SharedHost::new(Arc::new(CustomToolModel), "custom"));
+        let host = host_with_client_tool(
+            Arc::into_inner(build_unmounted_host(Arc::new(CustomToolModel), "custom"))
+                .expect("unmounted scenario host has one owner"),
+        );
         host.run(None, thread, vec![user("u1", "hi")])
             .await
             .unwrap();
         assert!(host.is_awaiting(thread).await);
     }
 
-    let host = host_with_client_tool(SharedHost::new(Arc::new(CustomToolModel), "custom"));
+    let host = host_with_client_tool(
+        Arc::into_inner(build_unmounted_host(Arc::new(CustomToolModel), "custom"))
+            .expect("unmounted scenario host has one owner"),
+    );
     assert!(
         !host.is_awaiting(thread).await,
         "an in-memory host starts clean; the awaiting run does not survive"

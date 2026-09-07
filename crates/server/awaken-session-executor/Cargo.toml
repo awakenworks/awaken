@@ -135,9 +135,5 @@ awaken-credential-materializer = { workspace = true, features = ["authority"] }
 # Drives Worker transport routers in-process through `ServiceExt::oneshot`.
 tower = { version = "0.5", features = ["util"] }
 
-[[test]]
-name = "durable_child_run"
-required-features = ["test-support"]
-
 [lints]
 workspace = true
