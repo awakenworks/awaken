@@ -44,6 +44,29 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttemptOwnershipAdmission {
+    Unbound,
+    Current,
+    Rejected,
+}
+
+impl AttemptOwnershipAdmission {
+    #[must_use]
+    const fn from_observation(authority_bound: bool, observation_current: bool) -> Self {
+        match (authority_bound, observation_current) {
+            (false, _) => Self::Unbound,
+            (true, true) => Self::Current,
+            (true, false) => Self::Rejected,
+        }
+    }
+
+    #[must_use]
+    const fn admits_external_effect(self) -> bool {
+        !matches!(self, Self::Rejected)
+    }
+}
+
 /// Verify the one claim-bound authority immediately before an external
 /// execution boundary.
 ///
@@ -54,13 +77,50 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub async fn verify_attempt_ownership(
     ownership: Option<&dyn crate::runtime_context::AttemptOwnershipVerifier>,
 ) -> Result<()> {
-    match ownership {
-        Some(ownership) => ownership.verify_current().await.map_err(|error| {
-            Error::Execution(format!(
-                "Run attempt no longer owns external execution: {error}"
-            ))
-        }),
-        None => Ok(()),
+    let (admission, rejection) = match ownership {
+        None => (
+            AttemptOwnershipAdmission::from_observation(false, false),
+            None,
+        ),
+        Some(ownership) => match ownership.verify_current().await {
+            Ok(()) => (
+                AttemptOwnershipAdmission::from_observation(true, true),
+                None,
+            ),
+            Err(error) => (
+                AttemptOwnershipAdmission::from_observation(true, false),
+                Some(error),
+            ),
+        },
+    };
+    if admission.admits_external_effect() {
+        Ok(())
+    } else {
+        let error = rejection.expect("rejected ownership admission retains its cause");
+        Err(Error::Execution(format!(
+            "Run attempt no longer owns external execution: {error}"
+        )))
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn claim_bound_external_effect_admits_only_current_ownership() {
+    // Test design — Causes: C1 an attempt authority is bound; C2 its latest
+    // observation is current. Effects: E1 admit the external effect or E2
+    // reject it. Constraint: an unbound context is the supported embedded/direct
+    // topology; claim-bound callers must never inherit that allowance.
+    // Decision rules: O1 !C1 -> E1; O2 C1+C2 -> E1; O3 C1+!C2 -> E2.
+    let authority_bound: bool = kani::any();
+    let observation_current: bool = kani::any();
+    let admission =
+        AttemptOwnershipAdmission::from_observation(authority_bound, observation_current);
+    assert_eq!(
+        admission.admits_external_effect(),
+        !authority_bound || observation_current
+    );
+    if authority_bound {
+        assert_eq!(admission.admits_external_effect(), observation_current);
     }
 }
 
