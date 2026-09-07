@@ -281,6 +281,8 @@ mod loom_tests {
         // EVERY mutex schedule; H3 a ready cloud Worker with valid login but no
         // exact backend cannot substitute. Readiness remains Ready, so H2 is
         // specifically credential fail-closed, not incidental Worker drain.
+        // H1 requires explicit current protocol on BOTH request and Worker; an
+        // omitted legacy manifest must fail H0 before credential admission.
         // Runs the production register/heartbeat/admission code with only its
         // mutex replaced by Loom; complements WorkerCredentialLiveness.tla.
         loom::model(|| {
@@ -295,10 +297,14 @@ mod loom_tests {
             let required = PlacementRequirements {
                 sandbox_backend: Some(TRUSTED_HOST_SANDBOX_BACKEND.into()),
                 required_credentials: [credential.clone()].into(),
-                ..Default::default()
+                ..PlacementRequirements::remote_required()
             };
             let directory = Arc::new(MemoryWorkerDirectory::new());
             let mut host = registration("host");
+            host.manifest.runtime_protocol = awaken_worker_contract::VersionRange {
+                min: awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                max: awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+            };
             host.manifest
                 .sandbox_backends
                 .insert(TRUSTED_HOST_SANDBOX_BACKEND.into());
@@ -309,6 +315,13 @@ mod loom_tests {
             baseline.state = WorkerState::Ready;
             baseline.credential_observations.insert(available.clone());
             assert!(baseline.accepts(&required, 1), "H1 positive control");
+            let mut legacy = baseline.clone();
+            legacy.manifest.runtime_protocol = awaken_worker_contract::VersionRange::ANY;
+            legacy.capability_fingerprint = legacy.manifest.fingerprint().unwrap();
+            assert!(
+                !legacy.accepts(&required, 1),
+                "H0 omitted protocol fails closed"
+            );
             let mut cloud = baseline.clone();
             cloud.manifest.sandbox_backends = ["container".into()].into();
             cloud.capability_fingerprint = cloud.manifest.fingerprint().unwrap();
