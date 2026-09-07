@@ -8,8 +8,8 @@
 use std::collections::BTreeSet;
 
 use awaken_resource_contract::{
-    ResourceKind, ResourcePurgeError, ResourcePurgeIntent, ResourceReferenceKind,
-    ResourceReferenceRecord, ResourceTarget,
+    AcquireResourceReclamationOutcome, ResourceKind, ResourcePurgeError, ResourcePurgeIntent,
+    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
 #[cfg(feature = "sqlite")]
 use awaken_sqlite_pool::SharedSqliteConnection;
@@ -108,6 +108,65 @@ pub(crate) fn validate_fence_request(
         ))
     } else {
         Ok(())
+    }
+}
+
+/// One store-owned decision for the storage-specific fence adapters.
+///
+/// SQLite and PostgreSQL still own their transaction and locking mechanics,
+/// but they must not carry separate interpretations of an existing fence or a
+/// non-empty reference scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReclamationAcquisitionDecision {
+    InstallFence,
+    AlreadyOwned,
+    Blocked,
+    Contended,
+}
+
+const fn reclamation_acquisition_decision(
+    fence_exists: bool,
+    owned_by_intent: bool,
+    has_references: bool,
+) -> ReclamationAcquisitionDecision {
+    if fence_exists {
+        if owned_by_intent {
+            ReclamationAcquisitionDecision::AlreadyOwned
+        } else {
+            ReclamationAcquisitionDecision::Contended
+        }
+    } else if has_references {
+        ReclamationAcquisitionDecision::Blocked
+    } else {
+        ReclamationAcquisitionDecision::InstallFence
+    }
+}
+
+pub(crate) enum ReclamationAcquisitionPlan {
+    InstallFence,
+    Return(AcquireResourceReclamationOutcome),
+}
+
+pub(crate) fn plan_reclamation_acquisition(
+    existing_owner: Option<&str>,
+    intent_id: &str,
+    blockers: Vec<ResourceReferenceRecord>,
+) -> ReclamationAcquisitionPlan {
+    match reclamation_acquisition_decision(
+        existing_owner.is_some(),
+        existing_owner == Some(intent_id),
+        !blockers.is_empty(),
+    ) {
+        ReclamationAcquisitionDecision::InstallFence => ReclamationAcquisitionPlan::InstallFence,
+        ReclamationAcquisitionDecision::AlreadyOwned => {
+            ReclamationAcquisitionPlan::Return(AcquireResourceReclamationOutcome::AlreadyOwned)
+        }
+        ReclamationAcquisitionDecision::Blocked => {
+            ReclamationAcquisitionPlan::Return(AcquireResourceReclamationOutcome::Blocked(blockers))
+        }
+        ReclamationAcquisitionDecision::Contended => {
+            ReclamationAcquisitionPlan::Return(AcquireResourceReclamationOutcome::Contended)
+        }
     }
 }
 
@@ -260,7 +319,7 @@ fn reference_params(record: &ResourceReferenceRecord) -> [String; 5] {
     ]
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
     use awaken_resource_contract::{
@@ -289,6 +348,58 @@ mod tests {
                 kind: ResourceReferenceKind::WorkspaceOwnership,
                 reference_id: holder.into(),
             },
+        }
+    }
+
+    #[test]
+    fn reclamation_acquisition_has_one_fail_closed_decision_table() {
+        // Causes: C1 a durable fence exists; C2 it belongs to this intent; C3
+        // the atomic reference scan is non-empty. Effects: E1 install a new
+        // fence, E2 return idempotent ownership, E3 report blockers, or E4
+        // reject contention. Constraint: C2 is meaningful only with C1; the
+        // impossible 01x projection is nevertheless handled as no existing
+        // fence and therefore cannot bypass C3. Decision table:
+        // R1=000/010=>E1; R2=001/011=>E3; R3=110/111=>E2;
+        // R4=100/101=>E4.
+        for (fence, owned, references, expected) in [
+            (
+                false,
+                false,
+                false,
+                ReclamationAcquisitionDecision::InstallFence,
+            ),
+            (false, false, true, ReclamationAcquisitionDecision::Blocked),
+            (
+                false,
+                true,
+                false,
+                ReclamationAcquisitionDecision::InstallFence,
+            ),
+            (false, true, true, ReclamationAcquisitionDecision::Blocked),
+            (
+                true,
+                true,
+                false,
+                ReclamationAcquisitionDecision::AlreadyOwned,
+            ),
+            (
+                true,
+                true,
+                true,
+                ReclamationAcquisitionDecision::AlreadyOwned,
+            ),
+            (
+                true,
+                false,
+                false,
+                ReclamationAcquisitionDecision::Contended,
+            ),
+            (true, false, true, ReclamationAcquisitionDecision::Contended),
+        ] {
+            assert_eq!(
+                reclamation_acquisition_decision(fence, owned, references),
+                expected
+            );
         }
     }
 
@@ -851,5 +962,25 @@ mod tests {
                 format!("lifecycle-{ordinal}")
             );
         }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn reclamation_fence_admission_requires_absent_owner_and_zero_references() {
+    // Symbolic form of the production decision table above. All Boolean
+    // projections are covered, including the impossible owned-without-fence
+    // input, which must remain fail closed with respect to references.
+    let fence_exists = kani::any::<bool>();
+    let owned_by_intent = kani::any::<bool>();
+    let has_references = kani::any::<bool>();
+    let decision = reclamation_acquisition_decision(fence_exists, owned_by_intent, has_references);
+
+    assert_eq!(
+        decision == ReclamationAcquisitionDecision::InstallFence,
+        !fence_exists && !has_references
+    );
+    if fence_exists || has_references {
+        assert_ne!(decision, ReclamationAcquisitionDecision::InstallFence);
     }
 }

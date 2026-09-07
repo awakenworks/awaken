@@ -110,6 +110,12 @@ cargo test -p awaken-control --lib management_effect
 cargo test -p awaken-config-store --features test-support --test integration management_effect
 cargo test -p awaken-config-store --features test-support --lib audit_identity
 cargo test -p awaken-config-store --features test-support --test integration audit_identity
+# The scalar admission proofs below rely on the actual adapters and reclaimer
+# calling the shared kernels at their transaction and pre-purge boundaries.
+cargo test -p awaken-resource-store --lib reclamation_acquisition_has_one_fail_closed_decision_table
+cargo test -p awaken-resource-store --lib sqlite_acquire_rechecks_references_added_by_the_fence_transaction
+cargo test -p awaken-resource-reclaimer --lib physical_purge_admission_requires_every_safety_fact
+cargo test -p awaken-resource-reclaimer --lib a_late_guard_blocker_releases_the_physical_fence_before_deferring
 
 AWAKEN_FORMAL_TRACE_DIR="$rust_trace_dir" \
   cargo test -p awaken-runtime --test formal_refinement
@@ -470,6 +476,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness portable_aggregate_revision_is_strictly_monotonic_and_never_wraps \
     --harness resource_lifecycle_timestamps_project_the_exact_transition \
     --harness stale_resource_purge_claim_cannot_commit_receipt
+  run_kani awaken-resource-store \
+    --harness reclamation_fence_admission_requires_absent_owner_and_zero_references
+  run_kani awaken-resource-reclaimer \
+    --harness physical_purge_requires_zero_references_leases_and_fence
   run_kani awaken-mcp-server-core \
     --harness one_request_has_at_most_one_final_response \
     --harness notifications_never_have_a_jsonrpc_response \
