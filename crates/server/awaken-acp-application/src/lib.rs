@@ -969,12 +969,15 @@ mod tests {
                 assert_eq!(credentials.len(), 1);
                 let credential = credentials.into_iter().next().unwrap();
                 assert_eq!(credential.state, state);
-                let expected = credential.credential.clone();
+                // C1-C3 exercise the production use-time revalidator, not a
+                // second state-only helper. The neutral contract separately
+                // owns the id/revision mismatch decision table.
                 assert_eq!(
-                    awaken_runtime_contract::require_exact_available_worker_reference(
-                        &expected, credential,
-                    )
-                    .is_ok(),
+                    prepared
+                        .resolver
+                        .revalidate_worker_reference(&credential.credential)
+                        .await
+                        .is_ok(),
                     state == CredentialObservationState::Available
                 );
                 let capabilities = prepared.resolver.capability_observations().await.unwrap();
