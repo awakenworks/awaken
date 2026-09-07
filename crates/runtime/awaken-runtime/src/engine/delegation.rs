@@ -385,6 +385,7 @@ pub(super) async fn resume_delegation(
     thread_id: &ThreadId,
     reader: &dyn CommittedThreadView,
     context: &RuntimeRunContext,
+    resume_checkpoint: Option<StreamCheckpoint>,
 ) -> Result<RunState> {
     let (call_id, pending) = ticket.tool_call().ok_or_else(|| {
         Error::Execution("awaiting delegation is missing its pending tool".to_string())
@@ -548,6 +549,7 @@ pub(super) async fn resume_delegation(
         reader,
         context,
         ResumeContinuation::NativeLoop,
+        resume_checkpoint,
     )
     .await
 }

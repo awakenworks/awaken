@@ -60,6 +60,7 @@ pub(super) async fn drive_resumed(
     reader: &dyn CommittedThreadView,
     context: &RuntimeRunContext,
     continuation: ResumeContinuation,
+    resume_checkpoint: Option<StreamCheckpoint>,
 ) -> Result<RunState> {
     let resume_applied = resume_operation_id.map(|operation_id| {
         RunEvent::ResumeApplied {
@@ -393,6 +394,7 @@ pub(super) async fn drive_resumed(
         store,
         seed_state,
         seed_audit,
+        resume_checkpoint,
     )
     .await?;
     finalize(runtime, context, thread_id, run_id.clone(), step_result).await

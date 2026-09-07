@@ -279,13 +279,39 @@ is not equivalent to a fresh call when an interrupted partial exists. Such
 historical checkpoints remain retained and cannot authorize model continuation
 or tool salvage. Fresh inference without a checkpoint still starts normally.
 
-Checkpoint observation precedes Native drive tool-batch recovery and inference.
-Only a successful absent read or a matching Run/Thread checkpoint may reach
-those boundaries. Storage/fence errors and foreign identity end Indeterminate;
-cancellation during the read returns Cancelled through the existing cancellable
-read boundary. All three retain the checkpoint and the physical veto rather
-than fabricating absence. This does not make a blocking synchronous storage
-operation preemptible, nor prove an unjournaled historical Run stopped.
+One recovery observation now precedes initial execution and validated resume,
+including permission approval, child delegation and model-free ToolBatch handoff.
+The entry passes the validated checkpoint into Native drive; drive does not read
+it again. Only a successful absent read or a matching Run/Thread checkpoint,
+together with permitting model evidence, may reach those effect boundaries.
+Storage/fence errors and foreign identity end Indeterminate; cancellation during
+the read returns Cancelled through the existing cancellable read boundary. These
+failures retain the checkpoint and physical veto rather than fabricate absence.
+The same read has one 30-second observation budget, even when no cancellation
+token is supplied. Expiry maps to the existing unavailable-read decision;
+it neither cancels the Run token nor times out a provider or durable evidence
+write. Successful slow reads before the deadline still admit normal execution.
+Cancel/stop preserve their requested logical outcome after read expiry while
+retaining the physical veto. No new retry loop or recovery authority is added.
+Malformed owned model evidence retains its Commit error classification and veto.
+Cancel, stop and coordinated tool interruption restore that same veto before
+returning their logical outcome, including terminal interruption replay.
+Recovery rejection seals unfinished tool/child state through the existing final
+ThreadCommit; resume supplies its explicit committed reader to that same sealing
+implementation instead of depending on the optional context reader.
+
+The existing CheckpointRecovery model covers five entry classes and four prior
+evidence classes within MaxChunks=3, including control return without evidence,
+resume/handoff before observation, retained unknown checkpoints and read
+settlement under fair local timer/scheduler progress even for a pending store.
+Fourteen semantic mutations and thirteen reachability witnesses guard
+the model. Runtime tests separately cover actual permission/tool/child calls and
+control replay, deadline expiry without cancellation, and successful slow reads.
+This is bounded abstract-model evidence, not Rust refinement or
+provider termination proof. It does not make blocking synchronous storage
+preemptible, prove an unjournaled historical Run stopped, or add independent
+execution-domain receipts. Invalid resume commands are rejected before recovery
+observation and are not claimed as predecessor-stop proof.
 
 Trusted adapters annotate pre-I/O validation/materialization errors as
 NotDispatched, and errors after validated protocol completion as Terminated.
