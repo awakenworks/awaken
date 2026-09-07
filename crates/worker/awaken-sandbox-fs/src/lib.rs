@@ -16,6 +16,10 @@ mod portable_name;
 pub use portable_name::{is_portable_component, is_reserved_component};
 mod projection_root;
 pub use projection_root::ProjectionRoot;
+#[cfg(target_os = "linux")]
+mod unix_socket_path;
+#[cfg(target_os = "linux")]
+pub use unix_socket_path::PinnedUnixSocketPath;
 mod tree_limits;
 use tree_limits::ReadBudget;
 pub use tree_limits::TreeReadLimits;
