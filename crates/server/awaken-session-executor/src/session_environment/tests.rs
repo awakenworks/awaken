@@ -615,7 +615,7 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
         .dispose_for_effect(
             &authorization,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&authorization).effect_fence(),
+                authorization.effect_fence(),
             ),
         )
         .await
@@ -3019,7 +3019,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
     hot.dispose_for_effect(
         &authorization,
         &awaken_provisioning_contract::test_support::EffectAuthority::new(
-            (&authorization).effect_fence(),
+            authorization.effect_fence(),
         ),
     )
     .await
@@ -3159,7 +3159,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
                 .dispose_for_effect(
                     &authorization,
                     &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                        (&authorization).effect_fence()
+                        authorization.effect_fence()
                     )
                 )
                 .await
@@ -3187,7 +3187,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
             .dispose_for_effect(
                 &authorization,
                 &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                    (&authorization).effect_fence(),
+                    authorization.effect_fence(),
                 ),
             )
             .await
@@ -3499,7 +3499,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
         .dispose_for_effect(
             &authorization,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&authorization).effect_fence(),
+                authorization.effect_fence(),
             ),
         )
         .await

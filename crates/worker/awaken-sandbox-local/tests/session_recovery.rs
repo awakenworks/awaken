@@ -186,7 +186,7 @@ async fn cross_node_adopt(tier: Tier, can_exec: bool) {
         .dispose_for_effect(
             &authorization(&terminal),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&authorization(&terminal)).effect_fence(),
+                authorization(&terminal).effect_fence(),
             ),
         )
         .await

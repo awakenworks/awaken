@@ -871,8 +871,11 @@ direct all-in-one Host's execution authority.
 The Session response-relative evidence contract, shared renewal lane and final
 projection publication are owned by the
 [ADR-0066 amendment](0066-session-service-binding-and-realization.md#2026-09-07-amendment-request-relative-realization-evidence).
-Provider absolute-time correspondence and complete platform qualification
-remain open; this provider ADR does not define another Session clock policy.
+That amendment also owns terminal Provider clock migration: preparation,
+reconstruction and physical removal consume current proof without repeating
+Worker UTC checks. Ordinary and terminal checkpoint WAL now use that same proof.
+Creation/adoption clock correspondence and complete
+platform qualification remain open; this ADR defines no second Session clock.
 
 Compound Kubernetes terminal and restored-target removal forward that same
 current-effect authority through the existing immutable-incarnation port. The

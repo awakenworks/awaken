@@ -29,7 +29,8 @@ VARIABLES deploymentReady, registeredWorker, providerSource, providerPhase
 physicalDisposal == providerPhase = "disposal"
 coldReconstruction == providerPhase = "reconstruction"
 restoredDisposal == providerPhase = "restore-disposal"
-(* Reconstruction, preparation and physical disposal share one wait transition,
+checkpointUpload == providerPhase = "checkpoint"
+(* Reconstruction, preparation, checkpoint upload and disposal share one wait transition,
    not independent authorization protocols. providerPhase is fixed at initialization;
    this proves admission within that phase, not aggregate preparation ordering.
    Both use the same current-effect kernel after control/credential/removal
@@ -56,7 +57,7 @@ bindingAll == <<allVars, bindingVars, deploymentReady, registeredWorker, provide
 BindingInit == RootInit
   /\ registeredWorker \in BOOLEAN
   /\ providerSource \in BOOLEAN
-  /\ providerPhase \in {"preparation", "disposal", "reconstruction", "restore-disposal"}
+  /\ providerPhase \in {"preparation", "disposal", "reconstruction", "restore-disposal", "checkpoint"}
   /\ deploymentReady = FALSE
   /\ selection = "unset" /\ boundSlot = 0 /\ boundGeneration = 0 /\ boundEnvironment = 0
   /\ environmentIdentity = 1 /\ environmentPhase = "candidate" /\ sessionExpired = FALSE
@@ -115,6 +116,8 @@ CommitEffect == /\ effectHeld /\ effectChecked /\ effects < 2
            (IF "reconstruction" \in effectPhases THEN "reconstruction-replay" ELSE "reconstruction")
           ELSE IF restoredDisposal THEN
            (IF "restore-disposal" \in effectPhases THEN "restore-disposal-replay" ELSE "restore-disposal")
+          ELSE IF checkpointUpload THEN
+           (IF "checkpoint" \in effectPhases THEN "checkpoint-replay" ELSE "checkpoint")
           ELSE "preparation")
        ELSE IF providerSource THEN "provider" ELSE environmentPhase}
   /\ memoryDrains' = (IF memoryWait = 2 THEN 1 ELSE memoryDrains)
@@ -176,16 +179,29 @@ BindingNext == (((((Select \/ WeakSpawn \/ Bind
 BindingSpec == BindingInit /\ [][BindingNext]_bindingAll
 BindingTypeOK == RootTypeOK /\ selection \in {"unset", "weak", "scoped"}
   /\ deploymentReady \in BOOLEAN /\ registeredWorker \in BOOLEAN
-  /\ providerSource \in BOOLEAN /\ providerPhase \in {"preparation", "disposal", "reconstruction", "restore-disposal"}
+  /\ providerSource \in BOOLEAN /\ providerPhase \in {"preparation", "disposal", "reconstruction", "restore-disposal", "checkpoint"}
   /\ boundSlot \in 0..2 /\ boundGeneration \in 0..2 /\ boundEnvironment \in 0..2
   /\ environmentIdentity \in 1..2 /\ environmentPhase \in {"candidate", "resident", "retiring"}
   /\ sessionExpired \in BOOLEAN /\ effectHeld \in BOOLEAN /\ effectChecked \in BOOLEAN
   /\ badEffect \in BOOLEAN /\ weakStarted \in BOOLEAN /\ effects \in 0..2
-  /\ effectPhases \subseteq {"candidate", "resident", "retiring", "provider", "memory", "memory-replay", "preparation", "disposal", "disposal-replay", "reconstruction", "reconstruction-replay", "restore-disposal", "restore-disposal-replay"}
+  /\ effectPhases \subseteq {"candidate", "resident", "retiring", "provider", "memory", "memory-replay", "preparation", "disposal", "disposal-replay", "reconstruction", "reconstruction-replay", "restore-disposal", "restore-disposal-replay", "checkpoint", "checkpoint-replay"}
   /\ memoryWait \in 0..2 /\ memoryDrains \in 0..2
   /\ providerWait \in 0..2
 MemoryCopyDrainedOnce == memoryDrains <= 1
 OnlyCurrentBindingCommits == ~badEffect
+(* Independent positive-admission oracle: exact fresh provider authority with
+   no outstanding wait must remain usable. A second Provider UTC gate cannot
+   reject it. No second clock/state machine is introduced: a mutant fixes the
+   unrelated clock in its rejecting class for one provider phase. Executable
+   tables cross actual past/future Control values with current proof. This is
+   enabledness of the next guarded callback, NOT eventual backend completion
+   or a proof of clock conversion, suspension, or arbitrary callback duration. *)
+FreshProviderEffectRemainsEnabled ==
+  (providerSource /\ ~effectHeld /\ effects < 2
+   /\ (~registeredWorker \/ RootCurrent)
+   /\ "Live" = projection /\ sessionExpired = FALSE
+   /\ slotIdentity = boundSlot /\ lease[1] = boundGeneration
+   /\ 1 # memoryWait /\ 1 # providerWait) => ENABLED CheckEffect
 OnlyProbedDeploymentSelected == selection = "scoped" => deploymentReady
 WeakExecutionCannotUpgrade == weakStarted => selection = "weak"
 BindingIsWriteOnce == [][boundSlot # 0 => UNCHANGED <<boundSlot, boundGeneration, boundEnvironment>>]_bindingAll
@@ -207,6 +223,12 @@ NoColdReconstructionReplayReached == "reconstruction-replay" \notin effectPhases
    observation proves absence. This phase models target-lock/backend response
    admission and its retry, not restoration tuple bytes, filesystem locking,
    remote compare-and-delete, or proof that a cancelled remote commit stops. *)
+(* Ordinary checkpoint upload/cached WAL uses the same captured Provider root.
+   The one put response corresponds to providerWait; each subsequent WAL effect
+   re-enters CheckEffect. Terminal put/delete ordering remains in
+   LocalProcessRecovery; exact snapshot/object identity remains executable. *)
+NoCheckpointUploadReached == "checkpoint" \notin effectPhases
+NoCheckpointReplayReached == "checkpoint-replay" \notin effectPhases
 NoRestoredDisposalReached == "restore-disposal" \notin effectPhases
 NoRestoredDisposalReplayReached == "restore-disposal-replay" \notin effectPhases
 =============================================================================

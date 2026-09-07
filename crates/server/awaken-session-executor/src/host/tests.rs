@@ -20043,7 +20043,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         );
         assert_eq!(
             provider.restored_disposals.lock().unwrap().as_slice(),
-            &[expected_authorization.clone()]
+            std::slice::from_ref(&expected_authorization)
         );
         // Begin the independent TR2/TR3 exact-retry phase only after checking the
         // late response and original owner. Reset fixture observations and supplied

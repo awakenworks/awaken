@@ -2,6 +2,224 @@ use super::state::ProjectedEnvironmentOwner;
 use super::*;
 use crate::session_slot::UnboundSessionEnvironmentOrigin;
 
+struct PendingUploadStore {
+    puts: std::sync::atomic::AtomicUsize,
+    gate: tokio::sync::Semaphore,
+}
+
+#[async_trait::async_trait]
+impl awaken_provisioning_contract::SandboxCheckpointStore for PendingUploadStore {
+    async fn put(
+        &self,
+        _metadata: &awaken_provisioning_contract::CheckpointObjectMetadata,
+        bytes: Vec<u8>,
+    ) -> Result<
+        awaken_provisioning_contract::StoredCheckpointObject,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        self.puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let receipt = awaken_provisioning_contract::StoredCheckpointObject {
+            id: "exact-upload".into(),
+            digest: awaken_resource_contract::content_id(&bytes),
+            size_bytes: bytes.len() as u64,
+        };
+        let _permit = self.gate.acquire().await.unwrap();
+        Ok(receipt)
+    }
+    async fn get(&self, _: &str) -> Result<Vec<u8>, awaken_provisioning_contract::SandboxError> {
+        panic!("upload must not read another checkpoint")
+    }
+    async fn delete(&self, _: &str) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        panic!("ordinary upload must not dispose a checkpoint")
+    }
+}
+
+#[tokio::test]
+async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_and_store_waits() {
+    use crate::session_slot::SessionRealizationAuthority as Authority;
+    use awaken_provisioning_contract as pc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    // Host-to-real-Local decision table H: direct/registered topology; lifecycle
+    // lock/put-response wait; current/Session close/same-byte slot replacement/
+    // Worker close/Worker expiry/renewal. Worker-only causes exclude direct Host.
+    // H1 current/renew -> real snapshot and receipt with unchanged Control time.
+    // H2 loss at lifecycle -> zero uploads. H3 loss at put response -> no receipt;
+    // exact fresh retry reaches cached WAL or repeats the original pending key.
+    // H4 same-byte new slot must not rebind the authority captured BEFORE wait.
+    // Store here is a response gate, not a durability proof; Local's store-CAS
+    // table independently checks replay bytes and key. No mock Sandbox path.
+    for registered in [false, true] {
+        for wait in ["lifecycle", "put"] {
+            for change in [
+                "current",
+                "session-close",
+                "slot-replace",
+                "worker-close",
+                "worker-expire",
+                "renew",
+            ] {
+                if !registered && change.starts_with("worker-") {
+                    continue;
+                }
+                let thread = "current-upload-host";
+                let root = tempfile::tempdir().unwrap();
+                let provider =
+                    crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+                let environment = environment(&provider, thread).await;
+                let binding = serde_json::to_string(&environment.handle()).unwrap();
+                let lease = awaken_session_contract::SessionRealizationLease {
+                    owner: "upload-worker".into(),
+                    runtime_incarnation: "boot".into(),
+                    epoch: 2,
+                    expires_at_unix_ms: 30_000,
+                };
+                let generation = generation(thread);
+                let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+                    "workspace",
+                    thread,
+                    "suspend",
+                    &generation,
+                    1,
+                    Some(lease.clone()),
+                    None,
+                );
+                let fence = lease.sandbox_effect_fence(&operation.effect_id).unwrap();
+                let worker = Arc::new(pc::test_support::EffectAuthority::new(&fence));
+                let store = Arc::new(PendingUploadStore {
+                    puts: AtomicUsize::new(0),
+                    gate: tokio::sync::Semaphore::new(usize::from(wait == "lifecycle")),
+                });
+                let mut raw =
+                    SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
+                        .with_environment_checkpoint_store(store.clone());
+                if registered {
+                    raw.execution_authority = Some(worker.clone());
+                }
+                let host = Arc::new(raw);
+                let install = || {
+                    host.session_slots.update(thread, |slot| {
+                        slot.environment_owner = resident(thread, environment.clone());
+                        slot.realization_authority = Authority::Live(
+                            awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+                                lease.clone(),
+                                0,
+                            )
+                            .unwrap()
+                            .observed(awaken_local_process::authority_proof_started().unwrap()),
+                        );
+                    })
+                };
+                install();
+                let request = awaken_session_contract::SandboxCheckpointRequest {
+                    workspace_id: "workspace".into(),
+                    session_id: thread.into(),
+                    operation,
+                    source_effect_id: format!("effect-{thread}"),
+                    source_binding: binding,
+                    generation,
+                    format: "awaken-fs-tar-v1".into(),
+                    created_at_unix_ms: 10,
+                    expires_at_unix_ms: 20_000,
+                    max_bytes: 1024 * 1024,
+                };
+                let managed = crate::ManagedHost::new(host.clone());
+                let lifecycle = host
+                    .session_slots
+                    .read(thread, |slot| slot.lifecycle.clone())
+                    .unwrap();
+                let held = if wait == "lifecycle" {
+                    Some(lifecycle.lock().await)
+                } else {
+                    None
+                };
+                let mut pending =
+                    Box::pin(managed.checkpoint_environment_continuation(thread, request.clone()));
+                std::future::poll_fn(|cx| {
+                    assert!(
+                        std::future::Future::poll(pending.as_mut(), cx).is_pending(),
+                        "H wait {wait}/{change}"
+                    );
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                assert_eq!(
+                    store.puts.load(Ordering::SeqCst),
+                    usize::from(wait == "put")
+                );
+                match change {
+                    "session-close" => host.session_slots.update(thread, |slot| {
+                        slot.realization_authority = Authority::Closed(Some(lease.clone()))
+                    }),
+                    "slot-replace" => {
+                        host.session_slots.remove(thread);
+                        install();
+                    }
+                    "worker-close" => *worker.current.lock().unwrap() = None,
+                    "worker-expire" => {
+                        worker.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO
+                    }
+                    "renew" => {
+                        let mut renewed = lease.clone();
+                        renewed.expires_at_unix_ms += 1;
+                        host.session_slots.update(thread, |slot| {
+                            slot.realization_authority = Authority::Live(
+                                awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+                                    renewed, 0,
+                                )
+                                .unwrap()
+                                .observed(awaken_local_process::authority_proof_started().unwrap()),
+                            )
+                        });
+                        worker
+                            .current
+                            .lock()
+                            .unwrap()
+                            .as_mut()
+                            .unwrap()
+                            .0
+                            .expires_at_unix_ms += 1;
+                    }
+                    _ => {}
+                }
+                drop(held);
+                store.gate.add_permits(1);
+                let result = pending.await;
+                let admitted = matches!(change, "current" | "renew");
+                assert_eq!(
+                    result.is_ok(),
+                    admitted,
+                    "H {registered}/{wait}/{change}: {result:?}"
+                );
+                assert_eq!(
+                    store.puts.load(Ordering::SeqCst),
+                    usize::from(wait == "put" || admitted)
+                );
+                if let Ok(receipt) = result {
+                    assert_eq!(
+                        receipt.checkpoint.expires_at_unix_ms,
+                        request.expires_at_unix_ms
+                    );
+                }
+                if !admitted {
+                    // Independent fresh retry after denial; renewal rows retain
+                    // their newer live receipt, proving expiry is not a WAL key.
+                    install();
+                    *worker.current.lock().unwrap() = Some((fence, Duration::from_secs(1)));
+                }
+                managed
+                    .checkpoint_environment_continuation(thread, request)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    store.puts.load(Ordering::SeqCst),
+                    if wait == "put" && !admitted { 2 } else { 1 }
+                );
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn terminal_committed_checkpoint_requires_current_worker_and_session_after_delete() {
     use crate::host::tests::{
@@ -201,7 +419,7 @@ async fn dispose_current_environment(
         .dispose_for_effect(
             &authorization,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&authorization).effect_fence(),
+                authorization.effect_fence(),
             ),
         )
         .await

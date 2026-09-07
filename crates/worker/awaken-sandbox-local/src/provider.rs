@@ -1652,8 +1652,9 @@ impl pc::Sandbox for LocalSandbox {
         request: &pc::SandboxCheckpointRequest,
         store: &dyn pc::SandboxCheckpointStore,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
-        self.create_checkpoint_for_effect(request, store, effect_fence)
+        self.create_checkpoint_for_effect(request, store, effect_fence, authority)
             .await
     }
 
