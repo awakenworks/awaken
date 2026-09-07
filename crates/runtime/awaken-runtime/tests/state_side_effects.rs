@@ -323,10 +323,10 @@ async fn tool_with_no_state_commits_nothing_extra() {
 
     let committed = commit.committed();
     assert!(
-        committed
-            .state
-            .iter()
-            .all(|command| command.key.0 == "runtime.active_tool_batch.v1"),
+        committed.state.iter().all(|command| matches!(
+            command.key.0.as_str(),
+            "runtime.active_tool_batch.v1" | "runtime.model_operation.v1"
+        )),
         "a tool staging no commands must commit only runtime recovery state, got {:?}",
         committed.state
     );

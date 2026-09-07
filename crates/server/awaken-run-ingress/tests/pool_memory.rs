@@ -980,8 +980,8 @@ async fn physical_return_ack_retries_transport_without_reexecuting_the_attempt()
         assert_eq!(infers.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(
             commit.commit_count(),
-            2,
-            "one input and one terminal commit, no replay"
+            4,
+            "input, model entry/return evidence, terminal; no replay"
         );
         assert_eq!(
             store.finish_claims(),

@@ -239,20 +239,36 @@ async fn infer_step(
         }
         request.model_binding = candidates[cand_idx].clone();
         if let Some(materializer) = &context.model_content_materializer {
-            request = materializer.materialize(request).await?;
+            request = inference::model_read(
+                context.cancellation.as_ref(),
+                materializer.materialize(request),
+            )
+            .await
+            .ok_or_else(|| {
+                awaken_runtime_contract::llm::Error::Unauthorized(
+                    "model preparation cancelled".into(),
+                )
+            })??;
         }
         if let Some(gate) = &context.model_request_gate {
-            match gate
-                .admit_model_request(ModelRequestAdmissionRequest {
+            match inference::model_read(
+                context.cancellation.as_ref(),
+                gate.admit_model_request(ModelRequestAdmissionRequest {
                     run_id: run_id.clone(),
                     thread_id: thread_id.clone(),
-                })
-                .await
-                .map_err(|error| {
-                    awaken_runtime_contract::llm::Error::Unauthorized(format!(
-                        "model request admission unavailable: {error}"
-                    ))
-                })? {
+                }),
+            )
+            .await
+            .ok_or_else(|| {
+                awaken_runtime_contract::llm::Error::Unauthorized(
+                    "model admission cancelled".into(),
+                )
+            })?
+            .map_err(|error| {
+                awaken_runtime_contract::llm::Error::Unauthorized(format!(
+                    "model request admission unavailable: {error}"
+                ))
+            })? {
                 ModelRequestAdmission::Admit => {}
                 ModelRequestAdmission::Pause(reason) => {
                     break Ok(InferStepOutcome::Await(reason));
@@ -270,6 +286,9 @@ async fn infer_step(
             step: step_base + step,
             response: truncation_retries,
         };
+        let mut journal = super::model_operation::ModelOperationJournal::new(
+            ledger, store, context, thread_id, run_id,
+        );
         let observed = infer_with_retry_observed(
             llm,
             request,
@@ -282,8 +301,24 @@ async fn infer_step(
             context.content_sink(),
             runtime.metrics(),
             context.ownership.as_deref(),
+            Some(&mut journal),
         )
         .await;
+        if context.is_cancelled() {
+            break Err(awaken_runtime_contract::llm::Error::Unauthorized(
+                "model observation cancelled".into(),
+            ));
+        }
+        if journal.failed() {
+            // A failed start/return receipt must not become model-pool failover
+            // or a provider retry. Preserve the unknown durable prefix.
+            break Ok(InferStepOutcome::EvidenceUnavailable(
+                observed
+                    .result
+                    .expect_err("journal failures stop inference")
+                    .to_string(),
+            ));
+        }
         // The audit vector shares the existing ThreadCommit watermarks with
         // messages and state. Gate pauses return before this seam and therefore
         // stage no model observation.
@@ -355,6 +390,7 @@ async fn infer_step(
 }
 
 enum InferStepOutcome {
+    EvidenceUnavailable(String),
     Response {
         response: ChatResponse,
         model_ref: String,
@@ -588,32 +624,21 @@ pub(super) async fn drive(
             context_window,
             final_step,
         );
-        // A cancel aborts a hung or long inference in flight rather than
-        // awaiting for the step boundary. Dropping the inference future drops
-        // its generation-bound circuit permit, which safely reopens an active
-        // half-open probe without a separate check-then-record race.
-        let inference = match &context.cancellation {
-            Some(token) => {
-                tokio::select! {
-                    biased;
-                    _ = token.cancelled() => {
-                        // Native inference only yields response data. Discarding
-                        // it cannot invoke its proposed tools: those cross the
-                        // separately governed tool boundary below. The local
-                        // attempt can end; this is not a claim that provider
-                        // computation/billing stopped on disconnect.
-                        None
-                    },
-                    result = inference => Some(result),
-                }
-            }
-            None => Some(inference.await),
-        };
+        // Model/preparation reads observe cancellation at their own boundary.
+        // Keep ownership of the enclosing future until a pending evidence
+        // commit settles; otherwise its lost ACK could race terminal commit.
+        let inference = inference.await;
+        let inference = (!context.is_cancelled()).then_some(inference);
         let Some(inference) = inference else {
             disposition = Some(RunDisposition::ended(run_id.clone(), EndCause::Cancelled));
             break;
         };
         let (response, response_model_ref) = match inference {
+            Ok(InferStepOutcome::EvidenceUnavailable(error)) => {
+                // Neither provider failover nor failure-streak tolerance may
+                // turn an unknown durable write into another invocation.
+                return Err(Error::Commit(error));
+            }
             Ok(InferStepOutcome::Response {
                 response,
                 model_ref,

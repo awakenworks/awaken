@@ -155,6 +155,33 @@ executor B proves exact committed continuation
 handoff B replaces slot A -> tasks/get (never message:send) -> finish B
 ```
 
+Native model invocation evidence now uses the existing Run-scoped Thread state
+log (`ActiveModelOperation`), not a new receipt database. Before every
+`LlmExecutor::infer_streaming` call, including Runtime retries and model-pool
+failover, the StepLedger commits a non-wrapping invocation ordinal and the
+selected model binding. An acknowledged entry is followed by another live
+ownership check. Local return records `Returned`; the outer watchdog records
+`TimedOut`; cancellation or process death during execution leaves `Entered`.
+Entry is conservative intent, not proof that the network send occurred.
+The complete ordinal history remains in the same append-only state log.
+
+Evidence write rejection or lost ACK terminates the drive as a commit error,
+outside provider retry, model failover and consecutive-inference-failure
+tolerance. Read/provider waits remain cancellable, but cancellation retains
+ownership of an in-flight evidence commit until its result before terminalizing.
+Cancellation and evidence-write failure retain the interrupted-stream checkpoint;
+neither counts as successful recovery or consumes a retry that never entered.
+The existing model completion audit remains the only logical request/usage
+observation; these small state records contain no request, response or credential
+material and do not create another billing path.
+
+This is an evidence-boundary repair, not a physical-slot recovery bypass.
+`Returned` means the local executor future returned, not that an arbitrary
+provider stopped computing. SDK-internal HTTP retries remain opaque below this
+executor seam. Legacy Runs without evidence, provider terminal/task receipts,
+and authority-backed Native crash handoff remain unresolved; no existing
+physical slot is cleared based only on these new records.
+
 The slot is not another lease or state machine. Claim, attempt admission,
 settlement, retry exhaustion, and dead-lettering mutate the same Dispatch row in
 one backend transaction. `ThreadCommit` remains the sole execution-result truth.

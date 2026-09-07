@@ -1193,6 +1193,7 @@ async fn logical_model_request_observations_cover_success_without_usage_and_fail
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
         None,
+        None,
     )
     .await;
     assert!(success.result.is_ok(), "R1/E1");
@@ -1216,6 +1217,7 @@ async fn logical_model_request_observations_cover_success_without_usage_and_fail
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
+        None,
         None,
     )
     .await;
@@ -1264,6 +1266,7 @@ async fn provider_attempts_fail_closed_when_live_ownership_is_lost() {
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
         Some(&stale),
+        None,
     )
     .await
     .result
@@ -1294,6 +1297,7 @@ async fn provider_attempts_fail_closed_when_live_ownership_is_lost() {
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
         child_context.ownership.as_deref(),
+        None,
     )
     .await
     .result
@@ -1324,6 +1328,7 @@ async fn provider_attempts_fail_closed_when_live_ownership_is_lost() {
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
         Some(&loses_during_backoff),
+        None,
     )
     .await
     .result
@@ -1333,6 +1338,53 @@ async fn provider_attempts_fail_closed_when_live_ownership_is_lost() {
         retrying_provider.requests.lock().unwrap().len(),
         1,
         "O3/E1+E2"
+    );
+}
+
+#[tokio::test]
+async fn model_entry_evidence_does_not_replace_post_write_ownership_verification() {
+    use super::model_operation::ModelOperationJournal;
+    use awaken_runtime_contract::model_operation::{ActiveModelOperation, ModelOperationPhase};
+    // C1 ownership current before an acknowledged entry write; C2 lost after
+    // that write. E1 conservative Entered evidence retained; E2 zero provider
+    // calls. R12=C1+C2=>E1+E2. Persisted intent never substitutes for a live
+    // execution claim, even though the same statement was previously allowed.
+    let provider = Arc::new(SucceedingLlm {
+        requests: Default::default(),
+        text: "must not run",
+    });
+    let llm: Arc<dyn LlmExecutor> = provider.clone();
+    let durable = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(durable);
+    let mut store = Store::default();
+    let mut ledger = StepLedger::new(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let thread = ThreadId("thread".into());
+    let run = RunId("run".into());
+    let mut journal = ModelOperationJournal::new(&mut ledger, &mut store, &context, &thread, &run);
+    let ownership = SequencedOwnership {
+        verifications: Default::default(),
+        lose_at: 1,
+    };
+    let result = infer_with_retry_observed(
+        &llm,
+        one_step_request(),
+        &policy(2),
+        &crate::circuit_breaker::CircuitBreaker::default(),
+        &recording(),
+        None,
+        None,
+        &awaken_runtime_contract::CaptureDecision::default(),
+        None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
+        Some(&ownership),
+        Some(&mut journal),
+    )
+    .await;
+    assert!(matches!(result.result, Err(LlmError::Unauthorized(_))));
+    assert!(provider.requests.lock().unwrap().is_empty());
+    assert_eq!(
+        ActiveModelOperation::load(&store).unwrap().unwrap().phase,
+        ModelOperationPhase::Entered
     );
 }
 
@@ -1513,6 +1565,7 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
+        None,
         None,
     )
     .await;
@@ -1770,6 +1823,7 @@ async fn a_persisted_text_partial_resumes_in_a_fresh_call() {
         &awaken_runtime_contract::CaptureDecision::default(),
         None,
         &awaken_runtime_contract::metrics::NoopRecorder,
+        None,
         None,
     )
     .await;

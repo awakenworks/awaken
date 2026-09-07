@@ -696,7 +696,9 @@ async fn delegation_start_requires_live_parent_attempt_authority() {
     //
     // | Rule | Authority sequence        | Effect |
     // | O1   | current,current,current   | E1     |
-    // | O2   | current,lost/down         | E2     |
+    // | O2   | current,current,lost/down | E2     |
+    // The first two checks bracket model-entry evidence persistence; the
+    // third remains the child-start boundary targeted by this test.
     // Constraints/invariants: the parent claim is checked at child start;
     // lost/unavailable ownership cannot produce any child side effect.
     let current_service = Arc::new(MockRunDelegationService::new(
@@ -734,6 +736,7 @@ async fn delegation_start_requires_live_parent_attempt_authority() {
         let context = RuntimeRunContext::new()
             .with_commit(Arc::new(MemoryCommitCoordinator::new()))
             .with_ownership(Arc::new(ScriptedOwnership::new([
+                OwnershipDecision::Current,
                 OwnershipDecision::Current,
                 stale,
             ])));

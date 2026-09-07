@@ -10,6 +10,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::StateKey;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
+use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
@@ -35,6 +36,23 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_state};
 
+async fn interrupted_model_checkpoint() -> (
+    Arc<awaken_store_inmem::MemoryStreamCheckpointStore>,
+    StreamCheckpoint,
+) {
+    let store = Arc::new(awaken_store_inmem::MemoryStreamCheckpointStore::new());
+    let checkpoint = StreamCheckpoint {
+        run_id: "run-1".into(),
+        thread_id: "thread-1".into(),
+        model: "model-1".into(),
+        partial_text: "retained partial".into(),
+        partial_tools: Vec::new(),
+        retry_count: 0,
+    };
+    store.put(checkpoint.clone()).await.unwrap();
+    (store, checkpoint)
+}
+
 fn committed_model_requests(store: &MemoryCommitCoordinator) -> Vec<ModelRequestObservation> {
     store
         .committed()
@@ -45,8 +63,381 @@ fn committed_model_requests(store: &MemoryCommitCoordinator) -> Vec<ModelRequest
         .expect("canonical model-request audit payload")
 }
 
+fn model_operations(
+    store: &MemoryCommitCoordinator,
+) -> Vec<awaken_runtime_contract::model_operation::ModelOperation> {
+    use awaken_agent_contract::agent::state::Action;
+    use awaken_runtime_contract::model_operation::ActiveModelOperation;
+    store
+        .committed_state(&ThreadId("thread-1".into()))
+        .into_iter()
+        .filter(|command| command.key.0 == ActiveModelOperation::KEY)
+        .map(|command| {
+            assert_eq!(command.run_id, Some(RunId("run-1".into())));
+            let Action::Set(value) = command.action else {
+                panic!("model operation must be Set")
+            };
+            serde_json::from_value(value).unwrap()
+        })
+        .collect()
+}
+
 /// A deterministic provider that always answers with fixed text.
 struct TextLlm(&'static str);
+
+struct ModelEvidenceFault {
+    durable: Arc<MemoryCommitCoordinator>,
+    phase: awaken_runtime_contract::model_operation::ModelOperationPhase,
+    lose_ack: bool,
+    pause: Option<Arc<ModelEvidencePause>>,
+}
+
+struct ModelEvidencePause {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+    entries: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::CommitCoordinator for ModelEvidenceFault {
+    async fn commit(
+        &self,
+        commit: awaken_runtime_contract::ThreadCommit,
+    ) -> Result<awaken_runtime_contract::CommitRecord, awaken_runtime_contract::CommitError> {
+        use awaken_agent_contract::agent::state::Action;
+        use awaken_runtime_contract::model_operation::{ActiveModelOperation, ModelOperation};
+        let fault = commit.state.iter().any(|command| {
+            if command.key.0 != ActiveModelOperation::KEY {
+                return false;
+            }
+            let Action::Set(value) = &command.action else {
+                return false;
+            };
+            serde_json::from_value::<ModelOperation>(value.clone())
+                .unwrap()
+                .phase
+                == self.phase
+        });
+        if fault {
+            if let Some(pause) = &self.pause {
+                pause.entries.fetch_add(1, Ordering::SeqCst);
+                pause.entered.notify_one();
+                pause.release.acquire().await.unwrap().forget();
+                return self.durable.commit(commit).await;
+            }
+            if self.lose_ack {
+                self.durable.commit(commit).await?;
+            }
+            Err(awaken_runtime_contract::CommitError::Rejected(
+                "injected model evidence failure".into(),
+            ))
+        } else {
+            self.durable.commit(commit).await
+        }
+    }
+}
+
+#[tokio::test]
+async fn model_evidence_write_faults_never_retry_or_fail_over_execution() {
+    use awaken_runtime_contract::model_operation::ModelOperationPhase::{Entered, Returned};
+    // Cause/effect graph: C1 failure at Entered/Returned; C2 before commit/
+    // lost ACK; C3 retry, model-pool failover and outer failure tolerance enabled.
+    // E1 fail at the commit boundary, not a provider failure; E2 no additional
+    // model calls; E3 exact durable prefix; E4 no invented final Run/usage fact.
+    // Decision table:
+    // R1 Entered+before => calls=0, phases=[]
+    // R2 Entered+lostACK => calls=0, phases=[Entered]
+    // R3 Returned+before => calls=1, phases=[Entered]
+    // R4 Returned+lostACK => calls=1, phases=[Entered,Returned]
+    // All rows include C3; none may be absorbed as a new inference step.
+    // C4 a prior stream checkpoint exists => E5 preserve it after every
+    // evidence failure; local error return does not mean recovery completed.
+    for (phase, lose_ack, calls, expected) in [
+        (Entered, false, 0, vec![]),
+        (Entered, true, 0, vec![Entered]),
+        (Returned, false, 1, vec![Entered]),
+        (Returned, true, 1, vec![Entered, Returned]),
+    ] {
+        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let (checkpoints, prior_checkpoint) = interrupted_model_checkpoint().await;
+        let model = Arc::new(RetryOnceLlm(AtomicUsize::new(0)));
+        let mut request = activation("catalog-a");
+        request
+            .snapshot
+            .resolved_spec
+            .model_candidates
+            .push(ResolvedModelCandidate::host(ModelBinding::new(
+                "fallback-provider",
+                "fallback-model",
+                "fallback-backend",
+            )));
+        let result = Runtime::new()
+            .with_llm(model.clone())
+            .with_max_consecutive_inference_failures(3)
+            .execute(
+                request,
+                RuntimeRunContext::new()
+                    .with_stream_checkpoint(checkpoints.clone())
+                    .with_commit(Arc::new(ModelEvidenceFault {
+                        durable: durable.clone(),
+                        phase,
+                        lose_ack,
+                        pause: None,
+                    })),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(Error::Commit(_))),
+            "{phase:?}/{lose_ack}"
+        );
+        assert_eq!(model.0.load(Ordering::SeqCst), calls);
+        assert_eq!(
+            model_operations(&durable)
+                .iter()
+                .map(|op| op.phase)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            durable.run(&RunId("run-1".into())).unwrap().state,
+            RunState::Running
+        );
+        assert!(committed_model_requests(&durable).is_empty());
+        assert_eq!(
+            checkpoints.get("run-1").await.unwrap(),
+            Some(prior_checkpoint),
+            "E5"
+        );
+    }
+}
+
+struct BlockedModelEvidence {
+    durable: Arc<MemoryCommitCoordinator>,
+    entered: Arc<tokio::sync::Notify>,
+}
+
+#[tokio::test]
+async fn cancellation_drains_model_evidence_commit_before_terminalizing() {
+    use awaken_runtime_contract::model_operation::ModelOperationPhase::{Entered, Returned};
+    // C1 cancel during entry/return evidence persistence; C2 commit ACK held.
+    // E1 retain the owned commit future until its result; E2 no later provider
+    // invocation; E3 one ordered Cancelled terminal, no duplicate draft.
+    // R10=entry+C2=>calls0,[Entered]; R11=return+C2=>calls1,[Entered,Returned].
+    // Both cancel before releasing C2. This catches an outer select dropping
+    // the whole inference future while its durable write is still in flight.
+    for phase in [Entered, Returned] {
+        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let (checkpoints, prior_checkpoint) = interrupted_model_checkpoint().await;
+        let pause = Arc::new(ModelEvidencePause {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+            entries: AtomicUsize::new(0),
+        });
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let model = Arc::new(RetryOnceLlm(AtomicUsize::new(0)));
+        let runtime = Runtime::new().with_llm(model.clone());
+        let context = RuntimeRunContext::new()
+            .with_stream_checkpoint(checkpoints.clone())
+            .with_cancellation(cancellation.clone())
+            .with_commit(Arc::new(ModelEvidenceFault {
+                durable: durable.clone(),
+                phase,
+                lose_ack: false,
+                pause: Some(pause.clone()),
+            }));
+        let driving =
+            tokio::spawn(async move { runtime.execute(activation("catalog-a"), context).await });
+        tokio::time::timeout(std::time::Duration::from_secs(2), pause.entered.notified())
+            .await
+            .unwrap();
+        cancellation.cancel();
+        tokio::task::yield_now().await;
+        assert!(!driving.is_finished(), "owned commit has not acknowledged");
+        pause.release.add_permits(1);
+        let state = tokio::time::timeout(std::time::Duration::from_secs(2), driving)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(state, RunState::Ended(EndCause::Cancelled));
+        // R10/R11 also preserve interrupted-stream recovery state: cancellation
+        // is not a successful consumption/terminal acknowledgement of it.
+        assert_eq!(
+            checkpoints.get("run-1").await.unwrap(),
+            Some(prior_checkpoint)
+        );
+        assert_eq!(
+            pause.entries.load(Ordering::SeqCst),
+            1,
+            "the commit future was retained, not dropped and re-created"
+        );
+        assert_eq!(
+            model.0.load(Ordering::SeqCst),
+            usize::from(phase == Returned)
+        );
+        assert_eq!(
+            model_operations(&durable)
+                .iter()
+                .map(|op| op.phase)
+                .collect::<Vec<_>>(),
+            if phase == Entered {
+                vec![Entered]
+            } else {
+                vec![Entered, Returned]
+            }
+        );
+        assert_eq!(
+            durable
+                .committed()
+                .run_facts
+                .iter()
+                .filter(|fact| matches!(fact.state, RunState::Ended(_)))
+                .count(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn restored_model_evidence_is_run_scoped_and_invalid_coordinates_fail_closed() {
+    use awaken_agent_contract::agent::state::{Command, MergePolicy, Scope};
+    use awaken_runtime_contract::model_operation::{
+        ActiveModelOperation, ModelOperationPhase::Returned,
+    };
+    use awaken_runtime_contract::{RunDisposition, ThreadCommit};
+    // C1 prior state belongs to this/another Run; C2 ordinal valid/zero/MAX;
+    // E1 next exact ordinal; E2 foreign state cannot advance this Run;
+    // E3 malformed/exhausted owned state admits no provider invocation.
+    // R7=owned+valid=>E1; R8=foreign+any=>E2;
+    // R9=owned+(zero|MAX)=>E3. Reconstruction must reuse store_from_run_commands.
+    for (owner, ordinal, expected) in [
+        ("run-1", 7, Some(8)),
+        ("foreign-run", 7, Some(1)),
+        ("foreign-run", 0, Some(1)),
+        ("run-1", 0, None),
+        ("run-1", u64::MAX, None),
+    ] {
+        let durable = Arc::new(MemoryCommitCoordinator::new());
+        awaken_runtime_contract::CommitCoordinator::commit(
+            durable.as_ref(),
+            ThreadCommit::assemble(
+                ThreadId("thread-1".into()),
+                RunDisposition::running(RunId(owner.into())),
+                true,
+                Vec::new(),
+                vec![Command::set(
+                    Scope::Run,
+                    MergePolicy::Disjoint,
+                    ActiveModelOperation::KEY,
+                    serde_json::json!({
+                        "ordinal":ordinal,
+                        "binding":ModelBinding::new("old-provider", "old-model", "old-backend"),
+                        "phase":Returned
+                    }),
+                )],
+                Vec::new(),
+            ),
+        )
+        .await
+        .unwrap();
+        let model = Arc::new(MaxTokensThenTextLlm(AtomicUsize::new(0)));
+        let result = Runtime::new()
+            .with_llm(model.clone())
+            .execute(
+                activation("catalog-a"),
+                RuntimeRunContext::new()
+                    .with_commit(durable.clone())
+                    .with_reader(durable.clone()),
+            )
+            .await;
+        if let Some(expected) = expected {
+            assert!(result.is_ok(), "{owner}/{ordinal}");
+            let commands = durable.committed_state(&ThreadId("thread-1".into()));
+            let own = awaken_runtime_contract::tool_batch::store_from_run_commands(
+                commands,
+                &RunId("run-1".into()),
+            );
+            let latest = ActiveModelOperation::load(&own).unwrap().unwrap();
+            // MaxTokensThenTextLlm requires two calls; both continue this Run's
+            // coordinate, independent of model step ids and another Run's state.
+            assert_eq!(latest.ordinal.get(), expected + 1);
+            assert_eq!(latest.phase, Returned);
+            assert_eq!(model.0.load(Ordering::SeqCst), 2);
+        } else {
+            assert!(matches!(result, Err(Error::Commit(_))));
+            assert_eq!(model.0.load(Ordering::SeqCst), 0);
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for BlockedModelEvidence {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        use awaken_runtime_contract::model_operation::ModelOperationPhase::Entered;
+        // An assertion at the actual provider boundary, not after execution.
+        let operations = model_operations(&self.durable);
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].phase, Entered);
+        self.entered.notify_one();
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn dropped_and_timed_out_model_futures_preserve_distinct_durable_evidence() {
+    use awaken_runtime_contract::model_operation::ModelOperationPhase::{Entered, TimedOut};
+    // C1 abort while the real executor is pending / C2 watchdog expiry.
+    // E1 start evidence precedes entry; E2 abort leaves Entered; E3 timeout
+    // records TimedOut, never Returned or provider quiescence. Rules:
+    // R5=C1=>E1+E2; R6=C2=>E1+E3. The existing Dispatch SIGKILL test owns
+    // physical exclusion; this test owns the new model evidence boundary.
+    for timeout in [false, true] {
+        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let model = Arc::new(BlockedModelEvidence {
+            durable: durable.clone(),
+            entered: entered.clone(),
+        });
+        let runtime =
+            Runtime::new()
+                .with_llm(model)
+                .with_retry_policy(awaken_runtime::LlmRetryPolicy {
+                    max_retries: 0,
+                    attempt_timeout: std::time::Duration::from_millis(if timeout {
+                        30
+                    } else {
+                        5000
+                    }),
+                    ..Default::default()
+                });
+        let context = RuntimeRunContext::new().with_commit(durable.clone());
+        let driving =
+            tokio::spawn(async move { runtime.execute(activation("catalog-a"), context).await });
+        tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+            .await
+            .unwrap();
+        if timeout {
+            driving.await.unwrap().unwrap();
+        } else {
+            driving.abort();
+            assert!(driving.await.unwrap_err().is_cancelled());
+        }
+        assert_eq!(
+            model_operations(&durable)
+                .iter()
+                .map(|op| op.phase)
+                .collect::<Vec<_>>(),
+            if timeout {
+                vec![Entered, TimedOut]
+            } else {
+                vec![Entered]
+            }
+        );
+    }
+}
 
 struct AdvisorThenTextLlm {
     primary_calls: AtomicUsize,
@@ -461,7 +852,7 @@ fn advisor_activation(with_candidate: bool) -> RunActivation {
 /// C1+C2+C3 -> E1+E2+E3. This crosses run_commands, run_loop, inference,
 /// progress, and finalize without relying on module-local implementation detail.
 /// Constraints/invariants: committed facts are replay authority while live deltas
-/// are observational and cannot substitute for the two durable commits.
+/// are observational and cannot substitute for the durable commits.
 #[tokio::test]
 async fn one_model_step_commits_facts_and_streams_progress() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("hi there")));
@@ -481,7 +872,9 @@ async fn one_model_step_commits_facts_and_streams_progress() {
     // Committed truth: the input commits at the first step boundary (under a
     // Running fact), the assistant reply with the terminal fact. The user
     // input is committed so the next Step sees it.
-    assert_eq!(commit.commit_count(), 2);
+    // R1 now includes the two operation-evidence commits around actual model
+    // entry. They add no transcript message and no logical usage observation.
+    assert_eq!(commit.commit_count(), 4);
     let committed = commit.committed();
     assert_eq!(committed.messages.len(), 2);
     assert_eq!(committed.messages[0].text_content(), "hello");
@@ -495,7 +888,9 @@ async fn one_model_step_commits_facts_and_streams_progress() {
         Some(RunState::Ended(EndCause::NaturalEnd))
     );
     // Lifecycle and model observations share the same committed audit log.
-    assert_eq!(committed.events.len(), 3);
+    // Two operation StatePatch facts supplement the existing lifecycle/usage
+    // facts; they must not create another model usage observation.
+    assert_eq!(committed.events.len(), 5);
     assert_eq!(
         committed_model_requests(&commit),
         vec![ModelRequestObservation::default()]
@@ -552,6 +947,10 @@ async fn model_request_gate_fences_every_logical_request_but_not_provider_retrie
         .expect("G0 pauses before provider sampling");
     assert_eq!(paused, RunState::Awaiting, "G0/E2");
     assert_eq!(paused_model.0.load(Ordering::SeqCst), 0, "G0/E2");
+    assert!(
+        model_operations(&paused_commit).is_empty(),
+        "G0 no invocation evidence"
+    );
     assert_eq!(paused_gate.requests().len(), 1, "G0/E3");
     assert!(
         committed_model_requests(&paused_commit).is_empty(),
@@ -682,6 +1081,16 @@ async fn model_request_gate_fences_every_logical_request_but_not_provider_retrie
         .expect("G3 transparent retry completes");
     assert_eq!(retried, RunState::Ended(EndCause::NaturalEnd), "G3/E4");
     assert_eq!(retry_model.0.load(Ordering::SeqCst), 2, "G3/E4");
+    // G3: each real retry has its own monotonic invocation coordinate, but
+    // remains under the same logical request and its one usage observation.
+    use awaken_runtime_contract::model_operation::ModelOperationPhase::{Entered, Returned};
+    assert_eq!(
+        model_operations(&retry_commit)
+            .iter()
+            .map(|operation| (operation.ordinal.get(), operation.phase))
+            .collect::<Vec<_>>(),
+        [(1, Entered), (1, Returned), (2, Entered), (2, Returned)]
+    );
     assert_eq!(retry_gate.requests().len(), 1, "G3/E4");
     assert_eq!(
         committed_model_requests(&retry_commit),
