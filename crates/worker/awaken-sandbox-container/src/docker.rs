@@ -1415,6 +1415,7 @@ impl ContainerRuntime for DockerRuntime {
         plan_fingerprint: &str,
         evidence: &pc::SandboxRestorationEvidence,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {
         authorization
             .validate()
@@ -1422,14 +1423,20 @@ impl ContainerRuntime for DockerRuntime {
         if restoration_plan_fingerprint(plan) != plan_fingerprint {
             return Err(backend("Docker restore cleanup plan fingerprint mismatch"));
         }
+        let admit = || {
+            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+                .map_err(backend)
+        };
+        admit()?;
         let name = restore_container_name(id);
         let info = match self.docker.inspect_container(&name, None).await {
             Ok(info) => info,
             Err(bollard::errors::Error::DockerResponseServerError {
                 status_code: 404, ..
-            }) => return Ok(()),
+            }) => return admit(),
             Err(error) => return Err(backend(error)),
         };
+        admit()?;
         let container_id = Self::exact_restoration_id(&info, plan_fingerprint, evidence)?;
         let live_inputs = info
             .mounts
@@ -1442,18 +1449,16 @@ impl ContainerRuntime for DockerRuntime {
         let staging_root = std::path::Path::new(live_inputs)
             .parent()
             .ok_or_else(|| backend("Docker restored live-input root has no staging parent"))?;
-        crate::remove_host_staging_path(staging_root)?;
-        self.docker
-            .remove_container(
-                &container_id,
-                Some(RemoveContainerOptions {
-                    force: true,
-                    ..Default::default()
-                }),
-            )
-            .await
-            .map_err(backend)?;
-        Ok(())
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || {
+            crate::remove_host_staging_path(staging_root)
+                .map_err(|error| pc::SandboxError::new(error.to_string()))
+        })
+        .map_err(backend)?;
+        // Reuse ordinary immutable-incarnation removal; never delete the
+        // mutable restore name after identity observation.
+        self.remove_exact_incarnation(&container_id, None, authorization)
+            .await?;
+        admit()
     }
 
     async fn handle_extra(

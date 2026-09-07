@@ -708,7 +708,10 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "dispose_terminal_cleanup_effect",
             (
                 "let authorization = self.terminal_cleanup_disposal_authorization(&effect)?",
+                "self.prepare_terminal_environment_under_lifecycle(",
                 "authorization.effect_fence()",
+                "BoundEnvironmentPreparationMode::TerminalDisposal",
+                "(SessionEnvironmentOwner::Retiring(retirement), None)",
                 "self.session_slots.provider_effect_authority(",
                 ".dispose_for_effect(&authorization, &authority)",
                 "self.terminal_cleanup_disposal_authorization(&effect)?",
@@ -717,6 +720,13 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "physical terminal disposal",
         )
     )
+    errors.extend(_require_ordered_function(
+        sources, RUNTIME_HOST_TERMINAL_CLEANUP, "dispose_terminal_cleanup_effect",
+        ("self.session_slots.provider_effect_authority(",
+         ".dispose_restored(&spec, expected, &authorization, &authority)",
+         "with_current_sandbox_effect("),
+        "restored target current authority",
+    ))
     preparation_body = _rust_function(
         sources.get(RUNTIME_HOST_TERMINAL_CLEANUP, ""),
         "prepare_terminal_cleanup_effect",
@@ -1117,9 +1127,17 @@ fn prepare_terminal_cleanup_effect() {
 fn dispose_terminal_cleanup_effect() {
     self.terminal_cleanup_disposal_authorization(&effect)?;
     let authorization = self.terminal_cleanup_disposal_authorization(&effect)?;
-    prepare(authorization.effect_fence());
+    self.prepare_terminal_environment_under_lifecycle(
+        session_id, authorization.effect_fence(), BoundEnvironmentPreparationMode::TerminalDisposal);
     let authority = self.session_slots.provider_effect_authority(...);
-    environment.dispose_for_effect(&authorization, &authority);
+    provider.dispose_restored(&spec, expected, &authorization, &authority);
+    with_current_sandbox_effect(authorization.effect_fence(), &authority, || Ok(()));
+    match owner {
+        (SessionEnvironmentOwner::Retiring(retirement), None) => {
+            let authority = self.session_slots.provider_effect_authority(...);
+            environment.dispose_for_effect(&authorization, &authority);
+        }
+    }
     self.terminal_cleanup_disposal_authorization(&effect)?;
     SessionCleanupDisposalReceipt::new(&effect.command);
 }
@@ -1271,8 +1289,13 @@ fn recover_terminal_receipts() {
         ".dispose_for_effect(&authorization, &authority)",
     ):
         mutant = dict(canonical)
-        mutant[RUNTIME_HOST_TERMINAL_CLEANUP] = mutant[RUNTIME_HOST_TERMINAL_CLEANUP].replace(marker, "", 1)
-        assert session_effect_violations(mutant), f"removed current disposal wiring: {marker}"
+        # Remove the physical branch's last capture, not the restored branch's
+        # first capture: a sibling failure must not satisfy this oracle.
+        mutant[RUNTIME_HOST_TERMINAL_CLEANUP] = "".join(
+            mutant[RUNTIME_HOST_TERMINAL_CLEANUP].rsplit(marker, 1)
+        )
+        assert any("physical terminal disposal" in error
+                   for error in session_effect_violations(mutant)), marker
 
     # Cold reconstruction table: capture plus forwarding is mandatory in the
     # same owner; either omission rejects even while hot-disposal wiring stays.
@@ -1300,6 +1323,16 @@ fn recover_terminal_receipts() {
         mutant[RUNTIME_HOST_TERMINAL_PREPARATION] = mutant[RUNTIME_HOST_TERMINAL_PREPARATION].replace(
             body, changed, 1)
         assert any("terminal checkpoint current authority" in error
+                   for error in session_effect_violations(mutant)), marker
+
+    # Restored target S1 capture, S2 exact forwarding, S3 post-response check.
+    # Ordinary physical disposal remains intact and cannot mask this branch.
+    for marker in ("let authority = self.session_slots.provider_effect_authority(...);",
+                   ".dispose_restored(&spec, expected, &authorization, &authority)",
+                   "with_current_sandbox_effect("):
+        mutant = dict(canonical)
+        mutant[RUNTIME_HOST_TERMINAL_CLEANUP] = mutant[RUNTIME_HOST_TERMINAL_CLEANUP].replace(marker, "", 1)
+        assert any("restored target current authority" in error
                    for error in session_effect_violations(mutant)), marker
 
     # G48 authority/deadline removal rules: C1 each destructive Worker route
@@ -1590,8 +1623,8 @@ fn recover_terminal_receipts() {
     stale_host_fence[RUNTIME_HOST_TERMINAL_CLEANUP] = stale_host_fence[
         RUNTIME_HOST_TERMINAL_CLEANUP
     ].replace(
-        "prepare(authorization.effect_fence());",
-        "prepare(authorization.prepared_effect_fence());",
+        "session_id, authorization.effect_fence(), BoundEnvironmentPreparationMode::TerminalDisposal",
+        "session_id, authorization.prepared_effect_fence(), BoundEnvironmentPreparationMode::TerminalDisposal",
     )
     assert session_effect_violations(stale_host_fence), (
         "T3 Host physical reconstruction requires current successor B, not predecessor A"

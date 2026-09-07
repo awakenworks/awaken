@@ -12,6 +12,121 @@ use crate::{NetworkMode, RootfsPlan};
 
 use super::*;
 
+#[tokio::test]
+async fn restored_disposal_keeps_immutable_id_and_current_authority_at_each_adapter_response() {
+    use pc::test_support::EffectAuthority;
+    use std::time::Duration;
+    // P1 five backend response positions x revoke/replace/expire/renew.
+    // Rejection after exists/identity/mount reads preserves staging and sends
+    // no rm; rejection after rm reports no success but cannot undo that commit.
+    // P2 missing/empty physical IDs reject, never fall back to the mutable
+    // restoration name. Every successful rm uses the observed immutable ID.
+    // This scripted CommandExec changes authority before returning a response;
+    // actual Pending/cancel schedules are owned by the neutral provider table.
+    for (boundary, change, identity) in ["none", "exists", "identity", "mounts", "remove"]
+        .into_iter()
+        .flat_map(|boundary| {
+            ["revoke", "replace", "expire", "renew"].map(|change| (boundary, change, "exact-id"))
+        })
+        .chain([("none", "renew", ""), ("none", "renew", "missing")])
+    {
+        let stage = tempfile::Builder::new()
+            .prefix("awaken-acp-stage-")
+            .tempdir()
+            .unwrap();
+        let payload = stage.path().join("retained");
+        std::fs::write(&payload, b"original").unwrap();
+        let plan = plan();
+        let fingerprint = restoration_plan_fingerprint(&plan);
+        let evidence = pc::SandboxRestorationEvidence::from_exact_parts(
+            "effect",
+            "generation",
+            "checkpoint",
+            "digest",
+            "spec",
+            "exclusions",
+        )
+        .unwrap();
+        let authorization = crate::tests::disposal_authorization(
+            &pc::SandboxEffectFence::new("restore-cleanup", "owner", "boot", 1, u64::MAX - 1)
+                .unwrap(),
+        );
+        let authority = Arc::new(EffectAuthority::new(authorization.effect_fence()));
+        let mut labels = serde_json::Map::new();
+        for (key, value) in restoration_metadata(&evidence) {
+            labels.insert(key.into(), serde_json::Value::String(value.into()));
+        }
+        labels.insert(
+            crate::RESTORE_PLAN_LABEL.into(),
+            serde_json::Value::String(fingerprint.clone()),
+        );
+        let mut info = serde_json::json!({"Id": identity, "Config":{"Labels":labels}, "State":{"Running":false}});
+        if identity == "missing" {
+            info.as_object_mut().unwrap().remove("Id");
+        }
+        let info = info.to_string();
+        let mounts = serde_json::json!([{"Source": stage.path().join("live-inputs"), "Destination":crate::LIVE_INPUTS_ROOT}]).to_string();
+        let changing = authority.clone();
+        let (runtime, commands) = runtime_with(8080, move |args| {
+            let selected = match args[0].as_str() {
+                "container" => "exists",
+                "inspect" if args[2] == "{{json .}}" => "identity",
+                "inspect" => "mounts",
+                "rm" => "remove",
+                _ => panic!("unexpected command: {args:?}"),
+            };
+            if selected == boundary {
+                let mut current = changing.current.lock().unwrap();
+                match change {
+                    "revoke" => *current = None,
+                    "replace" => current.as_mut().unwrap().0.epoch += 1,
+                    "expire" => current.as_mut().unwrap().1 = Duration::ZERO,
+                    "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                    _ => unreachable!(),
+                }
+            }
+            match selected {
+                "identity" => ok(&info),
+                "mounts" => ok(&mounts),
+                _ => ok(""),
+            }
+        });
+        let result = runtime
+            .dispose_restore_target(
+                "stable-target",
+                &plan,
+                &fingerprint,
+                &evidence,
+                &authorization,
+                authority.as_ref(),
+            )
+            .await;
+        let succeeds = identity == "exact-id" && (boundary == "none" || change == "renew");
+        assert_eq!(result.is_ok(), succeeds, "{boundary}/{change}/{identity}");
+        let removed = succeeds || (identity == "exact-id" && boundary == "remove");
+        let calls = commands.calls.lock().unwrap();
+        let removals: Vec<_> = calls.iter().filter(|args| args[0] == "rm").collect();
+        assert_eq!(removals.len(), usize::from(removed));
+        if let Some(args) = removals.first() {
+            assert_eq!(args.last().unwrap(), "exact-id", "P2 immutable target");
+        }
+        assert_eq!(payload.exists(), !removed);
+        if !removed {
+            assert_eq!(std::fs::read(&payload).unwrap(), b"original");
+        }
+        for args in calls
+            .iter()
+            .filter(|args| args[0] == "inspect" && args[2] == "{{json .Mounts}}")
+        {
+            assert_eq!(
+                args.last().unwrap(),
+                "exact-id",
+                "P2 all post-identity lookups stay pinned"
+            );
+        }
+    }
+}
+
 struct FixedBroker;
 
 #[async_trait]

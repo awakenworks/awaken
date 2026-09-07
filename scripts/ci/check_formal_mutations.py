@@ -1247,7 +1247,8 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
     # supply its counterexample; retry requires an actual prior phase effect.
     # Compensation and backend cancellation remain adapter obligations.
     for phase, selector in (("disposal", "physicalDisposal"),
-                            ("reconstruction", "coldReconstruction")):
+                            ("reconstruction", "coldReconstruction"),
+                            ("restore-disposal", "restoredDisposal")):
         for anchor, broken in [
             ('/\\ providerWait # 1\n', '/\\ (' + selector + ' \\/ providerWait # 1)\n'),
             ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ ((' + selector + ' /\\ providerWait = 2) \\/ CurrentBinding)'),
@@ -1265,15 +1266,16 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
                     "NoMemoryAckReached", "NoMemoryReplayReached",
                     "NoEmptyPreparationReached", "NoCachedPreparationReached",
                     "NoPhysicalDisposalReached", "NoCachedDisposalReached",
-                    "NoColdReconstructionReached", "NoColdReconstructionReplayReached"):
+                    "NoColdReconstructionReached", "NoColdReconstructionReplayReached",
+                    "NoRestoredDisposalReached", "NoRestoredDisposalReplayReached"):
         mutations.append((source, header + "INVARIANTS " + witness, witness))
     check_tlc_model_mutations(tlc_jar, "SessionExecutionBinding", source, config, mutations,
                               dependencies=("SessionRealizationAuthority", "WorkerExecutionAuthority"),
-                              # Three phase classes retain the same complete
+                              # Four phase classes retain the same complete
                               # two-effect state space; raise tool resources,
                               # never truncate exploration to fit the old budget.
                               heap_mb=4096, timeout_seconds=300)
-    print("Session execution binding: 29/29 mutants killed; 14 witnesses cover execution, provider projection, Memory, preparation, physical disposal and cold reconstruction/replay")
+    print("Session execution binding: 32/32 mutants killed; 16 witnesses cover execution, provider projection, Memory, preparation, physical/restored disposal and cold reconstruction/replay")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:

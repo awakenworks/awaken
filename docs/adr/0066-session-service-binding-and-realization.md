@@ -399,10 +399,60 @@ cold-only mutants and two reconstruction/replay witnesses bring its total to
 not a proof of aggregate ordering, backend commits, or cross-clock correspondence.
 Cold FUSE cancellation while the external mounter owns an unfinished operation,
 and process-lifetime retention after failed ownerless compensation, are not
-closed by these admission tests. Exact restored-target disposal still requires
-current-authority migration through its existing participants; terminal checkpoint
-cleanup is wired below. No new store, timer, lease, registry or state machine is
+closed by these admission tests. Exact restored-target disposal now uses the
+current-authority port described below; terminal checkpoint cleanup is wired
+below. No new store, timer, lease, registry or state machine is
 introduced by this cold reconstruction change.
+
+### Exact unpublished restore-target disposal
+
+This closes the admission gap between the retained `Restoring` request and its
+provider cleanup, not every backend's internal asynchronous commit boundary.
+
+Reused unchanged: the Session root's aggregate preparation/disposal authorization
+and acknowledgement, captured Worker/Session authority, exact restore tuple,
+Local process-shared target lock and sidecar, Container immutable plan evidence,
+and ordinary immutable-incarnation removal. Modified: the existing Host,
+SandboxProvider, ContainerEnvironmentProvider and ContainerRuntime forwarding
+ports, and Local/Docker/Podman/Kubernetes adapters. Added production owners,
+stores, clocks and lifecycles: none. The Local restored-handle `dispose()`
+shortcut is removed: the exact request and current authority must reach the
+existing provider port before any mount, credential or filesystem cleanup.
+Docker restoration reuses ordinary exact-ID removal; Podman no longer verifies
+an immutable ID and then deletes by mutable name, nor substitutes a missing or
+empty observed ID with that name.
+
+Dynamic order: retain the original Restoring owner -> capture current authority
+-> await original target lock or exact backend observation -> re-admit ->
+delete only the exact target -> re-admit completion -> retain the same request
+until aggregate acknowledgement. Local binding inspection, exact directory
+deletion and sidecar removal occur under the target lock and current-authority
+guard together. The stable lock inode survives deletion for existing waiters.
+Absence is replayable but never an authorization bypass. A lost or late remote
+delete response does not undo the commit and does not authorize success or a
+later operation; retry must use the original immutable identity.
+
+Adjacent decision tables cover ten actual Local target-lock waits (bound/absent
+crossed with revoke/replace/expire/renew/cancel), thirty Container provider
+schedules (both existing public ports, observation/committed-response/absence),
+seven Host response/lease schedules, and twenty-two scripted Podman adapter
+response/identity rows. They assert retained bytes, zero next effects on denial,
+exact replay and immutable-ID commands, rather than only error presence. The
+restore tests move to their existing target owner's child module instead of
+duplicating checkpoint fixtures. The shared `SessionExecutionBinding` selector
+adds restored disposal and replay, with 32 semantic mutants and 16 reachability
+witnesses in total. This remains a two-effect admission abstraction, not Rust
+refinement, real lock correctness, remote commit atomicity or cleanup liveness.
+
+Explicit remaining boundaries: Kubernetes `remove_bound` is a multi-request
+Pod/PVC finalizer/CAS protocol. The current adapter's checks before/after that
+existing port do not re-authorize each internal API mutation. Extend that same
+owner, not a restore-only deletion implementation, to finish this boundary.
+Docker/Podman staging release precedes the remote delete; an already-admitted
+delete can commit after revocation. Provider wall-clock migration, cold FUSE
+cancellation/failed ownerless compensation, and real backend, credential,
+hybrid-fault and Windows/macOS qualification remain separate work. Compilation
+of real-provider test targets and scripted adapters is not live-provider proof.
 
 ### Control-publication cleanup participant
 

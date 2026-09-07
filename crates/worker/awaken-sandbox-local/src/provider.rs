@@ -1112,8 +1112,9 @@ impl pc::SandboxProvider for LocalProvider {
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
-        self.dispose_restore_sandbox(spec, request, authorization)
+        self.dispose_restore_sandbox(spec, request, authorization, authority)
             .await
     }
 }
@@ -1779,14 +1780,15 @@ impl pc::Sandbox for LocalSandbox {
     }
 
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        if let Some(evidence) = self
+        if self
             .adopted_handle
             .as_ref()
             .and_then(pc::SandboxHandle::restoration)
+            .is_some()
         {
-            self.release_memory_mounts().await?;
-            self.shred_secrets()?;
-            return restore_target::dispose_bound_target(self.root.root(), evidence).await;
+            return Err(err(
+                "restored target disposal requires the exact provider request and current authority",
+            ));
         }
         if self.realization.current().is_some() {
             return Err(err(

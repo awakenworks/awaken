@@ -547,6 +547,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         _spec: &pc::SandboxSpec,
         _request: &pc::SandboxRestoreRequest,
         _authorization: &pc::SandboxDisposalAuthorization,
+        _authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         Err(pc::SandboxError::new(
             "container provider does not implement exact restored-target disposal",

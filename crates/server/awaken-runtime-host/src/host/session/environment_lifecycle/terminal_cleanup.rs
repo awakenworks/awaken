@@ -378,10 +378,21 @@ impl SharedHost {
                     provider,
                     previous_resources.as_ref(),
                 );
+                let authority = self.session_slots.provider_effect_authority(
+                    session_id,
+                    authorization.effect_fence(),
+                    self.execution_authority.as_ref(),
+                )?;
                 provider
-                    .dispose_restored(&spec, expected, &authorization)
+                    .dispose_restored(&spec, expected, &authorization, &authority)
                     .await
                     .map_err(|error| HostError::unavailable(error.to_string()))?;
+                awaken_provisioning_contract::with_current_sandbox_effect(
+                    authorization.effect_fence(),
+                    &authority,
+                    || Ok(()),
+                )
+                .map_err(|error| HostError::unavailable(error.to_string()))?;
                 // Keep the exact Restoring request as the response-loss fence.
                 // The provider port treats proved absence as success, so an
                 // identical Disposal can replay until aggregate acknowledgement

@@ -281,8 +281,18 @@ impl ContainerRuntime for K8sRuntime {
         plan_fingerprint: &str,
         evidence: &pc::SandboxRestorationEvidence,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {
-        restore::dispose(self, id, plan, plan_fingerprint, evidence, authorization).await
+        restore::dispose(
+            self,
+            id,
+            plan,
+            plan_fingerprint,
+            evidence,
+            authorization,
+            authority,
+        )
+        .await
     }
 
     async fn handle_extra(

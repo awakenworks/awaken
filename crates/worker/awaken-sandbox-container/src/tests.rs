@@ -2435,6 +2435,8 @@ struct FakeState {
     restore_plan_fingerprints: HashMap<String, String>,
     restore_creates: usize,
     restore_disposals: usize,
+    restore_disposal_observation_gate: Option<Arc<tokio::sync::Semaphore>>,
+    restore_disposal_response_gate: Option<Arc<tokio::sync::Semaphore>>,
     restore_disposal_authorizations: Vec<pc::SandboxDisposalAuthorization>,
     observations: u32,
     observation_purposes: Vec<ContainerObservationPurpose>,
@@ -2892,6 +2894,7 @@ impl ContainerRuntime for FakeRuntime {
         plan_fingerprint: &str,
         evidence: &pc::SandboxRestorationEvidence,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {
         authorization
             .validate()
@@ -2901,29 +2904,53 @@ impl ContainerRuntime for FakeRuntime {
                 "fake restore cleanup plan mismatch".into(),
             ));
         }
-        let cid = format!("restore-{id}");
-        let mut state = self.st.lock().unwrap();
-        state
-            .restore_disposal_authorizations
-            .push(authorization.clone());
-        let Some(observed) = state.restore_targets.get(&cid) else {
-            return Ok(());
+        let admit = || {
+            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+                .map_err(|error| RuntimeError::Backend(error.to_string()))
         };
-        if observed != evidence
-            || state
-                .restore_plan_fingerprints
-                .get(&cid)
-                .map(String::as_str)
-                != Some(plan_fingerprint)
-        {
-            return Err(RuntimeError::Backend(
-                "fake restore cleanup identity mismatch".into(),
-            ));
+        admit()?;
+        let gate = self
+            .st
+            .lock()
+            .unwrap()
+            .restore_disposal_observation_gate
+            .clone();
+        if let Some(gate) = gate {
+            let _permit = gate.acquire().await.unwrap();
         }
-        state.restore_targets.remove(&cid);
-        state.restore_plan_fingerprints.remove(&cid);
-        state.alive.remove(&cid);
-        state.restore_disposals += 1;
+        admit()?;
+        let cid = format!("restore-{id}");
+        let response = {
+            let mut state = self.st.lock().unwrap();
+            state
+                .restore_disposal_authorizations
+                .push(authorization.clone());
+            let Some(observed) = state.restore_targets.get(&cid) else {
+                return Ok(());
+            };
+            if observed != evidence
+                || state
+                    .restore_plan_fingerprints
+                    .get(&cid)
+                    .map(String::as_str)
+                    != Some(plan_fingerprint)
+            {
+                return Err(RuntimeError::Backend(
+                    "fake restore cleanup identity mismatch".into(),
+                ));
+            }
+            state.restore_targets.remove(&cid);
+            state.restore_plan_fingerprints.remove(&cid);
+            state.alive.remove(&cid);
+            state.restore_disposals += 1;
+            state.restore_disposal_response_gate.clone()
+        };
+        if let Some(gate) = response {
+            let _permit = gate.acquire().await.unwrap();
+        }
+        // An admitted remote delete can return success after revocation. The
+        // provider decision table must prove its OWN post-response rejection;
+        // this fixture must not reject on its behalf and mask missing wiring.
         Ok(())
     }
 
@@ -3486,11 +3513,25 @@ async fn exact_restore_target_is_shared_by_concurrent_and_fresh_container_provid
         .unwrap(),
     );
     fresh_provider
-        .dispose_restored_environment(&sandbox_spec, &request, &authorization)
+        .dispose_restored_environment(
+            &sandbox_spec,
+            &request,
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                authorization.effect_fence(),
+            ),
+        )
         .await
         .expect("R8 exact terminal disposal");
     fresh_provider
-        .dispose_restored_environment(&sandbox_spec, &request, &authorization)
+        .dispose_restored_environment(
+            &sandbox_spec,
+            &request,
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                authorization.effect_fence(),
+            ),
+        )
         .await
         .expect("R8 absent replay");
     let state = runtime.st.lock().unwrap();
@@ -4037,6 +4078,148 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
         1,
         "A6 disposal replay has no extra effect"
     );
+}
+
+#[tokio::test]
+async fn terminal_restored_container_disposal_rechecks_current_authority_across_response_loss() {
+    use pc::test_support::EffectAuthority;
+    use std::time::Duration;
+    // C1 exact target bound/absent; C2 Pending observation/committed-delete
+    // response; C3 revoke/replace/expire/renew/cancel. Constraint: an absent
+    // target has no delete response. C4 both neutral provider entry ports.
+    // R1 denied entry => zero backend admission. R2 stale authority after
+    // observation => no deletion; after committed deletion => no success, no
+    // invented rollback. R3 renewal completes; R4 cancellation keeps the same
+    // request identity for exact retry. R5 absent replay never recreates or
+    // repeats a deletion, and still denies without current authority.
+    // Full 3x5x2 actual Pending schedules, reusing the original fake runtime,
+    // physical target map and checkpoint request, not another recovery engine.
+    for port in ["sandbox", "container"] {
+        for (present, boundary) in [
+            (true, "observation"),
+            (true, "delete"),
+            (false, "observation"),
+        ] {
+            for change in ["revoke", "replace", "expire", "renew", "cancel"] {
+                let runtime = Arc::new(FakeRuntime::default());
+                let provider = provider(runtime.clone());
+                let spec = spec("restored-current");
+                let request = restore_request(&spec);
+                if present {
+                    drop(
+                        provider
+                            .acquire_restore_environment(&spec, &request)
+                            .await
+                            .unwrap(),
+                    );
+                }
+                let initial_creates = runtime.st.lock().unwrap().restore_creates;
+                let authorization = disposal_authorization(
+                    &pc::SandboxEffectFence::new(
+                        "restored-disposal",
+                        "owner",
+                        "boot",
+                        1,
+                        u64::MAX - 1,
+                    )
+                    .unwrap(),
+                );
+                let authority = EffectAuthority::new(authorization.effect_fence());
+                let call = |authority| -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<(), pc::SandboxError>> + Send + '_>,
+                > {
+                    if port == "sandbox" {
+                        pc::SandboxProvider::dispose_restored(
+                            &provider,
+                            &spec,
+                            &request,
+                            &authorization,
+                            authority,
+                        )
+                    } else {
+                        ContainerEnvironmentProvider::dispose_restored_environment(
+                            &provider,
+                            &spec,
+                            &request,
+                            &authorization,
+                            authority,
+                        )
+                    }
+                };
+                let denied = EffectAuthority::denied();
+                assert!(call(&denied).await.is_err(), "R1");
+                assert!(
+                    runtime
+                        .st
+                        .lock()
+                        .unwrap()
+                        .restore_disposal_authorizations
+                        .is_empty()
+                );
+                let gate = Arc::new(tokio::sync::Semaphore::new(0));
+                {
+                    let mut state = runtime.st.lock().unwrap();
+                    if boundary == "observation" {
+                        state.restore_disposal_observation_gate = Some(gate.clone());
+                    } else {
+                        state.restore_disposal_response_gate = Some(gate.clone());
+                    }
+                }
+                let mut pending = call(&authority);
+                std::future::poll_fn(|cx| {
+                    assert!(
+                        pending.as_mut().poll(cx).is_pending(),
+                        "{port}/{present}/{boundary}/{change}"
+                    );
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                {
+                    let mut current = authority.current.lock().unwrap();
+                    match change {
+                        "revoke" => *current = None,
+                        "replace" => current.as_mut().unwrap().0.epoch += 1,
+                        "expire" => current.as_mut().unwrap().1 = Duration::ZERO,
+                        "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                        _ => {}
+                    }
+                }
+                if change == "cancel" {
+                    drop(pending);
+                } else {
+                    gate.add_permits(1);
+                    assert_eq!(pending.await.is_ok(), change == "renew", "R2/R3");
+                }
+                {
+                    let mut state = runtime.st.lock().unwrap();
+                    assert_eq!(
+                        state.restore_disposals,
+                        usize::from(present && (boundary == "delete" || change == "renew"))
+                    );
+                    assert_eq!(
+                        state.restore_targets.is_empty(),
+                        !present || boundary == "delete" || change == "renew"
+                    );
+                    state.restore_disposal_observation_gate = None;
+                    state.restore_disposal_response_gate = None;
+                }
+                // A fresh fixture grant is an explicit successor test input,
+                // never a production reopening of the revoked Worker proof.
+                let retry = EffectAuthority::new(authorization.effect_fence());
+                call(&retry).await.unwrap();
+                call(&retry).await.unwrap();
+                assert!(call(&denied).await.is_err(), "R5");
+                let state = runtime.st.lock().unwrap();
+                assert_eq!(state.restore_creates, initial_creates, "R4 no recreation");
+                assert_eq!(
+                    state.restore_disposals,
+                    usize::from(present),
+                    "R4/R5 exact-once physical removal"
+                );
+                assert!(state.restore_targets.is_empty());
+            }
+        }
+    }
 }
 
 struct RejectingSecretBroker;

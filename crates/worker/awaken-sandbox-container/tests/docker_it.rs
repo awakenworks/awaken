@@ -166,11 +166,25 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
     );
     drop(recovered);
     retry
-        .dispose_restored_environment(&spec, &request, &authorization)
+        .dispose_restored_environment(
+            &spec,
+            &request,
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                authorization.effect_fence(),
+            ),
+        )
         .await
         .expect("D4 provider exact terminal cleanup");
     retry
-        .dispose_restored_environment(&spec, &request, &authorization)
+        .dispose_restored_environment(
+            &spec,
+            &request,
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                authorization.effect_fence(),
+            ),
+        )
         .await
         .expect("D4 provider absent replay");
     assert!(!staging_root.exists(), "D4/E4");

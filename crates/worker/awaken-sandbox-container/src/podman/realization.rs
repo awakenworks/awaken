@@ -134,7 +134,7 @@ impl PodmanRuntime {
             .and_then(serde_json::Value::as_str)
             .filter(|id| !id.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| container_id.to_string());
+            .ok_or_else(|| backend("Podman restore target has no immutable container id"))?;
         Ok((observed_id, restoration, plan_fingerprint, running))
     }
 

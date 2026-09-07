@@ -4,6 +4,9 @@
 //! this module is to reserve, recover, and dispose one exact provider directory
 //! across `LocalProvider` instances and Host process loss.
 
+#[cfg(test)]
+mod tests;
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -243,39 +246,49 @@ impl LocalProvider {
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         authorization.validate()?;
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
         request.validate_for_spec(spec)?;
         let evidence = request.evidence(spec);
         let root = restoration_root(&self.base, &evidence)?;
-        dispose_bound_target(&root, &evidence).await
+        dispose_bound_target(&root, &evidence, authorization.effect_fence(), authority).await
     }
 }
 
 pub(super) async fn dispose_bound_target(
     root: &Path,
     expected: &pc::SandboxRestorationEvidence,
+    fence: &pc::SandboxEffectFence,
+    authority: &dyn pc::CurrentExecutionAuthority,
 ) -> Result<(), pc::SandboxError> {
+    pc::with_current_sandbox_effect(fence, authority, || Ok(()))?;
     let _lock = lock_target(root).await?;
-    match read_binding(root)? {
-        Some(binding) if binding.evidence != *expected => {
-            return Err(err(
-                "local restored-target cleanup observed another exact effect",
-            ));
+    // The exact target lock and current owner guard jointly cover the whole
+    // synchronous deletion. Waiting for the former cannot preserve stale
+    // authority, and even exact absence is not an unfenced success receipt.
+    pc::with_current_sandbox_effect(fence, authority, || {
+        match read_binding(root)? {
+            Some(binding) if binding.evidence != *expected => {
+                return Err(err(
+                    "local restored-target cleanup observed another exact effect",
+                ));
+            }
+            None if physical_directory_exists(root)? => {
+                return Err(err(
+                    "local restored-target cleanup found an unfenced directory",
+                ));
+            }
+            Some(_) if physical_directory_exists(root)? => {
+                let identity = awaken_sandbox_fs::directory_identity_nofollow(root).map_err(err)?;
+                awaken_sandbox_fs::remove_directory_tree_exact(root, identity).map_err(err)?;
+            }
+            Some(_) | None => {}
         }
-        None if physical_directory_exists(root)? => {
-            return Err(err(
-                "local restored-target cleanup found an unfenced directory",
-            ));
-        }
-        Some(_) if physical_directory_exists(root)? => {
-            let identity = awaken_sandbox_fs::directory_identity_nofollow(root).map_err(err)?;
-            awaken_sandbox_fs::remove_directory_tree_exact(root, identity).map_err(err)?;
-        }
-        Some(_) | None => {}
-    }
-    // Keep the exact lock inode as the process-shared synchronization point.
-    // Removing it while waiters still hold/open it would split one target into
-    // two independent locks. It contains no environment state or evidence.
-    remove_target_binding(root)
+        // Keep the exact lock inode as the process-shared synchronization point.
+        // Removing it while waiters still hold/open it would split one target into
+        // two independent locks. It contains no environment state or evidence.
+        remove_target_binding(root)
+    })
 }
