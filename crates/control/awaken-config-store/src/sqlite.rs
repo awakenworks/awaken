@@ -7,6 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use awaken_tenancy::ScopeId;
 
 use crate::codec::decode_publication;
+use crate::management_effect_retirement_is_admitted;
 use crate::schema::{BUNDLE_ID, converged_config_bundle, selected_config_bundle};
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
@@ -370,12 +371,15 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 )
                 .optional()
                 .map_err(reject)?;
-            let Some(payload) = payload else {
-                return Ok(false);
-            };
-            let pending: ManagementEffect = serde_json::from_str(&payload).map_err(reject)?;
-            pending.validate_index(effect.kind(), effect.key())?;
-            if !receipt.matches_pending(&pending) {
+            let pending = payload
+                .as_deref()
+                .map(serde_json::from_str::<ManagementEffect>)
+                .transpose()
+                .map_err(reject)?;
+            if let Some(pending) = &pending {
+                pending.validate_index(effect.kind(), effect.key())?;
+            }
+            if !management_effect_retirement_is_admitted(&receipt, pending.as_ref()) {
                 return Ok(false);
             }
             // The same transaction protects the exact observation through DELETE.

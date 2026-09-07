@@ -292,6 +292,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness management_effect_confirmation_requires_positive_exact_readback \
     --harness processing_geography_requires_exact_evidence_from_every_candidate \
     --harness publication_revision_decision_is_target_safe_fail_closed_and_replay_first
+  run_kani awaken-config-store \
+    --harness management_effect_retirement_requires_present_matching_receipt
   run_kani awaken-credential-contract \
     --harness credential_envelope_issuance_accepts_exactly_the_complete_claim \
     --harness durable_credential_material_source_has_no_inline_plaintext_class \
