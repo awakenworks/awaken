@@ -60,10 +60,17 @@ self_test() {
   # targets whose volatile fixtures are isolated behind `test-support` enable
   # that feature explicitly; Cargo refusing to start a target is a red gate,
   # never evidence that the Postgres behavior passed.
-  grep -Fq "cargo test -p awaken-dispatch --features test-support" "$0" || {
-    echo "Postgres gate omits --features test-support for awaken-dispatch" >&2
+  grep -Fxq 'cargo test -p awaken-dispatch --features test-support || status=1' "$0" || {
+    echo "Postgres gate must run the complete ingress suite with test-support" >&2
     return 1
   }
+  # P8 the claim/commit guard lives in durable_postgres and its HTTP receipt
+  # boundary in active_active_postgres. The removed RuntimeHost filter matched
+  # zero tests; it is not a compatibility route or additional test coverage.
+  if grep -q '^cargo test -p awaken-session-executor' "$0"; then
+    echo "Postgres gate retains the retired RuntimeHost test selector" >&2
+    return 1
+  fi
   grep -Fq "cargo test -p awaken-dispatch-http --test active_active_postgres" "$0" || {
     echo "Postgres gate omits the coordinator-owned active/active transport test" >&2
     return 1
@@ -290,17 +297,10 @@ fi
 # where each test isolates itself in a fresh schema; the Session history matrix is
 # serialized explicitly while it creates and drops its canonical-prefix fixtures.
 status=0
-cargo test -p awaken-dispatch \
-  --features test-support \
-  --test dispatch_conformance \
-  --test durable_postgres \
-  --test runtime_postgres \
-  --test any_store \
-  --test sandbox_binding \
-  || status=1
-cargo test -p awaken-session-executor \
-  commit_claimed_postgres_guard_blocks_reclaim_until_http_commit_finishes \
-  || status=1
+# P7 run the whole ingress contract in this fixture lifetime, including Worker
+# cancellation/checkpoint regressions; a hand-maintained target list can omit
+# new recovery suites and silently exercise them only without PostgreSQL.
+cargo test -p awaken-dispatch --features test-support || status=1
 cargo test -p awaken-dispatch-http --test active_active_postgres -- --test-threads=1 \
   || status=1
 cargo test -p awaken-session-store --features test-support --test session_repo_conformance -- --test-threads=1 \

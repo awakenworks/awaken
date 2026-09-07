@@ -29,7 +29,7 @@ Init == /\ durable = 0
         /\ readStatus = "absent"
         /\ savedCheckpoint = 0
         /\ savedValid = FALSE
-        /\ recovery = [entry |-> "execute", evidence |-> "absent", quiescent |-> TRUE]
+        /\ recovery = [entry |-> "execute", evidence |-> "absent", quiescent |-> TRUE, acknowledged |-> FALSE]
 
 Produce == /\ phase = "running"
            /\ staged < MaxChunks
@@ -68,7 +68,7 @@ Crash == /\ phase = "running"
          /\ savedValid' = checkpointValid
          /\ recovery' \in [entry : EffectEntries \cup ControlEntries,
                             evidence : {"absent", "terminated", "unknown", "corrupt"},
-                            quiescent : {FALSE}]
+                            quiescent : {FALSE}, acknowledged : {FALSE}]
          /\ UNCHANGED <<durable, checkpoint, checkpointValid>>
 
 \* Decision table: observed absence/exact identity permits existing recovery;
@@ -129,12 +129,20 @@ Complete == /\ phase = "running"
             /\ lastAfter' = staged
             /\ UNCHANGED <<staged, checkpoint, readStatus, savedCheckpoint, savedValid, recovery>>
 
+\* The physical owner must observe the COMPLETE control operation, not merely
+\* a backend cancel callback which can return before the recovery/terminal gate.
+AcknowledgeControlReturn ==
+  /\ phase = "controlled" /\ ~recovery.acknowledged
+  /\ recovery' = [recovery EXCEPT !.acknowledged = TRUE]
+  /\ UNCHANGED <<durable, staged, checkpoint, checkpointValid, phase, lastKind,
+                 lastBefore, lastAfter, readStatus, savedCheckpoint, savedValid>>
+
 DoneStutter == /\ phase \in {"done", "blocked", "controlled"}
                /\ UNCHANGED vars
 
 Next == Produce \/ CommitWatermark \/ FlushCheckpoint \/ Crash
      \/ (\E outcome \in (AcceptedReads \cup RejectedReads) \ {"deadline"} : ObserveRead(outcome))
-     \/ ReadDeadline \/ Recover \/ RejectRead \/ ControlReturn \/ Complete \/ DoneStutter
+     \/ ReadDeadline \/ Recover \/ RejectRead \/ ControlReturn \/ AcknowledgeControlReturn \/ Complete \/ DoneStutter
 
 TypeOK == /\ durable \in 0..MaxChunks
           /\ staged \in 0..MaxChunks
@@ -149,7 +157,7 @@ TypeOK == /\ durable \in 0..MaxChunks
           /\ savedValid \in BOOLEAN
           /\ recovery \in [entry : EffectEntries \cup ControlEntries,
                             evidence : {"absent", "terminated", "unknown", "corrupt"},
-                            quiescent : BOOLEAN]
+                            quiescent : BOOLEAN, acknowledged : BOOLEAN]
 
 DurableWatermarkNeverRollsBack == lastAfter >= lastBefore
 RecoveryNeverStartsBeforeDurable == staged >= durable
@@ -166,6 +174,8 @@ RecoveredPartialRequiresEvidence == lastKind = "recover" /\ savedValid =>
   recovery.evidence = "terminated"
 UncertainOutcomeVetoesPhysicalReturn == phase = "blocked" => ~recovery.quiescent
 ControlReturnRequiresEvidence == phase = "controlled" => EvidencePermits
+ControlAckRequiresObservedEvidence == recovery.acknowledged =>
+  /\ phase = "controlled" /\ EvidencePermits /\ readStatus \in AcceptedReads
 
 \* Decision progress includes an unresponsive store under fair local scheduling.
 \* Neither property promises that an opaque remote operation terminates.
@@ -186,6 +196,7 @@ NoUnknownHandoffBlock == ~(phase = "blocked" /\ recovery.entry = "handoff" /\ re
 NoUnknownCancelBlock == ~(phase = "blocked" /\ recovery.entry = "cancel" /\ recovery.evidence = "unknown")
 NoUnknownStopBlock == ~(phase = "blocked" /\ recovery.entry = "stop" /\ recovery.evidence = "unknown")
 NoKnownControlReturn == ~(phase = "controlled" /\ recovery.evidence = "terminated")
+NoControlAckReached == ~recovery.acknowledged
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Recover) /\ WF_vars(RejectRead) /\ WF_vars(ControlReturn) /\ WF_vars(ReadDeadline)
 =============================================================================

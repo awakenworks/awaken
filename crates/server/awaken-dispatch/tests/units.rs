@@ -18,6 +18,30 @@ use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 use harness::{THREAD, activation, text_runtime};
 
 #[test]
+fn configured_postgres_failure_cannot_pass_as_a_skipped_test() {
+    // G1/G2 connected, required or optional => return the fixture. G3 optional
+    // unavailable => explicit skip. G4 configured unavailable => fail the test,
+    // never green without executing SQL. No process-global env mutation needed.
+    for required in [false, true] {
+        assert_eq!(
+            harness::postgres_connection_result(Ok(7), required),
+            Some(7)
+        );
+    }
+    assert_eq!(
+        harness::postgres_connection_result::<()>(Err(sqlx::Error::PoolClosed), false),
+        None
+    );
+    assert!(
+        std::panic::catch_unwind(|| harness::postgres_connection_result::<()>(
+            Err(sqlx::Error::PoolClosed),
+            true
+        ))
+        .is_err()
+    );
+}
+
+#[test]
 fn manual_clock_sets_and_advances_and_system_clock_reads() {
     let clock = ManualClock::new(5);
     assert_eq!(clock.now_ms(), 5);

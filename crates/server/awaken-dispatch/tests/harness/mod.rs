@@ -52,6 +52,52 @@ pub const SNAP: &str = "snapshot-1";
 pub const THREAD: &str = "thread-1";
 pub const TICKET: &str = "ticket-1";
 
+pub fn assert_completed_model_invocations(commit: &dyn CommittedThreadView, count: u64) {
+    use awaken_agent_contract::agent::state::{Action, StateKey};
+    use awaken_runtime_contract::model_operation::{
+        ActiveModelOperation, ModelExecutionEvidence, ModelOperation, ModelOperationPhase,
+    };
+    // M1 each successful Native call => exact Entered/Unknown then
+    // Returned/Terminated, same ordinal and Run. Extra journal writes or a
+    // missing entry/return are failures, not ignored implementation detail.
+    let observations = commit
+        .committed_state(&ThreadId(THREAD.into()))
+        .into_iter()
+        .filter(|command| command.key.0 == ActiveModelOperation::KEY)
+        .map(|command| {
+            assert_eq!(command.run_id, Some(RunId("run-1".into())));
+            let Action::Set(value) = command.action else {
+                panic!("M1 model evidence is retained");
+            };
+            let operation = serde_json::from_value::<Option<ModelOperation>>(value)
+                .unwrap()
+                .unwrap();
+            (
+                operation.ordinal.get(),
+                operation.phase,
+                operation.execution,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        observations,
+        (1..=count)
+            .flat_map(|ordinal| [
+                (
+                    ordinal,
+                    ModelOperationPhase::Entered,
+                    ModelExecutionEvidence::Unknown
+                ),
+                (
+                    ordinal,
+                    ModelOperationPhase::Returned,
+                    ModelExecutionEvidence::Terminated
+                ),
+            ])
+            .collect::<Vec<_>>()
+    );
+}
+
 /// One deterministic edge clock shared by claim, renewal, ownership checks, and
 /// settlement in a direct Worker drive.
 pub fn clock(now_ms: u64) -> Arc<dyn awaken_dispatch::Clock> {
@@ -1078,16 +1124,23 @@ pub fn database_url() -> String {
     })
 }
 
-/// Connect, or return `None` with a skip notice when no Postgres is reachable so
-/// the suite still passes on a machine without a database.
-pub async fn pool() -> Option<PgPool> {
-    match PgPool::connect(&database_url()).await {
-        Ok(pool) => Some(pool),
-        Err(err) => {
-            println!("[skip] no Postgres reachable: {err}");
+/// A configured gate must fail; only an optional developer probe may skip.
+pub fn postgres_connection_result<T>(result: Result<T, sqlx::Error>, required: bool) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) if required => panic!("configured PostgreSQL test gate is unavailable: {error}"),
+        Err(_) => {
+            println!("[skip] optional development PostgreSQL is unavailable");
             None
         }
     }
+}
+
+pub async fn pool() -> Option<PgPool> {
+    postgres_connection_result(
+        PgPool::connect(&database_url()).await,
+        std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_some(),
+    )
 }
 
 /// The test database URL with `search_path` pinned to `schema`, for the one test
@@ -1114,17 +1167,19 @@ pub async fn schema_pool(schema: &'static str) -> Option<PgPool> {
         .await
         .expect("create schema");
     admin.close().await;
-    PgPoolOptions::new()
-        .after_connect(move |conn, _meta| {
-            Box::pin(async move {
-                conn.execute(format!("SET search_path = {schema}").as_str())
-                    .await?;
-                Ok(())
+    Some(
+        PgPoolOptions::new()
+            .after_connect(move |conn, _meta| {
+                Box::pin(async move {
+                    conn.execute(format!("SET search_path = {schema}").as_str())
+                        .await?;
+                    Ok(())
+                })
             })
-        })
-        .connect(&database_url())
-        .await
-        .ok()
+            .connect(&database_url())
+            .await
+            .expect("a reachable PostgreSQL fixture must open its isolated schema"),
+    )
 }
 
 /// Shared spec for revision-guarded pending edit/retract (M3a): every backend
@@ -2704,6 +2759,11 @@ pub async fn assert_settle_fences_stale_epoch<S: awaken_dispatch::Dispatch>(
         "the recovery re-claim bumps the fence to 2"
     );
 
+    // F1 stale epoch => fenced with no persistent change, even if the authority
+    // clock advances while the assertion is being evaluated. PostgreSQL owns
+    // its wall clock; passing B.expiry - 1 cannot keep a 100ms lease alive.
+    let before_stale_settle = store.list_dispatches().await.unwrap();
+    assert_eq!(before_stale_settle.len(), 1, "B still owns the dispatch");
     // A wakes and tries to settle under its STALE epoch 1: fenced, nothing changes.
     assert_eq!(
         store
@@ -2713,21 +2773,31 @@ pub async fn assert_settle_fences_stale_epoch<S: awaken_dispatch::Dispatch>(
         SettleOutcome::Fenced,
         "the stale owner's settle is rejected by the fence"
     );
-    // The dispatch is untouched — B (the current owner) still holds a live claim, so
-    // a fresh claim before B's lease expires finds nothing runnable.
-    assert!(
-        store
-            .claim(
-                "owner-c",
-                100,
-                b.lease.expires_ms.saturating_sub(1),
-                &Default::default(),
-            )
-            .await
-            .unwrap()
-            .is_none(),
-        "the fenced settle did not delete the row B is running"
+    assert_eq!(
+        store.list_dispatches().await.unwrap(),
+        before_stale_settle,
+        "F1 stale settlement leaves B's durable dispatch untouched"
     );
+    // F2 exact clock control => also check the live-claim exclusion boundary.
+    // For live database clocks the shared claim tests cover that predicate;
+    // this spec proves persistence directly, without racing another claim
+    // against a real 100ms deadline and accidentally replacing B itself.
+    if clock.exact_boundary_is_controllable() {
+        clock.set(b.lease.expires_ms.saturating_sub(1));
+        assert!(
+            store
+                .claim(
+                    "owner-c",
+                    100,
+                    b.lease.expires_ms.saturating_sub(1),
+                    &Default::default(),
+                )
+                .await
+                .unwrap()
+                .is_none(),
+            "F2 B's live claim excludes C"
+        );
+    }
 
     // B settles under the CURRENT epoch 2: applied, the dispatch is removed.
     assert_eq!(

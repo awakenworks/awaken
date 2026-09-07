@@ -75,12 +75,12 @@ async fn postgres_commit_backs_execute_resume_and_survives_restart() {
     // approval. E1 recover input + model enter/return + Requested batch + Awaiting;
     // E2 exactly one invocation, zero tool entries, and the exact active ticket.
     // The shared memory/Postgres oracle reads the canonical Thread state log.
-    harness::assert_one_model_invocation(restarted.as_ref());
     assert_eq!(
         restarted.commit_count(),
         5,
         "input, model evidence, requested batch, and awaiting approval survive restart"
     );
+    harness::assert_completed_model_invocations(restarted.as_ref(), 1);
     assert!(
         CommittedThreadView::resume_ticket(&*restarted, &RunId("run-1".to_string())).is_some(),
         "the active ticket rehydrated — the await survives restart"
@@ -94,6 +94,9 @@ async fn postgres_commit_backs_execute_resume_and_survives_restart() {
         .expect("resume");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // R2 resume => reuse the first call's journal and append exactly the second
+    // model invocation after the approved tool; never replay the first call.
+    harness::assert_completed_model_invocations(restarted.as_ref(), 2);
 
     // The committed run record (the derived cache) equals the latest fact.
     let record =

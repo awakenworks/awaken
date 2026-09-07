@@ -93,6 +93,112 @@ async fn a_returned_unknown_tool_result_cannot_release_the_durable_physical_slot
     assert_eq!(effects.load(Ordering::SeqCst), 1);
 }
 
+async fn assert_native_cancel_observes_history_before_physical_ack<S>(store: Arc<S>, unknown: bool)
+where
+    S: awaken_dispatch::Dispatch + 'static,
+{
+    use awaken_agent_contract::agent::state::StateKey;
+    use awaken_runtime_contract::model_operation::{
+        ActiveModelOperation, ModelExecutionEvidence, ModelOperation,
+    };
+    use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
+    // C1 a cancellation claims an empty physical slot; C2 committed model
+    // evidence is Unknown/Terminated (e.g. a legacy slot already released).
+    // R1 Unknown => logical Cancelled but physical slot retained and settlement
+    // withheld. R2 Terminated => Cancelled and normal settlement. Both enter the
+    // real Native cancel adapter, never a fake executor; neither invokes a model.
+    // The later Runtime terminal writer cannot repair an ACK already emitted.
+    let request = activation("cancel-evidence");
+    let run_id = request.run_id.clone();
+    let thread_id = request.thread_id.clone();
+    let mut operation = ModelOperation::next(
+        None,
+        request
+            .snapshot
+            .resolved_spec
+            .model_binding
+            .binding()
+            .clone(),
+    )
+    .unwrap();
+    operation.execution = if unknown {
+        ModelExecutionEvidence::Unknown
+    } else {
+        ModelExecutionEvidence::Terminated
+    };
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    commit
+        .commit(ThreadCommit::assemble(
+            thread_id.clone(),
+            RunDisposition::running(run_id.clone()),
+            true,
+            Vec::new(),
+            vec![ActiveModelOperation::write(&Some(operation))],
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    store.enqueue(RunDispatch::new(request)).await.unwrap();
+    store.cancel(&run_id).await.unwrap().unwrap();
+    let (runtime, calls) = counting_text_runtime();
+    let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "cancel-owner")
+        .with_lease_ms(LEASE);
+    let result = worker.tick(harness::clock(0)).await.unwrap();
+    assert_eq!(
+        commit.run_state(&run_id),
+        Some(RunState::Ended(EndCause::Cancelled))
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let rows = store.list_dispatches().await.unwrap();
+    if unknown {
+        assert!(
+            result.is_none(),
+            "unknown execution cannot settle after a no-op cancel"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.run_id == run_id && row.physical_attempt_active)
+        );
+        let replacement = store
+            .claim("replacement", LEASE, LEASE + 1, &Default::default())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            store
+                .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1)
+                .await
+                .unwrap(),
+            AttemptAdmission::Blocked
+        );
+    } else {
+        assert_eq!(result, Some((run_id, RunState::Ended(EndCause::Cancelled))));
+        assert!(rows.iter().all(|row| !row.physical_attempt_active));
+    }
+}
+
+#[tokio::test]
+async fn native_cancel_evidence_precedes_physical_ack_memory() {
+    for unknown in [false, true] {
+        assert_native_cancel_observes_history_before_physical_ack(
+            Arc::new(MemoryDispatchStore::new()),
+            unknown,
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn native_cancel_evidence_precedes_physical_ack_sqlite() {
+    for unknown in [false, true] {
+        assert_native_cancel_observes_history_before_physical_ack(
+            Arc::new(SqliteDispatchStore::open_in_memory().unwrap()),
+            unknown,
+        )
+        .await;
+    }
+}
+
 // --- 1. A live lease fences a second claim ---------------------------------
 
 /// Store-level spec: while owner A holds a live lease on the only runnable

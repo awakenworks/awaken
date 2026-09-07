@@ -300,13 +300,25 @@ Recovery rejection seals unfinished tool/child state through the existing final
 ThreadCommit; resume supplies its explicit committed reader to that same sealing
 implementation instead of depending on the optional context reader.
 
+Durable cancellation keeps the backend cancel callback AND that terminal writer
+inside one `run_physical_attempt` operation. Its original attempt-local latch
+therefore receives the evidence veto before `finish_observed_attempt` can clear
+the exact slot. Previously only the backend callback was inside this boundary;
+Native's no-op could be ACKed before its later terminal writer discovered
+Unknown evidence. No Native-only duplicate preflight is needed. The existing
+Memory/SQLite Worker regressions require Unknown to retain the slot and withhold
+settlement, while Terminated still permits ordinary cancellation and settlement.
+
 The existing CheckpointRecovery model covers five entry classes and four prior
 evidence classes within MaxChunks=3, including control return without evidence,
 resume/handoff before observation, retained unknown checkpoints and read
 settlement under fair local timer/scheduler progress even for a pending store.
-Fourteen semantic mutations and thirteen reachability witnesses guard
+Fifteen semantic mutations and fourteen reachability witnesses guard
 the model. Runtime tests separately cover actual permission/tool/child calls and
 control replay, deadline expiry without cancellation, and successful slow reads.
+The model's explicit control ACK transition rejects acknowledgement before the
+control observation; a semantic mutant reproduces the early-callback ACK and a
+positive witness ensures confirmed control can still be acknowledged.
 This is bounded abstract-model evidence, not Rust refinement or
 provider termination proof. It does not make blocking synchronous storage
 preemptible, prove an unjournaled historical Run stopped, or add independent
