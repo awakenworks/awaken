@@ -7,7 +7,8 @@ use super::super::environment::EnvironmentStopProof;
 use super::super::tests::{DoneProcess, FakeHandExecutor, UnreapableProcess, spec};
 use super::super::{SessionEnvironment, SessionEnvironmentProvider};
 use super::*;
-use std::path::{Path, PathBuf};
+use crate::acp_backend::deployment_test_binary;
+use std::path::Path;
 
 struct CurrentAuthority;
 
@@ -18,12 +19,6 @@ impl awaken_provisioning_contract::CurrentExecutionAuthority for CurrentAuthorit
     ) -> std::io::Result<()> {
         effect(Duration::from_secs(60))
     }
-}
-
-fn deployment_binary(key: &str) -> PathBuf {
-    let path = PathBuf::from(std::env::var_os(key).unwrap_or_else(|| panic!("required {key}")));
-    assert!(path.is_absolute() && path.is_file(), "invalid {key}");
-    path
 }
 
 async fn environment(base: &Path, failing_hand: bool) -> SessionEnvironment {
@@ -53,8 +48,8 @@ async fn environment(base: &Path, failing_hand: bool) -> SessionEnvironment {
     };
     sandbox
         .install_scoped_execution(
-            &deployment_binary("AWAKEN_TEST_SCOPED_LAUNCHER"),
-            &deployment_binary("AWAKEN_TEST_SCOPED_HELPER"),
+            &deployment_test_binary("AWAKEN_TEST_SCOPED_LAUNCHER"),
+            &deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
             Arc::new(CurrentAuthority),
         )
         .unwrap();

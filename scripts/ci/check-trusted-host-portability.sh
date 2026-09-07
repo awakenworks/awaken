@@ -67,12 +67,19 @@ cargo test -p awaken-local-process --lib
 # Run the actual Hand binary with an explicit resource root and a nested cwd,
 # not just a renderer/unit fixture. Non-Linux builds exercise native path parsing.
 cargo test -p awaken-sandbox --features hand --lib --test hand_stdio_role
+# Artifact rule: Cargo may separate intermediates from final executables (and
+# Windows adds .exe). Reuse the one JSON resolver, never infer a profile sibling
+# of the test binary or copy a stale companion into Cargo's build cache.
+AWAKEN_TEST_SCOPED_HELPER="$(node --input-type=module -e '
+  import { cargoExecutable } from "./e2e/cargo_binary.mjs";
+  process.stdout.write(cargoExecutable({ cwd: process.cwd(), packageName: "awaken-sandbox", targetName: "awaken-sandbox", features: ["hand"] }));
+')"
+export AWAKEN_TEST_SCOPED_HELPER
 if [[ "$linux_supervision" == true ]]; then
   # The Session lifecycle rows use real scope processes and the exact just-built
   # helper. Missing binaries/substrate fail; ignored merely isolates this
   # mandatory Linux gate from portable unit builds without an installed helper.
-  AWAKEN_TEST_SCOPED_HELPER="$(realpath "$CARGO_TARGET_DIR/debug/awaken-sandbox")" \
-    AWAKEN_TEST_SCOPED_LAUNCHER="$(command -v bwrap)" \
+  AWAKEN_TEST_SCOPED_LAUNCHER="$(command -v bwrap)" \
     cargo test -p awaken-session-executor --lib trusted_host_scoped_session -- --ignored
 fi
 # These startup rows require the just-built release companion. The thin scoped
