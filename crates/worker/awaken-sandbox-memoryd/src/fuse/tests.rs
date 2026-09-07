@@ -23,6 +23,172 @@ fn memory(path: &str, content: &str) -> Memory {
 }
 
 #[test]
+fn failed_kernel_mount_releases_only_its_invalidation_listener() {
+    // R1: listener started + kernel setup error + live bus/peer => error returns
+    // only after this subscriber exits; peer remains usable. Repeated failures
+    // must not accumulate subscribers. The missing child is intentional: this
+    // exercises the real setup error even without /dev/fuse, not a skipped mount.
+    let root = tempfile::tempdir().unwrap();
+    let (bus, mut peer) = broadcast::channel(8);
+    for _ in 0..8 {
+        let result = spawn_mount_with_invalidations(
+            Arc::new(VolatileMemoryRepository::new()),
+            "s".into(),
+            root.path().join("missing-parent/mount"),
+            bus.subscribe(),
+        );
+        assert!(result.is_err(), "nonexistent mountpoint cannot be mounted");
+        assert_eq!(bus.receiver_count(), 1, "only the peer remains");
+        let event = ("s".into(), "/still-live.md".into());
+        bus.send(event.clone()).unwrap();
+        assert_eq!(peer.try_recv().unwrap(), event);
+    }
+}
+
+#[test]
+fn listener_owner_cleanup_covers_exit_and_disposal_decision_table() {
+    // R2-R19: (polling / bus closed / thread panicked) x (empty / queued bus)
+    // x (handle Drop / unmount / repeated unmount then Drop). Every row consumes
+    // the same listener exactly once, requests stop and releases its receiver.
+    // No kernel session is needed to test listener ownership. Thread panic is a
+    // terminal join result, never a second panic from cleanup.
+    for exit in ["polling", "closed", "panic"] {
+        for queued in [false, true] {
+            for dispose in ["drop", "unmount", "repeat"] {
+                let (bus, rx) = broadcast::channel(1);
+                if queued {
+                    bus.send(("s".into(), "/a.md".into())).unwrap();
+                    bus.send(("s".into(), "/b.md".into())).unwrap();
+                }
+                let stop = Arc::new(AtomicBool::new(false));
+                let thread_stop = stop.clone();
+                let worker = std::thread::spawn(move || {
+                    if exit == "panic" {
+                        // Keep rx live through the injected failure.
+                        let _rx = rx;
+                        panic!("injected invalidation thread failure");
+                    }
+                    run_invalidation_listener(
+                        Arc::new(Mutex::new(ContentLruCache::new(4))),
+                        "s".into(),
+                        rx,
+                        thread_stop,
+                    );
+                });
+                let mut handle = MemoryMountHandle {
+                    session: None,
+                    state: Arc::new(MountState::default()),
+                    drain_timeout: Duration::ZERO,
+                    listener: Some(InvalidationListener {
+                        stop: stop.clone(),
+                        handle: Some(worker),
+                    }),
+                };
+                let bus = if exit == "closed" {
+                    drop(bus);
+                    None
+                } else {
+                    Some(bus)
+                };
+                if exit != "polling" {
+                    // Force the early-exit-before-owner-cleanup ordering; a
+                    // closed bus alone would still race the owner's stop flag.
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !handle
+                        .listener
+                        .as_ref()
+                        .unwrap()
+                        .handle
+                        .as_ref()
+                        .unwrap()
+                        .is_finished()
+                    {
+                        assert!(Instant::now() < deadline, "{exit} worker did not exit");
+                        std::thread::yield_now();
+                    }
+                    assert!(!stop.load(Ordering::SeqCst));
+                }
+                if dispose != "drop" {
+                    handle.unmount();
+                    assert!(handle.listener.is_none());
+                    if dispose == "repeat" {
+                        handle.unmount();
+                    }
+                }
+                drop(handle);
+                assert!(stop.load(Ordering::SeqCst));
+                if let Some(bus) = bus {
+                    assert_eq!(bus.receiver_count(), 0, "{exit}/{queued}/{dispose}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn listener_drop_waits_for_exit_not_only_stop_acknowledgement() {
+    // R20: stop observed but worker still running => destructor cannot return;
+    // after worker exit => join returns. Channels fix the ordering, without a
+    // sleep-as-race oracle. This complements the abstract Stop/Exit/Join model.
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_stop = stop.clone();
+    let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+    let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        while !worker_stop.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        observed_tx.send(()).unwrap();
+        exit_rx.recv().unwrap();
+    });
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let disposer = std::thread::spawn(move || {
+        drop(InvalidationListener {
+            stop,
+            handle: Some(worker),
+        });
+        done_tx.send(()).unwrap();
+    });
+    observed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(matches!(
+        done_rx.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    exit_tx.send(()).unwrap();
+    done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    disposer.join().unwrap();
+}
+
+#[test]
+fn listener_setup_unwind_keeps_the_same_cleanup_owner() {
+    // R21: unwind after thread creation, before a MemoryMountHandle exists =>
+    // the local listener guard still stops and joins; the caller sees its panic.
+    let (bus, rx) = broadcast::channel(1);
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let worker = std::thread::spawn(move || {
+        run_invalidation_listener(
+            Arc::new(Mutex::new(ContentLruCache::new(4))),
+            "s".into(),
+            rx,
+            thread_stop,
+        );
+    });
+    let owner_stop = stop.clone();
+    let result = std::thread::spawn(move || {
+        let _listener = InvalidationListener {
+            stop: owner_stop,
+            handle: Some(worker),
+        };
+        panic!("injected setup unwind");
+    })
+    .join();
+    assert!(result.is_err());
+    assert!(stop.load(Ordering::SeqCst));
+    assert_eq!(bus.receiver_count(), 0);
+}
+
+#[test]
 fn invalidation_listener_drops_matching_paths_only() {
     use crate::LocalInvalidator;
     use crate::invalidate::Invalidator;
