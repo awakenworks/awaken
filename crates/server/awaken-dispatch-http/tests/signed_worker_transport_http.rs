@@ -874,7 +874,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         ..WorkerManifest::default()
     };
     manifest.runtime_protocol.min = 1;
-    manifest.runtime_protocol.max = 2;
+    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     // Worker lease receipt decision rules: successful registration and Applied
     // heartbeat both disclose the same positive Coordinator-owned TTL; a
     // bootstrap credential still cannot use incarnation-only operations.
@@ -883,6 +883,10 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .await
         .expect("bootstrap assertion registers the Worker");
     assert_eq!(registration_receipt.lease_ttl_ms, 30_000);
+    assert_eq!(
+        registration_receipt.runtime_protocol_version,
+        Some(awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION)
+    );
     let registered = registration_receipt.worker;
     assert!(
         WorkerControlClient::new(bootstrap.clone())
@@ -2469,16 +2473,118 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     assert_eq!(session_work.releases.load(Ordering::SeqCst), 2, "T21");
 }
 
-/// Terminal-cleanup capability cause/effect table: C1 a current registered
-/// Worker presents the historical omitted/default `VersionRange::ANY`; C2 each
-/// v2 claim, poll, preparation authorize/record, disposal authorize/record, or
-/// Repository publication edge carries a structurally valid request. Effect E1
-/// is HTTP 400 before any Session Control call. Rule V1=C1+C2=>E1 for every
-/// listed edge. Constraint: `ANY` is compatibility decode data, never explicit
-/// authority for a destructive protocol, even though its numeric range contains
-/// version 2.
 #[tokio::test]
-async fn terminal_cleanup_v2_rejects_default_any_before_every_control_edge() {
+async fn protocol_admission_precedes_registration_and_heartbeat_mutation() {
+    // Causes C1 explicit current range, C2 exact current identity, C3 operation.
+    // R1 register && !C1 => 400, no registry record; register && C1 => receipt
+    // selects current protocol. R2 old persisted registration + heartbeat =>
+    // 400, unchanged TTL/state/sequence. R3 stale identity => normal stale result,
+    // never mutates a replacement. R4 old exact drain/quiesce/deregister remains
+    // callable: protocol denial cannot remove the existing retirement route.
+    let directory = Arc::new(TestWorkerDirectory::default());
+    let service = WorkerDispatchService::local(Arc::new(MemoryDispatchStore::new()))
+        .with_worker_directory(directory.clone(), 30_000);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = dispatch_transport_router_with_service(Arc::new(service));
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    for (min, max, admitted) in [
+        (0, u32::MAX, false),
+        (0, 3, false),
+        (1, 1, false),
+        (1, 2, false),
+        (3, 2, false),
+        (4, 4, false),
+        (1, 3, true),
+        (3, 3, true),
+    ] {
+        *directory.0.lock().unwrap() = None;
+        let mut manifest = WorkerManifest::default();
+        manifest.runtime_protocol.min = min;
+        manifest.runtime_protocol.max = max;
+        let registration = WorkerRegistration {
+            worker_id: "protocol-worker".into(),
+            incarnation_id: "protocol-boot".into(),
+            manifest,
+        };
+        let response = client
+            .post(format!("http://{address}/v1/worker/register"))
+            .header("x-awaken-worker-id", "protocol-worker")
+            .json(&serde_json::json!({ "registration": &registration }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().is_success(), admitted, "{min}..{max}");
+        if admitted {
+            let receipt: awaken_dispatch_contract::WorkerRegistrationReceipt =
+                response.json().await.unwrap();
+            assert_eq!(
+                receipt.runtime_protocol_version,
+                Some(awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION)
+            );
+            continue;
+        }
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert!(directory.0.lock().unwrap().is_none(), "R1 no mutation");
+        // Seed a pre-upgrade persisted identity through the Directory, not the
+        // HTTP admission path under test.
+        let record = directory.register(registration, 0, u64::MAX).await.unwrap();
+        let identity = record.snapshot.identity.clone();
+        let heartbeat = WorkerHeartbeat {
+            sequence: 1,
+            ready: true,
+            in_flight: 0,
+            warm_environment_shapes: Default::default(),
+            credential_observations: Default::default(),
+            acp_capability_observations: Default::default(),
+        };
+        let response = client
+            .post(format!("http://{address}/v1/worker/heartbeat"))
+            .header("x-awaken-worker-id", "protocol-worker")
+            .json(&serde_json::json!({ "identity": &identity, "heartbeat": &heartbeat }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(*directory.0.lock().unwrap(), Some(record.clone()), "R2");
+        let mut stale = identity.clone();
+        stale.generation += 1;
+        let response = client
+            .post(format!("http://{address}/v1/worker/heartbeat"))
+            .header("x-awaken-worker-id", "protocol-worker")
+            .json(&serde_json::json!({ "identity": stale, "heartbeat": &heartbeat }))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap()["mutation"],
+            "stale_incarnation"
+        );
+        assert_eq!(*directory.0.lock().unwrap(), Some(record), "R3");
+        for operation in ["drain", "quiesced", "deregister"] {
+            let response = client
+                .post(format!("http://{address}/v1/worker/{operation}"))
+                .header("x-awaken-worker-id", "protocol-worker")
+                .json(&serde_json::json!({ "identity": &identity }))
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success(), "R4/{operation}");
+        }
+    }
+    server.abort();
+}
+
+/// C1 pre-upgrade registration has omitted/old/future/inverted protocol range;
+/// C2 structurally valid ordinary claim/renew/resume or terminal effect request.
+/// V1=C1+C2 => protocol-specific HTTP 400 before Control/Work/registry mutation.
+/// Cross every range with every edge: malformed request rejection must not
+/// masquerade as protocol rejection. Positive current protocol is exercised
+/// by signed_identity_covers_register_heartbeat_and_dispatch.
+#[tokio::test]
+async fn incompatible_registration_rejected_before_execution_and_terminal_edges() {
     let identity = WorkerIdentity::new("any-worker", "any-incarnation", 1);
     let manifest = WorkerManifest::default();
     let directory = Arc::new(TestWorkerDirectory::default());
@@ -2501,8 +2607,16 @@ async fn terminal_cleanup_v2_rejects_default_any_before_every_control_edge() {
         drain_deadline_ms: None,
     });
     let session_control = Arc::new(RecordingSessionControl::default());
-    let service = WorkerDispatchService::local(Arc::new(MemoryDispatchStore::new()))
-        .with_worker_directory(directory, 30_000)
+    // A real queued v1 request must remain pending after every denial; an
+    // empty queue would not expose accidentally claiming before rejection.
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    dispatch
+        .enqueue(standard_worker_dispatch(activation()))
+        .await
+        .unwrap();
+    let queued_before = dispatch.list_dispatches().await.unwrap();
+    let service = WorkerDispatchService::local(dispatch.clone())
+        .with_worker_directory(directory.clone(), 30_000)
         .with_session_control(session_control.clone());
     let router = dispatch_transport_router_with_service(Arc::new(service));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2583,6 +2697,29 @@ async fn terminal_cleanup_v2_rejects_default_any_before_every_control_edge() {
     };
     let rules = [
         (
+            "ordinary-claim",
+            "/v1/worker/dispatch/claim",
+            serde_json::json!({ "identity": &identity }),
+        ),
+        (
+            "ordinary-renew",
+            "/v1/worker/dispatch/renew",
+            serde_json::json!({ "identity": &identity, "run_id": "old-run", "lease_epoch": 1 }),
+        ),
+        (
+            "session-resume",
+            "/v1/worker/session/resume",
+            serde_json::json!({ "identity": &identity, "session_id": "any-session",
+                "claim": { "run_id": "old-run", "owner": identity.lease_owner(), "epoch": 1 } }),
+        ),
+        (
+            "session-renew",
+            "/v1/worker/session/realization/renew",
+            serde_json::json!({ "identity": &identity, "command": {
+                "session_id": "any-session", "asserted_lease": &lease,
+                "requested_expires_at_unix_ms": u64::MAX } }),
+        ),
+        (
             "claim",
             "/v1/worker/session/cleanup/claim-next",
             serde_json::json!({ "identity": &identity, "target": target }),
@@ -2638,20 +2775,42 @@ async fn terminal_cleanup_v2_rejects_default_any_before_every_control_edge() {
             }),
         ),
     ];
-    for (rule, path, body) in rules {
-        let response = reqwest::Client::new()
-            .post(format!("http://{address}{path}"))
-            .header("x-awaken-worker-id", &identity.worker_id)
-            .json(&body)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            reqwest::StatusCode::BAD_REQUEST,
-            "{rule}"
-        );
+    for (min, max) in [(0, u32::MAX), (0, 3), (1, 1), (1, 2), (3, 2), (4, 4)] {
+        {
+            let mut current = directory.0.lock().unwrap();
+            let snapshot = &mut current.as_mut().unwrap().snapshot;
+            snapshot.manifest.runtime_protocol.min = min;
+            snapshot.manifest.runtime_protocol.max = max;
+            snapshot.capability_fingerprint = snapshot.manifest.fingerprint().unwrap();
+        }
+        let before = directory.0.lock().unwrap().clone();
+        for (rule, path, body) in &rules {
+            let response = reqwest::Client::new()
+                .post(format!("http://{address}{path}"))
+                .header("x-awaken-worker-id", &identity.worker_id)
+                .json(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                reqwest::StatusCode::BAD_REQUEST,
+                "{rule}"
+            );
+            assert!(
+                response
+                    .text()
+                    .await
+                    .unwrap()
+                    .contains("current runtime protocol"),
+                "{min}..{max}/{rule}: rejection must come from protocol admission"
+            );
+        }
+        assert_eq!(*directory.0.lock().unwrap(), before);
+        assert_eq!(dispatch.list_dispatches().await.unwrap(), queued_before);
     }
+    assert!(session_control.begins.lock().unwrap().is_empty());
+    assert!(session_control.renewals.lock().unwrap().is_empty());
     assert_eq!(
         session_control
             .terminal_control_calls

@@ -5,6 +5,7 @@ pub use awaken_dispatch::AttemptAdmission
 pub use awaken_dispatch::AttemptCredentialBinding
 pub use awaken_dispatch::AttemptExecutionRequest
 pub use awaken_dispatch::BindSandboxRequest
+pub use awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION
 pub use awaken_dispatch::CandidateFingerprint
 pub use awaken_dispatch::CasOutcome
 pub use awaken_dispatch::CheckpointRequest

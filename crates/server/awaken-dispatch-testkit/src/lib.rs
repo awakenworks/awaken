@@ -114,7 +114,10 @@ pub mod worker_http {
     }
 
     pub async fn ready_worker(worker_id: &str) -> (Arc<dyn WorkerDirectory>, WorkerIdentity) {
-        let manifest = WorkerManifest::default();
+        let mut manifest = WorkerManifest::default();
+        manifest.runtime_protocol.min = 1;
+        manifest.runtime_protocol.max =
+            awaken_dispatch_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
         let identity = WorkerIdentity::new(worker_id, format!("{worker_id}-boot"), 1);
         let registered = RegisteredWorker {
             snapshot: WorkerSnapshot {

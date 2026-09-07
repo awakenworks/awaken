@@ -217,8 +217,27 @@ an unfenced suspension.
 This is a wire contract change, not a Lease rename: renewal responses include
 `lease` and required positive `remaining_ms`; directives and terminal
 assignments flatten the same envelope. New clients reject missing, zero or
-malformed horizons rather than inventing a fallback. Mixed-version deployment
-is not declared compatible by these changes.
+malformed horizons rather than inventing a fallback.
+
+Registered execution reuses the existing Worker runtime protocol range and
+compatibility kernel, with current protocol v3. Manifest/dispatch envelope
+versions remain v1. Registration rejects omitted/zero-based, old or otherwise
+incompatible ranges before mutation; claim authority, heartbeat renewal and
+application-owned terminal recovery reject pre-upgrade incompatible records.
+The standard Worker advertises 1..3, retaining support for explicitly pinned
+v1/v2 queued requirements without rewriting durable work. Legacy version-zero
+requirements do not become explicit registered authority; the existing local
+eligibility path remains unchanged.
+
+The registration receipt declares the selected Control runtime version. A new
+Worker accepts only the current version before Host factories or probes start.
+Missing/malformed version metadata grants no execution but preserves a decoded
+registration identity for the existing single bounded withdrawal path. Zero
+registration TTL is rejected inside that same scope, not in the transport
+decoder where rejection would discard the known cleanup identity. Drain,
+quiesce and deregistration remain available for incompatible registrations.
+This is fail-closed coordinated upgrade, not mixed-version rolling availability:
+old Control replicas must stop serving before the new fleet is admitted.
 
 Test decision tables reside beside the contract, application, Host and signed
 HTTP tests. They cover elapsed/expiry boundaries, regressed observations,
@@ -228,7 +247,7 @@ delayed projection publication and malformed wire evidence. The existing
 original lock/slot identity, revocation and guarded effects; its Session-expiry
 bit does not prove the receipt adapter or all projection fields. Provider
 `SandboxEffectFence` validation still has independent absolute-time boundaries:
-full provider clock correspondence, mixed-version rollout, real cloud/local
+full provider clock correspondence, live upgrade qualification, real cloud/local
 fault qualification and real Windows/macOS qualification remain open. Passing
 these tests or bounded models must not promote `process_tree_supervision`.
 

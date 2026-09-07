@@ -81,6 +81,20 @@ pub struct RegisterWorkerRequest {
 pub struct WorkerRegistrationReceipt {
     pub worker: RegisteredWorker,
     pub lease_ttl_ms: u64,
+    /// A valid declaration is required before Runtime startup, not before the
+    /// registered identity can be withdrawn. Missing/malformed legacy metadata
+    /// retains the receipt solely for the existing bounded exit cleanup.
+    #[serde(default, deserialize_with = "optional_runtime_protocol")]
+    pub runtime_protocol_version: Option<u32>,
+}
+
+fn optional_runtime_protocol<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u32>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_u64()
+        .and_then(|version| u32::try_from(version).ok()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

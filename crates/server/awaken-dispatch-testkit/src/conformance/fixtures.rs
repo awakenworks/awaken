@@ -1,6 +1,9 @@
 // Private fixture builders shared by the conformance rule families. Included
 // once at crate root so fixture identity and credential setup remain canonical.
 fn dispatch(ns: &str, run: &str, thread: &str) -> RunDispatch {
+    // These conformance rows exercise current local/registered execution.
+    // Pin the existing strict builder instead of accidentally granting a
+    // legacy zero-version queue envelope through a default ANY Worker.
     RunDispatch::new(RunActivation::new(
         run_id(ns, run),
         thread_id(ns, thread),
@@ -31,6 +34,7 @@ fn dispatch(ns: &str, run: &str, thread: &str) -> RunDispatch {
             "run conformance",
         )],
     ))
+    .with_placement(PlacementRequirements::remote_preferred())
 }
 
 /// Attach the current Session command identity after the fixture has applied
@@ -126,7 +130,11 @@ fn credential_candidate(
 }
 
 fn ready_dispatch_worker(ns: &str, suffix: &str) -> WorkerSnapshot {
-    let manifest = WorkerManifest::default();
+    // Protocol support is a fixed precondition; each caller varies the actual
+    // claim/credential/recovery cause under test.
+    let mut manifest = WorkerManifest::default();
+    manifest.runtime_protocol.min = 1;
+    manifest.runtime_protocol.max = awaken_dispatch_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
     WorkerSnapshot {
         identity: WorkerIdentity::new(format!("{ns}-{suffix}-worker"), "boot", 1),
         capability_fingerprint: manifest
@@ -148,7 +156,7 @@ fn ready_dispatch_worker(ns: &str, suffix: &str) -> WorkerSnapshot {
 }
 
 fn credential_worker(ns: &str, holder: &PlaintextHolder, capable: bool) -> WorkerSnapshot {
-    let mut manifest = WorkerManifest::default();
+    let mut manifest = ready_dispatch_worker(ns, "credential").manifest;
     if capable {
         let realization = CredentialRealizationCapabilities {
             holders: [holder.clone()].into_iter().collect(),

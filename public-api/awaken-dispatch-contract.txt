@@ -2,6 +2,7 @@ pub mod awaken_dispatch_contract
 pub use awaken_dispatch_contract::AssignmentRejection
 pub use awaken_dispatch_contract::AttemptCredentialBinding
 pub use awaken_dispatch_contract::AttemptCredentialBindingError
+pub use awaken_dispatch_contract::CURRENT_RUNTIME_PROTOCOL_VERSION
 pub use awaken_dispatch_contract::CandidateFingerprint
 pub use awaken_dispatch_contract::CredentialRealizationReceipt
 pub use awaken_dispatch_contract::CredentialReceiptError
@@ -770,6 +771,7 @@ pub awaken_dispatch_contract::WorkerIdentityRequest::deadline_ms: core::option::
 pub awaken_dispatch_contract::WorkerIdentityRequest::identity: awaken_worker_contract::registry::WorkerIdentity
 pub struct awaken_dispatch_contract::WorkerRegistrationReceipt
 pub awaken_dispatch_contract::WorkerRegistrationReceipt::lease_ttl_ms: u64
+pub awaken_dispatch_contract::WorkerRegistrationReceipt::runtime_protocol_version: core::option::Option<u32>
 pub awaken_dispatch_contract::WorkerRegistrationReceipt::worker: awaken_worker_contract::registry::RegisteredWorker
 pub trait awaken_dispatch_contract::ClaimedRunCommit: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch_contract::ClaimedRunCommit::commit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

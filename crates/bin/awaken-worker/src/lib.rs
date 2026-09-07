@@ -1147,6 +1147,18 @@ impl WorkerNode {
         // cancellation and ordinary shutdown reach the same bounded withdrawal;
         // no early-return branch maintains a second deregistration policy.
         let result = async {
+        if registration_receipt.lease_ttl_ms == 0 {
+            return Err(std::io::Error::other(
+                "worker registration returned a zero lease TTL",
+            ).into());
+        }
+        if registration_receipt.runtime_protocol_version
+            != Some(awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION)
+        {
+            return Err(std::io::Error::other(
+                "Control did not select the current Worker runtime protocol; upgrade Control and Worker together",
+            ).into());
+        }
         let (host, lifecycle, heartbeat_timing, environment_proof_started) = {
         let startup = std::panic::AssertUnwindSafe(async {
         let registered_context =
