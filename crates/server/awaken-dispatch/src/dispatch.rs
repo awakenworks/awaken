@@ -613,7 +613,7 @@ pub(crate) fn validate_session_resume_evidence<'a>(
     Ok(exact)
 }
 
-#[cfg(any(feature = "durable", kani))]
+#[cfg(any(feature = "durable", test, kani))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExactClaimMode {
     Runnable,
@@ -622,9 +622,9 @@ pub(crate) enum ExactClaimMode {
     RetryExhausted { max_attempts: u64 },
 }
 
-#[cfg(any(feature = "durable", kani))]
+#[cfg(any(feature = "durable", test, kani))]
 impl ExactClaimMode {
-    #[cfg(feature = "durable")]
+    #[cfg(any(feature = "durable", test))]
     pub(crate) fn bypasses_execution_admission(self) -> bool {
         !matches!(self, Self::Runnable)
     }
@@ -642,7 +642,7 @@ impl ExactClaimMode {
 /// canonical transition unchanged. The mode comes from locked row evidence;
 /// this function accepts no newly resolved request that could replace the
 /// dispatch's frozen execution pin.
-#[cfg(any(feature = "durable", kani))]
+#[cfg(any(feature = "durable", test, kani))]
 pub(crate) fn claim_with_frozen<T>(
     current: awaken_dispatch_contract::DispatchTransition,
     frozen: T,
@@ -667,7 +667,7 @@ pub(crate) fn claim_with_frozen<T>(
 /// orphan activity. A cancelled recovery lease is first returned to Reserved
 /// with an already-expired deadline by the backend, so it still repairs without
 /// waiting for another full lease.
-#[cfg(feature = "durable")]
+#[cfg(any(feature = "durable", test))]
 pub(crate) fn classify_exact_claim_mode(
     state: DispatchState,
     lease_or_reservation_deadline_ms: Option<u64>,
@@ -718,13 +718,13 @@ pub(crate) fn retry_exhaustion_evidence_is_eligible(
 /// Canonical host-side normalization for every pending/outbox ingress path.
 /// Persistent backends store signed BIGINT values, so all implementations use
 /// the same bounded representation before idempotency comparisons.
-#[cfg(feature = "durable")]
+#[cfg(any(feature = "durable", test))]
 pub(crate) fn normalize_pending_millis(mut input: PendingInput) -> PendingInput {
     input.available_at_ms = input.available_at_ms.map(crate::clock::normalize_millis);
     input
 }
 
-#[cfg(feature = "durable")]
+#[cfg(any(feature = "durable", test))]
 pub(crate) fn installed_worker_credential_capabilities(
     worker: &crate::WorkerSnapshot,
 ) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, DispatchError> {

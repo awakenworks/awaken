@@ -11,7 +11,7 @@ pub use awaken_agent_contract::clock::{Clock, ManualClock, SystemClock};
 ///
 /// Keeping this edge clock here prevents each storage backend from inventing a
 /// subtly different timestamp implementation.
-#[cfg(feature = "durable")]
+#[cfg(any(feature = "durable", test))]
 pub(crate) fn system_now_ms() -> u64 {
     SystemClock.now_ms()
 }
@@ -20,9 +20,11 @@ pub(crate) fn system_now_ms() -> u64 {
 /// public contract is `u64`; all stores normalize through this one boundary so
 /// SQLite/Postgres never turn a far-future value into a negative integer and the
 /// memory backend observes the same due/lease semantics.
+#[cfg(any(feature = "durable", test, kani))]
 pub(crate) const MAX_STORE_MILLIS: u64 = i64::MAX as u64;
 
 #[must_use]
+#[cfg(any(feature = "durable", test, kani))]
 pub(crate) fn normalize_millis(value: u64) -> u64 {
     value.min(MAX_STORE_MILLIS)
 }
@@ -41,6 +43,7 @@ pub(crate) fn millis_from_db(value: i64) -> Result<u64, &'static str> {
 }
 
 #[must_use]
+#[cfg(any(feature = "durable", test, kani))]
 pub(crate) fn deadline_millis(now_ms: u64, lease_ms: u64) -> u64 {
     normalize_millis(now_ms.saturating_add(lease_ms))
 }
