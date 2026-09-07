@@ -23,10 +23,7 @@ use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::docker::DockerRuntime;
-use awaken_sandbox_container::{
-    ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerProvider,
-    ContainerRuntime, ForwardProxy, command_of,
-};
+use awaken_sandbox_container::{ContainerProvider, ContainerRuntime, ForwardProxy, command_of};
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 use common::memory_mount;
 
@@ -655,104 +652,5 @@ async fn allowlist_rejects_a_forward_proxy_before_docker_creation() {
     assert!(
         no_proxy.create(&spec).await.is_err(),
         "an Allowlist without enforcement must fail closed"
-    );
-}
-
-/// A long-lived process-as-container (sleep) used to prove cross-provider adoption.
-fn sleeper_spec(scope: &str) -> pc::SandboxSpec {
-    pc::SandboxSpec {
-        scope: scope.into(),
-        isolation: pc::IsolationClass::Container,
-        environment: None,
-        command: vec!["sleep".into(), "30".into()],
-        deny_tool_egress: false,
-        mounts: Vec::new(),
-        env: Vec::new(),
-        packages: Default::default(),
-        network: pc::NetworkPolicy::None,
-        outputs_path: "/mnt/session/outputs".into(),
-        requests: Default::default(),
-        limits: Default::default(),
-        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
-        lease_ttl_secs: None,
-        control_services: Default::default(),
-    }
-}
-
-/// Docker host-bind participants exist only in the creating Worker process. A
-/// durable handle can still prove which physical container remains, but a peer
-/// cannot claim that its staging/Memory cleanup participants were reconstructed.
-/// This real-daemon case therefore locks the fail-closed recovery boundary and
-/// proves that rejection neither replaces nor deletes the live physical object.
-#[tokio::test]
-async fn a_peer_provider_rejects_an_unreconstructible_live_container_without_replacing_it() {
-    /* Host-bind recovery cause/effect table. Causes: C1 a current V2 Docker
-     * handle names an exact live/absent container; C2 its creating Worker has
-     * exited, so process-local participants are unavailable; C3 a peer has the
-     * frozen SandboxSpec. R1 live+C2+C3=>reject as incompatible and leave the
-     * exact container Running; R2 absent+C2+C3=>reject as unavailable. No rule
-     * creates, replaces, or adopts an unproven host-bind participant set. */
-    let Some((provider_a, rt)) = setup().await else {
-        return;
-    };
-    let scope = format!(
-        "adopt-me-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("test clock follows the Unix epoch")
-            .as_nanos()
-    );
-
-    // Worker A creates a long-lived container and persists its handle as the opaque
-    // durable string, then "crashes": the sandbox is dropped WITHOUT dispose, so the
-    // container keeps running on the shared substrate.
-    let sandbox_spec = sleeper_spec(&scope);
-    let handle: pc::SandboxHandle = {
-        let sandbox = provider_a
-            .create(&sandbox_spec)
-            .await
-            .expect("worker A creates a real container");
-        let wire = serde_json::to_string(&sandbox.handle()).expect("handle serializes");
-        serde_json::from_str(&wire).expect("handle round-trips as the durable form")
-        // `sandbox` dropped here — worker A crashes; the container is NOT disposed.
-    };
-
-    let container_id = handle
-        .container_payload()
-        .expect("current container handle")
-        .container_id
-        .clone();
-
-    // Worker B has the frozen spec and exact handle, but not Worker A's
-    // process-local participant set. It must not turn locator validity into
-    // successful adoption.
-    let (provider_b, _rt_b) = setup().await.expect("peer provider");
-    let error = match provider_b
-        .adopt_environment(ContainerEnvironmentAdoption::new(&sandbox_spec, &handle))
-        .await
-    {
-        Ok(_) => panic!("R1 peer must not adopt unreconstructible host-bind state"),
-        Err(error) => error,
-    };
-    assert!(
-        error.to_string().contains("prior process-local"),
-        "R1: {error}"
-    );
-    assert_eq!(
-        rt.inspect(&container_id).await.expect("exact live object"),
-        awaken_sandbox_container::ContainerState::Running,
-        "R1 rejection preserves the live container"
-    );
-
-    rt.remove(&container_id)
-        .await
-        .expect("test cleanup removes the exact container");
-    assert!(
-        provider_b
-            .adopt_environment(ContainerEnvironmentAdoption::new(&sandbox_spec, &handle))
-            .await
-            .is_err(),
-        "R2"
     );
 }

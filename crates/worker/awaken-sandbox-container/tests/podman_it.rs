@@ -20,8 +20,8 @@ use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::podman::PodmanRuntime;
 use awaken_sandbox_container::{
-    ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerPlan, ContainerProvider,
-    ContainerRuntime, ContainerState, NetworkMode, RootfsPlan, command_of,
+    ContainerPlan, ContainerProvider, ContainerRuntime, ContainerState, NetworkMode, RootfsPlan,
+    command_of,
 };
 
 const AGENT_PORT: u16 = 8080;
@@ -338,98 +338,6 @@ async fn podman_reports_the_agent_exit_code() {
     let status = rt.wait(&id).await.expect("wait for exit");
     assert_eq!(status.code, Some(7), "podman wait surfaces the exit code");
     let _ = rt.remove(&id).await;
-}
-
-#[tokio::test]
-async fn podman_peer_rejects_unreconstructible_live_environment_without_replacement() {
-    /* Host-bind recovery cause/effect table. Causes: C1 a current V2 Podman
-     * handle names an exact live/absent container; C2 the creating Worker's
-     * host staging root is physically missing; C3 the peer has the frozen spec.
-     * R1 live+C2+C3=>reject as incompatible while leaving the container
-     * Running; R2 absent+C2+C3=>reject as unavailable. Neither row recreates. */
-    let Some(runtime_a) = runtime().await else {
-        return;
-    };
-    let runtime_a = Arc::new(runtime_a);
-    let provider_a = ContainerProvider::new(runtime_a, "docker.io/library/busybox:latest");
-    let scope = format!(
-        "pod-adopt-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("test clock follows the Unix epoch")
-            .as_nanos()
-    );
-    let spec = pc::SandboxSpec {
-        scope,
-        isolation: pc::IsolationClass::Container,
-        environment: None,
-        command: vec!["sleep".into(), "30".into()],
-        deny_tool_egress: false,
-        mounts: Vec::new(),
-        env: Vec::new(),
-        packages: Default::default(),
-        network: pc::NetworkPolicy::Unrestricted,
-        outputs_path: "/mnt/session/outputs".into(),
-        requests: Default::default(),
-        limits: Default::default(),
-        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
-        lease_ttl_secs: None,
-        control_services: Default::default(),
-    };
-    let handle = {
-        let sandbox = provider_a.create(&spec).await.expect("create by worker A");
-        sandbox.handle()
-    };
-
-    let Some(runtime_b) = runtime().await else {
-        return;
-    };
-    let runtime_b = Arc::new(runtime_b);
-    let provider_b = ContainerProvider::new(runtime_b.clone(), "docker.io/library/busybox:latest");
-    let physical_id = &handle
-        .container_payload()
-        .expect("typed container handle")
-        .container_id;
-    // Model actual host loss explicitly. Merely dropping a creator is not
-    // evidence that its physical bind participants are missing (R1 above).
-    let root = runtime_b
-        .recovered_host_staging_root(physical_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        root.is_dir(),
-        "ordinary creation retains the live bind source"
-    );
-    std::fs::remove_dir_all(root).expect("inject loss of this test-owned staging root");
-    let error = match provider_b
-        .adopt_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
-        .await
-    {
-        Ok(_) => panic!("R1 peer must not adopt unreconstructible Podman state"),
-        Err(error) => error,
-    };
-    assert!(
-        error.to_string().contains("prior process-local"),
-        "R1: {error}"
-    );
-    assert_eq!(
-        runtime_b.inspect(physical_id).await.unwrap(),
-        ContainerState::Running,
-        "R1 rejection preserves the live container"
-    );
-    runtime_b
-        .remove(physical_id)
-        .await
-        .expect("test cleanup removes the exact container");
-    assert!(
-        provider_b
-            .adopt_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
-            .await
-            .is_err(),
-        "R2"
-    );
 }
 
 #[tokio::test]

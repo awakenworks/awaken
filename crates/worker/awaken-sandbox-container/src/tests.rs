@@ -4731,6 +4731,10 @@ async fn native_mount_projection_does_not_duplicate_plaintext_in_host_staging() 
         Some("/acp-config/auth.json"),
         "N3 exact harvest path"
     );
+    // Feature decision table: unit tests and K8s native Secret projection consume
+    // raw SecretBytes; standalone Docker/Podman use host staging. This assertion
+    // owns exact bytes; strict Clippy with and without `k8s` owns the two build
+    // rows, so feature unification cannot hide a dormant byte accessor.
     assert_eq!(
         plan.binds[0]
             .secret_content

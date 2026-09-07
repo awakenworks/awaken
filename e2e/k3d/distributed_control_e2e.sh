@@ -258,15 +258,19 @@ while IFS= read -r candidate; do
 done < <(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
   | grep "^k3d-${CLUSTER}-agent-" || true)
 [ -n "$CHAOS_NODE" ] || { err "no non-database agent node available for node chaos"; exit 1; }
+CORDONED_NODES=()
 while IFS= read -r candidate; do
-  [ "$candidate" = "$CHAOS_NODE" ] || kubectl cordon "$candidate" >/dev/null
+  if [ "$candidate" != "$CHAOS_NODE" ]; then
+    kubectl cordon "$candidate" >/dev/null
+    CORDONED_NODES+=("$candidate")
+  fi
 done < <(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
 
 log "4/10 exercise the complete public configuration-to-response path"
 BOOTSTRAP=$(node "$DRIVER" bootstrap "$API_URL" | tail -1)
 [ "${BOOTSTRAP%% *}" = "OK" ] || { err "bootstrap failed: $BOOTSTRAP"; diagnostics; exit 1; }
 read -r _ DEPLOYMENT_ID SESSION_ID ENVIRONMENT_ID FILE_ID MEMORY_ID SKILL_ID <<<"$BOOTSTRAP"
-kubectl uncordon --all >/dev/null
+kubectl uncordon "${CORDONED_NODES[@]}" >/dev/null
 ok "one endpoint completed Credential/File/Memory/Skill/Agent/Deployment/Session/Provider flow"
 
 log "5/10 prove Worker process isolation and material realization"
