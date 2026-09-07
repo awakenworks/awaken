@@ -298,6 +298,24 @@ k3d_import_storage_images() {
   kubectl -n kube-system rollout status deploy/local-path-provisioner --timeout=120s
 }
 
+# Kubernetes adapter publication owns the opaque Session scope annotation.
+# Never infer Session ownership from a Pod name, iteration order or copied files.
+k3d_sandbox_pod_for_session() {
+  local namespace="$1" session="$2"
+  kubectl -n "$namespace" get pods -l app=awaken-sandbox -o json | python3 -c '
+import json, sys
+session = sys.argv[1]
+pods = [pod for pod in json.load(sys.stdin)["items"]
+        if pod.get("metadata", {}).get("annotations", {}).get("awaken.dev/sandbox-scope") == session]
+if not session or len(pods) != 1:
+    raise SystemExit("expected exactly one Sandbox Pod for Session " + session)
+metadata = pods[0]["metadata"]
+if metadata.get("deletionTimestamp") or not metadata.get("name") or not metadata.get("uid"):
+    raise SystemExit("Session Sandbox Pod is deleting or lacks physical identity")
+print(metadata["name"])
+' "$session"
+}
+
 k3d_archive_name() {
   local value="${1//[^a-zA-Z0-9_.-]/_}"
   printf '%s' "$value"
@@ -487,6 +505,47 @@ k3d_harness_selftest() (
         import-fails) [[ "$calls" = " import" ]] ;;
         restart-fails) [[ "$calls" = " import restart" ]] ;;
       esac
+    done
+  )
+  # Session-selection decision table: Q1 one exact scope among foreign/absent
+  # annotations => that Pod; Q2 zero/two exact matches => reject; Q3 the exact
+  # Pod is deleting or lacks name/UID => reject; Q4 a different replacement name
+  # with the same exact scope => select its live identity. Physical continuity
+  # is separately asserted by the scenario's retained PVC UID and byte oracle.
+  # Q5 an API error remains failure even if the observer emitted valid JSON.
+  (
+    local document pod_key observation_status=0
+    kubectl() {
+      [[ "$*" = "-n ns get pods -l app=awaken-sandbox -o json" ]] || return 99
+      printf '%s' "$document"
+      return "$observation_status"
+    }
+    for pod_key in original replacement; do
+      document="$(python3 - "$pod_key" <<'FIXTURE'
+import json, sys
+print(json.dumps({"items": [{"metadata": {"name": "decoy", "uid": "foreign", "annotations": {"awaken.dev/sandbox-scope": "foreign"}}}, {"metadata": {"name": sys.argv[1], "uid": "exact", "annotations": {"awaken.dev/sandbox-scope": "session-exact"}}}, {"metadata": {"name": "unannotated"}}]}))
+FIXTURE
+)"
+      [[ "$(k3d_sandbox_pod_for_session ns session-exact)" = "$pod_key" ]]
+      ! k3d_sandbox_pod_for_session ns absent >/dev/null 2>&1
+      ! k3d_sandbox_pod_for_session ns "" >/dev/null 2>&1
+      observation_status=70
+      ! k3d_sandbox_pod_for_session ns session-exact >/dev/null 2>&1
+      observation_status=0
+      for fault in duplicate deleting missing-name missing-uid; do
+        (
+          document="$(python3 -c '
+import json, sys
+value = json.loads(sys.argv[1]); exact = value["items"][1]
+fault = sys.argv[2]
+if fault == "duplicate": value["items"].append(exact)
+elif fault == "deleting": exact["metadata"]["deletionTimestamp"] = "2026-09-07T00:00:00Z"
+else: exact["metadata"].pop(fault.removeprefix("missing-"))
+print(json.dumps(value))
+' "$document" "$fault")"
+          ! k3d_sandbox_pod_for_session ns session-exact >/dev/null 2>&1
+        )
+      done
     done
   )
   local k3d_calls=() docker_saves=() docker_execs=() docker_builds=()
