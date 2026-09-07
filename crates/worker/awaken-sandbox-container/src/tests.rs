@@ -1176,7 +1176,7 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
         .dispose_for_effect(
             &disposal_authorization(&terminal),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&terminal)).effect_fence(),
+                disposal_authorization(&terminal).effect_fence(),
             ),
         )
         .await
@@ -1772,7 +1772,7 @@ async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participan
         .dispose_for_effect(
             &disposal_authorization(&terminal_fence),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&terminal_fence)).effect_fence(),
+                disposal_authorization(&terminal_fence).effect_fence(),
             ),
         )
         .await
@@ -1907,7 +1907,7 @@ async fn disposing_terminal_preparation_reconstructs_only_physical_cleanup() {
         .dispose_for_effect(
             &disposal_authorization(&terminal),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&terminal)).effect_fence(),
+                disposal_authorization(&terminal).effect_fence(),
             ),
         )
         .await
@@ -3144,6 +3144,7 @@ impl ContainerRuntime for FakeRuntime {
         container_id: &str,
         _runtime_handle: Option<&pc::ContainerContinuationHandle>,
         _authorization: &pc::SandboxDisposalAuthorization,
+        _authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {
         self.remove(container_id).await
     }
@@ -4038,7 +4039,7 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
         &sandbox,
         &authorization,
         &awaken_provisioning_contract::test_support::EffectAuthority::new(
-            (&authorization).effect_fence(),
+            authorization.effect_fence(),
         ),
     )
     .await
@@ -4047,7 +4048,7 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
         &sandbox,
         &authorization,
         &awaken_provisioning_contract::test_support::EffectAuthority::new(
-            (&authorization).effect_fence(),
+            authorization.effect_fence(),
         ),
     )
     .await
@@ -5196,7 +5197,7 @@ async fn canonical_environment_spawns_agent_without_process_owning_terminal_clea
         .dispose_for_effect(
             &disposal_authorization(&terminal),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&terminal)).effect_fence(),
+                disposal_authorization(&terminal).effect_fence(),
             ),
         )
         .await
@@ -5454,7 +5455,7 @@ async fn durable_writable_secret_waits_for_explicit_environment_disposal() {
         .dispose_for_effect(
             &disposal_authorization(&terminal),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&terminal)).effect_fence(),
+                disposal_authorization(&terminal).effect_fence(),
             ),
         )
         .await
@@ -5528,7 +5529,7 @@ async fn remote_runtime_harvests_live_credential_only_at_environment_disposal() 
         .dispose_for_effect(
             &disposal_authorization(&terminal),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&terminal)).effect_fence(),
+                disposal_authorization(&terminal).effect_fence(),
             ),
         )
         .await

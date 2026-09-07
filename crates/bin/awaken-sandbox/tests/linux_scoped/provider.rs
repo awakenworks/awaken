@@ -118,14 +118,14 @@ async fn configured_execution_probe_uses_the_real_boundary_and_keeps_admission_c
         .is_err()
     );
     for (launcher, helper) in [
-        ("/missing-launcher", HELPER),
+        ("/missing-launcher", sandbox_binary()),
         ("/usr/bin/bwrap", "/missing-helper"),
         ("/usr/bin/bwrap", "/usr/bin/true"),
     ] {
         let deployment = Deployment::new(launcher.into(), helper.into()).unwrap();
         assert!(deployment.probe_ready().await.is_err());
     }
-    let deployment = Deployment::discover(HELPER.into()).unwrap();
+    let deployment = Deployment::discover(sandbox_binary().into()).unwrap();
     deployment.probe_ready().await.unwrap();
     let base = tempfile::tempdir().unwrap();
     let mut provider = LocalProvider::trusted_host(base.path());
@@ -225,7 +225,7 @@ async fn provider_spawn_records_all_trees_and_cold_adoption_waits_for_exact_exit
     sandbox
         .install_scoped_execution(
             Path::new("/usr/bin/bwrap"),
-            Path::new(HELPER),
+            Path::new(sandbox_binary()),
             authority.clone(),
         )
         .unwrap();
@@ -329,7 +329,7 @@ async fn provider_scope_denies_late_upgrade_and_rechecks_authority_at_go() {
             sandbox
                 .install_scoped_execution(
                     Path::new("/usr/bin/bwrap"),
-                    Path::new(HELPER),
+                    Path::new(sandbox_binary()),
                     authority.clone(),
                 )
                 .unwrap();
@@ -354,7 +354,11 @@ async fn provider_scope_denies_late_upgrade_and_rechecks_authority_at_go() {
         }
         assert!(
             sandbox
-                .install_scoped_execution(Path::new("/usr/bin/bwrap"), Path::new(HELPER), authority)
+                .install_scoped_execution(
+                    Path::new("/usr/bin/bwrap"),
+                    Path::new(sandbox_binary()),
+                    authority
+                )
                 .is_err()
         );
     }
@@ -395,7 +399,7 @@ async fn provider_refresh_reobserves_exact_tree_exit_after_delivery_failure() {
             sandbox
                 .install_scoped_execution(
                     Path::new("/usr/bin/bwrap"),
-                    Path::new(HELPER),
+                    Path::new(sandbox_binary()),
                     authority.clone(),
                 )
                 .unwrap();
@@ -481,7 +485,7 @@ async fn provider_authority_wait_cannot_extend_launch_or_refresh_budget() {
         sandbox
             .install_scoped_execution(
                 Path::new("/usr/bin/bwrap"),
-                Path::new(HELPER),
+                Path::new(sandbox_binary()),
                 authority.clone(),
             )
             .unwrap();
@@ -574,7 +578,11 @@ async fn provider_close_racing_join_cannot_report_quiescence_or_allow_late_go() 
         failure: None,
     });
     sandbox
-        .install_scoped_execution(Path::new("/usr/bin/bwrap"), Path::new(HELPER), authority)
+        .install_scoped_execution(
+            Path::new("/usr/bin/bwrap"),
+            Path::new(sandbox_binary()),
+            authority,
+        )
         .unwrap();
     let spawned = sandbox.clone();
     let launch = tokio::spawn(async move {
@@ -641,7 +649,7 @@ async fn provider_missing_helper_or_substituted_marker_cannot_fallback_to_host_e
             .install_scoped_execution(
                 Path::new("/usr/bin/bwrap"),
                 if missing_marker {
-                    Path::new(HELPER)
+                    Path::new(sandbox_binary())
                 } else {
                     &absent_helper
                 },
@@ -779,7 +787,7 @@ async fn provider_terminal_retry_retains_resources_until_the_last_tree_is_absent
     sandbox
         .install_scoped_execution(
             Path::new("/usr/bin/bwrap"),
-            Path::new(HELPER),
+            Path::new(sandbox_binary()),
             Authority::live(),
         )
         .unwrap();
@@ -832,7 +840,7 @@ async fn provider_owner_participant() {
     sandbox
         .install_scoped_execution(
             Path::new("/usr/bin/bwrap"),
-            Path::new(HELPER),
+            Path::new(sandbox_binary()),
             Authority::live(),
         )
         .unwrap();

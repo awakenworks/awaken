@@ -438,7 +438,9 @@ pub(super) async fn acquire_pod_cleanup_gate_with_authorization(
     observed: &Pod,
     expected_uid: &str,
     authorization: &PodCleanupAuthorization,
+    admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<PendingPodCleanup, RuntimeError> {
+    admit()?;
     let name = observed
         .metadata
         .name
@@ -497,6 +499,7 @@ pub(super) async fn acquire_pod_cleanup_gate_with_authorization(
         .replace(&name, &PostParams::default(), &replacement)
         .await
         .map_err(backend)?;
+    admit()?;
     let patched_authorization = observed_pod_cleanup_authorization(&patched)?;
     if patched.metadata.uid.as_deref() != Some(uid.as_str())
         || !pod_cleanup_gate_held(&patched)
@@ -521,9 +524,13 @@ pub(super) async fn acquire_pod_cleanup_gate_with_authorization(
 pub(super) async fn release_pod_cleanup_gate(
     pods: &Api<Pod>,
     pending: &PendingPodCleanup,
+    admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<(), RuntimeError> {
     loop {
-        let observed = match pods.get(&pending.name).await {
+        admit()?;
+        let observed = pods.get(&pending.name).await;
+        admit()?;
+        let observed = match observed {
             Ok(pod) => pod,
             Err(error) if api_not_found(&error) => return Ok(()),
             Err(error) => return Err(backend(error)),
@@ -572,10 +579,11 @@ pub(super) async fn release_pod_cleanup_gate(
         if let Some(annotations) = replacement.metadata.annotations.as_mut() {
             annotations.remove(CONTINUATION_CLEANUP_GATE_ANNOTATION);
         }
-        match pods
+        let replaced = pods
             .replace(&pending.name, &PostParams::default(), &replacement)
-            .await
-        {
+            .await;
+        admit()?;
+        match replaced {
             Ok(patched)
                 if patched.metadata.uid.as_deref() == Some(pending.uid.as_str())
                     && !pod_cleanup_gate_held(&patched)
@@ -1009,9 +1017,13 @@ pub(super) async fn initiate_claim_deletion(
     claims: &Api<PersistentVolumeClaim>,
     pod_name: &str,
     expected_uid: &str,
+    admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<Option<PendingClaimDeletion>, RuntimeError> {
+    admit()?;
     let name = continuation_claim_for_pod(pod_name)?;
-    let observed = match claims.get(&name).await {
+    let observed = claims.get(&name).await;
+    admit()?;
+    let observed = match observed {
         Ok(claim) => claim,
         Err(error) if api_not_found(&error) => return Ok(None),
         Err(error) => return Err(backend(error)),
@@ -1048,7 +1060,9 @@ pub(super) async fn initiate_claim_deletion(
         uid: Some(uid.clone()),
         resource_version: Some(resource_version),
     });
-    match claims.delete(&name, &params).await {
+    let deleted = claims.delete(&name, &params).await;
+    admit()?;
+    match deleted {
         Ok(_) => {}
         Err(error) if api_not_found(&error) => return Ok(None),
         Err(error) => return Err(backend(error)),
@@ -1104,10 +1118,14 @@ pub(super) async fn absent_pod_claim_deletion(
 pub(super) async fn await_claim_deletion(
     claims: &Api<PersistentVolumeClaim>,
     pending: &PendingClaimDeletion,
+    admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<(), RuntimeError> {
     let deadline = tokio::time::Instant::now() + DELETE_TIMEOUT;
     loop {
-        match claims.get(&pending.name).await {
+        admit()?;
+        let observed = claims.get(&pending.name).await;
+        admit()?;
+        match observed {
             Err(error) if api_not_found(&error) => return Ok(()),
             Err(error) => return Err(backend(error)),
             Ok(observed) if claim_uid(&observed)? != pending.uid => return Ok(()),

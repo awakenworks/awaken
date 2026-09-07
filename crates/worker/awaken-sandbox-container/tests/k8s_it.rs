@@ -170,7 +170,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         .dispose_for_effect(
             &disposal_authorization(&terminal_fence),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&terminal_fence)).effect_fence(),
+                disposal_authorization(&terminal_fence).effect_fence(),
             ),
         )
         .await
@@ -615,7 +615,7 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
         .dispose_for_effect(
             &disposal_authorization(&terminal_fence),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&terminal_fence)).effect_fence(),
+                disposal_authorization(&terminal_fence).effect_fence(),
             ),
         )
         .await
@@ -671,7 +671,7 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         .dispose_for_effect(
             &disposal_authorization(&first_terminal),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&first_terminal)).effect_fence(),
+                disposal_authorization(&first_terminal).effect_fence(),
             ),
         )
         .await
@@ -719,7 +719,7 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         .dispose_for_effect(
             &disposal_authorization(&second_terminal),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&second_terminal)).effect_fence(),
+                disposal_authorization(&second_terminal).effect_fence(),
             ),
         )
         .await
@@ -871,7 +871,7 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         .dispose_for_effect(
             &disposal_authorization(&terminal_fence),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&terminal_fence)).effect_fence(),
+                disposal_authorization(&terminal_fence).effect_fence(),
             ),
         )
         .await
@@ -1125,7 +1125,7 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         .dispose_for_effect(
             &disposal_authorization(&replacement_terminal_fence),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&replacement_terminal_fence)).effect_fence(),
+                disposal_authorization(&replacement_terminal_fence).effect_fence(),
             ),
         )
         .await
@@ -1336,7 +1336,7 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
             .dispose_for_effect(
                 &authorization,
                 &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                    (&authorization).effect_fence(),
+                    authorization.effect_fence(),
                 ),
             )
             .await
@@ -1389,7 +1389,7 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
             .dispose_for_effect(
                 &disposal_authorization(&replacement_terminal),
                 &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                    (&disposal_authorization(&replacement_terminal)).effect_fence(),
+                    disposal_authorization(&replacement_terminal).effect_fence(),
                 ),
             )
             .await
@@ -1528,7 +1528,7 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
             .dispose_for_effect(
                 &authorization,
                 &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                    (&authorization).effect_fence(),
+                    authorization.effect_fence(),
                 ),
             )
             .await
@@ -1697,7 +1697,7 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
             .dispose_for_effect(
                 &disposal_authorization(&terminal_fence),
                 &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                    (&disposal_authorization(&terminal_fence)).effect_fence(),
+                    disposal_authorization(&terminal_fence).effect_fence(),
                 ),
             )
             .await
@@ -1762,7 +1762,7 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
         .dispose_for_effect(
             &disposal_authorization(&terminal_fence),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal_authorization(&terminal_fence)).effect_fence(),
+                disposal_authorization(&terminal_fence).effect_fence(),
             ),
         )
         .await
