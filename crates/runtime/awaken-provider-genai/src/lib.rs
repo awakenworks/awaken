@@ -246,9 +246,6 @@ impl LlmExecutor for GenaiExecutor {
         .map_err(|err| classify_error(&err.to_string()))?;
 
         let mut stream = stream_response.stream;
-        let mut captured: Option<MessageContent> = None;
-        let mut usage: Option<TokenUsage> = None;
-        let mut stop_reason: Option<StopReason> = None;
         // Accumulated reasoning (streamed chunks); the End event's captured value
         // is preferred when present.
         let mut reasoning = String::new();
@@ -263,7 +260,7 @@ impl LlmExecutor for GenaiExecutor {
         let deadline = started + self.timeout;
         let mut progress_deadline = Instant::now() + self.idle_timeout;
 
-        loop {
+        let end = loop {
             // Two independent bounds share the one configured call timeout.
             // The fixed deadline caps the complete reasoning response; the
             // progress deadline ignores transport/no-op activity and requires
@@ -286,7 +283,11 @@ impl LlmExecutor for GenaiExecutor {
             let wait = progress_remaining.min(remaining);
             let event = match tokio::time::timeout(wait, stream.next()).await {
                 Ok(Some(event)) => event,
-                Ok(None) => break,
+                Ok(None) => {
+                    return Err(Error::Provider(
+                        "model stream ended before protocol completion".to_string(),
+                    ));
+                }
                 Err(_) if Instant::now() >= deadline => {
                     return Err(Error::Timeout(
                         "model stream exceeded total timeout".to_string(),
@@ -347,35 +348,35 @@ impl LlmExecutor for GenaiExecutor {
                 }
                 // Committed response: genai's parsed, ordered content and usage.
                 ChatStreamEvent::End(end) => {
-                    stop_reason = end
-                        .captured_stop_reason
-                        .as_ref()
-                        .map(map_stop_reason)
-                        .transpose()?;
-                    captured = end.captured_content;
-                    usage = end.captured_usage.as_ref().map(map_usage);
-                    if let Some(r) = end.captured_reasoning_content {
-                        reasoning = r;
-                    }
                     // `End` is the model protocol's authoritative turn boundary.
                     // OpenAI-compatible gateways may keep the HTTP connection
                     // alive after `[DONE]`; waiting for transport EOF in that
                     // case leaves an otherwise complete run stuck until the
                     // idle timeout. Do not let connection reuse redefine model
                     // completion.
-                    break;
+                    break end;
                 }
                 _ => {}
             }
             if made_progress {
                 progress_deadline = Instant::now() + self.idle_timeout;
             }
+        };
+
+        let stop_reason = end
+            .captured_stop_reason
+            .as_ref()
+            .map(map_stop_reason)
+            .transpose()?;
+        let usage = end.captured_usage.as_ref().map(map_usage);
+        if let Some(r) = end.captured_reasoning_content {
+            reasoning = r;
         }
 
         // Prefer genai's captured response (parsed tool arguments, same shape as
-        // `infer`); fall back to the chunk-assembled blocks only if no End
-        // content arrived (e.g. a stream that ends without a captured block).
-        let output = match captured {
+        // `infer`); fall back to chunk-assembled blocks only when a protocol End
+        // omits captured content. Transport EOF cannot authorize this fallback.
+        let output = match end.captured_content {
             Some(content) => map_assistant_output(&content),
             None => {
                 let mut blocks: Vec<ContentBlock> = Vec::new();
