@@ -1,107 +1,86 @@
-// Upstream fault injection over the REAL provider path (fake Anthropic upstream,
-// no live key): a retryable failure is retried and recovers, and a persistent
-// failure exhausts retries and surfaces through the run loop. Drives the runtime's
-// retry policy, circuit breaker, and inference-error handling — paths a happy-path
-// e2e never reaches. Deterministic, hermetic, CI-safe.
-//
-// Run: (from e2e/)  node managed_upstream_faults_e2e.mjs
-
+// Real Anthropic HTTP -> adapter evidence -> durable Run -> public Session.
+// Run: (from e2e/) node managed_upstream_faults_e2e.mjs
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import {
-  fakeAnthropicServerEnv,
-  withServer,
-  pass,
-  waitForSessionEventReceipt,
-} from './harness.mjs';
+import { fakeAnthropicServerEnv, withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const FAKE_KEY = 'sk-fake-faults-key'; // awaken-allow: secret
 
-async function listEvents(client, sessionId) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
-  return events;
-}
-
-async function runOneTurn(baseUrl, text) {
-  const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
-  const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-  // The send itself may reject when the turn fails terminally; the retry/error
-  // paths run either way (that is what we are covering).
-  let sendError = null;
-  let receiptId;
-  try {
-    const receipt = await client.beta.sessions.events.send(session.id, {
-      betas: BETAS,
-      events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
-    });
-    receiptId = receipt.data[0]?.id;
-    assert.equal(typeof receiptId, 'string', 'F1 exact upstream-fault User Event receipt');
-  } catch (err) {
-    sendError = err;
-  }
-  // C1=synchronous admission rejection; C2=accepted exact receipt; C3=retry
-  // succeeds; C4=permanent fault commits session.error. Effects: E1=C1 is the
-  // terminal HTTP oracle; E2=C2+C3/C4 yields a receipt-scoped committed effect.
-  // K: an accepted receipt cannot be converted back into HTTP failure. Decision
-  // F1 C1=>return rejection history; F2 C2+C3=>reply; F3 C2+C4=>session.error.
-  const events = receiptId === undefined
-    ? await listEvents(client, session.id).catch(() => [])
-    : (await waitForSessionEventReceipt(
-      client,
-      session.id,
-      receiptId,
-      BETAS,
-      ({ delta }) => delta.some((event) =>
-        event.type === 'agent.message' || event.type === 'session.error'),
-      `F2/F3 upstream-fault Run for ${JSON.stringify(text)} to commit`,
-      { timeoutMs: 30_000 },
-    )).events;
-  return { events, sendError };
-}
-
 async function main() {
-  // Arm 1: a retryable failure (first attempt 503) is retried; the turn recovers.
-  const recovering = await startFakeAnthropic(FAKE_KEY, { failuresBeforeSuccess: 1 });
-  try {
-    await withServer('real', Number(process.env.E2E_PORT), async (baseUrl) => {
-      const { events } = await runOneTurn(baseUrl, 'hello after a hiccup');
-      const replies = events
-        .filter((e) => e.type === 'agent.message')
-        .map((e) => e.content.map((b) => b.text ?? '').join(''));
-      assert.ok(
-        replies.some((m) => m.includes('FAKE:hello after a hiccup')),
-        `the turn recovered on retry: ${JSON.stringify(replies)}`,
-      );
-      assert.ok(recovering.attempts >= 2, `the failed attempt was retried (attempts=${recovering.attempts})`);
-    }, fakeAnthropicServerEnv(recovering, { ANTHROPIC_API_KEY: FAKE_KEY }));
-    pass('a retryable upstream failure is retried and the turn recovers');
-  } finally {
-    recovering.close();
+  // Cause-effect decision table: C1 protocol-complete success / HTTP 503;
+  // C2 the fixture would succeed on a later request / always rejects;
+  // C3 an accepted exact receipt and repeated public reads.
+  // F1 success => one request, one exact reply, no error (positive control).
+  // F2 503 + later success / F3 503 + persistent rejection => one request,
+  // no reply, one stable unknown_error/terminal before logical Thread idle;
+  // Session remains occupied without physical termination proof. C2 cannot supply
+  // remote termination evidence, so neither retry nor retry exhaustion is valid.
+  // C3 proves these are committed outcomes, not an HTTP admission rejection.
+  // Runtime failure.rs owns retries with positive NotDispatched evidence;
+  // execution.rs covers Unknown across retry/failover/tolerance and recovery.
+  // The Kani model_execution_reentry_requires_positive_evidence kernel owns
+  // the exhaustive three-valued gate; this HTTP test checks its adapter wiring.
+  for (const [rule, options, success] of [
+    ['F1', {}, true],
+    ['F2', { failuresBeforeSuccess: 1 }, false],
+    ['F3', { alwaysFail: true }, false],
+  ]) {
+    const upstream = await startFakeAnthropic(FAKE_KEY, options);
+    try {
+      await withServer('real', Number(process.env.E2E_PORT), async (baseUrl) => {
+        const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, maxRetries: 0 });
+        const session = await client.beta.sessions.create({
+          agent: 'assistant', environment_id: 'env_local', betas: BETAS,
+        });
+        const text = `${rule} upstream evidence`;
+        const receipt = await client.beta.sessions.events.send(session.id, {
+          betas: BETAS,
+          events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+        });
+        const receiptId = receipt.data[0]?.id;
+        assert.equal(typeof receiptId, 'string', `${rule} accepted exact User Event`);
+        const observed = await waitForSessionEventReceipt(
+          client, session.id, receiptId, BETAS,
+          ({ delta }) => {
+            const outcome = delta.findIndex((event) => event.type === (success ? 'agent.message' : 'session.error'));
+            return outcome >= 0 && delta.slice(outcome + 1).some((event) =>
+              event.type === (success ? 'session.status_idle' : 'session.thread_status_idle'));
+          },
+          // Unknown retains the physical slot; Session's canonical 30-second
+          // reconciliation sweep may publish the receipt. Allow two sweeps;
+          // this is a safety/convergence oracle, not the K3d latency gate.
+          `${rule} committed provider outcome`, { timeoutMs: 60_000 },
+        );
+        let previous;
+        for (const events of [observed.events, (await client.beta.sessions.events.list(session.id, { betas: BETAS })).data]) {
+          const replies = events.filter((event) => event.type === 'agent.message');
+          const errors = events.filter((event) => event.type === 'session.error');
+          if (success) {
+            assert.equal(replies.length, 1, `${rule} exactly one reply`);
+            assert.ok(replies[0].content.some((block) => block.text?.includes(`FAKE:${text}`)));
+            assert.equal(errors.length, 0, `${rule} no fabricated failure`);
+          } else {
+            assert.equal(replies.length, 0, `${rule} no fabricated completion`);
+            assert.ok(!events.some((event) => event.type === 'session.status_idle'),
+              `${rule} logical Thread end cannot advertise physical Session availability`);
+            assert.equal(errors.length, 1, `${rule} exactly one uncertainty diagnosis`);
+            assert.equal(errors[0].error.type, 'unknown_error');
+            assert.equal(errors[0].error.retry_status.type, 'terminal');
+            assert.match(errors[0].error.message, /will not be automatically repeated/);
+            if (previous) assert.deepEqual(errors[0], previous, `${rule} stable error identity and payload`);
+            previous = errors[0];
+          }
+          assert.equal(upstream.attempts, 1, `${rule} no hidden HTTP or Runtime retry`);
+        }
+      }, fakeAnthropicServerEnv(upstream, { ANTHROPIC_API_KEY: FAKE_KEY }));
+      pass(`${rule}: exact provider outcome and evidence-gated reentry`);
+    } finally {
+      upstream.close();
+    }
   }
-
-  // Arm 2: every attempt fails; retries exhaust and the failure surfaces through
-  // the run loop (error handling + circuit breaker) rather than hanging or panicking.
-  const failing = await startFakeAnthropic(FAKE_KEY, { alwaysFail: true });
-  try {
-    await withServer('real', Number(process.env.E2E_PORT), async (baseUrl) => {
-      const { events, sendError } = await runOneTurn(baseUrl, 'this never succeeds');
-      const recovered = events
-        .filter((e) => e.type === 'agent.message')
-        .some((e) => e.content.some((b) => (b.text ?? '').startsWith('FAKE:')));
-      assert.ok(!recovered, 'a permanently-failing upstream does not fabricate a reply');
-      assert.ok(failing.attempts >= 2, `retries were attempted before giving up (attempts=${failing.attempts})`);
-      assert.ok(sendError !== null || events.length > 0, 'the failure surfaced (error or a status event)');
-    }, fakeAnthropicServerEnv(failing, { ANTHROPIC_API_KEY: FAKE_KEY }));
-    pass('exhausted upstream failures surface through the run loop (retries + breaker + error path)');
-  } finally {
-    failing.close();
-  }
-
-  console.log('E2E PASS: upstream fault injection drives retry + circuit-breaker + inference-error paths.');
-  process.exitCode = 0;
+  console.log('E2E PASS: complete success and ambiguous upstream failures preserve execution evidence.');
 }
 
 main().catch((err) => {

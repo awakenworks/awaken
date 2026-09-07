@@ -893,7 +893,9 @@ mod tests {
         // child); C2=publication Drop or explicit close; C3=registry dispose.
         // E1=child future destroyed before disposal returns, not just parent
         // aborted; E2=owned socket removed once; E3=repeat dispose cannot unlink
-        // a subsequently bound foreign socket. Rows N11 C1+C2+C3=>E1+E2;
+        // a subsequently bound foreign socket. C4=short/120-byte parent; every
+        // N11/N12 row crosses C4 through the production pinned-path adapter.
+        // Rows N11 C1+C2+C3=>E1+E2;
         // N12 completed+C3+replacement=>E3. No real credentials are used.
         use std::sync::atomic::{AtomicBool, Ordering};
         struct PendingService {
@@ -917,9 +919,14 @@ mod tests {
                 std::future::pending().await
             }
         }
-        for drop_publication in [false, true] {
+        for (drop_publication, prefix_length) in [false, true]
+            .into_iter()
+            .flat_map(|drop| [1, 120].map(|len| (drop, len)))
+        {
             let base = tempfile::tempdir().unwrap();
-            let sandbox = NamespaceProvider::new(base.path())
+            let provider_base = base.path().join("p".repeat(prefix_length));
+            std::fs::create_dir(&provider_base).unwrap();
+            let sandbox = NamespaceProvider::new(provider_base)
                 .create_sandbox(&demanded_spec("namespace-drain"))
                 .await
                 .unwrap();
@@ -939,7 +946,10 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .join("repository-git-credential.sock");
-            let mut channel = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            let address = awaken_sandbox_fs::PinnedUnixSocketPath::capture(&socket).unwrap();
+            let mut channel = tokio::net::UnixStream::connect(address.path())
+                .await
+                .unwrap();
             awaken_sandbox_control::write_frame(
                 &mut channel,
                 &awaken_sandbox_control::SandboxControlRequest::RepositoryGitCredentialGet {
@@ -963,7 +973,7 @@ mod tests {
                 "N11 child destruction precedes return"
             );
             assert!(!socket.exists(), "N11 socket cleanup");
-            let replacement = tokio::net::UnixListener::bind(&socket).unwrap();
+            let replacement = tokio::net::UnixListener::bind(address.path()).unwrap();
             sandbox.control_publication.close_for_dispose().await;
             assert!(socket.exists(), "N12 no repeated cleanup");
             drop(replacement);
