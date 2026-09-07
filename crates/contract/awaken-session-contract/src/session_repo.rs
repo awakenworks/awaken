@@ -1863,6 +1863,13 @@ mod verification {
 
     #[kani::proof]
     fn terminal_execution_never_reopens() {
+        // Test design — Causes: the durable execution state is either terminal
+        // variant and the requested successor is any of the seven production
+        // variants. Effect: an admitted edge is necessarily an idempotent
+        // replay of the same terminal state. Constraint: `can_transition_to`
+        // is the sole transition relation used by `transition_execution`.
+        // Decision rules: T1=same terminal state -> admit without reopening;
+        // T2=other terminal or nonterminal state -> reject.
         let terminal = if kani::any::<bool>() {
             SessionExecutionState::ActivationFailed
         } else {
