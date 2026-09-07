@@ -416,6 +416,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness circuit_completion_requires_exact_phase_and_generation_for_every_outcome
   run_kani awaken-runtime-contract \
     --harness claim_bound_external_effect_admits_only_current_ownership \
+    --harness committed_terminal_projection_admits_only_exact_ended_identity \
     --harness max_token_continuation_requires_every_exact_guard \
     --harness anchored_context_window_never_moves_past_the_covered_prefix \
     --harness unanchored_legacy_context_never_hides_transcript_messages \

@@ -5,14 +5,80 @@
 use super::DispatchWorker;
 use crate::Error;
 use crate::clock::Clock;
-use crate::dispatch::{Claimed, Dispatch, DispatchOutcome, DispatchState, RunClaim};
+use crate::dispatch::{Claimed, Dispatch, DispatchOutcome, DispatchState, RunClaim, SettleOutcome};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_runtime_contract::terminal::redeliver_committed_terminal;
+use awaken_runtime_contract::terminal::{
+    CommittedTerminalProjection, CommittedTerminalRun, committed_terminal_projection,
+    deliver_committed_terminal,
+};
 use std::sync::Arc;
 use tracing::Instrument;
 
+pub(super) enum CommittedTerminalSettlement {
+    Applied(RunId, RunState),
+    Fenced,
+}
+
+impl CommittedTerminalSettlement {
+    pub(super) fn into_processed(self) -> Option<(RunId, RunState)> {
+        match self {
+            Self::Applied(run_id, state) => Some((run_id, state)),
+            Self::Fenced => None,
+        }
+    }
+}
+
 impl<S: Dispatch + 'static> DispatchWorker<S> {
+    /// Read the one Runtime-contract terminal projection for this exact claim.
+    /// Identity conflicts are corrupt authority, not an ordinary nonterminal.
+    pub(super) fn committed_terminal_for_claim(
+        &self,
+        claimed: &Claimed,
+    ) -> Result<Option<CommittedTerminalRun>, Error> {
+        let run_id = claimed.request.run_id();
+        let thread_id = claimed.request.thread_id();
+        match committed_terminal_projection(self.reader.as_ref(), run_id, thread_id) {
+            CommittedTerminalProjection::Nonterminal => Ok(None),
+            CommittedTerminalProjection::Exact(terminal) => Ok(Some(terminal)),
+            CommittedTerminalProjection::IdentityConflict => {
+                Err(Error::Dispatch(crate::DispatchError::Rejected(format!(
+                    "committed terminal identity conflicts with dispatch Run {} Thread {}",
+                    run_id.0, thread_id.0
+                ))))
+            }
+        }
+    }
+
+    /// Deliver observers and settle exactly one already-projected terminal fact.
+    /// No executor dependency is accepted by this owner; every terminal recovery
+    /// entry reaches the same claim-fenced `Done` transition here.
+    async fn settle_projected_terminal(
+        &self,
+        claimed: &Claimed,
+        terminal: CommittedTerminalRun,
+        consumed: &[String],
+        clock: &Arc<dyn Clock>,
+    ) -> Result<CommittedTerminalSettlement, Error> {
+        self.deliver_terminal_observers(&terminal).await?;
+        let run_id = terminal.run_id;
+        let state = RunState::Ended(terminal.cause);
+        let settled = self
+            .settle(
+                claimed,
+                Some(&state),
+                DispatchOutcome::Done,
+                consumed,
+                clock,
+            )
+            .await?;
+        Ok(if settled.applied() {
+            CommittedTerminalSettlement::Applied(run_id, state)
+        } else {
+            CommittedTerminalSettlement::Fenced
+        })
+    }
+
     /// Commit and settle a deterministic failure returned while resolving this
     /// exact claimed attempt, before an executor could be constructed. This is
     /// the same terminal commit and claim fence used after execution; it is not a
@@ -116,7 +182,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .iter()
             .map(|pending| pending.message_id.clone())
             .collect::<Vec<_>>();
-        let state = RunState::Ended(cause.clone());
         let claim = RunClaim::from(&claimed.lease);
         let context = self.execution_context_with(
             &claim,
@@ -134,7 +199,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         if let Err(error) = commit_run(
             coordinator.as_ref(),
             &thread_id,
-            RunDisposition::ended(run_id.clone(), cause),
+            RunDisposition::ended(run_id.clone(), cause.clone()),
             Vec::new(),
             Vec::new(),
         )
@@ -151,19 +216,100 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 )
                 .await;
         }
-        self.redeliver_terminal_observers(&run_id, &thread_id)
-            .await?;
         Ok(self
-            .settle(
+            .settle_projected_terminal(
                 claimed,
-                Some(&state),
-                DispatchOutcome::Done,
+                CommittedTerminalRun {
+                    run_id,
+                    thread_id,
+                    cause,
+                },
                 &consumed,
                 &clock,
             )
             .await?
-            .applied()
-            .then_some((run_id, state)))
+            .into_processed())
+    }
+
+    /// Settle one claim from committed terminal truth without invoking an
+    /// executor. This is the single owner of the crash-window inbox cleanup used
+    /// both before backend recovery and after an awaiting-ticket race.
+    pub(super) async fn settle_from_committed_terminal(
+        &self,
+        claimed: &Claimed,
+        all_pending: &mut Vec<String>,
+        clock: &Arc<dyn Clock>,
+    ) -> Result<Option<CommittedTerminalSettlement>, Error> {
+        let Some(terminal) = self.committed_terminal_for_claim(claimed)? else {
+            return Ok(None);
+        };
+
+        // A recovered fresh run that already committed a terminal record may
+        // have drained unbound idle-thread input before dying prior to settle.
+        // Consume exactly rows whose ids exist in committed transcript truth;
+        // later, undelivered input remains available to the next Run.
+        let delivered: std::collections::HashSet<String> = self
+            .reader
+            .committed_messages(&terminal.thread_id)
+            .into_iter()
+            .map(|message| message.id.0)
+            .collect();
+        let consumed_unbound = self
+            .store
+            .list(&terminal.thread_id)
+            .await?
+            .into_iter()
+            .map(|record| record.input)
+            .filter(|input| input.run_id.0.is_empty() && delivered.contains(&input.message_id))
+            .map(|input| input.message_id);
+        all_pending.extend(consumed_unbound);
+        Ok(Some(
+            self.settle_projected_terminal(claimed, terminal, all_pending, clock)
+                .await?,
+        ))
+    }
+
+    /// Convert a runtime-drive failure into a benign already-done when the
+    /// canonical committed projection shows that a replacement already ended
+    /// the Run. Any other error remains an execution failure.
+    pub(super) async fn settle_if_terminal_or_raise(
+        &self,
+        claimed: &Claimed,
+        consumed: &[String],
+        err: impl Into<Error>,
+        clock: &Arc<dyn Clock>,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        let err = err.into();
+        self.refresh_local_recovery_projection(
+            claimed.request.thread_id(),
+            claimed.request.run_id(),
+        )
+        .await?;
+        if let Some(terminal) = self.committed_terminal_for_claim(claimed)? {
+            // This path lost a terminal-commit race. Redelivery is expected:
+            // the winning attempt may have crashed after commit and observers
+            // suppress duplicate effects by `(observer_id, run_id)`.
+            return Ok(self
+                .settle_projected_terminal(claimed, terminal, consumed, clock)
+                .await?
+                .into_processed());
+        }
+
+        // A stale attempt can lose ownership before replacement terminal truth
+        // is readable in this Worker's projection. The queue already rejected
+        // its authority, so meter that exact decision through the same choke as
+        // a stale settlement CAS. Ordinary Runs retain their original error; a
+        // coordinated Run quietly yields to its replacement because it must not
+        // manufacture an Error boundary for the parent Session.
+        let started = std::time::Instant::now();
+        let claim = RunClaim::from(&claimed.lease);
+        if !self.store.claim_is_current(&claim, clock.now_ms()).await? {
+            self.record_settlement_outcome(SettleOutcome::Fenced, "done", started.elapsed());
+            if claimed.request.session_activity_epoch.is_some() {
+                return Ok(None);
+            }
+        }
+        Err(err)
     }
 
     /// Reconcile one quiescent pending/awaiting dispatch or expired running lease
@@ -253,7 +399,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         claimed: Claimed,
         clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
-        let run_id = claimed.lease.run_id.clone();
         // Decision table invariant: every terminal-recovery caller must check
         // the authoritative snapshot bound to this exact claim, never a stale
         // process projection. Keeping the refresh here makes claim + verify +
@@ -261,20 +406,16 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         let claim = RunClaim::from(&claimed.lease);
         self.install_claimed_recovery_projection(&claim, claimed.request.thread_id())
             .await?;
-        let Some(state @ RunState::Ended(_)) = self.reader.run_state(&run_id) else {
+        let Some(terminal) = self.committed_terminal_for_claim(&claimed)? else {
             let _ = self
                 .settle(&claimed, None, DispatchOutcome::Awaiting, &[], &clock)
                 .await?;
             return Ok(None);
         };
-        let thread_id = claimed.request.thread_id().clone();
-        self.redeliver_terminal_observers(&run_id, &thread_id)
-            .await?;
         Ok(self
-            .settle(&claimed, Some(&state), DispatchOutcome::Done, &[], &clock)
+            .settle_projected_terminal(&claimed, terminal, &[], &clock)
             .await?
-            .applied()
-            .then_some((run_id, state)))
+            .into_processed())
     }
 
     pub(super) async fn redeliver_terminal_observers(
@@ -282,17 +423,26 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         run_id: &RunId,
         thread_id: &ThreadId,
     ) -> Result<(), Error> {
-        let context = self.execution_context();
-        let Some(failures) = redeliver_committed_terminal(
-            self.reader.as_ref(),
-            &context.terminal_observers,
-            run_id,
-            thread_id,
-        )
-        .await
-        else {
-            return Ok(());
+        let terminal = match committed_terminal_projection(self.reader.as_ref(), run_id, thread_id)
+        {
+            CommittedTerminalProjection::Nonterminal => return Ok(()),
+            CommittedTerminalProjection::Exact(terminal) => terminal,
+            CommittedTerminalProjection::IdentityConflict => {
+                return Err(Error::Dispatch(crate::DispatchError::Rejected(format!(
+                    "committed terminal identity conflicts with Run {} Thread {}",
+                    run_id.0, thread_id.0
+                ))));
+            }
         };
+        self.deliver_terminal_observers(&terminal).await
+    }
+
+    async fn deliver_terminal_observers(
+        &self,
+        terminal: &CommittedTerminalRun,
+    ) -> Result<(), Error> {
+        let context = self.execution_context();
+        let failures = deliver_committed_terminal(&context.terminal_observers, terminal).await;
         if failures.is_empty() {
             return Ok(());
         }
@@ -300,7 +450,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         for failure in &failures {
             tracing::warn!(
                 observer.id = %failure.observer_id,
-                awaken.run.id = %run_id.0,
+                awaken.run.id = %terminal.run_id.0,
                 error = %failure.error,
                 "terminal observer failed; dispatch settlement withheld for recovery"
             );
