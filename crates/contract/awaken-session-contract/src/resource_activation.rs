@@ -106,6 +106,73 @@ pub enum ResourceActivationError {
     Invalid(String),
 }
 
+/// Which manifest slot in the persisted Session root still owns one asserted
+/// Resource generation. This is deliberately private: callers consume the
+/// manifest returned by [`SessionResourceState::retained_generation`] rather
+/// than treating the slot label as another lifecycle authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetainedResourceGenerationSlot {
+    Active,
+    Pending,
+}
+
+/// Closed scalar kernel behind retained-generation selection. Active wins if a
+/// corrupt or legacy row aliases both revisions; the public lookup then still
+/// returns one inseparable revision/manifest pair rather than mixing slots.
+const fn retained_resource_generation_slot(
+    active_revision: u64,
+    pending_revision: Option<u64>,
+    asserted_revision: u64,
+) -> Option<RetainedResourceGenerationSlot> {
+    if asserted_revision == active_revision {
+        Some(RetainedResourceGenerationSlot::Active)
+    } else {
+        match pending_revision {
+            Some(revision) if asserted_revision == revision => {
+                Some(RetainedResourceGenerationSlot::Pending)
+            }
+            Some(_) | None => None,
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn resource_materialization_selects_only_active_or_pending_root_generation() {
+    // Cause/effect graph: C1 the assertion equals the active revision; C2 a
+    // pending slot exists; C3 the assertion equals its revision. Effects: E1
+    // select Active, E2 select Pending, E3 reject. Active has deterministic
+    // precedence when C1 and C2+C3 alias.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // |---|---|---|---|---|
+    // | R1 | yes | any | any | E1 |
+    // | R2 | no | yes | yes | E2 |
+    // | R3 | no | no | any | E3 |
+    // | R4 | no | yes | no | E3 |
+    let active_revision: u64 = kani::any();
+    let has_pending: bool = kani::any();
+    let pending_revision: u64 = kani::any();
+    let asserted_revision: u64 = kani::any();
+    let selected = retained_resource_generation_slot(
+        active_revision,
+        has_pending.then_some(pending_revision),
+        asserted_revision,
+    );
+    let selects_active = asserted_revision == active_revision;
+    let selects_pending = !selects_active && has_pending && asserted_revision == pending_revision;
+
+    assert_eq!(
+        selected == Some(RetainedResourceGenerationSlot::Active),
+        selects_active
+    );
+    assert_eq!(
+        selected == Some(RetainedResourceGenerationSlot::Pending),
+        selects_pending
+    );
+    assert_eq!(selected.is_some(), selects_active || selects_pending);
+}
+
 impl SessionResourceState {
     /// Remove superseded terminal diagnostics without touching any activation
     /// that can still authorize or require a physical effect.
@@ -524,9 +591,15 @@ impl SessionResourceState {
     /// phase uses this lookup; the attempted watermark alone grants nothing.
     #[must_use]
     pub fn retained_generation(&self, revision: u64) -> Option<&ResolvedSessionResources> {
-        [self.active_generation(), self.desired_generation()]
-            .into_iter()
-            .find_map(|(current, resources)| (current == revision).then_some(resources))
+        match retained_resource_generation_slot(
+            self.active_revision(),
+            self.pending.as_ref().map(|_| self.revision),
+            revision,
+        ) {
+            Some(RetainedResourceGenerationSlot::Active) => Some(&self.active),
+            Some(RetainedResourceGenerationSlot::Pending) => self.pending.as_ref(),
+            None => None,
+        }
     }
 
     #[must_use]
