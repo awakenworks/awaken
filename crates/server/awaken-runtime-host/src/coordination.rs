@@ -351,7 +351,7 @@ impl HostDispatchSettlementObserver {
 
 #[async_trait::async_trait]
 impl DispatchSettlementObserver for HostDispatchSettlementObserver {
-    fn owns_session_run_reservation_fence(&self) -> bool {
+    fn owns_dispatch_fence(&self) -> bool {
         matches!(&self.endpoint, CoordinationEndpoint::Remote { .. })
     }
 

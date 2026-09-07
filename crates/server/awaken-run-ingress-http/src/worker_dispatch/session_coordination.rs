@@ -321,6 +321,11 @@ pub(super) async fn session_agent_settle(
             &request.command.session_id,
         )
         .await?;
+        if !guard.permits_settlement() {
+            return Err(RealizationHttpError::from(HostError::unavailable(
+                "Session boundary is waiting for predecessor physical quiescence",
+            )));
+        }
         let dispatch = guard.request();
         if request.command.source_run_id != request.claim.run_id
             || request.command.source_thread_id != *dispatch.thread_id()

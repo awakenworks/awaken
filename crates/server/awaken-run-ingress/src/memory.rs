@@ -88,7 +88,7 @@ fn guarded_claim_row(
     state: &State,
     claim: &RunClaim,
     required_state: DispatchState,
-) -> Result<Option<(RunDispatch, u64, bool)>, DispatchError> {
+) -> Result<Option<(RunDispatch, u64, bool, PhysicalAttemptSlot)>, DispatchError> {
     let Some(row) = state.rows.get(&claim.run_id) else {
         return Ok(None);
     };
@@ -110,6 +110,12 @@ fn guarded_claim_row(
                 row.request.clone(),
                 lease.expires_ms,
                 row.cancellation_requested,
+                PhysicalAttemptSlot::from_facts(
+                    row.active_attempt.is_some(),
+                    row.active_attempt.is_some(),
+                    row.active_attempt.as_ref() == Some(claim),
+                    row.active_attempt.as_ref() == Some(claim),
+                ),
             )))
         }
     }
@@ -215,11 +221,17 @@ impl MemoryDispatchStore {
         let state = lock(&self.state)?;
         let guarded = guarded_claim_row(&state, claim, required_state)?;
         drop(state);
-        Ok(
-            guarded.map(|(request, expires_ms, cancellation_requested)| {
-                CommitEpochGuard::new(guard, request, expires_ms, cancellation_requested)
-            }),
-        )
+        Ok(guarded.map(
+            |(request, expires_ms, cancellation_requested, physical_attempt)| {
+                CommitEpochGuard::new(
+                    guard,
+                    request,
+                    expires_ms,
+                    cancellation_requested,
+                    physical_attempt,
+                )
+            },
+        ))
     }
 }
 
@@ -1553,7 +1565,14 @@ impl DispatchQueue for MemoryDispatchStore {
         // owner (lower epoch, or a gone row) changes nothing — the reclaimer's
         // in-flight state is inviolate.
         let Some((transition, lease)) = state.rows.get(run_id).and_then(|row| {
-            if row.active_attempt.is_some() {
+            if !PhysicalAttemptSlot::from_facts(
+                row.active_attempt.is_some(),
+                row.active_attempt.is_some(),
+                false,
+                false,
+            )
+            .permits_settlement()
+            {
                 return None;
             }
             let transition = row

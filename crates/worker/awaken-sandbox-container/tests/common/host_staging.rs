@@ -60,8 +60,13 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
         lease_ttl_secs: None,
         control_services: Default::default(),
     };
+    let initial_fence = super::disposal::effect_fence(&spec.scope, "create", "creator", 1);
+    let terminal_fence = super::disposal::effect_fence(&spec.scope, "cleanup", "successor", 2);
     let creator = ContainerProvider::new(first_runtime, image);
-    let sandbox = creator.create(&spec).await.expect("R1 ordinary creation");
+    let sandbox = creator
+        .create_for_effect(&spec, &initial_fence)
+        .await
+        .expect("R1 ordinary creation");
     let handle = sandbox.handle();
     let physical_id = handle.container_payload().unwrap().container_id.clone();
     let root = peer_runtime
@@ -113,11 +118,36 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
         "R4 {error}"
     );
     assert!(root.is_dir(), "R4 rejection preserves the exact live stage");
-    adopted
-        .dispose()
+    // R7: a second process replacement after ordinary adoption must also
+    // reconstruct terminal participants. It must not need a warm cache or
+    // reactivate the Session. This is the multi-session cleanup failure's
+    // missing adapter edge, exercised identically on both real daemons.
+    drop(adopted);
+    drop(peer);
+    let cold = ContainerProvider::new(peer_runtime.clone(), image);
+    let cleanup = cold
+        .prepare_terminal_for_effect(&spec, Some(&handle), Some(&initial_fence), &terminal_fence)
+        .await
+        .expect("R7 cold terminal reconstruction")
+        .expect("exact object exists");
+    assert_eq!(
+        cleanup.handle(),
+        handle,
+        "R7 no replacement or reactivation"
+    );
+    cleanup
+        .prepare_disposal_for_effect(&terminal_fence)
+        .await
+        .expect("R7 source preparation");
+    let authorization = super::disposal::disposal_authorization(&terminal_fence);
+    cleanup
+        .dispose_for_effect(&authorization)
         .await
         .expect("R3 canonical terminal disposal");
-    adopted.dispose().await.expect("R3 disposal replay");
+    cleanup
+        .dispose_for_effect(&authorization)
+        .await
+        .expect("R3 disposal replay");
     assert_eq!(
         result.unwrap().unwrap().code,
         Some(0),

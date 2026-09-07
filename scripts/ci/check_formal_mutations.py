@@ -959,7 +959,26 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "ManagedCredentialRollout", source, config, [
         (mutant, config, "AdoptionCoversEveryNamedFence"),
     ])
-    print("Cowork lifecycle mutation score: 9/9 killed (worker evidence 3, drain 1, ACP/composition/rollout 5)")
+    # R2/R4/R7/R8: logical termination, partial source preparation and partial
+    # physical cleanup cannot become a full cleanup receipt. Each mutant must
+    # violate the named evidence invariant, not merely fail parsing or tooling.
+    source = (ROOT / "formal/tla/SessionDeletion.tla").read_text()
+    config = (ROOT / "formal/tla/SessionDeletion.cfg").read_text().replace(
+        "    DeleteSafety", "    PhysicalEvidenceRequired\n    DeleteSafety")
+    prepare = source[source.index("PrepareParticipant(participant, effect) =="):source.index("RemoveTarget(target, effect) ==")]
+    remove = source[source.index("RemoveTarget(target, effect) =="):source.index("Next ==")]
+    success = source[source.index("CleanupSucceeds =="):source.index("CommitTombstone ==")]
+    check_tlc_model_mutations(tlc_jar, "SessionDeletion", source, config, [
+        (source.replace(prepare, prepare.replace("~physicalActive /\\ effect", "effect", 1)),
+         config, "PhysicalEvidenceRequired"),
+        (source.replace(remove, remove.replace("~physicalActive /\\ prepared = Participants", "TRUE", 1)),
+         config, "PhysicalEvidenceRequired"),
+        (source.replace(success, success.replace("removedTargets = PhysicalTargets", "removedTargets # {}", 1)),
+         config, "PhysicalEvidenceRequired"),
+        (source.replace(success, success.replace("/\\ ~physicalActive /\\ prepared = Participants\n                         /\\ removedTargets = PhysicalTargets", "", 1)),
+         config, "PhysicalEvidenceRequired"),
+    ], dependencies=("SessionCleanupKernel",))
+    print("Cowork lifecycle mutation score: 13/13 killed (worker evidence 3, drain 1, ACP/composition/rollout 5, cleanup evidence 4)")
 
 
 def check_observation_rule_mutants(trace_dir: Path, manifest: dict) -> None:

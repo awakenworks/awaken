@@ -95,6 +95,7 @@ pub struct CommitEpochGuard {
     request: RunDispatch,
     expires_ms: u64,
     cancellation_requested: bool,
+    physical_attempt: crate::PhysicalAttemptSlot,
 }
 
 impl CommitEpochGuard {
@@ -104,12 +105,14 @@ impl CommitEpochGuard {
         request: RunDispatch,
         expires_ms: u64,
         cancellation_requested: bool,
+        physical_attempt: crate::PhysicalAttemptSlot,
     ) -> Self {
         Self {
             held: HeldAuthority::Drop(Box::new(held)),
             request,
             expires_ms,
             cancellation_requested,
+            physical_attempt,
         }
     }
 
@@ -122,12 +125,14 @@ impl CommitEpochGuard {
         request: RunDispatch,
         expires_ms: u64,
         cancellation_requested: bool,
+        physical_attempt: crate::PhysicalAttemptSlot,
     ) -> Self {
         Self {
             held: HeldAuthority::Release(Box::pin(release)),
             request,
             expires_ms,
             cancellation_requested,
+            physical_attempt,
         }
     }
 
@@ -175,6 +180,13 @@ impl CommitEpochGuard {
     #[must_use]
     pub fn expires_ms(&self) -> u64 {
         self.expires_ms
+    }
+
+    /// Physical evidence from the same locked row as this exact claim. A
+    /// committed terminal is intentionally independent of this permission.
+    #[must_use]
+    pub fn permits_settlement(&self) -> bool {
+        self.physical_attempt.permits_settlement()
     }
 
     /// Whether the same locked dispatch row already requests cancellation.

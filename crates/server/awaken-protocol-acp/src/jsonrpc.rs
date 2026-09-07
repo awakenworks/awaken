@@ -21,9 +21,7 @@ use agent_client_protocol::{
     AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, LoadSessionRequest, LoadSessionResponse,
     PermissionOptionKind, PromptRequest, PromptResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
-    SessionModeId, SessionNotification, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModelRequest,
-    SetSessionModelResponse,
+    SessionNotification,
 };
 use awaken_acp_contract::NegotiatedAcpCapabilities;
 use awaken_agent_channel::AgentChannel;
@@ -128,7 +126,7 @@ pub async fn run_turn_with_config(
     // The process is up; the ACP handshake (initialize + session/new|load) begins.
     notify_launch(
         launch_sink,
-        AcpLaunchEvent::stage(AcpLaunchStage::Initializing),
+        AcpLaunchEvent::with_detail(AcpLaunchStage::Initializing, "initialize"),
     );
 
     // 1. initialize — advertise the latest protocol version and no fs/terminal
@@ -159,6 +157,10 @@ pub async fn run_turn_with_config(
         bool,
     ) = match config.session_id.clone() {
         Some(prior) if can_load => {
+            notify_launch(
+                launch_sink,
+                AcpLaunchEvent::with_detail(AcpLaunchStage::Initializing, "session/load"),
+            );
             wire.send_request(
                 ID_NEW_SESSION,
                 AGENT_METHOD_NAMES.session_load,
@@ -198,6 +200,10 @@ pub async fn run_turn_with_config(
                     // lifetime of one ACP process (Kimi Code is one example). No
                     // prompt has been sent yet, so opening a fresh session is a safe
                     // compatibility fallback and cannot replay agent work.
+                    notify_launch(
+                        launch_sink,
+                        AcpLaunchEvent::with_detail(AcpLaunchStage::Initializing, "session/new"),
+                    );
                     let new_session = handshake_step(
                         config.handshake_step_deadline,
                         "session/new",
@@ -223,6 +229,10 @@ pub async fn run_turn_with_config(
             }
         }
         _ => {
+            notify_launch(
+                launch_sink,
+                AcpLaunchEvent::with_detail(AcpLaunchStage::Initializing, "session/new"),
+            );
             let new_session = handshake_step(
                 config.handshake_step_deadline,
                 "session/new",
@@ -243,105 +253,22 @@ pub async fn run_turn_with_config(
             (session_id, negotiated, supports_session_model)
         }
     };
-    if let Some(expected) = &config.expected_capability {
-        let actual = awaken_acp_contract::capability_fingerprint(
-            &expected.adapter_id,
-            &expected.adapter_version,
-            &negotiated,
-        );
-        if actual != expected.fingerprint {
-            return Err(AcpError::Frame(
-                "ACP capability fingerprint changed after publication".into(),
-            ));
-        }
-    }
-    let available_modes = negotiated
-        .modes
-        .iter()
-        .map(|mode| mode.native_id.clone())
-        .collect::<Vec<_>>();
-    let available_config_options = negotiated
-        .config_options
-        .iter()
-        .map(|option| option.native_id.clone())
-        .collect::<Vec<_>>();
-    // Record the negotiated id so the caller resumes this session next turn.
-    config.session_id = Some(session_id.to_string());
-
-    // 2b. session/set_mode — pin the adapter's mode, fail-closed against the modes
-    //     the agent advertised for the session (an unsupported pin never silently
-    //     no-ops; it ends the turn with a classified fault).
-    if let Some(mode) = config.session_mode.clone() {
-        if !available_modes.contains(&mode) {
-            return Err(AcpError::UnsupportedSessionMode(mode));
-        }
-        wire.send_request(
-            ID_SET_MODE,
-            AGENT_METHOD_NAMES.session_set_mode,
-            SetSessionModeRequest::new(session_id.clone(), SessionModeId::new(mode.as_str())),
-        )
-        .await?;
-        pump_to_response(&mut wire, ID_SET_MODE, sink, &mut seq, resolver).await?;
-    }
-
-    // 2c. session/set_model — some provider-agnostic adapters own model
-    // selection at the protocol layer rather than reading an environment key.
-    // Fail closed unless this exact Session advertised the model interface.
-    if let Some(model) = config.session_model.clone() {
-        if !supports_session_model {
-            return Err(AcpError::Frame(
-                "configured ACP session model selection was not advertised".into(),
-            ));
-        }
-        wire.send_request(
-            ID_SET_MODEL,
-            AGENT_METHOD_NAMES.session_set_model,
-            SetSessionModelRequest::new(session_id.clone(), model),
-        )
-        .await?;
-        let _: SetSessionModelResponse =
-            parse(pump_to_response(&mut wire, ID_SET_MODEL, sink, &mut seq, resolver).await?)?;
-    }
-
-    // 2d. session/set_config_option — exact backend-owned model selection. The
-    // option must be advertised by this exact Session and the agent must accept
-    // the value; either failure is terminal and never falls back to its default.
-    for (index, selection) in config
-        .session_config_options
-        .clone()
-        .into_iter()
-        .enumerate()
-    {
-        if !available_config_options.contains(&selection.config_id) {
-            return Err(AcpError::Frame(format!(
-                "configured ACP session option `{}` was not advertised",
-                selection.config_id
-            )));
-        }
-        wire.send_request(
-            ID_SET_CONFIG_OPTION + index as u64,
-            AGENT_METHOD_NAMES.session_set_config_option,
-            SetSessionConfigOptionRequest::new(
-                session_id.clone(),
-                selection.config_id,
-                selection.value,
-            ),
-        )
-        .await?;
-        let _: SetSessionConfigOptionResponse = parse(
-            pump_to_response(
-                &mut wire,
-                ID_SET_CONFIG_OPTION + index as u64,
-                sink,
-                &mut seq,
-                resolver,
-            )
-            .await?,
-        )?;
-    }
+    handshake::configure_session(
+        &mut wire,
+        sink,
+        &mut seq,
+        config,
+        &session_id,
+        &negotiated,
+        supports_session_model,
+    )
+    .await?;
 
     // Handshake complete — the agent is live and about to accept the prompt.
-    notify_launch(launch_sink, AcpLaunchEvent::stage(AcpLaunchStage::Ready));
+    notify_launch(
+        launch_sink,
+        AcpLaunchEvent::with_detail(AcpLaunchStage::Ready, "session/prompt"),
+    );
 
     // 3. session/prompt — the user turn as one text content block.
     wire.send_request(
@@ -559,9 +486,28 @@ mod tests {
         config.handshake_step_deadline = std::time::Duration::from_millis(20);
         let mut sink = RecordingSink::default();
 
-        let error = run_turn_with_config(ours.as_mut(), "not sent", &mut sink, &mut config, None)
-            .await
-            .expect_err("a silent initialize must be bounded");
+        // L3 a stalled handshake reports its exact last boundary and never
+        // emits Ready; a later timeout cannot imply prompt/model admission.
+        let launch = crate::tests::RecordingLaunch::default();
+        let error = run_turn_with_config(
+            ours.as_mut(),
+            "not sent",
+            &mut sink,
+            &mut config,
+            Some(LaunchSink::new(&launch, "stalled-launch")),
+        )
+        .await
+        .expect_err("a silent initialize must be bounded");
+        let stages = launch.events.lock().unwrap();
+        assert_eq!(
+            stages.last().unwrap().1.detail.as_deref(),
+            Some("initialize")
+        );
+        assert!(
+            stages
+                .iter()
+                .all(|(_, event)| event.stage == AcpLaunchStage::Initializing)
+        );
 
         assert!(
             matches!(&error, AcpError::Io(detail) if detail.contains("initialize handshake timed out"))
@@ -596,9 +542,28 @@ mod tests {
         config.handshake_step_deadline = std::time::Duration::from_millis(20);
         let mut sink = RecordingSink::default();
 
-        let error = run_turn_with_config(ours.as_mut(), "not sent", &mut sink, &mut config, None)
-            .await
-            .expect_err("a silent session/new must be bounded");
+        // L3 a stalled handshake reports its exact last boundary and never
+        // emits Ready; a later timeout cannot imply prompt/model admission.
+        let launch = crate::tests::RecordingLaunch::default();
+        let error = run_turn_with_config(
+            ours.as_mut(),
+            "not sent",
+            &mut sink,
+            &mut config,
+            Some(LaunchSink::new(&launch, "stalled-launch")),
+        )
+        .await
+        .expect_err("a silent session/new must be bounded");
+        let stages = launch.events.lock().unwrap();
+        assert_eq!(
+            stages.last().unwrap().1.detail.as_deref(),
+            Some("session/new")
+        );
+        assert!(
+            stages
+                .iter()
+                .all(|(_, event)| event.stage == AcpLaunchStage::Initializing)
+        );
 
         assert!(
             matches!(&error, AcpError::Io(detail) if detail.contains("session/new handshake timed out"))
@@ -722,9 +687,32 @@ mod tests {
         let agent = tokio::spawn(scripted_agent(theirs, updates, "end_turn"));
 
         let mut sink = RecordingSink::default();
-        let reason = run_turn(ours.as_mut(), "do it", &mut sink, None)
-            .await
-            .unwrap();
+        // L1 each completed handshake step emits the next protocol boundary
+        // through the existing observer. L2 Ready precedes prompt admission;
+        // it must not claim an inference response or terminal business result.
+        let launch = crate::tests::RecordingLaunch::default();
+        let reason = run_turn(
+            ours.as_mut(),
+            "do it",
+            &mut sink,
+            Some(LaunchSink::new(&launch, "launch-test")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            launch
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, event)| (event.stage, event.detail.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (AcpLaunchStage::Initializing, Some("initialize".into())),
+                (AcpLaunchStage::Initializing, Some("session/new".into())),
+                (AcpLaunchStage::Ready, Some("session/prompt".into())),
+            ]
+        );
         assert_eq!(reason, TerminationReason::NaturalEnd);
         // One projected message + the synthetic TurnEnd, in seq order.
         assert!(matches!(

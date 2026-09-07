@@ -49,6 +49,14 @@ pub enum PhysicalAttemptSlot {
 }
 
 impl PhysicalAttemptSlot {
+    /// Logical completion does not release physical authority. Both settlement
+    /// and its pre-settlement effects require an actually empty slot; corrupt
+    /// or still-occupied slots fail closed even under a current claim.
+    #[must_use]
+    pub const fn permits_settlement(self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
     /// Classify nullable storage columns without allowing either half of the
     /// owner/epoch pair to disappear. Match bits are ignored unless both facts
     /// are present.
@@ -716,6 +724,12 @@ mod proofs {
     fn physical_attempt_slot_installs_and_clears_only_exact_authority() {
         let current = kani::any::<bool>();
         let slot = arbitrary_physical_slot();
+        // R2/R4: neither a current mutation claim nor logical completion can
+        // authorize settlement effects while any physical slot remains.
+        assert_eq!(
+            slot.permits_settlement(),
+            slot == PhysicalAttemptSlot::Empty
+        );
         let begin = begin_physical_attempt(current, slot);
         let handoff = handoff_physical_attempt(current, slot);
         let finish = finish_physical_attempt(slot);
@@ -759,6 +773,7 @@ mod proofs {
             slot == PhysicalAttemptSlot::Corrupt,
             owner_present != epoch_present
         );
+        assert_eq!(slot.permits_settlement(), !owner_present && !epoch_present);
         assert_eq!(
             slot == PhysicalAttemptSlot::ExactClaim,
             owner_present && epoch_present && owner_matches && epoch_matches

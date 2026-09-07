@@ -1079,6 +1079,15 @@ async fn settle(
         let Some(guard) = authorized else {
             return Ok(json!({ "settled": false }));
         };
+        // No observer, Memory extraction, or Work release may run merely
+        // because logical Ended truth exists while a predecessor still runs.
+        if !guard.permits_settlement() {
+            guard
+                .release()
+                .await
+                .map_err(|error| RealizationHttpError::from(HostError::unavailable(error)))?;
+            return Ok(json!({ "settled": false }));
+        }
         let thread_id = guard.request().thread_id().clone();
         let session_thread_id = guard.request().session_thread_id().clone();
         let owns_session_work = thread_id == session_thread_id;

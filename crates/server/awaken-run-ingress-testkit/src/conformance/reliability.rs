@@ -67,6 +67,22 @@ pub async fn record_dispatch_recovery_history(
         .begin_attempt(&recovered_claim, recovery_now)
         .await
         .expect("R2 successor admission");
+    // R2b: even an exact current claim may commit logical truth, but its
+    // pre-settlement effects and queue settlement are blocked by A's slot.
+    let guard = store
+        .lock_commit_epoch(&recovered_claim)
+        .await
+        .expect("R2b guard")
+        .expect("R2b current");
+    assert!(!guard.permits_settlement(), "R2b no physical evidence");
+    guard.release().await.expect("R2b release");
+    assert_eq!(
+        store
+            .settle(&run_id, recovered.lease.epoch, DispatchOutcome::Done, &[])
+            .await
+            .unwrap(),
+        SettleOutcome::Fenced
+    );
     let stale_settlement = store
         .settle(&run_id, first.lease.epoch, DispatchOutcome::Done, &[])
         .await
@@ -75,6 +91,16 @@ pub async fn record_dispatch_recovery_history(
         .finish_attempt(&first_claim)
         .await
         .expect("R3 predecessor finish");
+    let guard = store
+        .lock_commit_epoch(&recovered_claim)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        guard.permits_settlement(),
+        "R3 precise ACK enables boundary effects"
+    );
+    guard.release().await.unwrap();
     let successor_attempt = store
         .begin_attempt(&recovered_claim, recovery_now)
         .await

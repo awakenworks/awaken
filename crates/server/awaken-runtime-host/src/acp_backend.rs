@@ -213,6 +213,16 @@ impl awaken_run_executor_acp::LaunchObserver for HubLaunchObserver {
             Ready => "ready",
             Failed => "failed",
         };
+        // Only protocol step names enter Worker diagnostics. Other launch
+        // details may contain argv/provider errors and remain on the existing
+        // scoped observer surface; never copy prompt/config/credentials to logs.
+        let protocol_step = event.detail.as_deref().filter(|step| {
+            matches!(
+                *step,
+                "initialize" | "session/new" | "session/load" | "session/prompt"
+            )
+        });
+        tracing::info!(scope, stage, protocol_step, "ACP launch progress");
         self.hub.publish(
             scope,
             crate::hub::ThreadEvent::AgentLaunch {

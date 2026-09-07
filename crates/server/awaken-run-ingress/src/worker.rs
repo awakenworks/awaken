@@ -26,7 +26,6 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::{
     AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext,
 };
-use awaken_runtime_contract::terminal::redeliver_committed_terminal;
 use awaken_runtime_contract::{
     AttemptCredentialBinding, AttemptCredentialRealization, CredentialRealizationReceipt,
     CredentialRealizationRecordError, CredentialRealizationRecorder,
@@ -39,15 +38,16 @@ use crate::Error;
 use crate::clock::Clock;
 use crate::commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 use crate::dispatch::{
-    Claimed, Dispatch, DispatchOutcome, DispatchState, PendingInput, RunClaim,
-    SessionRunReservationResolution, SettleOutcome,
+    Claimed, Dispatch, DispatchOutcome, PendingInput, RunClaim, SessionRunReservationResolution,
+    SettleOutcome,
 };
 use crate::worker_context::WorkerContext;
 
 mod claim_renewal;
 mod physical_attempt;
+mod terminal_recovery;
 
-use physical_attempt::PhysicalAttemptRequest;
+use physical_attempt::{PhysicalAttemptOutcome, PhysicalAttemptRequest};
 
 pub(crate) use claim_renewal::{
     ClaimLeaseRenewal, combine_attempt_cancellation, renew_claim_while_active,
@@ -759,7 +759,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         if claimed.session_activity_admission_required {
             let observer = self.settlement_observer.as_ref();
             let observer_owns_fence =
-                observer.is_some_and(|observer| observer.owns_session_run_reservation_fence());
+                observer.is_some_and(|observer| observer.owns_dispatch_fence());
             let local_guard = if observer.is_some() && !observer_owns_fence {
                 self.store
                     .lock_session_run_reservation_epoch(&claim)
@@ -871,6 +871,31 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             return Ok(settlement.into_processed());
         }
 
+        // Cause/effect recovery rule A2: a reclaimed ACP Run is opaque. The
+        // previous Worker may have dispatched the prompt or an MCP effect but
+        // failed before committing the reply. Re-executing here would duplicate
+        // an external effect; the existing neutral Indeterminate terminal is the
+        // only sound committed truth until ACP exposes an idempotent Run receipt.
+        if claimed.recovered
+            && awaken_runtime_contract::resolved::Backend::from_ref(
+                &activation
+                    .snapshot
+                    .resolved_spec
+                    .model_binding
+                    .binding()
+                    .backend_ref,
+            )
+            .is_acp()
+        {
+            return self
+                .end_claimed_before_execution(
+                    &claimed,
+                    awaken_agent_contract::agent::run::EndCause::Indeterminate,
+                    clock.clone(),
+                )
+                .await;
+        }
+
         // Cancellation is itself a durable claimed attempt. It deliberately runs
         // before model/credential/sandbox materialization: terminal control must
         // remain possible when the execution dependency being cancelled is down.
@@ -891,7 +916,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             } else {
                 AttemptRecoveryMode::RequirePredecessorQuiescence
             };
-            if let Err(error) = self
+            match self
                 .run_physical_attempt(
                     PhysicalAttemptRequest {
                         claimed: &claimed,
@@ -908,9 +933,21 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 )
                 .await?
             {
-                return self
-                    .settle_if_terminal_or_raise(&claimed, &all_pending, error, &clock)
-                    .await;
+                PhysicalAttemptOutcome::Returned(Ok(())) => {}
+                PhysicalAttemptOutcome::Returned(Err(error)) => {
+                    return self
+                        .settle_if_terminal_or_raise(&claimed, &all_pending, error, &clock)
+                        .await;
+                }
+                PhysicalAttemptOutcome::PredecessorUnconfirmed => {
+                    return self
+                        .end_claimed_before_execution(
+                            &claimed,
+                            awaken_agent_contract::agent::run::EndCause::Indeterminate,
+                            clock.clone(),
+                        )
+                        .await;
+                }
             }
             let ticket = self.reader.resume_ticket(&run_id);
             let awaiting_tool_interrupt = cancellation_uses_tool_interruption(
@@ -948,31 +985,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 .await?
                 .applied()
                 .then_some((run_id, state)));
-        }
-
-        // Cause/effect recovery rule A2: a reclaimed ACP Run is opaque. The
-        // previous Worker may have dispatched the prompt or an MCP effect but
-        // failed before committing the reply. Re-executing here would duplicate
-        // an external effect; the existing neutral Indeterminate terminal is the
-        // only sound committed truth until ACP exposes an idempotent Run receipt.
-        if claimed.recovered
-            && awaken_runtime_contract::resolved::Backend::from_ref(
-                &activation
-                    .snapshot
-                    .resolved_spec
-                    .model_binding
-                    .binding()
-                    .backend_ref,
-            )
-            .is_acp()
-        {
-            return self
-                .end_claimed_before_execution(
-                    &claimed,
-                    awaken_agent_contract::agent::run::EndCause::Indeterminate,
-                    clock.clone(),
-                )
-                .await;
         }
 
         // Recompute the exact binding set at the Worker boundary from the
@@ -1089,8 +1101,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     )
                     .await?
                 {
-                    Ok(state) => state,
-                    Err(err) => {
+                    PhysicalAttemptOutcome::Returned(Ok(state)) => state,
+                    PhysicalAttemptOutcome::PredecessorUnconfirmed => {
+                        return self
+                            .end_claimed_before_execution(
+                                &claimed,
+                                awaken_agent_contract::agent::run::EndCause::Indeterminate,
+                                clock.clone(),
+                            )
+                            .await;
+                    }
+                    PhysicalAttemptOutcome::Returned(Err(err)) => {
                         return self
                             .settle_if_terminal_or_raise(&claimed, &all_pending, err, &clock)
                             .await;
@@ -1133,8 +1154,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                             )
                             .await?
                         {
-                            Ok(state) => state,
-                            Err(err) => {
+                            PhysicalAttemptOutcome::Returned(Ok(state)) => state,
+                            PhysicalAttemptOutcome::PredecessorUnconfirmed => {
+                                return self
+                                    .end_claimed_before_execution(
+                                        &claimed,
+                                        awaken_agent_contract::agent::run::EndCause::Indeterminate,
+                                        clock.clone(),
+                                    )
+                                    .await;
+                            }
+                            PhysicalAttemptOutcome::Returned(Err(err)) => {
                                 return self
                                     .settle_if_terminal_or_raise(
                                         &claimed,
@@ -1234,8 +1264,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         )
                         .await?
                     {
-                        Ok(state) => state,
-                        Err(err) => {
+                        PhysicalAttemptOutcome::Returned(Ok(state)) => state,
+                        PhysicalAttemptOutcome::PredecessorUnconfirmed => {
+                            return self
+                                .end_claimed_before_execution(
+                                    &claimed,
+                                    awaken_agent_contract::agent::run::EndCause::Indeterminate,
+                                    clock.clone(),
+                                )
+                                .await;
+                        }
+                        PhysicalAttemptOutcome::Returned(Err(err)) => {
                             return self
                                 .settle_if_terminal_or_raise(&claimed, &all_pending, err, &clock)
                                 .await;
@@ -1266,8 +1305,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         )
                         .await?
                     {
-                        Ok(state) => state,
-                        Err(err) => {
+                        PhysicalAttemptOutcome::Returned(Ok(state)) => state,
+                        PhysicalAttemptOutcome::PredecessorUnconfirmed => {
+                            return self
+                                .end_claimed_before_execution(
+                                    &claimed,
+                                    awaken_agent_contract::agent::run::EndCause::Indeterminate,
+                                    clock.clone(),
+                                )
+                                .await;
+                        }
+                        PhysicalAttemptOutcome::Returned(Err(err)) => {
                             return self
                                 .settle_if_terminal_or_raise(&claimed, &all_pending, err, &clock)
                                 .await;
@@ -1378,17 +1426,44 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         "coordinated child settlement observer is not installed".to_string(),
                     ))
                 })?;
-                observer
+                // Pre-settlement Session effects need the same physical gate as
+                // the queue CAS. A remote observer checks its authority-side
+                // guard; a local observer consumes the colocated locked facts.
+                let guard = if observer.owns_dispatch_fence() {
+                    None
+                } else {
+                    let Some(guard) = self.store.lock_commit_epoch(&claim).await? else {
+                        return Ok(SettleOutcome::Fenced);
+                    };
+                    if !guard.permits_settlement() {
+                        guard.release().await.map_err(|error| {
+                            Error::Dispatch(crate::DispatchError::Unavailable(error))
+                        })?;
+                        return Ok(SettleOutcome::Fenced);
+                    }
+                    Some(guard)
+                };
+                // Do not hold Dispatch's lock across a Session application
+                // callback: report/interrupt handling may re-enter Dispatch.
+                // This is the same release boundary as the remote coordinator.
+                // The callback is exact/idempotent and final queue CAS still
+                // rejects a superseding epoch; logical Ended cannot restart.
+                if let Some(guard) = guard {
+                    guard.release().await.map_err(|error| {
+                        Error::Dispatch(crate::DispatchError::Unavailable(error))
+                    })?;
+                }
+                let observed = observer
                     .before_settle(
                         &claimed.request,
                         &claim,
                         &committed,
                         claimed.cancellation_requested,
                     )
-                    .await
-                    .map_err(|error| {
-                        Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
-                    })?;
+                    .await;
+                observed.map_err(|error| {
+                    Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
+                })?;
                 false
             }
         } else if claimed.request.session_activity_epoch.is_some()
@@ -1520,310 +1595,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 Err(err)
             }
         }
-    }
-
-    /// Commit and settle a deterministic failure returned while resolving this
-    /// exact claimed attempt, before an executor could be constructed. This is
-    /// the same terminal commit and claim fence used after execution; it is not a
-    /// dead-letter shortcut. If authority was lost, commit/settle fencing leaves
-    /// the replacement owner untouched and the error remains recoverable.
-    pub async fn fail_claimed_before_execution(
-        &self,
-        claimed: &Claimed,
-        code: impl Into<String>,
-        message: impl Into<String>,
-        clock: Arc<dyn Clock>,
-    ) -> Result<Option<(RunId, RunState)>, Error> {
-        use awaken_agent_contract::agent::run::{EndCause, Failure};
-
-        let cause = EndCause::Error(Failure::Inference {
-            code: code.into(),
-            message: message.into(),
-        });
-        let dispatch = Self::claimed_dispatch_span(claimed);
-        self.prepare_and_end_claimed_before_execution(claimed, cause, clock)
-            .instrument(dispatch)
-            .await
-    }
-
-    /// Commit the one neutral terminal outcome for an exact retry-exhaustion
-    /// claim, then reuse the ordinary observer and fenced `Done` settlement.
-    /// The queue command owns only retry eligibility; this Worker method is the
-    /// sole bridge into committed Run truth for every local, pooled, and remote
-    /// automatic path.
-    pub async fn terminalize_retry_exhausted(
-        &self,
-        claimed: &Claimed,
-        clock: Arc<dyn Clock>,
-    ) -> Result<Option<(RunId, RunState)>, Error> {
-        let dispatch = Self::claimed_dispatch_span(claimed);
-        self.prepare_and_end_claimed_before_execution(
-            claimed,
-            awaken_agent_contract::agent::run::EndCause::Indeterminate,
-            clock,
-        )
-        .instrument(dispatch)
-        .await
-    }
-
-    /// Install the claim-fenced recovery projection once before either public
-    /// pre-execution terminal cause enters the shared commit/observer/settle
-    /// owner. Keeping this preparation here prevents resolution failure and
-    /// retry exhaustion from growing parallel terminal protocols.
-    async fn prepare_and_end_claimed_before_execution(
-        &self,
-        claimed: &Claimed,
-        cause: awaken_agent_contract::agent::run::EndCause,
-        clock: Arc<dyn Clock>,
-    ) -> Result<Option<(RunId, RunState)>, Error> {
-        let claim = RunClaim::from(&claimed.lease);
-        self.install_claimed_recovery_projection(&claim, claimed.request.thread_id())
-            .await?;
-        self.end_claimed_before_execution(claimed, cause, clock)
-            .await
-    }
-
-    /// Claim and terminalize at most one exhausted dispatch for the per-Session
-    /// service. Process pools claim centrally and call
-    /// [`terminalize_retry_exhausted`](Self::terminalize_retry_exhausted) on the
-    /// resolved boundary Worker instead.
-    pub async fn resolve_one_retry_exhausted(
-        &self,
-        max_attempts: u64,
-        clock: Arc<dyn Clock>,
-    ) -> Result<bool, Error> {
-        let now_ms = clock.now_ms();
-        let Some(claimed) = self
-            .store
-            .claim_retry_exhausted(&self.owner, self.lease_ms, now_ms, max_attempts)
-            .await?
-        else {
-            return Ok(false);
-        };
-        let claim = RunClaim::from(&claimed.lease);
-        let _renewal = self.renew_claim_while_driving(&claim, clock.clone());
-        let _ = self.terminalize_retry_exhausted(&claimed, clock).await?;
-        Ok(true)
-    }
-
-    /// Commit one deterministic terminal outcome before invoking an executor.
-    /// Callers install any recovery projection first; this function owns the one
-    /// claim-fenced commit/observer/settle sequence shared by resolution failures
-    /// and opaque ACP crash recovery.
-    async fn end_claimed_before_execution(
-        &self,
-        claimed: &Claimed,
-        cause: awaken_agent_contract::agent::run::EndCause,
-        clock: Arc<dyn Clock>,
-    ) -> Result<Option<(RunId, RunState)>, Error> {
-        use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
-
-        let run_id = claimed.lease.run_id.clone();
-        let thread_id = claimed.request.thread_id().clone();
-        let consumed = claimed
-            .pending
-            .iter()
-            .map(|pending| pending.message_id.clone())
-            .collect::<Vec<_>>();
-        let state = RunState::Ended(cause.clone());
-        let claim = RunClaim::from(&claimed.lease);
-        let context = self.execution_context_with(
-            &claim,
-            claimed.request.execution_scope.as_ref(),
-            &None,
-            &[],
-            clock.clone(),
-            None,
-        );
-        let coordinator = context.commit.ok_or_else(|| {
-            Error::Execution(awaken_runtime_contract::execution::Error::Execution(
-                "claimed pre-execution terminal has no commit coordinator".to_string(),
-            ))
-        })?;
-        if let Err(error) = commit_run(
-            coordinator.as_ref(),
-            &thread_id,
-            RunDisposition::ended(run_id.clone(), cause),
-            Vec::new(),
-            Vec::new(),
-        )
-        .await
-        {
-            return self
-                .settle_if_terminal_or_raise(
-                    claimed,
-                    &consumed,
-                    Error::Execution(awaken_runtime_contract::execution::Error::Execution(
-                        error.to_string(),
-                    )),
-                    &clock,
-                )
-                .await;
-        }
-        self.redeliver_terminal_observers(&run_id, &thread_id)
-            .await?;
-        Ok(self
-            .settle(
-                claimed,
-                Some(&state),
-                DispatchOutcome::Done,
-                &consumed,
-                &clock,
-            )
-            .await?
-            .applied()
-            .then_some((run_id, state)))
-    }
-
-    /// Reconcile one quiescent pending/awaiting dispatch or expired running lease
-    /// whose committed Run is already terminal. The committed reader is checked before
-    /// the special claim, and
-    /// [`settle_claimed_terminal`](Self::settle_claimed_terminal) checks it again
-    /// under that claim before reusing the ordinary fenced Done settlement and
-    /// completion tombstone.
-    pub async fn reconcile_committed_terminal(
-        &self,
-        run_id: &RunId,
-        clock: Arc<dyn Clock>,
-    ) -> Result<Option<(RunId, RunState)>, Error> {
-        let now_ms = clock.now_ms();
-        // A local active-active worker's process projection may predate the peer
-        // that committed the terminal fact. Refresh the exact thread snapshot
-        // before making the claim/no-claim authority decision.
-        if self.recovery_source.is_some()
-            && let Some(row) = self
-                .store
-                .list_dispatches()
-                .await?
-                .into_iter()
-                .find(|row| &row.run_id == run_id)
-        {
-            self.refresh_local_recovery_projection(&row.thread_id, run_id)
-                .await?;
-        }
-        if !matches!(self.reader.run_state(run_id), Some(RunState::Ended(_))) {
-            return Ok(None);
-        }
-        let Some(claimed) = self
-            .store
-            .claim_for_terminal_recovery(run_id, &self.owner, self.lease_ms, now_ms)
-            .await?
-        else {
-            return Ok(None);
-        };
-        self.settle_claimed_terminal(claimed, clock).await
-    }
-
-    /// Bounded scan used by both the per-Session daemon and process pool host
-    /// adapter. Rows outside this Worker's committed reader naturally return no
-    /// state, so one implementation owns selection and settlement semantics.
-    pub async fn reconcile_committed_terminals(
-        &self,
-        clock: Arc<dyn Clock>,
-        limit: usize,
-    ) -> Result<Vec<(RunId, RunState)>, Error> {
-        let rows = self.store.list_dispatches().await?;
-        let mut processed = Vec::new();
-        for row in rows.into_iter().filter(|row| {
-            matches!(
-                row.state,
-                DispatchState::Pending | DispatchState::Awaiting | DispatchState::Leased
-            )
-        }) {
-            if processed.len() >= limit {
-                break;
-            }
-            if let Some(terminal) = self
-                .reconcile_committed_terminal(&row.run_id, clock.clone())
-                .await?
-            {
-                processed.push(terminal);
-            }
-        }
-        Ok(processed)
-    }
-
-    /// Complete a terminal-recovery claim without executing the Run. If the
-    /// caller raced stale or incorrect read evidence, restore the row to
-    /// Awaiting; only exact committed `Ended` truth can reach Done.
-    pub async fn settle_claimed_terminal(
-        &self,
-        claimed: Claimed,
-        clock: Arc<dyn Clock>,
-    ) -> Result<Option<(RunId, RunState)>, Error> {
-        let dispatch = Self::claimed_dispatch_span(&claimed);
-        self.settle_claimed_terminal_inner(claimed, clock)
-            .instrument(dispatch)
-            .await
-    }
-
-    async fn settle_claimed_terminal_inner(
-        &self,
-        claimed: Claimed,
-        clock: Arc<dyn Clock>,
-    ) -> Result<Option<(RunId, RunState)>, Error> {
-        let run_id = claimed.lease.run_id.clone();
-        // Decision table invariant: every terminal-recovery caller must check
-        // the authoritative snapshot bound to this exact claim, never a stale
-        // process projection. Keeping the refresh here makes claim + verify +
-        // fenced settlement one indivisible protocol for every entry point.
-        let claim = RunClaim::from(&claimed.lease);
-        self.install_claimed_recovery_projection(&claim, claimed.request.thread_id())
-            .await?;
-        let Some(state @ RunState::Ended(_)) = self.reader.run_state(&run_id) else {
-            let _ = self
-                .settle(&claimed, None, DispatchOutcome::Awaiting, &[], &clock)
-                .await?;
-            return Ok(None);
-        };
-        let thread_id = claimed.request.thread_id().clone();
-        self.redeliver_terminal_observers(&run_id, &thread_id)
-            .await?;
-        Ok(self
-            .settle(&claimed, Some(&state), DispatchOutcome::Done, &[], &clock)
-            .await?
-            .applied()
-            .then_some((run_id, state)))
-    }
-
-    async fn redeliver_terminal_observers(
-        &self,
-        run_id: &RunId,
-        thread_id: &ThreadId,
-    ) -> Result<(), Error> {
-        let context = self.execution_context();
-        let Some(failures) = redeliver_committed_terminal(
-            self.reader.as_ref(),
-            &context.terminal_observers,
-            run_id,
-            thread_id,
-        )
-        .await
-        else {
-            return Ok(());
-        };
-        if failures.is_empty() {
-            return Ok(());
-        }
-
-        for failure in &failures {
-            tracing::warn!(
-                observer.id = %failure.observer_id,
-                awaken.run.id = %run_id.0,
-                error = %failure.error,
-                "terminal observer failed; dispatch settlement withheld for recovery"
-            );
-        }
-        let failures = failures
-            .into_iter()
-            .map(|failure| format!("{}: {}", failure.observer_id, failure.error))
-            .collect::<Vec<_>>()
-            .join("; ");
-        Err(Error::Execution(
-            awaken_runtime_contract::execution::Error::Execution(format!(
-                "committed-terminal observer delivery failed; dispatch settlement withheld for recovery: {failures}"
-            )),
-        ))
     }
 
     /// Drain the queue until no dispatch is runnable, returning every processed

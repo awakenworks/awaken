@@ -451,6 +451,65 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn occupied_physical_attempt_blocks_terminal_observers_and_work_release() {
+    // Cause/effect table R2: committed terminal + exact current claim + an
+    // occupied physical slot => zero observer/recovery/Work effects and no
+    // settlement. R5: exact finish ACK => ordinary observer retry then settle.
+    // Root/child both use the same HTTP authority; a child's logical outcome
+    // must not unlock parent activity before the physical execution quiesces.
+    for child in [false, true] {
+        let (store, claim, session, thread) = claimed_terminal_dispatch("occupied", child).await;
+        store.begin_attempt(&claim, 0).await.unwrap();
+        let observer = Arc::new(FailFirstTerminalSettlement::default());
+        let work = Arc::new(RecordingSessionWork::default());
+        let recovery = terminal_recovery(
+            &session,
+            &thread,
+            &claim.run_id,
+            Ok(terminal_snapshot(
+                &thread,
+                &claim.run_id,
+                RunState::Ended(EndCause::Indeterminate),
+            )),
+        );
+        let router = dispatch_transport_router_with_service(Arc::new(
+            WorkerDispatchService::new(
+                store.clone(),
+                Arc::new(HeaderWorkerAuthenticator),
+                Arc::new(ManualWorkerClock::new(0)),
+                Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+            )
+            .with_recovery_source(recovery.clone())
+            .with_terminal_observer(observer.clone())
+            .with_session_work_authority(work.clone()),
+        ));
+        for _ in 0..2 {
+            let (status, value) = settle_terminal(&router, &claim).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(value["settled"], false, "R2 pending physical confirmation");
+        }
+        assert_eq!(observer.attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(work.acquisitions.load(Ordering::SeqCst), 0);
+        assert_eq!(work.releases.load(Ordering::SeqCst), 0);
+        assert!(recovery.observed.lock().unwrap().is_empty());
+        assert_eq!(store.list_dispatches().await.unwrap().len(), 1);
+        store.finish_attempt(&claim).await.unwrap();
+        assert_eq!(
+            settle_terminal(&router, &claim).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        let (status, value) = settle_terminal(&router, &claim).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            value["settled"], true,
+            "R5 resumes original settlement path"
+        );
+        assert_eq!(observer.successes.load(Ordering::SeqCst), 1);
+        assert_eq!(work.releases.load(Ordering::SeqCst), usize::from(!child));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn terminal_observer_failure_withholds_remote_child_done_and_parent_work_release() {
     // Test design.
     // C: C1 one exact child claim has distinct parent physical Session and child

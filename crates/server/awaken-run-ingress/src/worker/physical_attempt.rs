@@ -17,6 +17,13 @@ use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{AttemptRecoveryMode, LiveInput};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
+/// An unconfirmed predecessor is a domain outcome for a cancellation request,
+/// not a successful cancel or a fabricated physical-return acknowledgement.
+pub(super) enum PhysicalAttemptOutcome<T, E> {
+    Returned(Result<T, E>),
+    PredecessorUnconfirmed,
+}
+
 pub(super) struct PhysicalAttemptRequest<'a> {
     pub claimed: &'a Claimed,
     pub context: &'a RuntimeRunContext,
@@ -41,7 +48,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         request: PhysicalAttemptRequest<'_>,
         operation: F,
-    ) -> Result<Result<T, E>, Error>
+    ) -> Result<PhysicalAttemptOutcome<T, E>, Error>
     where
         F: FnOnce(RuntimeRunContext) -> Fut,
         Fut: Future<Output = Result<T, E>>,
@@ -85,6 +92,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             match admission {
                 AttemptAdmission::Applied | AttemptAdmission::AlreadyApplied => break,
                 AttemptAdmission::Blocked => {
+                    if claimed.cancellation_requested {
+                        // R4: cancellation revokes mutation authority but cannot
+                        // stop an opaque predecessor. Let the application commit
+                        // Indeterminate while retaining this occupied slot.
+                        return Ok(PhysicalAttemptOutcome::PredecessorUnconfirmed);
+                    }
                     tokio::select! {
                         _ = cancellation.cancelled() => {
                             return Err(Error::Execution(
@@ -150,7 +163,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             tracing::warn!(run_id = %claim.run_id.0, owner = %claim.owner,
                 lease_epoch = claim.epoch, phase = "physical_quiescence",
                 "Executor returned without physical termination evidence; retaining attempt slot");
-            return Ok(result);
+            return Ok(PhysicalAttemptOutcome::Returned(result));
         }
         if self.finish_observed_attempt(&claim, &timing).await? != SettleOutcome::Applied {
             return Err(Error::Execution(
@@ -159,7 +172,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 ),
             ));
         }
-        Ok(result)
+        Ok(PhysicalAttemptOutcome::Returned(result))
     }
 
     async fn finish_observed_attempt(

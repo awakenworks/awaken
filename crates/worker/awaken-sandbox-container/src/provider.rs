@@ -772,11 +772,16 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 "restored container terminal cleanup requires its exact SandboxRestoreRequest",
             ));
         }
-        if self.runtime.uses_host_bind_materialization() {
+        if self.runtime.uses_host_bind_materialization()
+            && !self.runtime.uses_host_live_input_bind()
+        {
             return Err(pc::SandboxError::new(
                 "host-bind container terminal participants cannot be reconstructed from a prior process-local realization attempt",
             ));
         }
+        // Host-bind recovery uses the same exact staging-root and frozen
+        // participant reconstruction as ordinary adoption below. Capability
+        // alone is not evidence: missing roots/brokers still fail closed there.
         // Built-in container runtimes do not implement checkpoint restore, so
         // the optional prior fence carries no reconstructible participant when
         // a durable handle is present. Root authorization remains the sole

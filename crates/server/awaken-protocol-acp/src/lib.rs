@@ -924,8 +924,8 @@ mod tests {
     /// Records the launch lifecycle events emitted for a scope — the otherwise
     /// untested `LaunchObserver`/`LaunchSink`/`notify_launch` observability seam.
     #[derive(Default)]
-    struct RecordingLaunch {
-        events: Mutex<Vec<(String, AcpLaunchEvent)>>,
+    pub(crate) struct RecordingLaunch {
+        pub(crate) events: Mutex<Vec<(String, AcpLaunchEvent)>>,
     }
 
     impl LaunchObserver for RecordingLaunch {
