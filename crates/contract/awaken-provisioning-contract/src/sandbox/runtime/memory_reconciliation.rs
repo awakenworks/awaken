@@ -103,13 +103,28 @@ impl MemoryReconciliationAck {
     /// Require the exact process-local acknowledgement before an effectful
     /// provider may mutate the physical Sandbox. Empty evidence is admitted
     /// because it carries no Copy guard; FUSE remains an ordinary disposal
-    /// participant and is deliberately not represented here.
-    pub fn require_for_disposal(
+    /// participant and is deliberately not represented here. Run synchronous
+    /// preparation under the SAME current authority as the evidence check.
+    /// Async providers must repeat this gate after waiting; success is not an
+    /// asynchronous backend commit grant.
+    pub fn require_for_disposal<T>(
+        &self,
+        expected_materializations: &[MemoryMaterializationEvidence],
+        effect_fence: &SandboxEffectFence,
+        authority: &dyn crate::CurrentExecutionAuthority,
+        prepare: impl FnOnce() -> Result<T, SandboxError>,
+    ) -> Result<T, SandboxError> {
+        authorize_memory_ack(effect_fence, authority, || {
+            self.require_current_for_disposal(expected_materializations, effect_fence)?;
+            prepare()
+        })
+    }
+
+    fn require_current_for_disposal(
         &self,
         expected_materializations: &[MemoryMaterializationEvidence],
         effect_fence: &SandboxEffectFence,
     ) -> Result<(), SandboxError> {
-        validate_live_memory_reconciliation_fence(effect_fence)?;
         MemoryMaterializationEvidence::validate_all(expected_materializations)?;
         if expected_materializations.is_empty() {
             return Ok(());
@@ -134,13 +149,14 @@ impl MemoryReconciliationAck {
 /// One guarded admission for both the shared kernel and the fail-closed
 /// provider default. Durable expiry stays in Control coordinates. This edge
 /// consumes local current proof rather than comparing unrelated wall clocks.
-pub(super) fn authorize_memory_ack(
+pub(super) fn authorize_memory_ack<T>(
     asserted: &SandboxEffectFence,
     authority: &dyn crate::CurrentExecutionAuthority,
-    apply: impl FnOnce() -> Result<(), SandboxError>,
-) -> Result<(), SandboxError> {
+    apply: impl FnOnce() -> Result<T, SandboxError>,
+) -> Result<T, SandboxError> {
     asserted.validate_identity()?;
     let mut apply = Some(apply);
+    let mut result = None;
     authority
         .with_current_effect(asserted, &mut |current, remaining| {
             if remaining.is_zero()
@@ -150,27 +166,11 @@ pub(super) fn authorize_memory_ack(
                 return Err(std::io::ErrorKind::PermissionDenied.into());
             }
             let apply = apply.take().ok_or(std::io::ErrorKind::PermissionDenied)?;
-            apply().map_err(std::io::Error::other)
+            result = Some(apply().map_err(std::io::Error::other)?);
+            Ok(())
         })
         .map_err(|error| SandboxError::new(error.to_string()))?;
-    if apply.is_some() {
-        return Err(SandboxError::new(
-            "Memory authority omitted the acknowledgement",
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_live_memory_reconciliation_fence(
-    effect_fence: &SandboxEffectFence,
-) -> Result<(), SandboxError> {
-    let now_unix_ms: u64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| SandboxError::new(format!("read Sandbox effect time: {error}")))?
-        .as_millis()
-        .try_into()
-        .map_err(|_| SandboxError::new("Sandbox effect time exceeds u64"))?;
-    effect_fence.validate_live_at(now_unix_ms)
+    result.ok_or_else(|| SandboxError::new("Memory authority omitted the acknowledgement"))
 }
 
 pub(super) fn default_memory_reconciliation_ack(
@@ -193,6 +193,122 @@ mod tests {
     use std::{io, time::Duration};
 
     struct FaultyAuthority(&'static str);
+
+    #[test]
+    fn disposal_preparation_uses_current_authority_for_empty_missing_and_cached_evidence() {
+        // Cause/effect graph: C1 empty/missing/acknowledged/mismatched Copy
+        // evidence; C2 current/revoked proof; C3 past/future Control expiry.
+        // R1 current+(empty|acknowledged) => run preparation exactly once under
+        // the held authority, independent of Worker UTC. R2 revoked OR missing
+        // OR mismatched => zero preparation. R3 preparation failure preserves
+        // the acknowledgement for exact retry. The complete 4x2x2 table is
+        // executable; empty Memory is NOT permission to bypass current proof.
+        for expiry in [100, u64::MAX] {
+            let fence = SandboxEffectFence::new("op", "owner", "boot", 1, expiry).unwrap();
+            for state in ["empty", "missing", "acknowledged", "mismatched"] {
+                for live in [false, true] {
+                    let ack = MemoryReconciliationAck::default();
+                    let authority = EffectAuthority::new(&fence);
+                    let mut expected = vec![
+                        MemoryMaterializationEvidence::new("store", "/memory", vec![]).unwrap(),
+                    ];
+                    if state == "empty" {
+                        expected.clear();
+                    }
+                    if matches!(state, "acknowledged" | "mismatched") {
+                        ack.acknowledge(&fence, &authority, &expected, &expected, || Ok(()))
+                            .unwrap();
+                    }
+                    if state == "mismatched" {
+                        expected = vec![
+                            MemoryMaterializationEvidence::new("other", "/memory", vec![]).unwrap(),
+                        ];
+                    }
+                    if !live {
+                        *authority.current.lock().unwrap() = None;
+                    }
+                    let mut calls = 0;
+                    let result = ack.require_for_disposal(&expected, &fence, &authority, || {
+                        assert!(
+                            authority.current.try_lock().is_err(),
+                            "R1 held authority spans preparation"
+                        );
+                        calls += 1;
+                        Ok(17)
+                    });
+                    let admitted = live && matches!(state, "empty" | "acknowledged");
+                    assert_eq!(result.is_ok(), admitted, "{expiry}/{state}/{live}");
+                    assert_eq!(calls, usize::from(admitted));
+                    if admitted {
+                        assert_eq!(result.unwrap(), 17);
+                        assert!(
+                            ack.require_for_disposal(
+                                &expected,
+                                &fence,
+                                &authority,
+                                || Err::<(), _>(SandboxError::new("prepare failed"))
+                            )
+                            .is_err()
+                        );
+                        ack.require_for_disposal(&expected, &fence, &authority, || Ok(()))
+                            .unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn disposal_preparation_rejects_faulty_authority_and_preserves_post_commit_uncertainty() {
+        // R4 omitted/zero/wrong operation/generation/regressed proof => no
+        // preparation; R5 duplicate callback or error after callback => one
+        // preparation, but Err, never an invented successful receipt. Cross
+        // empty/cached evidence so cached success cannot bypass the callback.
+        let fence = SandboxEffectFence::new("op", "owner", "boot", 1, 100).unwrap();
+        for cached in [false, true] {
+            for fault in [
+                "omitted",
+                "zero",
+                "operation",
+                "generation",
+                "expiry",
+                "twice",
+                "after-effect-error",
+            ] {
+                let ack = MemoryReconciliationAck::default();
+                let expected = if cached {
+                    vec![MemoryMaterializationEvidence::new("store", "/memory", vec![]).unwrap()]
+                } else {
+                    vec![]
+                };
+                ack.acknowledge(
+                    &fence,
+                    &EffectAuthority::new(&fence),
+                    &expected,
+                    &expected,
+                    || Ok(()),
+                )
+                .unwrap();
+                let mut calls = 0;
+                assert!(
+                    ack.require_for_disposal(&expected, &fence, &FaultyAuthority(fault), || {
+                        calls += 1;
+                        Ok(())
+                    })
+                    .is_err()
+                );
+                assert_eq!(
+                    calls,
+                    usize::from(matches!(fault, "twice" | "after-effect-error")),
+                    "{cached}/{fault}"
+                );
+                ack.require_for_disposal(&expected, &fence, &EffectAuthority::new(&fence), || {
+                    Ok(())
+                })
+                .unwrap();
+            }
+        }
+    }
     impl CurrentExecutionAuthority for FaultyAuthority {
         fn with_current(&self, _: &mut dyn FnMut(Duration) -> io::Result<()>) -> io::Result<()> {
             panic!("an execution-only grant cannot authorize a Memory effect")

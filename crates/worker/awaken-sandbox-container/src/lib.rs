@@ -1361,8 +1361,11 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     async fn prepare_disposal(
         &self,
         effect_fence: Option<&pc::SandboxEffectFence>,
+        authorize: impl Fn() -> Result<(), pc::SandboxError> + Sync,
     ) -> Result<(), pc::SandboxError> {
+        authorize()?;
         self.control_publication.close_for_dispose().await;
+        authorize()?;
         // Writable durable credentials belong to the Session environment and
         // are harvested when that environment terminates. Managed cleanup
         // carries the root operation into the credential authority, whose
@@ -1374,6 +1377,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
                 self.runtime.as_ref(),
                 &self.container_id,
                 effect_fence.zip(handle.as_ref()),
+                &authorize,
             )
             .await?;
         // Explicit effectless Sandbox disposal still owns its live RunV1 Memory
@@ -1573,8 +1577,10 @@ impl ContainerCleanupState {
         runtime: &R,
         container_id: &str,
         effect: Option<(&pc::SandboxEffectFence, &pc::SandboxHandle)>,
+        authorize: &(impl Fn() -> Result<(), pc::SandboxError> + Sync),
     ) -> Result<(), pc::SandboxError> {
         let mut done = self.writeback_done.lock().await;
+        authorize()?;
         if *done {
             return Ok(());
         }
@@ -1583,6 +1589,7 @@ impl ContainerCleanupState {
                 pc::SandboxError::new("durable writable Secret has no credential broker")
             })?;
             for item in &self.secret_writebacks {
+                authorize()?;
                 let bytes = match runtime
                     .read_live_file(container_id, &item.mount_path)
                     .await
@@ -1600,6 +1607,10 @@ impl ContainerCleanupState {
                         })?
                     }
                 };
+                // A read response is not permission to publish credentials.
+                // Likewise an admitted write may finish after revocation, but
+                // cannot authorize the next Secret or a preparation receipt.
+                authorize()?;
                 match effect {
                     Some((authorization, handle)) => {
                         let writeback = pc::SecretWritebackEffect::new(
@@ -1611,6 +1622,7 @@ impl ContainerCleanupState {
                     }
                     None => broker.write_back(&item.reference, bytes).await?,
                 }
+                authorize()?;
             }
         }
         *done = true;
@@ -1823,7 +1835,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
     }
 
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        self.prepare_disposal(None).await?;
+        self.prepare_disposal(None, || Ok(())).await?;
         self.lifecycle
             .dispose_once(
                 self.runtime.as_ref(),
@@ -1836,6 +1848,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
     async fn prepare_disposal_for_effect(
         &self,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<pc::SandboxEffectFence, pc::SandboxError> {
         if self.adoption_fingerprint.is_none() || self.realization_fingerprint.is_none() {
             return Err(pc::SandboxError::new(
@@ -1852,12 +1865,31 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         // finalizer) is reachable from this method.
         self.lifecycle
             .memory_reconciliation_ack
-            .require_for_disposal(expected_materializations, effect_fence)?;
-        self.prepare_disposal(Some(effect_fence)).await?;
+            .require_for_disposal(
+                expected_materializations,
+                effect_fence,
+                authority,
+                || Ok(()),
+            )?;
+        self.prepare_disposal(Some(effect_fence), || {
+            self.lifecycle
+                .memory_reconciliation_ack
+                .require_for_disposal(
+                    expected_materializations,
+                    effect_fence,
+                    authority,
+                    || Ok(()),
+                )
+        })
+        .await?;
         // Container/Kubernetes install their exact physical gate only at the
         // later disposal edge. This source-preparation boundary therefore
         // returns the caller's exact fence without claiming marker evidence.
-        Ok(effect_fence.clone())
+        self.lifecycle
+            .memory_reconciliation_ack
+            .require_for_disposal(expected_materializations, effect_fence, authority, || {
+                Ok(effect_fence.clone())
+            })
     }
 
     async fn dispose_for_effect(

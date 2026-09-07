@@ -604,7 +604,10 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
     let terminal =
         pc::SandboxEffectFence::new("terminal-hand", "owner", "runtime", 1, u64::MAX).unwrap();
     let prepared = adopted
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .unwrap();
     adopted
@@ -2992,7 +2995,10 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
     .await
     .expect("T1 exact empty Fuse evidence");
     let prepared = hot
-        .prepare_disposal_for_effect(&hot_terminal)
+        .prepare_disposal_for_effect(
+            &hot_terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&hot_terminal),
+        )
         .await
         .expect("T1 prepared");
     let authorization = restart_disposal_authorization(prepared, "terminal-fuse-hot");
@@ -3108,7 +3114,10 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
             .await
             .expect("T4 exact empty Fuse evidence");
         let prepared = second
-            .prepare_disposal_for_effect(&terminal)
+            .prepare_disposal_for_effect(
+                &terminal,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+            )
             .await
             .expect("T4 durable preparation");
         let authorization =
@@ -3213,7 +3222,10 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
     let terminal_fence =
         pc::SandboxEffectFence::new("terminal", "provider-test", "runtime", 1, u64::MAX).unwrap();
     adopted
-        .prepare_disposal_for_effect(&terminal_fence)
+        .prepare_disposal_for_effect(
+            &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .unwrap();
     let terminal_observation = namespace

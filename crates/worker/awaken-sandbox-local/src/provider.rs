@@ -1830,6 +1830,7 @@ impl pc::Sandbox for LocalSandbox {
     async fn prepare_disposal_for_effect(
         &self,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<pc::SandboxEffectFence, pc::SandboxError> {
         let handle = pc::Sandbox::handle(self);
         let complete_materializations = handle.memory_materializations()?.unwrap_or_default();
@@ -1840,6 +1841,7 @@ impl pc::Sandbox for LocalSandbox {
             &self.realization,
             &self.terminal_removal,
             effect_fence,
+            authority,
         )
     }
 

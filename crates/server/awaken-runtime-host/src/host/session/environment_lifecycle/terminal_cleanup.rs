@@ -269,9 +269,14 @@ impl SharedHost {
                 && let Some((environment, _)) = environment
             {
                 let provider_effect_fence = self.terminal_cleanup_effect_fence(&effect)?;
+                let authority = self.session_slots.provider_effect_authority(
+                    &effect.command.session_id,
+                    &provider_effect_fence,
+                    self.execution_authority.as_ref(),
+                )?;
                 provider_prepared_effect_fence = Some(
                     environment
-                        .prepare_disposal_for_effect(&provider_effect_fence)
+                        .prepare_disposal_for_effect(&provider_effect_fence, &authority)
                         .await
                         .map_err(|error| HostError::unavailable(error.to_string()))?,
                 );

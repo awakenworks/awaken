@@ -183,7 +183,10 @@ fn marker(base: &Path) -> serde_json::Value {
 
 async fn dispose(sandbox: &awaken_sandbox_local::LocalSandbox) {
     let prepared = sandbox
-        .prepare_disposal_for_effect(&fence("dispose"))
+        .prepare_disposal_for_effect(
+            &fence("dispose"),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("dispose")),
+        )
         .await
         .unwrap();
     let preparation =
@@ -730,7 +733,12 @@ async fn provider_owner_crash_preserves_marker_and_recovery_never_signals_saved_
     );
     assert!(
         recreated
-            .prepare_disposal_for_effect(&fence("dispose"))
+            .prepare_disposal_for_effect(
+                &fence("dispose"),
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence(
+                    "dispose"
+                ))
+            )
             .await
             .is_err()
     );
@@ -775,7 +783,12 @@ async fn provider_terminal_retry_retains_resources_until_the_last_tree_is_absent
     let nodes = observe_tree(&listener).await;
     assert!(
         sandbox
-            .prepare_disposal_for_effect(&fence("dispose"))
+            .prepare_disposal_for_effect(
+                &fence("dispose"),
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence(
+                    "dispose"
+                ))
+            )
             .await
             .is_err()
     );

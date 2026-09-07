@@ -6,6 +6,62 @@ use pc::Sandbox as _;
 use std::sync::Arc;
 
 #[tokio::test]
+async fn terminal_preparation_requires_current_authority_before_creating_or_reusing_a_participant()
+{
+    // C1 no participant / cached prepared participant; C2 revoked / changed
+    // operation / changed generation / live renewal. R1 any stale authority
+    // denies with zero new marker ownership and unchanged Secret/root bytes.
+    // R2 a live same-generation renewal prepares/replays the original durable
+    // predecessor, never the proof's newer expiry. Empty Memory is intentional:
+    // it must not bypass authority. No cross-clock marker claim is made here.
+    for cached in [false, true] {
+        for change in ["revoke", "operation", "generation", "renew"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let provider = LocalProvider::new(tmp.path());
+            let fence =
+                pc::SandboxEffectFence::new("prepare", "owner", "boot", 1, u64::MAX - 1).unwrap();
+            let sandbox = provider
+                .create_sandbox_for_effect(&workdir_spec("prepare-authority", false), &fence, None)
+                .await
+                .unwrap();
+            let secret = sandbox.workspace_path().join("synthetic-secret");
+            std::fs::write(&secret, b"synthetic-material").unwrap();
+            let authority = pc::test_support::EffectAuthority::new(&fence);
+            if cached {
+                sandbox
+                    .prepare_disposal_for_effect(&fence, &authority)
+                    .await
+                    .unwrap();
+            }
+            let mut current = fence.clone();
+            current.expires_at_unix_ms += 1;
+            match change {
+                "operation" => current.operation_id.push('x'),
+                "generation" => current.epoch += 1,
+                _ => {}
+            }
+            *authority.current.lock().unwrap() = if change == "revoke" {
+                None
+            } else {
+                Some((current, std::time::Duration::from_secs(1)))
+            };
+            let result = sandbox
+                .prepare_disposal_for_effect(&fence, &authority)
+                .await;
+            assert_eq!(result.is_ok(), change == "renew", "{cached}/{change}");
+            assert_eq!(
+                sandbox.terminal_removal.lock().await.is_some(),
+                cached || change == "renew"
+            );
+            assert_eq!(std::fs::read(&secret).unwrap(), b"synthetic-material");
+            if let Ok(prepared) = result {
+                assert_eq!(prepared, fence);
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn terminal_disposal_teardown_error_retains_every_participant_until_exact_retry() {
     // D8 first FUSE teardown fails => retain Memory guard, prepared marker and
     // unshredded secret/root. D9 exact retry succeeds on that SAME guard =>
@@ -22,7 +78,13 @@ async fn terminal_disposal_teardown_error_retains_every_participant_until_exact_
     let secret = sandbox.workspace_path().join("synthetic-secret");
     std::fs::write(&secret, b"synthetic-material").unwrap();
     sandbox.secret_paths.push(secret.clone());
-    sandbox.prepare_disposal_for_effect(&fence).await.unwrap();
+    sandbox
+        .prepare_disposal_for_effect(
+            &fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence),
+        )
+        .await
+        .unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let drops = Arc::new(AtomicUsize::new(0));
     sandbox
@@ -72,7 +134,10 @@ async fn terminal_disposal_revalidates_expiry_after_each_async_boundary() {
         std::fs::write(&secret, b"synthetic-material").unwrap();
         sandbox.secret_paths.push(secret.clone());
         sandbox
-            .prepare_disposal_for_effect(&prepared)
+            .prepare_disposal_for_effect(
+                &prepared,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&prepared),
+            )
             .await
             .unwrap();
         let calls = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
@@ -187,7 +252,10 @@ async fn terminal_disposal_cancellation_retains_the_original_participant_and_ser
         .await
         .unwrap();
     sandbox
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .unwrap();
     let root = sandbox.root.root().to_path_buf();
@@ -205,7 +273,10 @@ async fn terminal_disposal_cancellation_retains_the_original_participant_and_ser
     );
     assert!(
         sandbox
-            .prepare_disposal_for_effect(&terminal)
+            .prepare_disposal_for_effect(
+                &terminal,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal)
+            )
             .await
             .is_err(),
         "D4 fail busy, not deadlock"
@@ -258,7 +329,10 @@ async fn disposal_requires_authorization_before_quiescence_and_retains_cancelled
         .await
         .unwrap();
     sandbox
-        .prepare_disposal_for_effect(&terminal)
+        .prepare_disposal_for_effect(
+            &terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
+        )
         .await
         .unwrap();
     let entered = AtomicBool::new(false);

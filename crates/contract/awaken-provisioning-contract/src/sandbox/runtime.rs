@@ -1525,9 +1525,13 @@ pub trait Sandbox: Send + Sync {
     /// provider predecessor, which may predate the caller's fence after a
     /// same-generation response-loss replay. The aggregate persists that
     /// preparation fact before it may invoke [`Self::dispose_for_effect`].
+    /// The current operation-bound authority must guard synchronous preparation
+    /// and be re-entered after asynchronous waits, including empty Memory and
+    /// cached success. It does not certify a remote backend's in-flight commit.
     async fn prepare_disposal_for_effect(
         &self,
         _effect_fence: &SandboxEffectFence,
+        _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<SandboxEffectFence, SandboxError> {
         Err(SandboxError::new(
             "sandbox does not implement fenced disposal preparation",
@@ -1856,11 +1860,22 @@ mod terminal_memory_reconciliation_contract_tests {
         .expect("K4");
         assert_eq!(calls.load(Ordering::SeqCst), 2, "K4 reauthorizes");
         assert!(
-            ack.require_for_disposal(&expected, &live).is_err(),
+            ack.require_for_disposal(
+                &expected,
+                &live,
+                &crate::test_support::EffectAuthority::new(&live),
+                || Ok(())
+            )
+            .is_err(),
             "K4 supersedes the old operation"
         );
-        ack.require_for_disposal(&expected, &takeover)
-            .expect("K4 latest gate");
+        ack.require_for_disposal(
+            &expected,
+            &takeover,
+            &crate::test_support::EffectAuthority::new(&takeover),
+            || Ok(()),
+        )
+        .expect("K4 latest gate");
 
         assert!(
             ack.acknowledge(
@@ -1885,7 +1900,13 @@ mod terminal_memory_reconciliation_contract_tests {
             "K5 higher epoch"
         );
         assert!(
-            ack.require_for_disposal(&expected, &foreign).is_err(),
+            ack.require_for_disposal(
+                &expected,
+                &foreign,
+                &crate::test_support::EffectAuthority::new(&foreign),
+                || Ok(())
+            )
+            .is_err(),
             "K5 gate"
         );
 
@@ -1900,7 +1921,12 @@ mod terminal_memory_reconciliation_contract_tests {
             )
             .expect("empty evidence");
         empty
-            .require_for_disposal(&[], &foreign)
+            .require_for_disposal(
+                &[],
+                &foreign,
+                &crate::test_support::EffectAuthority::new(&foreign),
+                || Ok(()),
+            )
             .expect("empty evidence leaves FUSE to ordinary disposal");
     }
 }

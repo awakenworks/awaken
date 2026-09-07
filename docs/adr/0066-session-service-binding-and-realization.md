@@ -302,9 +302,27 @@ the existing authority port, both Host call chains, Sandbox acknowledgement
 signatures, and the shared ack kernel. Added: one feature-gated, explicit
 revocable test fixture shared across provider tests; no production store, timer,
 lease, registry, or alternative cleanup path. The acknowledgement no longer
-compares Control expiry with Worker UTC. Disposal preparation's separate
-`require_for_disposal` gate and provider marker/cleanup clocks still do, so this
-does not establish end-to-end cross-clock physical disposal correctness.
+compares Control expiry with Worker UTC. Disposal preparation now also uses
+that same authority kernel: both Host callers capture the provider target and
+forward it through the existing Sandbox preparation method. The existing
+`require_for_disposal` gate checks exact Memory evidence and runs synchronous
+provider preparation under one current guard; its independent UTC check and
+Local's redundant forwarding helper are removed. Local/Namespace keep the
+original marker participant. Container rechecks after control shutdown, the
+writeback lock, each credential read/write response and before returning the
+prepared fence, including empty Memory and cached writeback. Effectless
+direct-provider disposal retains its explicit owner and the same physical
+helper, without claiming Session authority. No new lifecycle or store is added.
+
+Adjacent decision tables cover empty/missing/acknowledged/mismatched evidence,
+past/future Control expiry, faulty callbacks and response loss. Local tests
+cover new/cached participants under operation/generation replacement and
+renewal. Container tests poll actual Pending lock/read/write-response futures
+before revocation, renewal or replacement, and verify no subsequent credential
+effect or successful preparation. Already-admitted broker commits remain
+possible; exact writeback identity is retained for retry. Provider marker and
+physical-cleanup clocks still require migration, so this does not establish
+end-to-end cross-clock disposal or backend commit fencing.
 
 The Host source decision table and barrier tests cover direct/registered
 topologies, same-byte slot replacement, renewal and closure during Worker,
@@ -321,6 +339,13 @@ and replay. This is a bounded safety model, not async-lock fairness, Memory CAS
 refinement, OS timing, or real backend availability evidence. Executable tests
 poll a real pending mount-lock future before revoking authority, cover empty,
 new and replay acknowledgements, and retain receipts after response loss.
+The same model adds one admitted preparation wait/response and re-enters the
+existing held-lock effect kernel after it. Three additional mutants bypass
+the pending wait, response-time authority or cached-Memory authority; empty
+and cached preparation reachability witnesses exclude vacuous checks. The
+two-effect bound and abstract expiry remain explicit: this checks local
+admission after a response, not cancellation or authorization of an in-flight
+remote commit, unbounded retries or eventual dependency availability.
 The independent Provider wall-clock checks and real backend effect-boundary
 authority remain unresolved by this amendment.
 

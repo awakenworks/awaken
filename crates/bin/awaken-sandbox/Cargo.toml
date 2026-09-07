@@ -83,8 +83,9 @@ awaken-agent-channel.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 awaken-tool-relay = { workspace = true, features = ["test-support"] }
-# hand-role integration test: drive the real hand with a real ToolCall over a socket.
-awaken-provisioning-contract = { workspace = true }
+# Hand/scoped tests consume the shared explicit authority fixture. Declare it
+# here so isolated thin/fat package tests do not borrow workspace feature union.
+awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
 # Real scoped Git fixtures use local bare endpoints; production still requires
 # admitted HTTPS/Gateway transport (this feature is dev-only).
 awaken-sandbox-local = { workspace = true, features = ["test-support"] }

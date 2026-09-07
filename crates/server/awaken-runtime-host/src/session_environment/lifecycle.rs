@@ -162,9 +162,10 @@ impl SessionEnvironment {
     pub(crate) async fn prepare_disposal_for_effect(
         &self,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<pc::SandboxEffectFence, pc::SandboxError> {
         self.sandbox()
-            .prepare_disposal_for_effect(effect_fence)
+            .prepare_disposal_for_effect(effect_fence, authority)
             .await
     }
 

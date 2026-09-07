@@ -39,6 +39,8 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
             .as_nanos()
     );
     let spec = pc::SandboxSpec {
+        // This shared Docker/Podman row qualifies bind retention, not the
+        // separately probed process-tree supervision guarantee.
         process_tree_supervision: false,
         scope,
         isolation: pc::IsolationClass::Container,

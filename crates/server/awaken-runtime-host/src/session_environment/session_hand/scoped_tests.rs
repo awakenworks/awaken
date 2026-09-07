@@ -99,7 +99,10 @@ async fn terminal_delete(environment: &SessionEnvironment) {
     let fence =
         pc::SandboxEffectFence::new("terminal-scoped", "owner", "runtime", 1, u64::MAX).unwrap();
     let prepared = environment
-        .prepare_disposal_for_effect(&fence)
+        .prepare_disposal_for_effect(
+            &fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence),
+        )
         .await
         .unwrap();
     let authorization =

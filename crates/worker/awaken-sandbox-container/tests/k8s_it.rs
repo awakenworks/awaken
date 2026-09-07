@@ -155,7 +155,10 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     ));
     let terminal_fence = effect_fence(&scope, "terminal", "lifecycle-owner", 2);
     retried
-        .prepare_disposal_for_effect(&terminal_fence)
+        .prepare_disposal_for_effect(
+            &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .expect("K1c prepare source durability without deleting the Pod");
     assert_eq!(
@@ -583,7 +586,10 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
     assert_eq!(validation.code, Some(0), "KTR1 retained bytes");
     let terminal_fence = effect_fence(&scope, "terminal", "terminal-owner", 3);
     replacement_environment
-        .prepare_disposal_for_effect(&terminal_fence)
+        .prepare_disposal_for_effect(
+            &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .expect("KTR2 prepare replacement disposal");
     replacement_environment
@@ -631,7 +637,10 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         .expect("KPV1 first V2 handle");
     let first_terminal = effect_fence(&scope, "dispose-a", "claim-owner", 2);
     first_environment
-        .prepare_disposal_for_effect(&first_terminal)
+        .prepare_disposal_for_effect(
+            &first_terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&first_terminal),
+        )
         .await
         .unwrap();
     first_environment
@@ -671,7 +680,10 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
     );
     let second_terminal = effect_fence(&scope, "dispose-b", "claim-owner", 4);
     second_environment
-        .prepare_disposal_for_effect(&second_terminal)
+        .prepare_disposal_for_effect(
+            &second_terminal,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&second_terminal),
+        )
         .await
         .unwrap();
     second_environment
@@ -815,7 +827,10 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
     assert_eq!(recovered_claim_uid, &claim_uid, "KPV3b exact claim UID");
     let terminal_fence = effect_fence(&scope, "terminal", "orphan-owner-a", 2);
     recovered
-        .prepare_disposal_for_effect(&terminal_fence)
+        .prepare_disposal_for_effect(
+            &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .expect("KPV3c source-dependent preparation");
     recovered
@@ -1054,7 +1069,12 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
     );
     let replacement_terminal_fence = effect_fence(&scope, "terminal-b", "claim-only-owner", 3);
     replacement
-        .prepare_disposal_for_effect(&replacement_terminal_fence)
+        .prepare_disposal_for_effect(
+            &replacement_terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                &replacement_terminal_fence,
+            ),
+        )
         .await
         .expect("KPV5c source-dependent preparation");
     replacement
@@ -1195,7 +1215,10 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
 
     let terminal_fence = effect_fence(&scope, "terminal", "delete-race-owner", 2);
     source
-        .prepare_disposal_for_effect(&terminal_fence)
+        .prepare_disposal_for_effect(
+            &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .expect("KPV6/E0 persist source-dependent effects before physical cleanup");
     assert!(
@@ -1294,7 +1317,12 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
     if let Ok(replacement) = replacement_result.as_ref() {
         let replacement_terminal = effect_fence(&scope, "terminal-b", "delete-race-owner", 3);
         replacement
-            .prepare_disposal_for_effect(&replacement_terminal)
+            .prepare_disposal_for_effect(
+                &replacement_terminal,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &replacement_terminal,
+                ),
+            )
             .await
             .expect("KPV6 E4 prepare exact replacement cleanup");
         replacement
@@ -1404,7 +1432,10 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
 
     let terminal_fence = effect_fence(&scope, "terminal", "delete-order-owner", 2);
     source
-        .prepare_disposal_for_effect(&terminal_fence)
+        .prepare_disposal_for_effect(
+            &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .expect("KPV4e persist source-dependent effects before physical cleanup");
     assert!(
@@ -1581,7 +1612,10 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
     let Some(retained) = live_runtime().await else {
         let terminal_fence = effect_fence(&scope, "terminal-a", "preflight-owner-a", 2);
         owner_environment
-            .prepare_disposal_for_effect(&terminal_fence)
+            .prepare_disposal_for_effect(
+                &terminal_fence,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+            )
             .await
             .unwrap();
         owner_environment
@@ -1638,7 +1672,10 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
     );
     let terminal_fence = effect_fence(&scope, "terminal-a", "preflight-owner-a", 2);
     owner_environment
-        .prepare_disposal_for_effect(&terminal_fence)
+        .prepare_disposal_for_effect(
+            &terminal_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
+        )
         .await
         .expect("KPV2 E3 prepare exact V2 cleanup");
     owner_environment
