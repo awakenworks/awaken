@@ -74,6 +74,35 @@ pub struct PinnedCredentialMaterializer {
         Arc<Mutex<HashMap<String, secret_broker::PendingCredentialArtifact>>>,
 }
 
+/// Last-mile lifecycle gate shared by every local Vault material read.
+/// Publication-time checks cannot substitute for this recheck because a
+/// credential may be disabled or archived after its access reference is frozen.
+#[cfg(feature = "authority")]
+#[must_use]
+const fn credential_status_allows_materialization(status: CredentialStatus) -> bool {
+    matches!(status, CredentialStatus::Active)
+}
+
+#[cfg(all(kani, feature = "authority"))]
+#[kani::proof]
+fn new_materialization_admits_only_active_credential_status() {
+    // Test design — Causes: the current persisted lifecycle is Active,
+    // Disabled, or Archived. Effects: only Active admits a new material read;
+    // both revoked forms fail closed. Constraint: this exact predicate is
+    // called after the current source row is loaded and before SecretStore I/O.
+    // Decision rules: M1=Active -> admit; M2=Disabled -> reject;
+    // M3=Archived -> reject.
+    let status = match kani::any::<u8>() % 3 {
+        0 => CredentialStatus::Active,
+        1 => CredentialStatus::Disabled,
+        _ => CredentialStatus::Archived,
+    };
+    assert_eq!(
+        credential_status_allows_materialization(status),
+        matches!(status, CredentialStatus::Active)
+    );
+}
+
 impl PinnedCredentialMaterializer {
     #[cfg(feature = "authority")]
     #[must_use]
@@ -816,7 +845,7 @@ impl PinnedCredentialMaterializer {
         source
             .validate_authority()
             .map_err(|_| CredentialMaterialError::Invalid)?;
-        if source.status != CredentialStatus::Active {
+        if !credential_status_allows_materialization(source.status) {
             return Err(CredentialMaterialError::Unavailable);
         }
         Ok(source)
