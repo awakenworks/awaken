@@ -1081,7 +1081,7 @@ impl Tool for WriteTool {
         Ok(format!(
             "wrote {} bytes to {}",
             args.content.len(),
-            args.path
+            path.logical_absolute.display()
         ))
     }
 }
@@ -1151,13 +1151,19 @@ impl Tool for EditTool {
                 let updated = content.replacen(&args.old, &args.new, 1);
                 atomic_write(&path, &updated)
                     .map_err(|error| file_error("edit: write", &args.path, &error))?;
-                Ok(format!("edited {} (1 replacement(s))", args.path))
+                Ok(format!(
+                    "edited {} (1 replacement(s))",
+                    path.logical_absolute.display()
+                ))
             }
             n if args.replace_all => {
                 let updated = content.replace(&args.old, &args.new);
                 atomic_write(&path, &updated)
                     .map_err(|error| file_error("edit: write", &args.path, &error))?;
-                Ok(format!("edited {} ({n} replacements)", args.path))
+                Ok(format!(
+                    "edited {} ({n} replacements)",
+                    path.logical_absolute.display()
+                ))
             }
             n => Err(ToolError::Execution(format!(
                 "edit: old_string appears {n} times in {} (must be unique)",
