@@ -17,6 +17,7 @@ API_PF_LOG="${TMPDIR:-/tmp}/adr71_api_pf.log"
 API_PF=""
 STOPPED_NODE=""
 WORKER_TLS_DIR=""
+CONTINUATION_VOLUME=""
 export CARGO_CACHE_AUTOCLEAN=0
 
 log() { echo -e "\n\033[1;36m== $* ==\033[0m"; }
@@ -38,7 +39,9 @@ cleanup() {
     "$DEPLOY_DIR/awaken-control" \
     "$DEPLOY_DIR/awaken-coordinator" \
     "$DEPLOY_DIR/awaken-server" \
-    "$DEPLOY_DIR/awaken-worker"
+    "$DEPLOY_DIR/awaken-worker" || return "$?"
+  # Allocated by this invocation only; retained together with a failed cluster.
+  [ -z "$CONTINUATION_VOLUME" ] || docker volume rm "$CONTINUATION_VOLUME" >/dev/null
 }
 
 k3d_admit_or_exit "ADR-0071 distributed E2E"
@@ -148,8 +151,14 @@ echo "using immutable test image $IMAGE_ID"
 # node's small writable layer, so reserve 128 MiB there; the host runner owns
 # the separate capacity preflight and cleanup policy.
 k3d_ensure_images "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
-k3d_create_cluster "$CLUSTER" 3 128Mi "" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
-k3d_import_images "$CLUSTER" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
+CONTINUATION_VOLUME=$(docker volume create --label "awaken.e2e.cluster=$CLUSTER")
+k3d_create_cluster "$CLUSTER" 3 128Mi "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
+# The installed local-path provisioner owns PVC/PV lifecycle. Its shared-filesystem
+# mode removes node affinity because this exact Docker volume is mounted on every
+# node. This is a node-crash fixture, not a proof of production storage durability.
+kubectl -n kube-system patch configmap local-path-config --type=merge -p \
+  '{"data":{"config.json":"{\"nodePathMap\":[],\"sharedFileSystemPath\":\"/var/lib/awaken-continuation\"}"}}' >/dev/null
+k3d_import_storage_images "$CLUSTER" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
 # Cause/effect decision table: D1 one default CoreDNS replica + its node stops ->
 # replacement application Pods cannot resolve authority Services; D2 two replicas
 # + the built-in hostname spread constraint -> one node loss retains DNS; D3 fewer
@@ -240,10 +249,24 @@ kubectl -n "$NS" wait --for=condition=complete job/coordinator-migrate --timeout
 wait_roles || { diagnostics; exit 1; }
 start_public_endpoint
 
+# N0: place the target Session on a known non-database agent. Otherwise node
+# chaos can miss its Sandbox entirely and pass without exercising reconstruction.
+DB_NODES=$(kubectl -n "$NS" get pod -l 'database-role in (primary,standby)' -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}')
+CHAOS_NODE=""
+while IFS= read -r candidate; do
+  if ! grep -qx "$candidate" <<<"$DB_NODES"; then CHAOS_NODE="$candidate"; break; fi
+done < <(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+  | grep "^k3d-${CLUSTER}-agent-" || true)
+[ -n "$CHAOS_NODE" ] || { err "no non-database agent node available for node chaos"; exit 1; }
+while IFS= read -r candidate; do
+  [ "$candidate" = "$CHAOS_NODE" ] || kubectl cordon "$candidate" >/dev/null
+done < <(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+
 log "4/10 exercise the complete public configuration-to-response path"
 BOOTSTRAP=$(node "$DRIVER" bootstrap "$API_URL" | tail -1)
 [ "${BOOTSTRAP%% *}" = "OK" ] || { err "bootstrap failed: $BOOTSTRAP"; diagnostics; exit 1; }
 read -r _ DEPLOYMENT_ID SESSION_ID ENVIRONMENT_ID FILE_ID MEMORY_ID SKILL_ID <<<"$BOOTSTRAP"
+kubectl uncordon --all >/dev/null
 ok "one endpoint completed Credential/File/Memory/Skill/Agent/Deployment/Session/Provider flow"
 
 log "5/10 prove Worker process isolation and material realization"
@@ -358,15 +381,31 @@ log "8/10 stop one K3D agent node and verify public continuity"
 # N4 stable public GETs -> issue the non-idempotent Event exactly once;
 # N5 surviving/replaced Provider and Worker -> one terminal response, never an
 # error hidden by retrying the accepted Event.
-DB_NODES=$(kubectl -n "$NS" get pod -l 'database-role in (primary,standby)' -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}')
-# K3D agent nodes intentionally do not rely on the optional
-# `node-role.kubernetes.io/agent` label. Select from the cluster-owned node-name
-# namespace, then exclude both database placements.
-while IFS= read -r candidate; do
-  if ! grep -qx "$candidate" <<<"$DB_NODES"; then STOPPED_NODE="$candidate"; break; fi
-done < <(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
-  | grep "^k3d-${CLUSTER}-agent-" || true)
-[ -n "$STOPPED_NODE" ] || { err "no non-database agent node available for node chaos"; exit 1; }
+# N6 decision rule: known target Pod + bound retained claim + matching live UID
+# + mutable bytes written after materialization => reconstruction must change Pod
+# UID and node, preserve PVC UID, and read the exact bytes. Any missing prerequisite
+# fails before fault injection. A resource re-projection cannot recreate this file.
+[ "$(printf '%s\n' "$SESSION_PODS" | wc -l)" = "1" ] \
+  || { err "bootstrap did not identify exactly one Session Pod"; exit 1; }
+CONTINUITY_POD="$SESSION_PODS"
+POD_UID_BEFORE=$(kubectl -n "$NS" get pod "$CONTINUITY_POD" -o jsonpath='{.metadata.uid}')
+POD_NODE_BEFORE=$(kubectl -n "$NS" get pod "$CONTINUITY_POD" -o jsonpath='{.spec.nodeName}')
+[ "$POD_NODE_BEFORE" = "$CHAOS_NODE" ] || { err "target Session left the selected chaos node"; exit 1; }
+CLAIM_NAME=$(kubectl -n "$NS" get pod "$CONTINUITY_POD" -o jsonpath='{.spec.volumes[*].persistentVolumeClaim.claimName}')
+[ -n "$CLAIM_NAME" ] || { err "target Session has no continuation claim"; exit 1; }
+CLAIM_UID_BEFORE=$(kubectl -n "$NS" get pvc "$CLAIM_NAME" -o jsonpath='{.metadata.uid}')
+[ -n "$CLAIM_UID_BEFORE" ] && \
+  [ "$(kubectl -n "$NS" get pod "$CONTINUITY_POD" -o jsonpath='{.metadata.annotations.awaken\.dev/continuation-claim-uid}')" = "$CLAIM_UID_BEFORE" ] \
+  || { err "target Pod does not attest the exact live continuation UID"; exit 1; }
+[ "$(kubectl -n "$NS" get pvc "$CLAIM_NAME" -o jsonpath='{.status.phase}')" = "Bound" ] \
+  || { err "continuation claim is not Bound"; exit 1; }
+CONTINUITY_PV=$(kubectl -n "$NS" get pvc "$CLAIM_NAME" -o jsonpath='{.spec.volumeName}')
+[ -z "$(kubectl get pv "$CONTINUITY_PV" -o jsonpath='{.spec.nodeAffinity}')" ] \
+  || { err "continuation PV cannot relocate across nodes"; exit 1; }
+CONTINUITY_MARKER="ADR71-MUTABLE-$POD_UID_BEFORE"
+kubectl -n "$NS" exec "$CONTINUITY_POD" -c agent -- /bin/sh -ec \
+  'printf %s "$1" > /workspace/adr71-continuity; sync' awaken-continuity "$CONTINUITY_MARKER"
+STOPPED_NODE="$CHAOS_NODE"
 docker stop "$STOPPED_NODE" >/dev/null
 # A hard node stop has a bounded detection window: Pods on that node may remain
 # Ready and therefore routable until the node controller changes Ready away
@@ -420,6 +459,18 @@ done
   || { err "no Ready CoreDNS replica survived the stopped node"; exit 1; }
 wait_roles || { diagnostics; exit 1; }
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-NODE-LOSS
+# N7: public success alone cannot establish filesystem continuity. Verify all
+# three independent effects before the stopped node (and its old bytes) returns.
+[ "$(kubectl -n "$NS" get pod "$CONTINUITY_POD" -o jsonpath='{.metadata.uid}')" != "$POD_UID_BEFORE" ] \
+  || { err "node loss did not reconstruct the target Pod"; exit 1; }
+[ "$(kubectl -n "$NS" get pod "$CONTINUITY_POD" -o jsonpath='{.spec.nodeName}')" != "$STOPPED_NODE" ] \
+  || { err "replacement Pod remained on the stopped node"; exit 1; }
+[ "$(kubectl -n "$NS" get pvc "$CLAIM_NAME" -o jsonpath='{.metadata.uid}')" = "$CLAIM_UID_BEFORE" ] && \
+  [ "$(kubectl -n "$NS" get pod "$CONTINUITY_POD" -o jsonpath='{.metadata.annotations.awaken\.dev/continuation-claim-uid}')" = "$CLAIM_UID_BEFORE" ] \
+  || { err "reconstruction changed continuation volume identity"; exit 1; }
+kubectl -n "$NS" exec "$CONTINUITY_POD" -c agent -- /bin/sh -ec \
+  'test "$(wc -c < /workspace/adr71-continuity)" -eq "${#1}" && test "$(cat /workspace/adr71-continuity)" = "$1"' awaken-continuity "$CONTINUITY_MARKER"
+ok "node loss changed Pod UID/node, retained PVC UID and exact mutable workspace bytes"
 docker start "$STOPPED_NODE" >/dev/null
 RESTORED_NODE="$STOPPED_NODE"
 STOPPED_NODE=""

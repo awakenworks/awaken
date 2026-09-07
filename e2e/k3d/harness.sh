@@ -204,7 +204,7 @@ k3d_cluster_residue() {
   return 1
 }
 
-# k3d_create_cluster <name> <agent-count> [eviction-threshold] [registry-coordinate] [images...]
+# k3d_create_cluster <name> <agent-count> [eviction-threshold] [registry-coordinate] [--shared-volume docker-volume-id] [images...]
 #
 # A bare integer preserves the historical percentage input. Kubernetes absolute
 # quantities are also accepted so image-heavy fixtures on large shared Docker
@@ -229,7 +229,19 @@ k3d_create_cluster() {
     echo "invalid k3d Registry coordinate: $registry" >&2
     return 2
   }
-  k3d_capacity_preflight "$((agents + 1))" "${@:5}" || return "$?"
+  local images=("${@:5}") shared_volume=""
+  if [[ "${images[0]:-}" = "--shared-volume" ]]; then
+    shared_volume="${images[1]:-}"
+    # Only a Docker-generated, already-owned volume ID is accepted. Never let
+    # a missing source silently create a bind directory or another named volume.
+    [[ "$shared_volume" =~ ^[0-9a-f]{64}$ ]] \
+      && docker volume inspect "$shared_volume" >/dev/null 2>&1 || {
+      echo "invalid or missing shared continuation volume" >&2
+      return 2
+    }
+    images=("${images[@]:2}")
+  fi
+  k3d_capacity_preflight "$((agents + 1))" "${images[@]}" || return "$?"
   k3d_delete_cluster "$cluster" || return "$?"
   if [[ "$eviction" =~ ^[0-9]+$ ]]; then
     eviction="${eviction}%"
@@ -249,7 +261,41 @@ k3d_create_cluster() {
     args+=(--k3s-arg "--kubelet-arg=$threshold@agent:*")
   fi
   [[ -z "$registry" ]] || args+=(--registry-use "$registry")
+  [[ -z "$shared_volume" ]] || args+=(--volume "$shared_volume:/var/lib/awaken-continuation@all")
   k3d "${args[@]}" >/dev/null
+}
+
+# Load the installed provisioner's exact dependency images through the one
+# offline importer. Both retained-volume suites use this owner and readiness.
+k3d_import_storage_images() {
+  local cluster="$1"
+  shift
+  local provisioner_image="$(kubectl -n kube-system get deploy local-path-provisioner \
+    -o jsonpath='{.spec.template.spec.containers[0].image}')"
+  [ -n "$provisioner_image" ] || {
+    echo "local-path provisioner deployment has no image" >&2
+    return 1
+  }
+  local helper_image="$(
+    kubectl -n kube-system get configmap local-path-config \
+      -o jsonpath='{.data.helperPod\.yaml}' \
+      | awk '$1 == "image:" { print $2; exit }' \
+      | tr -d '"'
+  )"
+  [ -n "$helper_image" ] || {
+    echo "local-path provisioner configuration has no helper image" >&2
+    return 1
+  }
+  k3d_import_images \
+    "$cluster" \
+    "$@" \
+    "$provisioner_image" \
+    "$helper_image" || return "$?"
+  # A provisioner Pod can enter registry backoff before the offline image import
+  # completes. Recreate that disposable system Pod so it observes the imported
+  # image immediately, then fence the PVC tests on actual provisioner readiness.
+  kubectl -n kube-system rollout restart deploy/local-path-provisioner >/dev/null || return "$?"
+  kubectl -n kube-system rollout status deploy/local-path-provisioner --timeout=120s
 }
 
 k3d_archive_name() {
@@ -408,9 +454,44 @@ k3d_harness_selftest() (
   # | H21  | failure     | absent        | original body failure |
   # | H22  | failure     | residue       | cleanup failure takes precedence |
   # The scenario tests own network and topology effects.
+  # Storage-image decision table: S1 both observed image coordinates + import
+  # succeeds => restart and wait; S2 either coordinate absent => no import/restart;
+  # S3 import fails => no restart; S4 restart/wait fails => propagate failure.
+  # Calls use the actual shared function, not a reimplementation of its decisions.
+  (
+    local mode calls
+    kubectl() {
+      case "$*" in
+        *"get deploy local-path-provisioner"*) [[ "$mode" = missing-provisioner ]] || printf provisioner:exact ;;
+        *"get configmap local-path-config"*) [[ "$mode" = missing-helper ]] || printf 'image: helper:exact\n' ;;
+        *"rollout restart"*) calls+=" restart"; [[ "$mode" != restart-fails ]] ;;
+        *"rollout status"*) calls+=" wait"; [[ "$mode" != wait-fails ]] ;;
+        *) return 99 ;;
+      esac
+    }
+    k3d_import_images() {
+      [[ "$*" = "awaken-test role:exact provisioner:exact helper:exact" ]] || return 99
+      calls+=" import"
+      [[ "$mode" != import-fails ]]
+    }
+    for mode in success missing-provisioner missing-helper import-fails restart-fails wait-fails; do
+      calls=""
+      if [[ "$mode" = success ]]; then
+        k3d_import_storage_images awaken-test role:exact
+      else
+        ! k3d_import_storage_images awaken-test role:exact
+      fi
+      case "$mode" in
+        success|wait-fails) [[ "$calls" = " import restart wait" ]] ;;
+        missing-*) [[ -z "$calls" ]] ;;
+        import-fails) [[ "$calls" = " import" ]] ;;
+        restart-fails) [[ "$calls" = " import restart" ]] ;;
+      esac
+    done
+  )
   local k3d_calls=() docker_saves=() docker_execs=() docker_builds=()
   local delete_fails=0 observation_error="" residue="" import_failure=0 transport_failure=0
-  local capacity_failure=0 capacity_calls=()
+  local capacity_failure=0 capacity_calls=() volume_missing=0
   k3d_capacity_preflight() {
     capacity_calls+=("$*")
     return "$capacity_failure"
@@ -429,7 +510,9 @@ k3d_harness_selftest() (
     fi
   }
   docker() {
-    if [[ "$1 $2" = "network ls" ]]; then
+    if [[ "$1 $2" = "volume inspect" ]]; then
+      return "$volume_missing"
+    elif [[ "$1 $2" = "network ls" ]]; then
       [[ "$observation_error" != "docker" ]] || return 1
       [[ "$residue" != "network" ]] || printf '%s\n' 'k3d-awaken-test'
     elif [[ "$1" = "ps" ]]; then
@@ -464,6 +547,29 @@ k3d_harness_selftest() (
   k3d_calls=()
   k3d_create_cluster "awaken-test-1" 0 2
   [[ "${k3d_calls[1]}" != *"@agent:*"* ]]
+
+  # Shared-storage decision table: V1 absent option => no mount; V2 generated
+  # ID + existing owned volume => one all-node mount, images alone reach capacity
+  # planning; V3 missing/option-shaped/path-shaped/short ID => zero cluster effects;
+  # V4 valid ID but absent Docker volume => zero cluster effects. This validates
+  # argument admission; the distributed live case owns byte/UID continuity.
+  [[ "${k3d_calls[1]}" != *"--volume"* ]]
+  local volume_id
+  printf -v volume_id '%064d' 1
+  k3d_calls=()
+  k3d_create_cluster "awaken-test" 3 128Mi "" --shared-volume "$volume_id" roles:exact
+  [[ "${k3d_calls[1]}" = *"--volume $volume_id:/var/lib/awaken-continuation@all"* ]]
+  [[ "${capacity_calls[${#capacity_calls[@]} - 1]}" = "4 roles:exact" ]]
+  k3d_calls=()
+  local bad_volume
+  for bad_volume in "" --all /tmp/foo abc; do
+    ! k3d_create_cluster "awaken-test" 3 128Mi "" --shared-volume "$bad_volume"
+    (( ${#k3d_calls[@]} == 0 ))
+  done
+  volume_missing=1
+  ! k3d_create_cluster "awaken-test" 3 128Mi "" --shared-volume "$volume_id"
+  (( ${#k3d_calls[@]} == 0 ))
+  volume_missing=0
 
   # Eviction-threshold cause/effect table. C1 a legacy integer percentage;
   # C2 an absolute Kubernetes quantity; C3 a malformed/zero quantity. Effects:
