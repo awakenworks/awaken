@@ -170,6 +170,9 @@ async fn occupied_recovery_does_not_starve_other_threads(
      * R2 C1+C4 -> different Thread first, same Thread still excluded;
      * R3 C1+no independent work -> recovery remains discoverable, entry blocked;
      * R4 C5 -> exact slot release, recovery settles, same Thread resumes.
+     * R5 C1+expired-running -> terminal-only maintenance cannot acquire a
+     * useless lease before ACK, unlike ordinary/A2A recovery. Older tests
+     * covered this physical fence only for cancelled Pending rows.
      * Constraints: cancellation cannot manufacture quiescence; placement
      * cannot widen Thread exclusion; selection does not erase an old epoch.
      * All 12 partitions run on every adapter through this one contract test. */
@@ -246,6 +249,16 @@ async fn occupied_recovery_does_not_starve_other_threads(
                             .await
                             .unwrap(),
                         SettleOutcome::Applied
+                    );
+                }
+                if occupied {
+                    assert!(
+                        store
+                            .claim_for_terminal_recovery(old.run_id(), "maintenance", LEASE_MS, now)
+                            .await
+                            .unwrap()
+                            .is_none(),
+                        "R5 expired-running physical fence prevents maintenance lease theft"
                     );
                 }
                 let peer = dispatch(&ns, "same-thread", "shared");

@@ -513,9 +513,8 @@ fn claim_exact_with_mode(
             let quiescent_unleased =
                 matches!(row.state, DispatchState::Pending | DispatchState::Awaiting)
                     && row.lease.is_none()
-                    && row.active_attempt.is_none()
                     && !thread_busy;
-            if !quiescent_unleased && !expired_running {
+            if row.active_attempt.is_some() || (!quiescent_unleased && !expired_running) {
                 return Ok(None);
             }
             let previous = expired_running

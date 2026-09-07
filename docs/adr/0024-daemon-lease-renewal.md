@@ -225,6 +225,10 @@ wake and fresh-work priorities remain. Relinquishing a recovery mutation lease
 preserves the predecessor slot, but must not let its expired-running priority
 starve fresh work in another Thread. Exact claims and A2A recovery remain
 available, and same-Thread peers remain excluded until the original Run settles.
+Terminal-only maintenance also requires an empty physical slot for expired
+running rows, just as for pending/awaiting rows. Otherwise it acquires a lease
+that cannot settle and delays the genuine ACK's effect until another expiry.
+This restriction does not affect ordinary/A2A recovery claims.
 The shared Dispatch conformance matrix crosses occupancy, cancellation and all
 three selection ports on Memory, SQLite and PostgreSQL. This is bounded progress
 for independent queued work; it does not prove fairness for an occupied recovery

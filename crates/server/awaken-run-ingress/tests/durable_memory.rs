@@ -751,11 +751,24 @@ async fn durable_submit_persists_then_runs_to_completion() {
         .expect("durable submit");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
-    // Committed truth holds the Run: the user message then the assistant reply.
-    // Per-step durability: the input commits at the first step boundary, the
-    // terminal Step through finish.
-    assert_eq!(commit.commit_count(), 2);
+    // C1 fresh durable input -> E1 one user/assistant exchange and one model
+    // completion, E2 settled dispatch removed. Model intent/return journal
+    // commits are legitimate durability, not duplicate user execution.
+    assert_eq!(
+        commit
+            .committed()
+            .events
+            .iter()
+            .filter(|event| event.kind == AuditKind::ModelRequestCompleted)
+            .count(),
+        1
+    );
     let messages = commit.committed().messages;
+    assert_eq!(
+        messages.len(),
+        2,
+        "one exchange, independent of commit batching"
+    );
     assert_eq!(messages[0].text_content(), "go");
     assert_eq!(messages.last().unwrap().text_content(), "done");
     assert_eq!(store.dispatch_count(), 0, "a finished dispatch is removed");
@@ -1193,6 +1206,7 @@ async fn durable_submit_is_idempotent_per_run() {
         .submit_background(activation("run-1"))
         .await
         .expect("first submit");
+    let first_commit_count = commit.commit_count();
     // Re-submitting the same run id is a no-op: the dispatch was already settled,
     // and re-enqueue does not create a second run or a second commit.
     let state = ingress
@@ -1200,9 +1214,13 @@ async fn durable_submit_is_idempotent_per_run() {
         .await
         .expect("second submit");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-    // Two commits (input + terminal) from the first submit; the re-submit
-    // adds none.
-    assert_eq!(commit.commit_count(), 2, "the run committed exactly once");
+    // C1 settled Run + C2 same identity -> E1 zero additional commits/effects.
+    // Compare against the actual first submission, including model journals.
+    assert_eq!(
+        commit.commit_count(),
+        first_commit_count,
+        "re-submit adds no commit"
+    );
 }
 
 #[tokio::test]
@@ -1408,11 +1426,6 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
         )]
     );
     assert_eq!(
-        commit.commit_count(),
-        3,
-        "R1/E1-E2: reschedule observation + input + terminal commits"
-    );
-    assert_eq!(
         commit
             .committed()
             .events
@@ -1422,10 +1435,26 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
         vec![
             AuditKind::RunRescheduled,
             AuditKind::RunStateChanged,
+            AuditKind::StateChanged, // invocation intent before model entry
+            AuditKind::StateChanged, // returned observation before terminal
             AuditKind::RunStateChanged,
             AuditKind::ModelRequestCompleted,
         ],
         "R1/E1-E2+E4: recovery and the logical model request are observed once"
+    );
+    let committed = commit.committed();
+    let operation = awaken_runtime_contract::model_operation::ActiveModelOperation::at_commit(
+        &committed.state,
+        &committed.state_commit_cursors,
+        &RunId("run-1".into()),
+        u64::MAX,
+    )
+    .unwrap()
+    .expect("R1 one actual invocation is journaled");
+    assert_eq!(operation.ordinal.get(), 1, "R1 no repeated model entry");
+    assert_eq!(
+        operation.phase,
+        awaken_runtime_contract::model_operation::ModelOperationPhase::Returned
     );
     assert_eq!(store.dispatch_count(), 0);
 }
