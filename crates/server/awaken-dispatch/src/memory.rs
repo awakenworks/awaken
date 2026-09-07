@@ -24,7 +24,7 @@ use crate::dispatch::{
     Outbox, PendingInput, PendingRecord, RunClaim, RunIdentityDecision, SessionChildAdmission,
     SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
     SettleOutcome, StoredRunIdentity, SubmitOptions, can_admit_attempt_credentials,
-    classify_completed_session_run_reservation, classify_exact_claim_mode,
+    claim_with_frozen, classify_completed_session_run_reservation, classify_exact_claim_mode,
     classify_live_session_run_reservation, classify_session_run_reservation_activation,
     compile_attempt_credential_bindings, decide_run_identity, ensure_session_child_capacity,
     installed_worker_credential_capabilities, normalize_pending_millis, session_child_parent,
@@ -521,28 +521,25 @@ fn claim_exact_with_mode(
     {
         return Ok(None);
     }
-    let claim_transition = if mode == ExactClaimMode::ReservationRecovery {
-        row.transition().recover_reservation()
-    } else {
-        row.transition().claim()
-    }
-    .map_err(transition_error)?;
-    let Some(claim_transition) = claim_transition else {
+    let claimed =
+        claim_with_frozen(row.transition(), row.request.clone(), mode).map_err(transition_error)?;
+    let Some((claim_transition, request)) = claimed else {
         return Ok(None);
     };
     let claim_epoch = claim_transition.lease_epoch;
     let credential_bindings = if terminal_resolution || row.cancellation_requested {
         Vec::new()
     } else {
-        compile_attempt_credential_bindings(&row.request, capabilities, claim_epoch, now_ms)
-            .map_err(|error| {
+        compile_attempt_credential_bindings(&request, capabilities, claim_epoch, now_ms).map_err(
+            |error| {
                 DispatchError::Rejected(format!("credential attempt admission failed: {error}"))
-            })?
+            },
+        )?
     };
     let assignment = (!terminal_resolution)
         .then(|| worker.map(WorkerAssignment::from))
         .flatten();
-    let (request, sandbox, cancellation_requested, lease) = {
+    let (sandbox, cancellation_requested, lease) = {
         let row = state.rows.get_mut(&run_id).expect("runnable row exists");
         row.apply_transition(claim_transition);
         let lease = Lease {
@@ -558,12 +555,7 @@ fn claim_exact_with_mode(
         if was_execution_recovery {
             row.attempt_count += 1;
         }
-        (
-            row.request.clone(),
-            row.sandbox.clone(),
-            row.cancellation_requested,
-            lease,
-        )
+        (row.sandbox.clone(), row.cancellation_requested, lease)
     };
     let pending = state
         .pending

@@ -170,17 +170,13 @@ async fn claim_exact_transaction_with_mode(
     let status: String = row.try_get("status").map_err(store_error)?;
     let current_transition =
         crate::persisted_dispatch_transition(&status, previous_epoch, cancellation_requested != 0)?;
-    let claimed_transition = if mode == ExactClaimMode::ReservationRecovery {
-        current_transition.recover_reservation()
-    } else {
-        current_transition.claim()
-    }
-    .map_err(crate::transition_error)?
-    .ok_or_else(|| {
-        DispatchError::Rejected(format!(
-            "persisted dispatch state `{status}` is not claimable in {mode:?} mode"
-        ))
-    })?;
+    let (claimed_transition, request) = claim_with_frozen(current_transition, request, mode)
+        .map_err(crate::transition_error)?
+        .ok_or_else(|| {
+            DispatchError::Rejected(format!(
+                "persisted dispatch state `{status}` is not claimable in {mode:?} mode"
+            ))
+        })?;
     let claim_epoch = claimed_transition.lease_epoch;
     let credential_bindings = if terminal_resolution || cancellation_requested != 0 {
         Vec::new()

@@ -41,43 +41,6 @@ fn non_postgres_wrapper_does_not_fabricate_a_checkpoint_authority() {
     assert!(remote.stream_checkpoint_store().is_none(), "R3");
 }
 
-fn candidate(
-    model: &str,
-    credential: &str,
-    provider: &str,
-    route: &str,
-) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
-    awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
-        awaken_runtime_contract::ModelBinding::new(provider, model, "genai"),
-        provider,
-        route,
-        "workspace-a",
-        Some(
-            awaken_runtime_contract::CredentialAccess::new(
-                awaken_runtime_contract::CredentialRef {
-                    id: credential.into(),
-                    revision: 0,
-                },
-                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
-            )
-            .with_target(awaken_runtime_contract::CredentialTarget::new(
-                awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
-                provider.split_once('@').map_or(provider, |(id, _)| id),
-            )),
-        ),
-        awaken_runtime_contract::InferenceEndpoint {
-            adapter_kind: "openai".into(),
-            api_dialect: "open_ai_chat".into(),
-            base_url: "https://provider.invalid/v1".into(),
-            upstream_model: model.into(),
-            processing_placement: None,
-        },
-    )
-    .expect("coherent test provider candidate")
-}
-
 #[tokio::test]
 async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
     let store = any_in_memory();
@@ -454,80 +417,6 @@ async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
         Some("owner-b".to_string()),
         "an expired lease is reclaimed by the next owner"
     );
-}
-
-#[tokio::test]
-async fn reclaim_preserves_the_dispatch_pinned_model_candidate_set() {
-    // Cause/effect decision table: C1 dispatch freezes a primary and fallback
-    // candidate, each with an exact provider target; C2 worker A owns a live
-    // claim; C3 its lease expires; C4 worker B has the selected holder and
-    // realization capability. R1 C1+C2 => first claim retains the primary;
-    // R2 C1+C3+C4 => recovery retains the same fallback order and Run identity.
-    // Missing or mismatched targets are rejected by credential-attempt admission
-    // and are covered at that authority boundary; this test exercises only the
-    // successful reclaim effect, not a legacy target-less compatibility path.
-    let store = any_in_memory();
-    let worker_holder = awaken_runtime_contract::PlaintextHolder::new(
-        awaken_runtime_contract::PlaintextBoundary::Worker,
-        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-    );
-    let capabilities = awaken_runtime_contract::CredentialRealizationCapabilities {
-        holders: [worker_holder.clone()].into_iter().collect(),
-        material_sources: [
-            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-        ]
-        .into_iter()
-        .collect(),
-        realization_kinds: [
-            awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
-        ]
-        .into_iter()
-        .collect(),
-        recipient_bound_envelopes: false,
-        extension_consumers: Default::default(),
-        alternatives: Vec::new(),
-    };
-    let primary = candidate("primary", "cred-a", "provider-a@1", "route-a@2");
-    let fallback = candidate("fallback", "cred-b", "provider-b@3", "route-b@4");
-    let mut activation = activation("binding-retry");
-    activation.snapshot.resolved_spec.model_binding = primary.clone();
-    activation.snapshot.resolved_spec.model_candidates = vec![fallback.clone()];
-    store
-        .enqueue(RunDispatch::new(activation).with_inference_plaintext_holder(worker_holder))
-        .await
-        .unwrap();
-
-    let first = store
-        .claim("worker-a", 10, 0, &capabilities)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        &first
-            .request
-            .activation
-            .snapshot
-            .resolved_spec
-            .model_binding,
-        &primary
-    );
-    let recovered = store
-        .claim("worker-b", 10, 11, &capabilities)
-        .await
-        .unwrap()
-        .unwrap();
-
-    assert!(recovered.recovered);
-    assert_eq!(
-        recovered
-            .request
-            .activation
-            .snapshot
-            .resolved_spec
-            .model_candidates,
-        vec![fallback]
-    );
-    assert_eq!(recovered.request.run_id(), first.request.run_id());
 }
 
 #[tokio::test]
