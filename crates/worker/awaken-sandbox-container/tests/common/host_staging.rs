@@ -25,7 +25,9 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
      * R5=live container+missing root => reject without removal/replacement;
      * R6=live container+symlink root => reject without following it; restoring
      * the exact root then enables R2, so rejection cannot destroy its bytes.
-     * R7=absent container after R3 => reject without recreating physical state.
+     * R7=R2+second process loss => a cold provider reconstructs the same terminal
+     * participants, prepares and performs exact fenced cleanup without reactivation;
+     * R8=absent container after R3 => reject without recreating physical state.
      * The creating wrapper being gone is not itself evidence of missing binds.
      * Both real daemon adapters consume this one decision table. */
     let scope = format!(
@@ -204,10 +206,10 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
         "R6 reject with zero symlink-target mutation"
     );
     assert!(
-        peer.adopt_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
+        cold.adopt_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
             .await
             .is_err(),
-        "R7 absent physical environment is not silently recreated"
+        "R8 absent physical environment is not silently recreated"
     );
-    assert!(!root.exists(), "R7 rejection cannot recreate staging");
+    assert!(!root.exists(), "R8 rejection cannot recreate staging");
 }
