@@ -14,6 +14,8 @@ use crate::provisioning::StagedResources;
 mod environment_owner;
 pub(crate) use environment_owner::*;
 mod execution_authority;
+mod projection_receipt;
+pub(crate) use projection_receipt::FrozenProjectionReceipt;
 
 /// Host fixtures use the actual Control-clock coordinate for live replies.
 /// Deliberately rejects expired input: an expiry test must construct and age
@@ -398,6 +400,8 @@ pub(crate) struct SessionRuntimeSlot {
     /// it. Keeping this separate lets projection installation remain atomic to
     /// Runtime observers without re-entering `lifecycle` during Resource sync.
     pub resource_projection: Arc<tokio::sync::Mutex<()>>,
+    /// Last accepted aggregate version and equality digest; rebuildable, never authority.
+    pub(crate) frozen_projection_receipt: Option<FrozenProjectionReceipt>,
     pub runtime: Option<Arc<crate::host::SessionCtx>>,
     /// Rebuildable model-only context materialized from the Session baseline's
     /// immutable transcript-prefix reference. Never committed to this Thread.

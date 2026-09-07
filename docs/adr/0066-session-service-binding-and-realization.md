@@ -72,6 +72,30 @@ so replacing its Clock or repository also updates the installed sink. There is
 no independent Environment wall-clock implementation or timestamp store.
 
 
+## Complete projection ordering
+
+The Runtime slot retains the last installed Session root revision and an equality
+digest of mutable aggregate coordinates. It validates both before Resource I/O
+and under the final publication lock. Older roots and conflicting equal revisions
+are rejected; exact replay is idempotent. The existing immutable baseline and
+Resource manifest checks still own their coordinates. Derived executable
+publication, decoded Resource receipts and materialized context do not mint root
+versions or become a second Session store.
+
+A newer complete root can replace an `AwaitingAdoption` descriptor because that
+phase owns no physical Environment. Candidate, Resident and Retiring owners keep
+their exact physical ownership checks; ordering alone cannot authorize disposal.
+Root receipt, descriptor and correlated dispatch facts publish in the existing
+infallible suffix under Worker authority. A failed preparation never advances
+the installed root version. Local binding commits still publish only through
+the canonical sink readback; a projection cannot publish a hidden candidate.
+
+The existing Environment projection model has a two-process A/B convergence
+configuration, and the observation runner checks actual ManagedHost before/after
+slots against its admission relation. Progress assumes fair latest delivery and
+exact closure; provider atomicity and universal asynchronous refinement remain
+outside this evidence. Decision tables live beside the production-entry tests.
+
 ## 2026-09-01 amendment: lease-only renewal
 
 Initial assignment and desired-state progression continue to use the one

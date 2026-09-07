@@ -2083,6 +2083,7 @@ dependencies = [
  "awaken-memory-store",
  "awaken-observability",
  "awaken-provisioning-contract",
+ "awaken-reliability-testkit",
  "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-store",
