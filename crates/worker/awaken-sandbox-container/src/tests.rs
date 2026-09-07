@@ -3702,6 +3702,57 @@ async fn create_fails_closed_on_bad_spec_and_backend_error_but_needs_no_attempt_
 }
 
 #[tokio::test]
+async fn successful_host_staging_follows_the_physical_container_lifetime() {
+    /* Lifetime cause/effect table. C1 create succeeds with host binds; C2 the
+     * process-local Sandbox wrapper is released; C3 explicit terminal disposal
+     * succeeds. R1=C1+C2+!C3 => retain exact source bytes while the container is
+     * alive; R2=C1+C3 => remove both container and staging, idempotently.
+     * Definite/ambiguous create failures are covered by the adjacent outcome
+     * table. Wrapper release is not evidence of physical container removal. */
+    use pc::Sandbox;
+    for dispose in [false, true] {
+        let runtime = Arc::new(FakeRuntime::default());
+        let provider = provider(runtime.clone());
+        let sandbox = provider
+            .create_container(&spec(if dispose {
+                "stage-dispose"
+            } else {
+                "stage-drop"
+            }))
+            .await
+            .unwrap();
+        let container_id = sandbox.container_id.clone();
+        let source = std::path::PathBuf::from(
+            &runtime.st.lock().unwrap().created_binds[&container_id][0].source_ref,
+        );
+        let original = std::fs::read(&source).unwrap();
+        if dispose {
+            sandbox.dispose().await.unwrap();
+            sandbox.dispose().await.unwrap();
+        }
+        drop(sandbox);
+        drop(provider);
+        assert_eq!(runtime.st.lock().unwrap().alive[&container_id], !dispose);
+        if dispose {
+            assert!(!source.exists(), "R2 terminal cleanup removes host staging");
+            assert_eq!(runtime.st.lock().unwrap().removals.len(), 1);
+        } else {
+            // Clean this test's fake object even when exercising the old bug.
+            let retained_bytes = std::fs::read(&source);
+            runtime.remove(&container_id).await.unwrap();
+            if let Some(root) = source.parent().filter(|root| root.exists()) {
+                std::fs::remove_dir_all(root).unwrap();
+            }
+            assert_eq!(
+                retained_bytes.unwrap(),
+                original,
+                "R1 retain live bind bytes"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn create_failure_compensates_only_when_the_runtime_proves_no_backend_effect() {
     /* Create-outcome cause/effect table.
      * Causes: C1 the runtime result is a definite pre/zero-effect Backend error

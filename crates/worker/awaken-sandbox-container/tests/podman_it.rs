@@ -5,6 +5,8 @@
 //! Run with: `cargo test -p awaken-sandbox-container --features podman --test podman_it`
 #![cfg(feature = "podman")]
 
+#[path = "common/host_staging.rs"]
+mod host_staging;
 #[path = "common/process.rs"]
 mod process_lifecycle;
 
@@ -147,6 +149,20 @@ fn live_prerequisite_requires_both_info_and_oci_execution() {
     assert!(!live_prerequisite(false, true), "R2");
     assert!(!live_prerequisite(true, false), "R3");
     assert!(live_prerequisite(true, true), "R4");
+}
+
+#[tokio::test]
+async fn podman_ordinary_host_staging_survives_creator_replacement() {
+    let Some(first) = runtime().await else { return };
+    let Some(peer) = runtime().await else {
+        panic!("Podman disappeared after readiness")
+    };
+    host_staging::verify_ordinary_host_staging_recovery(
+        Arc::new(first),
+        Arc::new(peer),
+        "docker.io/library/busybox:latest",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -326,7 +342,7 @@ async fn podman_reports_the_agent_exit_code() {
 async fn podman_peer_rejects_unreconstructible_live_environment_without_replacement() {
     /* Host-bind recovery cause/effect table. Causes: C1 a current V2 Podman
      * handle names an exact live/absent container; C2 the creating Worker's
-     * process-local participants are gone; C3 the peer has the frozen spec.
+     * host staging root is physically missing; C3 the peer has the frozen spec.
      * R1 live+C2+C3=>reject as incompatible while leaving the container
      * Running; R2 absent+C2+C3=>reject as unavailable. Neither row recreates. */
     let Some(runtime_a) = runtime().await else {
@@ -373,6 +389,18 @@ async fn podman_peer_rejects_unreconstructible_live_environment_without_replacem
         .container_payload()
         .expect("typed container handle")
         .container_id;
+    // Model actual host loss explicitly. Merely dropping a creator is not
+    // evidence that its physical bind participants are missing (R1 above).
+    let root = runtime_b
+        .recovered_host_staging_root(physical_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        root.is_dir(),
+        "ordinary creation retains the live bind source"
+    );
+    std::fs::remove_dir_all(root).expect("inject loss of this test-owned staging root");
     let error = match provider_b
         .adopt_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
         .await
