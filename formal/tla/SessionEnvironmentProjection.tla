@@ -15,15 +15,20 @@ VARIABLES phase, localEffect, localGeneration, localBinding,
 VARIABLES retirementCause, lastRecovery
 recoveryVars == <<retirementCause, lastRecovery>>
 
-vars == <<phase, localEffect, localGeneration, localBinding,
+ownerVars == <<phase, localEffect, localGeneration, localBinding,
           capturedEffect, capturedGeneration, capturedBinding,
           retirementFence, lastOutcome, lastBeforeEffect, lastAfterEffect,
           lastCapturedGeneration, lastCapturedBinding, recoveryVars>>
+
+VARIABLE lastSynchronization
+vars == <<ownerVars, lastSynchronization>>
 
 NoValue == "none"
 RetirementCauses == {"Revocation", "Discard", "Terminal", "Checkpoint"}
 
 Init ==
+    /\ lastSynchronization = [observed |-> TRUE, closed |-> FALSE,
+                                allowed |-> FALSE, admitted |-> TRUE, after |-> "Resident"]
     /\ phase = "Resident"
     /\ localEffect \in Effects
     /\ localGeneration \in Generations
@@ -124,13 +129,35 @@ RecoverClosed(exact, closed, allowed) ==
                     lastBeforeEffect, lastAfterEffect, lastCapturedGeneration,
                     lastCapturedBinding>>
 
-Next ==
+\* Caller boundary for an already-resident Worker. Physical loss is an
+\* independent provider input, never inferred from the local Arc. This action
+\* abstracts one observation plus policy decision, NOT atomic provider IO or
+\* perpetual liveness after that observation. Reuse the owner transition above.
+\* Decision rules S1 Ready => retain; S2 closed+continuity => reject/retain;
+\* S3 closed+rebuild => clear the exact owner before replacement publication.
+\* The Rust driver test crosses Runtime cached/evicted with S1-S3 and removes
+\* the actual Local root; K3d separately checks replacement UID/PVC/file bytes.
+SynchronizeResident(closed, allowed) ==
+    /\ phase = "Resident"
+    /\ LET observed == TRUE
+       IN /\ IF observed THEN RecoverClosed(TRUE, closed, allowed)
+                           ELSE UNCHANGED ownerVars
+          /\ lastSynchronization' = [observed |-> observed, closed |-> closed,
+                                       allowed |-> allowed,
+                                       admitted |-> ~observed \/ ~closed \/ allowed,
+                                       after |-> phase']
+
+OwnerNext ==
     \/ \E effect \in Effects, generation \in Generations, binding \in Bindings:
            Capture(effect, generation, binding)
     \/ \E effect \in Effects: PublishNewEffect(effect)
     \/ \E cause \in RetirementCauses: BeginRetiring(cause)
     \/ InstallCaptured
     \/ \E exact, closed, allowed \in BOOLEAN: RecoverClosed(exact, closed, allowed)
+
+Next ==
+    \/ (OwnerNext /\ UNCHANGED lastSynchronization)
+    \/ \E closed, allowed \in BOOLEAN: SynchronizeResident(closed, allowed)
 
 Spec == Init /\ [][Next]_vars
 
@@ -179,7 +206,16 @@ ClosedRecoveryIsExactAndComplete ==
       /\ (lastRecovery.cleared => lastRecovery.after = "Vacant")
       /\ (~lastRecovery.cleared => lastRecovery.after = lastRecovery.before)
 
+ResidentSynchronizationObservesPhysicalOwner ==
+    /\ lastSynchronization.observed
+    /\ lastSynchronization.admitted =
+         (~lastSynchronization.closed \/ lastSynchronization.allowed)
+    /\ lastSynchronization.after =
+         IF lastSynchronization.closed /\ lastSynchronization.allowed
+         THEN "Vacant" ELSE "Resident"
+
 Safety ==
+    /\ ResidentSynchronizationObservesPhysicalOwner
     /\ TypeOK
     /\ StaleProjectionNeverRollsBackLocalEffect
     /\ RejectedProjectionNeverRelabelsLocalEffect

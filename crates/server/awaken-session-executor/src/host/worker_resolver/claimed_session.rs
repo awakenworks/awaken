@@ -1,6 +1,6 @@
 //! Claimed Worker installation of one already-frozen Session projection.
 
-use super::session_realization::{
+use super::realization_failure::{
     SessionRealizationWorkerEffect, session_realization_worker_effect,
 };
 use super::*;

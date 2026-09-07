@@ -277,6 +277,13 @@ pub(super) async fn unavailable_local_environment_binding(
     projection: &awaken_session_contract::FrozenSessionProjection,
 ) -> String {
     let binding = available_local_environment_binding(host, thread, projection).await;
+    remove_local_environment_root(host, thread);
+    binding
+}
+
+/// Fault the physical owner independently of the Worker and its retained Arcs.
+/// Both cold and surviving-Worker recovery rows use this one exact-inode cut.
+pub(super) fn remove_local_environment_root(host: &crate::host::SharedHost, thread: &str) {
     let root = host
         .storage_dir()
         .expect("unavailable Local Environment fixture requires durable storage")
@@ -286,7 +293,6 @@ pub(super) async fn unavailable_local_environment_binding(
         .expect("observe exact unavailable-Environment root identity");
     awaken_sandbox_fs::remove_directory_tree_exact(&root, identity)
         .expect("remove exact unavailable-Environment physical root");
-    binding
 }
 
 pub(crate) fn with_empty_session_resources(

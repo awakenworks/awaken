@@ -865,7 +865,22 @@ def check_session_observation_model_mutants(tlc_jar: Path) -> None:
     assert driver.count(anchor) == 1
     check_tlc_model_mutations(tlc_jar, "SessionRealizationMutex", driver, config,
         [(driver.replace(anchor, '{"old", "new"}'), config, "PublicationExcludesRetiredGenerations")])
-    print("Session observation model mutation score: 6/6 killed")
+    # S1-S3: a surviving resident Arc cannot bypass the physical observation.
+    # Restore the old caller bypass in the existing owner model, then require
+    # its named routing invariant to fail (not a parser/tool/timeout failure).
+    projection = (ROOT / "formal/tla/SessionEnvironmentProjection.tla").read_text()
+    config = (ROOT / "formal/tla/SessionEnvironmentProjection.cfg").read_text()
+    for old, new in [("{effect_a, effect_b}", "{effect_a}"),
+                     ("{generation_1, generation_2}", "{generation_1}"),
+                     ("{binding_1, binding_2}", "{binding_1}")]:
+        config = config.replace(old, new)
+    config = config.replace("    Safety", "    ResidentSynchronizationObservesPhysicalOwner")
+    anchor = "LET observed == TRUE"
+    assert projection.count(anchor) == 1
+    check_tlc_model_mutations(tlc_jar, "SessionEnvironmentProjection", projection, config,
+        [(projection.replace(anchor, "LET observed == FALSE"), config,
+          "ResidentSynchronizationObservesPhysicalOwner")])
+    print("Session observation model mutation score: 7/7 killed")
 
 
 def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
