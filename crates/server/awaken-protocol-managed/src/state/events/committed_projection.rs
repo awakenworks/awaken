@@ -33,12 +33,15 @@ impl ManagedState {
         record: &mut SessionRecord,
         terminal: &RunLifecycleEvent,
         outcome_owns_failure: bool,
-    ) {
+        snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    ) -> Result<(), StateError> {
         if outcome_owns_failure {
-            return;
+            return Ok(());
         }
-        let Some(error) = SessionError::from_run_state(&terminal.state) else {
-            return;
+        let Some(error) = SessionError::from_committed_lifecycle(terminal, snapshot)
+            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?
+        else {
+            return Ok(());
         };
         let id = managed_multiagent_event_id(
             &record.session.id,
@@ -55,6 +58,7 @@ impl ManagedState {
                 processed_at: None,
             });
         }
+        Ok(())
     }
 
     async fn refresh_committed_projection_once(
@@ -914,7 +918,8 @@ impl ManagedState {
                 durable_outcome_projections
                     .iter()
                     .any(|projection| projection.owns_failure_run(&terminal.run_id)),
-            );
+                root_snapshot.as_ref(),
+            )?;
             let stop_reason = Self::public_run_stop_reason(
                 record,
                 None,
@@ -1124,7 +1129,8 @@ impl ManagedState {
                 durable_outcome_projections
                     .iter()
                     .any(|projection| projection.owns_failure_run(&terminal.run_id)),
-            );
+                root_snapshot.as_ref(),
+            )?;
             let stop_reason = Self::public_run_stop_reason(
                 record,
                 None,
