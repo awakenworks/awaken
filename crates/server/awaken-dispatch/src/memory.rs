@@ -310,12 +310,26 @@ fn select_where(
     now_ms: u64,
     mut compatible: impl FnMut(&Row) -> bool,
 ) -> Option<RunId> {
+    // An unconfirmed predecessor still needs recovery observation, but cannot
+    // monopolize the recovery-priority band while unrelated work is runnable.
+    // This changes selection only; exact claim, handoff and ACK remain fenced.
+    select_in_physical_band(state, now_ms, &mut compatible, false)
+        .or_else(|| select_in_physical_band(state, now_ms, &mut compatible, true))
+}
+
+fn select_in_physical_band(
+    state: &State,
+    now_ms: u64,
+    compatible: &mut impl FnMut(&Row) -> bool,
+    occupied: bool,
+) -> Option<RunId> {
     let now_ms = crate::clock::normalize_millis(now_ms);
     // Session admission repair is a distinct claim mode: the resulting Worker
     // lease may call only the root activity authority until it is resolved.
     // Both reservation phases use the same deadline classifier as exact claims.
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
+            && row.active_attempt.is_some() == occupied
             && classify_exact_claim_mode(row.state, row.exact_claim_deadline(), now_ms)
                 == ExactClaimMode::ReservationRecovery
             && !thread_has_claim_blocking_peer(state, run, false)
@@ -329,6 +343,7 @@ fn select_where(
     // branch, which lets a legacy multi-Awaiting Thread be cancelled sequentially.
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
+            && row.active_attempt.is_some() == occupied
             && row.cancellation_requested
             && matches!(row.state, DispatchState::Pending | DispatchState::Awaiting)
             && !thread_has_claim_blocking_peer(state, run, false)
@@ -340,6 +355,7 @@ fn select_where(
     // Recovery: re-own an expired-lease running row (first-match in enqueue order).
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
+            && row.active_attempt.is_some() == occupied
             && row.state == DispatchState::Leased
             && row.lease.as_ref().is_some_and(|l| l.expires_ms < now_ms)
             && compatible(row)
@@ -352,6 +368,7 @@ fn select_where(
     // fresh peer execution.
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
+            && row.active_attempt.is_some() == occupied
             && row.state == DispatchState::Awaiting
             && state
                 .pending
@@ -368,6 +385,7 @@ fn select_where(
     let mut best: Option<(&RunId, i64)> = None;
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
+            && row.active_attempt.is_some() == occupied
             && row.state == DispatchState::Pending
             && !thread_has_claim_blocking_peer(state, run, true)
             && compatible(row)
@@ -495,9 +513,8 @@ fn claim_exact_with_mode(
             let quiescent_unleased =
                 matches!(row.state, DispatchState::Pending | DispatchState::Awaiting)
                     && row.lease.is_none()
-                    && row.active_attempt.is_none()
                     && !thread_busy;
-            if !quiescent_unleased && !expired_running {
+            if row.active_attempt.is_some() || (!quiescent_unleased && !expired_running) {
                 return Ok(None);
             }
             let previous = expired_running

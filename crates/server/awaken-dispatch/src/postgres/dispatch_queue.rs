@@ -668,8 +668,8 @@ impl DispatchQueue for PostgresDispatchStore {
                  (pe.available_at IS NULL OR pe.available_at <= $1))) AND \
                {thread_available} AND {local_eligible}) OR \
              (d.status = 'pending' AND {thread_available} AND {local_eligible}) \
-             ORDER BY CASE \
-               WHEN d.cancel_requested = 1 THEN 0 \
+             ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
+               CASE WHEN d.cancel_requested = 1 THEN 0 \
                WHEN d.status IN ('reserved', 'reservation_running') THEN 1 \
                WHEN d.status = 'running' THEN 2 \
                WHEN d.status = 'awaiting' THEN 3 ELSE 4 END, \
@@ -718,7 +718,8 @@ impl DispatchQueue for PostgresDispatchStore {
                WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
                ) AND {thread_available}) OR \
              (d.status = 'pending' AND {thread_available}) \
-             ORDER BY CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
+             ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
+                      CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                       d.priority DESC, d.created_at",
             no_running_peer(p)
         ))
@@ -793,7 +794,8 @@ impl DispatchQueue for PostgresDispatchStore {
                WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
                ) AND {thread_available}) OR \
              (d.status = 'pending' AND {thread_available}) \
-             ORDER BY CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
+             ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
+                      CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                       d.priority DESC, d.created_at",
             no_running_peer(p)
         ))

@@ -219,6 +219,21 @@ these records. A historical Run with no model journal at all is not retrospectiv
 proved stopped. This repair rejects known uncertain invocation history; it is
 not a blanket historical migration or an independent execution-domain provider.
 
+Broad queue selection first considers eligible rows without physical occupancy,
+then occupied recovery candidates. Within either cohort the existing recovery,
+wake and fresh-work priorities remain. Relinquishing a recovery mutation lease
+preserves the predecessor slot, but must not let its expired-running priority
+starve fresh work in another Thread. Exact claims and A2A recovery remain
+available, and same-Thread peers remain excluded until the original Run settles.
+Terminal-only maintenance also requires an empty physical slot for expired
+running rows, just as for pending/awaiting rows. Otherwise it acquires a lease
+that cannot settle and delays the genuine ACK's effect until another expiry.
+This restriction does not affect ordinary/A2A recovery claims.
+The shared Dispatch conformance matrix crosses occupancy, cancellation and all
+three selection ports on Memory, SQLite and PostgreSQL. This is bounded progress
+for independent queued work; it does not prove fairness for an occupied recovery
+candidate under an infinite stream of other work.
+
 The slot is not another lease or state machine. Claim, attempt admission,
 settlement, retry exhaustion, and dead-lettering mutate the same Dispatch row in
 one backend transaction. `ThreadCommit` remains the sole execution-result truth.
