@@ -145,6 +145,20 @@ terminate through the existing background Indeterminate candidate, not another
 retry loop. These rules do not prove that a custom adapter correctly classifies
 its external protocol, or supply a provider receipt for post-crash admission.
 
+The MCP client maps effectful call/start/cancel failures through one adapter
+rule into that same typed uncertainty. Only transport-owned `NotDispatched`
+evidence (closed before send or rejected by the writer/admission fence) permits
+an unavailable-before-dispatch result. A server/protocol error, HTTP failure,
+generation revocation during a call, or malformed remote task coordinates is
+not such evidence. The generation fence still owns only local call drain; it
+does not acquire attempt or remote-stop authority. Read-only status/result
+failures for an already-persisted task handle remain observation failures for
+the existing bounded Host retry path, never permission to repeat creation.
+The existing MCP wire result schema is unchanged; the Rust transport error enum
+adds the explicit pre-dispatch case. Mapping decision tables, real HTTP replies
+and generation-drain traces exercise this adapter boundary, not remote provider
+termination, arbitrary custom transports, or whole-system crash refinement.
+
 Direct and durable delegated child Runs share the existing owned task boundary,
 so a durable Worker is not recursively polled on its parent's stack. Dropping
 the owner requests abort of that exact child task, never detachment; abort still
