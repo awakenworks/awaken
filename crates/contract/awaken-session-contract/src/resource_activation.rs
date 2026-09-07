@@ -106,7 +106,195 @@ pub enum ResourceActivationError {
     Invalid(String),
 }
 
+/// Which manifest slot in the persisted Session root still owns one asserted
+/// Resource generation. This is deliberately private: callers consume the
+/// manifest returned by [`SessionResourceState::retained_generation`] rather
+/// than treating the slot label as another lifecycle authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetainedResourceGenerationSlot {
+    Active,
+    Pending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceManifestSettlementKind {
+    Commit,
+    Rollback,
+    RetryableFailure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResourceManifestSettlementPlan {
+    promote_pending: bool,
+    retain_pending: bool,
+}
+
+/// One closed manifest-selection decision shared by every attempt outcome.
+/// Activation-record diagnostics remain in their existing per-state reducer;
+/// this plan owns only whether pending can replace active and whether it stays
+/// available to the next retry.
+const fn resource_manifest_settlement_plan(
+    settlement: ResourceManifestSettlementKind,
+) -> ResourceManifestSettlementPlan {
+    match settlement {
+        ResourceManifestSettlementKind::Commit => ResourceManifestSettlementPlan {
+            promote_pending: true,
+            retain_pending: false,
+        },
+        ResourceManifestSettlementKind::Rollback => ResourceManifestSettlementPlan {
+            promote_pending: false,
+            retain_pending: false,
+        },
+        ResourceManifestSettlementKind::RetryableFailure => ResourceManifestSettlementPlan {
+            promote_pending: false,
+            retain_pending: true,
+        },
+    }
+}
+
+/// Select the only generation that a fresh or restarted reconciler may retry.
+/// The persisted pending slot grants retry authority; the generation watermark
+/// is returned unchanged rather than allocating a second logical activation.
+const fn pending_resource_retry_revision(pending: bool, revision: u64) -> Option<u64> {
+    if pending { Some(revision) } else { None }
+}
+
+/// Closed scalar kernel behind retained-generation selection. Active wins if a
+/// corrupt or legacy row aliases both revisions; the public lookup then still
+/// returns one inseparable revision/manifest pair rather than mixing slots.
+const fn retained_resource_generation_slot(
+    active_revision: u64,
+    pending_revision: Option<u64>,
+    asserted_revision: u64,
+) -> Option<RetainedResourceGenerationSlot> {
+    if asserted_revision == active_revision {
+        Some(RetainedResourceGenerationSlot::Active)
+    } else {
+        match pending_revision {
+            Some(revision) if asserted_revision == revision => {
+                Some(RetainedResourceGenerationSlot::Pending)
+            }
+            Some(_) | None => None,
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn resource_materialization_selects_only_active_or_pending_root_generation() {
+    // Cause/effect graph: C1 the assertion equals the active revision; C2 a
+    // pending slot exists; C3 the assertion equals its revision. Effects: E1
+    // select Active, E2 select Pending, E3 reject. Active has deterministic
+    // precedence when C1 and C2+C3 alias.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // |---|---|---|---|---|
+    // | R1 | yes | any | any | E1 |
+    // | R2 | no | yes | yes | E2 |
+    // | R3 | no | no | any | E3 |
+    // | R4 | no | yes | no | E3 |
+    let active_revision: u64 = kani::any();
+    let has_pending: bool = kani::any();
+    let pending_revision: u64 = kani::any();
+    let asserted_revision: u64 = kani::any();
+    let selected = retained_resource_generation_slot(
+        active_revision,
+        has_pending.then_some(pending_revision),
+        asserted_revision,
+    );
+    let selects_active = asserted_revision == active_revision;
+    let selects_pending = !selects_active && has_pending && asserted_revision == pending_revision;
+
+    assert_eq!(
+        selected == Some(RetainedResourceGenerationSlot::Active),
+        selects_active
+    );
+    assert_eq!(
+        selected == Some(RetainedResourceGenerationSlot::Pending),
+        selects_pending
+    );
+    assert_eq!(selected.is_some(), selects_active || selects_pending);
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn failed_resource_replacement_never_promotes_the_pending_manifest() {
+    // Cause/effect graph: C1 realization commits; C2 it fails and rollback
+    // succeeds; C3 it fails and rollback is unavailable. Effects: E1 promote
+    // and clear pending, E2 preserve active and clear pending, E3 preserve
+    // active and retain pending. C1-C3 are closed and mutually exclusive.
+    //
+    // | Rule | outcome | promote pending | retain pending | Effect |
+    // |---|---|---|---|---|
+    // | R1 | commit | yes | no | E1 |
+    // | R2 | rollback | no | no | E2 |
+    // | R3 | retryable failure | no | yes | E3 |
+    let committed: bool = kani::any();
+    let rollback_completed: bool = kani::any();
+    let settlement = if committed {
+        ResourceManifestSettlementKind::Commit
+    } else if rollback_completed {
+        ResourceManifestSettlementKind::Rollback
+    } else {
+        ResourceManifestSettlementKind::RetryableFailure
+    };
+    let plan = resource_manifest_settlement_plan(settlement);
+
+    assert_eq!(
+        plan.promote_pending,
+        settlement == ResourceManifestSettlementKind::Commit
+    );
+    assert_eq!(
+        plan.retain_pending,
+        settlement == ResourceManifestSettlementKind::RetryableFailure
+    );
+    if settlement != ResourceManifestSettlementKind::Commit {
+        assert!(!plan.promote_pending);
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn resource_retry_reuses_exact_pending_revision() {
+    // Cause/effect graph: C1 a persisted pending manifest exists; C2 it does
+    // not. Effects: E1 select the exact persisted generation watermark for the
+    // next attempt; E2 reject retry authority. The process lifecycle is not an
+    // input because restart may reconstruct only these durable scalar facts.
+    //
+    // | Rule | pending | persisted revision | retry revision | Effect |
+    // |---|---|---|---|---|
+    // | R1 | yes | any u64 | identical | E1 |
+    // | R2 | no | any u64 | none | E2 |
+    let pending: bool = kani::any();
+    let revision: u64 = kani::any();
+    let selected = pending_resource_retry_revision(pending, revision);
+
+    assert_eq!(selected.is_some(), pending);
+    if let Some(selected) = selected {
+        assert_eq!(selected, revision);
+    }
+}
+
 impl SessionResourceState {
+    fn apply_manifest_settlement(
+        &mut self,
+        settlement: ResourceManifestSettlementKind,
+    ) -> Result<(), ResourceActivationError> {
+        if self.pending.is_none() {
+            return Err(ResourceActivationError::NoPending);
+        }
+        let plan = resource_manifest_settlement_plan(settlement);
+        if plan.promote_pending {
+            self.active = self
+                .pending
+                .take()
+                .expect("pending presence was checked before settlement");
+        } else if !plan.retain_pending {
+            self.pending = None;
+        }
+        Ok(())
+    }
+
     /// Remove superseded terminal diagnostics without touching any activation
     /// that can still authorize or require a physical effect.
     ///
@@ -224,11 +412,10 @@ impl SessionResourceState {
     /// Fence one external attempt durably. A retry increments the same records;
     /// it never creates a second logical activation.
     pub fn start_attempt(&mut self) -> Result<(), ResourceActivationError> {
-        if self.pending.is_none() {
-            return Err(ResourceActivationError::NoPending);
-        }
+        let retry_revision = pending_resource_retry_revision(self.pending.is_some(), self.revision)
+            .ok_or(ResourceActivationError::NoPending)?;
         for activation in self.activations.iter_mut().filter(|activation| {
-            activation.revision == self.revision && activation.state == ActivationState::Prepared
+            activation.revision == retry_revision && activation.state == ActivationState::Prepared
         }) {
             activation.attempts = activation.attempts.saturating_add(1);
             activation.last_error = None;
@@ -277,7 +464,7 @@ impl SessionResourceState {
     pub fn commit(&mut self) -> Result<(), ResourceActivationError> {
         let desired = self
             .pending
-            .take()
+            .as_ref()
             .ok_or(ResourceActivationError::NoPending)?;
         let desired_repository_ids = desired
             .inputs()
@@ -299,7 +486,7 @@ impl SessionResourceState {
                 _ => {}
             }
         }
-        self.active = desired;
+        self.apply_manifest_settlement(ResourceManifestSettlementKind::Commit)?;
         self.committed_revision = Some(self.revision);
         self.compact_settled_activations();
         Ok(())
@@ -371,9 +558,7 @@ impl SessionResourceState {
         &mut self,
         error: impl Into<String>,
     ) -> Result<(), ResourceActivationError> {
-        if self.pending.is_none() {
-            return Err(ResourceActivationError::NoPending);
-        }
+        self.apply_manifest_settlement(ResourceManifestSettlementKind::RetryableFailure)?;
         let error = error.into();
         for activation in self.activations.iter_mut().filter(|activation| {
             activation.revision == self.revision && activation.state == ActivationState::Prepared
@@ -386,9 +571,7 @@ impl SessionResourceState {
     /// Complete a successful rollback to the previously active manifest.
     pub fn rollback(&mut self, error: impl Into<String>) -> Result<(), ResourceActivationError> {
         let active_revision = self.active_revision();
-        self.pending
-            .take()
-            .ok_or(ResourceActivationError::NoPending)?;
+        self.apply_manifest_settlement(ResourceManifestSettlementKind::Rollback)?;
         self.committed_revision = Some(active_revision);
         let error = error.into();
         for activation in &mut self.activations {
@@ -524,9 +707,15 @@ impl SessionResourceState {
     /// phase uses this lookup; the attempted watermark alone grants nothing.
     #[must_use]
     pub fn retained_generation(&self, revision: u64) -> Option<&ResolvedSessionResources> {
-        [self.active_generation(), self.desired_generation()]
-            .into_iter()
-            .find_map(|(current, resources)| (current == revision).then_some(resources))
+        match retained_resource_generation_slot(
+            self.active_revision(),
+            self.pending.as_ref().map(|_| self.revision),
+            revision,
+        ) {
+            Some(RetainedResourceGenerationSlot::Active) => Some(&self.active),
+            Some(RetainedResourceGenerationSlot::Pending) => self.pending.as_ref(),
+            None => None,
+        }
     }
 
     #[must_use]

@@ -509,6 +509,7 @@ struct RecordingCleanupRuntime {
     terminal_assignments: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupAssignment>>,
     acknowledged_effects: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupEffect>>,
     acknowledged_completed: Mutex<Vec<(String, awaken_session_contract::SessionRealizationLease)>>,
+    ordinary_resource_apply_calls: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -1287,6 +1288,16 @@ impl SessionRuntime for RecordingCleanupRuntime {
         mode: awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
         install_complete_test_projection(self, thread, projection, mode).await
+    }
+
+    async fn apply_session_inputs(
+        &self,
+        _thread: &str,
+        _transition: &awaken_session_contract::SessionResourceTransition,
+    ) -> Result<(), RunError> {
+        self.ordinary_resource_apply_calls
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     async fn quiesce_terminal_delegations(

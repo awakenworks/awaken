@@ -19,10 +19,12 @@ use super::{
 };
 
 mod materialization_authorization;
+mod ordinary_reconciliation_gate;
 mod purge_guard;
 mod repository_reference;
 mod terminal_cleanup;
 
+use ordinary_reconciliation_gate::ordinary_resource_reconciliation_allowed;
 pub use purge_guard::SessionResourcePurgeGuard;
 use purge_guard::resource_targets;
 use repository_reference::{
@@ -1486,7 +1488,10 @@ impl SessionApplication {
             };
         }
         let session_id = session.session_id.clone();
-        if session.execution == SessionExecutionState::Idle && !session.is_terminal() {
+        if ordinary_resource_reconciliation_allowed(
+            session.is_terminal(),
+            session.execution == SessionExecutionState::Idle,
+        ) {
             if let Some(desired) = session.resources.pending.clone() {
                 let previous = session.resources.active.clone();
                 let previous_revision = session.resources.active_revision();

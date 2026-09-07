@@ -32,6 +32,7 @@ struct EventBatchRuntime {
     states: Mutex<HashMap<String, RunState>>,
     latest_run: Mutex<Option<RunId>>,
     committed: Mutex<Vec<Message>>,
+    recovery_projection_override: Mutex<Option<(Vec<u64>, u64)>>,
     trace: Mutex<Vec<String>>,
     outcomes: Mutex<BTreeMap<String, (String, String, u32)>>,
     outcome_commit_cursors: Mutex<BTreeMap<String, u64>>,
@@ -97,6 +98,11 @@ impl EventBatchRuntime {
 
     fn committed_message_projection(&self) -> (Vec<Message>, Vec<u64>, u64) {
         let messages = self.committed.lock().unwrap().clone();
+        if let Some((cursors, store_cursor)) =
+            self.recovery_projection_override.lock().unwrap().clone()
+        {
+            return (messages, cursors, store_cursor);
+        }
         let message_commit_cursors = (0..messages.len())
             .map(|index| index as u64 + 1)
             .collect::<Vec<_>>();
@@ -709,12 +715,240 @@ async fn unreplayed_user_run_anchors_its_receipt_without_inventing_a_message() {
 }
 
 #[tokio::test]
+async fn running_input_requires_exact_content_and_a_valid_committed_coordinate() {
+    // Decision table over recovery evidence: I1 absent/foreign identity ->
+    // pending without anchor; I2 exact identity + wrong role/content -> error;
+    // I3 exact content + zero/future/unaligned cursor -> error; I4 exact valid
+    // identity/content/cursor -> anchor only. Every row preserves the command,
+    // performs no new Run admission, and never marks it processed.
+    for evidence in [
+        "missing",
+        "foreign",
+        "wrong_role",
+        "wrong_content",
+        "zero",
+        "future",
+        "unaligned",
+        "valid",
+    ] {
+        let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        );
+        let session_id = "running-input-evidence";
+        let session = planned_session(
+            session_id,
+            vec![SessionEventInput::UserMessage {
+                content: vec![ContentBlock::text("original")],
+            }],
+        );
+        let (run_id, operation_id) = match &session.event_batches[0].events[0].event {
+            SessionEventCommand::UserMessage {
+                run_id,
+                operation_id,
+                ..
+            } => (run_id.clone(), operation_id.clone()),
+            _ => unreachable!(),
+        };
+        create(repository.as_ref(), session).await;
+        let runtime = Arc::new(EventBatchRuntime::default());
+        runtime
+            .states
+            .lock()
+            .unwrap()
+            .insert(run_id.0.clone(), RunState::Running);
+        *runtime.latest_run.lock().unwrap() = Some(run_id);
+        if evidence != "missing" {
+            runtime.committed.lock().unwrap().push(Message::new(
+                if evidence == "foreign" {
+                    MessageId("other".into())
+                } else {
+                    MessageId::session_event_input(session_id, &operation_id)
+                },
+                if evidence == "wrong_role" {
+                    Role::Assistant
+                } else {
+                    Role::User
+                },
+                vec![ContentBlock::text(if evidence == "wrong_content" {
+                    "changed"
+                } else {
+                    "original"
+                })],
+            ));
+        }
+        *runtime.recovery_projection_override.lock().unwrap() = match evidence {
+            "zero" => Some((vec![0], 1)),
+            "future" => Some((vec![2], 1)),
+            "unaligned" => Some((vec![], 1)),
+            _ => None,
+        };
+        let app = application_with_runtime(
+            runtime.clone(),
+            repository.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let outcome = app.drive_session_event_batches(session_id, None).await;
+        assert_eq!(
+            outcome.is_ok(),
+            matches!(evidence, "missing" | "foreign" | "valid"),
+            "{evidence}"
+        );
+        let root = repository.get(session_id).await.unwrap();
+        let entry = &root.event_batches[0].events[0];
+        assert_eq!(
+            entry.projection_anchor.is_some(),
+            evidence == "valid",
+            "{evidence}"
+        );
+        assert!(
+            !entry.processed && entry.processed_at_unix_ms.is_none(),
+            "{evidence}"
+        );
+        assert!(
+            runtime.reserved.lock().unwrap().is_empty()
+                && runtime.activated.lock().unwrap().is_empty(),
+            "{evidence}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn running_input_anchor_recovers_root_write_faults_without_reexecution() {
+    // Causes: C1 exact input committed while R is Running; C2 root CAS normal,
+    // unavailable before commit, or applied with lost acknowledgement; C3 two
+    // cold supervisors race; C4 R subsequently reaches Awaiting. Effects:
+    // E1 only visibility advances, no processed time or next User activation;
+    // E2 failed CAS retains pending input, retries preserve the first anchor;
+    // E3 exact replay is revision-inert; E4 only C4 completes the input.
+    // Decision rules: R1=C1+normal -> E1; R2=C1+unavailable -> E2;
+    // R3=C1+lost ack -> E1+E2; R4=R1-R3+C3 -> E1-E3; R5=R4+C4 -> E4.
+    for fault in ["none", "unavailable", "lost_ack"] {
+        let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        );
+        let faulting = Arc::new(FaultingSessionRepository::new(repository.clone()));
+        let session_id = "running-input-anchor";
+        let mut session = planned_session(
+            session_id,
+            vec![
+                SessionEventInput::UserMessage {
+                    content: vec![ContentBlock::text("first")],
+                },
+                SessionEventInput::UserMessage {
+                    content: vec![ContentBlock::text("queued")],
+                },
+            ],
+        );
+        // The original create wake has already handed activity to the Run.
+        session.event_batches[0].wake_activity_epoch = None;
+        let (run_id, operation_id) = match &session.event_batches[0].events[0].event {
+            SessionEventCommand::UserMessage {
+                run_id,
+                operation_id,
+                ..
+            } => (run_id.clone(), operation_id.clone()),
+            _ => unreachable!(),
+        };
+        create(repository.as_ref(), session).await;
+        let runtime = Arc::new(EventBatchRuntime::default());
+        runtime
+            .states
+            .lock()
+            .unwrap()
+            .insert(run_id.0.clone(), RunState::Running);
+        *runtime.latest_run.lock().unwrap() = Some(run_id.clone());
+        runtime.committed.lock().unwrap().push(Message::new(
+            MessageId::session_event_input(session_id, &operation_id),
+            Role::User,
+            vec![ContentBlock::text("first")],
+        ));
+        let app = application_with_runtime(
+            runtime.clone(),
+            faulting.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        match fault {
+            "unavailable" => faulting.fail_once("anchor-event-input"),
+            "lost_ack" => faulting.commit_then_conflict_once("anchor-event-input"),
+            _ => {}
+        }
+        let first = app.drive_session_event_batches(session_id, None).await;
+        assert_eq!(first.is_err(), fault == "unavailable", "R1-R3/{fault}");
+        let observed = repository.get(session_id).await.unwrap();
+        assert_eq!(
+            observed.event_batches[0].events[0]
+                .projection_anchor
+                .is_some(),
+            fault != "unavailable"
+        );
+        let cold = application_with_runtime(
+            runtime.clone(),
+            repository.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let (a, b) = tokio::join!(
+            app.drive_session_event_batches(session_id, None),
+            cold.drive_session_event_batches(session_id, None)
+        );
+        a.unwrap();
+        b.unwrap();
+        let anchored = repository.get(session_id).await.unwrap();
+        assert_eq!(
+            anchored.event_batches[0].events[0]
+                .projection_anchor
+                .unwrap()
+                .source_commit_cursor,
+            1,
+            "R4"
+        );
+        assert!(
+            anchored.event_batches[0]
+                .events
+                .iter()
+                .all(|entry| !entry.processed && entry.processed_at_unix_ms.is_none()),
+            "R4/E1"
+        );
+        assert!(
+            runtime.reserved.lock().unwrap().is_empty()
+                && runtime.activated.lock().unwrap().is_empty(),
+            "R4 no duplicate or successor execution"
+        );
+        cold.drive_session_event_batches(session_id, None)
+            .await
+            .unwrap();
+        assert_eq!(repository.get(session_id).await.unwrap(), anchored, "R4/E3");
+        runtime.await_run(&run_id);
+        cold.drive_session_event_batches(session_id, None)
+            .await
+            .unwrap();
+        let completed = repository.get(session_id).await.unwrap();
+        assert!(completed.event_batches[0].events[0].processed, "R5");
+        assert!(
+            completed.event_batches[0].events[0]
+                .processed_at_unix_ms
+                .is_some(),
+            "R5"
+        );
+        assert_eq!(
+            completed.event_batches[0].events[0].projection_anchor,
+            anchored.event_batches[0].events[0].projection_anchor,
+            "R5 immutable order"
+        );
+        assert!(
+            !completed.event_batches[0].events[1].processed,
+            "R5 awaiting still blocks next User"
+        );
+    }
+}
+
+#[tokio::test]
 async fn unreplayed_receipt_requires_its_exact_terminal_user_run() {
     // Public reconciliation decision table: A1 exact R Indeterminate and no
     // Message => User anchors at terminal cursor; A2 another Run Indeterminate
     // but R Running/Awaiting => User stays pending without its Message;
     // A3 R Awaiting/Indeterminate with committed input => exact Message cursor
-    // wins over the later store cursor; Running still waits. A4 the paired
+    // wins over the later store cursor; Running anchors committed input but
+    // stays unprocessed (no FIFO release or completion timestamp). A4 the paired
     // System Message is absent => System remains pending in every row. This
     // exercises the public coordinator without widening production visibility.
     for state in [
@@ -798,8 +1032,13 @@ async fn unreplayed_receipt_requires_its_exact_terminal_user_run() {
             );
             assert_eq!(
                 entries[0].projection_anchor.map(|a| a.source_commit_cursor),
-                processed.then_some(1),
+                (processed || committed_input).then_some(1),
                 "A1/A3 terminal or original Message, never later cursor 2"
+            );
+            assert_eq!(
+                entries[0].processed_at_unix_ms.is_some(),
+                processed,
+                "A3 committed input is visibility evidence, not Run completion"
             );
             assert!(
                 !entries[1].processed,

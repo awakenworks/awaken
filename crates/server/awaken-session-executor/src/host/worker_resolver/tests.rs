@@ -1452,13 +1452,15 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
     // cold requirements and exact desired-only replay does not publish an
     // active manifest; E2 physical create publishes generation 0; E3 a
     // desired-only replacement fails with no logical/physical change; E4 the
-    // exact transition removes the File before publishing generation 2.
+    // exact transition removes the File, clears every logical Runtime
+    // projection, performs no target activation, and only then publishes
+    // generation 2.
     //
     // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
     // | F1 | T | yes | exact | n/a | F | E1 |
     // | F2 | T | yes | exact | yes | T | E2 |
     // | F3 | F | n/a | different | no | T | E3 |
-    // | F4 | F | n/a | n/a | yes | T | E4 |
+    // | F4 | F | n/a | n/a | yes | T | E4: physical + logical revocation |
     // Workdir remains correctly ineligible for F1's immutability requirement.
     raw_host.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
@@ -1602,6 +1604,27 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         host.thread_resource_manifest("thread-cold-resource"),
         Some(cleared),
         "F4 publishes generation 2 only after realization"
+    );
+    let empty_projection = host
+        .session_slots
+        .read("thread-cold-resource", |slot| {
+            (
+                slot.resources.mounts.is_empty(),
+                slot.resources.prompts.is_empty(),
+                slot.resources.resource_prompts.is_empty(),
+                slot.resources.binding_checks.is_empty(),
+                slot.resources.repositories.is_empty(),
+                slot.memory_bindings.is_empty(),
+                slot.memory.is_none(),
+                slot.skills.as_ref().is_some_and(Vec::is_empty),
+                slot.runtime.is_none(),
+            )
+        })
+        .expect("F4 canonical Session slot");
+    assert_eq!(
+        empty_projection,
+        (true, true, true, true, true, true, true, true, true),
+        "F4 explicit empty is a complete Runtime revocation, not absent input"
     );
 }
 
