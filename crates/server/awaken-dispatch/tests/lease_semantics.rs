@@ -436,6 +436,186 @@ async fn expired_opaque_acp_claim_is_indeterminate_without_prompt_replay() {
     assert_eq!(store.dispatch_count(), 0, "A1 settled Done");
 }
 
+struct RecoverySettlementObserver<S> {
+    calls: std::sync::atomic::AtomicUsize,
+    store: Arc<S>,
+}
+
+#[async_trait::async_trait]
+impl<S: awaken_dispatch::Dispatch + 'static> awaken_dispatch::DispatchSettlementObserver
+    for RecoverySettlementObserver<S>
+{
+    async fn before_settle(
+        &self,
+        _: &RunDispatch,
+        _: &RunClaim,
+        _: &RunState,
+        _: bool,
+    ) -> Result<(), awaken_dispatch::DispatchSettlementError> {
+        // R6 a Session callback may re-enter Dispatch to report/interrupt.
+        // Holding its aggregate lock across this callback deadlocks. The outer
+        // bounded tick checks completion, while this query exercises that edge.
+        assert_eq!(self.store.list_dispatches().await.unwrap().len(), 1);
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+// Cause/effect table R2/R4/R5: an actual predecessor slot survives lease
+// expiry or cancellation. Opaque recovery, and either backend's cancellation,
+// must expose Indeterminate without entering another executor. The committed
+// result must not clear the physical slot or consume the dispatch; only the
+// exact predecessor ACK permits a later terminal reconciliation. Native ordinary
+// recovery remains the adjacent wait-for-quiescence test's responsibility.
+async fn assert_occupied_attempt_terminal_recovery<S: awaken_dispatch::Dispatch + 'static>(
+    store: Arc<S>,
+    acp_backend: bool,
+    cancel: bool,
+    coordinated: bool,
+) {
+    let (runtime, infers) = counting_text_runtime();
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let mut request = activation("occupied-recovery");
+    let run = request.run_id.clone();
+    if acp_backend {
+        let mut binding = request
+            .snapshot
+            .resolved_spec
+            .model_binding
+            .binding()
+            .clone();
+        binding.backend_ref = "acp:claude".into();
+        request.snapshot.resolved_spec.model_binding =
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
+    }
+    let request = RunDispatch::new(request);
+    if coordinated {
+        store
+            .enqueue_session_child(
+                request
+                    .for_session(ThreadId("parent".into()))
+                    .with_session_activity_epoch(1),
+                awaken_dispatch::SessionChildAdmission::new(25, Vec::new()),
+            )
+            .await
+            .unwrap();
+    } else {
+        store.enqueue(request).await.unwrap();
+    }
+    let first = store
+        .claim("owner-a", LEASE, 0, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let predecessor = RunClaim::from(&first.lease);
+    assert_eq!(
+        store.begin_attempt(&predecessor, 0).await.unwrap(),
+        AttemptAdmission::Applied
+    );
+    if cancel {
+        store
+            .cancel(&run)
+            .await
+            .unwrap()
+            .expect("durable cancellation");
+    }
+    let observer = Arc::new(RecoverySettlementObserver {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        store: store.clone(),
+    });
+    let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b")
+        .with_lease_ms(LEASE)
+        .with_settlement_observer(observer.clone());
+    assert_eq!(
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            worker.tick(harness::clock(LEASE + 1))
+        )
+        .await
+        .expect("R2/R4 logical outcome cannot wait for physical ACK")
+        .expect("terminal commit"),
+        None,
+        "physical settlement remains pending"
+    );
+    assert_eq!(
+        CommittedThreadView::run(commit.as_ref(), &run)
+            .unwrap()
+            .state,
+        RunState::Ended(EndCause::Indeterminate)
+    );
+    assert_eq!(
+        infers.load(Ordering::SeqCst),
+        0,
+        "no prompt or cancel replay"
+    );
+    assert_eq!(
+        store.list_dispatches().await.unwrap().len(),
+        1,
+        "retain physical authority"
+    );
+    assert_eq!(
+        observer.calls.load(Ordering::SeqCst),
+        0,
+        "R2 no premature Session boundary"
+    );
+    assert_eq!(
+        store.finish_attempt(&predecessor).await.unwrap(),
+        awaken_dispatch::SettleOutcome::Applied
+    );
+    assert_eq!(
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            worker.tick(harness::clock(3 * LEASE))
+        )
+        .await
+        .expect("R6 Session callback may re-enter Dispatch")
+        .unwrap(),
+        Some((run, RunState::Ended(EndCause::Indeterminate)))
+    );
+    assert!(store.list_dispatches().await.unwrap().is_empty());
+    assert_eq!(
+        infers.load(Ordering::SeqCst),
+        0,
+        "R5 terminal repair never executes"
+    );
+    assert_eq!(
+        observer.calls.load(Ordering::SeqCst),
+        usize::from(coordinated)
+    );
+}
+
+#[tokio::test]
+async fn occupied_attempt_recovery_memory() {
+    // Backend row M: run every legal R2/R4 combination through the same oracle.
+    for (acp, cancel) in [(true, false), (true, true), (false, true)] {
+        for coordinated in [false, true] {
+            assert_occupied_attempt_terminal_recovery(
+                Arc::new(MemoryDispatchStore::new()),
+                acp,
+                cancel,
+                coordinated,
+            )
+            .await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn occupied_attempt_recovery_sqlite() {
+    // Backend row S: SQL persistence must preserve the same logical/physical split.
+    for (acp, cancel) in [(true, false), (true, true), (false, true)] {
+        for coordinated in [false, true] {
+            assert_occupied_attempt_terminal_recovery(
+                Arc::new(SqliteDispatchStore::open_in_memory().unwrap()),
+                acp,
+                cancel,
+                coordinated,
+            )
+            .await;
+        }
+    }
+}
+
 #[tokio::test]
 async fn committed_terminal_truth_dominates_opaque_acp_recovery() {
     // This is decision-table rule A2 from the preceding cause/effect graph:

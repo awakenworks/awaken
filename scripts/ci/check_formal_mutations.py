@@ -909,6 +909,28 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
     print("Production observation trace mutation score: 4/4 killed")
 
 def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
+    # Worker fault matrix W1 registry-only renewal; W2 evidence-only renewal;
+    # W3 delayed probe success. Removing either expiry lane or erasing request
+    # latency must violate its exact invariant; first establish the green model.
+    source = (ROOT / "formal/tla/WorkerAuthorityEvidence.tla").read_text()
+    config = (ROOT / "formal/tla/WorkerAuthorityEvidence.cfg").read_text()
+    expiry = "(registryAge' < Window /\\ evidenceAge' < Window)"
+    check_tlc_model_mutations(tlc_jar, "WorkerAuthorityEvidence", source, config, [
+        (source.replace(expiry, "(registryAge' < Window)", 1), config, "BothProofsRequired"),
+        (source.replace(expiry, "(evidenceAge' < Window)", 1), config, "BothProofsRequired"),
+        (source.replace("evidenceAge' = probeAge", "evidenceAge' = 0", 1), config, "ProbeLatencyIncluded"),
+    ])
+    # W4 drain request + fair completion/ack progress => acknowledgement.
+    # Reopening admission after acknowledgement must violate the existing fence.
+    source = (ROOT / "formal/tla/WorkerDrain.tla").read_text()
+    config = (ROOT / "formal/tla/WorkerDrain.cfg").read_text()
+    check_tlc_model_mutations(tlc_jar, "WorkerDrain", source, config, [
+        (source.replace('RepeatDrain == /\\ drainRequested /\\ gate = "Closed"\n               /\\ UNCHANGED vars',
+                        'RepeatDrain == /\\ drainRequested /\\ gate = "Closed"\n'
+                        '               /\\ gate\' = "Open"\n'
+                        '               /\\ UNCHANGED <<claimInProgress, claimAttempts, claims, drainRequested, registryState, drainAcknowledged, attemptsAtRegistryDrain, claimsAtDrain>>'),
+         config, "RegistryDrainFollowsLocalFence"),
+    ])
     # C1 restore timeout-as-observer-drop; C2 TERM-as-ACK; C3 crash-as-ACK;
     # C4 first-target-as-complete-fanout. Each mutant must fail its independent
     # invariant after a green baseline, never a syntax/build/infrastructure error.
@@ -937,7 +959,26 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "ManagedCredentialRollout", source, config, [
         (mutant, config, "AdoptionCoversEveryNamedFence"),
     ])
-    print("Cowork lifecycle mutation score: 5/5 killed (timeout, signal, duplex, crash, partial adoption)")
+    # R2/R4/R7/R8: logical termination, partial source preparation and partial
+    # physical cleanup cannot become a full cleanup receipt. Each mutant must
+    # violate the named evidence invariant, not merely fail parsing or tooling.
+    source = (ROOT / "formal/tla/SessionDeletion.tla").read_text()
+    config = (ROOT / "formal/tla/SessionDeletion.cfg").read_text().replace(
+        "    DeleteSafety", "    PhysicalEvidenceRequired\n    DeleteSafety")
+    prepare = source[source.index("PrepareParticipant(participant, effect) =="):source.index("RemoveTarget(target, effect) ==")]
+    remove = source[source.index("RemoveTarget(target, effect) =="):source.index("Next ==")]
+    success = source[source.index("CleanupSucceeds =="):source.index("CommitTombstone ==")]
+    check_tlc_model_mutations(tlc_jar, "SessionDeletion", source, config, [
+        (source.replace(prepare, prepare.replace("~physicalActive /\\ effect", "effect", 1)),
+         config, "PhysicalEvidenceRequired"),
+        (source.replace(remove, remove.replace("~physicalActive /\\ prepared = Participants", "TRUE", 1)),
+         config, "PhysicalEvidenceRequired"),
+        (source.replace(success, success.replace("removedTargets = PhysicalTargets", "removedTargets # {}", 1)),
+         config, "PhysicalEvidenceRequired"),
+        (source.replace(success, success.replace("/\\ ~physicalActive /\\ prepared = Participants\n                         /\\ removedTargets = PhysicalTargets", "", 1)),
+         config, "PhysicalEvidenceRequired"),
+    ], dependencies=("SessionCleanupKernel",))
+    print("Cowork lifecycle mutation score: 13/13 killed (worker evidence 3, drain 1, ACP/composition/rollout 5, cleanup evidence 4)")
 
 
 def check_observation_rule_mutants(trace_dir: Path, manifest: dict) -> None:

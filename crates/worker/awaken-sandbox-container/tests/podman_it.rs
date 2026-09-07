@@ -5,6 +5,8 @@
 //! Run with: `cargo test -p awaken-sandbox-container --features podman --test podman_it`
 #![cfg(feature = "podman")]
 
+#[path = "common/disposal.rs"]
+mod disposal;
 #[path = "common/host_staging.rs"]
 mod host_staging;
 #[path = "common/process.rs"]

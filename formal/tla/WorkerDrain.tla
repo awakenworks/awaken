@@ -80,4 +80,9 @@ NoClaimAttemptAfterRegistryDrain ==
     registryState = "Draining" => claimAttempts = attemptsAtRegistryDrain
 
 Spec == Init /\ [][Next]_vars
+\* F3 a requested drain converges if in-flight claims and the existing drain
+\* acknowledgements can progress. Permanent I/O failure is outside this bound.
+ProgressSpec == Spec /\ WF_vars(FinishClaim) /\ WF_vars(CloseAdmission)
+                    /\ WF_vars(PublishRegistryDrain) /\ WF_vars(AcknowledgeDrain)
+DrainEventuallyAcknowledged == drainRequested ~> drainAcknowledged
 =============================================================================

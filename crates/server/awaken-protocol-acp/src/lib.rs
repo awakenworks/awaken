@@ -29,6 +29,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 /// the duplicated server/tool identity exactly matches the protocol title;
 /// otherwise retain the whole value so malformed or substituted input cannot
 /// borrow another tool's permission.
+#[cfg(feature = "real-acp")]
 fn exact_mcp_tool_arguments(name: &str, input: &serde_json::Value) -> serde_json::Value {
     let Some(identity) = name.strip_prefix("mcp.") else {
         return input.clone();
@@ -924,8 +925,8 @@ mod tests {
     /// Records the launch lifecycle events emitted for a scope — the otherwise
     /// untested `LaunchObserver`/`LaunchSink`/`notify_launch` observability seam.
     #[derive(Default)]
-    struct RecordingLaunch {
-        events: Mutex<Vec<(String, AcpLaunchEvent)>>,
+    pub(crate) struct RecordingLaunch {
+        pub(crate) events: Mutex<Vec<(String, AcpLaunchEvent)>>,
     }
 
     impl LaunchObserver for RecordingLaunch {

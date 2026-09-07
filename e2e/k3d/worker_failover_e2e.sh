@@ -4,9 +4,10 @@
 # Topology: ONE pool-less brain COORDINATOR (queues to shared Postgres, runs no local
 # pool) + a FLEET of 2 database-less workers draining over the HTTP worker transport.
 # We submit a batch of durable runs, DELETE one worker pod mid-drain, and prove the
-# surviving worker reclaims the crashed worker's in-flight + pending runs and drives
-# every one to a committed reply — no run lost, exactly-once (the commit fence rejects
-# a stale re-commit). This is the worker-topology twin of `failover_e2e.sh` (which
+# replacement worker must reclaim the crashed worker's in-flight + pending runs and drive
+# every one to one committed reply. The held-inference rule is a regression
+# gate: missing predecessor quiescence currently prevents this automatic recovery.
+# A random Pod deletion without the barrier cannot establish this claim. This is the worker-topology twin of `failover_e2e.sh` (which
 # fails over a BRAIN fleet); it exercises the db-less worker's HTTP claim/commit path
 # and the commit fence under a real pod kill.
 #
@@ -69,8 +70,9 @@ BASE() { echo "http://127.0.0.1:$LOCAL_PORT"; }
 # Submit one durable run on its own thread; echo the run_id (or empty on failure).
 submit_one() {
   local thread="$1"
+  local text="${2:-hello}"
   curl -fsS -X POST "$(BASE)/v1/durable/threads/$thread/submit_background" \
-    -H 'content-type: application/json' -d '{"text":"hello"}' 2>/dev/null \
+    -H 'content-type: application/json' -d "{\"text\":\"$text\"}" 2>/dev/null \
     | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('run_id','') if d.get('queued') else '')" 2>/dev/null || true
 }
 
@@ -128,20 +130,61 @@ fi
 pf_brain
 
 log "6/6 submit a batch, kill a worker mid-drain, verify every run still commits"
-threads=()
+# W5 no owned inference observation => do not kill a random idle Pod and
+# report recovery. W6 the exact admitted Run is held before response/commit;
+# killing that owner must cause a DIFFERENT Pod to enter the same barrier.
+# W7 release after observing replacement => exactly one committed reply. This
+# proves model/commit recovery, not exactly-once arbitrary external side effects.
+threads=(wf-held)
+held_run=$(submit_one wf-held worker-fault:wf-held)
+[ -n "$held_run" ] || { err 'held run submission failed'; exit 1; }
+victim=""
+deadline=$(( $(date +%s) + 90 ))
+while [ -z "$victim" ]; do
+  for pod in $(kubectl -n "$NS" get pods -l app=worker -o jsonpath='{.items[*].metadata.name}'); do
+    if kubectl -n "$NS" exec "$pod" -- cat /tmp/worker-fault/wf-held.entered 2>/dev/null | grep -qx 'worker-fault:wf-held'; then
+      victim="$pod"; break
+    fi
+  done
+  [ "$(date +%s)" -le "$deadline" ] || { err 'no Worker reached the held inference'; exit 1; }
+  [ -n "$victim" ] || sleep 1
+done
+[ "$(reply_count wf-held)" -eq 0 ] || { err 'held Run already committed before crash'; exit 1; }
+ok "fault barrier reached: run=$held_run owner=$victim"
 for i in $(seq 1 "$BATCH"); do
   t="wf-thread-$i"
   rid=$(submit_one "$t")
   [ -n "$rid" ] || { err "submit $t failed"; exit 1; }
   threads+=("$t")
 done
-ok "submitted $BATCH durable runs to the coordinator"
+ok "submitted $BATCH ordinary runs plus one held Run to the coordinator"
 
 # Kill ONE worker pod while the fleet is draining — a real worker crash. Its in-flight
 # claim + any unclaimed work must be recovered by the surviving worker.
-victim=$(kubectl -n "$NS" get pods -l app=worker -o jsonpath='{.items[0].metadata.name}')
-kubectl -n "$NS" delete pod "$victim" --grace-period=0 --force >/dev/null 2>&1 || true
+kubectl -n "$NS" delete pod "$victim" --grace-period=0 --force >/dev/null
 ok "killed worker pod $victim mid-drain"
+
+replacement=""
+deadline=$(( $(date +%s) + 120 ))
+while [ -z "$replacement" ]; do
+  for pod in $(kubectl -n "$NS" get pods -l app=worker -o jsonpath='{.items[*].metadata.name}'); do
+    [ "$pod" != "$victim" ] || continue
+    if kubectl -n "$NS" exec "$pod" -- cat /tmp/worker-fault/wf-held.entered 2>/dev/null | grep -qx 'worker-fault:wf-held'; then
+      replacement="$pod"; break
+    fi
+  done
+  if [ "$(date +%s)" -gt "$deadline" ]; then
+    err 'no replacement resumed the held Run'
+    kubectl -n "$NS" get pods -o wide || true
+    kubectl -n "$NS" logs -l app=worker --tail=60 || true
+    kubectl -n "$NS" logs deploy/brain --tail=30 || true
+    exit 1
+  fi
+  [ -n "$replacement" ] || sleep 1
+done
+[ "$(reply_count wf-held)" -eq 0 ] || { err 'replacement committed before release'; exit 1; }
+kubectl -n "$NS" exec "$replacement" -- touch /tmp/worker-fault/release
+ok "replacement barrier reached: run=$held_run old=$victim new=$replacement"
 
 # Every run must eventually commit exactly one assistant reply (survivor drains all,
 # recovering the crashed worker's in-flight run via lease expiry + fenced re-claim).

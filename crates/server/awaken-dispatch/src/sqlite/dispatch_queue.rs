@@ -1441,10 +1441,10 @@ impl DispatchQueue for SqliteDispatchStore {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(store_error)?;
-            let authority: Option<(String, Option<String>, i64, i64, String, Option<i64>)> = tx
+            let authority: Option<(String, Option<String>, i64, i64, String, Option<i64>, Option<String>)> = tx
                 .query_row(
                     &format!(
-                        "SELECT status, lease_owner, lease_epoch, cancel_requested, request, active_attempt_epoch \
+                        "SELECT status, lease_owner, lease_epoch, cancel_requested, request, active_attempt_epoch, active_attempt_owner \
                          FROM {p}_dispatch WHERE run_id = ?1"
                     ),
                     params![run_id],
@@ -1456,18 +1456,21 @@ impl DispatchQueue for SqliteDispatchStore {
                             row.get(3)?,
                             row.get(4)?,
                             row.get(5)?,
+                            row.get(6)?,
                         ))
                     },
                 )
                 .optional()
                 .map_err(store_error)?;
-            let Some((status, owner, persisted_epoch, cancellation_requested, request_json, active_attempt)) =
+            let Some((status, owner, persisted_epoch, cancellation_requested, request_json, active_attempt, attempt_owner)) =
                 authority
             else {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
             };
-            if active_attempt.is_some() {
+            if !awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
+                attempt_owner.is_some(), active_attempt.is_some(), false, false,
+            ).permits_settlement() {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
             }

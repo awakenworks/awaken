@@ -81,7 +81,9 @@ Worker registers and becomes ready
 
 A retry-exhausted claim bypasses execution placement and materialization. The
 Worker uses the same claim-fenced commit transport to append
-`Ended(Indeterminate)` and then the same `Done` settlement/tombstone. The
+`Ended(Indeterminate)` and attempts the same `Done` settlement/tombstone.
+Logical completion does not prove physical quiescence: an occupied predecessor
+slot retains the dispatch until its exact return acknowledgement arrives. The
 Coordinator-owned clock and retry limit select this claim; a remote Worker never
 supplies either value.
 
@@ -111,6 +113,39 @@ row remains unchanged; the first Worker tick resolves it before ordinary work.
 - after terminal commit, before settle: terminal repair reuses committed truth;
 - after Session realization ownership loss: process-local projection is revoked,
   while durable Session truth remains unchanged.
+
+### Logical outcome and physical completion
+
+The existing `PhysicalAttemptSlot` reducer owns physical settlement permission;
+Memory, SQLite and PostgreSQL classify both persisted owner/epoch columns through
+it. The existing exact-claim guard carries that same row's classification to
+local and HTTP pre-settlement observers. An occupied or torn slot rejects Session
+boundary effects, extraction and Work release before they execute. Queue
+settlement rechecks the same rule atomically. Session callbacks may re-enter
+Dispatch, so their admitted exact/idempotent command runs after releasing the
+Dispatch lock; the final queue CAS remains epoch-fenced.
+
+A recovered opaque ACP Run commits `Indeterminate` without prompt replay, including
+when cancellation was also requested. A cancelled Native Run blocked by an
+unconfirmed predecessor can commit the same logical outcome without entering
+another executor. Ordinary Native recovery still waits for predecessor quiescence.
+Neither logical cancellation, process/Pod death, lease expiry nor future Drop
+manufactures a physical ACK. Permanent absence of an authoritative return receipt
+therefore remains a blocked physical outcome, not successful automatic recovery.
+
+Cold Docker/Podman terminal preparation reuses the existing exact staging-root
+adoption and frozen Memory/Secret participant reconstruction. It does not perform
+ordinary reactivation. Missing roots, invalid mounts or unavailable required
+participants fail closed before removal. Source preparation precedes idempotent
+physical disposal; observing the container alone is not a complete cleanup receipt.
+
+The executable cause/effect rules live beside `lease_semantics`, the shared
+Dispatch recovery history, signed/unsigned HTTP settlement tests and container
+host-staging tests. Existing Kani slot harnesses cover empty/occupied/torn
+classification. `SessionDeletion` composes the existing cleanup kernel with
+quiescence, participant preparation and both physical removal targets. Its
+liveness assumes an eventual actual return and recoverable participants; the
+finite model does not verify OS mount identity or provider cancellation APIs.
 
 ## 7. Authentication and consistency
 

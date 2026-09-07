@@ -201,10 +201,17 @@ type checking are valuable executable evidence, but are not formal proofs.
   strings or the whole middleware/token/policy path.
 - `WorkerAuthorityEvidence.tla` checks independent registry/evidence lanes,
   conservative request-start freshness, absorbing expiry and conditional
-  eventual closure when environment proofs stop. Its window is four ticks and
+  eventual closure when either environment proofs or registry renewals stop.
+  Probe latency is explicitly retained in the evidence age; three mutation
+  tests reject deletion of either expiry lane or request latency. Its window is four ticks and
   it assumes fair time advancement and atomic local fencing. Actual Tokio
   timers, provider policy truth, startup I/O and physical cancellation remain
   executable-test/TCB boundaries; no Rust-to-model refinement is claimed.
+  `WorkerDrain.tla` additionally checks eventual acknowledgement under weak
+  fairness of claim completion, local admission closure, registry publication
+  and acknowledgement; permanent I/O failure is excluded. Its drain-reopening
+  mutant is rejected. These models do not establish recovery of an abandoned
+  external physical attempt or cold reconstruction of host-bind participants.
 - Worker credentials, ACP capabilities and their refresh generation now share
   one atomic observation snapshot. Initial and periodic heartbeats freeze that
   snapshot once before projecting wire fields; independent getters and the

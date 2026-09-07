@@ -131,3 +131,120 @@ pub(super) async fn handshake_step<T>(
             ))
         })?
 }
+
+/// Validate the pinned capability and apply the exact Session configuration.
+/// The public driver tests cover unsupported selections and their wire effects.
+pub(super) async fn configure_session(
+    wire: &mut Wire<'_>,
+    sink: &mut dyn RunFactAppender,
+    seq: &mut u64,
+    config: &mut crate::TurnConfig<'_>,
+    session_id: &agent_client_protocol::SessionId,
+    negotiated: &NegotiatedAcpCapabilities,
+    supports_session_model: bool,
+) -> Result<(), AcpError> {
+    use super::{ID_SET_CONFIG_OPTION, ID_SET_MODE, ID_SET_MODEL};
+    use agent_client_protocol::{
+        SessionModeId, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse,
+        SetSessionModeRequest, SetSessionModelRequest, SetSessionModelResponse,
+    };
+    let resolver = config.resolver;
+    if let Some(expected) = &config.expected_capability {
+        let actual = awaken_acp_contract::capability_fingerprint(
+            &expected.adapter_id,
+            &expected.adapter_version,
+            negotiated,
+        );
+        if actual != expected.fingerprint {
+            return Err(AcpError::Frame(
+                "ACP capability fingerprint changed after publication".into(),
+            ));
+        }
+    }
+    let available_modes = negotiated
+        .modes
+        .iter()
+        .map(|mode| mode.native_id.clone())
+        .collect::<Vec<_>>();
+    let available_config_options = negotiated
+        .config_options
+        .iter()
+        .map(|option| option.native_id.clone())
+        .collect::<Vec<_>>();
+    // Record the negotiated id so the caller resumes this session next turn.
+    config.session_id = Some(session_id.to_string());
+
+    // 2b. session/set_mode — pin the adapter's mode, fail-closed against the modes
+    //     the agent advertised for the session (an unsupported pin never silently
+    //     no-ops; it ends the turn with a classified fault).
+    if let Some(mode) = config.session_mode.clone() {
+        if !available_modes.contains(&mode) {
+            return Err(AcpError::UnsupportedSessionMode(mode));
+        }
+        wire.send_request(
+            ID_SET_MODE,
+            AGENT_METHOD_NAMES.session_set_mode,
+            SetSessionModeRequest::new(session_id.clone(), SessionModeId::new(mode.as_str())),
+        )
+        .await?;
+        pump_to_response(wire, ID_SET_MODE, sink, seq, resolver).await?;
+    }
+
+    // 2c. session/set_model — some provider-agnostic adapters own model
+    // selection at the protocol layer rather than reading an environment key.
+    // Fail closed unless this exact Session advertised the model interface.
+    if let Some(model) = config.session_model.clone() {
+        if !supports_session_model {
+            return Err(AcpError::Frame(
+                "configured ACP session model selection was not advertised".into(),
+            ));
+        }
+        wire.send_request(
+            ID_SET_MODEL,
+            AGENT_METHOD_NAMES.session_set_model,
+            SetSessionModelRequest::new(session_id.clone(), model),
+        )
+        .await?;
+        let _: SetSessionModelResponse =
+            parse(pump_to_response(wire, ID_SET_MODEL, sink, seq, resolver).await?)?;
+    }
+
+    // 2d. session/set_config_option — exact backend-owned model selection. The
+    // option must be advertised by this exact Session and the agent must accept
+    // the value; either failure is terminal and never falls back to its default.
+    for (index, selection) in config
+        .session_config_options
+        .clone()
+        .into_iter()
+        .enumerate()
+    {
+        if !available_config_options.contains(&selection.config_id) {
+            return Err(AcpError::Frame(format!(
+                "configured ACP session option `{}` was not advertised",
+                selection.config_id
+            )));
+        }
+        wire.send_request(
+            ID_SET_CONFIG_OPTION + index as u64,
+            AGENT_METHOD_NAMES.session_set_config_option,
+            SetSessionConfigOptionRequest::new(
+                session_id.clone(),
+                selection.config_id,
+                selection.value,
+            ),
+        )
+        .await?;
+        let _: SetSessionConfigOptionResponse = parse(
+            pump_to_response(
+                wire,
+                ID_SET_CONFIG_OPTION + index as u64,
+                sink,
+                seq,
+                resolver,
+            )
+            .await?,
+        )?;
+    }
+
+    Ok(())
+}

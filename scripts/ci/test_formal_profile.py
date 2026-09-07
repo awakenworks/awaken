@@ -1,12 +1,17 @@
 """Decision-table tests for the qualification shared by CI and packaging."""
 
 import copy
+import contextlib
+import io
 import json
 import re
 from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest import mock
+
+import check_feature_coverage
 
 from formal_profile import guardrail_results, profile_result, resolve_obligations
 
@@ -26,6 +31,41 @@ def fixture():
 
 
 class ProfileTests(unittest.TestCase):
+    def test_worker_evidence_obligation_requires_its_existing_product_journey(self):
+        # J1 explicit worker_authority obligation + existing Worker journey stage
+        # => complete. J2 remove the obligation edge => reject the disconnected
+        # proof even though its model and Rust files still exist. J3 remove the
+        # stage from every journey => reject the disconnected product feature.
+        # The neighboring `worker` prefix must not silently consume this distinct
+        # namespace. Run the canonical checker with only its JSON input varied;
+        # these are assurance-graph controls, not Rust or model proof results.
+        checker = check_feature_coverage
+        original_load = checker.load_json
+        current = original_load(checker.FEATURES)
+        obligation = "worker_authority.independent_evidence_never_extends_expired_proof"
+        for rule in ("linked", "missing-obligation", "missing-stage"):
+            with self.subTest(rule=rule):
+                features = copy.deepcopy(current)
+                feature = next(row for row in features["features"] if row["id"] == "worker.remote_execution")
+                requirement = next(row for row in feature["requirements"] if row["id"] == "remote_protocol")
+                self.assertIn(obligation, requirement["obligations"])
+                if rule == "missing-obligation":
+                    requirement["obligations"].remove(obligation)
+                elif rule == "missing-stage":
+                    for journey in features["product_journeys"]:
+                        journey["stages"] = [stage for stage in journey["stages"] if stage != feature["id"]]
+                def load(path):
+                    return features if path == checker.FEATURES else original_load(path)
+                errors = io.StringIO()
+                with mock.patch.object(checker, "load_json", side_effect=load), mock.patch.object(sys, "argv", [str(checker.__file__), "--require-complete"]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+                    if rule == "linked":
+                        checker.main()
+                    else:
+                        with self.assertRaises(SystemExit) as stopped:
+                            checker.main()
+                        self.assertEqual(stopped.exception.code, 1)
+                        self.assertIn(obligation if rule == "missing-obligation" else "worker.remote_execution", errors.getvalue())
+
     def test_readme_does_not_duplicate_live_proof_measurements(self):
         # D1 source/model changes make copied proof counts and state-space tables
         # stale; D2 the ledger CLI and exact-invocation reports remain canonical.
