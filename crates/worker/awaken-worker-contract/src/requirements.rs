@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::manifest::{
-    CURRENT_CONTRACT_VERSION, REPOSITORY_CREDENTIALS_CAPABILITY, SESSION_RESOURCES_CAPABILITY,
-    WorkerManifest,
+    CURRENT_CONTRACT_VERSION, CURRENT_RUNTIME_PROTOCOL_VERSION, REPOSITORY_CREDENTIALS_CAPABILITY,
+    SESSION_RESOURCES_CAPABILITY, WorkerManifest,
 };
 use crate::observation::WorkerAcpCapabilityRequirement;
 
@@ -138,7 +138,7 @@ impl PlacementRequirements {
     /// cleanup protocol. Cleanup reopens frozen Session/resource/provider truth;
     /// it does not execute a model and therefore must not inherit Run-only model,
     /// credential, ACP, or tool-recovery demands. The current dispatch-contract
-    /// floor is retained because cleanup v2 is carried by the same registered
+    /// floor is retained because two-stage cleanup is carried by the same registered
     /// Worker control transport, although it never claims a `RunDispatch`.
     #[must_use]
     pub fn terminal_cleanup(
@@ -147,7 +147,7 @@ impl PlacementRequirements {
         checkpoint_format: Option<String>,
     ) -> Self {
         let mut requirements = Self::remote_required();
-        requirements.runtime_protocol_version = 2;
+        requirements.runtime_protocol_version = CURRENT_RUNTIME_PROTOCOL_VERSION;
         requirements.checkpoint_format = checkpoint_format;
         if has_session_resources {
             requirements
@@ -316,6 +316,11 @@ pub fn can_claim(
     {
         return Err(Incompatibility::DispatchVersion(
             requirements.dispatch_contract_version,
+        ));
+    }
+    if !manifest.supports_current_runtime_protocol() {
+        return Err(Incompatibility::RuntimeVersion(
+            CURRENT_RUNTIME_PROTOCOL_VERSION,
         ));
     }
     if !manifest

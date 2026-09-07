@@ -45,12 +45,12 @@ async fn spawn_server() -> String {
 }
 
 #[tokio::test]
-async fn authoritative_lease_receipts_fail_closed_when_ttl_is_not_positive() {
+async fn registration_facts_survive_invalid_ttl_but_heartbeat_grants_require_positive_ttl() {
     // Cause/effect decision table for Coordinator timing receipts:
     //
     // | Rule | operation | mutation | TTL | effect |
     // |---|---|---|---|---|
-    // | T1 | register | n/a | zero | reject; no local timing is invented |
+    // | T1 | register | n/a | zero | preserve identity for Node withdrawal; no invented timing |
     // | T2 | heartbeat | Applied | missing | reject; no ownership proof |
     // | T3 | heartbeat | non-Applied | missing | accepted as explicit loss (covered by lifecycle) |
     let base = spawn_server().await;
@@ -58,8 +58,19 @@ async fn authoritative_lease_receipts_fail_closed_when_ttl_is_not_positive() {
     let registration = WorkerControlClient::new(bootstrap)
         .register_classified("inc-a", WorkerManifest::default())
         .await
-        .expect_err("T1 zero TTL fails closed");
-    assert!(registration.to_string().contains("zero lease TTL"), "T1");
+        .expect("T1 retain registration fact, not execution permission");
+    assert_eq!(registration.lease_ttl_ms, 0, "T1 no fabricated horizon");
+    assert_eq!(
+        registration.runtime_protocol_version, None,
+        "T1 no fabricated protocol"
+    );
+    assert_eq!(
+        registration.worker.snapshot.identity,
+        WorkerIdentity::new("worker-a", "inc-a", 1),
+        "T1 exact cleanup identity"
+    );
+    // The real WorkerNode lifecycle matrix proves zero TTL/unknown protocol
+    // stops before every factory/probe/Ready/claim and withdraws exactly once.
 
     let identity = WorkerIdentity::new("worker-a", "inc-a", 1);
     let worker = WorkerUpstream::new(base)

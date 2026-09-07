@@ -1011,6 +1011,12 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
     header = "SPECIFICATION Spec\nCONSTANT MaxClaims = 3\nCHECK_DEADLOCK FALSE\n"
     mutations = []
     for anchor, broken, invariant in [
+        ('AcceptProtocol == /\\ startupPhase = "checking_protocol"\n                  /\\ protocolCompatible',
+         'AcceptProtocol == /\\ startupPhase = "checking_protocol"', "RegistrationEvidenceRequired"),
+        ('/\\ ttlPositive\n                  /\\ startupPhase',
+         '/\\ startupPhase', "RegistrationEvidenceRequired"),
+        ('RejectProtocol == /\\ startupPhase = "checking_protocol"\n                  /\\ ~(protocolCompatible /\\ ttlPositive)',
+         'RejectProtocol == /\\ FALSE', "temporal:InvalidRegistrationTerminates"),
         ('AcceptInitialReady == /\\ startupPhase = "awaiting"',
          'AcceptInitialReady == /\\ startupPhase = "probing"', "StartupAdmissionRequiresProbe"),
         ('BeginWithdrawal == /\\ withdrawal = "none"',
@@ -1026,10 +1032,11 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
                          if invariant.startswith("temporal:") else "INVARIANTS " + invariant)
         mutations.append((source.replace(anchor, broken), header + property_line, invariant))
     for witness in ("NoFailedReturnReached", "NoReadyClaimReached",
-                    "NoUnknownWithdrawalReached", "NoPendingHeartbeatCancelled"):
+                    "NoUnknownWithdrawalReached", "NoPendingHeartbeatCancelled",
+                    "NoIncompatibleReturnReached", "NoZeroTtlReturnReached"):
         mutations.append((source, header + "INVARIANTS " + witness, witness))
     check_tlc_model_mutations(tlc_jar, "WorkerDrain", source, config, mutations)
-    print("Worker startup/withdrawal: 4/4 mutants killed; four lifecycle witnesses reachable")
+    print("Worker startup/withdrawal: 7/7 mutants killed; six lifecycle witnesses reachable")
     # L1: restore expiry-equality catch-up after a completed phase. Successful
     # renewals forever must expose a non-releasing cycle, not an oracle error.
     source = (ROOT / "formal/tla/SessionRealizationMutex.tla").read_text()

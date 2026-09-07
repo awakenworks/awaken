@@ -176,11 +176,9 @@ impl WorkerControlClient {
         let receipt: WorkerRegistrationReceipt = serde_json::from_value(body).map_err(|error| {
             WorkerRegistrationError::Rejected(format!("worker registration decode: {error}"))
         })?;
-        if receipt.lease_ttl_ms == 0 {
-            return Err(WorkerRegistrationError::Rejected(
-                "worker registration returned a zero lease TTL".to_string(),
-            ));
-        }
+        // A decoded identity is a registration fact, not startup permission.
+        // The Node checks timing/protocol inside its single withdrawal scope;
+        // rejecting here would lose the identity needed for exact cleanup.
         Ok(receipt)
     }
 

@@ -946,7 +946,7 @@ impl SessionApplication {
                     | awaken_worker_contract::WorkerState::Draining
             )
             || fingerprint != worker.capability_fingerprint
-            || !worker.manifest.explicitly_supports_terminal_cleanup_v2()
+            || !worker.manifest.supports_current_runtime_protocol()
         {
             return Ok(None);
         }

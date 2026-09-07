@@ -180,10 +180,11 @@ pub awaken_worker_contract::WorkerManifest::runtime_protocol: awaken_worker_cont
 pub awaken_worker_contract::WorkerManifest::sandbox: awaken_provisioning_contract::sandbox::runtime::SandboxCapabilities
 pub awaken_worker_contract::WorkerManifest::sandbox_backends: alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub awaken_worker_contract::WorkerManifest::sandbox_tool_recovery: awaken_runtime_contract::tool::ToolRecoveryCapability
+pub awaken_worker_contract::WorkerManifest::trusted_host_sandbox: core::option::Option<awaken_provisioning_contract::sandbox::runtime::SandboxCapabilities>
 pub awaken_worker_contract::WorkerManifest::zone: core::option::Option<alloc::string::String>
 impl awaken_worker_contract::WorkerManifest
-pub const fn awaken_worker_contract::WorkerManifest::explicitly_supports_terminal_cleanup_v2(&self) -> bool
 pub fn awaken_worker_contract::WorkerManifest::fingerprint(&self) -> core::result::Result<alloc::string::String, awaken_worker_contract::FingerprintError>
+pub const fn awaken_worker_contract::WorkerManifest::supports_current_runtime_protocol(&self) -> bool
 impl core::default::Default for awaken_worker_contract::WorkerManifest
 pub fn awaken_worker_contract::WorkerManifest::default() -> Self
 pub struct awaken_worker_contract::WorkerObservationPublicationFence<Fingerprint>
@@ -212,6 +213,7 @@ pub fn awaken_worker_contract::WorkerSnapshot::accepts(&self, &awaken_worker_con
 impl core::convert::From<&awaken_worker_contract::WorkerSnapshot> for awaken_worker_contract::WorkerAssignment
 pub fn awaken_worker_contract::WorkerAssignment::from(&awaken_worker_contract::WorkerSnapshot) -> Self
 pub const awaken_worker_contract::CURRENT_CONTRACT_VERSION: u32
+pub const awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION: u32
 pub const awaken_worker_contract::HOST_EXECUTOR_CAPABILITY: &str
 pub const awaken_worker_contract::PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE: &str
 pub const awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY: &str

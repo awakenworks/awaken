@@ -5,6 +5,7 @@ pub use awaken_run_ingress::AttemptAdmission
 pub use awaken_run_ingress::AttemptCredentialBinding
 pub use awaken_run_ingress::AttemptExecutionRequest
 pub use awaken_run_ingress::BindSandboxRequest
+pub use awaken_run_ingress::CURRENT_RUNTIME_PROTOCOL_VERSION
 pub use awaken_run_ingress::CandidateFingerprint
 pub use awaken_run_ingress::CasOutcome
 pub use awaken_run_ingress::CheckpointRequest

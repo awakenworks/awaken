@@ -314,7 +314,7 @@ async fn local_claims_skip_remote_only_work(store: &dyn DispatchQueue, ns: &str)
         SettleOutcome::Applied
     );
 
-    let mut manifest = WorkerManifest::default();
+    let mut manifest = ready_dispatch_worker(ns, "local-credential").manifest;
     manifest
         .capabilities
         .insert(WORKER_LOCAL_CREDENTIALS_CAPABILITY.to_string());

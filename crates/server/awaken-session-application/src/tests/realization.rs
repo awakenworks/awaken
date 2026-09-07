@@ -3246,7 +3246,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
 async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_root_cas() {
     // Worker-admission cause/effect graph: C1 the canonical registry source is
     // absent; C2 the exact current incarnation is registered; C3 its manifest
-    // explicitly supports terminal-cleanup v2; C4 the frozen active Resource
+    // explicitly supports the current runtime protocol; C4 the frozen active Resource
     // generation requires Session Resources and the manifest supplies it; C5
     // an installed Repository has a credential binding and the manifest
     // supplies the Repository-credential capability; C6 an unowned Environment
@@ -3261,15 +3261,15 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     // |---|---|---|---|---|---|
     // | W1a | absent | - | - | unmaterialized | E2 unavailable |
     // | W1b | read failure | - | - | unmaterialized | E2 unavailable |
-    // | W2 | stale incarnation | v2 | present | unmaterialized | E2 skip |
-    // | W3 | Starting | v2 | present | unmaterialized | E2 skip |
-    // | W4 | exact | legacy ANY | present | unmaterialized | E2 skip |
-    // | W5 | exact | v2 | missing capability | unmaterialized | E2 skip |
-    // | W6 | exact Draining/full | v2 | exact capability | unmaterialized | E1+E3 |
-    // | W7 | exact | v2, Repository credential missing/exact | credentialed | E2 then E1 |
-    // | W8 | exact | v2, checkpoint format missing | none | Hibernated/owned | E2 |
-    // | W9 | exact | v2, checkpoint format exact | none | Hibernated/owned | E1 |
-    // | W10 | exact | v2 | exact capability | Resident/no owner | E2+E4 |
+    // | W2 | stale incarnation | current | present | unmaterialized | E2 skip |
+    // | W3 | Starting | current | present | unmaterialized | E2 skip |
+    // | W4 | exact | ANY/zero-based/old/inverted/future | present | unmaterialized | E2 skip, unchanged root |
+    // | W5 | exact | current | missing capability | unmaterialized | E2 skip |
+    // | W6 | exact Draining/full | current | exact capability | unmaterialized | E1+E3 |
+    // | W7 | exact | current, Repository credential missing/exact | credentialed | E2 then E1 |
+    // | W8 | exact | current, checkpoint format missing | none | Hibernated/owned | E2 |
+    // | W9 | exact | current, checkpoint format exact | none | Hibernated/owned | E1 |
+    // | W10 | exact | current | exact capability | Resident/no owner | E2+E4 |
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Worker-compatible cleanup Session repository"),
@@ -3357,18 +3357,25 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
         "W3/E2"
     );
 
-    workers.replace(vec![terminal_cleanup_worker(
-        &target,
-        awaken_worker_contract::WorkerManifest::default(),
-    )]);
-    assert!(
-        application
-            .claim_next_terminal_cleanup(target.clone())
-            .await
-            .expect("W4 legacy manifest is an ineligible candidate")
-            .is_none(),
-        "W4/E2"
-    );
+    for (min, max) in [(0, u32::MAX), (0, 3), (1, 1), (1, 2), (3, 2), (4, 4)] {
+        let mut manifest = terminal_cleanup_manifest();
+        manifest.runtime_protocol.min = min;
+        manifest.runtime_protocol.max = max;
+        manifest
+            .capabilities
+            .insert(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY.to_string());
+        workers.replace(vec![terminal_cleanup_worker(&target, manifest)]);
+        let before = repo.get("claim-compatible").await.unwrap();
+        assert!(
+            application
+                .claim_next_terminal_cleanup(target.clone())
+                .await
+                .expect("W4 protocol-incompatible candidate")
+                .is_none(),
+            "{min}..{max}"
+        );
+        assert_eq!(repo.get("claim-compatible").await.unwrap(), before, "W4/E2");
+    }
 
     workers.replace(vec![terminal_cleanup_worker(
         &target,

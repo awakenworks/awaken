@@ -1192,9 +1192,9 @@ fn worker_manifest_includes_explicit_application_capabilities() {
 fn standard_manifest_uses_one_typed_metadata_source() {
     // Protocol cause/effect table: C1=the canonical standard topology still
     // executes ordinary runtime protocol v1; C2=it implements the two-stage
-    // terminal-cleanup transport v2. R1 C1+C2 => publish one inclusive 1..2
-    // range and pass the contract-owned explicit-v2 predicate. Omitting C1
-    // would strand ordinary Runs; omitting C2 would make this implementation
+    // terminal-cleanup transport and relative lease receipts. R1 C1+C2 =>
+    // publish one inclusive 1..current range and pass the canonical protocol
+    // predicate. Omitting C1 would strand ordinary Runs; omitting C2 makes it
     // ineligible for terminal cleanup recovery.
     let deployment = deployment();
     let config = StandardManifestConfig::new("build:test")
@@ -1221,11 +1221,14 @@ fn standard_manifest_uses_one_typed_metadata_source() {
     assert_eq!(manifest.capacity.max_concurrent, 7);
     assert_eq!(
         manifest.runtime_protocol,
-        awaken_worker_contract::VersionRange { min: 1, max: 2 },
-        "R1 publishes both implemented protocol generations"
+        awaken_worker_contract::VersionRange {
+            min: 1,
+            max: awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION
+        },
+        "R1 publishes the implemented protocol range"
     );
     assert!(
-        manifest.explicitly_supports_terminal_cleanup_v2(),
+        manifest.supports_current_runtime_protocol(),
         "R1 is admitted by the canonical capability predicate"
     );
 }

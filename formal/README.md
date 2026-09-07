@@ -469,6 +469,13 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   immutable Skill pin retention and validation, cross-protocol result
   correlation, the local-admission-before-remote-registry drain fence, and
   sequence-fenced credential observations that cannot roll back after rotation.
+  Worker startup also checks the protocol declaration and positive registration TTL before any
+  probe or Ready transition and sends incompatible peers through the same
+  bounded withdrawal. The model checks one incarnation and up to three claims;
+  semantic/liveness mutations and reachability witnesses qualify this path
+  through the existing mutation runner. Protocol compatibility is an abstract
+  input, not proof of HTTP decoding
+  or mixed-version Control replica rollout; those require implementation tests.
   The `MemoryCASCopy.cfg` configuration reuses the same Repository transitions
   for two copy projections, frozen materialization heads, update/delete races,
   handle loss and restart before acknowledgement. A request can now remain

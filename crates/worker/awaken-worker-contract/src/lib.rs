@@ -14,10 +14,10 @@ pub use awaken_credential_contract::{
     CredentialObservationState as WorkerCredentialState, CredentialRef as WorkerCredentialRevision,
 };
 pub use manifest::{
-    CURRENT_CONTRACT_VERSION, FingerprintError, HOST_EXECUTOR_CAPABILITY,
-    PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, REPOSITORY_CREDENTIALS_CAPABILITY,
-    SESSION_RESOURCES_CAPABILITY, TRUSTED_HOST_SANDBOX_BACKEND, VersionRange,
-    WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerCapacity, WorkerManifest,
+    CURRENT_CONTRACT_VERSION, CURRENT_RUNTIME_PROTOCOL_VERSION, FingerprintError,
+    HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
+    REPOSITORY_CREDENTIALS_CAPABILITY, SESSION_RESOURCES_CAPABILITY, TRUSTED_HOST_SANDBOX_BACKEND,
+    VersionRange, WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerCapacity, WorkerManifest,
 };
 #[cfg(any(test, kani))]
 pub(crate) use observation::dynamic_observation_admitted;
@@ -97,6 +97,18 @@ mod verification {
             assert!(version >= min);
             assert!(version <= max);
         }
+        // All u32 endpoints: valid explicit declaration && contains current
+        // iff current execution is supported. Zero/default cannot grant it.
+        let worker = WorkerManifest {
+            runtime_protocol: range,
+            ..Default::default()
+        };
+        assert_eq!(
+            worker.supports_current_runtime_protocol(),
+            min > 0
+                && min <= CURRENT_RUNTIME_PROTOCOL_VERSION
+                && CURRENT_RUNTIME_PROTOCOL_VERSION <= max
+        );
     }
 
     #[kani::proof]
@@ -409,33 +421,48 @@ mod tests {
     }
 
     #[test]
-    fn terminal_cleanup_v2_requires_explicit_valid_runtime_protocol_support() {
-        // Cause/effect table: C1=the range is structurally valid; C2=its lower
-        // bound is positive, so this is an explicit declaration rather than the
-        // omitted-field/default `ANY` compatibility value; C3=the range contains
-        // terminal-cleanup protocol v2. E1=admit v2 cleanup transport; E2=reject
-        // before any cleanup claim or effect.
-        //
-        // | Rule | C1 valid | C2 explicit | C3 contains v2 | Effect |
-        // |---|---|---|---|---|
-        // | R1 default/ANY | yes | no | yes | E2 |
-        // | R2 explicit 1..2 | yes | yes | yes | E1 |
-        // | R3 invalid 2..1 | no | yes | no | E2 |
-        // | R4 explicit v1 | yes | yes | no | E2 |
-        // | R5 zero-based 0..2 | yes | no | yes | E2 |
-        let supports = |runtime_protocol| {
-            WorkerManifest {
-                runtime_protocol,
-                ..WorkerManifest::default()
+    fn current_runtime_requires_explicit_support_even_for_old_queued_work() {
+        // Causes: C1 valid explicit range containing current protocol;
+        // C2 the durable queued requirement lies inside that same range.
+        // E1 claim iff C1 && C2. Otherwise E2 reject, without rewriting the
+        // requirement. ANY/omitted and zero-based ranges never prove C1.
+        // Rows cover old, current, future, inverted and broad declarations;
+        // each crosses legacy/current/future queued versions 0..4.
+        for (range, current) in [
+            (VersionRange::ANY, false),
+            (VersionRange { min: 0, max: 3 }, false),
+            (VersionRange { min: 3, max: 2 }, false),
+            (VersionRange::exact(1), false),
+            (VersionRange { min: 1, max: 2 }, false),
+            (VersionRange { min: 1, max: 3 }, true),
+            (VersionRange::exact(3), true),
+            (
+                VersionRange {
+                    min: 2,
+                    max: u32::MAX,
+                },
+                true,
+            ),
+            (VersionRange::exact(4), false),
+        ] {
+            let mut worker = manifest("protocol", 0).manifest;
+            worker.runtime_protocol = range;
+            assert_eq!(worker.supports_current_runtime_protocol(), current);
+            for version in 0..=4 {
+                let mut queued = requirements();
+                queued.runtime_protocol_version = version;
+                assert_eq!(
+                    can_claim(&worker, &queued).is_ok(),
+                    current && range.contains(version),
+                    "{range:?}/{version}"
+                );
+                assert_eq!(queued.runtime_protocol_version, version);
             }
-            .explicitly_supports_terminal_cleanup_v2()
-        };
-
-        assert!(!supports(VersionRange::ANY), "R1/E2");
-        assert!(supports(VersionRange { min: 1, max: 2 }), "R2/E1");
-        assert!(!supports(VersionRange { min: 2, max: 1 }), "R3/E2");
-        assert!(!supports(VersionRange::exact(1)), "R4/E2");
-        assert!(!supports(VersionRange { min: 0, max: 2 }), "R5/E2");
+        }
+        let mut encoded = serde_json::to_value(WorkerManifest::default()).unwrap();
+        encoded.as_object_mut().unwrap().remove("runtime_protocol");
+        let omitted: WorkerManifest = serde_json::from_value(encoded).unwrap();
+        assert!(!omitted.supports_current_runtime_protocol());
     }
 
     #[test]
@@ -445,7 +472,7 @@ mod tests {
         // checkpoint names a format. Effects: E1 require the Session Resource
         // adapter; E2 additionally require Repository credential injection; E3
         // require the exact checkpoint format; E4 always require explicit
-        // cleanup runtime v2 while model/ACP/tool/credential sets remain empty.
+        // current runtime while model/ACP/tool/credential sets remain empty.
         //
         // | Rule | C1 resources | C2 credentialed repo | C3 checkpoint | Effect |
         // |---|---|---|---|---|
@@ -453,7 +480,10 @@ mod tests {
         // | T2 | yes | no | no | E1 + E4 |
         // | T3 | yes | yes | stream-v1 | E1 + E2 + E3 + E4 |
         let bare = PlacementRequirements::terminal_cleanup(false, false, None);
-        assert_eq!(bare.runtime_protocol_version, 2, "T1/E4");
+        assert_eq!(
+            bare.runtime_protocol_version, CURRENT_RUNTIME_PROTOCOL_VERSION,
+            "T1/E4"
+        );
         assert!(bare.required_capabilities.is_empty(), "T1/E4");
         assert!(bare.required_credentials.is_empty(), "T1/E4");
         assert!(bare.required_acp_capabilities.is_empty(), "T1/E4");

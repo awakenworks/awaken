@@ -17,7 +17,10 @@ fn manifest() -> WorkerManifest {
     WorkerManifest {
         build_digest: "worker-node-test".to_string(),
         dispatch_contract: VersionRange::exact(1),
-        runtime_protocol: VersionRange::exact(1),
+        runtime_protocol: VersionRange {
+            min: 1,
+            max: awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+        },
         ..WorkerManifest::default()
     }
 }
@@ -767,6 +770,84 @@ async fn provider_evidence_drift_drains_the_incarnation() {
             .any(|path| path == "/v1/worker/drain"),
         "E3"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn incompatible_control_registration_withdraws_before_runtime_startup() {
+    // C1 valid exact registered identity; C2 Control protocol declaration;
+    // C3 registry TTL positive/zero. P0 zero TTL => same bounded withdrawal,
+    // primary TTL error even when C2 is also invalid; no identity lost.
+    // P1 missing/null/old/future/non-integer/out-of-range => preserve C1 for
+    // one bounded withdrawal, return protocol error, no factories/probes/Ready/
+    // claims. P2 current integer => normal startup (the lifecycle test above).
+    // C2 is never defaulted to current. Real HTTP exercises tolerant metadata
+    // decoding and the single post-registration exit, not just a predicate.
+    for zero_ttl in [false, true] {
+        for declaration in [
+            None,
+            Some("null"),
+            Some("0"),
+            Some("1"),
+            Some("2"),
+            Some("4"),
+            Some("-1"),
+            Some("3.5"),
+            Some("\"3\""),
+            Some("4294967296"),
+            Some("{}"),
+            Some("[]"),
+            Some("true"),
+            Some("3"),
+        ] {
+            if !zero_ttl && declaration == Some("3") {
+                continue; // P2 current+positive is the normal lifecycle journey.
+            }
+            let upstream = if zero_ttl {
+                FakeWorkerUpstream::start_with_zero_registry_ttl()
+            } else {
+                FakeWorkerUpstream::start()
+            };
+            upstream.set_registration_protocol(declaration);
+            let provider = Arc::new(ExternalSessionProvider::default());
+            let factories = Arc::new(AtomicUsize::new(0));
+            let calls = factories.clone();
+            let worker = lifecycle_worker(
+                WorkerUpstream::new(upstream.url()).with_worker_id("protocol-test"),
+            )
+            .with_deployment_config(local_coordinator_deployment())
+            .with_session_container_provider("external-secure", provider.clone())
+            .with_attempt_decorator_factory(Arc::new(move |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err("protocol rejection must precede factory".into())
+            }))
+            .with_manifest(manifest())
+            .without_admin_surface()
+            .build()
+            .unwrap();
+            let error = tokio::time::timeout(
+                Duration::from_secs(8),
+                worker.run_until(std::future::pending()),
+            )
+            .await
+            .expect("bounded withdrawal")
+            .expect_err("incompatible Control");
+            assert!(
+                error.to_string().contains(if zero_ttl {
+                    "zero lease TTL"
+                } else {
+                    "runtime protocol"
+                }),
+                "{declaration:?}/zero_ttl={zero_ttl}: {error}"
+            );
+            assert_eq!(factories.load(Ordering::SeqCst), 0);
+            assert_eq!(provider.probe_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                upstream.requests(),
+                ["/v1/worker/register", "/v1/worker/deregister"],
+                "{declaration:?}"
+            );
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
