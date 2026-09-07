@@ -68,6 +68,82 @@ fn terminal_prepare_commands(
     }
 }
 
+#[tokio::test]
+async fn terminal_assignment_preserves_the_complete_retained_resource_transition() {
+    // Cause/effect table: C1 committed A is empty/nonempty; C2 pending B is
+    // absent/unattempted/attempted. E1 cleanup carries A -> B (or A -> A),
+    // including after a cold read; E2 projection does not activate or settle B.
+    // A Worker may already have staged B before its activation receipt was
+    // committed. Sending A -> A would regress that slot and strand cleanup.
+    // C3 current/expired realization: only current authority may issue the
+    // complete assignment; expiry rejects it without mutating the stored root.
+    for active in [false, true] {
+        for pending in [None, Some(false), Some(true)] {
+            let repo = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            );
+            let mut session = persisted("terminal-transition", true, "terminated");
+            session.realization = Some(awaken_session_contract::SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "incarnation".into(),
+                epoch: 1,
+                expires_at_unix_ms: crate::activity::now_unix_ms() + 60_000,
+            });
+            if active {
+                session.resources = awaken_session_contract::SessionResourceState::from_active(
+                    file_resources("active"),
+                );
+                session.resources.adopt_legacy_active("terminal-transition");
+            }
+            if let Some(attempted) = pending {
+                session
+                    .resources
+                    .prepare("terminal-transition", file_resources("pending"))
+                    .unwrap();
+                if attempted {
+                    session.resources.start_attempt().unwrap();
+                }
+            }
+            create(repo.as_ref(), session).await;
+            let snapshot = repo.get("terminal-transition").await.unwrap();
+            let expected_resources = snapshot.resources.clone();
+            let application = application(
+                repo.clone(),
+                Arc::new(RecordingEnvironmentSource::default()),
+            );
+            let assignment = application
+                .terminal_cleanup_assignment_from_snapshot("workspace", &snapshot)
+                .await
+                .unwrap();
+            let transition = assignment
+                .projection
+                .resource_transition(
+                    awaken_session_contract::FrozenResourceTransitionUse::ValidateInstalled,
+                )
+                .unwrap();
+            let (active_revision, active_resources) = snapshot.resources.active_generation();
+            let (desired_revision, desired_resources) = snapshot.resources.desired_generation();
+            assert_eq!(transition.previous().revision, active_revision);
+            assert_eq!(&transition.previous().resources, active_resources);
+            assert_eq!(transition.desired().revision, desired_revision);
+            assert_eq!(&transition.desired().resources, desired_resources);
+            let mut expired = snapshot.clone();
+            expired.realization.as_mut().unwrap().expires_at_unix_ms = 1;
+            assert!(matches!(
+                application
+                    .terminal_cleanup_assignment_from_snapshot("workspace", &expired)
+                    .await,
+                Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership)
+            ));
+            assert_eq!(
+                repo.get("terminal-transition").await.unwrap().resources,
+                expected_resources,
+                "projection must not acknowledge physical cleanup"
+            );
+        }
+    }
+}
+
 /// Recovery-scan causal graph: C1 one supervisor cycle owns Resource,
 /// Environment, realization, Event, and Outcome convergence; C2 every handler
 /// previously opened the same durable candidate index; C3 cutover validation is

@@ -1,6 +1,7 @@
 use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_session_contract::ManagedLifecycleFact;
 
 fn coordinated_session(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "idle");
@@ -1804,6 +1805,173 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         .archive_with_repository_publication(unavailable)
         .await
         .expect("R9 retry publishes and completes ordinary cleanup");
+}
+
+#[test]
+fn terminal_only_release_rejects_live_execution_and_preserves_failure_truth() {
+    run_composed_async_test(|| async {
+        // T1 every nonterminal execution class rejects with zero root writes;
+        // T2 public archive still rejects failed execution; T3 the internal
+        // terminal-only edge preserves failure while requiring real cleanup;
+        // T4 duplicate release and activity admission cannot reopen that root.
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        );
+        let app = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let fact = |id: &str| ManagedLifecycleFact {
+            id: format!("{id}:terminated"),
+            object_id: id.into(),
+            workspace_id: Some("workspace".into()),
+            event_type: "session.terminated".into(),
+            timestamp: 1,
+            runtime_interval: None,
+        };
+        for state in ["preparing", "activating", "running", "rescheduling", "idle"] {
+            let id = format!("terminal-release-{state}");
+            create(repo.as_ref(), persisted(&id, false, state)).await;
+            let before = repo.get(&id).await.unwrap();
+            assert!(
+                matches!(
+                    app.release_terminal_session(&id, "2026-09-07T00:00:00Z", fact(&id)).await,
+                    Err(SessionPreparationError::Rejected(ref error))
+                        if error.message == "terminal Session release requires already-terminal execution"
+                ),
+                "T1 {state}"
+            );
+            assert_eq!(repo.get(&id).await.unwrap(), before, "T1 no write: {state}");
+        }
+        for state in ["activation_failed", "terminated"] {
+            let id = format!("terminal-release-{state}");
+            create(repo.as_ref(), persisted(&id, false, state)).await;
+            assert!(
+                app.begin_activity(&id).await.is_err(),
+                "T3 terminal absorption before archive"
+            );
+            assert!(
+                matches!(
+                    app.terminate_session(&id, "2026-09-07T00:00:00Z", fact(&id)).await,
+                    Err(SessionPreparationError::Rejected(ref error))
+                        if error.message == "only an idle Session may be archived"
+                ),
+                "T2 unchanged public archive: {state}"
+            );
+            app.release_terminal_session(&id, "2026-09-07T00:00:00Z", fact(&id))
+                .await
+                .expect("T3 terminal-only release");
+            let completed = repo.get(&id).await.unwrap();
+            assert_eq!(completed.execution.as_str(), state, "T3 retained failure");
+            assert!(
+                completed
+                    .verified_terminal_cleanup()
+                    .unwrap()
+                    .is_completed(),
+                "T3 receipt"
+            );
+            assert!(matches!(
+                completed.disposition,
+                awaken_session_contract::SessionDisposition::Archived { .. }
+            ));
+            assert!(app.begin_activity(&id).await.is_err(), "T4 no reopening");
+            app.release_terminal_session(&id, "another-timestamp", fact(&id))
+                .await
+                .expect("T4 exact terminal replay");
+            assert_eq!(repo.get(&id).await.unwrap(), completed, "T4 unchanged root");
+            assert_eq!(
+                repo.pending_lifecycle()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .filter(|event| event.id == fact(&id).id)
+                    .count(),
+                1,
+                "T4 one fact"
+            );
+        }
+        let id = "terminal-release-event-pending";
+        let mut session = session_with_unsettled_event(id);
+        session.execution = SessionExecutionState::ActivationFailed;
+        create(repo.as_ref(), session).await;
+        let before = repo.get(id).await.unwrap();
+        assert!(
+            matches!(
+                app.release_terminal_session(id, "2026-09-07T00:00:00Z", fact(id)).await,
+                Err(SessionPreparationError::Rejected(ref error))
+                    if error.code == "session_event_batch_pending"
+            ),
+            "T7 accepted Event effects retain their fence"
+        );
+        assert_eq!(
+            repo.get(id).await.unwrap(),
+            before,
+            "T7 zero lost Event writes"
+        );
+    });
+}
+
+#[test]
+fn terminal_only_release_waits_for_cleanup_and_recovers_committed_failure() {
+    run_composed_async_test(|| async {
+        // T5 archive commits before an unavailable physical cleanup; the caller
+        // must not observe successful release. T6 the same command recovers
+        // its retained intent and completes once, without normal activation.
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        );
+        let id = "terminal-release-pending";
+        create(repo.as_ref(), persisted(id, false, "activation_failed")).await;
+        let runtime = Arc::new(RecordingCleanupRuntime::default());
+        runtime.fail_quiesce_once.store(true, Ordering::SeqCst);
+        let app = application_with_runtime(
+            runtime.clone(),
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let fact = ManagedLifecycleFact {
+            id: format!("{id}:terminated"),
+            object_id: id.into(),
+            workspace_id: Some("workspace".into()),
+            event_type: "session.terminated".into(),
+            timestamp: 1,
+            runtime_interval: None,
+        };
+        assert!(
+            app.release_terminal_session(id, "2026-09-07T00:00:00Z", fact.clone())
+                .await
+                .is_err(),
+            "T5 no premature release"
+        );
+        let pending = repo.get(id).await.unwrap();
+        assert!(matches!(
+            pending.disposition,
+            awaken_session_contract::SessionDisposition::Archived { .. }
+        ));
+        assert_eq!(pending.execution, SessionExecutionState::ActivationFailed);
+        assert!(!pending.verified_terminal_cleanup().unwrap().is_completed());
+        app.release_terminal_session(id, "2026-09-07T00:00:00Z", fact.clone())
+            .await
+            .expect("T6 retry existing cleanup");
+        assert!(
+            repo.get(id)
+                .await
+                .unwrap()
+                .verified_terminal_cleanup()
+                .unwrap()
+                .is_completed()
+        );
+        let effects = runtime.effective_ids.lock().unwrap().len();
+        assert!(effects > 0, "T6 actual fixture cleanup effects");
+        app.release_terminal_session(id, "2026-09-07T00:00:00Z", fact)
+            .await
+            .expect("T6 absorbing replay");
+        assert_eq!(runtime.effective_ids.lock().unwrap().len(), effects);
+        assert_eq!(
+            runtime.ordinary_resource_apply_calls.load(Ordering::SeqCst),
+            0
+        );
+    });
 }
 
 /// Terminal-transition cause/effect graph. C1 execution is Idle or Running; C2
