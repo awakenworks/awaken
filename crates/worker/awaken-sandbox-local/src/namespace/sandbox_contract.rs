@@ -79,6 +79,10 @@ impl pc::Sandbox for NamespaceSandbox {
             &NamespaceProvider::capabilities(),
         )
         .map_err(err)?;
+        let mut memory_mounts = self.memory_mounts.lock().await;
+        memory_mounts
+            .release_unconfirmed(|| self.require_root_identity().map(|_| ()))
+            .await?;
         let (destination_exists, live_memory_exists) = {
             let layout = self.layout.read().expect("namespace layout lock poisoned");
             (
@@ -104,24 +108,13 @@ impl pc::Sandbox for NamespaceSandbox {
             ));
         }
         let host = host_projection_path(&self.root, &self.host_workspace, &req.mount_path)?;
-        let mut acquired_mounts = Vec::new();
-        let memory = crate::mount_memory_requirement(
-            &self.memory_mounter,
-            &req,
-            &host,
-            &mut acquired_mounts,
-        )
-        .await;
-        let memory = match memory {
-            Ok(memory) => memory,
-            Err(cause) => {
-                self.memory_mounts.lock().await.extend(acquired_mounts);
-                return Err(cause);
-            }
-        };
+        let memory =
+            crate::mount_memory_requirement(&self.memory_mounter, &req, &host, &mut memory_mounts)
+                .await?;
+        self.require_root_identity()?;
         if let Some((realized, materialization)) = memory {
             let rendered = RenderMount {
-                host,
+                host: host.clone(),
                 dest: req.mount_path.clone(),
                 read_only: req.access == pc::MountAccess::ReadOnly,
                 boundary: RenderMountBoundary::ManagedMemoryStore,
@@ -129,18 +122,17 @@ impl pc::Sandbox for NamespaceSandbox {
             // Publish the guard and its evidence under the same lock order used
             // by reconciliation acknowledgement, so no snapshot can drain an
             // unrepresented Copy participant.
-            let mut memory_mounts = self.memory_mounts.lock().await;
             let mut memory_materializations = self
                 .memory_materializations
                 .lock()
                 .map_err(|_| err("Memory materializations lock poisoned"))?;
-            memory_mounts.extend(acquired_mounts);
             let mut layout = self.layout.write().expect("namespace layout lock poisoned");
             layout.retain(|mount| mount.dest != req.mount_path);
             layout.push(rendered);
             if let Some(materialization) = materialization {
                 memory_materializations.push(materialization);
             }
+            memory_mounts.confirm(&req, &host);
             return Ok(realized);
         }
         let (contents, content_hash) = match &req.source {

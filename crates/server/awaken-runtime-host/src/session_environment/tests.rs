@@ -2687,8 +2687,9 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
     // adopt; C2 receipt realization is Fuse/Copy; C3 canonical mounter returns
     // the same/different realization; C4 a frozen requirement is covered/not
     // covered by the receipt. Rules: M0 !C0+Fuse fails closed with zero remount;
-    // M1 either C1+Fuse+same => reacquire exactly one process-owned guard through
-    // the one shared MemoryMounter adapter; M2 C0+Copy => retain exact durable
+    // M1 either C1+Fuse+same + live Provider => reuse exactly one retained guard;
+    // actual Provider replacement is covered by the cold-current table below.
+    // M2 C0+Copy => retain exact durable
     // evidence/files and perform no mount; M3 C0+Fuse+different => reject and
     // teardown the acquired participant; M4 covered C4 => adopted reconciliation
     // is a no-op, while uncovered C4 uses the existing attach port. M2/M3 use
@@ -2784,14 +2785,14 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 awaken_sandbox_container::ContainerRealizationIntent::Create,
             )
             .await
-            .expect("M1 Ready replay reacquires Fuse");
+            .expect("M1 Ready replay reuses Fuse");
         assert_eq!(ready_replay.handle(), fuse_handle, "M1 {label} binding");
         drop(ready_replay);
         let adopted = fuse_provider
             .adopt_effective_for_effect(&fuse_spec, &fuse_handle, Some(&fuse_effect))
             .await
-            .expect("M1 adoption reacquires Fuse");
-        assert_eq!(fuse_mounts.load(Ordering::SeqCst), 3, "M1 {label}");
+            .expect("M1 adoption reuses Fuse");
+        assert_eq!(fuse_mounts.load(Ordering::SeqCst), 1, "M1 {label}");
         let after =
             adopted.agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
         assert_eq!(before.protocol_cwd, after.protocol_cwd, "M5 stable cwd");
@@ -2820,7 +2821,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 .reconcile_adopted_mounts(&[fuse_memory.clone(), late])
                 .await
                 .expect("M4 only the late mount attaches");
-            assert_eq!(fuse_mounts.load(Ordering::SeqCst), 3, "M4 no remount");
+            assert_eq!(fuse_mounts.load(Ordering::SeqCst), 1, "M4 no remount");
             let files = if trusted {
                 adopted.list_frozen_mount_files("/workspace").await
             } else {
@@ -2936,6 +2937,15 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .await
         .expect("M3 initial Fuse participant");
     drop(created);
+    // M3 is a COLD realization drift, not wrapper loss. Replace the actual
+    // Provider so its retained guard cannot correctly satisfy the replay.
+    drop(drift_provider);
+    let drift_provider = restart_namespace_provider(
+        drift_root.path(),
+        [pc::Realization::Copy],
+        drift_mounts.clone(),
+        drift_teardowns.clone(),
+    );
     let error = match drift_provider
         .create_effective_for_effect(
             &drift_spec,
@@ -2960,16 +2970,16 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
 }
 
 #[tokio::test]
-async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent() {
+async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_convergent() {
     // Terminal Memory decision table. Causes: C1 provider is Local/Namespace;
     // C2 source is an exact handle / handle-free expected restore effect; C3
     // marker is Ready/Removing/authorized Removing/Removed; C4 receipt is
     // Fuse/Copy; C5 successor is live/foreign; C6 teardown succeeds/fails once.
-    // T1 hot Fuse uses its retained guard (one mount); T2 cold Ready and
-    // response-loss Removing reacquire exactly one Fuse guard per attempt for
+    // T1 hot Fuse uses its retained guard (one mount); T2 wrapper-loss Ready and
+    // response-loss Removing reuse exactly one Fuse guard across attempts for
     // both providers; T3 !C5 rejects before a second mount and leaves Ready;
-    // T4 an authorization-WAL + teardown failure remains retryable, and cold
-    // authorized Removing reacquires before the second disposal succeeds; T5
+    // T4 an authorization-WAL + teardown failure remains retryable, and
+    // authorized Removing retains the failed guard until disposal succeeds; T5
     // Removed is idempotent with zero remount. The provider-level
     // `terminal_memory_reconstruction_accepts_only_exact_copy_evidence` test
     // owns Copy's cold zero-remount/exact-evidence row; the shared replay helper
@@ -3136,7 +3146,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
             .await
             .expect("T2 Removing terminal preflight")
             .expect("T2 Removing participant");
-        assert_eq!(mounts.load(Ordering::SeqCst), 3, "T2 {label}");
+        assert_eq!(mounts.load(Ordering::SeqCst), 1, "T2 {label}");
         second
             .acknowledge_memory_reconciliation(
                 &terminal,
@@ -3167,7 +3177,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
             "T4 first teardown fails after authorization WAL",
         );
         assert_eq!(teardowns.load(Ordering::SeqCst), 1, "T4 {label}");
-        drop(second); // process loss retains the durable authorization, not the guard
+        drop(second); // wrapper loss retains both authorization and Provider-owned guard
 
         let replay = provider
             .prepare_terminal_effective_for_effect(
@@ -3182,7 +3192,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
             .await
             .expect("T4 authorized Removing preflight")
             .expect("T4 authorized Removing participant");
-        assert_eq!(mounts.load(Ordering::SeqCst), 4, "T4 {label} remount");
+        assert_eq!(mounts.load(Ordering::SeqCst), 1, "T4 {label} same guard");
         replay
             .dispose_for_effect(
                 &authorization,
@@ -3209,7 +3219,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_crash_convergent(
                 .is_none(),
             "T5 {label}",
         );
-        assert_eq!(mounts.load(Ordering::SeqCst), 4, "T5 {label} zero remount");
+        assert_eq!(mounts.load(Ordering::SeqCst), 1, "T5 {label} zero remount");
     }
 }
 
@@ -3218,11 +3228,12 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
     // Cause/effect table: Local/Namespace x first/last FUSE response x revoked,
     // replaced, expired, renewed, cancelled = 20 actual Pending schedules.
     // R1 entry denial => zero takeover/remount. R2 denial after response => no
-    // NEXT mount or successful reconstruction; returned guards use the existing
-    // compensation path. R3 renewal => both mounts and exact bytes. R4 dropped
-    // caller => no NEXT request; durable marker/source remain retryable. This
-    // cancellation row does not prove retention of an opaque mounter's internal
-    // in-flight resources or termination of its external mount operation.
+    // NEXT mount or successful reconstruction and no unauthorized compensation.
+    // R3 renewal => both mounts and exact bytes. R4 dropped caller => no NEXT
+    // request; the live cold Provider retains the same mount future. Authorized
+    // retry resumes/compensates only the unpublished guard, reuses any confirmed
+    // first guard, and remounts only the missing participant. Actual Provider
+    // replacement precedes the cold attempt; wrapper Drop alone is NOT restart.
     // Copy zero-remount/Removed and corrupt-evidence rows remain in the existing
     // replay tables. UTC is deliberately non-expiring; current proof owns R1/R2.
     for namespace in [false, true] {
@@ -3276,6 +3287,10 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                     .unwrap();
                 let handle = created.handle();
                 drop(created);
+                let cold_provider = provider.at_root(root.path());
+                drop(provider);
+                let provider = cold_provider;
+                provider.install_memory_mounter(mounter.clone());
                 assert_eq!(mounts.load(Ordering::SeqCst), 2);
                 let denied = pc::test_support::EffectAuthority::denied();
                 assert!(
@@ -3294,12 +3309,14 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                 let authority = pc::test_support::EffectAuthority::new(&terminal);
                 let gate = Arc::new(tokio::sync::Semaphore::new(0));
                 *mounter.response_gate.lock().unwrap() = Some((pause_at, gate.clone()));
-                let mut pending = Box::pin(provider.prepare_terminal_effective_for_effect(
-                    &spec,
-                    Some(&handle),
-                    None,
-                    &terminal,
-                    &authority,
+                let mut pending = Box::pin(tokio::task::unconstrained(
+                    provider.prepare_terminal_effective_for_effect(
+                        &spec,
+                        Some(&handle),
+                        None,
+                        &terminal,
+                        &authority,
+                    ),
                 ));
                 std::future::poll_fn(|cx| {
                     assert!(std::future::Future::poll(pending.as_mut(), cx).is_pending());
@@ -3334,11 +3351,12 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                 if !matches!(change, "renew" | "cancel") {
                     assert_eq!(
                         teardowns.load(Ordering::SeqCst),
-                        pause_at - 2,
-                        "R2 returned guards compensated"
+                        0,
+                        "R2 denied authority cannot compensate returned guards"
                     );
                 }
                 *mounter.response_gate.lock().unwrap() = None;
+                gate.add_permits(1); // the retained cancelled future still owns this gate
                 *authority.current.lock().unwrap() =
                     Some((terminal.clone(), std::time::Duration::from_secs(1)));
                 let replay = provider
@@ -3352,6 +3370,14 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                     .await
                     .unwrap()
                     .unwrap();
+                assert_eq!(
+                    mounts.load(Ordering::SeqCst),
+                    if change == "renew" { 4 } else { 5 }
+                );
+                assert_eq!(
+                    teardowns.load(Ordering::SeqCst),
+                    usize::from(change != "renew")
+                );
                 for mount in &spec.mounts {
                     assert_eq!(
                         replay

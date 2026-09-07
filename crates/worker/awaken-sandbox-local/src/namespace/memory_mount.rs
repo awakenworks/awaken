@@ -3,6 +3,20 @@ use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
 
+pub(crate) async fn prepare_memory_before_root(
+    owner: &crate::MemoryMountOwner,
+    guard: &crate::realization_marker::ProviderCreationGuard,
+) -> Result<(), pc::SandboxError> {
+    let mut state = owner.lock().await;
+    if guard.root_identity()?.is_some() {
+        state.release(|| guard.validate_before_mutation()).await
+    } else {
+        // Legacy one-shot creation has not prepared a root yet. It permits an
+        // empty owner, not adopting or clearing a retained prior participant.
+        state.require_empty()
+    }
+}
+
 /// Mount one MemoryStore requirement through the crate's single provider-neutral
 /// adapter. The guard is retained before any mode/evidence validation so every
 /// caller can compensate a partially successful external mount.
@@ -10,7 +24,7 @@ pub(crate) async fn mount_memory_requirement(
     memory_mounter: &Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
     requirement: &pc::MountRequirement,
     host_path: &Path,
-    retained_mounts: &mut Vec<Box<dyn pc::MemoryMount>>,
+    retained_mounts: &mut crate::MemoryMountState,
 ) -> Result<Option<(pc::RealizedMount, Option<pc::MemoryMaterializationEvidence>)>, pc::SandboxError>
 {
     let pc::MountSource::MemoryStore {
@@ -31,16 +45,20 @@ pub(crate) async fn mount_memory_requirement(
             requirement.mount_id
         )));
     };
-    let guard = mounter
-        .mount(
-            materialization_reference.as_deref().unwrap_or(store_id),
-            host_path,
+    let index = retained_mounts
+        .acquire(
+            mounter,
+            requirement.clone(),
+            materialization_reference
+                .as_deref()
+                .unwrap_or(store_id)
+                .to_owned(),
+            host_path.to_owned(),
             requirement.access,
         )
         .await?;
-    retained_mounts.push(guard);
     let guard = retained_mounts
-        .last()
+        .get(index)
         .expect("the acquired Memory guard was retained");
     let realization = guard.realization();
     let materialization = match (realization, guard.materialization_heads()) {
@@ -148,11 +166,11 @@ fn validate_adoption_memory_replay_spec(
 
 /// Provider-neutral Ready-adoption projection. Marker evidence and the
 /// ReadyOperationGuard remain the lifecycle authority; this carrier returns
-/// only their exact receipt projection and reacquired process-owned guards.
+/// only their exact receipt projection and the shared physical Memory owner.
 pub(crate) struct AdoptionMemoryReplay {
     pub(crate) realized: Vec<pc::RealizedMount>,
     pub(crate) materializations: Vec<pc::MemoryMaterializationEvidence>,
-    pub(crate) memory_mounts: Vec<Box<dyn pc::MemoryMount>>,
+    pub(crate) memory_mounts: crate::MemoryMountOwner,
 }
 
 /// Reproject one exact Ready receipt for either Local or Namespace adoption.
@@ -162,6 +180,7 @@ pub(crate) struct AdoptionMemoryReplay {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare_adoption_memory_replay(
     memory_mounter: &Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
+    memory_mounts: crate::MemoryMountOwner,
     root: &Path,
     current_evidence: Option<&super::realization_marker::RealizationEvidence>,
     effect_fence: Option<&pc::SandboxEffectFence>,
@@ -185,36 +204,42 @@ pub(crate) async fn prepare_adoption_memory_replay(
     }
 
     let memory_mounts = if let Some(spec) = spec {
-        let ready_operation = if realized
-            .iter()
-            .any(|mount| mount.realization == pc::Realization::Fuse)
-        {
-            let evidence = current_evidence.ok_or_else(|| {
-                pc::SandboxError::new("FUSE replay has no exact Ready realization evidence")
-            })?;
-            let effect_fence = effect_fence.ok_or_else(|| {
-                pc::SandboxError::new("FUSE replay requires its exact adoption effect fence")
-            })?;
-            Some(super::realization_marker::begin_ready_operation(
-                root,
-                evidence,
-                effect_fence,
-            )?)
-        } else {
-            None
+        let ready_operation = match (current_evidence, effect_fence) {
+            (Some(evidence), Some(effect_fence)) => Some(
+                super::realization_marker::begin_ready_operation(root, evidence, effect_fence)?,
+            ),
+            _ if realized
+                .iter()
+                .any(|mount| mount.realization == pc::Realization::Fuse) =>
+            {
+                return Err(pc::SandboxError::new(
+                    "FUSE replay requires exact Ready evidence and its adoption effect fence",
+                ));
+            }
+            _ => None,
         };
         let host_paths = host_paths.ok_or_else(|| {
             pc::SandboxError::new("Memory replay has no provider-projected host paths")
         })?;
-        replay_memory_mount_guards(memory_mounter, spec, &realized, host_paths, || {
-            match ready_operation.as_ref() {
-                Some(operation) => operation.validate_receipt_before_effect(receipt),
-                None => Ok(()),
-            }
-        })
-        .await?
+        if let Some(operation) = ready_operation.as_ref() {
+            replay_memory_mount_guards(
+                memory_mounter,
+                memory_mounts,
+                spec,
+                &realized,
+                host_paths,
+                || operation.validate_receipt_before_effect(receipt),
+            )
+            .await?
+        } else {
+            // Unfenced Copy projection stays read-only. It cannot opportunistically
+            // resume a cancelled mount or harvest a retained unpublished copy.
+            memory_mounts.lock().await.require_no_pending()?;
+            memory_mounts
+        }
     } else {
-        Vec::new()
+        memory_mounts.lock().await.require_no_pending()?;
+        memory_mounts
     };
     Ok(AdoptionMemoryReplay {
         realized,
@@ -232,7 +257,7 @@ pub(crate) struct TerminalMemoryReplay {
     pub(crate) owned_root_present: bool,
     pub(crate) realized: Vec<pc::RealizedMount>,
     pub(crate) materializations: Vec<pc::MemoryMaterializationEvidence>,
-    pub(crate) memory_mounts: Vec<Box<dyn pc::MemoryMount>>,
+    pub(crate) memory_mounts: crate::MemoryMountOwner,
 }
 
 /// Prepare the one Local/Namespace terminal Memory participant. The typed
@@ -243,6 +268,7 @@ pub(crate) struct TerminalMemoryReplay {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare_terminal_memory_replay(
     memory_mounter: &Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
+    memory_mounts: crate::MemoryMountOwner,
     root: &Path,
     fingerprint: &pc::SandboxRealizationFingerprint,
     spec: &pc::SandboxSpec,
@@ -299,6 +325,10 @@ pub(crate) async fn prepare_terminal_memory_replay(
         )
     })?;
     let Some((realization, removal)) = terminal else {
+        let state = memory_mounts.lock().await;
+        pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+            state.require_empty()
+        })?;
         return Ok(None);
     };
     let completed_receipt = if incomplete {
@@ -321,13 +351,29 @@ pub(crate) async fn prepare_terminal_memory_replay(
     };
     let owned_root_present = removal.owned_root()?.is_some();
     let memory_mounts = if realized.is_empty() || !owned_root_present {
-        pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(Vec::new()))?
-    } else {
-        replay_memory_mount_guards(memory_mounter, spec, &realized, host_paths, || {
-            pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
-                removal.validate_before_reconstruction(terminal_effect_fence)
+        memory_mounts
+            .lock()
+            .await
+            .release_unconfirmed(|| {
+                pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+                    removal.validate_before_reconstruction(terminal_effect_fence)
+                })
             })
-        })
+            .await?;
+        pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(memory_mounts))?
+    } else {
+        replay_memory_mount_guards(
+            memory_mounter,
+            memory_mounts,
+            spec,
+            &realized,
+            host_paths,
+            || {
+                pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+                    removal.validate_before_reconstruction(terminal_effect_fence)
+                })
+            },
+        )
         .await?
     };
     Ok(Some(TerminalMemoryReplay {
@@ -340,17 +386,18 @@ pub(crate) async fn prepare_terminal_memory_replay(
     }))
 }
 
-/// Reacquire only process-owned FUSE guards named by an exact Ready receipt.
-/// Copy bytes and heads remain durable projections and are never remounted.
-/// Any mismatch tears down every guard acquired by this replay; teardown faults
-/// are preserved alongside the original cause.
+/// Reuse exact live FUSE guards or reacquire them from an exact Ready receipt.
+/// Copy bytes, original heads and confirmed guards are never remounted/harvested
+/// here. An admitted retry compensates unpublished attempts; denied or failed
+/// compensation remains reachable from the live Provider for another retry.
 pub(crate) async fn replay_memory_mount_guards<F>(
     memory_mounter: &Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
+    memory_mounts: crate::MemoryMountOwner,
     spec: &pc::SandboxSpec,
     realized: &[pc::RealizedMount],
     host_paths: &[PathBuf],
     mut validate_before_mount: F,
-) -> Result<Vec<Box<dyn pc::MemoryMount>>, pc::SandboxError>
+) -> Result<crate::MemoryMountOwner, pc::SandboxError>
 where
     F: FnMut() -> Result<(), pc::SandboxError>,
 {
@@ -359,7 +406,10 @@ where
             "Memory replay has no exact Ready realization or host path for the frozen mount set",
         ));
     }
-    let mut retained_mounts = Vec::new();
+    let mut retained_mounts = memory_mounts.lock().await;
+    retained_mounts
+        .prepare_replay(spec, host_paths, &mut validate_before_mount)
+        .await?;
     let replay = async {
         for ((requirement, expected), host_path) in spec.mounts.iter().zip(realized).zip(host_paths)
         {
@@ -388,6 +438,7 @@ where
                     "Memory replay changed the exact Ready realization",
                 ));
             }
+            retained_mounts.confirm(requirement, host_path);
         }
         // Empty/Copy-only replay also requires admission. Keep this final
         // check inside the same compensation owner as individual FUSE waits.
@@ -395,29 +446,19 @@ where
     }
     .await;
     match replay {
-        Ok(()) => Ok(retained_mounts),
-        Err(cause) => match compensate_memory_mounts(retained_mounts).await {
+        Ok(()) => {
+            drop(retained_mounts);
+            Ok(memory_mounts)
+        }
+        Err(cause) => match retained_mounts
+            .prepare_replay(spec, host_paths, &mut validate_before_mount)
+            .await
+        {
             Ok(()) => Err(cause),
             Err(teardown) => Err(pc::SandboxError::new(format!(
                 "Memory replay failed: {cause}; Memory replay teardown failed: {teardown}"
             ))),
         },
-    }
-}
-
-/// Consume a temporary all-or-retain participant set. An all-Ok teardown makes
-/// normal drop safe; any failure deliberately retains the complete set for the
-/// process lifetime because no Sandbox owner exists to retry it. This is the
-/// same fail-closed ownership rule as container staging compensation.
-pub(crate) async fn compensate_memory_mounts(
-    mounts: Vec<Box<dyn pc::MemoryMount>>,
-) -> Result<(), pc::SandboxError> {
-    match super::teardown_memory_mounts(&mounts, || Ok(())).await {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            std::mem::forget(mounts);
-            Err(error)
-        }
     }
 }
 

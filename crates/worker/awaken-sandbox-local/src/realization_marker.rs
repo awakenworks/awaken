@@ -544,6 +544,14 @@ impl ProviderCreationGuard {
         }
     }
 
+    pub(crate) fn validate_memory_replay(&self) -> Result<(), pc::SandboxError> {
+        self.validate_before_mutation()?;
+        if let Self::Current(guard) = self {
+            execution_participant::require_quiescent(&guard.marker)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn abort_creation(self) -> Result<(), pc::SandboxError> {
         match self {
             Self::Current(guard) => (*guard).abort_creation(),

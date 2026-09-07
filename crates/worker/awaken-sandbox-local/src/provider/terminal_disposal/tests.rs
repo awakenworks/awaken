@@ -79,18 +79,22 @@ async fn physical_disposal_rechecks_current_authority_after_every_retained_wait(
             } else {
                 None
             };
-            let mut pending = Box::pin(crate::dispose_terminal_realization(
-                &sandbox.memory_mounts,
-                sandbox.root.root(),
-                &sandbox.secret_paths,
-                &sandbox.terminal_removal,
-                &authorization,
-                &authority,
-                async {
-                    if boundary == "quiescence" {
-                        let _permit = gate.acquire().await.unwrap();
-                    }
-                },
+            // Ignore cooperative-budget yields in this bounded fixture: Pending
+            // must be the selected physical wait, not an earlier scheduler yield.
+            let mut pending = Box::pin(tokio::task::unconstrained(
+                crate::dispose_terminal_realization(
+                    &sandbox.memory_mounts,
+                    sandbox.root.root(),
+                    &sandbox.secret_paths,
+                    &sandbox.terminal_removal,
+                    &authorization,
+                    &authority,
+                    async {
+                        if boundary == "quiescence" {
+                            let _permit = gate.acquire().await.unwrap();
+                        }
+                    },
+                ),
             ));
             std::future::poll_fn(|cx| {
                 assert!(
@@ -100,6 +104,16 @@ async fn physical_disposal_rechecks_current_authority_after_every_retained_wait(
                 std::task::Poll::Ready(())
             })
             .await;
+            assert_eq!(
+                calls[0].load(Ordering::SeqCst),
+                usize::from(matches!(boundary, "first-mount" | "last-mount")),
+                "entered {boundary}"
+            );
+            assert_eq!(
+                calls[1].load(Ordering::SeqCst),
+                usize::from(boundary == "last-mount"),
+                "entered {boundary}"
+            );
             let mut current = authorization.effect_fence().clone();
             current.expires_at_unix_ms += 1;
             if change == "replace" {
@@ -131,11 +145,13 @@ async fn physical_disposal_rechecks_current_authority_after_every_retained_wait(
             }
             assert_eq!(
                 calls[0].load(Ordering::SeqCst),
-                usize::from(change == "renew" || matches!(boundary, "first-mount" | "last-mount"))
+                usize::from(change == "renew" || matches!(boundary, "first-mount" | "last-mount")),
+                "first teardown {boundary}/{change}/{expiry}"
             );
             assert_eq!(
                 calls[1].load(Ordering::SeqCst),
-                usize::from(change == "renew" || boundary == "last-mount")
+                usize::from(change == "renew" || boundary == "last-mount"),
+                "second teardown {boundary}/{change}/{expiry}"
             );
             if change != "renew" {
                 assert_eq!(std::fs::read(&secret).unwrap(), b"synthetic-material");
