@@ -316,7 +316,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness store_deadline_is_monotonic_saturating_and_never_wraps
   run_kani awaken-credential-materializer \
     --harness exact_vault_revision_accepts_only_a_positive_matching_or_unpinned_source \
-    --harness platform_relay_local_gate_admits_only_exact_platform_relay
+    --harness platform_relay_local_gate_admits_only_exact_platform_relay \
+    --harness new_materialization_admits_only_active_credential_status
   run_kani awaken-executable-agent-contract \
     --harness requested_agent_profile_accepts_only_the_same_positive_revision \
     --harness executable_snapshot_pin_is_complete_exact_and_non_mixing \
