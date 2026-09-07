@@ -1352,7 +1352,10 @@ impl WorkerNode {
                     .expect("WorkerControlClient validates applied heartbeat TTL"),
             );
         if lifecycle.session_environment_provider.is_some()
-            && environment_proof_started.elapsed() >= heartbeat_timing.proof_window()
+            && !lifecycle::environment_proof_is_fresh(
+                environment_proof_started.elapsed(),
+                heartbeat_timing.proof_window(),
+            )
         {
             let _ = tokio::time::timeout(
                 startup_timing.request_timeout(),

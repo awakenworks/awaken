@@ -153,7 +153,7 @@ pub(super) async fn configure_session(
         let actual = awaken_acp_contract::capability_fingerprint(
             &expected.adapter_id,
             &expected.adapter_version,
-            &negotiated,
+            negotiated,
         );
         if actual != expected.fingerprint {
             return Err(AcpError::Frame(
