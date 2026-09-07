@@ -8,41 +8,31 @@
 
 use std::sync::Arc;
 
-use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator as _;
-use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
-use awaken_dispatch::{ClaimedCommitApplier, ClaimedRunCommit, DispatchQueue, RunDispatch};
+use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
+use awaken_dispatch::{
+    ClaimedOperationCoordinatorResolver, ClaimedRunCommit, DispatchQueue, RunDispatch,
+};
 
 use crate::host::HostError;
 use crate::host::SharedHost;
-struct HostCommitApplier(Arc<SharedHost>);
-
-async fn apply_host_operation(
-    host: &Arc<SharedHost>,
-    trusted_dispatch: &RunDispatch,
-    operation: CommitOperation,
-) -> Result<CommitReceipt, HostError> {
-    // Physical commit authority is Session-scoped. A child keeps its logical
-    // Thread identity in `operation.commit`, while the guarded dispatch selects
-    // the parent Session partition. Terminal observation deliberately does not
-    // run here: the authenticated dispatch-settlement boundary is the sole
-    // fallible owner that can retain the queue row until observation succeeds.
-    let session_thread = trusted_dispatch.session_thread_id();
-    let commit = host.commit_for_read(&session_thread.0).await?;
-    commit
-        .commit_operation(operation)
-        .await
-        .map_err(|error| HostError::internal(error.to_string()))
-}
+struct HostOperationCoordinatorResolver(Arc<SharedHost>);
 
 #[async_trait::async_trait]
-impl ClaimedCommitApplier for HostCommitApplier {
-    async fn apply(
+impl ClaimedOperationCoordinatorResolver for HostOperationCoordinatorResolver {
+    async fn resolve(
         &self,
         trusted_dispatch: &RunDispatch,
-        operation: CommitOperation,
-    ) -> Result<CommitReceipt, awaken_dispatch::ApplicationError> {
-        apply_host_operation(&self.0, trusted_dispatch, operation)
+    ) -> Result<Arc<dyn OperationCoordinator>, awaken_dispatch::ApplicationError> {
+        // Physical commit authority is Session-scoped. A child keeps its logical
+        // Thread identity in the operation, while the guarded dispatch selects
+        // the parent Session partition. This adapter can only resolve the
+        // existing Coordinator; ClaimedCommitService remains the sole caller of
+        // its authoritative write method.
+        let session_thread = trusted_dispatch.session_thread_id();
+        self.0
+            .commit_for_read(&session_thread.0)
             .await
+            .map(|coordinator| coordinator as Arc<dyn OperationCoordinator>)
             .map_err(map_host_error)
     }
 }
@@ -69,9 +59,9 @@ pub fn claimed_commit_service(
     dispatch: Arc<dyn DispatchQueue>,
     host: Arc<SharedHost>,
 ) -> awaken_dispatch::ClaimedCommitService {
-    awaken_dispatch::ClaimedCommitService::with_applier(
+    awaken_dispatch::ClaimedCommitService::with_coordinator_resolver(
         dispatch,
-        Arc::new(HostCommitApplier(host)),
+        Arc::new(HostOperationCoordinatorResolver(host)),
     )
 }
 
@@ -89,7 +79,7 @@ mod tests {
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_agent_contract::thread::commit::RunDisposition;
     use awaken_agent_contract::thread::commit::operation::{
-        CommitOperationId, commit_payload_hash,
+        CommitOperation, CommitOperationId, CommitReceipt, commit_payload_hash,
     };
     use awaken_agent_contract::thread::commit::staged::ThreadCommit;
     use awaken_ext_memory::MemoryExtractionStatus;
@@ -104,6 +94,22 @@ mod tests {
     const PRIMARY_MODEL_REF: &str = "claimed-primary-model";
     const OVERRIDE_MODEL_REF: &str = "claimed-override-model";
     const WORKSPACE_ID: &str = "claimed-memory-workspace";
+
+    /// Test-only direct setup seam for scenarios whose subject is terminal
+    /// observation after committed truth already exists. Production claimed
+    /// writes always enter through `ClaimedCommitService` below.
+    async fn apply_host_operation(
+        host: &Arc<SharedHost>,
+        trusted_dispatch: &RunDispatch,
+        operation: CommitOperation,
+    ) -> Result<CommitReceipt, HostError> {
+        let session_thread = trusted_dispatch.session_thread_id();
+        host.commit_for_read(&session_thread.0)
+            .await?
+            .commit_operation(operation)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))
+    }
 
     fn claimed_memory_snapshot() -> (
         awaken_runtime_contract::ExecutableAgentSnapshot,
@@ -629,8 +635,11 @@ mod tests {
         // physical partition; E7 exact replay is duplicate and creates no second
         // extraction attempt or Memory version. Constraints: the RunDispatch is built
         // by the production child dispatch owner and accepted only through
-        // CommitEpochGuard; a rejected rule leaves Thread version zero, and only the
-        // existing settlement observer consumes the same guarded dispatch afterward.
+        // CommitEpochGuard. The deployment adapter receives no CommitOperation and
+        // can only return the existing OperationCoordinator selected by that trusted
+        // dispatch; ClaimedCommitService owns the only write invocation. A rejected
+        // rule leaves Thread version zero, and only the existing settlement observer
+        // consumes the same guarded dispatch afterward.
         //
         // | Rule | C1 | C2 | C3 | C4       | C5     | C6/C7 | effects          |
         // | R1   | N  | Y  | Y  | any      | any    | exact | E1               |

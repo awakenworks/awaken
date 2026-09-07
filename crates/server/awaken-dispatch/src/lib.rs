@@ -48,8 +48,9 @@ mod worker_context;
 
 pub use any::AnyDispatchStore;
 pub use application::{
-    ApplicationError, ApplicationErrorKind, ClaimedCommitApplier, ClaimedCommitService,
-    DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
+    ApplicationError, ApplicationErrorKind, ClaimedCommitService,
+    ClaimedOperationCoordinatorResolver, DurableDispatchStatus, DurableRunOperations,
+    DurableSupersedeResult,
 };
 pub use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,

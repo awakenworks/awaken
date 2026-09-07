@@ -1155,7 +1155,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 let matched = claimed
                     .pending
                     .iter()
-                    .find(|p| p.correlation_id == ticket.correlation_id)
+                    .find(|input| {
+                        pending_input_admission(false, Some(&ticket), input)
+                            == PendingInputAdmission::Deliver
+                    })
                     .cloned();
                 match matched {
                     Some(input) => {
@@ -1243,7 +1246,11 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         .await?
                         .into_iter()
                         .map(|r| r.input)
-                        .filter(|input| input.run_id.0.is_empty())
+                        .filter(|input| {
+                            input.run_id.0.is_empty()
+                                && pending_input_admission(false, None, input)
+                                    == PendingInputAdmission::Deliver
+                        })
                         .collect();
                     let mut activation = activation;
                     // Prepend each immediate fresh *input*. Claimed input with a
@@ -1255,7 +1262,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     for input in claimed
                         .pending
                         .iter()
-                        .filter(|input| input.correlation_id.is_empty())
+                        .filter(|input| {
+                            pending_input_admission(false, None, input)
+                                == PendingInputAdmission::Deliver
+                        })
                         .chain(unbound.iter())
                     {
                         if let ResumeResult::Input(text) = &input.result {
@@ -1586,9 +1596,10 @@ fn recovered_attempt_disposition(
     match (state, ticket) {
         (Some(RunState::Awaiting), Some(ticket)) => {
             let will_execute = ticket.reason() == AwaitReason::ScheduledAction
-                || pending
-                    .iter()
-                    .any(|input| input.correlation_id == ticket.correlation_id);
+                || pending.iter().any(|input| {
+                    pending_input_admission(false, Some(&ticket), input)
+                        == PendingInputAdmission::Deliver
+                });
             Ok(will_execute.then(|| RunDisposition::awaiting(ticket)))
         }
         (Some(RunState::Awaiting), None) => {
@@ -1608,6 +1619,52 @@ fn recovered_attempt_disposition(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingInputAdmission {
+    Deliver,
+    ConsumedByCommittedTruth,
+}
+
+#[must_use]
+const fn classify_pending_input_admission(
+    committed_terminal: bool,
+    committed_ticket_exists: bool,
+    correlation_matches_ticket: bool,
+    input_is_unbound: bool,
+) -> PendingInputAdmission {
+    if committed_terminal {
+        PendingInputAdmission::ConsumedByCommittedTruth
+    } else if committed_ticket_exists {
+        if correlation_matches_ticket {
+            PendingInputAdmission::Deliver
+        } else {
+            PendingInputAdmission::ConsumedByCommittedTruth
+        }
+    } else if input_is_unbound {
+        PendingInputAdmission::Deliver
+    } else {
+        PendingInputAdmission::ConsumedByCommittedTruth
+    }
+}
+
+/// One committed-truth rule shared by fresh execution, awaiting resume and
+/// recovery. A bound signal remains deliverable only while the current ticket
+/// retains its exact correlation; a commit that ends the Run or advances the
+/// ticket makes the old signal a settlement-cleanup concern, never executable
+/// input. Unbound input is admitted only to a fresh Run.
+fn pending_input_admission(
+    committed_terminal: bool,
+    ticket: Option<&awaken_agent_contract::agent::awaiting::ResumeTicket>,
+    input: &PendingInput,
+) -> PendingInputAdmission {
+    classify_pending_input_admission(
+        committed_terminal,
+        ticket.is_some(),
+        ticket.is_some_and(|ticket| ticket.correlation_id == input.correlation_id),
+        input.correlation_id.is_empty(),
+    )
+}
+
 /// Map a settled executor state to the dispatch outcome the worker commits.
 ///
 /// `execute`/`resume` only ever return an awaiting or ended state; `Running` exists
@@ -1625,6 +1682,29 @@ fn settle_outcome(state: &RunState) -> Result<DispatchOutcome, Error> {
             ),
         )),
     }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn pending_signal_is_deliverable_only_without_consuming_commit() {
+    // Causes: C1 committed truth is terminal; C2 it retains an awaiting ticket;
+    // C3 the signal matches that exact ticket; C4 the input is unbound. Effects:
+    // E1 deliver only for a nonterminal exact ticket match or a nonterminal fresh
+    // unbound input; E2 every terminal, stale-correlation, and orphan-bound signal
+    // is consumed logically by committed truth and can only be deleted by the
+    // existing settlement transaction. Rules: R1=C1=>E2; R2=!C1+C2+C3=>E1;
+    // R3=!C1+C2+!C3=>E2; R4=!C1+!C2+C4=>E1;
+    // R5=!C1+!C2+!C4=>E2. C4 is irrelevant while C2 is true.
+    let terminal: bool = kani::any();
+    let ticket: bool = kani::any();
+    let correlation_matches: bool = kani::any();
+    let unbound: bool = kani::any();
+    let disposition =
+        classify_pending_input_admission(terminal, ticket, correlation_matches, unbound);
+    assert_eq!(
+        disposition == PendingInputAdmission::Deliver,
+        !terminal && ((ticket && correlation_matches) || (!ticket && unbound))
+    );
 }
 
 #[cfg(kani)]
