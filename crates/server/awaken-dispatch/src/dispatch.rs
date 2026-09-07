@@ -480,7 +480,7 @@ pub(crate) fn validate_session_resume_evidence<'a>(
     Ok(exact)
 }
 
-#[cfg(feature = "durable")]
+#[cfg(any(feature = "durable", kani))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExactClaimMode {
     Runnable,
@@ -489,18 +489,41 @@ pub(crate) enum ExactClaimMode {
     RetryExhausted { max_attempts: u64 },
 }
 
-#[cfg(feature = "durable")]
+#[cfg(any(feature = "durable", kani))]
 impl ExactClaimMode {
+    #[cfg(feature = "durable")]
     pub(crate) fn bypasses_execution_admission(self) -> bool {
         !matches!(self, Self::Runnable)
     }
 
+    #[cfg(feature = "durable")]
     pub(crate) fn retry_limit(self) -> Option<u64> {
         match self {
             Self::RetryExhausted { max_attempts } => Some(max_attempts),
             Self::Runnable | Self::ReservationRecovery | Self::TerminalRecovery => None,
         }
     }
+}
+
+/// Advance one claim while moving its already-persisted request through the
+/// canonical transition unchanged. The mode comes from locked row evidence;
+/// this function accepts no newly resolved request that could replace the
+/// dispatch's frozen execution pin.
+#[cfg(any(feature = "durable", kani))]
+pub(crate) fn claim_with_frozen<T>(
+    current: awaken_dispatch_contract::DispatchTransition,
+    frozen: T,
+    mode: ExactClaimMode,
+) -> Result<
+    Option<(awaken_dispatch_contract::DispatchTransition, T)>,
+    awaken_dispatch_contract::DispatchTransitionError,
+> {
+    let claimed = if mode == ExactClaimMode::ReservationRecovery {
+        current.recover_reservation()
+    } else {
+        current.claim()
+    }?;
+    Ok(claimed.map(|transition| (transition, frozen)))
 }
 
 /// Select the only exact-claim mode that may own a Session reservation.
@@ -575,4 +598,106 @@ pub(crate) fn installed_worker_credential_capabilities(
     awaken_dispatch_contract::worker_credential_realization_capabilities(worker).map_err(
         |error| DispatchError::Rejected(format!("Worker capability evidence is invalid: {error}")),
     )
+}
+
+#[cfg(kani)]
+mod claim_binding_proofs {
+    use super::*;
+
+    fn arbitrary_state() -> DispatchState {
+        match kani::any::<u8>() % 7 {
+            0 => DispatchState::Reserved,
+            1 => DispatchState::ReservationLeased,
+            2 => DispatchState::Pending,
+            3 => DispatchState::Leased,
+            4 => DispatchState::Awaiting,
+            5 => DispatchState::DeadLetter,
+            _ => DispatchState::Superseded,
+        }
+    }
+
+    fn arbitrary_mode() -> ExactClaimMode {
+        match kani::any::<u8>() % 4 {
+            0 => ExactClaimMode::Runnable,
+            1 => ExactClaimMode::ReservationRecovery,
+            2 => ExactClaimMode::TerminalRecovery,
+            _ => ExactClaimMode::RetryExhausted {
+                max_attempts: kani::any(),
+            },
+        }
+    }
+
+    #[kani::proof]
+    fn dispatch_claim_preserves_every_frozen_binding() {
+        // Cause/effect graph: C1 selects ordinary, terminal, exhausted, or
+        // reservation recovery; C2 the row is valid or invalid for that path;
+        // C3 the epoch is incrementable or exhausted; C4 the frozen binding has
+        // arbitrary primary, provider, route, and fallback-order coordinates.
+        // Effects: E1 a successful claim returns every C4 coordinate exactly;
+        // E2 its phase is Leased or ReservationLeased according to C1; E3 its
+        // epoch is exactly old+1 and cancellation is unchanged; E4 an invalid
+        // phase is a no-op; E5 an exhausted valid phase fails closed.
+        //
+        // | Rule | Path | Phase valid | Epoch | Effects |
+        // | R1 | ordinary/terminal/exhausted | yes | open | E1+E2+E3 |
+        // | R2 | reservation | yes | open | E1+E2+E3 |
+        // | R3 | any | no | any | E4 |
+        // | R4 | any | yes | max | E5 |
+        //
+        // Constraint: the generic production kernel cannot inspect or rebuild
+        // `T`; this four-axis witness makes a mixed or reordered binding visible
+        // while the Rust move preserves the complete `RunDispatch` in callers.
+        let state = awaken_dispatch_contract::DispatchTransition {
+            state: arbitrary_state(),
+            lease_epoch: kani::any(),
+            cancellation_requested: kani::any(),
+        };
+        let mode = arbitrary_mode();
+        let frozen = [
+            kani::any::<u8>(),
+            kani::any::<u8>(),
+            kani::any::<u8>(),
+            kani::any::<u8>(),
+        ];
+        let result = claim_with_frozen(state, frozen, mode);
+        let reservation_recovery = mode == ExactClaimMode::ReservationRecovery;
+        let valid = if reservation_recovery {
+            matches!(
+                state.state,
+                DispatchState::Reserved | DispatchState::ReservationLeased
+            )
+        } else {
+            matches!(
+                state.state,
+                DispatchState::Pending | DispatchState::Leased | DispatchState::Awaiting
+            )
+        };
+
+        if !valid {
+            assert_eq!(result, Ok(None), "R3/E4");
+        } else if state.lease_epoch == u64::MAX {
+            assert_eq!(
+                result,
+                Err(awaken_dispatch_contract::DispatchTransitionError::LeaseEpochExhausted),
+                "R4/E5"
+            );
+        } else {
+            let (claimed, returned) = result.unwrap().expect("R1-R2 successful claim");
+            assert_eq!(returned, frozen, "R1-R2/E1");
+            assert_eq!(
+                claimed.state,
+                if reservation_recovery {
+                    DispatchState::ReservationLeased
+                } else {
+                    DispatchState::Leased
+                },
+                "R1-R2/E2"
+            );
+            assert_eq!(claimed.lease_epoch, state.lease_epoch + 1, "R1-R2/E3");
+            assert_eq!(
+                claimed.cancellation_requested, state.cancellation_requested,
+                "R1-R2/E3"
+            );
+        }
+    }
 }

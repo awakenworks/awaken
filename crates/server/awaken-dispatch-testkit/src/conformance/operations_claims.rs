@@ -360,6 +360,22 @@ async fn exact_claim_recovery_and_fencing(
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
+    // Cause/effect graph: C1 the durable request freezes an exact credential,
+    // provider, route, primary and ordered fallback; C2 a fresh claim succeeds;
+    // C3 the first lease is still live or exactly at its boundary; C4 it is
+    // strictly expired and another owner reclaims it. Effects: E1 C2 returns
+    // the complete persisted request; E2 C3 admits no replacement owner; E3 C4
+    // returns the byte-equivalent frozen request under exactly epoch+1; E4 the
+    // old epoch is fenced and the new epoch settles.
+    //
+    // | Rule | Claim state | Time | Effects |
+    // | R1 | Pending | fresh | E1 |
+    // | R2 | Leased | live/equal deadline | E2 |
+    // | R3 | Leased | strictly expired | E3+E4 |
+    //
+    // Constraint: Memory, SQLite and PostgreSQL invoke this one table; the
+    // stored request is the sole binding authority and no retry-time resolver
+    // or backend-specific projection is permitted.
     clock.set(0);
     let target = run_id(ns, "target");
     let unrelated = run_id(ns, "unrelated");
@@ -367,8 +383,33 @@ async fn exact_claim_recovery_and_fencing(
         .enqueue(dispatch(ns, "unrelated", "unrelated-thread"))
         .await
         .expect("enqueue unrelated conformance run");
+    let holder = PlaintextHolder::new(
+        PlaintextBoundary::Worker,
+        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    );
+    let capabilities = CredentialRealizationCapabilities {
+        holders: [holder.clone()].into_iter().collect(),
+        material_sources: [CredentialMaterialSource::ControlPlaneReference]
+            .into_iter()
+            .collect(),
+        realization_kinds: [CredentialRealizationKind::WorkerProviderAdapter]
+            .into_iter()
+            .collect(),
+        recipient_bound_envelopes: false,
+        extension_consumers: Default::default(),
+        alternatives: Vec::new(),
+    };
+    let mut frozen = credential_dispatch(ns, "target", "target-thread", &holder);
+    frozen.activation.snapshot.resolved_spec.model_candidates = vec![credential_candidate(
+        ns,
+        &format!("{ns}-fallback-provider"),
+        "fallback-model",
+        &format!("{ns}-fallback-credential"),
+        &format!("{ns}-fallback-route@2"),
+        &holder,
+    )];
     store
-        .enqueue(dispatch(ns, "target", "target-thread"))
+        .enqueue(frozen.clone())
         .await
         .expect("enqueue exact-claim target");
     if let Some(depth) = store.runnable_depth(0).await.expect("query runnable depth") {
@@ -376,17 +417,25 @@ async fn exact_claim_recovery_and_fencing(
     }
 
     let first = store
-        .claim_run(&target, "conformance-a", LEASE_MS, 0, &Default::default())
+        .claim_run(&target, "conformance-a", LEASE_MS, 0, &capabilities)
         .await
         .expect("exact claim succeeds")
         .expect("target is runnable");
-    assert_eq!(first.request.run_id(), &target);
+    assert_eq!(first.request, frozen, "R1/E1 exact frozen request");
     assert_eq!(first.lease.owner, "conformance-a");
     assert!(!first.recovered, "a fresh exact claim is not recovery");
     assert!(first.lease.epoch > 0, "a claimed lease has a fence epoch");
+    assert_eq!(
+        first.credential_bindings.len(),
+        2,
+        "R1/E1 primary and fallback receive exact attempt bindings"
+    );
     assert!(
-        first.credential_bindings.is_empty(),
-        "A1 a credential-free publication carries no attempt binding"
+        first
+            .credential_bindings
+            .iter()
+            .all(|binding| binding.claim_epoch == first.lease.epoch),
+        "R1/E1 every attempt binding is fenced by the fresh claim"
     );
 
     let other = store
@@ -412,7 +461,7 @@ async fn exact_claim_recovery_and_fencing(
                     "conformance-b",
                     LEASE_MS,
                     first.lease.expires_ms,
-                    &Default::default(),
+                    &capabilities,
                 )
                 .await
                 .expect("live-boundary claim")
@@ -427,13 +476,34 @@ async fn exact_claim_recovery_and_fencing(
             "conformance-b",
             LEASE_MS,
             first.lease.expires_ms.saturating_add(1),
-            &Default::default(),
+            &capabilities,
         )
         .await
         .expect("recovery claim succeeds")
         .expect("expired target is recoverable");
     assert!(recovered.recovered, "an expired running lease is recovery");
+    assert_eq!(recovered.request, first.request, "R3/E3 frozen request");
     assert_eq!(recovered.lease.epoch, first.lease.epoch + 1);
+    assert_eq!(
+        recovered
+            .credential_bindings
+            .iter()
+            .map(|binding| (&binding.candidate_fingerprint, &binding.credential))
+            .collect::<Vec<_>>(),
+        first
+            .credential_bindings
+            .iter()
+            .map(|binding| (&binding.candidate_fingerprint, &binding.credential))
+            .collect::<Vec<_>>(),
+        "R3/E3 reclaim retains the ordered candidate and credential identities"
+    );
+    assert!(
+        recovered
+            .credential_bindings
+            .iter()
+            .all(|binding| binding.claim_epoch == recovered.lease.epoch),
+        "R3/E4 reclaim re-fences every exact binding to the new epoch"
+    );
     assert_eq!(
         store
             .settle(&target, first.lease.epoch, DispatchOutcome::Done, &[])

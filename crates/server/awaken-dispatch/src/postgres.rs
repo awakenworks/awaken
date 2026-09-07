@@ -25,7 +25,7 @@ use crate::dispatch::{
     DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode,
     Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SessionChildAdmission,
     SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
-    SettleOutcome, SubmitOptions, can_admit_attempt_credentials,
+    SettleOutcome, SubmitOptions, can_admit_attempt_credentials, claim_with_frozen,
     classify_completed_session_run_reservation, classify_exact_claim_mode,
     classify_live_session_run_reservation, classify_session_run_reservation_activation,
     compile_attempt_credential_bindings, ensure_session_child_capacity,

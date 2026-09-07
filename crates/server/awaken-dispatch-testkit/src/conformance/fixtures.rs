@@ -74,41 +74,55 @@ fn current_session_command_with_operation(
 
 fn credential_dispatch(ns: &str, run: &str, thread: &str, holder: &PlaintextHolder) -> RunDispatch {
     let mut request = dispatch(ns, run, thread);
-    request.activation.snapshot.resolved_spec.model_binding =
-        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
-            ModelBinding::new(format!("{ns}-provider"), "model", "genai"),
-            format!("{ns}-provider@1"),
-            format!("{ns}-route@1"),
-            ns,
-            Some(
-                CredentialAccess::new(
-                    CredentialRef {
-                        id: format!("{ns}-credential"),
-                        revision: 7,
-                    },
-                    CredentialMaterialSource::ControlPlaneReference,
-                    CredentialUsage::ProviderAdapter,
-                    CredentialExecutionPolicy::exact(
-                        holder.clone(),
-                        ModelExposurePolicy::Forbidden,
-                    ),
-                )
-                .with_target(awaken_runtime_contract::CredentialTarget::new(
-                    awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
-                    format!("{ns}-provider"),
-                )),
-            ),
-            InferenceEndpoint {
-                adapter_kind: "openai".into(),
-                api_dialect: "open_ai_chat".into(),
-                base_url: "https://provider.invalid/v1".into(),
-                upstream_model: "model".into(),
-                processing_placement: None,
-            },
-        )
-        .expect("testkit provider candidate is coherent");
+    request.activation.snapshot.resolved_spec.model_binding = credential_candidate(
+        ns,
+        &format!("{ns}-provider"),
+        "model",
+        &format!("{ns}-credential"),
+        &format!("{ns}-route@1"),
+        holder,
+    );
     request.inference_plaintext_holder = Some(holder.clone());
     request
+}
+
+fn credential_candidate(
+    workspace_id: &str,
+    provider_id: &str,
+    model_id: &str,
+    credential_id: &str,
+    route_ref: &str,
+    holder: &PlaintextHolder,
+) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
+    awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
+        ModelBinding::new(provider_id, model_id, "genai"),
+        format!("{provider_id}@1"),
+        route_ref,
+        workspace_id,
+        Some(
+            CredentialAccess::new(
+                CredentialRef {
+                    id: credential_id.to_string(),
+                    revision: 7,
+                },
+                CredentialMaterialSource::ControlPlaneReference,
+                CredentialUsage::ProviderAdapter,
+                CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
+            )
+            .with_target(awaken_runtime_contract::CredentialTarget::new(
+                awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                provider_id,
+            )),
+        ),
+        InferenceEndpoint {
+            adapter_kind: "openai".into(),
+            api_dialect: "open_ai_chat".into(),
+            base_url: "https://provider.invalid/v1".into(),
+            upstream_model: model_id.into(),
+            processing_placement: None,
+        },
+    )
+    .expect("testkit provider candidate is coherent")
 }
 
 fn ready_dispatch_worker(ns: &str, suffix: &str) -> WorkerSnapshot {
