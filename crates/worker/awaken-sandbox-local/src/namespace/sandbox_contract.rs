@@ -309,9 +309,8 @@ impl pc::Sandbox for NamespaceSandbox {
             &self.secret_paths,
             &self.terminal_removal,
             authorization,
+            self.control_publication.close_for_dispose(),
         )
-        .await?;
-        self.control_publication.close_for_dispose().await;
-        Ok(())
+        .await
     }
 }

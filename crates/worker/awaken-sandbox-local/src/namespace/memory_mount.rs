@@ -404,7 +404,7 @@ where
 pub(crate) async fn compensate_memory_mounts(
     mounts: Vec<Box<dyn pc::MemoryMount>>,
 ) -> Result<(), pc::SandboxError> {
-    match super::teardown_memory_mounts(&mounts).await {
+    match super::teardown_memory_mounts(&mounts, || Ok(())).await {
         Ok(()) => Ok(()),
         Err(error) => {
             std::mem::forget(mounts);

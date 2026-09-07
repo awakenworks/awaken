@@ -879,7 +879,7 @@ impl NamespaceProvider {
                 memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
                 memory_mounter: self.memory_mounter.clone(),
                 realization,
-                terminal_removal: std::sync::Mutex::new(None),
+                terminal_removal: tokio::sync::Mutex::new(None),
                 owned_paths: std::sync::Mutex::new(
                     spec.mounts
                         .iter()
@@ -1075,7 +1075,7 @@ impl NamespaceProvider {
             memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             memory_mounter: self.memory_mounter.clone(),
             realization,
-            terminal_removal: std::sync::Mutex::new(None),
+            terminal_removal: tokio::sync::Mutex::new(None),
             owned_paths: std::sync::Mutex::new(
                 spec.mounts
                     .iter()
@@ -1227,7 +1227,7 @@ impl NamespaceProvider {
             memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             memory_mounter: self.memory_mounter.clone(),
             realization: crate::realization_marker::LiveRealization::Current(realization),
-            terminal_removal: std::sync::Mutex::new(Some(removal)),
+            terminal_removal: tokio::sync::Mutex::new(Some(removal)),
             owned_paths: std::sync::Mutex::new(owned_paths),
             adopted_handle: None,
         }))
@@ -1386,7 +1386,7 @@ impl NamespaceProvider {
             memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             memory_mounter: self.memory_mounter.clone(),
             realization,
-            terminal_removal: std::sync::Mutex::new(None),
+            terminal_removal: tokio::sync::Mutex::new(None),
             owned_paths: std::sync::Mutex::new(handle.owned_paths().unwrap_or_default().to_vec()),
             adopted_handle: handle.restoration().map(|_| handle.clone()),
         })
@@ -1431,7 +1431,7 @@ pub struct NamespaceSandbox {
     memory_mounter: Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
     /// One coherent marker/legacy realization authority.
     realization: crate::realization_marker::LiveRealization,
-    terminal_removal: std::sync::Mutex<Option<crate::realization_marker::RemovalGuard>>,
+    terminal_removal: tokio::sync::Mutex<Option<crate::realization_marker::RemovalGuard>>,
     owned_paths: std::sync::Mutex<Vec<String>>,
     /// Complete Phase-A future restoration wire retained only for pass-through.
     /// Ordinary P/V2 handles remain derived from the provider marker authority.
@@ -1484,7 +1484,7 @@ impl NamespaceSandbox {
     /// Tear down every live memory mount (harvest a copy / unmount a FUSE), draining
     /// the guard list so a later dispose is a no-op.
     pub async fn release_memory_mounts(&self) -> Result<(), pc::SandboxError> {
-        crate::release_memory_mounts(&self.memory_mounts).await
+        crate::release_memory_mounts(&self.memory_mounts, || Ok(())).await
     }
 
     /// Remove only the runtime-owned resource projection while retaining the

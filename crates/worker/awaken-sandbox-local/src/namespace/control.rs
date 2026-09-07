@@ -787,6 +787,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fenced_namespace_disposal_authorizes_then_joins_control_before_removing_root() {
+        // N13 invalid preparation => zero control cancellation/root mutation.
+        // N14 valid physical authorization + control task pending => original
+        // removal participant held, root/socket preserved. N15 cancel disposal
+        // and retry => both participants survive; only confirmed control exit
+        // permits root removal and the Removed terminal transition.
+        let base = tempfile::tempdir().unwrap();
+        let create =
+            pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
+        let terminal =
+            pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX).unwrap();
+        let foreign =
+            pc::SandboxEffectFence::new("foreign", "owner", "runtime", 1, u64::MAX).unwrap();
+        let sandbox = NamespaceProvider::new(base.path())
+            .create_sandbox_for_effect(&demanded_spec("namespace-terminal-order"), &create, None)
+            .await
+            .unwrap();
+        pc::Sandbox::prepare_disposal_for_effect(&sandbox, &terminal)
+            .await
+            .unwrap();
+        let socket = sandbox
+            .control_directory
+            .as_ref()
+            .unwrap()
+            .join("repository-git-credential.sock");
+        let (lease, state) = sandbox.control_publication.reserve(socket.clone()).unwrap();
+        let (listener, identity) = bind_namespace_control_listener(&socket).await.unwrap();
+        sandbox
+            .control_publication
+            .record_owned_socket(&lease, &state, identity)
+            .unwrap();
+        let release = Arc::new(tokio::sync::Notify::new());
+        state
+            .task
+            .start({
+                let release = release.clone();
+                async move { release.notified().await }
+            })
+            .unwrap();
+        assert!(
+            pc::Sandbox::dispose_for_effect(
+                &sandbox,
+                &crate::test_disposal_authorization(&foreign)
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            !state.task.cancellation().is_cancelled(),
+            "N13 no unauthorized shutdown"
+        );
+        let authorization = crate::test_disposal_authorization(&terminal);
+        let mut first = Box::pin(pc::Sandbox::dispose_for_effect(&sandbox, &authorization));
+        tokio::select! {
+            biased;
+            result = &mut first => panic!("N14 did not join control: {result:?}"),
+            () = std::future::ready(()) => {}
+        }
+        assert!(state.task.cancellation().is_cancelled());
+        assert!(sandbox.root.root().exists(), "N14 root before control join");
+        assert!(socket.exists(), "N14 socket before control join");
+        drop(first);
+        assert!(
+            sandbox.terminal_removal.lock().await.is_some(),
+            "N15 retained removal"
+        );
+        release.notify_one();
+        pc::Sandbox::dispose_for_effect(&sandbox, &authorization)
+            .await
+            .unwrap();
+        assert!(!sandbox.root.root().exists(), "N15 physical completion");
+        assert!(!socket.exists());
+        drop(listener);
+    }
+
+    #[tokio::test]
     async fn namespace_drop_and_dispose_drain_an_inflight_credential_request() {
         // N11 real Unix codec has entered a pending request handler (JoinSet
         // child); C2=publication Drop or explicit close; C3=registry dispose.

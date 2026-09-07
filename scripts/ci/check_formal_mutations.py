@@ -501,6 +501,7 @@ def main() -> None:
 
     model_selection.add_argument("--cowork-lifecycle-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--local-process-model-mutant", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--local-recovery-model-mutants", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
     if arguments.session_observation_trace_mutants is not None:
         if arguments.observation_trace_dir is None:
@@ -512,6 +513,9 @@ def main() -> None:
         return
     if arguments.cowork_lifecycle_model_mutants is not None:
         check_cowork_lifecycle_model_mutants(arguments.cowork_lifecycle_model_mutants)
+        return
+    if arguments.local_recovery_model_mutants is not None:
+        check_local_recovery_model_mutants(arguments.local_recovery_model_mutants)
         return
     if arguments.sandbox_control_model_mutants is not None:
         check_sandbox_control_model_mutants(arguments.sandbox_control_model_mutants)
@@ -741,38 +745,7 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "LocalProcessLifecycle", source, renewal_config,
                               renewal_mutations)
     print("Local renewal mutation score: 5/5 killed (current grant, stale cutoff, resurrection, transit time, partial stall)")
-    # REC1 omit WAL before GO; REC2 foreign observer becomes empty; REC3 leader
-    # exit substitutes for init exit; REC4-6 bypass the Session Hand/tree
-    # conjunction. Each mutant must violate its EXACT oracle,
-    # with the unchanged LocalProcessLifecycle dependency and a green baseline.
-    recovery_source = (ROOT / "formal/tla/LocalProcessRecovery.tla").read_text(encoding="utf-8")
-    recovery_config = (ROOT / "formal/tla/LocalProcessRecovery.cfg").read_text(encoding="utf-8")
-    recovery_header = recovery_config.split("INVARIANTS\n", 1)[0]
-    recovery_mutations = []
-    for original, replacement, property_name, action in [
-        ('=> markerRecorded /\\ markerLock = "launch"', '=> markerLock = "launch"',
-         "GoRequiresDurableParticipant", False),
-        ('ELSE IF ~observerKnown THEN "unknown"', 'ELSE IF ~observerKnown THEN "empty"',
-         "EffectsRequireKnownQuiescence", True),
-        ('ELSE IF initState \\in {"absent", "exited"} THEN "empty" ELSE "live"',
-         'ELSE IF ~leaderAlive THEN "empty" ELSE "live"',
-         "EffectsRequireKnownQuiescence", True),
-        ('recoveryObservation = "empty"\n  /\\ handQuiescent',
-         'recoveryObservation = "empty"', "EffectsRequireHandQuiescence", True),
-        ('/\\ ~sessionReceipt\n  /\\ handQuiescent',
-         '/\\ ~sessionReceipt', "SessionReceiptRequiresAllParticipants", True),
-        ('/\\ (~markerRecorded \\/ (observerKnown /\\ initState \\in {"absent", "exited"}))\n  /\\ sessionReceipt\' = TRUE',
-         '/\\ sessionReceipt\' = TRUE', "SessionReceiptRequiresAllParticipants", True),
-    ]:
-        if recovery_source.count(original) != 1:
-            raise SystemExit(f"Local recovery mutation anchor drifted: {property_name}")
-        keyword = "PROPERTIES" if action else "INVARIANTS"
-        recovery_mutations.append((recovery_source.replace(original, replacement),
-                                   recovery_header + f"{keyword} {property_name}\n",
-                                   "action:" + property_name if action else property_name))
-    check_tlc_model_mutations(tlc_jar, "LocalProcessRecovery", recovery_source, recovery_config,
-                              recovery_mutations, dependencies=("LocalProcessLifecycle",))
-    print("Local recovery mutation score: 6/6 killed (pre-GO WAL, unknown observer, leader-only receipt, Hand effect, Hand receipt, tree receipt)")
+    check_local_recovery_model_mutants(tlc_jar)
     # Refresh classification reuses the exact kernel model. F1 swallowing all
     # errors must fail safety; F2 the old unconditional error must fail benign
     # exit handling; F3 leader-only observation must fail exact-tree safety.
@@ -859,6 +832,56 @@ def check_local_process_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "LocalProcessDeadline", source, config, mutations,
                               dependencies=("LocalProcessLifecycle",))
     print("Local deadline mutation score: 2/2 killed; accepted/expired conversion reachable")
+
+
+def check_local_recovery_model_mutants(tlc_jar: Path) -> None:
+    # One authority for the former recovery mutants and the async participant
+    # extension. REC1-6 retain GO/OS/Hand checks. D1 cancellation loses the file
+    # guard; D2 steals another borrow; D3-5/D9 skip fresh checks; D6-7 admit
+    # false control/unmount completion; D8 records Removed with a live root;
+    # D10 skips post-wait quiescence; D11 skips only the NEXT mount admission;
+    # D12 forgets the complete guard set after an expired final teardown.
+    # Exact oracles and a green base are required.
+    source = (ROOT / "formal/tla/LocalProcessRecovery.tla").read_text()
+    config = (ROOT / "formal/tla/LocalProcessRecovery.cfg").read_text()
+    header = config.split("INVARIANTS\n", 1)[0]
+    mutations = []
+    for original, replacement, oracle, action in [
+        ('=> markerRecorded /\\ markerLock = "launch"', '=> markerLock = "launch"', "GoRequiresDurableParticipant", False),
+        ('ELSE IF ~observerKnown THEN "unknown"', 'ELSE IF ~observerKnown THEN "empty"', "EffectsRequireKnownQuiescence", True),
+        ('ELSE IF initState \\in {"absent", "exited"} THEN "empty" ELSE "live"', 'ELSE IF ~leaderAlive THEN "empty" ELSE "live"', "EffectsRequireKnownQuiescence", True),
+        ('recoveryObservation = "empty"\n  /\\ handQuiescent', 'recoveryObservation = "empty"', "EffectsRequireHandQuiescence", True),
+        ('/\\ ~sessionReceipt\n  /\\ handQuiescent', '/\\ ~sessionReceipt', "SessionReceiptRequiresAllParticipants", True),
+        ('/\\ (~markerRecorded \\/ (observerKnown /\\ initState \\in {"absent", "exited"}))\n  /\\ sessionReceipt\' = TRUE', '/\\ sessionReceipt\' = TRUE', "SessionReceiptRequiresAllParticipants", True),
+        ('CancelCleanup ==\n  /\\ cleanupCaller \\in Waiters\n  /\\ cleanupCaller\' = NoLock /\\ cleanupStage\' = "idle"\n  /\\ UNCHANGED <<allBoundaryVars, renewalVars, markerVars,',
+         'CancelCleanup ==\n  /\\ cleanupCaller \\in Waiters\n  /\\ cleanupCaller\' = NoLock /\\ cleanupStage\' = "idle"\n  /\\ markerLock\' = "free"\n  /\\ UNCHANGED <<allBoundaryVars, renewalVars, markerPhase, markerRecorded, observerKnown, recoveryObservation, rootPresent, resourceEffect, deletion, handQuiescent, sessionReceipt,',
+         "CleanupCancellationRetainsParticipant", True),
+        ('EnterCleanup(c, operation) ==\n  /\\ markerLock = "remove" /\\ cleanupCaller = NoLock',
+         'EnterCleanup(c, operation) ==\n  /\\ markerLock = "remove"', "CleanupBorrowIsExclusive", True),
+        ('/\\ RecoveryQuiescent /\\ cleanupFenceLive', '/\\ RecoveryQuiescent', "CleanupEffectRequiresFreshFence", True),
+        ('cleanupStage \\in {"memory-admit", "memory-next"}\n  /\\ cleanupFenceLive /\\ RecoveryQuiescent', 'cleanupStage \\in {"memory-admit", "memory-next"}\n  /\\ RecoveryQuiescent', "CleanupEffectRequiresFreshFence", True),
+        ('cleanupStage \\in {"memory-admit", "memory-next"}\n  /\\ cleanupFenceLive /\\ RecoveryQuiescent', 'cleanupStage \\in {"memory-admit", "memory-next"}\n  /\\ (cleanupStage = "memory-next" \\/ cleanupFenceLive) /\\ RecoveryQuiescent', "CleanupEffectRequiresFreshFence", True),
+        ('cleanupStage = "memory-finish"\n  /\\ cleanupFenceLive /\\ RecoveryQuiescent', 'cleanupStage = "memory-finish"\n  /\\ RecoveryQuiescent', "CleanupEffectRequiresFreshFence", True),
+        ('cleanupStage = "physical"\n  /\\ cleanupFenceLive /\\ RecoveryQuiescent', 'cleanupStage = "physical"\n  /\\ RecoveryQuiescent', "CleanupEffectRequiresFreshFence", True),
+        ('controlQuiescent\' = TRUE /\\ cleanupStage\' = "memory-admit"', 'controlQuiescent\' = FALSE /\\ cleanupStage\' = "memory-admit"', "RootRemovalFollowsParticipants", False),
+        ('mountsReleased\' = TRUE /\\ cleanupStage\' = "physical"', 'mountsReleased\' = FALSE /\\ cleanupStage\' = "physical"', "RootRemovalFollowsParticipants", False),
+        ('/\\ cleanupFenceLive /\\ ~rootPresent', '/\\ cleanupFenceLive', "RemovedIsPhysical", False),
+        ('/\\ cleanupFenceLive /\\ ~rootPresent', '/\\ ~rootPresent', "CleanupEffectRequiresFreshFence", True),
+        ('cleanupStage = "physical"\n  /\\ cleanupFenceLive /\\ RecoveryQuiescent', 'cleanupStage = "physical"\n  /\\ cleanupFenceLive', "EffectsRequireKnownQuiescence", True),
+    ]:
+        if source.count(original) != 1:
+            raise SystemExit(f"Local recovery mutation anchor drifted: {oracle}")
+        keyword = "PROPERTIES" if action else "INVARIANTS"
+        mutations.append((source.replace(original, replacement), header + f"{keyword} {oracle}\n",
+                          "action:" + oracle if action else oracle))
+    for witness in ("NoCancelledCleanupReached", "NoQueuedCheckpointReached",
+                    "NoUnrecordedRemovalReached", "NoLostRemovedReceiptReached",
+                    "NoInterMountAdmissionReached"):
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "LocalProcessRecovery", source, config, mutations,
+                              dependencies=("LocalProcessLifecycle",),
+                              heap_mb=1024, timeout_seconds=240)
+    print("Local recovery mutation score: 18/18 killed; 5 async cleanup schedules reachable")
 
 
 def check_memory_copy_model_mutant(tlc_jar: Path) -> None:

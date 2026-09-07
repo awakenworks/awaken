@@ -351,12 +351,32 @@ backend cancellation, or survival of a stopped runtime. Without a live runtime,
 Drop cancels but does not claim cleanup; explicit disposal retains responsibility.
 The provider authority-clock and live cloud/platform qualification gaps above
 remain separate from this process-local lifecycle fix.
-Fenced Namespace disposal still calls control shutdown after physical removal;
-moving it earlier requires prior valid physical authorization. The shared
-physical-disposal helper and Local terminal-checkpoint cleanup also temporarily
-take the prepared `RemovalGuard` out of its resident slot across asynchronous
-I/O. Cancellation-safe retention and the authorization/quiescence/effect order
-remain required before claiming complete physical-disposal closure.
+Fenced Local and Namespace disposal now borrow the original prepared
+`RemovalGuard` under the existing slot's async mutex rather than taking it out
+across I/O. Namespace authorizes before closing and joining control publication,
+then revalidates before resource release. The same existing teardown helper
+checks authorization after acquiring the Memory-list lock, before each mount,
+and after the last mount before clearing the complete set. An operation already
+admitted may finish after expiry; that completion does not authorize the next
+operation. Denial, failure and cancellation retain the same participant and
+guards for an exact authorized retry. Legacy disposal and ownerless compensation
+reuse this helper without claiming aggregate authority.
+
+Terminal checkpoint cleanup borrows the same participant and keeps the existing
+upload journal. Removed publication changes the in-memory marker only after the
+durable write succeeds; a lost acknowledgement is replayed against the exact
+intended tombstone, never a foreign value. These are extensions to the existing
+Provider and marker, not another store, cleanup service or lifecycle.
+
+Adjacent decision tables exercise competing disposers, cancellation during
+control/Memory/checkpoint waits, expiry across lock and per-mount waits, partial
+teardown, and lost marker/checkpoint acknowledgements. `LocalProcessRecovery`
+composes two callers, retained marker ownership, repeated mount admission and
+physical removal/terminal acknowledgement in the existing boundary model.
+Its fresh-fence bit assumes truthful Provider authorization; it does not prove
+Control/Worker clock correspondence, in-flight backend commit fencing, kernel
+termination or cross-platform deployment. Those remaining qualifications must
+not be inferred from model checks or successful local retries.
 
 ## 2026-08-12 amendment
 

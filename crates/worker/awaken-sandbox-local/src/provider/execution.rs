@@ -350,7 +350,7 @@ impl LocalSandbox {
             .realization
             .current()
             .ok_or_else(|| err("scoped realization evidence missing"))?;
-        let removal = self.terminal_removal.lock().map_err(err)?;
+        let removal = self.terminal_removal.lock().await;
         if let Some(removal) = removal.as_ref() {
             removal.verify_execution_quiescence()?;
         } else {
