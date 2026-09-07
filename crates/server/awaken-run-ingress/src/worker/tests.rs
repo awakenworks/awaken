@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use super::{
-    ClaimedSnapshotAuthority, DispatchWorker, cancellation_uses_tool_interruption,
+    ClaimedSnapshotAuthority, DispatchWorker, PendingInputAdmission,
+    cancellation_uses_tool_interruption, classify_pending_input_admission,
     combine_attempt_cancellation, recovered_attempt_disposition, settle_outcome,
 };
 use awaken_agent_contract::agent::awaiting::{
@@ -211,6 +212,33 @@ fn managed_cancellation_routes_missing_external_waits_to_batch_recovery() {
         !cancellation_uses_tool_interruption(true, Some(&RunState::Awaiting), Some(&manual)),
         "CI5/E2"
     );
+}
+
+#[test]
+fn committed_truth_is_the_single_pending_input_admission_rule() {
+    // Cause/effect graph: C1 committed state is terminal; C2 it retains a
+    // ticket; C3 the input matches that ticket; C4 the input is unbound.
+    // Effects: E1 deliver only exact live-ticket or fresh unbound input; E2
+    // classify terminal, stale, and orphan-bound input as already consumed by
+    // the commit so settle may delete it without re-execution. Constraints:
+    // ticket presence makes C4 irrelevant; terminal truth dominates all other
+    // causes. The 16 Boolean rows below exhaust the decision table.
+    for mask in 0_u8..16 {
+        let terminal = mask & 1 != 0;
+        let ticket = mask & 2 != 0;
+        let matches = mask & 4 != 0;
+        let unbound = mask & 8 != 0;
+        let expected_deliver = !terminal && ((ticket && matches) || (!ticket && unbound));
+        assert_eq!(
+            classify_pending_input_admission(terminal, ticket, matches, unbound),
+            if expected_deliver {
+                PendingInputAdmission::Deliver
+            } else {
+                PendingInputAdmission::ConsumedByCommittedTruth
+            },
+            "decision row {mask:04b}"
+        );
+    }
 }
 
 #[test]

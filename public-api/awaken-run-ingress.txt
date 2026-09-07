@@ -222,7 +222,7 @@ pub struct awaken_run_ingress::ClaimedCommitService
 impl awaken_run_ingress::ClaimedCommitService
 pub async fn awaken_run_ingress::ClaimedCommitService::apply_claimed(&self, awaken_run_ingress_contract::worker_transport::ClaimedCommitRequest) -> core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_run_ingress::ApplicationError>
 pub fn awaken_run_ingress::ClaimedCommitService::new(alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::OperationCoordinator>) -> Self
-pub fn awaken_run_ingress::ClaimedCommitService::with_applier(alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_run_ingress::ClaimedCommitApplier>) -> Self
+pub fn awaken_run_ingress::ClaimedCommitService::with_coordinator_resolver(alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_run_ingress::ClaimedOperationCoordinatorResolver>) -> Self
 pub struct awaken_run_ingress::DispatchMaintenance
 impl awaken_run_ingress::DispatchMaintenance
 pub async fn awaken_run_ingress::DispatchMaintenance::shutdown(self)
@@ -476,8 +476,8 @@ pub fn awaken_run_ingress::SqliteDispatchStore::stage_session_resume<'life0, 'li
 impl awaken_run_ingress_contract::operational::DispatchOperationalFeed for awaken_run_ingress::SqliteDispatchStore
 pub fn awaken_run_ingress::SqliteDispatchStore::events_after<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::operational::DispatchCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_ingress_contract::operational::DispatchPage, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub const awaken_run_ingress::DEFAULT_LEASE_MS: u64
-pub trait awaken_run_ingress::ClaimedCommitApplier: core::marker::Send + core::marker::Sync
-pub fn awaken_run_ingress::ClaimedCommitApplier::apply<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress_contract::run_dispatch::RunDispatch, awaken_agent_contract::thread::commit::operation::CommitOperation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_run_ingress::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_run_ingress::ClaimedOperationCoordinatorResolver: core::marker::Send + core::marker::Sync
+pub fn awaken_run_ingress::ClaimedOperationCoordinatorResolver::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress_contract::run_dispatch::RunDispatch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::OperationCoordinator>, awaken_run_ingress::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_run_ingress::CompletionSink: core::marker::Send + core::marker::Sync
 pub fn awaken_run_ingress::CompletionSink::settled(&self, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::run::RunState)
 pub trait awaken_run_ingress::DurableRunOperations: core::marker::Send + core::marker::Sync

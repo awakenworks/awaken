@@ -330,6 +330,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness recovery_snapshot_admission_requires_exact_claim_identity \
     --harness acknowledged_projection_is_exact_monotonic_or_a_noop \
     --harness claimed_snapshot_execution_requires_exact_identity \
+    --harness pending_signal_is_deliverable_only_without_consuming_commit \
     --harness dispatch_claim_preserves_every_frozen_binding \
     --harness shared_error_gate_admits_exactly_one_probe_after_the_deadline \
     --harness drain_error_backoff_is_bounded_monotonic_and_saturating \
