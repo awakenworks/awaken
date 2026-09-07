@@ -10,7 +10,7 @@ CONSTANTS EventOperation, RunOperation, Workers, NoWorker, MaxEpoch
 ActivityIds == {EventOperation, RunOperation}
 
 EventPhases == {"None", "Accepted", "Reserved", "Activated", "Anchored", "Processed", "Rejected"}
-CommittedDispositions == {"None", "Awaiting", "Ended"}
+CommittedDispositions == {"None", "Running", "Awaiting", "Ended"}
 
 VARIABLES
     kDispatchExists,
@@ -143,13 +143,33 @@ ClaimRun(worker) ==
 \* The production ThreadCommit is the only writer of disposition. This action
 \* records the exact committed fact observed under the current Dispatch claim;
 \* it intentionally does not mutate Dispatch.
-ObserveCommittedRun(worker, epoch, disposition) ==
-    /\ disposition \in {"Awaiting", "Ended"}
+CurrentRunClaim(worker, epoch) ==
     /\ kEventPhase = "Activated"
-    /\ kCommittedDisposition = "None"
     /\ kDispatchState = "Leased"
     /\ kDispatchOwner = worker
     /\ kDispatchEpoch = epoch
+
+\* Input ThreadCommit and Session root anchor CAS are separate recoverable
+\* boundaries. Neither one settles the Run or supplies a processed timestamp.
+ObserveCommittedInput(worker, epoch) ==
+    /\ CurrentRunClaim(worker, epoch)
+    /\ kCommittedDisposition = "None"
+    /\ kCommittedDisposition' = "Running"
+    /\ UNCHANGED <<kDispatchExists, dispatchVars, activityVars,
+                   kEventPhase, kProjectionAnchor>>
+
+AnchorCommittedInput ==
+    /\ kEventPhase = "Activated"
+    /\ kCommittedDisposition = "Running"
+    /\ ~kProjectionAnchor
+    /\ kProjectionAnchor' = TRUE
+    /\ UNCHANGED <<kDispatchExists, dispatchVars, activityVars,
+                   kEventPhase, kCommittedDisposition>>
+
+ObserveCommittedRun(worker, epoch, disposition) ==
+    /\ disposition \in {"Awaiting", "Ended"}
+    /\ CurrentRunClaim(worker, epoch)
+    /\ kCommittedDisposition \in {"None", "Running"}
     /\ kCommittedDisposition' = disposition
     /\ kProjectionAnchor' = TRUE
     /\ kEventPhase' = "Anchored"
@@ -208,6 +228,9 @@ Next ==
     \/ RejectUnclaimedReservation
     \/ SettleRejectedRunActivity
     \/ \E worker \in Workers: ClaimRun(worker)
+    \/ \E worker \in Workers, epoch \in 0..MaxEpoch:
+           ObserveCommittedInput(worker, epoch)
+    \/ AnchorCommittedInput
     \/ \E worker \in Workers, epoch \in 0..MaxEpoch,
           disposition \in {"Awaiting", "Ended"}:
            ObserveCommittedRun(worker, epoch, disposition)
@@ -240,7 +263,15 @@ ReservationCannotExecute ==
         kCommittedDisposition = "None"
 
 AnchorRequiresExactCommit ==
-    kProjectionAnchor <=> kCommittedDisposition \in {"Awaiting", "Ended"}
+    /\ (kProjectionAnchor => kCommittedDisposition \in {"Running", "Awaiting", "Ended"})
+    /\ (kCommittedDisposition \in {"Awaiting", "Ended"} => kProjectionAnchor)
+
+RunningInputCannotComplete ==
+    kCommittedDisposition = "Running" =>
+        /\ kEventPhase = "Activated"
+        /\ kDispatchState = "Leased"
+        /\ kActivityEpoch[RunOperation] \in kActiveActivityEpochs
+        /\ RunOperation \notin kSettledActivities
 
 ProcessedRequiresDurableCausalChain ==
     kEventPhase = "Processed" =>
@@ -261,6 +292,7 @@ Safety ==
     /\ ExecutableDispatchRequiresActivityReceipt
     /\ ReservationCannotExecute
     /\ AnchorRequiresExactCommit
+    /\ RunningInputCannotComplete
     /\ ProcessedRequiresDurableCausalChain
     /\ RejectedNeverBecomesExecutable
 

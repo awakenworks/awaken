@@ -831,6 +831,22 @@ def check_session_observation_model_mutants(tlc_jar: Path) -> None:
         [(mutant, config, "action:FirstProcessingTimeIsImmutable")],
         dependencies=("SessionEventKernel", "SessionActivityKernel", "RunIngressKernel"))
 
+    # I1 anchoring without an observed input invents committed truth; I2 an
+    # input-only observation cannot release the Run activity. These mutations
+    # exercise the same kernel consumed by the Event and Start compositions.
+    kernel = (ROOT / "formal/tla/SessionEventKernel.tla").read_text()
+    kernel_config = "\n".join(line for line in config.splitlines()
+        if not any(word in line for word in ("ObservationTimes =", "UnknownTime =", "PROPERTIES First")))
+    guard = 'AnchorCommittedInput ==\n    /\\ kEventPhase = "Activated"\n    /\\ kCommittedDisposition = "Running"'
+    assert kernel.count(guard) == 1
+    unproven = kernel.replace(guard, 'AnchorCommittedInput ==\n    /\\ kEventPhase = "Activated"')
+    release = 'SettleRunActivity ==\n    /\\ kEventPhase = "Anchored"'
+    assert kernel.count(release) == 1
+    premature = kernel.replace(release, 'SettleRunActivity ==\n    /\\ kEventPhase \\in {"Activated", "Anchored"}')
+    check_tlc_model_mutations(tlc_jar, "SessionEventKernel", kernel, kernel_config,
+        [(unproven, kernel_config, "Safety"), (premature, kernel_config, "Safety")],
+        dependencies=("SessionActivityKernel", "RunIngressKernel"))
+
     history = (ROOT / "formal/tla/StoreHistory.tla").read_text()
     config = (ROOT / "formal/tla/StoreHistory.cfg").read_text()
     # Small mutation witness only; the unchanged canonical CFG still runs the
@@ -849,7 +865,7 @@ def check_session_observation_model_mutants(tlc_jar: Path) -> None:
     assert driver.count(anchor) == 1
     check_tlc_model_mutations(tlc_jar, "SessionRealizationMutex", driver, config,
         [(driver.replace(anchor, '{"old", "new"}'), config, "PublicationExcludesRetiredGenerations")])
-    print("Session observation model mutation score: 4/4 killed")
+    print("Session observation model mutation score: 6/6 killed")
 
 
 def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
