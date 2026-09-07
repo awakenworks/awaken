@@ -539,6 +539,8 @@ def main() -> None:
         "memory-copy-model-mutant": check_memory_copy_model_mutant,
         "agent-input-model-mutant": check_agent_input_model_mutant,
         "resource-preparation-model-mutant": check_resource_preparation_model_mutant,
+        "terminal-resource-model-mutants": check_terminal_resource_model_mutants,
+        "unmaterialized-cleanup-model-mutant": check_unmaterialized_cleanup_model_mutant,
         "realization-renewal-model-mutant": check_realization_renewal_model_mutant,
         "resolution-failure-model-mutant": check_resolution_failure_model_mutant,
         "terminal-scan-model-mutants": check_terminal_scan_model_mutants,
@@ -770,6 +772,37 @@ def check_realization_publication_model_mutants(tlc_jar: Path) -> None:
         mutations.append((source, header + "INVARIANTS " + witness, witness))
     check_tlc_model_mutations(tlc_jar, "SessionRealizationMutex", source, config, mutations)
     print("Realization publication: 2/2 mutants killed; recovery/response-loss witnesses reachable")
+
+
+def check_terminal_resource_model_mutants(tlc_jar: Path) -> None:
+    # T1 restores the actual active-only projection bug. T2 admits a cleanup
+    # receipt before installing its complete command. Require the exact safety
+    # counterexample, never a parse failure, tool outage, or liveness timeout.
+    source = (ROOT / "formal/tla/SessionResourceActivation.tla").read_text(encoding="utf-8")
+    config = (ROOT / "formal/tla/SessionResourceActivation.cfg").read_text(encoding="utf-8")
+    projection = "                  /\\ cleanupRevision' = DesiredRevision"
+    receipt = "           /\\ cleanupProjected /\\ cleanupRevision = DesiredRevision"
+    if source.count(projection) != 1 or source.count(receipt) != 1:
+        raise SystemExit("Terminal Resource mutation anchor drifted; review the model")
+    mutations = [
+        (source.replace(projection, projection.replace("DesiredRevision", "activeRevision")),
+         config, "CleanupProjectionCoversDesired"),
+        (source.replace(receipt, "           /\\ TRUE"),
+         config, "CleanupRequiresCompleteProjection"),
+    ]
+    check_tlc_model_mutations(tlc_jar, "SessionResourceActivation", source, config, mutations)
+    print("Terminal Resource mutation score: 2/2 killed (active-only projection, premature receipt)")
+
+
+def check_unmaterialized_cleanup_model_mutant(tlc_jar: Path) -> None:
+    source = (ROOT / "formal/tla/SessionUnmaterializedCleanup.tla").read_text(encoding="utf-8")
+    config = (ROOT / "formal/tla/SessionUnmaterializedCleanupTarget.cfg").read_text(encoding="utf-8")
+    anchor = "            /\\ joined\n"
+    if source.count(anchor) != 1:
+        raise SystemExit("Unmaterialized cleanup mutation anchor drifted; review the model")
+    check_tlc_model_mutations(tlc_jar, "SessionUnmaterializedCleanup", source, config,
+        [(source.replace(anchor, "            /\\ TRUE\n"), config, "NoUndrainedCompletion")])
+    print("Unmaterialized cleanup mutation score: 1/1 killed (absence without physical join)")
 
 
 def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:

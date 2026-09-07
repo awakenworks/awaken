@@ -69,6 +69,7 @@ pub enum SessionArchiveWithRepositoryPublicationError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ArchiveAdmission {
     IdleOnly,
+    TerminalOnly,
     ForceTerminal,
 }
 
@@ -384,7 +385,8 @@ impl SessionApplication {
     /// Archive one publicly idle Session and release every remaining Resource
     /// exactly once. The idle check and archive transition share the root CAS;
     /// protocol adapters must not race a separate status read against this
-    /// command. Internal terminal jobs use [`Self::force_terminate_session`].
+    /// command. Already-terminal execution uses [`Self::release_terminal_session`];
+    /// owners authorized to stop live execution use [`Self::force_terminate_session`].
     pub async fn terminate_session(
         &self,
         session_id: &str,
@@ -423,6 +425,27 @@ impl SessionApplication {
         .await
     }
 
+    /// Release an already-terminal Session through its existing cleanup owner.
+    /// Unlike public idle archive or internal force termination, this command
+    /// cannot terminate live execution. Terminal execution is absorbing, so a
+    /// completed Run is not used to infer permission over a reusable Session.
+    /// Success requires the canonical verified cleanup receipt.
+    pub async fn release_terminal_session(
+        &self,
+        session_id: &str,
+        archived_at: &str,
+        fact: ManagedLifecycleFact,
+    ) -> Result<SessionDispositionMutation, SessionPreparationError> {
+        self.terminate_session_with_admission(
+            session_id,
+            archived_at,
+            fact,
+            ArchiveAdmission::TerminalOnly,
+            ArchiveCleanupCompletion::Required,
+        )
+        .await
+    }
+
     async fn terminate_session_with_admission(
         &self,
         session_id: &str,
@@ -438,11 +461,11 @@ impl SessionApplication {
             self.notify_lifecycle_fact();
         }
         // Archive is linearized by the durable terminal fence above. Physical
-        // Runtime/Resource cleanup is a recoverable saga and must not turn that
-        // committed business transition into a retryable command failure. Wake
-        // the lifecycle owner before the eager attempt so caller cancellation
-        // cannot strand the intent; the attempt only shortens convergence when
-        // the current projector is immediately available.
+        // Runtime/Resource cleanup is a recoverable saga. Public archive returns
+        // the committed transition; internal required-completion callers join
+        // its verified cleanup below. Wake the lifecycle owner before the eager
+        // attempt so caller cancellation cannot strand the intent; the attempt
+        // only shortens convergence when the current projector is available.
         self.wake_lifecycle_supervisor();
         let cleanup = self
             .release_terminal_resources(&transition.owner_scope, session_id)
@@ -515,6 +538,7 @@ impl SessionApplication {
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         let admission_name = match admission {
             ArchiveAdmission::IdleOnly => "idle_only",
+            ArchiveAdmission::TerminalOnly => "terminal_only",
             ArchiveAdmission::ForceTerminal => "force_terminal",
         };
         let command_hash = awaken_session_contract::stable_fingerprint(&(
@@ -581,6 +605,11 @@ impl SessionApplication {
             {
                 return Err(SessionPreparationError::Rejected(RunError::bad_request(
                     "only an idle Session may be archived",
+                )));
+            }
+            if admission == ArchiveAdmission::TerminalOnly && !session.execution.is_terminal() {
+                return Err(SessionPreparationError::Rejected(RunError::bad_request(
+                    "terminal Session release requires already-terminal execution",
                 )));
             }
             session

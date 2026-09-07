@@ -898,8 +898,12 @@ impl SessionApplication {
             .realization
             .clone()
             .ok_or(SessionRealizationControlFailure::StaleOwnership)?;
+        // Terminal effects must retain both aggregate-authored generations.
+        // A Worker may have installed desired B before its receipt committed;
+        // projecting only active A regresses that slot to A -> A and strands
+        // cleanup. The terminal Host install stages A -> B without activating B.
         let projection = self
-            .active_frozen_session_projection(owner_scope.to_string(), session, false)
+            .frozen_session_projection(owner_scope.to_string(), session, false)
             .await
             .map_err(unavailable)?;
         Ok(SessionTerminalCleanupAssignment {

@@ -969,6 +969,14 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/session-resource-activation" \
     -config formal/tla/SessionResourceActivation.cfg \
     formal/tla/SessionResourceActivation.tla
+  python3 scripts/ci/check_formal_mutations.py --terminal-resource-model-mutants "$tla_jar"
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-unmaterialized-cleanup" \
+    -config formal/tla/SessionUnmaterializedCleanup.cfg formal/tla/SessionUnmaterializedCleanup.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-unmaterialized-cleanup-target" \
+    -config formal/tla/SessionUnmaterializedCleanupTarget.cfg formal/tla/SessionUnmaterializedCleanup.tla
+  python3 scripts/ci/check_formal_mutations.py --unmaterialized-cleanup-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/resource-dispatch" \
     -config formal/tla/ResourceDispatch.cfg formal/tla/ResourceDispatch.tla
