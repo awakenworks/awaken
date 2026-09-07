@@ -778,7 +778,10 @@ impl Supervisor {
         if process.poll().await.map_err(io)?.is_some() {
             return Ok(false);
         }
-        process.signal(pc::Signal::Term).await.map_err(io)?;
+        // A provider may lose the signal-vs-exit race before its outer handle
+        // observes the exit. Only that same handle can supply the evidence;
+        // signal errors must not skip the existing bounded observation window.
+        let term = process.signal(pc::Signal::Term).await;
         const STEPS: u32 = 5;
         let step = grace / STEPS;
         for _ in 0..STEPS {
@@ -787,7 +790,8 @@ impl Supervisor {
             }
             tokio::time::sleep(step).await;
         }
-        process.signal(pc::Signal::Kill).await.map_err(io)?;
+        term.map_err(io)?;
+        let kill_error = process.signal(pc::Signal::Kill).await.err();
         // Wait through the provider boundary so lifecycle hooks (notably durable
         // credential-file write-back) run before the turn is considered finished.
         // A broken provider must not retain the caller's lifecycle lock forever.
@@ -796,7 +800,11 @@ impl Supervisor {
             process.wait(),
         )
         .await
-        .map_err(|_| AcpError::Io("process did not report exit after SIGKILL".into()))?
+        .map_err(|_| {
+            kill_error
+                .map(io)
+                .unwrap_or_else(|| AcpError::Io("process did not report exit after SIGKILL".into()))
+        })?
         .map_err(io)?;
         Ok(true)
     }
