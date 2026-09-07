@@ -11,6 +11,8 @@ describe("trace event layout", () => {
   // T1 tool/error/long label -> kind belongs to accessible content, never the
   // aria-hidden narrow rail; T2 known times -> duration retained; T3 unknown
   // times -> no manufactured zero duration; T4 empty/error -> existing state.
+  // T5 a linked JsonInspector peer installed by another workspace still uses
+  // this renderer's React dispatcher; exercise its real state hook in T1.
   const render = (log: SessionEvent[], loadError: Error | null = null) => renderToStaticMarkup(
     createElement(MemoryRouter, null, createElement(TraceView, { log, loadError })),
   );
