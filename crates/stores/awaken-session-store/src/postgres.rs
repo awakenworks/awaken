@@ -720,7 +720,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         if current_owner != owner_scope || current_revision != mutation.expected_revision {
             return Ok(SessionMutationResult::Conflict { current_revision });
         }
-        if matches!(&mutation.payload, SessionMutationPayload::Delete(_)) {
+        let deleted_admissions = if matches!(&mutation.payload, SessionMutationPayload::Delete(_)) {
             let current_session = decode(EncodedSessionRow {
                 aggregate_json: current.try_get("aggregate_json").map_err(storage)?,
                 revision: current.try_get("revision").map_err(storage)?,
@@ -735,7 +735,10 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                         .into(),
                 ));
             }
-        }
+            Some(super::event_admissions::encode(&current_session)?)
+        } else {
+            None
+        };
         match &mutation.payload {
             SessionMutationPayload::Replace(replacement) => {
                 let mut replacement = replacement.clone();
@@ -776,13 +779,14 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 }
                 sqlx::query(
                     "INSERT INTO managed_session_tombstone
-                        (session_id, scope_id, deleted_revision, deleted_at)
-                     VALUES ($1, $2, $3, $4)",
+                        (session_id, scope_id, deleted_revision, deleted_at, event_admissions_json)
+                     VALUES ($1, $2, $3, $4, $5)",
                 )
                 .bind(&tombstone.session_id)
                 .bind(owner_scope)
                 .bind(db_revision(tombstone.deleted_revision)?)
                 .bind(&tombstone.deleted_at)
+                .bind(deleted_admissions)
                 .execute(&mut *tx)
                 .await
                 .map_err(storage)?;
@@ -1106,6 +1110,25 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                         .map_err(|_| corrupt("negative Session idempotency revision"))?,
                 ),
             })
+        })
+        .transpose()
+    }
+
+    async fn deleted_event_admissions(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+    ) -> Result<
+        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+        SessionRepositoryError,
+    > {
+        let row = sqlx::query("SELECT deleted_revision, event_admissions_json FROM managed_session_tombstone WHERE session_id=$1 AND scope_id=$2")
+            .bind(session_id).bind(owner_scope).fetch_optional(&self.pool).await.map_err(storage)?;
+        row.map(|row| {
+            super::event_admissions::decode(
+                row.try_get("deleted_revision").map_err(storage)?,
+                row.try_get("event_admissions_json").map_err(storage)?,
+            )
         })
         .transpose()
     }

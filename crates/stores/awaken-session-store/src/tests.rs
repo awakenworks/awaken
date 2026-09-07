@@ -527,7 +527,11 @@ fn sqlite_migration_startup_is_concurrent_and_replay_safe() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(ledger_count, 2, "S1/E1 and S3/E3");
+    assert_eq!(
+        ledger_count as usize,
+        session_bundle().unwrap().migrations().len(),
+        "S1/E1 and S3/E3 current tail exactly once"
+    );
     let quarantine_exists: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -1127,7 +1131,7 @@ async fn sqlite_original_history_converges_without_a_parallel_session_model() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(ledgers, (23, 1), "E1");
+    assert_eq!(ledgers, (24, 1), "E1");
     let retired_columns: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('managed_session') WHERE name IN ('agent_id','metadata_json','runtime_json')",
@@ -1234,7 +1238,7 @@ async fn postgres_original_history_converges_with_the_same_domain_effects() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(ledgers, (23, 1), "E1");
+    assert_eq!(ledgers, (24, 1), "E1");
     let retired_columns: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM information_schema.columns \
          WHERE table_schema='t_session_original_upgrade' AND table_name='managed_session' \
@@ -1299,20 +1303,20 @@ async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
             &original,
             1,
             false,
-            23_usize,
+            24_usize,
         ),
-        ("PGV2", "t_session_original_v9", &original, 9, false, 23),
-        ("PGV3", "t_session_original_v12", &original, 12, false, 23),
-        ("PGV4", "t_session_original_v13", &original, 13, true, 23),
+        ("PGV2", "t_session_original_v9", &original, 9, false, 24),
+        ("PGV3", "t_session_original_v12", &original, 12, false, 24),
+        ("PGV4", "t_session_original_v13", &original, 13, true, 24),
         (
             "PGV5",
             "t_session_original_v22_matrix",
             &original,
             22,
             true,
-            23,
+            24,
         ),
-        ("PGV6", "t_session_compacted_v20", &compacted, 20, true, 21),
+        ("PGV6", "t_session_compacted_v20", &compacted, 20, true, 22),
     ] {
         let _ = admin
             .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
@@ -1667,7 +1671,11 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(ledger_count, 2, "B2/E1 V2 DDL and receipt are durable");
+    assert_eq!(
+        ledger_count as usize,
+        full.migrations().len(),
+        "B2/E1 current DDL and receipts are durable"
+    );
     let dependency_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM managed_session_credential_source_reference",
@@ -2172,6 +2180,57 @@ async fn negative_tombstone_revision_is_rejected_at_the_schema_boundary() {
         )
         .expect_err("negative revision must never enter the repository");
     assert!(error.to_string().contains("deleted_revision > 0"));
+}
+
+#[tokio::test]
+async fn retained_admission_lookup_preserves_legacy_unknown_across_reopen() {
+    // L1 old-writer INSERT omits new nullable column=>unknown after restart;
+    // L2 new complete empty inventory=>Deleted proof; L3 wrong owner=>None;
+    // L4 malformed stored evidence=>Corrupt, never synthetic non-admission.
+    // These are actual migrated/reopened SQLite rows, not a mocked codec.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("retained.db");
+    let path = path.to_str().unwrap();
+    let repo = SqliteManagedSessionRepository::open(path).unwrap();
+    repo.conn.lock().unwrap().execute(
+        "INSERT INTO managed_session_tombstone(session_id,scope_id,deleted_revision,deleted_at) VALUES ('legacy','ws_a',2,'now')", [],
+    ).unwrap();
+    repo.conn.lock().unwrap().execute(
+        "INSERT INTO managed_session_tombstone(session_id,scope_id,deleted_revision,deleted_at,event_admissions_json) VALUES ('empty','ws_a',3,'now','[]'),('corrupt','ws_a',4,'now','{}')", [],
+    ).unwrap();
+    drop(repo);
+    let repo = SqliteManagedSessionRepository::open(path).unwrap();
+    let legacy = repo
+        .deleted_event_admissions("ws_a", "legacy")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(legacy.admissions.is_none());
+    assert_eq!(
+        legacy.resolve("key", "fp").unwrap_err().kind,
+        awaken_session_contract::RunErrorKind::Unavailable
+    );
+    let empty = repo
+        .deleted_event_admissions("ws_a", "empty")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        empty.resolve("key", "fp").unwrap(),
+        awaken_session_contract::SessionEventAdmission::Deleted {
+            deleted_revision: SessionRevision(3)
+        }
+    );
+    for id in ["legacy", "empty", "corrupt"] {
+        assert_eq!(
+            repo.deleted_event_admissions("foreign", id).await.unwrap(),
+            None
+        );
+    }
+    assert!(matches!(
+        repo.deleted_event_admissions("ws_a", "corrupt").await,
+        Err(SessionRepositoryError::Corrupt(_))
+    ));
 }
 
 fn extraction(id: &str, key: &str) -> awaken_ext_memory::MemoryExtractionIntent {

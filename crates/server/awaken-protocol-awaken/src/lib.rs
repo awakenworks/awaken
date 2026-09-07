@@ -15,7 +15,8 @@ mod sandbox_policies;
 
 pub use dream_policies::dream_policy_router;
 pub use event_admissions::{
-    EventAdmissionReceipt, EventAdmissionStatus, session_event_admission_router,
+    EventAdmissionProof, EventAdmissionReceipt, EventAdmissionStatus,
+    session_event_admission_router,
 };
 pub use file_outputs::{
     FileOutputCapture, FileOutputCaptureParams, FileOutputCaptureResponse,
