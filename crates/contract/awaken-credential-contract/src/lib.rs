@@ -100,6 +100,16 @@ pub enum CredentialMaterialSource {
     WorkerReference,
 }
 
+/// The durable credential-access vocabulary is closed over references. Keep
+/// this match exhaustive so adding another material source cannot silently
+/// create an inline-material path without revisiting admission and its proof.
+const fn durable_material_source_is_reference_only(source: CredentialMaterialSource) -> bool {
+    match source {
+        CredentialMaterialSource::ControlPlaneReference
+        | CredentialMaterialSource::WorkerReference => true,
+    }
+}
+
 /// The process/trust boundary permitted to hold plaintext.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -644,7 +654,7 @@ impl CredentialAccess {
         capabilities: &CredentialRealizationCapabilities,
         now_unix_ms: u64,
     ) -> Result<CredentialRealizationPlan, CredentialAdmissionError> {
-        if self.legacy_direct {
+        if self.legacy_direct || !durable_material_source_is_reference_only(self.material_source) {
             return Err(CredentialAdmissionError::DirectPublicationRejected);
         }
         self.usage
@@ -842,6 +852,16 @@ pub trait CredentialExtensionConsumer: Send + Sync {
 
 /// Material shape returned by the sole exact resolver port. Provider drivers
 /// consume OAuth as a bundle; extension-owned schemas remain typed and opaque.
+/// Credential material deliberately has no Serde implementation: attempting to
+/// place it on any durable JSON path is a compile-time error.
+///
+/// ```compile_fail
+/// use awaken_agent_contract::RedactedString;
+/// use awaken_credential_contract::CredentialMaterial;
+///
+/// let material = CredentialMaterial::secret(RedactedString::new("credential-plaintext"));
+/// let _ = serde_json::to_vec(&material);
+/// ```
 #[derive(Debug)]
 pub enum CredentialMaterial {
     /// One opaque secret. Whether it becomes an API-key header, a Bearer header,

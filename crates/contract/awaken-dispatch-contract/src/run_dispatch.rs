@@ -552,6 +552,7 @@ impl RunDispatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::RedactedString;
 
     #[test]
     fn dispatch_admission_shape_is_total_and_port_neutral() {
@@ -599,11 +600,17 @@ mod tests {
     }
 
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_runtime_contract::credential::CredentialPurpose;
     use awaken_runtime_contract::resolved::{
         CatalogFingerprint, ModelBinding, ModelProvisioning, ResolvedSpec,
     };
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+    };
+    use awaken_runtime_contract::{
+        CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterial,
+        CredentialMaterialSource, CredentialRef, CredentialTarget, CredentialUsage,
+        SealedCredentialEnvelopeRef, TrustDomainRef,
     };
 
     fn provider_candidate(
@@ -612,26 +619,46 @@ mod tests {
         provider: &str,
         route: &str,
     ) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
+        provider_candidate_with_access(
+            model,
+            credential,
+            provider,
+            route,
+            CredentialMaterialSource::ControlPlaneReference,
+            None,
+        )
+    }
+
+    fn provider_candidate_with_access(
+        model: &str,
+        credential: &str,
+        provider: &str,
+        route: &str,
+        material_source: CredentialMaterialSource,
+        envelope: Option<CredentialEnvelope>,
+    ) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
+        let mut access = CredentialAccess::new(
+            CredentialRef {
+                id: credential.into(),
+                revision: 0,
+            },
+            material_source,
+            CredentialUsage::ProviderAdapter,
+            CredentialExecutionPolicy::self_hosted_provider(),
+        )
+        .with_target(CredentialTarget::new(
+            CredentialPurpose::ProviderAdapter,
+            provider.split_once('@').map_or(provider, |(id, _)| id),
+        ));
+        if let Some(envelope) = envelope {
+            access = access.with_envelope(envelope);
+        }
         awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
             ModelBinding::new(provider, model, "genai"),
             provider,
             route,
             "workspace-a",
-            Some(
-                awaken_runtime_contract::CredentialAccess::new(
-                    awaken_runtime_contract::CredentialRef {
-                        id: credential.into(),
-                        revision: 0,
-                    },
-                    awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                    awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                    awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
-                )
-                .with_target(awaken_runtime_contract::CredentialTarget::new(
-                    awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
-                    provider.split_once('@').map_or(provider, |(id, _)| id),
-                )),
-            ),
+            Some(access),
             awaken_runtime_contract::InferenceEndpoint {
                 adapter_kind: "openai".into(),
                 api_dialect: "open_ai_chat".into(),
@@ -1076,26 +1103,99 @@ mod tests {
 
     #[test]
     fn execution_envelope_round_trips_without_exposing_provider_credentials() {
+        // Cause/effect graph: C1 the primary carries a Control-plane reference;
+        // C2 the fallback carries a Worker reference and recipient-bound sealed
+        // envelope; C3 actual plaintext exists only as CredentialMaterial beside
+        // the dispatch; C4 the dispatch is serialized and restored. Effects: E1
+        // the two exact references and envelope coordinates persist; E2 only the
+        // closed CredentialAccess fields appear; E3 no C3 bytes enter the wire;
+        // E4 the complete secret-free request round-trips. Decision table:
+        // R1=C1+C4=>E1+E2; R2=C2+C4=>E1+E2; R3=C1+C2+C3+C4=>E3+E4.
+        // Constraint: this claim covers credential plaintext represented by
+        // RedactedString/CredentialMaterial, not arbitrary user message text.
         let authority =
             awaken_tenancy::Authority::bound(awaken_tenancy::ScopeId("workspace-a".to_string()));
         let claimed = ExecutionScopeRef(awaken_tenancy::ScopeId("workspace-a".to_string()));
         let verified = authority
             .verify_execution_scope(&claimed)
             .expect("scope belongs to authority");
+        let material_plaintext = "credential-plaintext-must-stay-outside-dispatch";
+        let _material =
+            CredentialMaterial::secret(RedactedString::new(material_plaintext.to_string()));
         let mut activation = activation();
         activation.snapshot.resolved_spec.model_binding =
             provider_candidate("model", "grant-17", "provider@1", "route@1");
+        activation.snapshot.resolved_spec.model_candidates = vec![provider_candidate_with_access(
+            "fallback-model",
+            "worker-grant-23",
+            "fallback-provider@2",
+            "fallback-route@3",
+            CredentialMaterialSource::WorkerReference,
+            Some(CredentialEnvelope::SealedForWorker {
+                envelope_ref: SealedCredentialEnvelopeRef {
+                    id: "sealed-envelope-23".into(),
+                    payload_fingerprint: "sha256:sealed-payload-23".into(),
+                },
+                recipient: TrustDomainRef(
+                    awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN.into(),
+                ),
+                expires_at_unix_ms: 9_999,
+            }),
+        )];
         let request = RunDispatch::new(activation).with_execution_scope(verified.into_ref());
         let wire = serde_json::to_value(&request).expect("serializes");
         assert_eq!(wire["execution_scope"], "workspace-a");
+        let primary = &wire["activation"]["snapshot"]["resolved_spec"]["model_binding"]["provisioning"]
+            ["credential"];
+        assert_eq!(primary["credential"]["id"], "grant-17", "R1/E1");
         assert_eq!(
-            wire["activation"]["snapshot"]["resolved_spec"]["model_binding"]["provisioning"]["credential"]
-                ["credential"]["id"],
-            "grant-17"
+            primary["material_source"], "control_plane_reference",
+            "R1/E1"
         );
-        assert!(!wire.to_string().contains("provider-key"));
+        assert_eq!(
+            primary
+                .as_object()
+                .expect("R1 credential object")
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([
+                "credential",
+                "material_source",
+                "policy",
+                "target",
+                "usage",
+            ]),
+            "R1/E2"
+        );
+        let fallback = &wire["activation"]["snapshot"]["resolved_spec"]["model_candidates"][0]["provisioning"]
+            ["credential"];
+        assert_eq!(fallback["credential"]["id"], "worker-grant-23", "R2/E1");
+        assert_eq!(fallback["material_source"], "worker_reference", "R2/E1");
+        assert_eq!(
+            fallback["envelope"]["envelope_ref"]["id"], "sealed-envelope-23",
+            "R2/E1"
+        );
+        assert_eq!(
+            fallback
+                .as_object()
+                .expect("R2 credential object")
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([
+                "credential",
+                "envelope",
+                "material_source",
+                "policy",
+                "target",
+                "usage",
+            ]),
+            "R2/E2"
+        );
+        assert!(!wire.to_string().contains(material_plaintext), "R3/E3");
         let restored: RunDispatch = serde_json::from_value(wire).expect("deserializes");
-        assert_eq!(restored, request);
+        assert_eq!(restored, request, "R3/E4");
     }
 
     #[test]
