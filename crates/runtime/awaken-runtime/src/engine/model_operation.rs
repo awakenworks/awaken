@@ -38,18 +38,38 @@ impl<'a> ModelOperationJournal<'a> {
         self.failed
     }
 
+    pub fn verify_reentry(
+        &mut self,
+    ) -> awaken_runtime_contract::llm::Result<Option<ModelOperation>> {
+        let previous =
+            ActiveModelOperation::load(self.store).map_err(|error| self.reject(error))?;
+        if previous
+            .as_ref()
+            .is_some_and(|operation| !operation.execution.permits_reentry())
+        {
+            self.context.physical_quiescence.mark_uncertain();
+            return Err(awaken_runtime_contract::llm::Error::Provider(
+                "previous model invocation has no termination evidence".into(),
+            ));
+        }
+        Ok(previous)
+    }
+
     pub async fn enter(
         &mut self,
         binding: &ModelBinding,
     ) -> awaken_runtime_contract::llm::Result<()> {
-        let previous =
-            ActiveModelOperation::load(self.store).map_err(|error| self.reject(error))?;
+        let previous = self.verify_reentry()?;
         let next = ModelOperation::next(previous.as_ref(), binding.clone())
             .ok_or_else(|| self.reject("model operation ordinal exhausted"))?;
         self.persist(next).await
     }
 
-    pub async fn returned(&mut self, timed_out: bool) -> awaken_runtime_contract::llm::Result<()> {
+    pub async fn returned(
+        &mut self,
+        timed_out: bool,
+        execution: awaken_runtime_contract::model_operation::ModelExecutionEvidence,
+    ) -> awaken_runtime_contract::llm::Result<()> {
         let mut operation = ActiveModelOperation::load(self.store)
             .map_err(|error| self.reject(error))?
             .ok_or_else(|| self.reject("model operation entry is missing"))?;
@@ -58,6 +78,7 @@ impl<'a> ModelOperationJournal<'a> {
         } else {
             ModelOperationPhase::Returned
         };
+        operation.execution = execution;
         self.persist(operation).await
     }
 

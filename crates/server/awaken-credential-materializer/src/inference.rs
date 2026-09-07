@@ -313,7 +313,12 @@ impl PinnedCandidateExecutor {
 impl LlmExecutor for PinnedCandidateExecutor {
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
         self.executor_for(&request.model_binding)
-            .await?
+            .await
+            .map_err(|error| {
+                error.with_execution_evidence(
+                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
+                )
+            })?
             .infer(request)
             .await
     }
@@ -324,7 +329,12 @@ impl LlmExecutor for PinnedCandidateExecutor {
         sink: &dyn DeltaSink,
     ) -> Result<ChatResponse, LlmError> {
         self.executor_for(&request.model_binding)
-            .await?
+            .await
+            .map_err(|error| {
+                error.with_execution_evidence(
+                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
+                )
+            })?
             .infer_streaming(request, sink)
             .await
     }
@@ -457,6 +467,53 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
 mod tests {
     use super::*;
     use awaken_agent_contract::RedactedString;
+
+    #[tokio::test]
+    async fn pinned_executor_preserves_inner_execution_evidence_for_both_modes() {
+        use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
+        struct Reject(ModelExecutionEvidence);
+        #[async_trait]
+        impl LlmExecutor for Reject {
+            async fn infer(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+                assert_eq!(request.model_binding.model_ref, "upstream");
+                Err(LlmError::Provider("inner failure".into()).with_execution_evidence(self.0))
+            }
+        }
+        struct Sink;
+        #[async_trait]
+        impl DeltaSink for Sink {
+            async fn on_text(&self, _: &str) {}
+        }
+        // C1 all three evidence values * C2 streaming/nonstreaming => exact
+        // evidence and classification survive model-name pinning. A decorator
+        // must never promote Unknown to Terminated merely because it returned.
+        for evidence in [
+            ModelExecutionEvidence::Unknown,
+            ModelExecutionEvidence::NotDispatched,
+            ModelExecutionEvidence::Terminated,
+        ] {
+            let executor = PinnedModelExecutor {
+                inner: Arc::new(Reject(evidence)),
+                upstream_model: "upstream".into(),
+            };
+            let request = ChatRequest {
+                model_binding: ModelBinding::new("p", "alias", "b"),
+                inference: Default::default(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+            };
+            for streaming in [false, true] {
+                let error = if streaming {
+                    executor.infer_streaming(request.clone(), &Sink).await
+                } else {
+                    executor.infer(request.clone()).await
+                }
+                .unwrap_err();
+                assert_eq!(error.code(), "provider_error");
+                assert_eq!(error.execution_evidence(), evidence);
+            }
+        }
+    }
 
     #[test]
     fn provider_executor_factory_decision_table() {
@@ -726,5 +783,30 @@ mod tests {
                 .is_err(),
             "B4/E4"
         );
+        // B4 at the actual model port is known pre-dispatch in both modes;
+        // NeverGrantClient would panic if candidate validation leaked I/O.
+        struct Sink;
+        #[async_trait]
+        impl DeltaSink for Sink {
+            async fn on_text(&self, _: &str) {}
+        }
+        let request = ChatRequest {
+            model_binding: ModelBinding::new("openai", "outside", "genai"),
+            inference: Default::default(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        for streaming in [false, true] {
+            let error = if streaming {
+                router.infer_streaming(request.clone(), &Sink).await
+            } else {
+                router.infer(request.clone()).await
+            }
+            .unwrap_err();
+            assert_eq!(
+                error.execution_evidence(),
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched
+            );
+        }
     }
 }

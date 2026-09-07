@@ -15,6 +15,7 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, DEFAULT_MODEL_RESPONSE_TIMEOUT, Error, LlmExecutor,
     Result, StopReason, TokenUsage, ToolCall,
 };
+use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
 use genai::Client;
 use genai::chat::{
     Binary, ChatMessage, ChatRequest as GenaiChatRequest, ContentPart, MessageContent,
@@ -44,7 +45,7 @@ use transcript_projection::{
 // silence bound: using the same 120-second value for both made healthy streams
 // from reasoning models fail while they were still emitting progress.
 /// How long the stream may go silent between events before the response fails as
-/// a retryable timeout. `timeout` independently bounds the complete streaming
+/// an unconfirmed timeout. `timeout` independently bounds the complete streaming
 /// inference, including opening and consuming the response; without both bounds,
 /// either a silent stream or an endless stream of no-op events could hang a run.
 // Strong reasoning models can legitimately produce no SSE event for more than
@@ -128,7 +129,7 @@ impl GenaiExecutor {
     }
 
     /// Set the per-event stall bound for streaming: a stream that produces no
-    /// event within this window fails as a retryable timeout.
+    /// event within this window fails with unknown execution, not safe replay.
     #[must_use]
     pub fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
         self.idle_timeout = idle_timeout;
@@ -191,6 +192,7 @@ impl GenaiExecutor {
             },
         );
         let client = Client::builder()
+            .with_reqwest(model_http_client()?)
             .with_service_target_resolver(resolver)
             .build()
             .map_err(|error| {
@@ -218,7 +220,10 @@ impl LlmExecutor for GenaiExecutor {
 
         let model = request.model_binding.model_ref.clone();
         let genai_request =
-            to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())?;
+            to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())
+                .map_err(|error| {
+                    error.with_execution_evidence(ModelExecutionEvidence::NotDispatched)
+                })?;
 
         // Have genai assemble the committed response for us. It concatenates the text
         // chunks and parses the accumulated tool-argument fragments into a JSON
@@ -227,7 +232,8 @@ impl LlmExecutor for GenaiExecutor {
         // JSON once the block ends. Without `capture_*` the `End` event carries
         // no content and we'd be stuck with the raw, string-encoded deltas.
         let options = self
-            .chat_options(&request, true)?
+            .chat_options(&request, true)
+            .map_err(|error| error.with_execution_evidence(ModelExecutionEvidence::NotDispatched))?
             .with_capture_content(true)
             .with_capture_tool_calls(true)
             .with_capture_usage(true)
@@ -246,12 +252,8 @@ impl LlmExecutor for GenaiExecutor {
         .map_err(|err| classify_error(&err.to_string()))?;
 
         let mut stream = stream_response.stream;
-        // Accumulated reasoning (streamed chunks); the End event's captured value
-        // is preferred when present.
-        let mut reasoning = String::new();
-        // Fallback assembly, used only if the provider delivers no captured response.
-        let mut text = String::new();
-        let mut tool_calls: Vec<ToolCall> = Vec::new();
+        // The SDK capture is the sole response accumulator. This adapter keeps
+        // only per-call emission offsets, never duplicate text/reasoning/tools.
         // Per-call bytes already emitted: genai hands CUMULATIVE argument snapshots,
         // so this adapter is the single owner that de-accumulates them into suffix
         // deltas (`ToolCallDelta`); no downstream ever diffs again.
@@ -305,15 +307,15 @@ impl LlmExecutor for GenaiExecutor {
                 // Live text: forward each chunk as it arrives (valid UTF-8 by type).
                 ChatStreamEvent::Chunk(chunk) if !chunk.content.is_empty() => {
                     sink.on_text(&chunk.content).await;
-                    text.push_str(&chunk.content);
                     made_progress = true;
                 }
                 // Live tool-call progress: genai hands incremental, string-encoded
                 // arguments here. Best-effort only; the committed response is the End
                 // event, where genai has parsed the arguments into an object.
                 ChatStreamEvent::ToolCallChunk(tool) => {
-                    let call = from_genai_tool_call(&tool.tool_call);
-                    let is_new_call = !tool_calls.iter().any(|c| c.call_id == call.call_id);
+                    let call = &tool.tool_call;
+                    let is_new_call = !tool_sent.contains_key(&call.call_id);
+                    let sent = tool_sent.entry(call.call_id.clone()).or_insert(0);
                     // genai's `arguments` is the cumulative JSON string so far; emit
                     // only the newly-appended suffix. A non-string or non-continuation
                     // snapshot is skipped (best-effort — the End event carries the
@@ -321,20 +323,16 @@ impl LlmExecutor for GenaiExecutor {
                     // Incremental transport is raw text, even when this snapshot
                     // happens to complete an object. Final argument normalization
                     // must not remove that snapshot's unsent suffix.
-                    if let Some(cum) = tool.tool_call.fn_arguments.as_str() {
-                        let sent = tool_sent.entry(call.call_id.clone()).or_insert(0);
-                        if cum.len() > *sent && cum.is_char_boundary(*sent) {
-                            sink.on_tool_call_delta(&call.call_id, &call.tool_id, &cum[*sent..])
-                                .await;
-                            *sent = cum.len();
-                            made_progress = true;
-                        }
+                    if let Some(cum) = tool.tool_call.fn_arguments.as_str()
+                        && cum.len() > *sent
+                        && cum.is_char_boundary(*sent)
+                    {
+                        sink.on_tool_call_delta(&call.call_id, &call.fn_name, &cum[*sent..])
+                            .await;
+                        *sent = cum.len();
+                        made_progress = true;
                     }
                     made_progress |= is_new_call;
-                    match tool_calls.iter_mut().find(|c| c.call_id == call.call_id) {
-                        Some(existing) => *existing = call,
-                        None => tool_calls.push(call),
-                    }
                 }
                 // Live reasoning: announce progress on the distinct reasoning
                 // channel; Managed exposes only a start marker and never the text.
@@ -342,7 +340,6 @@ impl LlmExecutor for GenaiExecutor {
                 ChatStreamEvent::ReasoningChunk(chunk) => {
                     if !chunk.content.is_empty() {
                         sink.on_reasoning(&chunk.content).await;
-                        reasoning.push_str(&chunk.content);
                         made_progress = true;
                     }
                 }
@@ -367,40 +364,27 @@ impl LlmExecutor for GenaiExecutor {
             .captured_stop_reason
             .as_ref()
             .map(map_stop_reason)
-            .transpose()?;
+            .transpose()
+            .map_err(|error| error.with_execution_evidence(ModelExecutionEvidence::Terminated))?;
         let usage = end.captured_usage.as_ref().map(map_usage);
-        if let Some(r) = end.captured_reasoning_content {
-            reasoning = r;
-        }
-
-        // Prefer genai's captured response (parsed tool arguments, same shape as
-        // `infer`); fall back to chunk-assembled blocks only when a protocol End
-        // omits captured content. Transport EOF cannot authorize this fallback.
-        let output = match end.captured_content {
-            Some(content) => map_assistant_output(&content),
-            None => {
-                let mut blocks: Vec<ContentBlock> = Vec::new();
-                if !text.is_empty() {
-                    blocks.push(ContentBlock::text(text));
-                }
-                for call in tool_calls {
-                    blocks.push(ContentBlock::tool_use(
-                        call.call_id,
-                        call.tool_id,
-                        call.arguments,
-                    ));
-                }
-                AssistantOutput::from_blocks(blocks)
-            }
-        };
+        let output = end
+            .captured_content
+            .as_ref()
+            .map(map_assistant_output)
+            .unwrap_or_else(|| AssistantOutput::from_blocks(Vec::new()));
         // Fold the response's reasoning through the same canonical response mapper
         // used by non-streaming inference so both paths commit an identical Step response.
-        let output = with_reasoning(output, Some(&reasoning), ResponseTransport::Streaming);
+        let output = with_reasoning(
+            output,
+            end.captured_reasoning_content.as_deref(),
+            ResponseTransport::Streaming,
+        );
         require_usable_response(ChatResponse {
             output,
             usage,
             stop_reason,
         })
+        .map_err(|error| error.with_execution_evidence(ModelExecutionEvidence::Terminated))
     }
 }
 
@@ -412,8 +396,13 @@ impl GenaiExecutor {
     ) -> Result<ChatResponse> {
         let model = request.model_binding.model_ref.clone();
         let genai_request =
-            to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())?;
-        let mut options = self.chat_options(&request, false)?;
+            to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())
+                .map_err(|error| {
+                    error.with_execution_evidence(ModelExecutionEvidence::NotDispatched)
+                })?;
+        let mut options = self.chat_options(&request, false).map_err(|error| {
+            error.with_execution_evidence(ModelExecutionEvidence::NotDispatched)
+        })?;
         if let Some(max_tokens) = max_tokens_override {
             options = options.with_max_tokens(max_tokens);
         }
@@ -423,11 +412,13 @@ impl GenaiExecutor {
             self.client.exec_chat(model, genai_request, Some(&options)),
         )
         .await
-        // A timeout is retryable: the same call may succeed on retry.
+        // A local timeout cannot prove that the remote operation stopped.
         .map_err(|_| Error::Timeout("model call timed out".to_string()))?
         .map_err(|err| classify_error(&err.to_string()))?;
 
-        require_usable_response(from_genai_response(response)?)
+        from_genai_response(response)
+            .and_then(require_usable_response)
+            .map_err(|error| error.with_execution_evidence(ModelExecutionEvidence::Terminated))
     }
 
     fn chat_options(
@@ -437,6 +428,18 @@ impl GenaiExecutor {
     ) -> Result<genai::chat::ChatOptions> {
         inference_options::materialize(request, streaming, self.unspecified_reasoning)
     }
+}
+
+/// One transport policy for both native model dialects. Runtime owns retries;
+/// redirects and HTTP-client retries must not hide another initiating request.
+fn model_http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .retry(reqwest::retry::never())
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| {
+            Error::Binding(format!("model transport could not be constructed: {error}"))
+        })
 }
 
 /// Classify a provider error string into the contract's error taxonomy. The

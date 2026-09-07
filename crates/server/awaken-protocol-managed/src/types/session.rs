@@ -761,7 +761,7 @@ impl SessionError {
             RunState::Ended(EndCause::Error(failure)) => Some(Self::classify(failure.code(), failure.message())),
             RunState::Ended(EndCause::Indeterminate) => Some(Self {
                 kind: "unknown_error",
-                message: "Completion could not be confirmed. This operation will not be automatically repeated.".into(),
+                message: "The execution result is unknown. This operation will not be automatically repeated. Do not repeat external actions until their outcome is verified.".into(),
                 retry_status: RetryStatus::Terminal,
                 mcp_server_name: None,
             }),
@@ -1803,6 +1803,18 @@ mod tests {
         let wire = serde_json::to_value(error).unwrap();
         assert_eq!(wire["type"], "unknown_error");
         assert_eq!(wire["retry_status"], serde_json::json!({"type":"terminal"}));
+        assert!(
+            wire["message"]
+                .as_str()
+                .unwrap()
+                .contains("result is unknown")
+        );
+        assert!(
+            wire["message"]
+                .as_str()
+                .unwrap()
+                .contains("not be automatically repeated")
+        );
         assert_eq!(
             wire.as_object().unwrap().len(),
             3,

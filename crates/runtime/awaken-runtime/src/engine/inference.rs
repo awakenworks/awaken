@@ -71,7 +71,7 @@ fn stitch_prefix(response: ChatResponse, prefix: &str) -> ChatResponse {
 /// the call fails fast as a retryable provider error instead of burning the
 /// retry budget against a provider that is already down.
 ///
-/// A stream cut off mid-flight is recovered from its partial rather than
+/// Only after positive termination evidence, an interrupted stream is recovered from its partial rather than
 /// regenerated: text-only continues from an assistant prefix + continuation
 /// prompt (R1); a still-open tool call is dropped and the text continues (R3);
 /// tool calls that finished before the drop are executed without re-inferring
@@ -184,6 +184,10 @@ pub(super) async fn infer_with_retry_observed(
     )
     .await;
     let mut retry_count = 0;
+    let quiescence = journal
+        .as_deref()
+        .map(|journal| journal.context.physical_quiescence.clone())
+        .unwrap_or_default();
     let result = infer_with_retry_inner(
         llm,
         request,
@@ -197,6 +201,7 @@ pub(super) async fn infer_with_retry_observed(
         ownership,
         journal.as_deref_mut(),
         cancellation.as_ref(),
+        &quiescence,
     )
     .await;
     // A cancelled observation or failed evidence write has not concluded
@@ -207,9 +212,7 @@ pub(super) async fn infer_with_retry_observed(
             .as_ref()
             .is_some_and(|token| token.is_cancelled())
         && !journal.as_deref().is_some_and(|journal| journal.failed())
-        && journal
-            .as_deref()
-            .is_none_or(|journal| journal.context.physical_quiescence.can_acknowledge_return())
+        && quiescence.can_acknowledge_return()
         && let Err(error) = ctx.store.delete(&ctx.run_id).await
     {
         tracing::warn!(run_id = %ctx.run_id, %error, "failed to delete spent stream checkpoint");
@@ -292,7 +295,13 @@ async fn infer_with_retry_inner(
     ownership: Option<&dyn awaken_runtime_contract::AttemptOwnershipVerifier>,
     mut journal: Option<&mut super::model_operation::ModelOperationJournal<'_>>,
     cancellation: Option<&tokio_util::sync::CancellationToken>,
+    quiescence: &awaken_runtime_contract::runtime_context::AttemptQuiescence,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
+    // Recovery must check the committed invocation before even salvaging a
+    // checkpoint's tool arguments. A fresh process has no in-memory latch.
+    if let Some(journal) = journal.as_deref_mut() {
+        journal.verify_reentry()?;
+    }
     let model = request.model_binding.model_ref.clone();
     let sink = ContinuationSink::new(sink);
     // Text confirmed from prior interrupted attempts; grows as continuation
@@ -351,10 +360,6 @@ async fn infer_with_retry_inner(
                     awaken_runtime_contract::llm::Error::Unauthorized(error.to_string())
                 })?;
         }
-        let quiescence = journal
-            .as_deref()
-            .map(|journal| journal.context.physical_quiescence.clone())
-            .unwrap_or_default();
         let outcome = model_read(
             cancellation,
             tokio::time::timeout(
@@ -370,8 +375,20 @@ async fn infer_with_retry_inner(
                 "model observation cancelled".into(),
             ));
         };
+        use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
+        let execution = match &outcome {
+            Ok(Ok(_)) => ModelExecutionEvidence::Terminated,
+            Ok(Err(error)) => error.execution_evidence(),
+            Err(_) => ModelExecutionEvidence::Unknown,
+        };
+        // The adapter can drop its own transport future and RETURN an error.
+        // The outer return observer cannot detect that abandonment. Latch the
+        // explicit evidence before any awaited commit, retry or checkpoint work.
+        if !execution.permits_reentry() {
+            quiescence.mark_uncertain();
+        }
         if let Some(journal) = journal.as_deref_mut() {
-            journal.returned(outcome.is_err()).await?;
+            journal.returned(outcome.is_err(), execution).await?;
         }
         if cancellation.is_some_and(|token| token.is_cancelled()) {
             // Cancellation may have arrived while the return write was held.
@@ -387,12 +404,12 @@ async fn infer_with_retry_inner(
                 policy.attempt_timeout.as_millis()
             )))
         });
-        if journal
-            .as_deref()
-            .is_some_and(|journal| !journal.context.physical_quiescence.can_acknowledge_return())
-        {
+        if !quiescence.can_acknowledge_return() {
             // The watchdog abandoned an in-flight executor. Neither a retry,
             // continuation, nor synthesized tool call may cross this boundary.
+            if let Err(error) = &attempt_result {
+                permit.failure(error.is_retryable());
+            }
             return attempt_result;
         }
         match attempt_result {

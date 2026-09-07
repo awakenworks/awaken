@@ -869,7 +869,7 @@ impl DeltaSink for RecordingSink {
     }
 }
 
-/// Drops the first attempt with a retryable error after streaming a partial
+/// Ends the first remote attempt with a provider-confirmed terminal error after streaming a partial
 /// (text and/or one tool call whose raw argument text is `first_tool.2`), then
 /// succeeds on any retry — capturing every request it received.
 struct FlakyStreamLlm {
@@ -967,7 +967,12 @@ impl LlmExecutor for FlakyStreamLlm {
                 // Mid-stream, a provider hands a de-accumulated arg-fragment.
                 sink.on_tool_call_delta(call_id, tool_id, raw).await;
             }
-            return Err(LlmError::Timeout("connection reset".to_string()));
+            return Err(
+                LlmError::Timeout("provider-confirmed terminal deadline".to_string())
+                    .with_execution_evidence(
+                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated,
+                ),
+            );
         }
         sink.on_text(self.continuation).await;
         Ok(ChatResponse {
@@ -1545,6 +1550,8 @@ async fn native_child_tool_effects_require_the_parent_attempt_authority() {
 
 #[tokio::test]
 async fn interrupted_text_stream_is_continued_from_the_partial() {
+    // S1 partial text + confirmed remote termination + retry budget => continue.
+    // Plain connection loss is Unknown and is covered by the negative case below.
     let flaky = Arc::new(FlakyStreamLlm {
         requests: Default::default(),
         first_partial: "The ans",
@@ -1606,10 +1613,10 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
 #[tokio::test]
 async fn completed_tool_calls_before_a_drop_are_executed_without_re_inferring() {
     // Test design — Causes: the model completes parseable tool arguments before
-    // its stream drops. Effects: inference salvages text+ToolUse without another
+    // its stream ends with confirmed remote termination. Effects: inference salvages text+ToolUse without another
     // provider call. Constraints/invariants: only complete JSON calls are
     // executable and salvage keeps the original call identity. Decision rule R2:
-    // completed call+drop=>ToolUse response and provider count one.
+    // completed call+confirmed termination=>ToolUse response and provider count one.
     let flaky = Arc::new(FlakyStreamLlm {
         requests: Default::default(),
         first_partial: "Let me search ",
@@ -1648,7 +1655,7 @@ async fn completed_tool_calls_before_a_drop_are_executed_without_re_inferring() 
 
 #[tokio::test]
 async fn completed_tool_calls_are_salvaged_even_when_the_retry_budget_is_spent() {
-    // Causes: R2 preempts budget exhaustion—a mid-stream drop left a COMPLETE tool
+    // Causes: R2 preempts budget exhaustion—a confirmed remote termination left a COMPLETE tool
     // call (its args parse) executes the salvaged call without re-inference, even
     // though `max_retries == 0` leaves no budget for a text continuation. The
     // completed-tools short-circuit (inference.rs B8) sits before the budget gate.
@@ -1690,7 +1697,7 @@ async fn completed_tool_calls_are_salvaged_even_when_the_retry_budget_is_spent()
 
 #[tokio::test]
 async fn an_in_flight_tool_call_is_dropped_and_the_text_continues() {
-    // Test design — Causes: a drop leaves confirmed text plus unparseable in-flight
+    // Test design — Causes: confirmed remote termination leaves text plus unparseable in-flight
     // tool arguments. Effects: the tool is discarded and retry continues only
     // from text. Constraints/invariants: incomplete tool syntax is never executed
     // or replayed. Decision rule R3: partial tool+text=>two calls, stitched text,
@@ -1732,12 +1739,12 @@ async fn an_in_flight_tool_call_is_dropped_and_the_text_continues() {
 }
 
 /// Test design for the inference checkpoint boundary.
-/// Causes: C1=stream drops after a partial, C2=no retry budget,
+/// Causes: C1=remote terminates after a partial, C2=no retry budget,
 /// C3=checkpoint store configured. Effects: E1=partial checkpoint is written,
-/// E2=normal function return clears it. Rule R1: C1+C2+C3 -> E1+E2; the
+/// E2=confirmed termination clears it. Rule R1: C1+C2+C3 -> E1+E2; the
 /// following persisted-partial tests cover crash-before-clear recovery.
 /// Constraints/invariants: the checkpoint is Run-scoped and survives only a
-/// crash before the unconditional return-path deletion.
+/// crash before the confirmed return-path deletion; Unknown never authorizes deletion.
 #[tokio::test]
 async fn the_interruption_boundary_flushes_a_checkpoint_then_clears_it_on_return() {
     // A text-only drop with no retry budget: the boundary flush persists the

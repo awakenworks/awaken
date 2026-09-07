@@ -110,6 +110,7 @@ pub trait Classify {
 impl Classify for Error {
     fn disposition(&self) -> Disposition {
         match self {
+            Error::Observed { source, .. } => source.disposition(),
             // Transient: retrying the same binding may succeed.
             Error::Provider(_) | Error::Timeout(_) => Disposition::Transient,
             // Quota: a rate/quota signal against the identity. `Overloaded` is a

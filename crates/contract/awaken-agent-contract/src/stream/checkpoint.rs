@@ -24,8 +24,9 @@ use serde::{Deserialize, Serialize};
 /// One tool call as it stood when the stream was interrupted. `raw_arguments` is
 /// the provider's accumulated-so-far argument text — raw, unparsed JSON that may
 /// be syntactically incomplete if the drop landed mid-arguments. Whether it
-/// parses is the completion signal: parseable ⇒ the model finished emitting this
-/// call (replay it); unparseable ⇒ it was still in flight (drop it and continue).
+/// parses is only a syntax signal. Parseable arguments may be salvaged only
+/// after Runtime separately establishes model termination and tool recovery
+/// permission; neither valid JSON nor this checkpoint proves quiescence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartialToolCall {
     pub call_id: String,

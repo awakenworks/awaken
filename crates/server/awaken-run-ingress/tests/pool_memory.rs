@@ -39,6 +39,7 @@ type MemWorker = DispatchWorker<MemoryDispatchStore>;
 type FlakyWorker = DispatchWorker<FlakyDispatchStore>;
 
 struct DetachedInference {
+    return_unknown_error: bool,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Semaphore>,
     calls: std::sync::atomic::AtomicUsize,
@@ -59,14 +60,24 @@ impl awaken_runtime_contract::llm::LlmExecutor for DetachedInference {
         // This independent test task models a provider that continues computing
         // after its HTTP client Future is dropped. The test explicitly releases
         // it; dropping a JoinHandle deliberately does not cancel remote work.
-        tokio::spawn(async move {
+        let remote = tokio::spawn(async move {
             live.fetch_add(1, SeqCst);
             entered.notify_one();
             release.acquire().await.unwrap().forget();
             live.fetch_sub(1, SeqCst);
-        })
-        .await
-        .unwrap();
+        });
+        if self.return_unknown_error {
+            tokio::time::timeout(Duration::from_millis(5), remote)
+                .await
+                .map_err(|_| {
+                    awaken_runtime_contract::llm::Error::Timeout(
+                        "adapter deadline before remote termination".into(),
+                    )
+                })?
+                .unwrap();
+        } else {
+            remote.await.unwrap();
+        }
         Ok(awaken_runtime_contract::llm::ChatResponse {
             output: awaken_runtime_contract::llm::AssistantOutput::text("late response"),
             usage: None,
@@ -77,14 +88,25 @@ impl awaken_runtime_contract::llm::LlmExecutor for DetachedInference {
 
 #[tokio::test]
 async fn native_watchdog_retains_slot_while_detached_provider_is_still_running() {
+    assert_native_uncertainty_retains_physical_slot(false).await;
+}
+
+#[tokio::test]
+async fn native_returned_error_retains_slot_while_detached_provider_is_still_running() {
+    assert_native_uncertainty_retains_physical_slot(true).await;
+}
+
+async fn assert_native_uncertainty_retains_physical_slot(return_unknown_error: bool) {
     // Q1 Native model entered; Q2 remote execution outlives local watchdog;
+    // Q2b adapter's own deadline returns Err normally while remote work lives.
     // Q3 inner retry and outer tolerance enabled; Q4 new owner reclaims lease.
     // E1 exactly one physical provider invocation; E2 durable slot retained;
     // E3 replacement cannot begin, even after logical Indeterminate commits.
-    // Rules: Q1+Q2+Q3=>E1/E2; Q4+E2=>E3. Unlike a blocking custom Attempt,
+    // Rules: Q1+(Q2|Q2b)+Q3=>E1/E2; Q4+E2=>E3. Unlike a blocking custom Attempt,
     // this crosses the actual Native inference/timeout/journal/Worker seam.
     use std::sync::atomic::Ordering::SeqCst;
     let model = Arc::new(DetachedInference {
+        return_unknown_error,
         entered: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Semaphore::new(0)),
         calls: std::sync::atomic::AtomicUsize::new(0),

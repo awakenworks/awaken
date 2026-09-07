@@ -27,7 +27,7 @@ pub const DEFAULT_MODEL_RESPONSE_TIMEOUT: std::time::Duration = std::time::Durat
 /// Runtime watchdog around the complete [`LlmExecutor`] attempt. It is a last
 /// resort for an executor that fails to enforce its own response deadline, and
 /// therefore must outlive [`DEFAULT_MODEL_RESPONSE_TIMEOUT`] so the provider's
-/// typed terminal outcome remains authoritative.
+/// typed observation reaches Runtime first. Neither deadline proves remote termination.
 pub const DEFAULT_MODEL_ATTEMPT_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(630);
 
 const _: () =
@@ -45,7 +45,7 @@ mod inference_deadline_contract_tests {
         // provider result/error reaches Runtime unchanged; E2 only C3 is cut off
         // by the outer watchdog. Rules D1=(C1|C2)=>E1 because response timeout <
         // watchdog; D2=C3=>E2. Invariant: an outer watchdog must never preempt
-        // the canonical provider terminal boundary under default composition.
+        // the canonical provider observation boundary under default composition.
         assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT < DEFAULT_MODEL_ATTEMPT_WATCHDOG);
     }
 }
@@ -434,6 +434,15 @@ mod thread_usage_key_tests {
 /// everything else — retrying an identical request cannot succeed.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// The adapter's independent execution evidence. Unannotated failures are
+    /// Unknown, never implicitly safe because a Rust future returned Err.
+    /// Classification/health remains the enclosed error; this is not another
+    /// retry policy or a provider-specific recovery exception.
+    #[error("{source}")]
+    Observed {
+        source: Box<Error>,
+        execution: crate::model_operation::ModelExecutionEvidence,
+    },
     /// The selected binding cannot be served (unknown model, bad endpoint).
     /// Permanent: retrying will not help.
     #[error("model binding rejected: {0}")]
@@ -496,10 +505,42 @@ pub enum Error {
 }
 
 impl Error {
-    /// Whether the runtime should retry the call after backoff.
+    /// Attach evidence at the boundary that actually established it. Wrappers
+    /// remain flat; transport decorators must preserve the inner evidence.
+    #[must_use]
+    pub fn with_execution_evidence(
+        self,
+        execution: crate::model_operation::ModelExecutionEvidence,
+    ) -> Self {
+        let source = match self {
+            Self::Observed { source, .. } => source,
+            other => Box::new(other),
+        };
+        Self::Observed { source, execution }
+    }
+
+    #[must_use]
+    pub fn execution_evidence(&self) -> crate::model_operation::ModelExecutionEvidence {
+        match self {
+            Self::Observed { execution, .. } => *execution,
+            _ => crate::model_operation::ModelExecutionEvidence::Unknown,
+        }
+    }
+
+    /// The existing error taxonomy, without changing its health/routing meaning.
+    #[must_use]
+    pub fn classification(&self) -> &Self {
+        match self {
+            Self::Observed { source, .. } => source.classification(),
+            other => other,
+        }
+    }
+
+    /// Whether policy considers retry worthwhile. This is not proof that a new
+    /// invocation is safe: Runtime must also require execution evidence.
     pub fn is_retryable(&self) -> bool {
         matches!(
-            self,
+            self.classification(),
             Error::Provider(_)
                 | Error::RateLimited { .. }
                 | Error::Overloaded { .. }
@@ -510,6 +551,7 @@ impl Error {
     /// The server's `Retry-After` hint, when the provider sent one.
     pub fn retry_after(&self) -> Option<std::time::Duration> {
         match self {
+            Error::Observed { source, .. } => source.retry_after(),
             Error::RateLimited { retry_after, .. } | Error::Overloaded { retry_after, .. } => {
                 *retry_after
             }
@@ -522,6 +564,7 @@ impl Error {
     /// on. `None` for every other classification.
     pub fn reset_hint(&self) -> Option<std::time::Duration> {
         match self {
+            Error::Observed { source, .. } => source.reset_hint(),
             Error::UsageLimit { reset_after, .. } => *reset_after,
             _ => None,
         }
@@ -532,6 +575,7 @@ impl Error {
     /// hosts can categorize faults without parsing messages.
     pub fn code(&self) -> &'static str {
         match self {
+            Error::Observed { source, .. } => source.code(),
             Error::Binding(_) => "binding_rejected",
             Error::Provider(_) => "provider_error",
             Error::RateLimited { .. } => "rate_limited",
@@ -577,6 +621,9 @@ pub trait DeltaSink: Send + Sync {
 }
 
 /// Provider-adapter port: turn one neutral request into one neutral response.
+/// Ok requires protocol completion for this invocation, not merely transport
+/// EOF. Err carries independent execution evidence; an unannotated error is
+/// Unknown. Adapters must not hide unconfirmed retries behind a later success.
 #[async_trait]
 pub trait LlmExecutor: Send + Sync {
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse>;

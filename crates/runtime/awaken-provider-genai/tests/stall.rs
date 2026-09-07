@@ -8,11 +8,16 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::{AdapterKind, GenaiExecutor};
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, DeltaSink, LlmExecutor, StopReason};
+use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
 use awaken_runtime_contract::resolved::ModelBinding;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum StreamFixture {
+    HttpFailure {
+        status: u16,
+        requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    },
     Boundary {
         anthropic: bool,
         tool: bool,
@@ -34,13 +39,25 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
         .await
         .expect("binds");
     let addr = listener.local_addr().expect("addr");
+    let serving = fixture.clone();
     tokio::spawn(async move {
         while let Ok((mut socket, _)) = listener.accept().await {
-            let fixture = fixture;
+            let fixture = serving.clone();
             tokio::spawn(async move {
                 // Drain the request head; the response does not depend on it.
                 let mut buf = [0u8; 8192];
                 let _ = socket.read(&mut buf).await;
+                if let StreamFixture::HttpFailure { status, requests } = &fixture {
+                    requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let response = format!(
+                        "HTTP/1.1 {status} Failure\r\nlocation: http://{addr}/repeated\r\nretry-after: 0\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}"
+                    );
+                    socket
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("failure response");
+                    return;
+                }
                 if let StreamFixture::Boundary {
                     anthropic,
                     tool,
@@ -67,6 +84,7 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
                 let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n";
                 let _ = socket.write_all(head.as_bytes()).await;
                 match fixture {
+                    StreamFixture::HttpFailure { .. } => unreachable!("handled at HTTP boundary"),
                     StreamFixture::Boundary { .. } => unreachable!("handled at HTTP boundary"),
                     StreamFixture::AnthropicStall => {
                         let events = concat!(
@@ -144,6 +162,7 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
         }
     });
     let suffix = match fixture {
+        StreamFixture::HttpFailure { .. } => "/v1",
         StreamFixture::Boundary {
             anthropic: true, ..
         } => "/",
@@ -156,6 +175,63 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
         | StreamFixture::OpenAiCompleteAfterEmptyChoices => "/v1",
     };
     format!("http://{addr}{suffix}")
+}
+
+#[tokio::test]
+async fn production_model_clients_do_not_redirect_or_retry_ambiguous_http_responses() {
+    use awaken_provider_genai::OpenAiResponsesExecutor;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    // H1 redirect 307/308; H2 retryable status 429/503; H3 Anthropic/OpenAI
+    // streaming and nonstreaming + Responses. All H1/H2 * H3 must make exactly
+    // one HTTP request and retain Unknown, even with Location and Retry-After.
+    // This exercises production construction, not a custom test HTTP client.
+    for status in [307, 308, 429, 503] {
+        for (kind, streaming) in [(0, false), (0, true), (1, false), (1, true), (2, false)] {
+            let requests = Arc::new(AtomicUsize::new(0));
+            let base = spawn_sse_server(StreamFixture::HttpFailure {
+                status,
+                requests: requests.clone(),
+            })
+            .await;
+            let executor: Box<dyn LlmExecutor> = match kind {
+                2 => Box::new(
+                    OpenAiResponsesExecutor::from_materialized_endpoint("openai", &base, "test")
+                        .unwrap(),
+                ),
+                _ => Box::new(
+                    GenaiExecutor::from_materialized_endpoint(
+                        if kind == 0 {
+                            AdapterKind::Anthropic
+                        } else {
+                            AdapterKind::OpenAI
+                        },
+                        base,
+                        "test",
+                    )
+                    .unwrap(),
+                ),
+            };
+            let result = tokio::time::timeout(Duration::from_secs(5), async {
+                if streaming {
+                    executor.infer_streaming(request(), &NullSink).await
+                } else {
+                    executor.infer(request()).await
+                }
+            })
+            .await
+            .expect("no hidden retry delay");
+            let error = result.expect_err("HTTP failure cannot become model completion");
+            assert_eq!(
+                requests.load(Ordering::SeqCst),
+                1,
+                "{status}/{kind}/{streaming}"
+            );
+            assert_eq!(error.execution_evidence(), ModelExecutionEvidence::Unknown);
+        }
+    }
 }
 
 fn boundary_events(anthropic: bool, tool: bool, terminal: bool) -> String {
@@ -261,6 +337,7 @@ async fn provider_protocol_end_not_http_eof_owns_response_success() {
                         let error =
                             result.expect_err("HTTP EOF cannot authorize a partial answer or tool");
                         assert_eq!(error.code(), "provider_error");
+                        assert_eq!(error.execution_evidence(), ModelExecutionEvidence::Unknown);
                         if !broken_body {
                             assert!(error.to_string().contains("before protocol completion"));
                         }
@@ -325,7 +402,8 @@ fn request() -> ChatRequest {
  * stall; E2 return a retryable timeout naming the total deadline; E3 never
  * leave the inference future pending. Constraints: C3 and C4 are exclusive;
  * C2 is required for either timeout. Rules: S1 C1+C2+C3=>E1+E3;
- * S2 C1+C2+C4+C5=>E2+E3.
+ * S2 C1+C2+C4+C5=>E2+E3. In both rules physical evidence stays Unknown:
+ * a retryable error class describes health, not permission to submit again.
  */
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stalled_stream_times_out_as_a_retryable_timeout() {
@@ -348,7 +426,8 @@ async fn stalled_stream_times_out_as_a_retryable_timeout() {
     .expect("the idle timeout fires instead of hanging");
     let err = result.expect_err("a stalled stream is an error, not a response");
     assert_eq!(err.code(), "timeout");
-    assert!(err.is_retryable(), "a stall is worth retrying");
+    assert!(err.is_retryable(), "health classification is retained");
+    assert_eq!(err.execution_evidence(), ModelExecutionEvidence::Unknown);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -374,6 +453,7 @@ async fn heartbeating_unfinished_stream_obeys_the_total_call_deadline() {
     let err = result.expect_err("an unfinished stream is not a completed response");
     assert_eq!(err.code(), "timeout");
     assert!(err.to_string().contains("total timeout"), "got: {err}");
+    assert_eq!(err.execution_evidence(), ModelExecutionEvidence::Unknown);
     assert!(
         err.is_retryable(),
         "a total stream timeout is worth retrying"
@@ -405,6 +485,7 @@ async fn transport_heartbeats_do_not_count_as_model_progress() {
     assert_eq!(error.code(), "timeout");
     assert!(error.is_retryable());
     assert!(error.to_string().contains("no useful event"), "{error}");
+    assert_eq!(error.execution_evidence(), ModelExecutionEvidence::Unknown);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -454,6 +535,7 @@ async fn openai_empty_choice_heartbeats_do_not_defeat_the_idle_timeout() {
     let error = result.expect_err("O2/E2 no-op choices are never a response");
     assert_eq!(error.code(), "timeout", "O2/E1");
     assert!(error.is_retryable(), "O2/E1");
+    assert_eq!(error.execution_evidence(), ModelExecutionEvidence::Unknown);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -474,4 +556,9 @@ async fn openai_empty_terminal_response_fails_closed() {
         .expect_err("O3/E1 a terminal empty turn fails closed");
     assert_eq!(error.code(), "provider_error", "O3/E2");
     assert!(error.is_retryable(), "O3/E2");
+    // O3 also proves physical completion independently of response quality.
+    assert_eq!(
+        error.execution_evidence(),
+        ModelExecutionEvidence::Terminated
+    );
 }

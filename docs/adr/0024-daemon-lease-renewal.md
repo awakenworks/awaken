@@ -133,7 +133,9 @@ that effect. The ordinary-tool and model ports do not supply a terminal-receipt
 recovery command. Native inference returns data rather than invoking proposed
 Awaken tools, but discarding that data does not prove provider computation or
 billing stopped. The model Future therefore arms the same attempt-local veto on
-first poll and disarms it only on observed return. Cancellation, task abort and
+first poll. A Rust return only disarms that observer; Runtime separately latches
+returned errors with unknown remote execution before any awaited journal write.
+Cancellation, task abort and
 watchdog expiry retain the physical slot. A watchdog ends the logical Run as
 Indeterminate without inner retry, continuation, failover or outer failure
 tolerance. Cancellation retains its logical Cancelled outcome; neither outcome
@@ -178,13 +180,28 @@ material and do not create another billing path.
 
 This is an evidence-boundary repair, not a physical-slot recovery bypass.
 `Returned` means the local executor future returned, not that an arbitrary
-provider stopped computing. SDK-internal HTTP retries remain opaque below this
-executor seam. Legacy Runs without evidence, provider terminal/task receipts,
-and authority-backed Native crash handoff remain unresolved; no existing
-physical slot is cleared based only on these new records.
-Locally returned transport errors are not yet typed as definitive pre-dispatch
-rejection versus accepted-but-unconfirmed execution. This change closes
-abandoned Future paths, not every provider retry ambiguity.
+provider stopped computing. The same record stores independent execution
+evidence: `Unknown`, `NotDispatched`, or `Terminated`. Missing fields, including
+legacy `Returned`, decode as `Unknown`. Before checkpoint salvage and every new
+invocation, Runtime checks the prior Run-scoped evidence; Unknown retains the
+physical veto and ends logically as Indeterminate without retry or failover.
+Error taxonomy still owns provider health and routing, never physical safety.
+
+Trusted adapters annotate pre-I/O validation/materialization errors as
+NotDispatched, and errors after validated protocol completion as Terminated.
+Transport EOF, local deadlines, unparsed bodies and HTTP failure statuses remain
+Unknown. Both production GenAI and Responses constructors use one HTTP-client
+policy that disables retries and redirects. Injected custom clients/executors
+must uphold the same port contract; this does not prove arbitrary SDK behavior.
+The SDK's captured response is the sole full streaming accumulator in the GenAI
+adapter; the adapter retains only tool emission offsets, not a second copy of
+text, reasoning and tool arguments.
+
+Provider terminal/task receipt recovery and authority-backed Native crash
+handoff remain unresolved; no existing physical slot is cleared based only on
+these records. A historical Run with no model journal at all is not retrospectively
+proved stopped. This repair rejects known uncertain invocation history; it is
+not a blanket historical migration or an independent execution-domain provider.
 
 The slot is not another lease or state machine. Claim, attempt admission,
 settlement, retry exhaustion, and dead-lettering mutate the same Dispatch row in

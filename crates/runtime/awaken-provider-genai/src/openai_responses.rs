@@ -8,6 +8,7 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, StopReason, TokenUsage,
 };
+use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
 use awaken_runtime_contract::resolved::ProviderServerTool;
 #[cfg(test)]
 use awaken_runtime_contract::resolved::{
@@ -42,11 +43,7 @@ impl OpenAiResponsesExecutor {
         if !url.path().trim_end_matches('/').ends_with("responses") {
             url.set_path(&format!("{}/responses", url.path().trim_end_matches('/')));
         }
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|error| Error::Provider(error.to_string()))?;
+        let client = crate::model_http_client()?;
         Ok(Self {
             client,
             url,
@@ -56,11 +53,15 @@ impl OpenAiResponsesExecutor {
     }
 
     async fn execute(&self, request: &ChatRequest) -> Result<ResponsesResponse, Error> {
+        let body = request_body_for_provider(request, &self.provider_kind).map_err(|error| {
+            error.with_execution_evidence(ModelExecutionEvidence::NotDispatched)
+        })?;
         let response = self
             .client
             .post(self.url.clone())
+            .timeout(Duration::from_secs(120))
             .bearer_auth(&self.authentication)
-            .json(&request_body_for_provider(request, &self.provider_kind)?)
+            .json(&body)
             .send()
             .await
             .map_err(|error| classify_error(&error.without_url().to_string()))?;
@@ -543,6 +544,21 @@ fn response_from_value(value: Value) -> Result<ChatResponse, Error> {
 }
 
 fn response_from_wire(wire: ResponsesResponse) -> Result<ChatResponse, Error> {
+    match wire.status.as_deref() {
+        Some("completed" | "incomplete") => {}
+        Some("failed" | "cancelled") => {
+            return Err(Error::Provider(format!(
+                "Responses operation ended with status {:?}",
+                wire.status
+            ))
+            .with_execution_evidence(ModelExecutionEvidence::Terminated));
+        }
+        _ => {
+            return Err(Error::Provider(
+                "Responses operation has no confirmed terminal status".into(),
+            ));
+        }
+    }
     let mut blocks = Vec::new();
     for item in wire.output {
         match item {
@@ -574,6 +590,7 @@ fn response_from_wire(wire: ResponsesResponse) -> Result<ChatResponse, Error> {
             } => {
                 let arguments = serde_json::from_str(&arguments).map_err(|error| {
                     Error::Provider(format!("function_call arguments are invalid JSON: {error}"))
+                        .with_execution_evidence(ModelExecutionEvidence::Terminated)
                 })?;
                 blocks.push(ContentBlock::tool_use(call_id, name, arguments));
             }
@@ -977,6 +994,10 @@ mod tests {
         // R5b=C2=>error cover structural and semantic malformed partitions.
         let missing_output = response_from_value(json!({"status":"completed"})).unwrap_err();
         assert_eq!(missing_output.code(), "provider_error");
+        assert_eq!(
+            missing_output.execution_evidence(),
+            ModelExecutionEvidence::Unknown
+        );
 
         let malformed_arguments = response_from_value(json!({
             "status":"completed",
@@ -984,6 +1005,42 @@ mod tests {
         }))
         .unwrap_err();
         assert_eq!(malformed_arguments.code(), "provider_error");
+        assert_eq!(
+            malformed_arguments.execution_evidence(),
+            ModelExecutionEvidence::Terminated
+        );
+    }
+
+    #[test]
+    fn response_requires_terminal_evidence_independent_of_partial_content() {
+        // T1 absent/queued/in_progress/unknown status => Unknown even if text
+        // or a complete tool call is present; T2 failed/cancelled => terminal
+        // failure, not successful output. T3 completed/incomplete success and
+        // malformed terminal arguments are covered by adjacent tests.
+        for status in [
+            None,
+            Some("queued"),
+            Some("in_progress"),
+            Some("future_status"),
+            Some("failed"),
+            Some("cancelled"),
+        ] {
+            for output in [
+                json!([{"type":"message","content":[{"type":"output_text","text":"partial"}]}]),
+                json!([{"type":"function_call","call_id":"c","name":"tool","arguments":"{}"}]),
+            ] {
+                let error =
+                    response_from_value(json!({"status":status,"output":output})).unwrap_err();
+                assert_eq!(
+                    error.execution_evidence(),
+                    if matches!(status, Some("failed" | "cancelled")) {
+                        ModelExecutionEvidence::Terminated
+                    } else {
+                        ModelExecutionEvidence::Unknown
+                    }
+                );
+            }
+        }
     }
 
     #[tokio::test]

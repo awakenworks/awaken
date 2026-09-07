@@ -332,7 +332,8 @@ async fn restored_model_evidence_is_run_scoped_and_invalid_coordinates_fail_clos
                     serde_json::json!({
                         "ordinal":ordinal,
                         "binding":ModelBinding::new("old-provider", "old-model", "old-backend"),
-                        "phase":Returned
+                        "phase":Returned,
+                        "execution":"Terminated"
                     }),
                 )],
                 Vec::new(),
@@ -453,6 +454,164 @@ async fn dropped_and_timed_out_model_futures_preserve_distinct_durable_evidence(
     }
 }
 
+struct ReturnedUnknownModel {
+    calls: AtomicUsize,
+    timeout: bool,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for ReturnedUnknownModel {
+    async fn infer_streaming(
+        &self,
+        request: ChatRequest,
+        sink: &dyn awaken_runtime_contract::llm::DeltaSink,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        sink.on_text("partial answer").await;
+        // Complete JSON is not permission to execute a tool while the model's
+        // physical completion is unknown.
+        sink.on_tool_call_delta("call-unknown", "must-not-execute", "{}")
+            .await;
+        self.infer(request).await
+    }
+
+    async fn infer(&self, _: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        // The adapter future RETURNS normally; the remote operation need not
+        // have ended. This is distinct from the adjacent dropped-future test.
+        Err(if self.timeout {
+            awaken_runtime_contract::llm::Error::Timeout("adapter deadline".into())
+        } else {
+            awaken_runtime_contract::llm::Error::Provider("EOF before protocol end".into())
+        })
+    }
+}
+
+#[tokio::test]
+async fn returned_unknown_model_error_blocks_retry_failover_and_outer_tolerance() {
+    // Cause/effect: C1 adapter returns timeout or transport error normally;
+    // C2 no provider termination proof; C3 retries, failover and outer failure
+    // tolerance all enabled. R1=C1+C2+C3 => one invocation, Indeterminate,
+    // retained physical veto. The healthy-return observer alone cannot prove
+    // remote quiescence. R2 existing checkpoint => retained, not consumed.
+    for timeout in [false, true] {
+        let model = Arc::new(ReturnedUnknownModel {
+            calls: AtomicUsize::new(0),
+            timeout,
+        });
+        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let (checkpoints, checkpoint) = interrupted_model_checkpoint().await;
+        let runtime = Runtime::new()
+            .with_llm(model.clone())
+            .with_retry_policy(awaken_runtime::LlmRetryPolicy {
+                max_retries: 2,
+                backoff_base_ms: 0,
+                overloaded_backoff_base_ms: 0,
+                ..Default::default()
+            })
+            .with_max_consecutive_inference_failures(3);
+        let mut request = activation("catalog-a");
+        request
+            .snapshot
+            .resolved_spec
+            .model_candidates
+            .push(ResolvedModelCandidate::host(ModelBinding::new(
+                "fallback", "fallback", "fallback",
+            )));
+        let context = RuntimeRunContext::new()
+            .with_commit(durable.clone())
+            .with_stream_checkpoint(checkpoints.clone());
+        let quiescence = context.physical_quiescence.clone();
+        let result = runtime.execute(request, context).await.unwrap();
+        assert_eq!(
+            model.calls.load(Ordering::SeqCst),
+            1,
+            "R1: no hidden re-entry"
+        );
+        assert_eq!(result, RunState::Ended(EndCause::Indeterminate));
+        assert!(!quiescence.can_acknowledge_return());
+        assert_eq!(
+            model_operations(&durable).last().unwrap().execution,
+            awaken_runtime_contract::model_operation::ModelExecutionEvidence::Unknown
+        );
+        assert_eq!(
+            checkpoints.get(&checkpoint.run_id).await.unwrap(),
+            Some(checkpoint)
+        );
+    }
+}
+
+#[tokio::test]
+async fn restored_unknown_invocation_blocks_checkpoint_salvage_and_provider_reentry() {
+    use awaken_agent_contract::agent::state::{Command, MergePolicy, Scope};
+    use awaken_runtime_contract::model_operation::ActiveModelOperation;
+    use awaken_runtime_contract::{RunDisposition, ThreadCommit};
+    // U1 legacy phase Entered/Returned/TimedOut * absent/explicit Unknown;
+    // U2 complete tool JSON in checkpoint. Effects: zero new model invocations,
+    // no salvaged tool, retained checkpoint, Indeterminate and physical veto.
+    // U1+U2 must behave identically in a fresh Runtime (no surviving local latch).
+    // Adjacent coordinate test covers explicit Terminated and cross-Run isolation.
+    for phase in ["Entered", "Returned", "TimedOut"] {
+        for explicit in [false, true] {
+            let durable = Arc::new(MemoryCommitCoordinator::new());
+            let mut value = serde_json::json!({"ordinal":7,
+                "binding":ModelBinding::new("p", "m", "b"), "phase":phase});
+            if explicit {
+                value["execution"] = serde_json::json!("Unknown");
+            }
+            awaken_runtime_contract::CommitCoordinator::commit(
+                durable.as_ref(),
+                ThreadCommit::assemble(
+                    ThreadId("thread-1".into()),
+                    RunDisposition::running(RunId("run-1".into())),
+                    true,
+                    Vec::new(),
+                    vec![Command::set(
+                        Scope::Run,
+                        MergePolicy::Disjoint,
+                        ActiveModelOperation::KEY,
+                        value,
+                    )],
+                    Vec::new(),
+                ),
+            )
+            .await
+            .unwrap();
+            let (checkpoints, mut checkpoint) = interrupted_model_checkpoint().await;
+            checkpoint.partial_tools.push(
+                awaken_agent_contract::stream::checkpoint::PartialToolCall {
+                    call_id: "old-call".into(),
+                    tool_id: "must-not-execute".into(),
+                    raw_arguments: "{}".into(),
+                },
+            );
+            checkpoints.put(checkpoint.clone()).await.unwrap();
+            let model = Arc::new(MaxTokensThenTextLlm(AtomicUsize::new(0)));
+            let context = RuntimeRunContext::new()
+                .with_commit(durable.clone())
+                .with_reader(durable.clone())
+                .with_stream_checkpoint(checkpoints.clone());
+            let quiescence = context.physical_quiescence.clone();
+            let state = Runtime::new()
+                .with_llm(model.clone())
+                .execute(activation("catalog-a"), context)
+                .await
+                .unwrap();
+            assert_eq!(
+                state,
+                RunState::Ended(EndCause::Indeterminate),
+                "{phase}/{explicit}"
+            );
+            assert_eq!(model.0.load(Ordering::SeqCst), 0);
+            assert!(!quiescence.can_acknowledge_return());
+            assert_eq!(
+                checkpoints.get(&checkpoint.run_id).await.unwrap(),
+                Some(checkpoint)
+            );
+            assert_eq!(model_operations(&durable).last().unwrap().ordinal.get(), 7);
+        }
+    }
+}
+
 struct AdvisorThenTextLlm {
     primary_calls: AtomicUsize,
     expected_tool_result: &'static str,
@@ -554,7 +713,10 @@ impl LlmExecutor for PrimaryFailureThenTextLlm {
         self.models.lock().unwrap().push(model.clone());
         if model == "model-1" {
             return Err(awaken_runtime_contract::llm::Error::Provider(
-                "primary unavailable".into(),
+                "primary rejected before dispatch".into(),
+            )
+            .with_execution_evidence(
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
             ));
         }
         Ok(ChatResponse {
@@ -575,7 +737,10 @@ impl LlmExecutor for RetryOnceLlm {
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
             return Err(awaken_runtime_contract::llm::Error::Timeout(
-                "retry this provider attempt".into(),
+                "provider-confirmed terminal deadline".into(),
+            )
+            .with_execution_evidence(
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated,
             ));
         }
         Ok(ChatResponse {

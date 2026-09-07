@@ -26,7 +26,7 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore, MemoryStreamSink};
 
-/// Streams `first` then drops (retryable) on its first call; streams `rest` and
+/// Streams `first` then confirms remote termination on its first call; streams `rest` and
 /// succeeds on any later call. Continuation stitches `first + rest`.
 struct DropOnceLlm {
     calls: std::sync::Mutex<usize>,
@@ -50,7 +50,12 @@ impl LlmExecutor for DropOnceLlm {
         };
         if n == 0 {
             sink.on_text(self.first).await;
-            return Err(Error::Timeout("connection reset".to_string()));
+            return Err(
+                Error::Timeout("provider-confirmed terminal deadline".to_string())
+                    .with_execution_evidence(
+                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated,
+                ),
+            );
         }
         sink.on_text(self.rest).await;
         Ok(ChatResponse {
@@ -163,6 +168,9 @@ fn assistant_text(commit: &MemoryCommitCoordinator) -> String {
 
 #[tokio::test]
 async fn an_interrupted_step_recovers_in_process_and_leaves_no_checkpoint() {
+    // C1 remote termination confirmed after partial text; C2 retry allowed.
+    // R1=C1+C2 => one continuation, joined text, spent checkpoint removed.
+    // Unknown returned errors have separate negative coverage in execution.rs.
     let checkpoints = Arc::new(MemoryStreamCheckpointStore::new());
     let (state, commit) = drive(
         Arc::new(DropOnceLlm {

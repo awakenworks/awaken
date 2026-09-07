@@ -17,6 +17,7 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error as LlmError, LlmExecutor, StopReason,
 };
+use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
 };
@@ -37,7 +38,7 @@ fn committed_model_requests(store: &MemoryCommitCoordinator) -> Vec<ModelRequest
 }
 
 /// Routes by `model_ref`: any model whose id is in `failing` returns a retryable
-/// error; every other model returns a fixed success text. Records the ordered
+/// pre-dispatch rejection; every other model returns a fixed success text. Records the ordered
 /// sequence of model ids it was actually asked to run.
 struct RouteLlm {
     failing: Vec<&'static str>,
@@ -67,7 +68,8 @@ impl LlmExecutor for RouteByProviderLlm {
             Err(LlmError::Overloaded {
                 message: format!("{provider} is down"),
                 retry_after: None,
-            })
+            }
+            .with_execution_evidence(ModelExecutionEvidence::NotDispatched))
         } else {
             Ok(ChatResponse {
                 output: AssistantOutput::text(format!("answered by {provider}")),
@@ -90,7 +92,8 @@ impl LlmExecutor for RouteLlm {
             Err(LlmError::Overloaded {
                 message: format!("{model} is down"),
                 retry_after: None,
-            })
+            }
+            .with_execution_evidence(ModelExecutionEvidence::NotDispatched))
         } else {
             Ok(ChatResponse {
                 output: AssistantOutput::text(format!("answered by {model}")),
@@ -132,7 +135,8 @@ impl LlmExecutor for TruncateThenFailPrimary {
             "primary" => Err(LlmError::Overloaded {
                 message: "primary down".to_string(),
                 retry_after: None,
-            }),
+            }
+            .with_execution_evidence(ModelExecutionEvidence::NotDispatched)),
             other => Ok(ChatResponse {
                 output: AssistantOutput::text(format!("answered by {other}")),
                 usage: None,
