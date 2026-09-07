@@ -10,6 +10,11 @@ The `SuiteSwitcher` navigation export and its generated runtime/type modules
 come from the successful `pnpm build` of
 `AwakenWorks/awaken-ui@b669c96446e1b1b0f9c3057a4e598765c75ae42e`.
 
+The `chat/markdown.js` runtime comes from the successful `pnpm check` build of
+`AwakenWorks/awaken-ui@740ba29`. Its upstream lifecycle regressions cover identical
+HTML rerenders, label/content replacement, Strict Mode and a late clipboard
+completion after unmount. The public types and sanitizer contract are unchanged.
+
 The upstream Windows path defect is fixed in this distributable. It remains vendored
 until the same immutable package is available from the internal registry, so clean Release builds
 do not depend on SSH credentials or mutable Git state. It was produced with `pnpm build`; source

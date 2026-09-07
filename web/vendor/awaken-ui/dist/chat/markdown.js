@@ -49,6 +49,9 @@ export function ChatMarkdown({ body, copyCodeLabel, copiedCodeLabel, copyFailedL
     const rich = hasMarkdown(body);
     const defaultHtml = useMemo(() => rich ? renderSafeMarkdown(body) : null, [body, rich]);
     const html = sanitizedHtml === undefined ? defaultHtml : sanitizedHtml;
+    // React owns the HTML snapshot; enhancements own only their lifetime. Keep
+    // identical snapshots stable so a parent render cannot erase those controls.
+    const innerHtml = useMemo(() => ({ __html: html ?? "" }), [html]);
     const internalRootRef = useRef(null);
     const resolvedRootRef = rootRef ?? internalRootRef;
     useEffect(() => {
@@ -61,7 +64,7 @@ export function ChatMarkdown({ body, copyCodeLabel, copiedCodeLabel, copyFailedL
     const classes = cx("ui-chat-markdown", className);
     if (!html)
         return _jsx("div", { ref: resolvedRootRef, className: classes, children: _jsx("p", { children: body }) });
-    return _jsx("div", { ref: resolvedRootRef, className: classes, dangerouslySetInnerHTML: { __html: html } });
+    return _jsx("div", { ref: resolvedRootRef, className: classes, dangerouslySetInnerHTML: innerHtml });
 }
 function attachCodeCopy(pre, labels) {
     const parent = pre.parentElement;
@@ -78,6 +81,7 @@ function attachCodeCopy(pre, labels) {
     button.setAttribute("aria-label", labels.copyCodeLabel);
     wrapper.appendChild(button);
     let timer;
+    let active = true;
     const click = () => {
         const value = pre.querySelector("code")?.textContent ?? pre.textContent ?? "";
         const clipboard = globalThis.navigator?.clipboard;
@@ -85,12 +89,18 @@ function attachCodeCopy(pre, labels) {
             ? clipboard.writeText(value)
             : Promise.reject(new Error("Clipboard unavailable"));
         void result.then(() => {
+            if (!active)
+                return;
             button.textContent = labels.copiedCodeLabel;
             button.classList.add("is-copied");
         }, () => {
+            if (!active)
+                return;
             button.textContent = labels.copyFailedLabel;
             button.classList.remove("is-copied");
         }).finally(() => {
+            if (!active)
+                return;
             if (timer)
                 clearTimeout(timer);
             timer = setTimeout(() => {
@@ -101,8 +111,12 @@ function attachCodeCopy(pre, labels) {
     };
     button.addEventListener("click", click);
     return () => {
+        active = false;
         if (timer)
             clearTimeout(timer);
         button.removeEventListener("click", click);
+        // Undo our own DOM change for Strict Mode and label/ref replacement.
+        // Detached old HTML is harmless; never reinsert it into the live root.
+        wrapper.replaceWith(pre);
     };
 }
