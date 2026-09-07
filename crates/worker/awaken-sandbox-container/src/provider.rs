@@ -379,6 +379,14 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 }
             }
         };
+        // A successful physical create outlives this process-local wrapper.
+        // Reuse the restore path's ownership transition: only explicit terminal
+        // disposal may remove host binds once a container can reference them.
+        if self.runtime.uses_host_bind_materialization()
+            && let Some(guard) = staging.guard.as_mut()
+        {
+            guard.retain_for_restoration();
+        }
         let runtime_handle = match self.runtime.handle_extra(&container_id).await {
             Ok(evidence) => evidence,
             // `create` is exact-idempotent and may have recovered a Ready effect

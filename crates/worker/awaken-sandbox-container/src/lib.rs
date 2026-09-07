@@ -401,7 +401,9 @@ mod planner_tests {
 
 /// A host staging directory holding the bytes of inline mounts (codex `config.toml`,
 /// ADR-0038 resource content) materialized for a container's lifetime, then removed when
-/// the sandbox is dropped (after the container is gone). The container tier binds host
+/// explicit terminal disposal proves the container is gone. Before physical creation,
+/// dropping the guard compensates staging; after creation a wrapper drop retains it.
+/// The container tier binds host
 /// paths, so self-contained content (`Inline` / `Other{content}`) is written here and the
 /// bind repointed at the host file — the counterpart of the bwrap tier's `resolve_source`
 /// plus write. Content-addressed `File`/`Resource` (a store id, not bytes) still needs a
