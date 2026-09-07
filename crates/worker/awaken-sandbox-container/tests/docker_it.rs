@@ -8,6 +8,8 @@
 mod common;
 #[path = "common/disposal.rs"]
 mod disposal;
+#[path = "common/host_staging.rs"]
+mod host_staging;
 #[path = "common/process.rs"]
 mod process_lifecycle;
 
@@ -50,6 +52,20 @@ async fn runtime() -> Option<DockerRuntime> {
         return None;
     }
     Some(rt)
+}
+
+#[tokio::test]
+async fn docker_ordinary_host_staging_survives_creator_replacement() {
+    let Some(first) = runtime().await else { return };
+    let Some(peer) = runtime().await else {
+        panic!("Docker disappeared after readiness")
+    };
+    host_staging::verify_ordinary_host_staging_recovery(
+        Arc::new(first),
+        Arc::new(peer),
+        "busybox:latest",
+    )
+    .await;
 }
 
 #[tokio::test]
