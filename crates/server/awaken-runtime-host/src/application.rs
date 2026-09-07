@@ -942,19 +942,64 @@ mod acp_context_tests {
     }
 }
 
-impl crate::SharedHost {
-    pub(crate) fn install_session_request_context(&self, session_id: &str, messages: Vec<Message>) {
-        self.session_slots.update(session_id, |slot| {
-            if slot.request_context != messages {
-                slot.request_context = messages;
-                // RuntimeRunContext is assembled once with a SessionCtx. Drop
-                // only that cached projection so the next claimed attempt is
-                // rebuilt from the newly installed immutable prefix.
-                slot.runtime = None;
-            }
-        });
+impl crate::session_slot::SessionRuntimeSlot {
+    fn install_session_request_context(&mut self, messages: Vec<Message>) {
+        if self.request_context != messages {
+            self.request_context = messages;
+            // RuntimeRunContext is assembled once with a SessionCtx. Drop only
+            // that cached projection; the next attempt uses the new prefix.
+            self.runtime = None;
+        }
     }
 
+    fn validate_environment_projection(
+        &self,
+        thread: &str,
+        projection: &crate::session_slot::FrozenEnvironmentRuntimeProjection,
+    ) -> Result<(), crate::HostError> {
+        if self
+            .environment_projection
+            .as_ref()
+            .is_some_and(|existing| existing.fingerprint != projection.fingerprint)
+        {
+            return Err(crate::HostError::internal(format!(
+                "thread {thread} is already bound to a different frozen Environment"
+            )));
+        }
+        Ok(())
+    }
+
+    fn install_validated_environment_projection(
+        &mut self,
+        environment: &awaken_session_contract::EnvironmentSnapshot,
+        projection: crate::session_slot::FrozenEnvironmentRuntimeProjection,
+    ) {
+        self.environment_projection.get_or_insert(projection);
+        self.environment_snapshot = Some(environment.clone());
+    }
+
+    /// The one lowering of validated SessionInit coordinates, shared by the
+    /// legacy preparation entrance and complete fenced projection publication.
+    fn project_validated_session_init(
+        &mut self,
+        init: &awaken_session_contract::SessionInit,
+        environment: crate::session_slot::FrozenEnvironmentRuntimeProjection,
+    ) {
+        self.install_validated_environment_projection(&init.environment, environment);
+        self.workspace = Some(init.workspace_id.clone());
+        self.agent_id = Some(init.agent_id.clone());
+        if let Some(model) = &init.model {
+            self.model_ref = Some(model.clone());
+        }
+        if let Some(backend) = &init.runtime {
+            self.register_backend_projection(backend);
+        }
+        self.delegates = init.delegate_ids.clone();
+        self.tools = init.tools.clone();
+    }
+}
+
+impl crate::SharedHost {
     #[cfg(test)]
     pub(crate) fn install_session_realization_lease(
         &self,
@@ -962,10 +1007,15 @@ impl crate::SharedHost {
         lease: awaken_session_contract::SessionRealizationLease,
     ) -> Result<(), crate::HostError> {
         let changed = self.authorize_worker_effect(|| {
-            Ok(self.session_slots.update(session_id, |slot| {
-                slot.install_realization_lease(lease);
-                slot.realization_changed.clone()
-            }))
+            self.session_slots.update(session_id, |slot| {
+                if !slot.install_realization_lease(crate::session_slot::test_observed_lease(lease))
+                {
+                    return Err(crate::HostError::internal(
+                        "test lease installation rejected",
+                    ));
+                }
+                Ok(slot.realization_changed.clone())
+            })
         })?;
         changed.notify_waiters();
         Ok(())
@@ -1001,7 +1051,7 @@ impl crate::SharedHost {
         generation: &awaken_session_contract::McpGenerationRef,
         now_unix_ms: u64,
     ) -> bool {
-        self.mcp_generation_root_authority_at(generation, now_unix_ms)
+        self.mcp_generation_root_authority(generation)
             // Direct realizer callers can present a live Control assertion
             // before installing a complete local Session projection. A relay
             // capability, by contrast, always requires the current root.
@@ -1015,10 +1065,9 @@ impl crate::SharedHost {
 
     /// One root-authority decision shared by effect admission and the relay.
     /// Absence is explicit: it is never a live lease or proof of renewal.
-    pub(crate) fn mcp_generation_root_authority_at(
+    pub(crate) fn mcp_generation_root_authority(
         &self,
         generation: &awaken_session_contract::McpGenerationRef,
-        now_unix_ms: u64,
     ) -> Option<bool> {
         self.session_slots
             .read(&generation.session_id, |slot| {
@@ -1029,10 +1078,7 @@ impl crate::SharedHost {
                     current.runtime_incarnation == generation.runtime_incarnation
                         && current.epoch == generation.lease_epoch
                         && current.expires_at_unix_ms >= generation.lease_expires_at_unix_ms
-                        && awaken_session_contract::realization_lease_is_live_at(
-                            current.expires_at_unix_ms,
-                            now_unix_ms,
-                        )
+                        && slot.realization_authority.remaining().is_some()
                 })
             })
             .flatten()
@@ -1131,7 +1177,7 @@ impl crate::SharedHost {
                 .reconcile_terminal_cleanup_for_lease(
                     control.as_ref(),
                     &assignment.session_id,
-                    &assignment.lease,
+                    &assignment.authority.lease,
                 )
                 .await
             {
@@ -1280,28 +1326,18 @@ impl crate::SharedHost {
     /// Session projection. Managed local preparation and claimed Worker replay
     /// share this single lowering path; neither may independently reconstruct a
     /// different workspace, Agent, model, backend, Environment, or tool surface.
+    #[cfg(test)]
     pub(crate) fn project_session_init(
         &self,
         thread: &str,
         init: &awaken_session_contract::SessionInit,
     ) -> Result<(), crate::HostError> {
-        // Validate the only fallible coordinate before publishing the remaining
-        // fields, so a conflicting Environment cannot leave a partial update.
-        self.install_environment_projection(thread, &init.environment)?;
-        self.register_thread_workspace(thread, &init.workspace_id);
-        self.register_thread_agent_projection(thread, &init.agent_id);
-        if let Some(model) = &init.model {
-            self.register_thread_model(thread, model);
-        }
-        if let Some(backend_ref) = &init.runtime {
-            self.register_thread_backend_projection(thread, backend_ref);
-        }
-        self.register_thread_delegates(thread, init.delegate_ids.clone());
+        let environment = crate::provisioning::project_environment(&init.environment);
         self.session_slots.update(thread, |slot| {
-            slot.agent_id = Some(init.agent_id.clone());
-            slot.tools = init.tools.clone();
-        });
-        Ok(())
+            slot.validate_environment_projection(thread, &environment)?;
+            slot.project_validated_session_init(init, environment);
+            Ok(())
+        })
     }
 
     pub(crate) async fn install_frozen_session_projection(
@@ -1310,7 +1346,7 @@ impl crate::SharedHost {
         projection: awaken_session_contract::FrozenSessionProjection,
         claim: Option<&RunClaim>,
         synchronize_resources: bool,
-        realization_lease: Option<awaken_session_contract::SessionRealizationLease>,
+        realization_lease: Option<awaken_session_contract::ObservedSessionRealizationLease>,
     ) -> Result<(), crate::HostError> {
         self.install_frozen_session_projection_with_resource_authority(
             thread,
@@ -1351,7 +1387,7 @@ impl crate::SharedHost {
         projection: awaken_session_contract::FrozenSessionProjection,
         claim: Option<&RunClaim>,
         resource_mode: FrozenResourceProjectionMode,
-        realization_lease: Option<awaken_session_contract::SessionRealizationLease>,
+        realization_lease: Option<awaken_session_contract::ObservedSessionRealizationLease>,
     ) -> Result<(), crate::HostError> {
         if projection.baseline.fingerprint.0.trim().is_empty() {
             return Err(crate::HostError::internal(
@@ -1538,7 +1574,7 @@ impl crate::SharedHost {
                     thread,
                     &resource_transition,
                     claim,
-                    realization_lease.as_ref(),
+                    realization_lease.as_ref().map(|proof| &proof.lease),
                     projection.environment.binding().is_some(),
                 );
             tokio::select! {
@@ -1556,21 +1592,34 @@ impl crate::SharedHost {
             preparation.validate()?;
         }
         self.authorize_worker_effect(|| {
-            self.retain_session_publication(thread, publication.as_ref())?;
-            self.install_session_environment_owner_projection(
-                thread,
-                &projection.workspace_id,
-                &projection.environment,
-            )?;
-            self.project_session_init(thread, &init)?;
-            self.install_session_request_context(thread, projection.request_context.clone());
             self.session_slots.update(thread, |slot| {
+                // Revalidate fallible coordinates and stage the existing owner
+                // transition under the final slot lock. No correlated field is
+                // published before the time proof/preparation is admitted.
+                slot.validate_session_publication(publication.as_ref())?;
+                slot.validate_environment_projection(thread, &environment_projection)?;
+                let owner = slot.projected_environment_owner(
+                    thread,
+                    &projection.workspace_id,
+                    &projection.environment,
+                )?;
                 if let Some(preparation) = &preparation {
                     preparation.finish(slot)?;
                 } else if let Some(lease) = realization_lease {
-                    slot.install_realization_lease(lease);
+                    if !slot.install_realization_lease(lease) {
+                        return Err(crate::HostError::internal(
+                            "Session realization time proof is not current",
+                        ));
+                    }
                     slot.realization_changed.notify_waiters();
                 }
+                // This suffix is infallible and holds both Worker authority and
+                // the slot lock: revoke/replacement cannot interleave a partial
+                // publication between the check above and these writes.
+                slot.retain_validated_session_publication(publication.as_ref());
+                slot.install_projected_environment_owner(owner, &projection.environment);
+                slot.project_validated_session_init(&init, environment_projection);
+                slot.install_session_request_context(projection.request_context.clone());
                 if let Some(baseline) = baseline_to_install {
                     slot.baseline = Some(baseline);
                 }
@@ -1589,13 +1638,35 @@ impl crate::SharedHost {
         })
     }
 
+    /// Terminal effect fixtures supply an already-received assignment. Actual
+    /// transport-latency tests call the production entrance with their explicit
+    /// request-start observation instead of this convenience adapter.
+    #[cfg(test)]
+    pub(crate) async fn install_test_terminal_cleanup_projection(
+        &self,
+        assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+    ) -> Result<(), crate::HostError> {
+        let started = awaken_local_process::authority_proof_started().unwrap();
+        self.install_terminal_cleanup_projection(
+            assignment,
+            assignment.authority.clone().observed(started),
+        )
+        .await
+    }
+
     /// Install one aggregate-frozen terminal assignment without entering the
     /// active realization driver. Cleanup I/O remains owned by the terminal
     /// effect path.
     pub(crate) async fn install_terminal_cleanup_projection(
         &self,
         assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+        proof: awaken_session_contract::ObservedSessionRealizationLease,
     ) -> Result<(), crate::HostError> {
+        if proof.lease != assignment.authority.lease {
+            return Err(crate::HostError::internal(
+                "terminal assignment time proof names another lease",
+            ));
+        }
         let realization = self.session_slots.realization_lock(&assignment.session_id);
         let _realization = realization.lock().await;
         self.install_frozen_session_projection_with_resource_authority(
@@ -1603,7 +1674,7 @@ impl crate::SharedHost {
             assignment.projection.clone(),
             None,
             FrozenResourceProjectionMode::Terminal,
-            Some(assignment.lease.clone()),
+            Some(proof),
         )
         .await?;
         self.session_slots.update(&assignment.session_id, |slot| {
@@ -1618,26 +1689,11 @@ impl crate::SharedHost {
         environment: &awaken_session_contract::EnvironmentSnapshot,
     ) -> Result<(), crate::HostError> {
         let projection = crate::provisioning::project_environment(environment);
-        if let Some(existing) = self
-            .session_slots
-            .read(thread, |slot| slot.environment_projection.clone())
-            .flatten()
-        {
-            if existing.fingerprint != projection.fingerprint {
-                return Err(crate::HostError::internal(format!(
-                    "thread {thread} is already bound to a different frozen Environment"
-                )));
-            }
-            self.session_slots.update(thread, |slot| {
-                slot.environment_snapshot = Some(environment.clone())
-            });
-            return Ok(());
-        }
         self.session_slots.update(thread, |slot| {
-            slot.environment_projection = Some(projection);
-            slot.environment_snapshot = Some(environment.clone());
-        });
-        Ok(())
+            slot.validate_environment_projection(thread, &projection)?;
+            slot.install_validated_environment_projection(environment, projection);
+            Ok(())
+        })
     }
 
     pub(crate) fn thread_session_mounts(

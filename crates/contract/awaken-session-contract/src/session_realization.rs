@@ -21,7 +21,9 @@ pub use agent_publication_projection::{
 mod repository_publication_projection;
 pub use repository_publication_projection::SessionRepositoryPublicationProjection;
 mod control_failure;
+mod lease_receipt;
 pub use control_failure::{SessionRealizationControlDisposition, SessionRealizationControlFailure};
+pub use lease_receipt::{ObservedSessionRealizationLease, SessionRealizationLeaseReceipt};
 mod terminal_cleanup_authorization;
 pub use terminal_cleanup_authorization::{
     SessionTerminalCleanupAssignment, SessionTerminalCleanupPreparationAuthorization,
@@ -71,7 +73,7 @@ pub enum SessionProjectionInstallMode {
     /// Install the exact realization fence and optionally perform the Stage
     /// effects selected by the canonical realization driver.
     Realization {
-        lease: crate::SessionRealizationLease,
+        lease: ObservedSessionRealizationLease,
         prepare_session: bool,
     },
 }
@@ -105,7 +107,7 @@ impl SessionProjectionInstallMode {
     pub const fn realization_lease(&self) -> Option<&crate::SessionRealizationLease> {
         match self {
             Self::Dispatch => None,
-            Self::Realization { lease, .. } => Some(lease),
+            Self::Realization { lease, .. } => Some(&lease.lease),
         }
     }
 }
@@ -493,8 +495,19 @@ pub enum SessionRealizationAction {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SessionRealizationDirective {
     pub projection: FrozenSessionProjection,
-    pub lease: SessionRealizationLease,
+    #[serde(flatten)]
+    pub authority: SessionRealizationLeaseReceipt,
     pub action: SessionRealizationAction,
+}
+
+impl SessionRealizationDirective {
+    /// Relative time is observation metadata, not phase progress.
+    #[must_use]
+    pub fn same_progress_as(&self, previous: &Self) -> bool {
+        self.projection == previous.projection
+            && self.authority.lease == previous.authority.lease
+            && self.action == previous.action
+    }
 }
 
 #[cfg(test)]
@@ -786,7 +799,7 @@ pub trait SessionRealizationControl: Send + Sync {
     async fn renew_session_realization(
         &self,
         _command: RenewSessionRealization,
-    ) -> Result<SessionRealizationLease, SessionRealizationControlFailure> {
+    ) -> Result<SessionRealizationLeaseReceipt, SessionRealizationControlFailure> {
         Err(SessionRealizationControlFailure::Invalid(
             "Session realization lease renewal is unsupported".into(),
         ))
@@ -975,11 +988,15 @@ pub trait SessionRealizationControl: Send + Sync {
 /// topology-specific effects and owns no lifecycle transition or desired state.
 #[async_trait]
 pub trait SessionProjectionSynchronizer: Send + Sync {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError>;
+
     async fn synchronize_session_projection(
         &self,
         session_id: &str,
         projection: &FrozenSessionProjection,
-        lease: &SessionRealizationLease,
+        lease: &ObservedSessionRealizationLease,
         prepare_session: bool,
     ) -> Result<(), RunError>;
 
@@ -1076,6 +1093,7 @@ pub async fn drive_session_realization(
     synchronizer: &dyn SessionProjectionSynchronizer,
     mcp: &dyn McpAttachmentRealizer,
     mut directive: SessionRealizationDirective,
+    mut request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
 ) -> Result<(), SessionRealizationDriveError> {
     loop {
         let previous = directive.clone();
@@ -1089,7 +1107,7 @@ pub async fn drive_session_realization(
             .synchronize_session_projection(
                 session_id,
                 &directive.projection,
-                &directive.lease,
+                &directive.authority.clone().observed(request_started),
                 prepare_session,
             )
             .await
@@ -1099,7 +1117,7 @@ pub async fn drive_session_realization(
                 source_run_id.as_ref(),
                 control,
                 synchronizer,
-                &directive.lease,
+                &directive.authority.lease,
                 prepare_session.then_some(directive.projection.resource_revision),
                 &error,
             )
@@ -1153,7 +1171,7 @@ pub async fn drive_session_realization(
                         source_run_id.as_ref(),
                         control,
                         synchronizer,
-                        &directive.lease,
+                        &directive.authority.lease,
                         prepare_session.then_some(directive.projection.resource_revision),
                         &error,
                     )
@@ -1162,11 +1180,12 @@ pub async fn drive_session_realization(
                 }
                 #[cfg(feature = "test-support")]
                 crate::realization_observation::checkpoint("stage", session_id,
-                    serde_json::json!({"lease": directive.lease, "generations": receipts.iter().map(|r| &r.generation).collect::<Vec<_>>()})).await;
+                    serde_json::json!({"lease": directive.authority.lease, "generations": receipts.iter().map(|r| &r.generation).collect::<Vec<_>>()})).await;
+                request_started = synchronizer.observe_realization_request()?;
                 directive = match control
                     .activate_session_realization(ActivateSessionRealization {
                         session_id: session_id.to_string(),
-                        lease: directive.lease,
+                        lease: directive.authority.lease,
                         prepared_resource_revision: prepare_session
                             .then_some(directive.projection.resource_revision),
                         mcp_receipts: receipts.clone(),
@@ -1213,7 +1232,7 @@ pub async fn drive_session_realization(
                         source_run_id.as_ref(),
                         control,
                         synchronizer,
-                        &directive.lease,
+                        &directive.authority.lease,
                         None,
                         &error,
                     )
@@ -1222,11 +1241,12 @@ pub async fn drive_session_realization(
                 }
                 #[cfg(feature = "test-support")]
                 crate::realization_observation::checkpoint("published", session_id,
-                    serde_json::json!({"lease": directive.lease, "published": publish, "drained": drain})).await;
+                    serde_json::json!({"lease": directive.authority.lease, "published": publish, "drained": drain})).await;
+                request_started = synchronizer.observe_realization_request()?;
                 directive = control
                     .acknowledge_session_realization(AcknowledgeSessionRealization {
                         session_id: session_id.to_string(),
-                        lease: directive.lease,
+                        lease: directive.authority.lease,
                         published: publish,
                         drained: drain,
                     })
@@ -1260,7 +1280,7 @@ pub async fn drive_session_realization(
         // catch-up rounds. The protocol therefore rejects only a Control
         // transition that made no observable progress; an arbitrary iteration
         // cap would turn a healthy, still-owned execution into a false failure.
-        if directive == previous {
+        if directive.same_progress_as(&previous) {
             return Err(SessionRealizationDriveError::DidNotConverge);
         }
     }
@@ -1571,6 +1591,14 @@ mod tests {
             epoch: 1,
             expires_at_unix_ms: 2,
         };
+        let lease = super::SessionRealizationLeaseReceipt::issued_at(lease, 0)
+            .unwrap()
+            .observed(
+                awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
+                    std::time::Instant::now(),
+                    std::time::Duration::ZERO,
+                ),
+            );
         let rules = [
             (SessionProjectionInstallMode::Dispatch, true, false, false),
             (
@@ -1596,6 +1624,47 @@ mod tests {
             assert_eq!(mode.prepares_session(), prepares);
             assert_eq!(mode.adopts_resident_environment(), adopts);
             assert_eq!(mode.realization_lease().is_some(), has_lease);
+        }
+    }
+
+    #[test]
+    fn response_time_metadata_is_not_realization_phase_progress() {
+        // C1 horizon changes; C2 exact lease changes; C3 phase changes;
+        // C4 frozen projection changes. C1 alone is not progress; any of
+        // C2/C3/C4 is. This guards against a phase loop kept alive solely
+        // by fresh response timestamps while its business result repeats.
+        let initial = super::SessionRealizationDirective {
+            projection: legacy_resource_projection(false),
+            authority: super::SessionRealizationLeaseReceipt::issued_at(
+                SessionRealizationLease {
+                    owner: "worker".into(),
+                    runtime_incarnation: "boot".into(),
+                    epoch: 1,
+                    expires_at_unix_ms: 100,
+                },
+                0,
+            )
+            .unwrap(),
+            action: super::SessionRealizationAction::Stage {
+                prepare_session: false,
+                mcp_stages: Vec::new(),
+            },
+        };
+        for changed in ["none", "time", "lease", "phase", "projection"] {
+            let mut next = initial.clone();
+            match changed {
+                "none" => {}
+                "time" => next.authority.remaining_ms = std::num::NonZeroU64::new(50).unwrap(),
+                "lease" => next.authority.lease.expires_at_unix_ms += 1,
+                "phase" => next.action = super::SessionRealizationAction::Complete,
+                "projection" => next.projection.revision.0 += 1,
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                next.same_progress_as(&initial),
+                matches!(changed, "none" | "time"),
+                "{changed}"
+            );
         }
     }
 

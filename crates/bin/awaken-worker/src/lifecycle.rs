@@ -567,7 +567,6 @@ pub(crate) fn spawn_session_realization_reconciliation(
             move || {
                 let lifecycle = renewal_lifecycle.clone();
                 async move {
-                    let now = wall_clock_ms();
                     // Cause/effect decision table: C1 this cadence owns only
                     // lease renewal; C2 the Host bounds independent due
                     // Sessions; C3 each Control call has an authority-derived
@@ -583,7 +582,7 @@ pub(crate) fn spawn_session_realization_reconciliation(
                     // | R3 | no | any | any | E4 |
                     if let Err(error) = lifecycle
                         .host
-                        .renew_due_session_realizations(now, timing)
+                        .renew_due_session_realizations(timing)
                         .await
                     {
                         eprintln!(

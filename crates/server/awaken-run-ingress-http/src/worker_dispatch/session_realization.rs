@@ -612,7 +612,7 @@ pub(super) async fn renew_session_realization(
             .renew_session_realization(command)
             .await
             .map_err(RealizationHttpError::from)?;
-        Ok(json!({ "lease": lease }))
+        Ok(json!(lease))
     }
     .await;
     respond_realization(result)

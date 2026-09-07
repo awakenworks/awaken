@@ -1107,6 +1107,14 @@ impl SessionRuntime for LifecycleRuntime {
             .map(|event| event.state.clone()))
     }
 
+    fn observe_realization_request(
+        &self,
+    ) -> Result<
+        awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        awaken_session_contract::RunError,
+    > {
+        crate::test_support::observe_realization_request()
+    }
     async fn install_session_projection(
         &self,
         thread: &str,

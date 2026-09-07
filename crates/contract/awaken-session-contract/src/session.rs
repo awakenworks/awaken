@@ -337,6 +337,30 @@ pub trait SessionThreadLiveSubscription: Send {
 /// [`McpAttachmentRealizer`] because it has a distinct hot-attachment lifecycle.
 #[async_trait]
 pub trait SessionRuntime: Send + Sync {
+    /// Sample the execution host's elapsed clock before a Control request.
+    /// A Runtime without this port cannot claim local timed execution proof.
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        Err(RunError::unavailable(
+            "runtime does not provide an execution authority clock",
+        ))
+    }
+
+    /// Reconcile the existing Runtime projections through the given Control
+    /// owner. Local and Worker deployment use one slot-based selection and
+    /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
+    async fn renew_session_realization_projections(
+        &self,
+        _control: &dyn crate::SessionRealizationControl,
+        _owner: &str,
+        _runtime_incarnation: &str,
+        _timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
+    ) -> Result<usize, RunError> {
+        Err(RunError::unavailable(
+            "runtime does not reconcile realization time proofs",
+        ))
+    }
     /// Validate the exact provider-effective Sandbox layout without publishing
     /// process-local state or performing provider, cache, Skill, File, Vault,
     /// Repository, or Git I/O. Session creation and Resource mutation call this
@@ -381,7 +405,7 @@ pub trait SessionRuntime: Send + Sync {
     async fn renew_session_realization_lease(
         &self,
         _thread: &str,
-        _lease: crate::SessionRealizationLease,
+        _lease: crate::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         Err(RunError::unavailable(
             "runtime does not implement Session realization lease renewal",
@@ -1047,6 +1071,7 @@ pub trait SessionRuntime: Send + Sync {
     async fn install_terminal_cleanup_assignment(
         &self,
         _assignment: &crate::SessionTerminalCleanupAssignment,
+        _proof: crate::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         Err(RunError::unavailable_classified(
             "session_terminal_projection_runtime_unsupported",

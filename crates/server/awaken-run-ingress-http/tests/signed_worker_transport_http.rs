@@ -34,6 +34,7 @@ use awaken_worker_transport_security::{
 
 #[derive(Default)]
 struct RecordingSessionControl {
+    clock: Option<Arc<ManualWorkerClock>>,
     projection: Mutex<Option<awaken_session_contract::FrozenSessionProjection>>,
     activations: Mutex<usize>,
     acknowledgements: Mutex<usize>,
@@ -59,6 +60,27 @@ struct RecordingSessionControl {
         Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationReceipt>>,
     repository_publication_rejections:
         Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationRejection>>,
+}
+
+impl RecordingSessionControl {
+    fn receipt(
+        &self,
+        lease: awaken_session_contract::SessionRealizationLease,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationLeaseReceipt,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        use awaken_worker_transport_security::WorkerClock as _;
+        // The same injected authority clock drives HTTP admission and response
+        // publication. Fixtures rejected before Control need no clock at all.
+        awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+            lease,
+            self.clock
+                .as_ref()
+                .expect("Control reached with its clock")
+                .now_ms(),
+        )
+    }
 }
 
 #[derive(Clone, Default)]
@@ -300,12 +322,12 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
             .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
         Ok(awaken_session_contract::SessionRealizationDirective {
             projection,
-            lease: awaken_session_contract::SessionRealizationLease {
+            authority: self.receipt(awaken_session_contract::SessionRealizationLease {
                 owner: command.target.owner,
                 runtime_incarnation: command.target.runtime_incarnation,
                 epoch: 1,
                 expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
-            },
+            })?,
             action: awaken_session_contract::SessionRealizationAction::Complete,
         })
     }
@@ -314,7 +336,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         &self,
         command: awaken_session_contract::RenewSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationLease,
+        awaken_session_contract::SessionRealizationLeaseReceipt,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
         self.renewals.lock().unwrap().push(command.clone());
@@ -323,7 +345,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         }
         let mut lease = command.asserted_lease;
         lease.expires_at_unix_ms = command.requested_expires_at_unix_ms;
-        Ok(lease)
+        self.receipt(lease)
     }
 
     async fn activate_session_realization(
@@ -342,7 +364,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
             .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
         Ok(awaken_session_contract::SessionRealizationDirective {
             projection,
-            lease: command.lease,
+            authority: self.receipt(command.lease)?,
             action: awaken_session_contract::SessionRealizationAction::Complete,
         })
     }
@@ -363,7 +385,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
             .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
         Ok(awaken_session_contract::SessionRealizationDirective {
             projection,
-            lease: command.lease,
+            authority: self.receipt(command.lease)?,
             action: awaken_session_contract::SessionRealizationAction::Complete,
         })
     }
@@ -395,12 +417,12 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
             awaken_session_contract::SessionTerminalCleanupAssignment {
                 session_id: "signed-terminal-recovery".into(),
                 projection,
-                lease: awaken_session_contract::SessionRealizationLease {
+                authority: self.receipt(awaken_session_contract::SessionRealizationLease {
                     owner: target.owner,
                     runtime_incarnation: target.runtime_incarnation,
                     epoch: 9,
                     expires_at_unix_ms: target.lease_expires_at_unix_ms,
-                },
+                })?,
             },
         ))
     }
@@ -427,7 +449,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
             assignment: awaken_session_contract::SessionTerminalCleanupAssignment {
                 session_id: session_id.to_string(),
                 projection,
-                lease: lease.clone(),
+                authority: self.receipt(lease.clone())?,
             },
             action,
         }))
@@ -781,7 +803,10 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let authenticator: Arc<dyn WorkerRequestAuthenticator> = Arc::new(authenticator);
     let directory = Arc::new(TestWorkerDirectory::default());
     let dispatch = Arc::new(MemoryDispatchStore::new());
-    let session_control = Arc::new(RecordingSessionControl::default());
+    let session_control = Arc::new(RecordingSessionControl {
+        clock: Some(clock.clone()),
+        ..Default::default()
+    });
     *session_control.projection.lock().unwrap() = Some(frozen_projection());
     let session_work = Arc::new(RecordingSessionWorkAuthority::default());
     let environment_bindings = Arc::new(RecordingEnvironmentBindings::default());
@@ -1215,7 +1240,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "T25/T26"
     );
 
-    let realization_lease = resumed.lease.clone();
+    let realization_lease = resumed.authority.lease.clone();
+    assert_eq!(
+        resumed.authority.remaining_ms.get(),
+        realization_lease.expires_at_unix_ms - 10_000,
+        "receipt horizon comes from Control, not this machine's wall clock"
+    );
     let session_client =
         WorkerControlSessionClient::new(client.clone(), registered.snapshot.identity.clone());
 
@@ -1402,7 +1432,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("K1 cleanup recovery claim")
         .expect("K1 typed assignment");
     assert_eq!(assignment.session_id, "signed-terminal-recovery", "K1");
-    assert_eq!(assignment.lease.epoch, 9, "K1");
+    assert_eq!(assignment.authority.lease.epoch, 9, "K1");
+    assert_eq!(
+        assignment.authority.remaining_ms.get(),
+        assignment.authority.lease.expires_at_unix_ms - 10_000,
+        "K1 authority horizon survives cleanup claim"
+    );
     assert_eq!(
         session_control.cleanup_claims.lock().unwrap().len(),
         1,
@@ -1478,7 +1513,15 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("K4 cleanup poll")
         .expect("K4 terminal fence");
     assert_eq!(cleanup_work.assignment.session_id, "signed-thread", "K4");
-    assert_eq!(cleanup_work.assignment.lease, realization_lease, "K4");
+    assert_eq!(
+        cleanup_work.assignment.authority.lease, realization_lease,
+        "K4"
+    );
+    assert_eq!(
+        cleanup_work.assignment.authority.remaining_ms.get(),
+        realization_lease.expires_at_unix_ms - 10_000,
+        "K4 authority horizon survives cleanup poll"
+    );
     assert_eq!(
         cleanup_work.action,
         awaken_session_contract::SessionTerminalCleanupAction::Prepare {
@@ -1858,10 +1901,20 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         },
         requested_expires_at_unix_ms: realization_lease.expires_at_unix_ms,
     };
-    client
+    let renewed = client
         .renew_session_realization(&registered.snapshot.identity, renewal.clone())
         .await
         .expect("T10");
+    // R1 same injected Control clock + positive horizon => the exact lease and
+    // remaining time survive the signed production router/client round trip.
+    // R2..R7 malformed horizons are rejected in worker_control_client tests;
+    // transport authentication/retirement rules below must remain unchanged.
+    assert_eq!(renewed.lease, renewal.asserted_lease, "T10/R1");
+    assert_eq!(
+        renewed.remaining_ms.get(),
+        renewed.lease.expires_at_unix_ms - 10_000,
+        "T10/R1"
+    );
     assert_eq!(session_control.renewals.lock().unwrap().len(), 1, "T10");
     *session_work.owner.lock().unwrap() = None;
     session_work.retired.store(true, Ordering::SeqCst);

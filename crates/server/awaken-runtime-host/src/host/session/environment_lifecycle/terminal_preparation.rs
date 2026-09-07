@@ -39,35 +39,35 @@ impl SharedHost {
         session_id: &str,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<awaken_session_contract::SessionRealizationLease, HostError> {
-        let current = self
+        self
             .session_slots
             .read(session_id, |slot| {
-                slot.realization_authority.lease().cloned()
+                let current = slot.realization_authority.lease().ok_or_else(|| {
+                    HostError::unavailable_classified(
+                        "session_terminal_cleanup_projection_missing",
+                        "terminal cleanup has no installed realization generation",
+                    )
+                })?;
+                if !awaken_session_contract::realization_lease_generation_authorizes(current, lease) {
+                    return Err(HostError::unavailable_classified(
+                        "session_terminal_cleanup_generation_stale",
+                        "terminal cleanup realization generation was replaced",
+                    ));
+                }
+                if slot.realization_authority.remaining_for(lease).is_none() {
+                    return Err(HostError::unavailable_classified(
+                        "session_terminal_cleanup_effect_expired",
+                        "terminal cleanup generation has no current live renewal at its physical boundary",
+                    ));
+                }
+                Ok(current.clone())
             })
-            .flatten()
-            .ok_or_else(|| {
+            .unwrap_or_else(|| Err(
                 HostError::unavailable_classified(
                     "session_terminal_cleanup_projection_missing",
                     "terminal cleanup has no installed realization generation",
                 )
-            })?;
-        if !awaken_session_contract::realization_lease_generation_authorizes(&current, lease) {
-            return Err(HostError::unavailable_classified(
-                "session_terminal_cleanup_generation_stale",
-                "terminal cleanup realization generation was replaced",
-            ));
-        }
-        let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
-        if !awaken_session_contract::realization_lease_is_live_at(
-            current.expires_at_unix_ms,
-            now_unix_ms,
-        ) {
-            return Err(HostError::unavailable_classified(
-                "session_terminal_cleanup_effect_expired",
-                "terminal cleanup generation has no current live renewal at its physical boundary",
-            ));
-        }
-        Ok(current)
+            ))
     }
 
     /// Project the one preparation fence after the shared terminal assignment

@@ -26,12 +26,7 @@ fn validate_preparation_publication(
     asserted: Option<&awaken_session_contract::SessionRealizationLease>,
 ) -> Result<(), RunError> {
     if slot.resource_preparation.is_some()
-        && !asserted.is_some_and(|lease| {
-            slot.resource_preparation_authorized(
-                lease,
-                crate::terminal_repository_publication::runtime_unix_now_ms(),
-            )
-        })
+        && !asserted.is_some_and(|lease| slot.resource_preparation_authorized(lease))
     {
         return Err(RunError::unavailable_classified(
             "session_realization_authority_lost",

@@ -4,7 +4,7 @@
 //! root remains the sole lifecycle authority, and the parent module re-exports
 //! the unchanged public contract consumed by Control and Runtime adapters.
 
-use super::{FrozenSessionProjection, SessionRealizationControlFailure, SessionRealizationLease};
+use super::{FrozenSessionProjection, SessionRealizationControlFailure};
 
 /// One cold Worker assignment for an already-fenced terminal Session.
 ///
@@ -17,7 +17,8 @@ use super::{FrozenSessionProjection, SessionRealizationControlFailure, SessionRe
 pub struct SessionTerminalCleanupAssignment {
     pub session_id: String,
     pub projection: FrozenSessionProjection,
-    pub lease: SessionRealizationLease,
+    #[serde(flatten)]
+    pub authority: super::SessionRealizationLeaseReceipt,
 }
 
 /// One read-only projection of terminal work from a single Session-root

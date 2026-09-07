@@ -113,6 +113,12 @@ impl EventBatchRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for EventBatchRuntime {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        crate::tests::test_realization_request_started()
+    }
+
     async fn install_session_projection(
         &self,
         thread: &str,

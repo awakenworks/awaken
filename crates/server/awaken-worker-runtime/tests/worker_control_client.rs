@@ -89,6 +89,115 @@ struct ConcurrentControlState {
     heartbeats: std::sync::atomic::AtomicUsize,
 }
 
+#[tokio::test]
+async fn session_renewal_receipt_wire_requires_positive_horizon_and_preserves_failures() {
+    use awaken_session_contract::{
+        RenewSessionRealization, SessionRealizationControlFailure as Failure,
+        SessionRealizationLease,
+    };
+    use axum::http::StatusCode;
+
+    // Cause/effect graph: HTTP success AND complete lease AND positive integer
+    // horizon -> decode the exact authority response; any missing/invalid
+    // horizon or lease -> Unavailable, never infer a TTL from local wall time.
+    // HTTP failure -> preserve the typed Control disposition, never grant.
+    // Decision rules: R1 positive horizon (1/max included) -> exact receipt;
+    // R2 missing/legacy, R3 zero, R4 null, R5 negative, R6 string/fraction,
+    // R7 absent lease -> no receipt; R8 typed failure -> exact failure.
+    // Constraint: this is the client wire boundary, not local admission. The
+    // deliberately ancient absolute expiry is opaque here; only the Runtime
+    // request-start observation can assess response latency and live ownership.
+    let lease = SessionRealizationLease {
+        owner: "worker-a".into(),
+        runtime_incarnation: "inc-a".into(),
+        epoch: 7,
+        expires_at_unix_ms: 100,
+    };
+    let reply = Arc::new(std::sync::Mutex::new((StatusCode::OK, Value::Null)));
+    let expected_request = RenewSessionRealization {
+        session_id: "session-a".into(),
+        asserted_lease: lease.clone(),
+        requested_expires_at_unix_ms: 200,
+    };
+    let command = expected_request.clone();
+    let app = Router::new()
+        .route(
+            "/v1/worker/session/realization/renew",
+            post(
+                move |State(reply): State<Arc<std::sync::Mutex<(StatusCode, Value)>>>,
+                      Json(body): Json<Value>| {
+                    let command = command.clone();
+                    async move {
+                        assert_eq!(body["command"], json!(command));
+                        assert_eq!(body["identity"]["worker_id"], "worker-a");
+                        let (status, body) = reply.lock().unwrap().clone();
+                        (status, Json(body))
+                    }
+                },
+            ),
+        )
+        .with_state(reply.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let identity = WorkerIdentity::new("worker-a", "inc-a", 1);
+    let client = WorkerControlClient::new(
+        WorkerUpstream::new(format!("http://{address}"))
+            .with_worker_id("worker-a")
+            .with_worker_identity(identity.clone()),
+    );
+
+    for horizon in [1, 30_000, u64::MAX] {
+        *reply.lock().unwrap() = (
+            StatusCode::OK,
+            json!({"lease": lease, "remaining_ms": horizon}),
+        );
+        let receipt = client
+            .renew_session_realization(&identity, expected_request.clone())
+            .await
+            .unwrap();
+        assert_eq!(receipt.lease, lease, "R1/{horizon}");
+        assert_eq!(receipt.remaining_ms.get(), horizon, "R1/{horizon}");
+    }
+    for (rule, body) in [
+        ("R2 legacy", json!({"lease": lease})),
+        ("R3 zero", json!({"lease": lease, "remaining_ms": 0})),
+        ("R4 null", json!({"lease": lease, "remaining_ms": null})),
+        ("R5 negative", json!({"lease": lease, "remaining_ms": -1})),
+        ("R6 string", json!({"lease": lease, "remaining_ms": "30"})),
+        ("R6 fraction", json!({"lease": lease, "remaining_ms": 0.5})),
+        ("R7 no lease", json!({"remaining_ms": 30})),
+    ] {
+        *reply.lock().unwrap() = (StatusCode::OK, body);
+        let error = client
+            .renew_session_realization(&identity, expected_request.clone())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Failure::Unavailable(_)),
+            "{rule}: {error:?}"
+        );
+    }
+    for failure in [
+        Failure::StaleOwnership,
+        Failure::Retired,
+        Failure::NotReady,
+        Failure::Unavailable("fixture".into()),
+    ] {
+        *reply.lock().unwrap() = (StatusCode::CONFLICT, json!({"realization_error": failure}));
+        assert_eq!(
+            client
+                .renew_session_realization(&identity, expected_request.clone())
+                .await
+                .unwrap_err(),
+            failure,
+            "R8"
+        );
+    }
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+}
+
 async fn blocked_cleanup_poll(State(state): State<Arc<ConcurrentControlState>>) -> Json<Value> {
     state.cleanup_started.notify_one();
     state.cleanup_release.notified().await;

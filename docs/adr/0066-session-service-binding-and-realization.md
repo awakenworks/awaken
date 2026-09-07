@@ -129,6 +129,27 @@ owner/epoch, a future expiry or changed binding fails closed. An MCP-only Stage
 cannot consume a pending Resource mutation, and a mismatched prepared revision
 commits nothing. No new scheduler, store, wire field or phase driver is added.
 
+Recovery overlapping a full MCP replacement can Stage both an old Active
+generation and its successor. Activation may then move the old generation to
+Draining. The committed aggregate's existing publication selector partitions
+the validated receipts: only still-Active/unacknowledged generations publish;
+obsolete generations use the drain lane. A lost activation response may be
+retried with old receipts now backed by Draining claims. Those receipts still
+pass the same complete binding/fingerprint verifier, but never regain Active
+status or enter Publish. Required Stage receipts remain a bijection; unrelated
+or duplicate generations do not become admissible. No replay registry is added.
+
+The application decision table covers hot/restarted ownership, replacement plus
+removal plus retention, heartbeat overlap, invalid old/foreign receipts and
+exact activation replay through strict acknowledgement. The existing
+`SessionRealizationMutex` model's publication configuration adds recovered
+generations and activation-response loss to the same phase driver. Two semantic
+mutations check obsolete publication and lost-response retry; reachability
+witnesses exclude vacuous recovery/loss coverage. This bounded abstraction
+assumes immutable generation bindings and eventual successful retry under weak
+fairness; it does not prove fingerprints, arbitrary root-CAS contention,
+unbounded generations, real transport or Rust refinement.
+
 WorkerRelay retains the immutable staged generation, not a second expiry
 authority. Its production admission reads the same Session slot root decision
 as MCP effect admission: a live same-incarnation/epoch root may authorize an
@@ -157,6 +178,59 @@ then run ordinary Stage again. This is recovery, not renewal of missing effects:
 the old receipt is not returned as fresh proof. Changed bindings, non-monotonic
 renewals, live/Staging/Draining effects and a closed quiescence fence remain
 protected by their existing checks.
+
+## 2026-09-07 amendment: request-relative realization evidence
+
+The durable `SessionRealizationLease` remains unchanged and is still the only
+Session ownership authority. Runtime admission must not compare a Control
+absolute expiry against an unrelated Worker wall clock.
+
+Static responsibilities:
+
+| Treatment | Canonical owner | Responsibility |
+|---|---|---|
+| Reused | Session root CAS and generation comparison | Persist ownership and authorize monotonic same-generation renewal |
+| Reused | `AuthorityLeaseTiming`, `AuthorityProofStarted`, Local process clock adapter | Conservative elapsed-time arithmetic and platform sampling |
+| Modified | Session Control responses and shared realization/terminal drivers | Carry positive response-relative evidence and retain the request-start observation |
+| Modified | Existing Host slot and renewal scheduler | Authorize and publish under the same slot lock; share local/Worker due selection and physical refresh |
+| Added value objects | Session contract `SessionRealizationLeaseReceipt` and `ObservedSessionRealizationLease` | Transient wire envelope and non-serializable local observation; neither is a store or another lease owner |
+
+Dynamic order is request-start observation -> Control read/CAS and projection
+I/O -> positive `remaining_ms` sampled in Control coordinates -> local elapsed
+deduction -> guarded slot publication. The final publication validates all
+fallible coordinates before writing the correlated Agent, Environment,
+workspace, request-context, baseline and dispatch fields. Resource preparation
+retains its existing cancellable staging owner. Renewal compares the exact
+pre-I/O lease snapshot; replacement, closure, exhausted old proof or exhausted
+response proof cannot be overwritten by a late response. Response time metadata
+does not count as realization phase progress.
+
+Both deployment topologies use the existing slot-based renewal lane; the local
+application no longer scans durable Sessions through an MCP-only renewal path.
+Due selection uses observed remaining time. The requested extension uses the
+asserted Control expiry plus a renewal interval, never Worker wall time.
+Control is required only when a lease is due. The independent physical refresh
+lane still runs for retained execution trees when no live leases or Control
+client remain. A closed slot is not an uninstalled legacy slot and cannot admit
+an unfenced suspension.
+
+This is a wire contract change, not a Lease rename: renewal responses include
+`lease` and required positive `remaining_ms`; directives and terminal
+assignments flatten the same envelope. New clients reject missing, zero or
+malformed horizons rather than inventing a fallback. Mixed-version deployment
+is not declared compatible by these changes.
+
+Test decision tables reside beside the contract, application, Host and signed
+HTTP tests. They cover elapsed/expiry boundaries, regressed observations,
+response-loss progression, exact-generation races, closed-slot rejection,
+delayed projection publication and malformed wire evidence. The existing
+`SessionExecutionBinding` model covers registered and direct-local binding,
+original lock/slot identity, revocation and guarded effects; its Session-expiry
+bit does not prove the receipt adapter or all projection fields. Provider
+`SandboxEffectFence` validation still has independent absolute-time boundaries:
+full provider clock correspondence, mixed-version rollout, real cloud/local
+fault qualification and real Windows/macOS qualification remain open. Passing
+these tests or bounded models must not promote `process_tree_supervision`.
 
 ## 2026-08-12 amendment
 

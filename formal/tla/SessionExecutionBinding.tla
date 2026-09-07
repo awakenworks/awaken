@@ -7,24 +7,31 @@ EXTENDS WorkerExecutionAuthority
    check/commit exposes a lock-release mutant. Time within a synchronous grant
    is abstracted atomically here; LocalProcessDeadline/Boundary own physical
    cutoff and callback-delay bounds. This is not an OS or Rust refinement proof.
-   The separate Session-expiry bit does NOT equate wall time with BOOTTIME. *)
-VARIABLES deploymentReady
+   The separate Session-expiry bit does NOT equate wall time with BOOTTIME.
+   registeredWorker is fixed at initialization: the deployment composition is
+   trusted to require root proof for registered workers; a direct unregistered
+   Host has only its real Session owner, never an invented infinite Worker
+   receipt. This model does not prove that deployment classification or the
+   new request-relative Session clock adapter is implemented correctly. *)
+VARIABLES deploymentReady, registeredWorker
 VARIABLES selection, boundSlot, boundGeneration, boundEnvironment,
           environmentIdentity, environmentPhase, sessionExpired,
           effectHeld, effectChecked, badEffect, effects, effectPhases, weakStarted
 bindingVars == <<selection, boundSlot, boundGeneration, boundEnvironment,
     environmentIdentity, environmentPhase, sessionExpired, effectHeld,
     effectChecked, badEffect, effects, effectPhases, weakStarted>>
-bindingAll == <<allVars, bindingVars, deploymentReady>>
+bindingAll == <<allVars, bindingVars, deploymentReady, registeredWorker>>
 
 BindingInit == RootInit
+  /\ registeredWorker \in BOOLEAN
   /\ deploymentReady = FALSE
   /\ selection = "unset" /\ boundSlot = 0 /\ boundGeneration = 0 /\ boundEnvironment = 0
   /\ environmentIdentity = 1 /\ environmentPhase = "candidate" /\ sessionExpired = FALSE
   /\ effectHeld = FALSE /\ effectChecked = FALSE /\ badEffect = FALSE
   /\ effects = 0 /\ effectPhases = {} /\ weakStarted = FALSE
 
-CurrentBinding == /\ RootCurrent /\ projection = "Live" /\ ~sessionExpired
+ExecutionRootCurrent == ~registeredWorker \/ RootCurrent
+CurrentBinding == /\ ExecutionRootCurrent /\ projection = "Live" /\ ~sessionExpired
   /\ selection = "scoped" /\ boundSlot = slotIdentity
   /\ boundGeneration = lease[1] /\ boundEnvironment = environmentIdentity
   /\ environmentPhase \in {"candidate", "resident"}
@@ -50,7 +57,8 @@ CheckEffect == /\ ~effectHeld /\ effects < 2 /\ CurrentBinding
 CommitEffect == /\ effectHeld /\ effectChecked /\ effects < 2
   \* Independent receipt oracle: changing an admission guard must not also
   \* weaken the assertion against which that mutant is checked.
-  /\ badEffect' = (badEffect \/ ~RootCurrent \/ projection # "Live" \/ sessionExpired
+  /\ badEffect' = (badEffect \/ (registeredWorker /\ ~RootCurrent)
+       \/ projection # "Live" \/ sessionExpired
        \/ selection # "scoped" \/ boundSlot # slotIdentity \/ boundGeneration # lease[1]
        \/ boundEnvironment # environmentIdentity \/ environmentPhase = "retiring")
   /\ effects' = effects + 1
@@ -65,10 +73,12 @@ CancelEffect == /\ effectHeld /\ effectHeld' = FALSE /\ effectChecked' = FALSE
 (* Existing authority transition owners; no shadow renew/revoke implementation.
    Peer cleanup/fresh Session counts are irrelevant to this one scope and stay
    fixed; their full interleavings remain in WorkerExecutionAuthority. *)
-AuthorityChanges == (RequestHeartbeat \/ ApplyHeartbeat \/ CloseRoot \/ Tick
-    \/ InstallReplacement \/ RenewProjection
+AuthorityChanges == ((registeredWorker /\
+      (RequestHeartbeat \/ ApplyHeartbeat \/ CloseRoot \/ Tick
+       \/ InstallReplacement \/ RenewProjection))
     \/ ((SendRenewal \/ BeginRevoke(1) \/ RecreateClosedSlot
-          \/ (RootCurrent /\ RecreateSlot)) /\ UNCHANGED rootVars))
+          \/ (~registeredWorker /\ (Replace \/ ApplyRenewal))
+          \/ (ExecutionRootCurrent /\ RecreateSlot)) /\ UNCHANGED rootVars))
   /\ ~effectHeld /\ UNCHANGED bindingVars
 EnvironmentChanges == /\ ~effectHeld
   /\ \/ (/\ environmentPhase = "candidate" /\ environmentPhase' = "resident"
@@ -89,12 +99,13 @@ EnvironmentChanges == /\ ~effectHeld
 \* acquired by this action, and readiness alone cannot satisfy CurrentBinding.
 ProbeReady == /\ ~deploymentReady /\ deploymentReady' = TRUE
   /\ UNCHANGED <<allVars, bindingVars>>
-BindingNext == ((Select \/ WeakSpawn \/ Bind \/ CheckEffect \/ CommitEffect
+BindingNext == (((Select \/ WeakSpawn \/ Bind \/ CheckEffect \/ CommitEffect
   \/ CancelEffect \/ AuthorityChanges \/ EnvironmentChanges)
-  /\ UNCHANGED deploymentReady) \/ ProbeReady
+  /\ UNCHANGED deploymentReady) \/ ProbeReady)
+  /\ UNCHANGED registeredWorker
 BindingSpec == BindingInit /\ [][BindingNext]_bindingAll
 BindingTypeOK == RootTypeOK /\ selection \in {"unset", "weak", "scoped"}
-  /\ deploymentReady \in BOOLEAN
+  /\ deploymentReady \in BOOLEAN /\ registeredWorker \in BOOLEAN
   /\ boundSlot \in 0..2 /\ boundGeneration \in 0..2 /\ boundEnvironment \in 0..2
   /\ environmentIdentity \in 1..2 /\ environmentPhase \in {"candidate", "resident", "retiring"}
   /\ sessionExpired \in BOOLEAN /\ effectHeld \in BOOLEAN /\ effectChecked \in BOOLEAN
@@ -106,4 +117,6 @@ WeakExecutionCannotUpgrade == weakStarted => selection = "weak"
 BindingIsWriteOnce == [][boundSlot # 0 => UNCHANGED <<boundSlot, boundGeneration, boundEnvironment>>]_bindingAll
 NoCandidateEffectReached == "candidate" \notin effectPhases
 NoResidentEffectReached == "resident" \notin effectPhases
+NoLocalEffectReached == registeredWorker \/ effects = 0
+NoRegisteredEffectReached == ~registeredWorker \/ effects = 0
 =============================================================================

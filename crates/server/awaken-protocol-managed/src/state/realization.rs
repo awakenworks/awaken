@@ -55,6 +55,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SessionRuntime for NoopRuntime {
+        fn observe_realization_request(
+            &self,
+        ) -> Result<
+            awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+            awaken_session_contract::RunError,
+        > {
+            crate::test_support::observe_realization_request()
+        }
         async fn install_session_projection(
             &self,
             thread: &str,
@@ -68,7 +76,7 @@ mod tests {
         async fn renew_session_realization_lease(
             &self,
             _thread: &str,
-            _lease: awaken_session_contract::SessionRealizationLease,
+            _lease: awaken_session_contract::ObservedSessionRealizationLease,
         ) -> Result<(), RunError> {
             Ok(())
         }
@@ -365,7 +373,10 @@ mod tests {
             .begin_session_realization(begin)
             .await
             .expect("Q2");
-        assert_eq!(replay, staged, "Q2");
+        assert!(
+            replay.same_progress_as(&staged),
+            "Q2 response age is not phase progress"
+        );
         assert_eq!(
             repo.get("session-phase").await.unwrap().revision,
             after_begin.revision,
@@ -398,7 +409,7 @@ mod tests {
             .application
             .activate_session_realization(ActivateSessionRealization {
                 session_id: "session-phase".into(),
-                lease: staged.lease.clone(),
+                lease: staged.authority.lease.clone(),
                 prepared_resource_revision: Some(staged.projection.resource_revision),
                 mcp_receipts: Vec::new(),
             })
@@ -420,7 +431,7 @@ mod tests {
             .application
             .activate_session_realization(ActivateSessionRealization {
                 session_id: "session-phase".into(),
-                lease: staged.lease.clone(),
+                lease: staged.authority.lease.clone(),
                 prepared_resource_revision: Some(staged.projection.resource_revision),
                 mcp_receipts: mismatched,
             })
@@ -434,7 +445,7 @@ mod tests {
             .application
             .activate_session_realization(ActivateSessionRealization {
                 session_id: "session-phase".into(),
-                lease: staged.lease.clone(),
+                lease: staged.authority.lease.clone(),
                 prepared_resource_revision: Some(staged.projection.resource_revision),
                 mcp_receipts: receipts.clone(),
             })
@@ -460,13 +471,14 @@ mod tests {
             .application
             .activate_session_realization(ActivateSessionRealization {
                 session_id: "session-phase".into(),
-                lease: staged.lease.clone(),
+                lease: staged.authority.lease.clone(),
                 prepared_resource_revision: Some(staged.projection.resource_revision),
                 mcp_receipts: receipts,
             })
             .await
             .expect("Q7");
-        assert_eq!(activate_replay, activated, "Q7");
+        // Q7 compares durable progress, not response-relative horizon age.
+        assert!(activate_replay.same_progress_as(&activated), "Q7");
         assert_eq!(
             repo.get("session-phase").await.unwrap().revision,
             after_activate.revision,
@@ -477,7 +489,7 @@ mod tests {
             .application
             .acknowledge_session_realization(AcknowledgeSessionRealization {
                 session_id: "session-phase".into(),
-                lease: staged.lease.clone(),
+                lease: staged.authority.lease.clone(),
                 published: Vec::new(),
                 drained: Vec::new(),
             })
@@ -496,7 +508,7 @@ mod tests {
             .application
             .acknowledge_session_realization(AcknowledgeSessionRealization {
                 session_id: "session-phase".into(),
-                lease: staged.lease.clone(),
+                lease: staged.authority.lease.clone(),
                 published: vec![publish[0].clone(), publish[0].clone()],
                 drained: Vec::new(),
             })
@@ -516,7 +528,7 @@ mod tests {
 
         let acknowledgement = AcknowledgeSessionRealization {
             session_id: "session-phase".into(),
-            lease: staged.lease,
+            lease: staged.authority.lease,
             published: publish,
             drained: drain,
         };
@@ -593,8 +605,8 @@ mod tests {
             .await
             .expect("Q12");
         let renewed = repo.get("session-phase").await.unwrap();
-        assert_eq!(renewal.expires_at_unix_ms, u64::MAX - 1, "Q12");
-        assert_eq!(renewed.realization.as_ref(), Some(&renewal), "Q12");
+        assert_eq!(renewal.lease.expires_at_unix_ms, u64::MAX - 1, "Q12");
+        assert_eq!(renewed.realization.as_ref(), Some(&renewal.lease), "Q12");
         assert_eq!(renewed.resources.pending, Some(desired.clone()), "Q12");
         assert_eq!(
             renewed.resources.active_revision(),
@@ -637,12 +649,15 @@ mod tests {
             .application
             .renew_session_realization(RenewSessionRealization {
                 session_id: "session-phase".into(),
-                asserted_lease: renewal.clone(),
+                asserted_lease: renewal.lease.clone(),
                 requested_expires_at_unix_ms: u64::MAX - 1,
             })
             .await
             .expect("Q13 replay");
-        assert_eq!(replay, renewal, "Q13");
+        assert_eq!(
+            replay.lease, renewal.lease,
+            "Q13 durable lease, not response age"
+        );
         assert_eq!(
             repo.get("session-phase").await.unwrap().revision,
             renewed_revision,
@@ -651,62 +666,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_lease_supervision_cases_follow_the_decision_table() {
-        // Cause graph: active generation AND local owner/incarnation AND expiry
-        // within the renewal window -> run the canonical phase driver with a
-        // later exact fence. A false due-window cause is a no-op; there is no
-        // relay-local timer or second desired-state mutation.
-        //
-        // | Rule | Active | Owner/incarnation | Due | Effect |
-        // |---|---|---|---|---|
-        // | S1 | yes | exact local | yes | same generation/epoch, later expiry |
-        // | S2 | yes | exact local | no | no mutation |
+    async fn local_lease_supervision_requires_runtime_projections_not_a_durable_rescan() {
+        // L1 a durable active local MCP generation exists, but this protocol
+        // fake owns no Runtime slot/renewal port. E1 explicit unsupported error;
+        // E2 no durable mutation. This detects a hidden fallback to the removed
+        // MCP-only repository scan. Due/owner/expiry scheduling is owned and
+        // tested by Host's single realization scheduler, not copied into this
+        // wire-cache fixture or driven with a synthetic Worker wall clock.
         let (state, repo) = harness("session-supervised").await;
         state
             .application
             .realize_session("session-supervised")
             .await
-            .expect("S1 setup");
+            .expect("L1 setup");
         let before = repo.get("session-supervised").await.unwrap();
-        let lease = before.realization.clone().unwrap();
-        let original_generation = before.mcp.attachments[0].generation;
-        let original_epoch = lease.epoch;
-        let supervision_now = lease.expires_at_unix_ms.saturating_sub(100_000);
-        assert_eq!(
-            state
-                .application
-                .renew_due_session_realizations(supervision_now)
-                .await
-                .expect("S1"),
-            1,
-            "S1"
-        );
-        let renewed = repo.get("session-supervised").await.unwrap();
-        let renewed_lease = renewed.realization.as_ref().unwrap();
         assert!(
-            renewed_lease.expires_at_unix_ms > lease.expires_at_unix_ms,
-            "S1"
-        );
-        assert_eq!(renewed_lease.epoch, original_epoch, "S1");
-        assert_eq!(
-            renewed.mcp.attachments[0].generation, original_generation,
-            "S1"
-        );
-        assert!(renewed.mcp.attachments[0].publication_acknowledged, "S1");
-        let revision = renewed.revision;
-        assert_eq!(
             state
                 .application
-                .renew_due_session_realizations(supervision_now)
+                .renew_due_session_realizations()
                 .await
-                .expect("S2"),
-            0,
-            "S2"
+                .is_err(),
+            "L1/E1"
         );
         assert_eq!(
-            repo.get("session-supervised").await.unwrap().revision,
-            revision,
-            "S2 no mutation"
+            repo.get("session-supervised").await.unwrap(),
+            before,
+            "L1/E2"
         );
     }
 
@@ -746,7 +731,7 @@ mod tests {
             })
             .await
             .expect("O1 replay");
-        assert_eq!(replay.lease, first.lease, "O1");
+        assert_eq!(replay.authority.lease, first.authority.lease, "O1");
 
         let restarted = state
             .application
@@ -760,9 +745,13 @@ mod tests {
             })
             .await
             .expect("O2");
-        assert_eq!(restarted.lease.epoch, first.lease.epoch + 1, "O2");
         assert_eq!(
-            restarted.lease.runtime_incarnation, "worker-a/incarnation-2",
+            restarted.authority.lease.epoch,
+            first.authority.lease.epoch + 1,
+            "O2"
+        );
+        assert_eq!(
+            restarted.authority.lease.runtime_incarnation, "worker-a/incarnation-2",
             "O2"
         );
         let persisted = repo.get("session-owner-restart").await.unwrap();
@@ -862,7 +851,7 @@ mod tests {
             .application
             .activate_session_realization(ActivateSessionRealization {
                 session_id: "session-empty".into(),
-                lease: staged.lease.clone(),
+                lease: staged.authority.lease.clone(),
                 prepared_resource_revision: Some(staged.projection.resource_revision),
                 mcp_receipts: Vec::new(),
             })
@@ -882,7 +871,7 @@ mod tests {
             .application
             .acknowledge_session_realization(AcknowledgeSessionRealization {
                 session_id: "session-empty".into(),
-                lease: staged.lease,
+                lease: staged.authority.lease,
                 published: Vec::new(),
                 drained: Vec::new(),
             })
@@ -906,7 +895,7 @@ mod tests {
             .unwrap();
         let failure = FailSessionRealization {
             session_id: "session-failed".into(),
-            lease: staged.lease,
+            lease: staged.authority.lease,
             prepared_resource_revision: Some(staged.projection.resource_revision),
             retryable: false,
             source_run_id: None,

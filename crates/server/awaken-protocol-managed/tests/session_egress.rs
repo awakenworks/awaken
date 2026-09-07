@@ -27,6 +27,14 @@ struct CapturingFake {
 
 #[async_trait::async_trait]
 impl SessionRuntime for CapturingFake {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<
+        awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        awaken_session_contract::RunError,
+    > {
+        awaken_protocol_managed::test_support::observe_realization_request()
+    }
     async fn install_session_projection(
         &self,
         thread: &str,

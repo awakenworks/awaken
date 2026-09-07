@@ -39,6 +39,12 @@ struct ContinuationRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for ContinuationRuntime {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        crate::tests::test_realization_request_started()
+    }
+
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -102,6 +108,7 @@ impl SessionRuntime for ContinuationRuntime {
     async fn install_terminal_cleanup_assignment(
         &self,
         assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+        _proof: awaken_session_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         if assignment.projection.environment.checkpoint().is_some() {
             self.terminal_checkpoint_projections
@@ -351,7 +358,10 @@ fn generated_session(id: &str) -> PersistedSession {
         owner: "continuation-worker-a".into(),
         runtime_incarnation: "continuation-runtime-a".into(),
         epoch: 4,
-        expires_at_unix_ms: 100_000,
+        // Generation/checkpoint retention uses the explicit continuation test
+        // clock. The independent Session lease is read by the real Control
+        // receipt publisher, so its live fixture uses that authority's clock.
+        expires_at_unix_ms: crate::activity::now_unix_ms() + 300_000,
     });
     session
 }
@@ -764,7 +774,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
             &app,
             awaken_session_contract::ActivateSessionRealization {
                 session_id: "suspend-with-mcp".into(),
-                lease: staged.lease.clone(),
+                lease: staged.authority.lease.clone(),
                 prepared_resource_revision: None,
                 mcp_receipts: vec![receipt],
             },
@@ -787,7 +797,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
             &app,
             awaken_session_contract::AcknowledgeSessionRealization {
                 session_id: "suspend-with-mcp".into(),
-                lease: staged.lease,
+                lease: staged.authority.lease,
                 published: vec![generation],
                 drained: Vec::new(),
             },
@@ -1215,7 +1225,10 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
     let durable =
         Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
     let repo = Arc::new(FaultingSessionRepository::new(durable));
-    create(repo.as_ref(), generated_session("prep-response-loss")).await;
+    let mut session = generated_session("prep-response-loss");
+    // P1 exercises exact logical fences, not a new runtime time grant.
+    session.realization.as_mut().unwrap().expires_at_unix_ms = 100_000;
+    create(repo.as_ref(), session).await;
     let runtime = Arc::new(ContinuationRuntime::default());
     runtime.fail_checkpoint_once.store(true, Ordering::SeqCst);
     let app = application_with_runtime(
@@ -1387,7 +1400,7 @@ async fn driving_ingress_restores_once_before_activity() {
                 awaken_session_contract::SessionProjectionInstallMode::Realization {
                     lease,
                     prepare_session: true,
-                } if Some(lease) == restored.realization.as_ref()
+                } if Some(&lease.lease) == restored.realization.as_ref()
             ),
             "R1/E2 exact current lease and adoption mode",
         );
@@ -1750,7 +1763,11 @@ async fn expired_checkpoint_delete_failure_retains_reference_for_retry() {
 async fn terminal_cleanup_delegates_checkpoint_to_the_one_runtime_effect() {
     let repo =
         Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
-    create(repo.as_ref(), hibernated_session("terminal", 100_000)).await;
+    let mut session = hibernated_session("terminal", 100_000);
+    // C3 the previous owner has expired; the local cleanup claim may take
+    // ownership. A live foreign fixture would correctly defer all effects.
+    session.realization.as_mut().unwrap().expires_at_unix_ms = 1;
+    create(repo.as_ref(), session).await;
     let runtime = Arc::new(ContinuationRuntime::default());
     let app = application_with_runtime(
         runtime.clone(),

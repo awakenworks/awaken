@@ -14,6 +14,24 @@ use crate::{
     ManagedTunnelScope,
 };
 
+/// Protocol fixtures exercise application ordering, not OS suspend behavior.
+/// Keep one explicit advancing test clock; unsupported production Runtimes
+/// still fail closed instead of receiving a default timing capability.
+pub fn observe_realization_request() -> Result<
+    awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+    awaken_session_contract::RunError,
+> {
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let origin = *ORIGIN.get_or_init(std::time::Instant::now);
+    let now = std::time::Instant::now();
+    Ok(
+        awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
+            now,
+            now.duration_since(origin),
+        ),
+    )
+}
+
 /// Empty hosted Tunnel port for composition tests.
 ///
 /// Open Awaken deliberately leaves the Cloud-owned Tunnel port absent. Tests
@@ -494,6 +512,14 @@ impl CoordinatedRuntimeFake {
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<
+        awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        awaken_session_contract::RunError,
+    > {
+        crate::test_support::observe_realization_request()
+    }
     async fn install_session_projection(
         &self,
         thread: &str,

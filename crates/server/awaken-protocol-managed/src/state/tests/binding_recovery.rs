@@ -596,13 +596,11 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
         2,
         awaken_credential_vault::repo::ManagedCredentialOperation::Update,
     );
-    assert!(
+    let outcome =
         awaken_credential_vault::repo::ManagedCredentialRolloutTarget::rollout(&state, &updated)
             .await
-            .unwrap()
-            .is_converged(),
-        "V1/E1"
-    );
+            .unwrap();
+    assert!(outcome.is_converged(), "V1/E1: {outcome:?}");
     let affected = repo.get("source-affected").await.unwrap();
     assert_eq!(
         affected.mcp.desired_attachments()[0]

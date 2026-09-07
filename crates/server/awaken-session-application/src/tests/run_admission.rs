@@ -24,6 +24,12 @@ struct ActivationOnlySessionRunRuntime {
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionRuntime for ActivationOnlySessionRunRuntime {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        crate::tests::test_realization_request_started()
+    }
+
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -405,7 +411,7 @@ async fn public_run_reserves_then_restores_and_projects_before_activation() {
             awaken_session_contract::SessionProjectionInstallMode::Realization {
                 lease,
                 prepare_session: true,
-            } if Some(lease) == resident.realization.as_ref()
+            } if Some(&lease.lease) == resident.realization.as_ref()
         ),
         "H1/E3",
     );
@@ -474,6 +480,12 @@ impl awaken_session_contract::RunApplication for ProtocolProjectionRuntime {
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionRuntime for BlockingSessionRunRuntime {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
+        crate::tests::test_realization_request_started()
+    }
+
     async fn install_session_projection(
         &self,
         thread: &str,

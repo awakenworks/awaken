@@ -1384,6 +1384,14 @@ struct EndSessionFailer;
 
 #[async_trait]
 impl SessionRuntime for EndSessionFailer {
+    fn observe_realization_request(
+        &self,
+    ) -> Result<
+        awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        awaken_session_contract::RunError,
+    > {
+        crate::test_support::observe_realization_request()
+    }
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -1451,6 +1459,7 @@ impl SessionRuntime for EndSessionFailer {
     async fn install_terminal_cleanup_assignment(
         &self,
         _assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+        _proof: awaken_session_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         Ok(())
     }

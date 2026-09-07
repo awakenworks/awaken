@@ -141,7 +141,7 @@ impl awaken_session_contract::SessionRealizationControl for WorkerControlSession
         &self,
         command: awaken_session_contract::RenewSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationLease,
+        awaken_session_contract::SessionRealizationLeaseReceipt,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
         self.control

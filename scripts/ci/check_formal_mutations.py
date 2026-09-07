@@ -978,7 +978,32 @@ def check_resource_preparation_model_mutant(tlc_jar: Path) -> None:
     print("Resource preparation mutation score: 2/2 killed (hidden lease, cancelled publication)")
 
 
+def check_realization_publication_model_mutants(tlc_jar: Path) -> None:
+    # R1 all Stage receipts republished after the activation switch; R2 exact
+    # retry forgets Draining receipts. Each negative control must violate its
+    # named safety invariant, never count a parser failure/timeout as a kill.
+    # Two witnesses prove recovery and response loss are actually reachable.
+    source = (ROOT / "formal/tla/SessionRealizationMutex.tla").read_text()
+    config = (ROOT / "formal/tla/SessionRealizationPublication.cfg").read_text()
+    mutations = []
+    for anchor, broken, invariant in [
+        ("publish |-> @.staged \\cap ActiveGenerations", "publish |-> @.staged",
+         "PublicationUsesActiveReceipts"),
+        ("(publication[session].publish \\cup publication[session].drain)",
+         "publication[session].publish", "LostActivationCanReplay"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit("Realization publication mutation anchor drifted; review the model")
+        mutations.append((source.replace(anchor, broken), config, invariant))
+    header = config.split("INVARIANTS", 1)[0]
+    for witness in ("NoRecoveredPublicationReached", "NoLostActivationReached"):
+        mutations.append((source, header + "INVARIANTS " + witness, witness))
+    check_tlc_model_mutations(tlc_jar, "SessionRealizationMutex", source, config, mutations)
+    print("Realization publication: 2/2 mutants killed; recovery/response-loss witnesses reachable")
+
+
 def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
+    check_realization_publication_model_mutants(tlc_jar)
     # S1-S9 extend the existing Worker lifecycle family: startup and withdrawal
     # share the same registration owner as drain, not a second cleanup model.
     source = (ROOT / "formal/tla/WorkerDrain.tla").read_text()
@@ -1105,6 +1130,10 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
                               dependencies=("SessionRealizationAuthority",),
                               action_properties={"NoRegressionResponse"})
     print("Worker execution authority: 7/7 mutants killed; admission/renewal/regression reachable")
+    check_session_execution_binding_model_mutants(tlc_jar)
+
+
+def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
     # S1-S21: independently remove each authority/identity guard; release the
     # original mutex between check and effect; permit a late weak upgrade or
     # rebinding. The receipt oracle is independent of the mutated predicate.
@@ -1113,7 +1142,7 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
     header = "SPECIFICATION BindingSpec\nCHECK_DEADLOCK FALSE\n"
     mutations = []
     for anchor, broken, invariant in [
-        ('CurrentBinding == /\\ RootCurrent', 'CurrentBinding == /\\ TRUE', "OnlyCurrentBindingCommits"),
+        ('CurrentBinding == /\\ ExecutionRootCurrent', 'CurrentBinding == /\\ TRUE', "OnlyCurrentBindingCommits"),
         ('/\\ projection = "Live" /\\ ~sessionExpired', '/\\ TRUE /\\ ~sessionExpired', "OnlyCurrentBindingCommits"),
         ('/\\ ~sessionExpired\n  /\\ selection', '/\\ TRUE\n  /\\ selection', "OnlyCurrentBindingCommits"),
         ('/\\ boundSlot = slotIdentity', '/\\ TRUE', "OnlyCurrentBindingCommits"),
@@ -1129,12 +1158,15 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
             raise SystemExit(f"Session execution binding mutation anchor drifted: {anchor}")
         property_kind = "PROPERTY" if invariant == "BindingIsWriteOnce" else "INVARIANTS"
         mutations.append((source.replace(anchor, broken), header + property_kind + " " + invariant, invariant))
-    for witness in ("NoCandidateEffectReached", "NoResidentEffectReached"):
+    # Both topology paths must reach actual effects. Otherwise an accidental
+    # mandatory Worker guard could make all direct-local safety checks vacuous.
+    for witness in ("NoCandidateEffectReached", "NoResidentEffectReached",
+                    "NoLocalEffectReached", "NoRegisteredEffectReached"):
         mutations.append((source, header + "INVARIANTS " + witness, witness))
     check_tlc_model_mutations(tlc_jar, "SessionExecutionBinding", source, config, mutations,
                               dependencies=("SessionRealizationAuthority", "WorkerExecutionAuthority"),
                               action_properties={"BindingIsWriteOnce"})
-    print("Session execution binding: 11/11 mutants killed; candidate/resident effects reachable")
+    print("Session execution binding: 11/11 mutants killed; candidate/resident and local/registered effects reachable")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
