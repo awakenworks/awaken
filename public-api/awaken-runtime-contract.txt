@@ -80,6 +80,7 @@ pub use awaken_runtime_contract::WorkerLocalCredentialResolver
 pub use awaken_runtime_contract::WorkerLocalReferenceRevalidator
 pub use awaken_runtime_contract::commit_payload_hash
 pub use awaken_runtime_contract::extract_text
+pub use awaken_runtime_contract::require_exact_available_worker_reference
 pub mod awaken_runtime_contract::activation
 pub struct awaken_runtime_contract::activation::RunActivation
 pub awaken_runtime_contract::activation::RunActivation::data_subject_id: core::option::Option<awaken_runtime_contract::data_subject::DataSubjectId>

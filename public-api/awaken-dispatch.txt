@@ -16,6 +16,7 @@ pub use awaken_dispatch::ClaimedCommitCommand
 pub use awaken_dispatch::ClaimedCommitRequest
 pub use awaken_dispatch::ClaimedRunCommit
 pub use awaken_dispatch::ClaimedStreamPublisher
+pub use awaken_dispatch::Clock
 pub use awaken_dispatch::CommitEpochGuard
 pub use awaken_dispatch::ContinuationAdmission
 pub use awaken_dispatch::CredentialRealizationReceipt
@@ -44,6 +45,7 @@ pub use awaken_dispatch::Inbox
 pub use awaken_dispatch::Lease
 pub use awaken_dispatch::LeaseLossReason
 pub use awaken_dispatch::LeastLoadedPolicy
+pub use awaken_dispatch::ManualClock
 pub use awaken_dispatch::Outbox
 pub use awaken_dispatch::PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE
 pub use awaken_dispatch::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY
@@ -78,6 +80,8 @@ pub use awaken_dispatch::SettleRequest
 pub use awaken_dispatch::StreamEventRequest
 pub use awaken_dispatch::StreamObservationRequest
 pub use awaken_dispatch::SubmitOptions
+pub use awaken_dispatch::SystemClock
+pub use awaken_dispatch::TRUSTED_HOST_SANDBOX_BACKEND
 pub use awaken_dispatch::WORKER_LOCAL_CREDENTIALS_CAPABILITY
 pub use awaken_dispatch::WorkerAcpCapabilityObservation
 pub use awaken_dispatch::WorkerAcpCapabilityRequirement
@@ -221,7 +225,7 @@ pub fn awaken_dispatch::ClaimedCommitService::with_applier(alloc::sync::Arc<dyn 
 pub struct awaken_dispatch::DispatchMaintenance
 impl awaken_dispatch::DispatchMaintenance
 pub async fn awaken_dispatch::DispatchMaintenance::shutdown(self)
-pub fn awaken_dispatch::DispatchMaintenance::spawn<S: awaken_dispatch_contract::dispatch::Dispatch + 'static>(alloc::sync::Arc<S>, alloc::sync::Arc<dyn awaken_dispatch::Clock>, alloc::sync::Arc<dyn awaken_dispatch::WakeSignal>, awaken_dispatch::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_dispatch::WorkerResolver<S>>, core::option::Option<alloc::sync::Arc<dyn awaken_dispatch::CompletionSink>>) -> Self
+pub fn awaken_dispatch::DispatchMaintenance::spawn<S: awaken_dispatch_contract::dispatch::Dispatch + 'static>(alloc::sync::Arc<S>, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>, alloc::sync::Arc<dyn awaken_dispatch::WakeSignal>, awaken_dispatch::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_dispatch::WorkerResolver<S>>, core::option::Option<alloc::sync::Arc<dyn awaken_dispatch::CompletionSink>>) -> Self
 impl core::ops::drop::Drop for awaken_dispatch::DispatchMaintenance
 pub fn awaken_dispatch::DispatchMaintenance::drop(&mut self)
 pub struct awaken_dispatch::DispatchPool<S>
@@ -237,10 +241,10 @@ pub async fn awaken_dispatch::DispatchPool<S>::notify(&self)
 pub async fn awaken_dispatch::DispatchPool<S>::resume_admission(&self) -> bool
 pub async fn awaken_dispatch::DispatchPool<S>::send(&self, awaken_dispatch_contract::dispatch::PendingInput) -> core::result::Result<(), awaken_dispatch::Error>
 pub async fn awaken_dispatch::DispatchPool<S>::shutdown(self)
-pub fn awaken_dispatch::DispatchPool<S>::spawn(alloc::sync::Arc<S>, alloc::sync::Arc<dyn awaken_dispatch::Clock>, impl core::convert::Into<alloc::string::String>, u64, awaken_dispatch::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_dispatch::WorkerResolver<S>>, usize) -> Self
-pub fn awaken_dispatch::DispatchPool<S>::spawn_with_completion(alloc::sync::Arc<S>, alloc::sync::Arc<dyn awaken_dispatch::Clock>, impl core::convert::Into<alloc::string::String>, u64, awaken_dispatch::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_dispatch::WorkerResolver<S>>, usize, alloc::sync::Arc<dyn awaken_dispatch::CompletionSink>) -> Self
-pub fn awaken_dispatch::DispatchPool<S>::spawn_with_wake(alloc::sync::Arc<S>, alloc::sync::Arc<dyn awaken_dispatch::Clock>, impl core::convert::Into<alloc::string::String>, u64, awaken_dispatch::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_dispatch::WorkerResolver<S>>, usize, alloc::sync::Arc<dyn awaken_dispatch::WakeSignal>) -> Self
-pub fn awaken_dispatch::DispatchPool<S>::spawn_with_wake_and_completion(alloc::sync::Arc<S>, alloc::sync::Arc<dyn awaken_dispatch::Clock>, impl core::convert::Into<alloc::string::String>, u64, awaken_dispatch::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_dispatch::WorkerResolver<S>>, usize, alloc::sync::Arc<dyn awaken_dispatch::WakeSignal>, alloc::sync::Arc<dyn awaken_dispatch::CompletionSink>) -> Self
+pub fn awaken_dispatch::DispatchPool<S>::spawn(alloc::sync::Arc<S>, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>, impl core::convert::Into<alloc::string::String>, u64, awaken_dispatch::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_dispatch::WorkerResolver<S>>, usize) -> Self
+pub fn awaken_dispatch::DispatchPool<S>::spawn_with_completion(alloc::sync::Arc<S>, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>, impl core::convert::Into<alloc::string::String>, u64, awaken_dispatch::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_dispatch::WorkerResolver<S>>, usize, alloc::sync::Arc<dyn awaken_dispatch::CompletionSink>) -> Self
+pub fn awaken_dispatch::DispatchPool<S>::spawn_with_wake(alloc::sync::Arc<S>, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>, impl core::convert::Into<alloc::string::String>, u64, awaken_dispatch::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_dispatch::WorkerResolver<S>>, usize, alloc::sync::Arc<dyn awaken_dispatch::WakeSignal>) -> Self
+pub fn awaken_dispatch::DispatchPool<S>::spawn_with_wake_and_completion(alloc::sync::Arc<S>, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>, impl core::convert::Into<alloc::string::String>, u64, awaken_dispatch::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_dispatch::WorkerResolver<S>>, usize, alloc::sync::Arc<dyn awaken_dispatch::WakeSignal>, alloc::sync::Arc<dyn awaken_dispatch::CompletionSink>) -> Self
 pub async fn awaken_dispatch::DispatchPool<S>::submit(&self, awaken_runtime_contract::activation::RunActivation) -> core::result::Result<(), awaken_dispatch::Error>
 pub async fn awaken_dispatch::DispatchPool<S>::submit_dispatch(&self, awaken_dispatch_contract::run_dispatch::RunDispatch) -> core::result::Result<(), awaken_dispatch::Error>
 pub async fn awaken_dispatch::DispatchPool<S>::suspend_admission(&self)
@@ -250,8 +254,8 @@ pub async fn awaken_dispatch::DispatchService<S>::deliver(&self, awaken_dispatch
 pub async fn awaken_dispatch::DispatchService<S>::notify(&self)
 pub async fn awaken_dispatch::DispatchService<S>::send(&self, awaken_dispatch_contract::dispatch::PendingInput) -> core::result::Result<(), awaken_dispatch::Error>
 pub async fn awaken_dispatch::DispatchService<S>::shutdown(self)
-pub fn awaken_dispatch::DispatchService<S>::spawn(alloc::sync::Arc<awaken_dispatch::DispatchWorker<S>>, alloc::sync::Arc<dyn awaken_dispatch::Clock>, awaken_dispatch::DispatchServiceConfig) -> Self
-pub fn awaken_dispatch::DispatchService<S>::spawn_with_wake(alloc::sync::Arc<awaken_dispatch::DispatchWorker<S>>, alloc::sync::Arc<dyn awaken_dispatch::Clock>, awaken_dispatch::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_dispatch::WakeSignal>) -> Self
+pub fn awaken_dispatch::DispatchService<S>::spawn(alloc::sync::Arc<awaken_dispatch::DispatchWorker<S>>, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>, awaken_dispatch::DispatchServiceConfig) -> Self
+pub fn awaken_dispatch::DispatchService<S>::spawn_with_wake(alloc::sync::Arc<awaken_dispatch::DispatchWorker<S>>, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>, awaken_dispatch::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_dispatch::WakeSignal>) -> Self
 pub async fn awaken_dispatch::DispatchService<S>::submit(&self, awaken_runtime_contract::activation::RunActivation) -> core::result::Result<(), awaken_dispatch::Error>
 pub struct awaken_dispatch::DispatchServiceConfig
 pub awaken_dispatch::DispatchServiceConfig::dead_letter_ttl: core::option::Option<core::time::Duration>
@@ -264,23 +268,23 @@ pub struct awaken_dispatch::DispatchWorker<S>
 impl<S: awaken_dispatch_contract::dispatch::Dispatch + 'static> awaken_dispatch::DispatchWorker<S>
 pub async fn awaken_dispatch::DispatchWorker<S>::claim_one(&self, u64) -> core::result::Result<core::option::Option<awaken_dispatch_contract::dispatch::Claimed>, awaken_dispatch::Error>
 pub async fn awaken_dispatch::DispatchWorker<S>::claim_run(&self, &awaken_agent_contract::agent::run::Id, u64) -> core::result::Result<core::option::Option<awaken_dispatch_contract::dispatch::Claimed>, awaken_dispatch::Error>
-pub async fn awaken_dispatch::DispatchWorker<S>::drive_claimed(&self, awaken_dispatch_contract::dispatch::Claimed, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
-pub async fn awaken_dispatch::DispatchWorker<S>::fail_claimed_before_execution(&self, &awaken_dispatch_contract::dispatch::Claimed, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
+pub async fn awaken_dispatch::DispatchWorker<S>::drive_claimed(&self, awaken_dispatch_contract::dispatch::Claimed, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
+pub async fn awaken_dispatch::DispatchWorker<S>::fail_claimed_before_execution(&self, &awaken_dispatch_contract::dispatch::Claimed, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
 pub fn awaken_dispatch::DispatchWorker<S>::from_parts(alloc::sync::Arc<awaken_runtime::runtime::Runtime>, alloc::sync::Arc<S>, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_dispatch::DispatchWorker<S>::install_attempt_executor(&self, alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>)
 pub fn awaken_dispatch::DispatchWorker<S>::new<C>(alloc::sync::Arc<awaken_runtime::runtime::Runtime>, alloc::sync::Arc<S>, alloc::sync::Arc<C>, impl core::convert::Into<alloc::string::String>) -> Self where C: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView + awaken_agent_contract::thread::read::recovery::RunRecoverySource + core::marker::Send + core::marker::Sync + 'static
-pub async fn awaken_dispatch::DispatchWorker<S>::reconcile_committed_terminal(&self, &awaken_agent_contract::agent::run::Id, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
-pub async fn awaken_dispatch::DispatchWorker<S>::reconcile_committed_terminals(&self, alloc::sync::Arc<dyn awaken_dispatch::Clock>, usize) -> core::result::Result<alloc::vec::Vec<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
-pub async fn awaken_dispatch::DispatchWorker<S>::resolve_one_retry_exhausted(&self, u64, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> core::result::Result<bool, awaken_dispatch::Error>
-pub async fn awaken_dispatch::DispatchWorker<S>::resume_run(&self, awaken_dispatch_contract::dispatch::PendingInput, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
-pub async fn awaken_dispatch::DispatchWorker<S>::run_until_idle(&self, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> core::result::Result<alloc::vec::Vec<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
+pub async fn awaken_dispatch::DispatchWorker<S>::reconcile_committed_terminal(&self, &awaken_agent_contract::agent::run::Id, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
+pub async fn awaken_dispatch::DispatchWorker<S>::reconcile_committed_terminals(&self, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>, usize) -> core::result::Result<alloc::vec::Vec<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
+pub async fn awaken_dispatch::DispatchWorker<S>::resolve_one_retry_exhausted(&self, u64, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> core::result::Result<bool, awaken_dispatch::Error>
+pub async fn awaken_dispatch::DispatchWorker<S>::resume_run(&self, awaken_dispatch_contract::dispatch::PendingInput, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
+pub async fn awaken_dispatch::DispatchWorker<S>::run_until_idle(&self, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> core::result::Result<alloc::vec::Vec<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
 pub fn awaken_dispatch::DispatchWorker<S>::runtime(&self) -> &alloc::sync::Arc<awaken_runtime::runtime::Runtime>
-pub async fn awaken_dispatch::DispatchWorker<S>::settle_claimed_terminal(&self, awaken_dispatch_contract::dispatch::Claimed, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
-pub async fn awaken_dispatch::DispatchWorker<S>::start_run(&self, awaken_dispatch_contract::run_dispatch::RunDispatch, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
+pub async fn awaken_dispatch::DispatchWorker<S>::settle_claimed_terminal(&self, awaken_dispatch_contract::dispatch::Claimed, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
+pub async fn awaken_dispatch::DispatchWorker<S>::start_run(&self, awaken_dispatch_contract::run_dispatch::RunDispatch, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
 pub fn awaken_dispatch::DispatchWorker<S>::store(&self) -> &alloc::sync::Arc<S>
-pub async fn awaken_dispatch::DispatchWorker<S>::terminalize_retry_exhausted(&self, &awaken_dispatch_contract::dispatch::Claimed, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
-pub async fn awaken_dispatch::DispatchWorker<S>::tick(&self, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
-pub async fn awaken_dispatch::DispatchWorker<S>::tick_run(&self, &awaken_agent_contract::agent::run::Id, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
+pub async fn awaken_dispatch::DispatchWorker<S>::terminalize_retry_exhausted(&self, &awaken_dispatch_contract::dispatch::Claimed, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
+pub async fn awaken_dispatch::DispatchWorker<S>::tick(&self, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
+pub async fn awaken_dispatch::DispatchWorker<S>::tick_run(&self, &awaken_agent_contract::agent::run::Id, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
 pub fn awaken_dispatch::DispatchWorker<S>::with_claimed_commit(self, alloc::sync::Arc<dyn awaken_dispatch_contract::claimed_commit::ClaimedRunCommit>) -> Self
 pub fn awaken_dispatch::DispatchWorker<S>::with_claimed_stream_publisher(self, alloc::sync::Arc<dyn awaken_dispatch_contract::claimed_stream::ClaimedStreamPublisher>) -> Self
 pub fn awaken_dispatch::DispatchWorker<S>::with_context(self, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> Self
@@ -324,13 +328,6 @@ pub fn awaken_dispatch::LocalWakeSignal::new() -> Self
 impl awaken_dispatch::WakeSignal for awaken_dispatch::LocalWakeSignal
 pub fn awaken_dispatch::LocalWakeSignal::publish<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch::LocalWakeSignal::wait<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub struct awaken_dispatch::ManualClock
-impl awaken_dispatch::ManualClock
-pub fn awaken_dispatch::ManualClock::advance(&self, u64)
-pub fn awaken_dispatch::ManualClock::new(u64) -> Self
-pub fn awaken_dispatch::ManualClock::set(&self, u64)
-impl awaken_dispatch::Clock for awaken_dispatch::ManualClock
-pub fn awaken_dispatch::ManualClock::now_ms(&self) -> u64
 pub struct awaken_dispatch::PgNotifyWake
 impl awaken_dispatch::PgNotifyWake
 pub fn awaken_dispatch::PgNotifyWake::new(sqlx_postgres::PgPool, impl core::convert::Into<alloc::string::String>) -> Self
@@ -408,7 +405,6 @@ pub fn awaken_dispatch::PostgresStreamCheckpointStore::get<'life0, 'life1, 'asyn
 pub fn awaken_dispatch::PostgresStreamCheckpointStore::put<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::checkpoint::StreamCheckpoint) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::checkpoint::StreamCheckpointError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_dispatch::RecoveryProjection
 impl awaken_dispatch::RecoveryProjection
-pub fn awaken_dispatch::RecoveryProjection::apply_committed(&self, awaken_agent_contract::thread::commit::staged::ThreadCommit, &awaken_agent_contract::thread::commit::staged::CommitRecord) -> core::result::Result<(), awaken_agent_contract::thread::commit::coordinator::Error>
 pub fn awaken_dispatch::RecoveryProjection::apply_receipt(&self, awaken_agent_contract::thread::commit::operation::CommitOperation, &awaken_agent_contract::thread::commit::operation::CommitReceipt) -> core::result::Result<(), awaken_agent_contract::thread::commit::coordinator::Error>
 pub fn awaken_dispatch::RecoveryProjection::clear(&self)
 pub fn awaken_dispatch::RecoveryProjection::current(&self) -> core::option::Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>
@@ -425,7 +421,7 @@ pub fn awaken_dispatch::RecoveryProjection::run_state(&self, &awaken_agent_contr
 pub struct awaken_dispatch::SqliteDispatchStore
 impl awaken_dispatch::SqliteDispatchStore
 pub fn awaken_dispatch::SqliteDispatchStore::open(&str) -> core::result::Result<Self, awaken_dispatch::SqliteStoreError>
-pub fn awaken_dispatch::SqliteDispatchStore::with_clock(self, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> Self
+pub fn awaken_dispatch::SqliteDispatchStore::with_clock(self, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> Self
 impl awaken_dispatch_contract::dispatch::DispatchQueue for awaken_dispatch::SqliteDispatchStore
 pub fn awaken_dispatch::SqliteDispatchStore::activate_session_run_reservation<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 awaken_agent_contract::agent::thread::Id, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SessionRunReservationActivation, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_dispatch::SqliteDispatchStore::begin_attempt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::AttemptAdmission, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -477,18 +473,9 @@ pub fn awaken_dispatch::SqliteDispatchStore::stage<'life0, 'async_trait>(&'life0
 pub fn awaken_dispatch::SqliteDispatchStore::stage_session_resume<'life0, 'life1, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput, &'life1 awaken_agent_contract::agent::thread::Id, core::option::Option<u64>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_dispatch_contract::operational::DispatchOperationalFeed for awaken_dispatch::SqliteDispatchStore
 pub fn awaken_dispatch::SqliteDispatchStore::events_after<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::operational::DispatchCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::operational::DispatchPage, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub struct awaken_dispatch::SystemClock
-impl awaken_dispatch::Clock for awaken_dispatch::SystemClock
-pub fn awaken_dispatch::SystemClock::now_ms(&self) -> u64
 pub const awaken_dispatch::DEFAULT_LEASE_MS: u64
 pub trait awaken_dispatch::ClaimedCommitApplier: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch::ClaimedCommitApplier::apply<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::run_dispatch::RunDispatch, awaken_agent_contract::thread::commit::operation::CommitOperation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_dispatch::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub trait awaken_dispatch::Clock: core::marker::Send + core::marker::Sync
-pub fn awaken_dispatch::Clock::now_ms(&self) -> u64
-impl awaken_dispatch::Clock for awaken_dispatch::ManualClock
-pub fn awaken_dispatch::ManualClock::now_ms(&self) -> u64
-impl awaken_dispatch::Clock for awaken_dispatch::SystemClock
-pub fn awaken_dispatch::SystemClock::now_ms(&self) -> u64
 pub trait awaken_dispatch::CompletionSink: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch::CompletionSink::settled(&self, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::run::RunState)
 pub trait awaken_dispatch::DurableRunOperations: core::marker::Send + core::marker::Sync
@@ -518,11 +505,11 @@ pub fn awaken_dispatch::PgNotifyWake::publish<'life0, 'async_trait>(&'life0 self
 pub fn awaken_dispatch::PgNotifyWake::wait<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_dispatch::WorkerResolver<S>: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch::WorkerResolver::credential_realization_capabilities(&self) -> awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities
-pub fn awaken_dispatch::WorkerResolver::reconcile_committed_terminals<'life0, 'async_trait>(&'life0 self, alloc::sync::Arc<dyn awaken_dispatch::Clock>, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_dispatch::WorkerResolver::settle_claimed_resolution_failure<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::Claimed, awaken_dispatch::Error, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::WorkerResolver::terminalize_retry_exhausted<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::Claimed, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>> + core::marker::Send + 'async_trait)>> where S: awaken_dispatch_contract::dispatch::Dispatch + 'static, Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_dispatch::WorkerResolver::reconcile_committed_terminals<'life0, 'async_trait>(&'life0 self, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_dispatch::WorkerResolver::settle_claimed_resolution_failure<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::Claimed, awaken_dispatch::Error, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_dispatch::WorkerResolver::terminalize_retry_exhausted<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::Claimed, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>> + core::marker::Send + 'async_trait)>> where S: awaken_dispatch_contract::dispatch::Dispatch + 'static, Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch::WorkerResolver::worker_for<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id, core::option::Option<&'life2 str>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::sync::Arc<awaken_dispatch::DispatchWorker<S>>, awaken_dispatch::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_dispatch::WorkerResolver::worker_for_claimed<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::Claimed) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::sync::Arc<awaken_dispatch::DispatchWorker<S>>, awaken_dispatch::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::claim_bound_ownership_verifier(alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::DispatchQueue>, awaken_dispatch_contract::dispatch::RunClaim, alloc::sync::Arc<dyn awaken_dispatch::Clock>) -> alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>
+pub fn awaken_dispatch::claim_bound_ownership_verifier(alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::DispatchQueue>, awaken_dispatch_contract::dispatch::RunClaim, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>
 pub fn awaken_dispatch::dispatch_bundle() -> core::result::Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError>
 pub type awaken_dispatch::InferenceMaterializerFn = alloc::sync::Arc<(dyn core::ops::function::Fn(&awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>, alloc::string::String> + core::marker::Send + core::marker::Sync)>

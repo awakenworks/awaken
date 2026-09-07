@@ -1,4 +1,8 @@
 pub mod awaken_connection_plan
+pub mod awaken_connection_plan::socket_stdio
+pub const awaken_connection_plan::socket_stdio::READY: &[u8]
+pub async fn awaken_connection_plan::socket_stdio::connect<R, W>(&str, R, W) -> core::result::Result<(), awaken_connection_plan::ConnectError> where R: tokio::io::async_read::AsyncRead + core::marker::Unpin, W: tokio::io::async_write::AsyncWrite + core::marker::Unpin
+pub async fn awaken_connection_plan::socket_stdio::listen<R, W>(&str, R, W) -> core::result::Result<(), awaken_connection_plan::ConnectError> where R: tokio::io::async_read::AsyncRead + core::marker::Unpin + core::marker::Send + 'static, W: tokio::io::async_write::AsyncWrite + core::marker::Unpin + core::marker::Send + 'static
 pub enum awaken_connection_plan::ConnectError
 pub awaken_connection_plan::ConnectError::Io(alloc::string::String)
 pub awaken_connection_plan::ConnectError::Policy(alloc::string::String)
@@ -24,6 +28,15 @@ pub fn awaken_connection_plan::ConnectionPlan::tcp_dial(impl core::convert::Into
 pub fn awaken_connection_plan::ConnectionPlan::tcp_listen(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_connection_plan::ConnectionPlan::unix_dial(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_connection_plan::ConnectionPlan::unix_listen(impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_connection_plan::MultiplexedChannel
+impl awaken_connection_plan::MultiplexedChannel
+pub const awaken_connection_plan::MultiplexedChannel::MAX_STREAMS: usize
+pub async fn awaken_connection_plan::MultiplexedChannel::accept(&mut self) -> core::option::Option<core::io::error::Result<alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>>>
+pub fn awaken_connection_plan::MultiplexedChannel::client(impl awaken_agent_channel::AgentChannel + 'static) -> Self
+pub async fn awaken_connection_plan::MultiplexedChannel::open(&self) -> core::io::error::Result<alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>>
+pub fn awaken_connection_plan::MultiplexedChannel::server(impl awaken_agent_channel::AgentChannel + 'static) -> Self
+impl core::ops::drop::Drop for awaken_connection_plan::MultiplexedChannel
+pub fn awaken_connection_plan::MultiplexedChannel::drop(&mut self)
 pub struct awaken_connection_plan::TcpHandListener
 impl awaken_connection_plan::TcpHandListener
 pub async fn awaken_connection_plan::TcpHandListener::accept(&self) -> core::result::Result<alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, awaken_connection_plan::ConnectError>
@@ -40,5 +53,6 @@ impl awaken_connection_plan::ChannelFactory for awaken_connection_plan::TokioCha
 pub fn awaken_connection_plan::TokioChannelFactory::connect<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_connection_plan::ConnectionPlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, awaken_connection_plan::ConnectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub async fn awaken_connection_plan::bind_tcp(&awaken_connection_plan::ConnectionPlan) -> core::result::Result<awaken_connection_plan::TcpHandListener, awaken_connection_plan::ConnectError>
 pub fn awaken_connection_plan::bind_unix(&awaken_connection_plan::ConnectionPlan) -> core::result::Result<awaken_connection_plan::UnixHandListener, awaken_connection_plan::ConnectError>
+pub fn awaken_connection_plan::bind_unix_exclusive(&awaken_connection_plan::ConnectionPlan) -> core::result::Result<awaken_connection_plan::UnixHandListener, awaken_connection_plan::ConnectError>
 pub async fn awaken_connection_plan::connect_with_retry(&awaken_connection_plan::TokioChannelFactory, &awaken_connection_plan::ConnectionPlan, u32, core::time::Duration) -> core::result::Result<alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, awaken_connection_plan::ConnectError>
 pub fn awaken_connection_plan::in_process_pair() -> (alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>)

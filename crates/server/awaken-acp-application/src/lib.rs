@@ -926,6 +926,8 @@ mod tests {
         // | C4 | CLI disappears | not attempted | unavailable | no grant |
         // | C5 | source disabled | not attempted | unavailable | disabled |
         // Cross C1-C3 over all six credential states at startup AND heartbeat.
+        // Every row supplies the exact observed credential reference; the
+        // contract-owned admission test separately covers identity mismatch.
         // C4/C5 prove that removing the login gate does not remove detection or
         // registration gates. No Provider key is present in any negotiation.
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -967,8 +969,12 @@ mod tests {
                 assert_eq!(credentials.len(), 1);
                 let credential = credentials.into_iter().next().unwrap();
                 assert_eq!(credential.state, state);
+                let expected = credential.credential.clone();
                 assert_eq!(
-                    require_available(credential).is_ok(),
+                    awaken_runtime_contract::require_exact_available_worker_reference(
+                        &expected, credential,
+                    )
+                    .is_ok(),
                     state == CredentialObservationState::Available
                 );
                 let capabilities = prepared.resolver.capability_observations().await.unwrap();

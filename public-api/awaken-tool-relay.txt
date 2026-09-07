@@ -90,7 +90,7 @@ pub fn awaken_tool_relay::HandSession::with_catalog_fingerprint(self, impl core:
 pub fn awaken_tool_relay::HandSession::with_in_flight_wait_timeout(self, core::time::Duration) -> Self
 pub struct awaken_tool_relay::RemoteToolExecutor<S>
 impl<S> awaken_tool_relay::RemoteToolExecutor<S> where S: awaken_agent_channel::AgentChannel
-pub async fn awaken_tool_relay::RemoteToolExecutor<S>::call_hand(&self, &awaken_runtime_contract::llm::ToolCall) -> awaken_tool_relay::wire::HandResult
+pub async fn awaken_tool_relay::RemoteToolExecutor<S>::call_hand(&self, &awaken_runtime_contract::llm::ToolCall) -> core::result::Result<awaken_tool_relay::wire::HandResult, awaken_runtime_contract::tool::ToolError>
 pub fn awaken_tool_relay::RemoteToolExecutor<S>::new(S) -> Self
 pub fn awaken_tool_relay::RemoteToolExecutor<S>::with_catalog_fingerprint(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_tool_relay::RemoteToolExecutor<S>::with_durable_request_recovery(self) -> Self

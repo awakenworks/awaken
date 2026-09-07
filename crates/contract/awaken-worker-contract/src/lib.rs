@@ -32,9 +32,11 @@ pub use placement::{
 pub use registry::{
     AssignmentRejection, DynamicEvidenceProbeState, RegisteredWorker, RegistryError,
     RegistryMutation, WorkerAssignment, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
-    WorkerObservationSource, WorkerRegistration, WorkerSnapshot, WorkerState,
-    assignment_recovery_rejection, can_assign, process_ready_after_startup,
-    worker_heartbeat_admission, worker_slot_is_replaceable,
+    WorkerObservationPublicationAdmission, WorkerObservationPublicationCompletion,
+    WorkerObservationPublicationFence, WorkerObservationSource, WorkerRegistration, WorkerSnapshot,
+    WorkerState, assignment_recovery_rejection, can_assign, process_ready_after_startup,
+    worker_heartbeat_admission, worker_observation_sequence_after_heartbeat,
+    worker_slot_is_replaceable,
 };
 pub use requirements::{
     ExecutionLocation, Incompatibility, PlacementRequirements, WorkerRecoveryMode, can_claim,

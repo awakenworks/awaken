@@ -260,6 +260,87 @@ pub const fn worker_heartbeat_admission(
     }
 }
 
+/// Project the observation fence of one already-admitted heartbeat.
+///
+/// Unchanged evidence keeps its prior fence so ordinary heartbeats coalesce.
+/// Changed evidence must carry a strictly newer heartbeat sequence; rejecting
+/// any non-increase makes a corrupt or downgraded durable record fail closed.
+#[must_use]
+pub const fn worker_observation_sequence_after_heartbeat(
+    current_observation_sequence: u64,
+    heartbeat_sequence: u64,
+    observations_changed: bool,
+) -> Option<u64> {
+    if !observations_changed {
+        Some(current_observation_sequence)
+    } else if heartbeat_sequence > current_observation_sequence {
+        Some(heartbeat_sequence)
+    } else {
+        None
+    }
+}
+
+/// Admission result for one Worker-observation fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerObservationPublicationAdmission {
+    Coalesce,
+    Publish,
+}
+
+/// Completion result for one Worker-observation publication attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerObservationPublicationCompletion {
+    Advanced,
+    Retained,
+}
+
+/// The sole successful-publication fence for Worker-observation reconciliation.
+///
+/// The stored fingerprint is private: callers can create an empty fence and can
+/// advance it only through a successful completion. Therefore `Coalesce` always
+/// names an exact fingerprint captured by a prior successful reconciliation;
+/// the reconciler may have published that capture or a later source snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerObservationPublicationFence<Fingerprint> {
+    last_successful: Option<Fingerprint>,
+}
+
+impl<Fingerprint> Default for WorkerObservationPublicationFence<Fingerprint> {
+    fn default() -> Self {
+        Self {
+            last_successful: None,
+        }
+    }
+}
+
+impl<Fingerprint: PartialEq> WorkerObservationPublicationFence<Fingerprint> {
+    /// Admit publication unless this exact fingerprint already owns the fence.
+    #[must_use]
+    pub fn observe(&self, fingerprint: &Fingerprint) -> WorkerObservationPublicationAdmission {
+        if self.last_successful.as_ref() == Some(fingerprint) {
+            WorkerObservationPublicationAdmission::Coalesce
+        } else {
+            WorkerObservationPublicationAdmission::Publish
+        }
+    }
+}
+
+impl<Fingerprint> WorkerObservationPublicationFence<Fingerprint> {
+    /// Complete a publication attempt, retaining the old fence on failure.
+    pub fn complete(
+        &mut self,
+        fingerprint: Fingerprint,
+        succeeded: bool,
+    ) -> WorkerObservationPublicationCompletion {
+        if succeeded {
+            self.last_successful = Some(fingerprint);
+            WorkerObservationPublicationCompletion::Advanced
+        } else {
+            WorkerObservationPublicationCompletion::Retained
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum RegistryError {
     #[error("worker id and incarnation id must be non-empty")]
@@ -437,6 +518,76 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn observation_sequence_changes_only_to_a_strictly_new_fence() {
+        // Causes: C1 credential/ACP evidence changed; C2 the heartbeat sequence
+        // is strictly newer than the current observation fence. Effects: E1
+        // unchanged evidence preserves the fence; E2 C1+C2 installs the new
+        // sequence; E3 C1+!C2 rejects. Decision rules O1=!C1=>E1,
+        // O2=C1+C2=>E2, and O3=C1+!C2=>E3.
+        assert_eq!(
+            worker_observation_sequence_after_heartbeat(7, 8, false),
+            Some(7),
+            "O1/E1"
+        );
+        assert_eq!(
+            worker_observation_sequence_after_heartbeat(7, 8, true),
+            Some(8),
+            "O2/E2"
+        );
+        assert_eq!(
+            worker_observation_sequence_after_heartbeat(7, 7, true),
+            None,
+            "O3/E3 equal"
+        );
+        assert_eq!(
+            worker_observation_sequence_after_heartbeat(7, 6, true),
+            None,
+            "O3/E3 older"
+        );
+    }
+
+    #[test]
+    fn observation_publication_fence_is_success_owned_exact_and_failure_stable() {
+        // Causes: C1 a successful fingerprint exists; C2 the observation
+        // matches it exactly; C3 the current publication succeeds. Effects: E1
+        // C1+C2 coalesces, E2 !C1|!C2 publishes, E3 C3 advances to the current
+        // fingerprint, E4 !C3 retains the old fence. Decision rules:
+        // R1=!C1=>E2; R2=C1+C2=>E1; R3=C1+!C2=>E2;
+        // R4=C3=>E3; R5=!C3=>E4 with the prior admission unchanged.
+        let mut fence = WorkerObservationPublicationFence::default();
+        assert_eq!(
+            fence.observe(&"a"),
+            WorkerObservationPublicationAdmission::Publish,
+            "R1/E2"
+        );
+        assert_eq!(
+            fence.complete("a", false),
+            WorkerObservationPublicationCompletion::Retained,
+            "R5/E4"
+        );
+        assert_eq!(
+            fence.observe(&"a"),
+            WorkerObservationPublicationAdmission::Publish,
+            "R5 retains R1"
+        );
+        assert_eq!(
+            fence.complete("a", true),
+            WorkerObservationPublicationCompletion::Advanced,
+            "R4/E3"
+        );
+        assert_eq!(
+            fence.observe(&"a"),
+            WorkerObservationPublicationAdmission::Coalesce,
+            "R2/E1"
+        );
+        assert_eq!(
+            fence.observe(&"b"),
+            WorkerObservationPublicationAdmission::Publish,
+            "R3/E2"
+        );
+    }
 }
 
 #[cfg(kani)]
@@ -471,4 +622,74 @@ fn worker_replacement_and_heartbeat_share_one_non_resurrection_boundary() {
     if worker_slot_is_replaceable(state, expires_at_ms, now_ms) {
         assert_ne!(admission, RegistryMutation::Applied);
     }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn changed_worker_observation_always_mints_a_strictly_fresh_fence() {
+    let current = kani::any::<u64>();
+    let heartbeat = kani::any::<u64>();
+    let changed = kani::any::<bool>();
+    let result = worker_observation_sequence_after_heartbeat(current, heartbeat, changed);
+
+    assert_eq!(
+        result,
+        if changed {
+            (heartbeat > current).then_some(heartbeat)
+        } else {
+            Some(current)
+        }
+    );
+    if changed {
+        assert_eq!(result.is_some(), heartbeat > current);
+        if let Some(next) = result {
+            assert!(next > current);
+        }
+    } else {
+        assert_eq!(result, Some(current));
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn observation_publication_fence_is_success_owned_exact_and_failure_stable() {
+    // Symbolic decision table over every u8 prior/current fingerprint and both
+    // completion outcomes. An opaque fence starts empty; therefore Coalesce is
+    // reachable exactly after a successful completion of the same fingerprint.
+    let prior = kani::any::<u8>();
+    let observed = kani::any::<u8>();
+    let prior_succeeded = kani::any::<bool>();
+    let mut fence = WorkerObservationPublicationFence::default();
+    assert_eq!(
+        fence.complete(prior, prior_succeeded),
+        if prior_succeeded {
+            WorkerObservationPublicationCompletion::Advanced
+        } else {
+            WorkerObservationPublicationCompletion::Retained
+        }
+    );
+    assert_eq!(
+        fence.observe(&observed),
+        if prior_succeeded && observed == prior {
+            WorkerObservationPublicationAdmission::Coalesce
+        } else {
+            WorkerObservationPublicationAdmission::Publish
+        }
+    );
+
+    let before_failure = fence.observe(&observed);
+    assert_eq!(
+        fence.complete(kani::any::<u8>(), false),
+        WorkerObservationPublicationCompletion::Retained
+    );
+    assert_eq!(fence.observe(&observed), before_failure);
+
+    assert_eq!(
+        fence.complete(observed, true),
+        WorkerObservationPublicationCompletion::Advanced
+    );
+    assert_eq!(
+        fence.observe(&observed),
+        WorkerObservationPublicationAdmission::Coalesce
+    );
 }

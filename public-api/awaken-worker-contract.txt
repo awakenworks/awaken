@@ -54,6 +54,12 @@ pub awaken_worker_contract::RegistryMutation::InvalidTransition
 pub awaken_worker_contract::RegistryMutation::NotFound
 pub awaken_worker_contract::RegistryMutation::StaleIncarnation
 pub awaken_worker_contract::RegistryMutation::StaleSequence
+pub enum awaken_worker_contract::WorkerObservationPublicationAdmission
+pub awaken_worker_contract::WorkerObservationPublicationAdmission::Coalesce
+pub awaken_worker_contract::WorkerObservationPublicationAdmission::Publish
+pub enum awaken_worker_contract::WorkerObservationPublicationCompletion
+pub awaken_worker_contract::WorkerObservationPublicationCompletion::Advanced
+pub awaken_worker_contract::WorkerObservationPublicationCompletion::Retained
 pub enum awaken_worker_contract::WorkerRecoveryMode
 pub awaken_worker_contract::WorkerRecoveryMode::NeverReplace
 pub awaken_worker_contract::WorkerRecoveryMode::RebuildFromCommittedTruth
@@ -180,6 +186,13 @@ pub const fn awaken_worker_contract::WorkerManifest::explicitly_supports_termina
 pub fn awaken_worker_contract::WorkerManifest::fingerprint(&self) -> core::result::Result<alloc::string::String, awaken_worker_contract::FingerprintError>
 impl core::default::Default for awaken_worker_contract::WorkerManifest
 pub fn awaken_worker_contract::WorkerManifest::default() -> Self
+pub struct awaken_worker_contract::WorkerObservationPublicationFence<Fingerprint>
+impl<Fingerprint: core::cmp::PartialEq> awaken_worker_contract::WorkerObservationPublicationFence<Fingerprint>
+pub fn awaken_worker_contract::WorkerObservationPublicationFence<Fingerprint>::observe(&self, &Fingerprint) -> awaken_worker_contract::WorkerObservationPublicationAdmission
+impl<Fingerprint> awaken_worker_contract::WorkerObservationPublicationFence<Fingerprint>
+pub fn awaken_worker_contract::WorkerObservationPublicationFence<Fingerprint>::complete(&mut self, Fingerprint, bool) -> awaken_worker_contract::WorkerObservationPublicationCompletion
+impl<Fingerprint> core::default::Default for awaken_worker_contract::WorkerObservationPublicationFence<Fingerprint>
+pub fn awaken_worker_contract::WorkerObservationPublicationFence<Fingerprint>::default() -> Self
 pub struct awaken_worker_contract::WorkerRegistration
 pub awaken_worker_contract::WorkerRegistration::incarnation_id: alloc::string::String
 pub awaken_worker_contract::WorkerRegistration::manifest: awaken_worker_contract::WorkerManifest
@@ -204,6 +217,7 @@ pub const awaken_worker_contract::PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE: &str
 pub const awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY: &str
 pub const awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY: &str
 pub const awaken_worker_contract::SESSION_RESOURCES_CAPABILITY: &str
+pub const awaken_worker_contract::TRUSTED_HOST_SANDBOX_BACKEND: &str
 pub const awaken_worker_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY: &str
 pub trait awaken_worker_contract::PlacementPolicy: core::marker::Send + core::marker::Sync
 pub fn awaken_worker_contract::PlacementPolicy::id(&self) -> &str
@@ -232,4 +246,5 @@ pub fn awaken_worker_contract::place_assignment(&dyn awaken_worker_contract::Pla
 pub const fn awaken_worker_contract::process_ready_after_startup(awaken_worker_contract::DynamicEvidenceProbeState) -> bool
 pub const fn awaken_worker_contract::sandbox_tool_recovery_is_compatible(awaken_runtime_contract::tool::ToolRecoveryMode, awaken_runtime_contract::tool::ToolRecoveryCapability) -> bool
 pub const fn awaken_worker_contract::worker_heartbeat_admission(bool, bool, bool, bool, awaken_worker_contract::WorkerState) -> awaken_worker_contract::RegistryMutation
+pub const fn awaken_worker_contract::worker_observation_sequence_after_heartbeat(u64, u64, bool) -> core::option::Option<u64>
 pub const fn awaken_worker_contract::worker_slot_is_replaceable(awaken_worker_contract::WorkerState, u64, u64) -> bool
