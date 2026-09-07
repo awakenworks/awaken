@@ -502,7 +502,11 @@ def main() -> None:
     model_selection.add_argument("--cowork-lifecycle-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--local-process-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--local-recovery-model-mutants", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--checkpoint-recovery-model-mutants", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
+    if arguments.checkpoint_recovery_model_mutants is not None:
+        check_checkpoint_recovery_model_mutants(arguments.checkpoint_recovery_model_mutants)
+        return
     if arguments.session_observation_trace_mutants is not None:
         if arguments.observation_trace_dir is None:
             parser.error("--observation-trace-dir is required")
@@ -1293,6 +1297,23 @@ def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
         (source, witness, "NoConflictedRunHasSettled"),
     ], dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
     print("Resolution conflict: execution mutant killed; terminal settlement reachability witnessed")
+    # Q1 timeout/drop must not clear a slot with unreturned external work.
+    # Q2 require reachable external execution, not a vacuous green model.
+    # The full CI configuration separately explores both Workers and 3 epochs;
+    # this mutation slice uses 1 epoch to isolate the return-ACK boundary.
+    physical_config = (ROOT / "formal/tla/SessionRunProtocol.cfg").read_text()
+    physical_config = physical_config.replace("MaxEpoch = 3", "MaxEpoch = 1")
+    physical_config = physical_config.replace("MaxHeartbeat = 1", "MaxHeartbeat = 0")
+    physical_config = physical_config.replace("MaxTime = 2", "MaxTime = 1")
+    return_guard = r"    /\ <<run, candidate, epoch>> \notin externalAttempts" + "\n"
+    if source.count(return_guard) != 1:
+        raise SystemExit("External return mutation anchor drifted; review the model")
+    check_tlc_model_mutations(tlc_jar, "SessionRunProtocol", source, physical_config, [
+        (source.replace(return_guard, ""), physical_config.replace("    Safety", "    ExternalAttemptRetainsExactSlot\n    Safety"),
+         "ExternalAttemptRetainsExactSlot"),
+        (source, physical_config.replace("    Safety", "    NoExternalExecution\n    Safety"), "NoExternalExecution"),
+    ], dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
+    print("Physical return: unsafe ACK mutant killed; external execution reachable")
 
 
 def check_config_cas_model_mutant(tlc_jar: Path) -> None:
@@ -1883,6 +1904,42 @@ def check_realization_trace_mutants(tlc_jar: Path, trace_dir: Path, manifest: di
                 artifact_directory=Path(artifact_root) / f"batch-{offset // 64}" if artifact_root else None)
     print(f"Observation schema mutations: {schema_killed}/{schema_killed} rejected")
     print(f"Continuous observation matrix: {len(report)}/{len(report)} rejected; {len(positives)} positive controls passed; {len(bases)} rules")
+
+
+def check_checkpoint_recovery_model_mutants(tlc_jar: Path) -> None:
+    # Cause/effect rules match execution/checkpoint_observation.rs: a failed,
+    # foreign or interrupted observation cannot become fresh execution; blocked
+    # observation cannot consume evidence; valid reads still resume. Require a
+    # green baseline and exact failures/reachability, never parse errors/timeouts.
+    source = (ROOT / "formal/tla/CheckpointRecovery.tla").read_text()
+    config = (ROOT / "formal/tla/CheckpointRecovery.cfg").read_text()
+    header = "SPECIFICATION Spec\nCONSTANT MaxChunks = 3\n"
+    mutations = []
+    anchor = '/\\ readStatus \\in AcceptedReads\n           /\\ phase\' = "running"'
+    if source.count(anchor) != 1:
+        raise SystemExit("checkpoint observation mutation anchor drifted")
+    for outcome in ("storage", "fenced", "wrong-run", "wrong-thread", "pending", "cancelled"):
+        broken = anchor.replace("AcceptedReads", f'AcceptedReads \\cup {{"{outcome}"}}')
+        mutations.append((source.replace(anchor, broken),
+                          header + "INVARIANTS UnknownObservationNeverExecutes\n",
+                          "UnknownObservationNeverExecutes"))
+    anchor = 'RejectRead == /\\ phase = "crashed"'
+    if source.count(anchor) != 1:
+        raise SystemExit("checkpoint rejection mutation anchor drifted")
+    # Keep the assignment well formed: mutate only RejectRead's UNCHANGED tuple.
+    reject = source[source.index(anchor):source.index("\nComplete ==", source.index(anchor))]
+    broken = reject.replace('              /\\ UNCHANGED',
+                            "              /\\ checkpointValid' = FALSE\n              /\\ UNCHANGED")
+    broken = broken.replace("staged, checkpoint, checkpointValid,", "staged, checkpoint,")
+    mutations.append((source.replace(reject, broken),
+                      header + "INVARIANTS BlockedPreservesCheckpoint\n", "BlockedPreservesCheckpoint"))
+    mutations.append((source.replace(anchor, anchor + " /\\ FALSE"), header +
+                      "CHECK_DEADLOCK FALSE\nPROPERTIES ObservationSettles\n", "temporal:ObservationSettles"))
+    for witness in ("NoExactResume", "NoAbsentResume", "NoStorageBlock", "NoFenceBlock",
+                    "NoRunMismatchBlock", "NoThreadMismatchBlock", "NoCancelledReadBlock"):
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "CheckpointRecovery", source, config, mutations)
+    print("Checkpoint recovery: 8/8 mutants killed; seven observation witnesses reachable")
 
 
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,

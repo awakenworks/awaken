@@ -170,6 +170,19 @@ test('each operation owns one exact executable Rust behavior case', () => {
     /has no adjacent named test design/u,
     'a behavior owner without its causal design cannot certify an operation',
   );
+  // C5 a valid design was displaced by an intervening long test (the native
+  // admission regression). Effect: source-wide presence cannot earn evidence
+  // for a later undecorated case; moving the comment back restores ownership.
+  assert.throws(
+    () => run({ files: { rust_behavior_cases: [{
+      path: 'files.rs', test: 'list_files', operations: ['beta.files.list'],
+    }] } }, () => designed('list_files').replace(
+      '#[tokio::test]',
+      `#[test]\nfn unrelated() {\n${'// unrelated fixture\n'.repeat(250)}}\n#[tokio::test]`,
+    )),
+    /has no adjacent named test design/u,
+    'C5 misplaced design is not evidence for the later case',
+  );
 });
 
 test('surface fixture binds the exact SDK module and every operation as callable', () => {

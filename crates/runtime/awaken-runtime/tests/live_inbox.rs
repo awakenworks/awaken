@@ -4,7 +4,6 @@
 //! changes nothing.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -59,15 +58,20 @@ impl LlmExecutor for EchoUserLlm {
 }
 
 #[derive(Clone)]
-struct RejectSecondCommit {
+struct RejectFoldCommit {
     inner: MemoryCommitCoordinator,
-    calls: Arc<AtomicUsize>,
 }
 
 #[async_trait::async_trait]
-impl CommitCoordinator for RejectSecondCommit {
+impl CommitCoordinator for RejectFoldCommit {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
-        if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+        // Inject at the domain boundary, not an ordinal changed by unrelated
+        // model/tool evidence commits. B3 specifically targets the drained fold.
+        if commit
+            .messages
+            .iter()
+            .any(|message| message.id.0 == "r-commit-loss-inbox-0")
+        {
             return Err(CommitError::Rejected(
                 "simulated boundary-fold commit loss".into(),
             ));
@@ -292,9 +296,8 @@ async fn failed_commit_after_boundary_drain_does_not_invent_a_retry_queue() {
     // delivery belongs to durable Session ingress, not restoration into a
     // second LiveInbox acknowledgement/retry mechanism.
     let durable = MemoryCommitCoordinator::new();
-    let commit = Arc::new(RejectSecondCommit {
+    let commit = Arc::new(RejectFoldCommit {
         inner: durable.clone(),
-        calls: Arc::new(AtomicUsize::new(0)),
     });
     let inbox = LiveInbox::new();
     let _ = inbox.offer(queued("best effort"));

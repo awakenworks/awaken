@@ -415,6 +415,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness circuit_admission_is_capacity_bounded_nonwrapping_and_rejection_stutters \
     --harness circuit_completion_requires_exact_phase_and_generation_for_every_outcome
   run_kani awaken-runtime-contract \
+    --harness model_operation_ordinal_never_wraps_or_reuses_a_coordinate \
+    --harness model_execution_reentry_requires_positive_evidence \
     --harness claim_bound_external_effect_admits_only_current_ownership \
     --harness committed_terminal_projection_admits_only_exact_ended_identity \
     --harness max_token_continuation_requires_every_exact_guard \
@@ -725,6 +727,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/checkpoint-recovery" \
     -config formal/tla/CheckpointRecovery.cfg formal/tla/CheckpointRecovery.tla
+  python3 scripts/ci/check_formal_mutations.py --checkpoint-recovery-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/background-task" \
     -config formal/tla/BackgroundTask.cfg formal/tla/BackgroundTask.tla

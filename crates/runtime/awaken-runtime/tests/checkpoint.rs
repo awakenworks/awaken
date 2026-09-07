@@ -1,8 +1,8 @@
 //! Durable interrupted-stream checkpoints, driven end-to-end through `execute`
 //! (not the inference call in isolation): the engine flushes a partial at an
-//! interruption boundary and clears it once the step concludes, and a partial
-//! pre-seeded into the store (as a crash mid-recovery would leave) resumes the
-//! run's first step from that partial instead of regenerating it.
+//! interruption boundary and clears it once the step concludes. A retained
+//! partial can resume only with independent invocation evidence.
+//! An unjournaled historical checkpoint must not authorize a fresh call.
 
 use std::sync::Arc;
 
@@ -26,7 +26,7 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore, MemoryStreamSink};
 
-/// Streams `first` then drops (retryable) on its first call; streams `rest` and
+/// Streams `first` then confirms remote termination on its first call; streams `rest` and
 /// succeeds on any later call. Continuation stitches `first + rest`.
 struct DropOnceLlm {
     calls: std::sync::Mutex<usize>,
@@ -50,7 +50,12 @@ impl LlmExecutor for DropOnceLlm {
         };
         if n == 0 {
             sink.on_text(self.first).await;
-            return Err(Error::Timeout("connection reset".to_string()));
+            return Err(
+                Error::Timeout("provider-confirmed terminal deadline".to_string())
+                    .with_execution_evidence(
+                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated,
+                ),
+            );
         }
         sink.on_text(self.rest).await;
         Ok(ChatResponse {
@@ -61,10 +66,10 @@ impl LlmExecutor for DropOnceLlm {
     }
 }
 
-/// Always streams `text` and succeeds — used to observe how a pre-seeded
-/// checkpoint reshapes the run's first inference.
+/// Would succeed if invoked; the historical-checkpoint test requires zero calls.
 struct AlwaysLlm {
     text: &'static str,
+    calls: std::sync::atomic::AtomicUsize,
 }
 #[async_trait::async_trait]
 impl LlmExecutor for AlwaysLlm {
@@ -76,6 +81,7 @@ impl LlmExecutor for AlwaysLlm {
         _request: ChatRequest,
         sink: &dyn DeltaSink,
     ) -> Result<ChatResponse> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         sink.on_text(self.text).await;
         Ok(ChatResponse {
             output: AssistantOutput::text(self.text),
@@ -163,6 +169,9 @@ fn assistant_text(commit: &MemoryCommitCoordinator) -> String {
 
 #[tokio::test]
 async fn an_interrupted_step_recovers_in_process_and_leaves_no_checkpoint() {
+    // C1 remote termination confirmed after partial text; C2 retry allowed.
+    // R1=C1+C2 => one continuation, joined text, spent checkpoint removed.
+    // Unknown returned errors have separate negative coverage in execution.rs.
     let checkpoints = Arc::new(MemoryStreamCheckpointStore::new());
     let (state, commit) = drive(
         Arc::new(DropOnceLlm {
@@ -189,14 +198,11 @@ async fn an_interrupted_step_recovers_in_process_and_leaves_no_checkpoint() {
 }
 
 #[tokio::test]
-async fn a_pre_seeded_checkpoint_resumes_the_first_step() {
-    // Test design — Causes: a crash left one Run-scoped text checkpoint before
-    // the first Step. Effects: fresh execution stitches it to new text, commits
-    // the completed response, and clears the checkpoint. Constraints/invariants:
-    // the prefix is consumed once and never becomes a second assistant message.
-    // Decision rule R1: matching checkpoint+fresh completion=>joined text+delete.
-    // A crash mid-recovery would leave a checkpoint keyed by this run. On the next
-    // execution the engine reads it and continues the first step from the partial.
+async fn a_historical_checkpoint_without_invocation_evidence_cannot_resume() {
+    // H1 a historical text checkpoint exists; H2 no invocation journal exists.
+    // H1+H2 => Indeterminate, no new assistant message, retained checkpoint.
+    // Absence of evidence must not be treated as a fresh model operation.
+    // Positive confirmed-termination continuation is covered above.
     let checkpoints = Arc::new(MemoryStreamCheckpointStore::new());
     checkpoints
         .put(StreamCheckpoint {
@@ -210,21 +216,27 @@ async fn a_pre_seeded_checkpoint_resumes_the_first_step() {
         .await
         .expect("checkpoint put");
 
-    let (state, commit) = drive(
-        Arc::new(AlwaysLlm { text: "and done" }),
-        checkpoints.clone(),
-    )
-    .await;
+    let model = Arc::new(AlwaysLlm {
+        text: "and done",
+        calls: Default::default(),
+    });
+    let (state, commit) = drive(model.clone(), checkpoints.clone()).await;
 
-    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-    // The committed response carries the recovered prefix stitched onto the fresh text.
-    assert_eq!(assistant_text(&commit), "Resumed and done");
-    // The consumed checkpoint is cleared once the step concludes.
+    assert_eq!(state, RunState::Ended(EndCause::Indeterminate));
+    assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .all(|m| m.role != Role::Assistant),
+        "historical partial cannot authorize a new assistant response"
+    );
     assert!(
         checkpoints
             .get(RUN_ID)
             .await
             .expect("checkpoint read")
-            .is_none()
+            .is_some()
     );
 }

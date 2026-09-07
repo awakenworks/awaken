@@ -105,29 +105,8 @@ impl ManagedState {
     ) -> Result<ListEventsResponse, StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
-        let primary_answerable_event_ids = record.primary_answerable_event_ids();
-        let primary_events = record.events.iter().cloned().filter_map(|event| {
-            let owner = record.event_thread_owners.get(&event.id);
-            let primary_references_event = primary_answerable_event_ids.contains(event.id.as_str());
-            Self::project_event_for_thread(
-                session_id,
-                session_id,
-                event,
-                owner.map(String::as_str),
-                primary_references_event,
-            )
-        });
-        let matching = primary_events.filter(include);
-        let ordered = if descending {
-            matching.rev().collect::<Vec<_>>()
-        } else {
-            matching.collect::<Vec<_>>()
-        };
-        let page = paginate_by_id(&ordered, cursor, limit, |e| e.id.as_str())
-            .map_err(|_| RunError::bad_request("unknown pagination cursor"))?;
-        Ok(ListEventsResponse {
-            data: page.items.to_vec(),
-            next_page: page.next_page,
-        })
+        Self::project_event_page(
+            record, session_id, session_id, cursor, limit, descending, include,
+        )
     }
 }

@@ -194,9 +194,16 @@ pub fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_
 pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::lease_ttl(self) -> core::time::Duration
 pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::proof_window(self) -> core::time::Duration
 pub fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::remaining_proof_after(self, core::time::Duration) -> core::time::Duration
+pub fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::remaining_proof_at(self, awaken_runtime_contract::authority_lease::AuthorityProofStarted, awaken_runtime_contract::authority_lease::AuthorityProofStarted) -> core::option::Option<core::time::Duration>
 pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::renew_interval(self) -> core::time::Duration
 pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::request_timeout(self) -> core::time::Duration
 pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::retry_delay(self) -> core::time::Duration
+pub struct awaken_runtime_contract::authority_lease::AuthorityProofStarted
+impl awaken_runtime_contract::authority_lease::AuthorityProofStarted
+pub fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::elapsed_at(self, Self) -> core::option::Option<core::time::Duration>
+pub const fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::elapsed_clock(self) -> core::time::Duration
+pub const fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(std::time::Instant, core::time::Duration) -> Self
+pub const fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::scheduled(self) -> std::time::Instant
 pub mod awaken_runtime_contract::boundary
 pub enum awaken_runtime_contract::boundary::BoundaryOutcome
 pub awaken_runtime_contract::boundary::BoundaryOutcome::Await
@@ -557,6 +564,9 @@ pub awaken_runtime_contract::llm::Error::ContextOverflow(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::InvalidRequest(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::LoginRequired(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::ModelNotFound(alloc::string::String)
+pub awaken_runtime_contract::llm::Error::Observed
+pub awaken_runtime_contract::llm::Error::Observed::execution: awaken_runtime_contract::model_operation::ModelExecutionEvidence
+pub awaken_runtime_contract::llm::Error::Observed::source: alloc::boxed::Box<awaken_runtime_contract::llm::Error>
 pub awaken_runtime_contract::llm::Error::Overloaded
 pub awaken_runtime_contract::llm::Error::Overloaded::message: alloc::string::String
 pub awaken_runtime_contract::llm::Error::Overloaded::retry_after: core::option::Option<core::time::Duration>
@@ -570,10 +580,13 @@ pub awaken_runtime_contract::llm::Error::UsageLimit
 pub awaken_runtime_contract::llm::Error::UsageLimit::message: alloc::string::String
 pub awaken_runtime_contract::llm::Error::UsageLimit::reset_after: core::option::Option<core::time::Duration>
 impl awaken_runtime_contract::llm::Error
+pub fn awaken_runtime_contract::llm::Error::classification(&self) -> &Self
 pub fn awaken_runtime_contract::llm::Error::code(&self) -> &'static str
+pub fn awaken_runtime_contract::llm::Error::execution_evidence(&self) -> awaken_runtime_contract::model_operation::ModelExecutionEvidence
 pub fn awaken_runtime_contract::llm::Error::is_retryable(&self) -> bool
 pub fn awaken_runtime_contract::llm::Error::reset_hint(&self) -> core::option::Option<core::time::Duration>
 pub fn awaken_runtime_contract::llm::Error::retry_after(&self) -> core::option::Option<core::time::Duration>
+pub fn awaken_runtime_contract::llm::Error::with_execution_evidence(self, awaken_runtime_contract::model_operation::ModelExecutionEvidence) -> Self
 impl awaken_runtime_contract::resilience::Classify for awaken_runtime_contract::llm::Error
 pub fn awaken_runtime_contract::llm::Error::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
 pub enum awaken_runtime_contract::llm::ModelRequestAdmission
@@ -688,6 +701,31 @@ pub fn awaken_runtime_contract::metrics::NoopRecorder::record_dispatch_recovered
 pub fn awaken_runtime_contract::metrics::NoopRecorder::record_dispatch_settled(&self, &str)
 pub fn awaken_runtime_contract::metrics::NoopRecorder::record_inference(&self, awaken_runtime_contract::metrics::InferenceMetric<'_>)
 pub fn awaken_runtime_contract::metrics::NoopRecorder::record_tool(&self, &str, &str, core::time::Duration)
+pub mod awaken_runtime_contract::model_operation
+pub enum awaken_runtime_contract::model_operation::ModelExecutionEvidence
+pub awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched
+pub awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated
+pub awaken_runtime_contract::model_operation::ModelExecutionEvidence::Unknown
+impl awaken_runtime_contract::model_operation::ModelExecutionEvidence
+pub const fn awaken_runtime_contract::model_operation::ModelExecutionEvidence::permits_reentry(self) -> bool
+pub enum awaken_runtime_contract::model_operation::ModelOperationPhase
+pub awaken_runtime_contract::model_operation::ModelOperationPhase::Entered
+pub awaken_runtime_contract::model_operation::ModelOperationPhase::Returned
+pub awaken_runtime_contract::model_operation::ModelOperationPhase::TimedOut
+pub struct awaken_runtime_contract::model_operation::ActiveModelOperation
+impl awaken_agent_contract::agent::state::StateKey for awaken_runtime_contract::model_operation::ActiveModelOperation
+pub type awaken_runtime_contract::model_operation::ActiveModelOperation::Value = core::option::Option<awaken_runtime_contract::model_operation::ModelOperation>
+pub const awaken_runtime_contract::model_operation::ActiveModelOperation::KEY: &'static str
+pub const awaken_runtime_contract::model_operation::ActiveModelOperation::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_runtime_contract::model_operation::ActiveModelOperation::SCOPE: awaken_agent_contract::agent::state::Scope
+pub struct awaken_runtime_contract::model_operation::ModelOperation
+pub awaken_runtime_contract::model_operation::ModelOperation::binding: awaken_runtime_contract::resolved::ModelBinding
+pub awaken_runtime_contract::model_operation::ModelOperation::execution: awaken_runtime_contract::model_operation::ModelExecutionEvidence
+pub awaken_runtime_contract::model_operation::ModelOperation::ordinal: core::num::nonzero::NonZeroU64
+pub awaken_runtime_contract::model_operation::ModelOperation::phase: awaken_runtime_contract::model_operation::ModelOperationPhase
+impl awaken_runtime_contract::model_operation::ModelOperation
+pub fn awaken_runtime_contract::model_operation::ModelOperation::next(core::option::Option<&Self>, awaken_runtime_contract::resolved::ModelBinding) -> core::option::Option<Self>
+pub fn awaken_runtime_contract::model_operation::ModelOperation::permits_reentry(core::option::Option<&Self>, bool) -> bool
 pub mod awaken_runtime_contract::model_routing
 pub fn awaken_runtime_contract::model_routing::exact_candidate_identity(&awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_runtime_contract::resolved::ResolvedModelCandidate) -> bool
 pub fn awaken_runtime_contract::model_routing::pinned_candidate_at<'a>(&'a awaken_runtime_contract::resolved::ResolvedModelCandidate, &'a [awaken_runtime_contract::resolved::ResolvedModelCandidate], usize) -> core::option::Option<&'a awaken_runtime_contract::resolved::ResolvedModelCandidate>
@@ -1398,6 +1436,7 @@ pub struct awaken_runtime_contract::runtime_context::AttemptQuiescence
 impl awaken_runtime_contract::runtime_context::AttemptQuiescence
 pub fn awaken_runtime_contract::runtime_context::AttemptQuiescence::can_acknowledge_return(&self) -> bool
 pub fn awaken_runtime_contract::runtime_context::AttemptQuiescence::mark_uncertain(&self)
+pub async fn awaken_runtime_contract::runtime_context::AttemptQuiescence::observe_return<T>(&self, impl core::future::future::Future<Output = T>) -> T
 pub struct awaken_runtime_contract::runtime_context::CaptureContext
 pub awaken_runtime_contract::runtime_context::CaptureContext::decision: awaken_runtime_contract::capture::CaptureDecision
 pub awaken_runtime_contract::runtime_context::CaptureContext::sink: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>>

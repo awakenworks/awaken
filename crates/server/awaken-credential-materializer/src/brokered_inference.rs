@@ -775,11 +775,17 @@ impl BrokeredCandidateExecutor {
 #[async_trait]
 impl LlmExecutor for BrokeredCandidateExecutor {
     async fn infer(&self, mut request: ChatRequest) -> Result<ChatResponse, LlmError> {
-        let lease = self.lease().await?;
+        let lease = self.lease().await.map_err(|error| {
+            error.with_execution_evidence(
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
+            )
+        })?;
         request.model_binding.model_ref.clone_from(&self.model);
         let result = match self.executor(&lease) {
             Ok(executor) => executor.infer(request).await,
-            Err(error) => Err(error),
+            Err(error) => Err(error.with_execution_evidence(
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
+            )),
         };
         self.close(&lease).await;
         result
@@ -790,11 +796,17 @@ impl LlmExecutor for BrokeredCandidateExecutor {
         mut request: ChatRequest,
         sink: &dyn DeltaSink,
     ) -> Result<ChatResponse, LlmError> {
-        let lease = self.lease().await?;
+        let lease = self.lease().await.map_err(|error| {
+            error.with_execution_evidence(
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
+            )
+        })?;
         request.model_binding.model_ref.clone_from(&self.model);
         let result = match self.executor(&lease) {
             Ok(executor) => executor.infer_streaming(request, sink).await,
-            Err(error) => Err(error),
+            Err(error) => Err(error.with_execution_evidence(
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
+            )),
         };
         self.close(&lease).await;
         result
@@ -1179,6 +1191,34 @@ mod tests {
         let error = executor(client.clone(), None).lease().await.unwrap_err();
 
         assert_eq!(error.code(), "binding_rejected");
+        assert!(client.requests.lock().unwrap().is_empty());
+        // T3 at both model-port entries: missing authority => no model send,
+        // hence NotDispatched (the broker control operation is a separate effect).
+        struct Sink;
+        #[async_trait]
+        impl DeltaSink for Sink {
+            async fn on_text(&self, _: &str) {}
+        }
+        let request = ChatRequest {
+            model_binding: awaken_runtime_contract::resolved::ModelBinding::new("p", "m", "b"),
+            inference: Default::default(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        let model = executor(client.clone(), None);
+        for streaming in [false, true] {
+            let error = if streaming {
+                model.infer_streaming(request.clone(), &Sink).await
+            } else {
+                model.infer(request.clone()).await
+            }
+            .unwrap_err();
+            assert_eq!(error.code(), "binding_rejected");
+            assert_eq!(
+                error.execution_evidence(),
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched
+            );
+        }
         assert!(client.requests.lock().unwrap().is_empty());
     }
 

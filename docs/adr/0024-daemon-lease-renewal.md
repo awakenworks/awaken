@@ -127,17 +127,20 @@ authoritative provider terminal receipt. Process/Pod termination can prove only
 process-bound tool/Sandbox work. This chooses safety over availability when
 external work cannot be proven stopped.
 
-Consequently, interruption of a Native opaque tool can admit cancellation intent
-yet remain unable to finish or resume the same Thread after abandoning that
-effect. The current ordinary-tool ports do not supply a terminal-receipt recovery
-command. Native inference is a separate branch: `LlmExecutor` returns response
-data, and the Runtime must admit and invoke any proposed tool afterward. Its
-closed provider-owned capabilities are search/fetch, not arbitrary mutation.
-Discarding that response ends the local attempt without leaving an invoked
-Awaken tool behind, so pure-inference cancellation can finish and resume. This
-does not establish that provider computation or billing stopped on disconnect.
-Adding a provider-owned mutation capability must revisit this boundary. ACP's
-fixed business outcome likewise does not imply successful process cleanup.
+Consequently, interruption of a Native opaque tool or model can admit
+cancellation intent yet remain unable to resume the same Thread after abandoning
+that effect. The ordinary-tool and model ports do not supply a terminal-receipt
+recovery command. Native inference returns data rather than invoking proposed
+Awaken tools, but discarding that data does not prove provider computation or
+billing stopped. The model Future therefore arms the same attempt-local veto on
+first poll. A Rust return only disarms that observer; Runtime separately latches
+returned errors with unknown remote execution before any awaited journal write.
+Cancellation, task abort and
+watchdog expiry retain the physical slot. A watchdog ends the logical Run as
+Indeterminate without inner retry, continuation, failover or outer failure
+tolerance. Cancellation retains its logical Cancelled outcome; neither outcome
+is physical-termination evidence. ACP's fixed business outcome likewise does not
+imply successful process cleanup.
 
 One continuation case is stronger than terminal receipt: an A2A executor may
 recover a complete committed `TaskReference` whose endpoint matches the frozen
@@ -155,12 +158,93 @@ executor B proves exact committed continuation
 handoff B replaces slot A -> tasks/get (never message:send) -> finish B
 ```
 
+Native model invocation evidence now uses the existing Run-scoped Thread state
+log (`ActiveModelOperation`), not a new receipt database. Before every
+`LlmExecutor::infer_streaming` call, including Runtime retries and model-pool
+failover, the StepLedger commits a non-wrapping invocation ordinal and the
+selected model binding. An acknowledged entry is followed by another live
+ownership check. Local return records `Returned`; the outer watchdog records
+`TimedOut`; cancellation or process death during execution leaves `Entered`.
+Entry is conservative intent, not proof that the network send occurred.
+The complete ordinal history remains in the same append-only state log.
+
+Evidence write rejection or lost ACK terminates the drive as a commit error,
+outside provider retry, model failover and consecutive-inference-failure
+tolerance. Read/provider waits remain cancellable, but cancellation retains
+ownership of an in-flight evidence commit until its result before terminalizing.
+Cancellation and evidence-write failure retain the interrupted-stream checkpoint;
+neither counts as successful recovery or consumes a retry that never entered.
+The existing model completion audit remains the only logical request/usage
+observation; these small state records contain no request, response or credential
+material and do not create another billing path.
+
+This is an evidence-boundary repair, not a physical-slot recovery bypass.
+`Returned` means the local executor future returned, not that an arbitrary
+provider stopped computing. The same record stores independent execution
+evidence: `Unknown`, `NotDispatched`, or `Terminated`. Missing fields, including
+legacy `Returned`, decode as `Unknown`. Before checkpoint salvage and every new
+invocation, Runtime checks the prior Run-scoped evidence; Unknown retains the
+physical veto and ends logically as Indeterminate without retry or failover.
+Error taxonomy still owns provider health and routing, never physical safety.
+An existing stream checkpoint also requires predecessor evidence: no journal
+is not equivalent to a fresh call when an interrupted partial exists. Such
+historical checkpoints remain retained and cannot authorize model continuation
+or tool salvage. Fresh inference without a checkpoint still starts normally.
+
+Checkpoint observation precedes Native drive tool-batch recovery and inference.
+Only a successful absent read or a matching Run/Thread checkpoint may reach
+those boundaries. Storage/fence errors and foreign identity end Indeterminate;
+cancellation during the read returns Cancelled through the existing cancellable
+read boundary. All three retain the checkpoint and the physical veto rather
+than fabricating absence. This does not make a blocking synchronous storage
+operation preemptible, nor prove an unjournaled historical Run stopped.
+
+Trusted adapters annotate pre-I/O validation/materialization errors as
+NotDispatched, and errors after validated protocol completion as Terminated.
+Transport EOF, local deadlines, unparsed bodies and HTTP failure statuses remain
+Unknown. Both production GenAI and Responses constructors use one HTTP-client
+policy that disables retries and redirects. Injected custom clients/executors
+must uphold the same port contract; this does not prove arbitrary SDK behavior.
+The SDK's captured response is the sole full streaming accumulator in the GenAI
+adapter; the adapter retains only tool emission offsets, not a second copy of
+text, reasoning and tool arguments.
+
+Provider terminal/task receipt recovery and authority-backed Native crash
+handoff remain unresolved; no existing physical slot is cleared based only on
+these records. A historical Run with no model journal at all is not retrospectively
+proved stopped. This repair rejects known uncertain invocation history; it is
+not a blanket historical migration or an independent execution-domain provider.
+
 The slot is not another lease or state machine. Claim, attempt admission,
 settlement, retry exhaustion, and dead-lettering mutate the same Dispatch row in
 one backend transaction. `ThreadCommit` remains the sole execution-result truth.
 Direct, non-durable ingress uses Runtime's one process-local Thread gate and
-holds it across the complete executor Future. Durable `RunService::start` and
+holds it across the complete executor Future. An unconfirmed direct return keeps
+only a blocking marker in that same registry: queued and later acquisitions fail
+before entering an executor, while unrelated Threads remain available. Normal
+completion still removes the dead weak entry. This marker is process-local;
+direct ingress does not acquire cross-process recovery guarantees.
+Durable `RunService::start` and
 `resume` fail closed; their only legal path is durable submission and claim.
+
+SessionRunProtocol now represents external invocations as Run/Worker/Epoch
+tuples independently of its Run-keyed slots. Only a separate observed external
+return permits slot release; lease handoff does not remove that tuple. This can
+represent two physical invocations of the same logical Run, unlike a Run-keyed
+function alone. Receipt authenticity remains an assumption, not an implemented
+Native provider-recovery API. The mutation gate rejects an unconditional finish
+and requires an external-execution reachability witness.
+This model treats each physical attempt as one external invocation; the
+per-model-operation ordinal, sequential retries inside an attempt and opaque
+SDK retries are outside that abstraction. The Native watchdog regression
+separately enables retry, failover and outer tolerance at the actual Runtime
+boundary and checks that abandoned inference cannot enter any of them.
+
+The Managed adapter projects committed Indeterminate through its existing
+`session.error` / `unknown_error` / terminal retry status, before terminal idle.
+Root and child histories use one Run-state classifier; repeated and cold reads
+keep the same deterministic error identity. This reports a logical outcome,
+not physical quiescence, and adds no Awaken recovery field to the standard wire.
 
 ## Dynamic behavior
 

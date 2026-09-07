@@ -114,11 +114,11 @@ prior process vanished without an ACK, process/Pod termination proves only its
 process-bound tool or Sandbox work stopped. An opaque remote model request also
 requires an authoritative provider cancellation or terminal receipt when it can
 continue external effects independently; registry TTL alone is insufficient.
-A live Native response-only inference is narrower: Runtime can cancel its wait,
-discard the response before any proposed tool crosses the governed tool boundary,
-and return the owned executor. That actual local return permits the exact ACK;
-it does not prove provider computation or billing stopped. Hard process loss
-without that return still leaves the physical slot occupied.
+Native response-only inference uses the same evidence rule from ADR-0024:
+discarding a response prevents proposed tools from executing, but does not prove
+provider computation or billing stopped. Cancellation retains the physical veto
+even after the local executor returns; it does not permit an exact ACK. Hard
+process loss likewise leaves the physical slot occupied.
 
 Aborting or dropping the outer executor Future is not an ACK. The physical slot
 remains occupied until the Future explicitly returns, and uncertain external

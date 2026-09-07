@@ -802,6 +802,24 @@ pub struct AttemptQuiescence {
 }
 
 impl AttemptQuiescence {
+    /// Observe one nested executor without inventing termination on Future drop.
+    /// Arm on first poll, not construction; normal return disarms only this
+    /// observer and can never erase an uncertainty reported by another child.
+    pub async fn observe_return<T>(&self, future: impl std::future::Future<Output = T>) -> T {
+        struct PendingReturn<'a>(Option<&'a AttemptQuiescence>);
+        impl Drop for PendingReturn<'_> {
+            fn drop(&mut self) {
+                if let Some(quiescence) = self.0 {
+                    quiescence.mark_uncertain();
+                }
+            }
+        }
+        let mut pending = PendingReturn(Some(self));
+        let result = future.await;
+        pending.0 = None;
+        result
+    }
+
     pub fn mark_uncertain(&self) {
         self.uncertain
             .store(true, std::sync::atomic::Ordering::Release);
@@ -816,6 +834,35 @@ impl AttemptQuiescence {
 #[cfg(test)]
 mod quiescence_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn only_an_entered_unreturned_future_vetoes_acknowledgement() {
+        // C1 never polled / C2 returns Ok or Err / C3 polled then dropped.
+        // R1=C1=>no invented activity; R2=C2=>local return observed;
+        // R3=C3=>monotonic veto. Error return is not a remote terminal proof;
+        // definitive error classification remains an adapter obligation.
+        let latch = AttemptQuiescence::default();
+        drop(latch.observe_return(std::future::pending::<()>()));
+        assert!(latch.can_acknowledge_return());
+        for response in [Ok(()), Err(())] {
+            assert_eq!(latch.observe_return(async { response }).await, response);
+            assert!(latch.can_acknowledge_return());
+        }
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(1),
+                latch.observe_return(std::future::pending::<()>())
+            )
+            .await
+            .is_err()
+        );
+        assert!(!latch.can_acknowledge_return());
+        latch.observe_return(async {}).await;
+        assert!(
+            !latch.can_acknowledge_return(),
+            "later return cannot erase uncertainty"
+        );
+    }
 
     #[test]
     fn uncertainty_is_shared_with_inline_children_and_never_cleared_by_return() {

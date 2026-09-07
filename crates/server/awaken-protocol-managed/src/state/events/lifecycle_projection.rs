@@ -161,10 +161,7 @@ impl ManagedState {
                         terminal_pending,
                         event.await_reason.as_ref(),
                     )?;
-                    if let awaken_agent_contract::agent::run::RunState::Ended(
-                        awaken_agent_contract::agent::run::EndCause::Error(failure),
-                    ) = &event.state
-                    {
+                    if let Some(error) = SessionError::from_run_state(&event.state) {
                         let id = managed_multiagent_event_id(
                             &record.session.id,
                             thread_id,
@@ -185,7 +182,7 @@ impl ManagedState {
                                         ADVISOR_FAILURE_NOTICE,
                                     )
                                 } else {
-                                    SessionError::classify(failure.code(), failure.message())
+                                    error
                                 },
                             },
                             processed_at: None,
