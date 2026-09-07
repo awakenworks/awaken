@@ -1170,6 +1170,7 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
 // R2 exact target disposal, including response-loss replay, removes only that
 // target. Directory modes are restored children-first so read-only parents
 // cannot block extraction.
+#[cfg(unix)]
 #[tokio::test]
 async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
     use std::os::unix::fs::PermissionsExt;

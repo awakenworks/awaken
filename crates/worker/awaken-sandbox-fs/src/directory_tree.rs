@@ -130,7 +130,7 @@ pub fn remove_relative_entry_exact(
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn remove_relative_entry_exact(
     root: &Path,
     expected_root: DirectoryIdentity,
