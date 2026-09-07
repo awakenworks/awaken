@@ -386,11 +386,14 @@ mod tests {
         // C2 the immutable Worker manifest offers it. E1 admission succeeds
         // when !C1 or C2; E2 C1+!C2 returns the exact MissingCapability error.
         // Constraint: this hard axis runs inside can_claim before ranking and is
-        // rechecked by the atomic claim path. The four rules exhaust C1/C2.
+        // rechecked by the atomic claim path. Pin all other admission causes
+        // to the existing compatible fixtures, including explicit current
+        // runtime support; omitted protocol metadata must not grant authority.
+        // The four rules exhaust C1/C2 without weakening that independent gate.
         for requirement_present in [false, true] {
             for capability_offered in [false, true] {
-                let mut worker = WorkerManifest::default();
-                let mut required = PlacementRequirements::default();
+                let mut worker = manifest("capability-table", 0).manifest;
+                let mut required = requirements();
                 if requirement_present {
                     required
                         .required_capabilities
