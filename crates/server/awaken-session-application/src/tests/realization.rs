@@ -973,6 +973,111 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
 }
 
 #[tokio::test]
+async fn failed_nonterminal_realization_expires_assignment_before_same_incarnation_recovery() {
+    // Causes: C1 initial Preparing / already Idle; C2 retryable / permanent;
+    // C3 attempt below / at budget; C4 exact / stale failure lease.
+    // Decision table: F0 stale -> no root mutation; F1 initial+retry+below ->
+    // Preparing, expired assignment; F2 other initial -> ActivationFailed;
+    // F3 Idle+any C2/C3 -> Idle, expired assignment, retained active resources.
+    // F4 F1/F3+same-incarnation begin -> successor epoch, never reuse the closed
+    // generation; old failure replay cannot mutate that successor. The existing
+    // running-realization test owns interval/terminal settlement. The HTTP MCP
+    // hot-swap test additionally proves the previous Active server still runs.
+    let repo: Arc<dyn ManagedSessionRepository> =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let app = application_with_configuration(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+        SessionApplicationConfiguration {
+            realization_retry_budget: 2,
+            ..Default::default()
+        },
+    );
+    for idle in [false, true] {
+        for retryable in [false, true] {
+            for attempts in [1, 2] {
+                let id = format!("failure-{idle}-{retryable}-{attempts}");
+                let lease = awaken_session_contract::SessionRealizationLease {
+                    owner: "worker".into(),
+                    runtime_incarnation: "worker/1".into(),
+                    epoch: 7,
+                    expires_at_unix_ms: u64::MAX,
+                };
+                let mut root = persisted(&id, false, if idle { "idle" } else { "preparing" });
+                root.realization = Some(lease.clone());
+                root.realization_progress.attempts = attempts;
+                create(repo.as_ref(), root).await;
+                let before = repo.get(&id).await.unwrap();
+                let command = awaken_session_contract::FailSessionRealization {
+                    session_id: id.clone(),
+                    lease: lease.clone(),
+                    prepared_resource_revision: None,
+                    retryable,
+                    source_run_id: None,
+                    reason: "external stage failed".into(),
+                };
+                let mut stale = command.clone();
+                stale.lease.epoch -= 1;
+                assert!(app.fail_session_realization(stale).await.is_err(), "F0");
+                assert_eq!(repo.get(&id).await.unwrap(), before, "F0");
+                app.fail_session_realization(command.clone()).await.unwrap();
+                let failed = repo.get(&id).await.unwrap();
+                let recoverable = idle || (retryable && attempts < 2);
+                assert_eq!(
+                    failed.execution,
+                    if idle {
+                        SessionExecutionState::Idle
+                    } else if recoverable {
+                        SessionExecutionState::Preparing
+                    } else {
+                        SessionExecutionState::ActivationFailed
+                    },
+                    "F1/F2/F3"
+                );
+                assert_eq!(
+                    failed.resources, before.resources,
+                    "retain active resource authority"
+                );
+                assert_eq!(failed.realization.as_ref().unwrap().epoch, 7);
+                if recoverable {
+                    assert_eq!(
+                        failed.realization.as_ref().unwrap().expires_at_unix_ms,
+                        0,
+                        "F1/F3 root cannot reissue the locally closed generation"
+                    );
+                    let directive = app
+                        .begin_session_realization(
+                            awaken_session_contract::BeginSessionRealization {
+                                session_id: id.clone(),
+                                expected_resources: None,
+                                target: awaken_session_contract::SessionRealizationTarget {
+                                    owner: lease.owner.clone(),
+                                    runtime_incarnation: lease.runtime_incarnation.clone(),
+                                    lease_expires_at_unix_ms: u64::MAX,
+                                    reassign_existing_lease: false,
+                                },
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(directive.authority.lease.epoch, 8, "F4");
+                    let successor = repo.get(&id).await.unwrap();
+                    assert!(
+                        app.fail_session_realization(command).await.is_err(),
+                        "F4 stale replay"
+                    );
+                    assert_eq!(
+                        repo.get(&id).await.unwrap(),
+                        successor,
+                        "F4 successor retained"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn lease_renewal_is_a_projection_free_root_cas() {
     // Renewal cause/effect graph: C1 exact live owner/incarnation/epoch; C2 the
     // requested expiry is newer/equal/older; C3 executable projection refresh

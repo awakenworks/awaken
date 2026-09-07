@@ -412,6 +412,20 @@ fn session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an
         assert!(same_owner);
         assert!(same_runtime_incarnation);
     }
+    // Once a failed nonterminal assignment is expired in the Session root,
+    // even the same Host incarnation must advance its locally closed epoch.
+    // Prove progress as well as no-reuse across the entire u64 epoch domain;
+    // exhaustion is the sole terminal alternative to a successor assignment.
+    if !current_is_live {
+        assert_eq!(
+            decision,
+            match current_epoch {
+                None => SessionRealizationAssignment::Assign { epoch: 1 },
+                Some(u64::MAX) => SessionRealizationAssignment::EpochExhausted,
+                Some(epoch) => SessionRealizationAssignment::Assign { epoch: epoch + 1 },
+            }
+        );
+    }
 }
 
 #[cfg(test)]
