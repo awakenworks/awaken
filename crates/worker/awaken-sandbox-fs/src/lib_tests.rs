@@ -548,3 +548,84 @@ fn a_read_error_after_partial_bytes_never_returns_a_partial_file() {
     );
     assert_eq!(remaining, 16, "IO1 rejected read does not publish progress");
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn pinned_socket_path_is_short_nofollow_and_directory_exact() {
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    // Cause/effect table: S1 short/long parent x ASCII/non-UTF8 leaf -> the same
+    // filesystem socket and real byte exchange; S2 parent renamed/replaced after
+    // capture -> bind only in the retained inode; S3 missing/file/symlink parent,
+    // no leaf, NUL or overlong address -> reject with no publication. The kernel
+    // and procfs are external TCB; these are executed Linux adapter checks.
+    let root = std::env::temp_dir().join(format!(
+        "awaken-socket-{}-{}",
+        std::process::id(),
+        PRIVATE_STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _owned = OwnedDirectory(root.clone());
+    for length in [1, 120] {
+        let parent = root.join("p".repeat(length));
+        std::fs::create_dir(&parent).unwrap();
+        for leaf in [
+            std::ffi::OsStr::new("control.sock"),
+            std::ffi::OsStr::from_bytes(b"socket-\xff"),
+        ] {
+            let socket = parent.join(leaf);
+            if length == 120 {
+                assert!(
+                    UnixListener::bind(&socket).is_err(),
+                    "S1 raw address exceeds sun_path"
+                );
+            }
+            let address = PinnedUnixSocketPath::capture(&socket).unwrap();
+            let listener = UnixListener::bind(address.path()).unwrap();
+            assert!(socket.exists(), "S1 exact canonical pathname");
+            let mut client = UnixStream::connect(address.path()).unwrap();
+            let (mut server, _) = listener.accept().unwrap();
+            client.write_all(b"socket-proof").unwrap();
+            let mut bytes = [0; 12];
+            server.read_exact(&mut bytes).unwrap();
+            assert_eq!(&bytes, b"socket-proof", "S1 real byte exchange");
+            std::fs::remove_file(&socket).unwrap();
+        }
+    }
+    let parent = root.join("retained");
+    let moved = root.join("moved");
+    std::fs::create_dir(&parent).unwrap();
+    let address = PinnedUnixSocketPath::capture(&parent.join("control.sock")).unwrap();
+    std::fs::rename(&parent, &moved).unwrap();
+    std::fs::create_dir(&parent).unwrap();
+    let _listener = UnixListener::bind(address.path()).unwrap();
+    assert!(moved.join("control.sock").exists(), "S2 retained inode");
+    assert!(
+        !parent.join("control.sock").exists(),
+        "S2 replacement untouched"
+    );
+
+    let file = root.join("file");
+    std::fs::write(&file, b"unchanged").unwrap();
+    let link = root.join("link");
+    std::os::unix::fs::symlink(&parent, &link).unwrap();
+    for invalid in [
+        root.join("missing/control.sock"),
+        file.join("control.sock"),
+        link.join("control.sock"),
+        PathBuf::from("/"),
+        parent.join(std::ffi::OsStr::from_bytes(b"bad\0name")),
+        parent.join("s".repeat(108)),
+    ] {
+        assert!(
+            PinnedUnixSocketPath::capture(&invalid).is_err(),
+            "S3 {}",
+            invalid.display()
+        );
+    }
+    assert_eq!(
+        std::fs::read(file).unwrap(),
+        b"unchanged",
+        "S3 no side effects"
+    );
+}

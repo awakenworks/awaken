@@ -290,16 +290,19 @@ impl PublishedSandboxControlService for NamespaceControlPublication {
 async fn bind_namespace_control_listener(
     socket: &std::path::Path,
 ) -> Result<(tokio::net::UnixListener, SocketIdentity), SandboxControlPublishError> {
-    match std::fs::symlink_metadata(socket) {
+    let address = awaken_sandbox_fs::PinnedUnixSocketPath::capture(socket)
+        .map_err(|_| SandboxControlPublishError)?;
+    let physical_socket = address.path();
+    match std::fs::symlink_metadata(physical_socket) {
         Ok(metadata) => {
             use std::os::unix::fs::FileTypeExt as _;
             if !metadata.file_type().is_socket() {
                 return Err(SandboxControlPublishError);
             }
-            let observed = socket_identity(socket)?;
+            let observed = socket_identity(physical_socket)?;
             match tokio::time::timeout(
                 std::time::Duration::from_millis(250),
-                tokio::net::UnixStream::connect(socket),
+                tokio::net::UnixStream::connect(physical_socket),
             )
             .await
             {
@@ -313,7 +316,7 @@ async fn bind_namespace_control_listener(
                     // The failed connect proves only the inode we observed is
                     // stale. A concurrent publisher may already have replaced
                     // the path, so never unlink by name alone.
-                    unlink_if_identity(socket, observed);
+                    unlink_if_identity(physical_socket, observed);
                 }
                 Ok(Err(_)) => return Err(SandboxControlPublishError),
             }
@@ -321,12 +324,27 @@ async fn bind_namespace_control_listener(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return Err(SandboxControlPublishError),
     }
+    bind_new_namespace_control_listener(socket, &address)
+}
+
+#[cfg(target_os = "linux")]
+fn bind_new_namespace_control_listener(
+    socket: &std::path::Path,
+    address: &awaken_sandbox_fs::PinnedUnixSocketPath,
+) -> Result<(tokio::net::UnixListener, SocketIdentity), SandboxControlPublishError> {
+    let physical_socket = address.path();
     let listener =
-        tokio::net::UnixListener::bind(socket).map_err(|_| SandboxControlPublishError)?;
-    let identity = socket_identity(socket)?;
+        tokio::net::UnixListener::bind(physical_socket).map_err(|_| SandboxControlPublishError)?;
+    let identity = socket_identity(physical_socket)?;
+    // The short address and provider-owned cleanup path must still name the
+    // same bound inode. A replaced parent cannot transfer cleanup ownership.
+    if socket_identity(socket).ok() != Some(identity) {
+        unlink_if_identity(physical_socket, identity);
+        return Err(SandboxControlPublishError);
+    }
     use std::os::unix::fs::PermissionsExt as _;
-    if std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o777)).is_err() {
-        unlink_if_identity(socket, identity);
+    if std::fs::set_permissions(physical_socket, std::fs::Permissions::from_mode(0o777)).is_err() {
+        unlink_if_identity(physical_socket, identity);
         return Err(SandboxControlPublishError);
     }
     Ok((listener, identity))
@@ -551,6 +569,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn socket_binding_covers_long_paths_and_ambient_inode_states() {
+        // N11: short/long parent x absent/stale/live/non-socket. Absent and
+        // stale sockets admit one real listener; live and non-socket entries
+        // fail closed and preserve the exact observed inode. This exercises
+        // the production bind AND liveness-probe paths at both path lengths.
+        for length in [1, 120] {
+            for state in ["absent", "stale", "live", "file"] {
+                let base = tempfile::tempdir().unwrap();
+                let parent = base.path().join("p".repeat(length));
+                std::fs::create_dir(&parent).unwrap();
+                let socket = parent.join("control.sock");
+                let address = awaken_sandbox_fs::PinnedUnixSocketPath::capture(&socket).unwrap();
+                let foreign = match state {
+                    "stale" => {
+                        drop(tokio::net::UnixListener::bind(address.path()).unwrap());
+                        None
+                    }
+                    "live" => Some(tokio::net::UnixListener::bind(address.path()).unwrap()),
+                    "file" => {
+                        std::fs::write(&socket, b"preserved").unwrap();
+                        None
+                    }
+                    _ => None,
+                };
+                let before = socket_identity(&socket).ok();
+                let result = bind_namespace_control_listener(&socket).await;
+                if matches!(state, "absent" | "stale") {
+                    let (listener, identity) = result.unwrap();
+                    let _client = tokio::net::UnixStream::connect(address.path())
+                        .await
+                        .unwrap();
+                    let _accepted = listener.accept().await.unwrap();
+                    assert_eq!(
+                        socket_identity(&socket).unwrap(),
+                        identity,
+                        "N11 admitted identity"
+                    );
+                    unlink_if_identity(&socket, identity);
+                } else {
+                    assert!(result.is_err(), "N11 {length}/{state}");
+                    assert_eq!(
+                        socket_identity(&socket).ok(),
+                        before,
+                        "N11 foreign inode preserved"
+                    );
+                    if state == "file" {
+                        assert_eq!(std::fs::read(&socket).unwrap(), b"preserved");
+                    }
+                }
+                drop(foreign);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn replaced_parent_cannot_transfer_socket_cleanup_ownership() {
+        // N12: capture the physical directory, then replace its canonical name
+        // before the production bind phase. Cross absent/file/live-socket at
+        // the replacement name: publication rejects, its own new inode is
+        // removed, and every replacement entry remains untouched. This orders
+        // the rename at the probe/bind boundary without a timing race.
+        for replacement in ["absent", "file", "socket"] {
+            let base = tempfile::tempdir().unwrap();
+            let parent = base.path().join("parent");
+            let moved = base.path().join("moved");
+            std::fs::create_dir(&parent).unwrap();
+            let socket = parent.join("control.sock");
+            let address = awaken_sandbox_fs::PinnedUnixSocketPath::capture(&socket).unwrap();
+            std::fs::rename(&parent, &moved).unwrap();
+            std::fs::create_dir(&parent).unwrap();
+            let replacement_address =
+                awaken_sandbox_fs::PinnedUnixSocketPath::capture(&socket).unwrap();
+            let foreign = match replacement {
+                "file" => {
+                    std::fs::write(&socket, b"preserved").unwrap();
+                    None
+                }
+                "socket" => {
+                    Some(tokio::net::UnixListener::bind(replacement_address.path()).unwrap())
+                }
+                _ => None,
+            };
+            let before = socket_identity(&socket).ok();
+            assert!(
+                bind_new_namespace_control_listener(&socket, &address).is_err(),
+                "N12 {replacement}"
+            );
+            assert!(
+                !moved.join("control.sock").exists(),
+                "N12 own inode removed"
+            );
+            assert_eq!(
+                socket_identity(&socket).ok(),
+                before,
+                "N12 replacement inode retained"
+            );
+            if replacement == "file" {
+                assert_eq!(std::fs::read(&socket).unwrap(), b"preserved");
+            }
+            if let Some(foreign) = foreign {
+                let _client = tokio::net::UnixStream::connect(replacement_address.path())
+                    .await
+                    .unwrap();
+                let _accepted = foreign.accept().await.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn disposal_closes_the_active_generation_and_forbids_reopen() {
         /* N5: C1=active reserved generation; C2=environment disposal.
          * E1=active generation is cancelled; E2=every later reserve fails.
@@ -672,80 +799,89 @@ mod tests {
          * private external rendezvous; E2=one new socket generation; E3=stale
          * drop leaves it intact; E4=listener closes before tree removal and can
          * never reopen. Rules: N6 C1+C2=>E1; N7 C3=>E2; N7 C3+C4=>E3;
-         * N7 C5=>E4.
+         * N7 C5=>E4. Cross every rule with a short/120-byte host directory
+         * prefix (N10): the same codec, lease and disposal behavior must hold
+         * even when the full host socket pathname exceeds sockaddr_un.
          */
-        let base = tempfile::tempdir().unwrap();
-        let provider = NamespaceProvider::new(base.path());
-        let sandbox = provider
-            .create_sandbox(&demanded_spec("namespace-control"))
-            .await
-            .unwrap();
-        let socket = sandbox
-            .control_directory
-            .as_ref()
-            .unwrap()
-            .join("repository-git-credential.sock");
-        assert!(
-            !socket.starts_with(sandbox.root.root()),
-            "N6 private external path"
-        );
-
-        let first = SandboxControlServicePublisher::publish_sandbox_control_service(
-            &sandbox,
-            SandboxControlServiceKind::RepositoryGitCredential,
-            Arc::new(DeniedService),
-        )
-        .await
-        .unwrap();
-        let mut channel = tokio::net::UnixStream::connect(&socket).await.unwrap();
-        awaken_sandbox_control::write_frame(
-            &mut channel,
-            &awaken_sandbox_control::SandboxControlRequest::RepositoryGitCredentialGet {
-                query: awaken_sandbox_control::RepositoryGitCredentialQuery {
-                    protocol: "https".into(),
-                    host: "gateway.test".into(),
-                    path: "git/repository".into(),
-                },
-            },
-        )
-        .await
-        .unwrap();
-        assert!(
-            matches!(
-                awaken_sandbox_control::read_frame::<
-                    _,
-                    awaken_sandbox_control::SandboxControlResponse,
-                >(&mut channel)
+        for prefix_length in [1, 120] {
+            let base = tempfile::tempdir().unwrap();
+            let provider_base = base.path().join("p".repeat(prefix_length));
+            std::fs::create_dir(&provider_base).unwrap();
+            let provider = NamespaceProvider::new(provider_base);
+            let sandbox = provider
+                .create_sandbox(&demanded_spec("namespace-control"))
                 .await
-                .unwrap(),
-                awaken_sandbox_control::SandboxControlResponse::Denied
-            ),
-            "N6/E1"
-        );
-        first.close().await;
-        assert!(!socket.exists(), "N7 old socket removed");
+                .unwrap();
+            let socket = sandbox
+                .control_directory
+                .as_ref()
+                .unwrap()
+                .join("repository-git-credential.sock");
+            assert!(
+                !socket.starts_with(sandbox.root.root()),
+                "N6 private external path"
+            );
 
-        let second = SandboxControlServicePublisher::publish_sandbox_control_service(
-            &sandbox,
-            SandboxControlServiceKind::RepositoryGitCredential,
-            Arc::new(DeniedService),
-        )
-        .await
-        .unwrap();
-        drop(first);
-        assert!(socket.exists(), "N7/E3");
-        pc::Sandbox::dispose(&sandbox).await.unwrap();
-        assert!(!socket.exists(), "N7/E4");
-        assert!(
-            SandboxControlServicePublisher::publish_sandbox_control_service(
+            let first = SandboxControlServicePublisher::publish_sandbox_control_service(
                 &sandbox,
                 SandboxControlServiceKind::RepositoryGitCredential,
                 Arc::new(DeniedService),
             )
             .await
-            .is_err(),
-            "N7/E4 no reopen"
-        );
-        drop(second);
+            .unwrap_or_else(|_| panic!("N10 publication failed for prefix length {prefix_length}"));
+            let address = awaken_sandbox_fs::PinnedUnixSocketPath::capture(&socket).unwrap();
+            let mut channel = tokio::net::UnixStream::connect(address.path())
+                .await
+                .unwrap();
+            awaken_sandbox_control::write_frame(
+                &mut channel,
+                &awaken_sandbox_control::SandboxControlRequest::RepositoryGitCredentialGet {
+                    query: awaken_sandbox_control::RepositoryGitCredentialQuery {
+                        protocol: "https".into(),
+                        host: "gateway.test".into(),
+                        path: "git/repository".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(
+                    awaken_sandbox_control::read_frame::<
+                        _,
+                        awaken_sandbox_control::SandboxControlResponse,
+                    >(&mut channel)
+                    .await
+                    .unwrap(),
+                    awaken_sandbox_control::SandboxControlResponse::Denied
+                ),
+                "N6/E1"
+            );
+            first.close().await;
+            assert!(!socket.exists(), "N7 old socket removed");
+
+            let second = SandboxControlServicePublisher::publish_sandbox_control_service(
+                &sandbox,
+                SandboxControlServiceKind::RepositoryGitCredential,
+                Arc::new(DeniedService),
+            )
+            .await
+            .unwrap();
+            drop(first);
+            assert!(socket.exists(), "N7/E3");
+            pc::Sandbox::dispose(&sandbox).await.unwrap();
+            assert!(!socket.exists(), "N7/E4");
+            assert!(
+                SandboxControlServicePublisher::publish_sandbox_control_service(
+                    &sandbox,
+                    SandboxControlServiceKind::RepositoryGitCredential,
+                    Arc::new(DeniedService),
+                )
+                .await
+                .is_err(),
+                "N7/E4 no reopen"
+            );
+            drop(second);
+        }
     }
 }

@@ -490,7 +490,13 @@ provider capability.
 Static provider realization stays below that one port. A Linux Namespace keeps
 the host rendezvous in its provider-private external directory and projects the
 fixed control directory read-only into the sandbox. Socket generation and
-device/inode ownership are one publication critical section. A demanded
+device/inode ownership are one publication critical section. Host-side bind and
+liveness probes use a retained directory descriptor through Linux procfs, so a
+long host data directory does not enter the Unix socket address. Before handing
+the listener to the publication registry, the adapter verifies that its short
+address and the canonical cleanup path name the same inode. The descriptor is
+process-local and never enters a durable handle or the sandbox-visible endpoint;
+procfs and kernel pathname semantics remain external assumptions. A demanded
 Kubernetes Pod uses one private `emptyDir`: the Agent mount is read-only, the
 digest-pinned forwarder mount is writable, and its TCP listener is loopback-only.
 The same trusted binary atomically publishes a PID/start-time generation marker

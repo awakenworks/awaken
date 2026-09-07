@@ -23,6 +23,10 @@ pub fn awaken_sandbox_fs::ExclusiveFileLock::sibling_names(&self) -> core::io::e
 pub fn awaken_sandbox_fs::ExclusiveFileLock::validate_parent_path(&self) -> core::io::error::Result<()>
 impl core::ops::drop::Drop for awaken_sandbox_fs::ExclusiveFileLock
 pub fn awaken_sandbox_fs::ExclusiveFileLock::drop(&mut self)
+pub struct awaken_sandbox_fs::PinnedUnixSocketPath
+impl awaken_sandbox_fs::PinnedUnixSocketPath
+pub fn awaken_sandbox_fs::PinnedUnixSocketPath::capture(&std::path::Path) -> core::io::error::Result<Self>
+pub fn awaken_sandbox_fs::PinnedUnixSocketPath::path(&self) -> &std::path::Path
 pub struct awaken_sandbox_fs::ProjectionRoot
 impl awaken_sandbox_fs::ProjectionRoot
 pub fn awaken_sandbox_fs::ProjectionRoot::capture(&std::path::Path) -> core::io::error::Result<Self>
