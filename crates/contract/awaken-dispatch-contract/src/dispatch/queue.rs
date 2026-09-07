@@ -154,6 +154,10 @@ pub trait DispatchQueue: Send + Sync {
     /// resumed or cancelled. The candidate itself is excluded from this peer
     /// check, so its matching reply/cancellation can wake it. Returns `None` when
     /// nothing is runnable, and the run's current pending input in [`Claimed`].
+    /// Broad selection prefers eligible rows without an occupied physical slot.
+    /// Recovery with an unconfirmed predecessor remains discoverable when no
+    /// independent runnable work exists; it cannot starve other Threads. This
+    /// order also applies to compatible/placed claims and never clears a slot.
     async fn claim(
         &self,
         owner: &str,
@@ -221,8 +225,9 @@ pub trait DispatchQueue: Send + Sync {
     /// only redeliver terminal observers and call [`settle`](Self::settle) with
     /// `Done`. Implementations must claim only an unleased `pending`/`awaiting`
     /// row whose Thread has no running dispatch, or a `running` row whose lease
-    /// is strictly expired. A live lease, missing, superseded, or dead-lettered
-    /// row returns `None`.
+    /// is strictly expired. Every state requires an empty physical slot: this
+    /// maintenance entry cannot execute or observe an occupied predecessor.
+    /// A live lease, occupied, missing, superseded, or dead-lettered row returns `None`.
     async fn claim_for_terminal_recovery(
         &self,
         _run_id: &RunId,

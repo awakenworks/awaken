@@ -156,3 +156,179 @@ pub async fn record_dispatch_recovery_history(
     assert_eq!(history.live_rows_after_settlement, 0, "R3/E6");
     history
 }
+
+async fn occupied_recovery_does_not_starve_other_threads(
+    store: &dyn DispatchQueue,
+    namespace: &str,
+    clock: &dyn ConformanceClock,
+) {
+    /* Cause/effect graph: C1 predecessor physical slot empty/occupied; C2
+     * cancellation absent/requested; C3 selector local/compatible/placed;
+     * C4 expired recovery competes with a fresh different-Thread Run and a
+     * same-Thread successor; C5 exact predecessor ACK arrives later.
+     * Decision table (C2 x C3 in every row): R1 !C1+C4 -> recovery first;
+     * R2 C1+C4 -> different Thread first, same Thread still excluded;
+     * R3 C1+no independent work -> recovery remains discoverable, entry blocked;
+     * R4 C5 -> exact slot release, recovery settles, same Thread resumes.
+     * R5 C1+expired-running -> terminal-only maintenance cannot acquire a
+     * useless lease before ACK, unlike ordinary/A2A recovery. Older tests
+     * covered this physical fence only for cancelled Pending rows.
+     * Constraints: cancellation cannot manufacture quiescence; placement
+     * cannot widen Thread exclusion; selection does not erase an old epoch.
+     * All 12 partitions run on every adapter through this one contract test. */
+    for selector in 0..3 {
+        for cancelled in [false, true] {
+            for occupied in [false, true] {
+                let ns = format!("{namespace}-fair-{selector}-{cancelled}-{occupied}");
+                let worker = ready_dispatch_worker(&ns, "candidate");
+                async fn pick(
+                    store: &dyn DispatchQueue,
+                    worker: &WorkerSnapshot,
+                    selector: u8,
+                    now: u64,
+                ) -> awaken_dispatch_contract::Claimed {
+                    match selector {
+                        0 => {
+                            store
+                                .claim("fair-local", LEASE_MS, now, &Default::default())
+                                .await
+                        }
+                        1 => store.claim_compatible(worker, LEASE_MS, now).await,
+                        _ => {
+                            store
+                                .claim_placed(
+                                    worker,
+                                    vec![worker.clone()],
+                                    std::sync::Arc::new(LeastLoadedPolicy),
+                                    LEASE_MS,
+                                    now,
+                                )
+                                .await
+                        }
+                    }
+                    .expect("select candidate")
+                    .expect("eligible candidate")
+                }
+                clock.set(0);
+                let old = dispatch(&ns, "old", "shared");
+                store.enqueue(old.clone()).await.unwrap();
+                let first = store
+                    .claim_run(
+                        old.run_id(),
+                        "predecessor",
+                        LEASE_MS,
+                        0,
+                        &Default::default(),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let first_claim = RunClaim::from(&first.lease);
+                if occupied {
+                    assert_eq!(
+                        store.begin_attempt(&first_claim, 0).await.unwrap(),
+                        AttemptAdmission::Applied
+                    );
+                }
+                if cancelled {
+                    store.cancel(old.run_id()).await.unwrap();
+                }
+                clock.advance_past(first.lease.expires_ms).await;
+                let now = first.lease.expires_ms.saturating_add(1);
+                if occupied {
+                    // The real observer failure relinquishes a replacement
+                    // mutation claim, preserving the predecessor's slot.
+                    let replacement = store
+                        .claim_run(old.run_id(), "observer", LEASE_MS, now, &Default::default())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(
+                        store
+                            .relinquish_claim(&RunClaim::from(&replacement.lease))
+                            .await
+                            .unwrap(),
+                        SettleOutcome::Applied
+                    );
+                }
+                if occupied {
+                    assert!(
+                        store
+                            .claim_for_terminal_recovery(old.run_id(), "maintenance", LEASE_MS, now)
+                            .await
+                            .unwrap()
+                            .is_none(),
+                        "R5 expired-running physical fence prevents maintenance lease theft"
+                    );
+                }
+                let peer = dispatch(&ns, "same-thread", "shared");
+                let fresh = dispatch(&ns, "independent", "independent");
+                store.enqueue(peer.clone()).await.unwrap();
+                store.enqueue(fresh.clone()).await.unwrap();
+                let selected = pick(store, &worker, selector, now).await;
+                let recovered = if occupied {
+                    assert_eq!(
+                        selected.request.run_id(),
+                        fresh.run_id(),
+                        "R2 independent progress"
+                    );
+                    settle_done(store, &selected).await;
+                    let recovered = pick(store, &worker, selector, now).await;
+                    assert_eq!(
+                        recovered.request.run_id(),
+                        old.run_id(),
+                        "R3 recovery still visible"
+                    );
+                    assert_eq!(
+                        store
+                            .begin_attempt(&RunClaim::from(&recovered.lease), now)
+                            .await
+                            .unwrap(),
+                        AttemptAdmission::Blocked,
+                        "R3 original slot preserved"
+                    );
+                    assert_eq!(
+                        store.finish_attempt(&first_claim).await.unwrap(),
+                        SettleOutcome::Applied,
+                        "R4 exact ACK releases old slot"
+                    );
+                    recovered
+                } else {
+                    assert_eq!(
+                        selected.request.run_id(),
+                        old.run_id(),
+                        "R1 recovery priority preserved"
+                    );
+                    selected
+                };
+                assert!(
+                    store
+                        .claim_run(
+                            peer.run_id(),
+                            "same-thread",
+                            LEASE_MS,
+                            now,
+                            &Default::default()
+                        )
+                        .await
+                        .unwrap()
+                        .is_none(),
+                    "R2/R4 Thread remains exclusive until settlement"
+                );
+                settle_done(store, &recovered).await;
+                for expected in if occupied {
+                    vec![peer.run_id()]
+                } else {
+                    vec![peer.run_id(), fresh.run_id()]
+                } {
+                    let next = store
+                        .claim_run(expected, "finish", LEASE_MS, now, &Default::default())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    settle_done(store, &next).await;
+                }
+            }
+        }
+    }
+}
