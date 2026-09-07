@@ -943,52 +943,85 @@ mod tests {
         }
     }
 
-    struct RejectedModel;
+    struct RejectedModel(awaken_runtime_contract::model_operation::ModelExecutionEvidence);
 
     #[async_trait::async_trait]
     impl LlmExecutor for RejectedModel {
         async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
-            // This fixture rejects locally before any provider invocation.
-            Err(awaken_runtime_contract::llm::Error::Binding(
+            let error = awaken_runtime_contract::llm::Error::Binding(
                 "candidate is outside the frozen set".into(),
-            )
-            .with_execution_evidence(
-                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
-            ))
+            );
+            // Keep the legacy/unannotated adapter as the negative control.
+            Err(match self.0 {
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Unknown => error,
+                evidence => error.with_execution_evidence(evidence),
+            })
         }
     }
 
     #[tokio::test]
     async fn auxiliary_terminal_failure_is_not_projected_as_empty_success() {
-        // Cause graph / decision table:
-        // C1=terminal cause is NaturalEnd/MaxSteps; C2=terminal cause is a fault.
-        // | Rule | C1 | C2 | result                                      |
-        // | R1   | T  | F  | return reply/usage                          |
-        // | R2   | F  | T  | return error; caller must retry/fail closed |
-        let tmp = tempfile::tempdir().unwrap();
-        let provider = LocalProvider::new(tmp.path());
-        let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
-        let commit = Arc::new(MemoryCommitCoordinator::new());
-        let context = RuntimeRunContext::new()
-            .with_commit(commit.clone())
-            .with_reader(commit);
+        use awaken_agent_contract::agent::run::{EndCause, Failure};
+        use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
+        // Causes: C1 binding error; C2 adapter's physical execution evidence.
+        // C1 never implies C2: a returned error is not a termination receipt.
+        // | Rule | C2                       | committed terminal | boundary |
+        // | R1   | absent => Unknown         | Indeterminate      | error    |
+        // | R2   | NotDispatched             | binding_rejected   | error    |
+        // | R3   | Terminated                | binding_rejected   | error    |
+        // Every row uses real Runtime -> ThreadCommit -> shared Agent boundary;
+        // no row may invent an assistant reply. The adjacent stable auxiliary
+        // test owns successful terminal replay, so no parallel classifier here.
+        for evidence in [
+            ModelExecutionEvidence::Unknown,
+            ModelExecutionEvidence::NotDispatched,
+            ModelExecutionEvidence::Terminated,
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let provider = LocalProvider::new(tmp.path());
+            let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
+            let commit = Arc::new(MemoryCommitCoordinator::new());
+            let context = RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(commit.clone());
+            let run_id = RunId("aux/rejected/run".into());
 
-        let error = run_configured_agent_with_id(
-            &catalog,
-            AgentRunSandbox::Fresh(&provider),
-            Arc::new(RejectedModel),
-            "worker",
-            "aux/rejected",
-            RunId("aux/rejected/run".into()),
-            vec![user("go")],
-            Vec::new(),
-            context,
-        )
-        .await
-        .expect_err("R2: a terminal inference fault is not an empty successful result");
+            let error = run_configured_agent_with_id(
+                &catalog,
+                AgentRunSandbox::Fresh(&provider),
+                Arc::new(RejectedModel(evidence)),
+                "worker",
+                "aux/rejected",
+                run_id.clone(),
+                vec![user("go")],
+                Vec::new(),
+                context,
+            )
+            .await
+            .expect_err("R1-R3: neither fault nor uncertainty is empty success");
 
-        assert!(error.to_string().contains("ended unsuccessfully"));
-        assert!(error.to_string().contains("binding_rejected"));
+            assert!(error.to_string().contains("ended unsuccessfully"));
+            let expected = match evidence {
+                ModelExecutionEvidence::Unknown => EndCause::Indeterminate,
+                _ => EndCause::Error(Failure::Inference {
+                    code: "binding_rejected".into(),
+                    message: "model binding rejected: candidate is outside the frozen set".into(),
+                }),
+            };
+            assert_eq!(
+                commit.run_state(&run_id),
+                Some(RunState::Ended(expected.clone())),
+                "{evidence:?}: authoritative terminal fact"
+            );
+            assert!(error.to_string().contains(&format!("{expected:?}")));
+            assert!(
+                commit
+                    .committed_messages(&ThreadId("aux/rejected".into()))
+                    .iter()
+                    .all(|message| message.role != Role::Assistant),
+                "{evidence:?}: no fabricated assistant reply"
+            );
+        }
     }
 
     #[tokio::test]

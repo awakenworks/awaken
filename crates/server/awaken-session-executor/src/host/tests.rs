@@ -2785,25 +2785,20 @@ async fn interrupt_ends_an_in_flight_run_as_cancelled() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finishes() {
-    // Decision rule: execute every reachable cause partition documented here and
-    // require its stated effects, including each fail-closed outcome.
-    // Cause/effect: C0 is the canonical Dispatch runtime composition; C1 is a
-    // durable Run blocked inside Provider inference; C2 is an interrupt accepted
-    // by the Session control edge. E0 is that setup failure cannot masquerade as
-    // a gate hang; E1 is that C2 returns while C1 remains blocked; E2 is the
-    // existing pool drainer committing one Indeterminate terminal fact under the new
-    // claim epoch. Constraint: the caller may wake the pool but must never become
-    // a synchronous dispatch driver. This is the pure Native inference branch:
-    // LlmExecutor yields response data, not an invoked Awaken tool. Discarding
-    // that response cannot authorize a later tool call. Opaque tool abandonment
-    // is separately fenced by lease_semantics::native_cancelled_external_future.
-    // C3 the blocked adapter supplies no execution-termination evidence.
-    // E2 must therefore be Indeterminate; interrupt admission alone cannot
-    // prove cancellation of provider-side computation.
+    // Causes: C0 canonical durable Dispatch composition; C1 inference entered
+    // without return evidence; C2 accepted cancellation replaces the claim.
+    // C1+C2 -> prompt intent ACK, then predecessor-unconfirmed Indeterminate,
+    // retaining the exact Run's physical slot and publishing no model reply.
+    // ThreadCommit owns logical state; Dispatch owns physical exclusion. Neither
+    // a new claim nor a returned Host future proves remote termination.
+    // Direct cooperative cancellation is the adjacent test's Cancelled row;
+    // lease_semantics::native_cancelled_external_future owns the lower tool seam.
+    // SessionRunProtocol's ExternalAttemptRetainsExactSlot and unsafe-ACK mutant
+    // cover the abstract exclusion rule, not provider termination or liveness.
     //
     // | Rule | Runtime | durable Run | Provider | interrupt | Effects |
     // |---|---|---|---|---|---|
-    // | R1 | installed | active | blocked | accepted | E0 + E1 + eventual E2 |
+    // | R1 | installed | active | blocked | new claim | prompt ACK + Indeterminate + occupied |
     // | R2 | installed | absent | n/a | replay/no-op | immediate success (sibling test) |
     let reached = Arc::new(tokio::sync::Notify::new());
     let gate = Arc::new(tokio::sync::Notify::new());
@@ -2827,34 +2822,50 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     let mut run =
         tokio::spawn(async move { driver.run(None, "durable-interrupt", user("go")).await });
     await_interrupt_inference_gate(&reached, &mut run).await;
+    use awaken_dispatch::DispatchQueue as _;
+    let before = dispatch.list_dispatches().await.unwrap();
+    assert_eq!(before.len(), 1, "R1: exactly one admitted Run");
+    let original = &before[0];
+    assert_eq!(original.thread_id, ThreadId("durable-interrupt".into()));
+    assert!(original.physical_attempt_active, "R1: model really entered");
 
     tokio::time::timeout(
         std::time::Duration::from_millis(250),
         host.interrupt("durable-interrupt"),
     )
     .await
-    .expect("R1/E1 interrupt admission must not await Provider completion")
+    .expect("R1 interrupt admission must not await Provider completion")
     .expect("R1 interrupt admission");
 
     let result = tokio::time::timeout(std::time::Duration::from_secs(2), run)
         .await
-        .expect("R1/E2 cancellation drainer")
+        .expect("R1 predecessor-uncertain cancellation drainer")
         .expect("R1 join")
         .expect("R1 durable Run");
     assert!(
         matches!(result.state, RunState::Ended(EndCause::Indeterminate)),
-        "R1/E2: {:?}",
+        "R1: {:?}",
         result.state
     );
-    use awaken_dispatch::DispatchQueue as _;
+    let after = dispatch.list_dispatches().await.unwrap();
+    assert_eq!(after.len(), 1, "R1: uncertain occupant cannot be removed");
+    assert_eq!(after[0].run_id, original.run_id);
     assert!(
-        dispatch
-            .list_dispatches()
-            .await
-            .unwrap()
+        after[0].physical_attempt_active,
+        "R1: dropping inference cannot acknowledge physical termination"
+    );
+    let ctx = host.ctx_for("durable-interrupt", None).await.unwrap();
+    assert_eq!(
+        ctx.commit.run_state(&original.run_id),
+        Some(RunState::Ended(EndCause::Indeterminate)),
+        "R1: Host result is the exact committed terminal fact"
+    );
+    assert!(
+        ctx.commit
+            .committed_messages(&ctx.thread_id)
             .iter()
-            .any(|row| row.physical_attempt_active),
-        "R1 unknown model execution retains its physical fence despite terminal projection"
+            .all(|message| message.role != Role::Assistant),
+        "R1: abandoned inference publishes no reply or proposed tool call"
     );
     gate.notify_waiters();
 }
