@@ -942,7 +942,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             } else {
                 AttemptRecoveryMode::RequirePredecessorQuiescence
             };
-            match self
+            let state = match self
                 .run_physical_attempt(
                     PhysicalAttemptRequest {
                         claimed: &claimed,
@@ -954,13 +954,36 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     },
                     move |attempt_context| async move {
                         cancel_executor
-                            .cancel(cancel_activation, attempt_context)
-                            .await
+                            .cancel(cancel_activation.clone(), attempt_context.clone())
+                            .await?;
+                        // Keep cancellation and its terminal writer inside the
+                        // SAME physical Attempt. The writer restores committed
+                        // uncertainty on this latch before the owner decides
+                        // whether to ACK; a backend no-op cannot clear it early.
+                        let ticket = self.reader.resume_ticket(&cancel_activation.run_id);
+                        let awaiting_tool_interrupt = cancellation_uses_tool_interruption(
+                            claimed.request.session_activity_epoch.is_some(),
+                            self.reader.run_state(&cancel_activation.run_id).as_ref(),
+                            ticket.as_ref(),
+                        );
+                        if awaiting_tool_interrupt {
+                            self.runtime
+                                .interrupt_awaiting_tools(
+                                    cancel_activation.run_id,
+                                    cancel_activation.thread_id,
+                                    attempt_context,
+                                )
+                                .await
+                        } else {
+                            self.runtime
+                                .cancel_activation(cancel_activation, attempt_context)
+                                .await
+                        }
                     },
                 )
                 .await?
             {
-                PhysicalAttemptOutcome::Returned(Ok(())) => {}
+                PhysicalAttemptOutcome::Returned(Ok(state)) => state,
                 PhysicalAttemptOutcome::Returned(Err(error)) => {
                     return self
                         .settle_if_terminal_or_raise(&claimed, &all_pending, error, &clock)
@@ -973,27 +996,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                             awaken_agent_contract::agent::run::EndCause::Indeterminate,
                             clock.clone(),
                         )
-                        .await;
-                }
-            }
-            let ticket = self.reader.resume_ticket(&run_id);
-            let awaiting_tool_interrupt = cancellation_uses_tool_interruption(
-                claimed.request.session_activity_epoch.is_some(),
-                self.reader.run_state(&run_id).as_ref(),
-                ticket.as_ref(),
-            );
-            let result = if awaiting_tool_interrupt {
-                self.runtime
-                    .interrupt_awaiting_tools(run_id.clone(), activation.thread_id.clone(), context)
-                    .await
-            } else {
-                self.runtime.cancel_activation(activation, context).await
-            };
-            let state = match result {
-                Ok(state) => state,
-                Err(error) => {
-                    return self
-                        .settle_if_terminal_or_raise(&claimed, &all_pending, error, &clock)
                         .await;
                 }
             };

@@ -767,7 +767,7 @@ async fn durable_submit_persists_then_runs_to_completion() {
             .count(),
         1
     );
-    harness::assert_one_model_invocation(commit.as_ref());
+    harness::assert_completed_model_invocations(commit.as_ref(), 1);
     let messages = commit.committed().messages;
     assert_eq!(
         messages.len(),
@@ -1216,7 +1216,7 @@ async fn durable_submit_is_idempotent_per_run() {
         .await
         .expect("first submit");
     let first_commit_count = commit.commit_count();
-    harness::assert_one_model_invocation(commit.as_ref());
+    harness::assert_completed_model_invocations(commit.as_ref(), 1);
     assert_eq!(calls.load(Ordering::SeqCst), 1, "R1 executes once");
     // Re-submitting the same run id is a no-op: the dispatch was already settled,
     // and re-enqueue does not create a second run or a second commit.
@@ -1232,7 +1232,7 @@ async fn durable_submit_is_idempotent_per_run() {
         first_commit_count,
         "re-submit adds no commit"
     );
-    harness::assert_one_model_invocation(commit.as_ref());
+    harness::assert_completed_model_invocations(commit.as_ref(), 1);
     assert_eq!(calls.load(Ordering::SeqCst), 1, "R2 does not execute again");
 }
 
