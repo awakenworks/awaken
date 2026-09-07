@@ -56,6 +56,27 @@ pub(super) async fn finish(
     run_id: RunId,
     step: RunStepResult,
 ) -> Result<RunState> {
+    finish_with_reader(
+        runtime,
+        context,
+        context.reader.as_deref(),
+        thread_id,
+        run_id,
+        step,
+    )
+    .await
+}
+
+/// Resume already has an authoritative borrowed view. Use it for sealing too;
+/// the optional context reader is not a second source of resume truth.
+pub(super) async fn finish_with_reader(
+    runtime: &Runtime,
+    context: &RuntimeRunContext,
+    reader: Option<&dyn CommittedThreadView>,
+    thread_id: &ThreadId,
+    run_id: RunId,
+    step: RunStepResult,
+) -> Result<RunState> {
     let RunStepResult {
         new_messages,
         mut staged_state,
@@ -78,9 +99,7 @@ pub(super) async fn finish(
     // and child-cancellation intent become one ThreadCommit.
     if matches!(run_state, RunState::Ended(_)) {
         let mut store = store_from_run_commands(
-            context
-                .reader
-                .as_ref()
+            reader
                 .map(|reader| reader.committed_state(thread_id))
                 .unwrap_or_default(),
             &run_id,

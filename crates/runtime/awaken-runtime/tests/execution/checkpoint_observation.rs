@@ -238,10 +238,20 @@ async fn checkpoint_observation_precedes_committed_tool_batch_recovery() {
     // C2 prior model Terminated; C3 checkpoint read Storage/confirmed None.
     // R1 C1+C2+Storage => zero tool effects and no new model ordinal.
     // R2 C1+C2+None => exactly one tool effect and normal completion.
+    // R3 prior model Unknown + readable None => no tool effect: checkpoint
+    // absence cannot override independent model evidence.
     // R2 proves a missing capability/gate cannot make R1 vacuously pass.
-    for failed in [true, false] {
+    for (failed, unknown) in [(true, false), (false, false), (false, true)] {
         let durable = Arc::new(MemoryCommitCoordinator::new());
-        commit_terminated_model(&durable).await;
+        commit_model_evidence(
+            &durable,
+            if unknown {
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Unknown
+            } else {
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated
+            },
+        )
+        .await;
         let batch = ToolBatch::for_step(
             RunId("run-1".into()),
             0,
@@ -298,14 +308,109 @@ async fn checkpoint_observation_precedes_committed_tool_batch_recovery() {
             )
             .await
             .unwrap();
-        assert_eq!(tool.0.load(Ordering::SeqCst), usize::from(!failed));
-        if failed {
+        assert_eq!(
+            tool.0.load(Ordering::SeqCst),
+            usize::from(!failed && !unknown)
+        );
+        if failed || unknown {
             assert_eq!(result, RunState::Ended(EndCause::Indeterminate));
             assert_eq!(model_operations(&durable).last().unwrap().ordinal.get(), 1);
-            checkpoints.assert_untouched();
+            assert_eq!(checkpoints.writes.load(Ordering::SeqCst), 0);
+            assert_eq!(checkpoints.deletes.load(Ordering::SeqCst), 0);
         } else {
             assert_eq!(result, RunState::Ended(EndCause::NaturalEnd));
             assert_eq!(model_operations(&durable).last().unwrap().ordinal.get(), 2);
+        }
+    }
+}
+
+#[tokio::test]
+async fn early_cancellation_preserves_recovered_model_uncertainty() {
+    use awaken_runtime_contract::model_operation::ModelExecutionEvidence::{Terminated, Unknown};
+    // R1 no journal, R2 terminated journal => Cancelled without an invented veto.
+    // R3 unknown journal => Cancelled but no physical ACK. Cancellation precedes
+    // inference, so the inference-only guard cannot satisfy this test.
+    for evidence in [None, Some(Terminated), Some(Unknown)] {
+        let durable = Arc::new(MemoryCommitCoordinator::new());
+        if let Some(evidence) = evidence {
+            commit_model_evidence(&durable, evidence).await;
+        }
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        let context = RuntimeRunContext::new()
+            .with_reader(durable.clone())
+            .with_commit(durable.clone())
+            .with_cancellation(token);
+        let quiescence = context.physical_quiescence.clone();
+        let model = Arc::new(MaxTokensThenTextLlm(AtomicUsize::new(0)));
+        let result = Runtime::new()
+            .with_llm(model.clone())
+            .execute(activation("catalog-a"), context)
+            .await
+            .unwrap();
+        assert_eq!(result, RunState::Ended(EndCause::Cancelled));
+        assert_eq!(
+            quiescence.can_acknowledge_return(),
+            evidence != Some(Unknown)
+        );
+        assert_eq!(model.0.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn control_completion_never_supplies_predecessor_stop_evidence() {
+    use awaken_runtime_contract::model_operation::ModelExecutionEvidence::{Terminated, Unknown};
+    // C1 cancel Run / cancel activation / budget stop; C2 absent/terminated/
+    // unknown journal. Nine rules C1 x C2: keep the requested logical outcome,
+    // no model entry or new ordinal; only Unknown vetoes physical return.
+    for entry in ["cancel-run", "cancel-activation", "stop"] {
+        for evidence in [None, Some(Terminated), Some(Unknown)] {
+            let durable = Arc::new(MemoryCommitCoordinator::new());
+            if let Some(evidence) = evidence {
+                commit_model_evidence(&durable, evidence).await;
+            }
+            let before = model_operations(&durable);
+            let context = RuntimeRunContext::new()
+                .with_reader(durable.clone())
+                .with_commit(durable.clone());
+            let quiescence = context.physical_quiescence.clone();
+            let runtime = Runtime::new();
+            let result = match entry {
+                "cancel-run" => {
+                    runtime
+                        .cancel_run(RunId("run-1".into()), ThreadId("thread-1".into()), context)
+                        .await
+                }
+                "cancel-activation" => {
+                    runtime
+                        .cancel_activation(activation("catalog-a"), context)
+                        .await
+                }
+                _ => {
+                    runtime
+                        .stop_run(
+                            RunId("run-1".into()),
+                            ThreadId("thread-1".into()),
+                            "budget".into(),
+                            context,
+                        )
+                        .await
+                }
+            }
+            .unwrap();
+            assert_eq!(
+                result,
+                RunState::Ended(if entry == "stop" {
+                    EndCause::Stopped("budget".into())
+                } else {
+                    EndCause::Cancelled
+                })
+            );
+            assert_eq!(
+                quiescence.can_acknowledge_return(),
+                evidence != Some(Unknown)
+            );
+            assert_eq!(model_operations(&durable), before);
         }
     }
 }

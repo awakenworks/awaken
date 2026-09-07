@@ -4,6 +4,9 @@
 //! G9); ask awaits on a decision ticket that a later allow resumes; every decision
 //! is audited as a committed `PermissionDecided` event.
 
+#[path = "permission/recovery_evidence.rs"]
+mod recovery_evidence;
+
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};

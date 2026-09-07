@@ -7,6 +7,89 @@ use awaken_runtime_contract::model_operation::{
 };
 use awaken_runtime_contract::resolved::ModelBinding;
 
+/// The one predecessor decision, shared by initial recovery and every subsequent
+/// invocation. Malformed evidence vetoes physical return just like Unknown.
+fn verify_reentry(
+    store: &Store,
+    context: &RuntimeRunContext,
+    recovering_checkpoint: bool,
+) -> awaken_runtime_contract::llm::Result<Option<ModelOperation>> {
+    let previous = ActiveModelOperation::load(store).map_err(|error| {
+        context.physical_quiescence.mark_uncertain();
+        awaken_runtime_contract::llm::Error::Unauthorized(format!(
+            "model operation evidence unavailable: {error}"
+        ))
+    })?;
+    if !ModelOperation::permits_reentry(previous.as_ref(), recovering_checkpoint) {
+        context.physical_quiescence.mark_uncertain();
+        return Err(awaken_runtime_contract::llm::Error::Provider(
+            "previous model invocation has no termination evidence".into(),
+        ));
+    }
+    Ok(previous)
+}
+
+/// A transient observation, not another persistent recovery state machine.
+pub(super) enum RecoveryObservation {
+    Ready(Option<StreamCheckpoint>),
+    End(EndCause),
+}
+
+/// Observe recovery once before initial/resumed effects, not after permission
+/// approval or delegation. Pass the validated partial into the Native loop;
+/// model-free handoffs share this gate without needing a model executor.
+pub(super) async fn recover_checkpoint(
+    store: &Store,
+    context: &RuntimeRunContext,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+) -> Result<RecoveryObservation> {
+    let uncertain = || {
+        context.physical_quiescence.mark_uncertain();
+        if context.is_cancelled() {
+            EndCause::Cancelled
+        } else {
+            EndCause::Indeterminate
+        }
+    };
+    let previous = match verify_reentry(store, context, false) {
+        Ok(previous) => previous,
+        Err(awaken_runtime_contract::llm::Error::Unauthorized(detail)) => {
+            return Err(Error::Commit(detail));
+        }
+        Err(_) => return Ok(RecoveryObservation::End(uncertain())),
+    };
+    let checkpoint = match context.stream_checkpoint.as_ref() {
+        None => None,
+        Some(checkpoints) => {
+            match inference::model_read(context.cancellation.as_ref(), checkpoints.get(&run_id.0))
+                .await
+            {
+                Some(Ok(checkpoint))
+                    if checkpoint.as_ref().is_none_or(|checkpoint| {
+                        checkpoint.run_id == run_id.0 && checkpoint.thread_id == thread_id.0
+                    }) =>
+                {
+                    checkpoint
+                }
+                observation => {
+                    if let Some(Err(error)) = observation {
+                        tracing::warn!(run_id = %run_id.0, %error, "failed to load stream checkpoint");
+                    }
+                    return Ok(RecoveryObservation::End(uncertain()));
+                }
+            }
+        }
+    };
+    if !ModelOperation::permits_reentry(previous.as_ref(), checkpoint.is_some()) {
+        return Ok(RecoveryObservation::End(uncertain()));
+    }
+    if context.is_cancelled() {
+        return Ok(RecoveryObservation::End(EndCause::Cancelled));
+    }
+    Ok(RecoveryObservation::Ready(checkpoint))
+}
+
 pub(super) struct ModelOperationJournal<'a> {
     pub ledger: &'a mut StepLedger,
     pub store: &'a mut Store,
@@ -42,15 +125,11 @@ impl<'a> ModelOperationJournal<'a> {
         &mut self,
         recovering_checkpoint: bool,
     ) -> awaken_runtime_contract::llm::Result<Option<ModelOperation>> {
-        let previous =
-            ActiveModelOperation::load(self.store).map_err(|error| self.reject(error))?;
-        if !ModelOperation::permits_reentry(previous.as_ref(), recovering_checkpoint) {
-            self.context.physical_quiescence.mark_uncertain();
-            return Err(awaken_runtime_contract::llm::Error::Provider(
-                "previous model invocation has no termination evidence".into(),
-            ));
-        }
-        Ok(previous)
+        verify_reentry(self.store, self.context, recovering_checkpoint).inspect_err(|error| {
+            if matches!(error, awaken_runtime_contract::llm::Error::Unauthorized(_)) {
+                self.failed = true;
+            }
+        })
     }
 
     pub async fn enter(

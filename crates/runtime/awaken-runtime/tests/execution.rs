@@ -57,15 +57,25 @@ async fn interrupted_model_checkpoint() -> (
 }
 
 async fn commit_terminated_model(durable: &MemoryCommitCoordinator) {
+    commit_model_evidence(
+        durable,
+        awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated,
+    )
+    .await;
+}
+
+async fn commit_model_evidence(
+    durable: &MemoryCommitCoordinator,
+    evidence: awaken_runtime_contract::model_operation::ModelExecutionEvidence,
+) {
     use awaken_runtime_contract::model_operation::{
-        ActiveModelOperation, ModelExecutionEvidence, ModelOperation, ModelOperationPhase,
+        ActiveModelOperation, ModelOperation, ModelOperationPhase,
     };
-    // A retained checkpoint in the positive/fault tests follows a confirmed
-    // prior termination. Persist that prerequisite through the real state log,
-    // rather than letting an unjournaled legacy partial imply permission.
+    // Persist the selected predecessor fact through the real state log. A local
+    // Returned phase alone cannot turn Unknown into permission to replay.
     let mut prior = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
     prior.phase = ModelOperationPhase::Returned;
-    prior.execution = ModelExecutionEvidence::Terminated;
+    prior.execution = evidence;
     awaken_runtime_contract::CommitCoordinator::commit(
         durable,
         awaken_runtime_contract::ThreadCommit::assemble(
