@@ -192,6 +192,26 @@ keeps one production realization path across Workdir and Namespace providers.
 - **Lifecycle is projection-local.** Disposing one sandbox tears down only its own
   mount. Other projections remain mounted and coherent through the shared repository
   and invalidation bus.
+- **The listener owns its thread before kernel setup.** `InvalidationListener`
+  now stops and joins in its own destructor. Failed `spawn_mount2`, setup unwind,
+  explicit unmount and `MemoryMountHandle::drop` use this single cleanup owner;
+  dropping a bare `JoinHandle` previously detached the subscriber on setup error.
+  The existing bus, cache loop, Memory port and kernel session remain unchanged;
+  only listener ownership changes, with no new runtime registry or cleanup service.
+  Dynamic order is create owned listener -> attempt mount -> transfer to the mount
+  handle on success, or stop/join on error. Unmount/Drop stop and join the listener
+  before releasing the kernel session. Repeated unmount sees an empty listener.
+  Adjacent test comments own the cause/effect table: real invalid-mount failures
+  preserve a peer subscriber, 18 disposal/exit/queue combinations release the
+  subscriber, a channel barrier requires exit rather than stop acknowledgement,
+  and setup unwind retains cleanup. `MemoryInvalidationLifecycle` separately
+  checks two projection owners, join-before-return, peer isolation and conditional
+  completion, with five semantic mutants and four reachability witnesses. The
+  existing Memory CAS model remains the write-conflict authority, not a listener
+  lifecycle model. The new model is abstract, not Rust refinement: scheduler
+  progress and terminating cache critical sections are assumptions. This does
+  not solve abrupt process death, unmount error reporting, Provider replay
+  cancellation or failed ownerless compensation retention.
 - **Cross-host transport remains deferred.** `Invalidator` is the transport port, but
   only the in-process `LocalInvalidator` is implemented. A distributed transport must
   reuse that port and the same repository authority; it must not add another store or

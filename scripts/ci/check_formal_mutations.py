@@ -20,6 +20,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from formal_model_mutation_runner import check_tlc_model_mutations
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -490,6 +492,7 @@ def main() -> None:
     model_selection.add_argument("--config-cas-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--background-completion-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--sandbox-control-model-mutants", type=Path, metavar="TLC_JAR")
+    model_selection.add_argument("--memory-invalidation-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--audit-commit-model-mutants", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--effect-retirement-model-mutant", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--credential-removal-model-mutant", type=Path, metavar="TLC_JAR")
@@ -520,6 +523,9 @@ def main() -> None:
         return
     if arguments.local_recovery_model_mutants is not None:
         check_local_recovery_model_mutants(arguments.local_recovery_model_mutants)
+        return
+    if arguments.memory_invalidation_model_mutants is not None:
+        check_memory_invalidation_model_mutants(arguments.memory_invalidation_model_mutants)
         return
     if arguments.sandbox_control_model_mutants is not None:
         check_sandbox_control_model_mutants(arguments.sandbox_control_model_mutants)
@@ -1347,6 +1353,34 @@ def check_config_cas_model_mutant(tlc_jar: Path) -> None:
     print("Config CAS mutation score: 2/2 killed (absent-row predicate, exhaustion)")
 
 
+def check_memory_invalidation_model_mutants(tlc_jar: Path) -> None:
+    # MI1 missing stop; MI2 return before exit; MI3 detached rather than joined;
+    # MI4 stop a peer; MI5 cleanup cannot finish. The real baseline must pass,
+    # and exact invariants/liveness must fail (never parser/timeout credit).
+    source = (ROOT / "formal/tla/MemoryInvalidationLifecycle.tla").read_text()
+    config = (ROOT / "formal/tla/MemoryInvalidationLifecycle.cfg").read_text()
+    header = config.split("INVARIANTS\n", 1)[0]
+    mutations = []
+    for anchor, broken, oracle in [
+        ("stop' = [stop EXCEPT ![i] = TRUE]", "stop' = stop", "StoppingRequestsStop"),
+        ('/\\ task[i] = "Exited"\n    /\\ phase\'', '/\\ TRUE\n    /\\ phase\'', "ReturnRequiresJoin"),
+        ("joined' = [joined EXCEPT ![i] = TRUE]", "joined' = joined", "ReturnRequiresJoin"),
+        ("stop' = [stop EXCEPT ![i] = TRUE]", "stop' = [j \\in Owners |-> TRUE]", "NoPeerStop"),
+        ('Finish(i) ==\n    /\\ phase[i] = "Stopping"',
+         'Finish(i) ==\n    /\\ FALSE\n    /\\ phase[i] = "Stopping"', "temporal:CleanupEventuallyReturns"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"Memory invalidation mutation anchor drifted: {oracle}")
+        kind = "PROPERTIES" if oracle.startswith("temporal:") else "INVARIANTS"
+        mutations.append((source.replace(anchor, broken),
+                          header + f"{kind} {oracle.removeprefix('temporal:')}\n", oracle))
+    for witness in ("NoFailedSetupReturned", "NoSuccessfulMountReturned",
+                    "NoPeerMountsActive", "NoEarlyExitReached"):
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "MemoryInvalidationLifecycle", source, config, mutations)
+    print("Memory invalidation mutation score: 5/5 killed; 4 lifecycle schedules reachable")
+
+
 def check_sandbox_control_model_mutants(tlc_jar: Path) -> None:
     # SC1 first close forgets participant; SC2 cancellation forgets it; SC3
     # return skips join; SC4 Drop releases early; SC5 late start after cancel;
@@ -1955,57 +1989,6 @@ def check_checkpoint_recovery_model_mutants(tlc_jar: Path) -> None:
     print("Checkpoint recovery: 8/8 mutants killed; seven observation witnesses reachable")
 
 
-def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,
-                              mutations: list[tuple[str, str, str]], *,
-                              dependencies: tuple[str, ...] = (),
-                              artifact_directory: Path | None = None,
-                              heap_mb: int = 512, timeout_seconds: int = 60) -> None:
-    # One TLC invocation/oracle for every model mutation family. Validate both
-    # the process result and semantic outcome; always establish the green base.
-    cases = [(source, config, None), *mutations]
-    for model_text, config_text, invariant in cases:
-        with tempfile.TemporaryDirectory(prefix="awaken-tlc-mutant-") as temp:
-            directory = Path(temp)
-            for dependency in dependencies:
-                shutil.copy2(ROOT / f"formal/tla/{dependency}.tla", directory)
-            model = directory / f"{name}.tla"
-            model.write_text(model_text, encoding="utf-8")
-            config_path = directory / f"{name}.cfg"
-            config_path.write_text(config_text, encoding="utf-8")
-            if artifact_directory:
-                artifact_directory.mkdir(parents=True, exist_ok=False)
-                for source_path in directory.glob("*"):
-                    if source_path.is_file(): shutil.copy2(source_path, artifact_directory / source_path.name)
-            try:
-                result = subprocess.run(
-                    ["java", f"-Xmx{heap_mb}m", "-XX:+UseParallelGC", "-jar", str(tlc_jar.resolve()),
-                     "-metadir", str(directory / "states"), "-config", str(config_path), str(model)],
-                    cwd=directory, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    timeout=timeout_seconds, check=False,
-                )
-            except (subprocess.TimeoutExpired, OSError) as error:
-                if artifact_directory: (artifact_directory / "tlc.log").write_text(f"proof tool failed: {error}")
-                raise
-            if artifact_directory:
-                (artifact_directory / "tlc.log").write_text(result.stdout)
-            temporal = invariant is not None and invariant.startswith("temporal:")
-            action = invariant is not None and invariant.startswith("action:")
-            constant = invariant is not None and invariant.startswith("constant:")
-            if temporal:
-                # TLC does not name a failed temporal property in its output.
-                # Restrict this oracle to one explicitly named CFG property.
-                properties = [line.strip() for line in config_text.splitlines()
-                              if line.strip().startswith(("PROPERTY ", "PROPERTIES "))]
-                if properties != [f"PROPERTIES {invariant.removeprefix('temporal:')}"]:
-                    raise SystemExit("temporal mutation requires one exact named property")
-            expected_code = 0 if invariant is None else (151 if constant else 13 if temporal or action else 12)
-            expected_text = ("Model checking completed. No error has been found." if invariant is None
-                             else f"The invariant of {invariant.removeprefix('constant:')} is equal to FALSE" if constant
-                             else f"Action property {invariant.removeprefix('action:')} is violated." if action
-                             else "Temporal properties were violated." if temporal
-                             else f"Invariant {invariant} is violated")
-            if result.returncode != expected_code or expected_text not in result.stdout:
-                raise SystemExit(f"{name} {'baseline failed' if invariant is None else f'mutant for {invariant} was not killed correctly'} (exit={result.returncode}):\n{result.stdout}")
 
 
 if __name__ == "__main__":

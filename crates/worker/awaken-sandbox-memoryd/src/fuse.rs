@@ -63,13 +63,18 @@ pub struct MemoryMountHandle {
 /// (ADR-0053 D5). Stops when its flag is set (at unmount) or the bus closes.
 struct InvalidationListener {
     stop: Arc<AtomicBool>,
-    handle: JoinHandle<()>,
+    handle: Option<JoinHandle<()>>,
 }
 
-impl InvalidationListener {
-    fn stop(self) {
+impl Drop for InvalidationListener {
+    fn drop(&mut self) {
+        // Own the thread from creation, before the fallible kernel mount. The
+        // same destructor covers setup failure, explicit unmount and owner Drop;
+        // dropping a bare JoinHandle would only detach the still-live subscriber.
         self.stop.store(true, Ordering::SeqCst);
-        let _ = self.handle.join();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -117,9 +122,7 @@ impl MemoryMountHandle {
     /// the drain timeout so a close-flush in flight is not cut off; warns (never
     /// hangs) if fds remain.
     pub fn unmount(&mut self) {
-        if let Some(listener) = self.listener.take() {
-            listener.stop();
-        }
+        drop(self.listener.take());
         let deadline = Instant::now() + self.drain_timeout;
         while self.state.open_fds.load(Ordering::SeqCst) != 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
@@ -153,9 +156,7 @@ impl Drop for MemoryMountHandle {
     fn drop(&mut self) {
         // Dropping the handle (without an explicit unmount) still stops the listener
         // thread rather than leaving it polling a detached bus.
-        if let Some(listener) = self.listener.take() {
-            listener.stop();
-        }
+        drop(self.listener.take());
     }
 }
 
@@ -197,7 +198,10 @@ fn spawn_mount_inner(
         let handle = std::thread::spawn(move || {
             run_invalidation_listener(cache, store_id, rx, stop_thread);
         });
-        InvalidationListener { stop, handle }
+        InvalidationListener {
+            stop,
+            handle: Some(handle),
+        }
     });
     let session = fuser::spawn_mount2(fuse, mountpoint, &mount_options())
         .map_err(|e| FuseError::Internal(e.to_string()))?;
