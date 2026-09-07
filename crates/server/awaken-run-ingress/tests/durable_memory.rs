@@ -755,9 +755,10 @@ async fn durable_submit_persists_then_runs_to_completion() {
         .expect("durable submit");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
-    // C1 fresh durable input -> E1 one user/assistant exchange and one model
-    // completion, E2 settled dispatch removed. Model intent/return journal
-    // commits are legitimate durability, not duplicate user execution.
+    // C1 fresh durable input -> E1 one exchange and one actual invocation,
+    // E2 settled dispatch removed. M1 checks the exact invocation journal;
+    // commit batching is not a proxy for duplicate execution.
+    harness::assert_completed_model_invocations(commit.as_ref(), 1);
     assert_eq!(
         commit
             .committed()
@@ -767,7 +768,6 @@ async fn durable_submit_persists_then_runs_to_completion() {
             .count(),
         1
     );
-    harness::assert_completed_model_invocations(commit.as_ref(), 1);
     let messages = commit.committed().messages;
     assert_eq!(
         messages.len(),
@@ -1226,7 +1226,7 @@ async fn durable_submit_is_idempotent_per_run() {
         .expect("second submit");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     // C1 settled Run + C2 same identity -> E1 zero additional commits/effects.
-    // Compare against the actual first submission, including model journals.
+    // D2 replay adds no input, invocation journal, or terminal commit.
     assert_eq!(
         commit.commit_count(),
         first_commit_count,
@@ -1438,6 +1438,7 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
             RunState::Ended(EndCause::NaturalEnd)
         )]
     );
+    harness::assert_completed_model_invocations(commit.as_ref(), 1);
     assert_eq!(
         commit
             .committed()
