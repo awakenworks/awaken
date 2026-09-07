@@ -9,6 +9,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import {
   allowManagedToolBoundaries,
   availablePort,
+  availablePortBlock,
   deploymentEnv,
   ensureProductionBuilt,
   initializeE2EInstallation,
@@ -33,6 +34,7 @@ async function main() {
   // durable-state assertions and consume this same E2E_PORT authority.
   for (const [rule, assignments] of [
     ['P1', {}],
+    ['P1 occupied offset', {}],
     ['P2', { E2E_PORT: '23117', E2E_WORKER_PORT: '23167' }],
   ]) {
     const env = { ...process.env };
@@ -40,7 +42,18 @@ async function main() {
     delete env.E2E_WORKER_PORT;
     Object.assign(env, assignments);
     const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import net from 'node:net';
+      const preferred = 20_000 + (process.pid % 100) * 100;
+      const occupied = ${JSON.stringify(rule)} === 'P1 occupied offset' ? net.createServer() : null;
+      if (occupied) await new Promise((resolve, reject) => {
+        occupied.once('error', reject);
+        occupied.listen(preferred + 99, '127.0.0.1', resolve);
+      });
       await import(${JSON.stringify(new URL('./harness.mjs', import.meta.url).href)});
+      if (occupied) {
+        if (Number(process.env.E2E_PORT) === preferred) throw new Error('default block ignored occupied offset');
+        await new Promise(resolve => occupied.close(resolve));
+      }
       console.log(JSON.stringify([process.env.E2E_PORT, process.env.E2E_WORKER_PORT]));
     `], { env, encoding: 'utf8' });
     assert.equal(child.status, 0, `${rule}: ${child.stderr}`);
@@ -48,6 +61,53 @@ async function main() {
     if (rule === 'P2') assert.deepEqual(selected, ['23117', '23167'], rule);
     else assert.ok(selected.every(value => Number(value) >= 20_000 && Number(value) < 30_000), rule);
   }
+  // Block-allocation decision table. B1 an entirely free block => exact reuse;
+  // B2 an occupied base, Worker offset, or final offset => select another whole
+  // block, preserve the foreign listener; B3 the listener closes => exact reuse;
+  // B4 unaligned/out-of-range/non-integer input => reject. Boundary values 0,
+  // 50 and 99 cover primary, Worker and largest relative-offset consumers.
+  const block = await availablePortBlock(20_000);
+  assert.equal(await availablePortBlock(block), block, 'B1');
+  for (const offset of [0, 50, 99]) {
+    const owner = net.createServer();
+    await new Promise((resolve, reject) => {
+      owner.once('error', reject);
+      owner.listen(block + offset, '127.0.0.1', resolve);
+    });
+    try {
+      assert.notEqual(await availablePortBlock(block), block, `B2 offset ${offset}`);
+      assert.equal(owner.listening, true, 'B2 preserves foreign listener');
+    } finally {
+      await new Promise(resolve => owner.close(resolve));
+    }
+    assert.equal(await availablePortBlock(block), block, 'B3');
+  }
+  for (const invalid of [19_900, 30_000, 20_001, NaN]) {
+    await assert.rejects(availablePortBlock(invalid), RangeError, 'B4');
+  }
+
+  // B5 all blocks have at least one occupied socket => bounded exhaustion,
+  // never an unprobed fallback. Real listeners remain owned by this test; any
+  // preexisting EADDRINUSE already supplies that block's obstruction.
+  const blockers = [];
+  try {
+    for (let base = 20_000; base < 30_000; base += 100) {
+      const owner = net.createServer();
+      try {
+        await new Promise((resolve, reject) => {
+          owner.once('error', reject);
+          owner.listen(base, '127.0.0.1', resolve);
+        });
+        blockers.push(owner);
+      } catch (error) {
+        assert.equal(error.code, 'EADDRINUSE');
+      }
+    }
+    await assert.rejects(availablePortBlock(block), /no available E2E port block/, 'B5');
+  } finally {
+    await Promise.all(blockers.map(owner => new Promise(resolve => owner.close(resolve))));
+  }
+
   const foreign = net.createServer();
   await new Promise((resolve, reject) => {
     foreign.once('error', reject);

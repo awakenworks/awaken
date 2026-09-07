@@ -29,9 +29,7 @@
 
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { closeHttpServer } from './http_server.mjs';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -41,7 +39,7 @@ import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 import { snapshotExecutable } from './executable_snapshot.mjs';
-import { FAKE_KEY, startUpstream, initializeE2EInstallation, waitForSessionEventReceipt, stopServer as stop, hardKillServer } from './harness.mjs';
+import { availablePort, FAKE_KEY, startUpstream, initializeE2EInstallation, waitForSessionEventReceipt, stopServer as stop, hardKillServer } from './harness.mjs';
 import { installHostResourceFixture, verifyAgentResources } from './fixtures/trusted_host_resources.mjs';
 
 const profile = process.env.CODEX_ACP_PROFILE;
@@ -83,18 +81,6 @@ function awakenBin() {
     // accept an unqualified prebuilt binary with unknown feature provenance.
     ...(profile === 'container' ? { prebuiltEnvironmentName: AWAKEN_BIN_ENV } : { features: ['test-support'] }),
   });
-}
-
-async function availablePort() {
-  const server = net.createServer();
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
-  });
-  const address = server.address();
-  assert.equal(typeof address, 'object');
-  await closeHttpServer(server);
-  return address.port;
 }
 
 async function waitReady(child, baseURL, tokenPath) {
@@ -157,7 +143,7 @@ async function startHostLoginProfile() {
   assert.equal(codex?.login_state, 'available', JSON.stringify(codex));
   }
 
-  const port = await availablePort();
+  const port = await availablePort(0);
   const config = path.join(temp, 'config.toml');
   fs.writeFileSync(config, [
     `data_dir = ${JSON.stringify(path.join(temp, 'data'))}`,
