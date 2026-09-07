@@ -90,24 +90,18 @@ impl SharedHost {
     ) -> Result<awaken_provisioning_contract::SandboxDisposalAuthorization, HostError> {
         let current =
             self.authorize_terminal_cleanup_lease(&effect.command.session_id, &effect.lease)?;
-        let authorization = effect
+        // The same slot proof already authorized preparation and disposal.
+        // Lowering preserves its Control-clock fence bytes; comparing them to
+        // Worker UTC would invent a second, incompatible expiry decision.
+        // This projection is not a grant for a later asynchronous effect.
+        effect
             .sandbox_disposal_authorization_for_current_generation(&current)
             .map_err(|error| {
                 HostError::unavailable_classified(
                     "session_terminal_cleanup_disposal_unauthorized",
                     error.to_string(),
                 )
-            })?;
-        authorization
-            .effect_fence()
-            .validate_live_at(crate::terminal_repository_publication::runtime_unix_now_ms())
-            .map_err(|error| {
-                HostError::unavailable_classified(
-                    "session_terminal_cleanup_disposal_expired",
-                    error.to_string(),
-                )
-            })?;
-        Ok(authorization)
+            })
     }
 
     /// Re-open one exact terminal substrate into the process-local teardown
