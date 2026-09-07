@@ -59,6 +59,15 @@ def main() -> None:
     # own that proven recovery flow. Effects: E1 C1+C2 grants only
     # create/get/delete; E2 C3 retains no dormant PVC authority. KRB1=C1+C2=>E1;
     # KRB2=C3=>E2. Pod update remains a separate rule and must not widen PVCs.
+    # KRB3: permission is insufficient; the actual Worker must select retained
+    # storage. Omitting configuration yields claim_uid=None and must reject
+    # rebuild. This assertion closes the false premise in KRB1 above.
+    import tomllib
+    import textwrap
+    worker = resources.split("  worker.toml: |\n", 1)[1].split("---", 1)[0]
+    assert tomllib.loads(textwrap.dedent(worker))["k8s_continuation_volume"] == {
+        "storage_class_name": "local-path", "size": "1Gi",
+    }
     assert 'resources: ["persistentvolumeclaims"]' in resources
     assert 'verbs: ["create", "get", "delete"]' in resources
     product_active_yaml = "\n".join(
