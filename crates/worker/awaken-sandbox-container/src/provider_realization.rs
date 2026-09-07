@@ -377,8 +377,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         authorization.validate()?;
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
         request.validate_for_spec(spec)?;
         pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())
             .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
@@ -387,8 +389,16 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         let evidence = request.evidence(spec);
         let scope = restoration_runtime_scope(&evidence)?;
         self.runtime
-            .dispose_restore_target(&scope, &plan, &plan_fingerprint, &evidence, authorization)
+            .dispose_restore_target(
+                &scope,
+                &plan,
+                &plan_fingerprint,
+                &evidence,
+                authorization,
+                authority,
+            )
             .await
-            .map_err(err)
+            .map_err(err)?;
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
     }
 }

@@ -17079,6 +17079,7 @@ struct TerminalRecoveryProvider {
 
 #[derive(Default)]
 struct TerminalFenceRefreshProbe {
+    restored_release: tokio::sync::Notify,
     artifact_entered: tokio::sync::Notify,
     artifact_release: tokio::sync::Notify,
     memory_entered: tokio::sync::Notify,
@@ -17214,10 +17215,13 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         _spec: &pc::SandboxSpec,
         handle: Option<&pc::SandboxHandle>,
         _expected_effect_fence: Option<&pc::SandboxEffectFence>,
-        _terminal_effect_fence: &pc::SandboxEffectFence,
+        terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<Arc<dyn awaken_sandbox_container::ContainerEnvironment>>, pc::SandboxError>
     {
-        match self.scenario {
+        pc::with_current_sandbox_effect::<
+            Option<Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+        >(terminal_effect_fence, authority, || match self.scenario {
             TerminalRecoveryScenario::OrphanClaim => Err(pc::SandboxError::new(
                 "orphan-claim observation must fail before terminal preparation",
             )),
@@ -17276,7 +17280,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
             TerminalRecoveryScenario::Restoring => Err(pc::SandboxError::new(
                 "Restoring terminal cleanup must use exact target disposal",
             )),
-        }
+        })
     }
 
     async fn dispose_restored_environment(
@@ -17284,6 +17288,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         _spec: &pc::SandboxSpec,
         _request: &pc::SandboxRestoreRequest,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         if !matches!(self.scenario, TerminalRecoveryScenario::Restoring) {
             return Err(pc::SandboxError::new(
@@ -17291,11 +17296,18 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
             ));
         }
         authorization.validate()?;
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
         self.restored_disposals
             .lock()
             .unwrap()
             .push(authorization.clone());
         self.events.lock().unwrap().push("dispose-restored");
+        if let Some(probe) = &self.fence_refresh_probe {
+            probe.restored_release.notified().await;
+        }
+        // Intentionally return the admitted backend result even after proof
+        // loss. TR4 must exercise the Host's own post-response guard rather
+        // than pass because this fixture preemptively rejects the response.
         Ok(())
     }
 }
@@ -17330,13 +17342,17 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
         _store: &dyn pc::SandboxCheckpointStore,
         _expected_effect_fence: &pc::SandboxEffectFence,
         terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
-        self.events.lock().unwrap().push("checkpoint-live-io");
+        pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+            self.events.lock().unwrap().push("checkpoint-live-io");
+            Ok(())
+        })?;
         if let Some(probe) = &self.fence_refresh_probe {
             probe.record("checkpoint", terminal_effect_fence);
             probe.checkpoint_entered.notify_one();
             probe.checkpoint_release.notified().await;
-            return Ok(());
+            return pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(()));
         }
         Err(pc::SandboxError::new(
             "terminal recovery fixture has no pending checkpoint upload",
@@ -17546,7 +17562,10 @@ impl awaken_sandbox_container::ContainerEnvironment for TerminalRecoveryEnvironm
     }
 }
 
-fn terminal_fixture_container_handle(thread: &str, spec: &pc::SandboxSpec) -> pc::SandboxHandle {
+pub(super) fn terminal_fixture_container_handle(
+    thread: &str,
+    spec: &pc::SandboxSpec,
+) -> pc::SandboxHandle {
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
     pc::SandboxHandle::container_v2(
         thread,
@@ -18098,9 +18117,10 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublic
     }
 }
 
-struct RecordingTerminalCheckpointStore {
-    events: Arc<Mutex<Vec<&'static str>>>,
-    expected_id: String,
+pub(super) struct RecordingTerminalCheckpointStore {
+    pub(super) events: Arc<Mutex<Vec<&'static str>>>,
+    pub(super) expected_id: String,
+    pub(super) delete_gate: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 #[async_trait::async_trait]
@@ -18128,11 +18148,14 @@ impl pc::SandboxCheckpointStore for RecordingTerminalCheckpointStore {
             ));
         }
         self.events.lock().unwrap().push("delete-checkpoint");
+        if let Some(gate) = &self.delete_gate {
+            let _permit = gate.acquire().await.unwrap();
+        }
         Ok(())
     }
 }
 
-fn terminal_recovery_effect(
+pub(super) fn terminal_recovery_effect(
     thread: &str,
     owner: &str,
 ) -> (
@@ -18153,7 +18176,7 @@ fn terminal_recovery_effect(
     (lease, effect)
 }
 
-fn disposing_terminal_environment(
+pub(super) fn disposing_terminal_environment(
     thread: &str,
     lease: &awaken_session_contract::SessionRealizationLease,
     handle: &pc::SandboxHandle,
@@ -18545,6 +18568,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
             events: events.clone(),
             expected_id: "unused-pending-checkpoint-id".into(),
+            delete_gate: None,
         }));
     raw_host.install_memory_mounter(Arc::new(RecordingTerminalMemoryMounter {
         events: events.clone(),
@@ -18889,6 +18913,7 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
         raw_host.with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
             events: events.clone(),
             expected_id: checkpoint_id.clone(),
+            delete_gate: None,
         }));
     let host = Arc::new(raw_host);
     let managed = install_test_dispatch_runtime(&host);
@@ -19015,6 +19040,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
             events: events.clone(),
             expected_id: checkpoint_id.into(),
+            delete_gate: None,
         }));
     raw_host.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
         events: events.clone(),
@@ -19767,146 +19793,245 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
     // fence; E4 acknowledgement alone retires the terminal projection. Rules:
     // TR1=C1+C2=>E1; TR2=TR1+C3+C4=>E2+E3; TR3=TR2+C5=>E4. There is no
     // Disposal-local Vacant completion or second receipt registry.
-    let thread = "restoring-terminal-response-loss";
-    let (lease, base_effect) = terminal_recovery_effect(thread, "restoring-terminal-worker");
-    let generation = awaken_session_contract::SandboxGeneration::new(
-        thread,
-        lease.epoch,
-        lease.expires_at_unix_ms,
-        "restoring-terminal-environment",
-        "restoring-terminal-image",
-    );
-    let suspend = awaken_session_contract::SessionEnvironmentOperation::new(
-        "terminal-workspace",
-        thread,
-        "suspend",
-        &generation,
-        6,
-        Some(lease.clone()),
-        None,
-    );
-    let checkpoint = awaken_session_contract::SandboxCheckpointRef {
-        id: "restoring-terminal-checkpoint".into(),
-        format: "awaken-fs-v1".into(),
-        digest: "restoring-terminal-checkpoint-digest".into(),
-        size_bytes: 1,
-        created_at_unix_ms: 1,
-        expires_at_unix_ms: u64::MAX,
-        environment_fingerprint: generation.environment_fingerprint.clone(),
-        base_image_fingerprint: generation.base_image_fingerprint.clone(),
-        excluded_mounts: Vec::new(),
-        suspend_effect_id: suspend.effect_id,
-    };
-    let restore = awaken_session_contract::SessionEnvironmentOperation::new(
-        "terminal-workspace",
-        thread,
-        "restore",
-        &generation,
-        7,
-        Some(lease.clone()),
-        Some(&checkpoint),
-    );
-    let restoring = awaken_session_contract::SessionEnvironmentState::Restoring {
-        operation: restore,
-        checkpoint: checkpoint.clone(),
-        generation,
-    };
-    let restore_target = restoring
-        .restoring_request("terminal-workspace", thread)
-        .expect("TR1 exact aggregate restore target");
-    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
-        base_effect
-            .command
-            .with_restore_target(restore_target.clone())
-            .expect("TR1 root command owns R"),
-        lease.clone(),
-    );
+    // TR4: actual committed-response wait x unchanged/Worker revoke/expiry,
+    // Session revoke/replacement/renewal/cancellation. Only unchanged/renewal
+    // may return a receipt; every failed/cancelled attempt retains the exact
+    // Restoring owner. TR5 absent/repeated deletion still crosses both current
+    // authorities. These are Host composition checks, not remote rollback.
+    for change in [
+        "unchanged",
+        "worker-revoke",
+        "worker-expire",
+        "session-revoke",
+        "replace",
+        "renew",
+        "cancel",
+    ] {
+        let thread = "restoring-terminal-response-loss";
+        let (lease, base_effect) = terminal_recovery_effect(thread, "restoring-terminal-worker");
+        let generation = awaken_session_contract::SandboxGeneration::new(
+            thread,
+            lease.epoch,
+            lease.expires_at_unix_ms,
+            "restoring-terminal-environment",
+            "restoring-terminal-image",
+        );
+        let suspend = awaken_session_contract::SessionEnvironmentOperation::new(
+            "terminal-workspace",
+            thread,
+            "suspend",
+            &generation,
+            6,
+            Some(lease.clone()),
+            None,
+        );
+        let checkpoint = awaken_session_contract::SandboxCheckpointRef {
+            id: "restoring-terminal-checkpoint".into(),
+            format: "awaken-fs-v1".into(),
+            digest: "restoring-terminal-checkpoint-digest".into(),
+            size_bytes: 1,
+            created_at_unix_ms: 1,
+            expires_at_unix_ms: u64::MAX,
+            environment_fingerprint: generation.environment_fingerprint.clone(),
+            base_image_fingerprint: generation.base_image_fingerprint.clone(),
+            excluded_mounts: Vec::new(),
+            suspend_effect_id: suspend.effect_id,
+        };
+        let restore = awaken_session_contract::SessionEnvironmentOperation::new(
+            "terminal-workspace",
+            thread,
+            "restore",
+            &generation,
+            7,
+            Some(lease.clone()),
+            Some(&checkpoint),
+        );
+        let restoring = awaken_session_contract::SessionEnvironmentState::Restoring {
+            operation: restore,
+            checkpoint: checkpoint.clone(),
+            generation,
+        };
+        let restore_target = restoring
+            .restoring_request("terminal-workspace", thread)
+            .expect("TR1 exact aggregate restore target");
+        let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
+            base_effect
+                .command
+                .with_restore_target(restore_target.clone())
+                .expect("TR1 root command owns R"),
+            lease.clone(),
+        );
 
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let provider = Arc::new(TerminalRecoveryProvider {
-        restored_disposals: Mutex::new(Vec::new()),
-        events: events.clone(),
-        scenario: TerminalRecoveryScenario::Restoring,
-        fence_refresh_probe: None,
-    });
-    let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub")
-            .with_session_container_provider(
-                provider.clone(),
-                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+        let worker_fence = effect.sandbox_effect_fence().unwrap();
+        let worker = Arc::new(pc::test_support::EffectAuthority::new(&worker_fence));
+        let probe = Arc::new(TerminalFenceRefreshProbe::default());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(TerminalRecoveryProvider {
+            restored_disposals: Mutex::new(Vec::new()),
+            events: events.clone(),
+            scenario: TerminalRecoveryScenario::Restoring,
+            fence_refresh_probe: Some(probe.clone()),
+        });
+        let mut host =
+            SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
+                .with_session_container_provider(
+                    provider.clone(),
+                    Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+                )
+                .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
+                    events: events.clone(),
+                    expected_id: checkpoint.id,
+                    delete_gate: None,
+                }));
+        host.execution_authority = Some(worker.clone());
+        let host = Arc::new(host);
+        let managed = install_test_dispatch_runtime(&host);
+        install_test_session_application(&host);
+        let projection =
+            install_terminal_recovery_projection(&host, &managed, thread, lease.clone(), restoring)
+                .await;
+
+        let preparation = managed
+            .prepare_terminal_cleanup_for_effect(
+                effect.clone(),
+                terminal_preparation_authorization(&effect, &projection),
             )
-            .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
-                events: events.clone(),
-                expected_id: checkpoint.id,
-            })),
-    );
-    let managed = install_test_dispatch_runtime(&host);
-    install_test_session_application(&host);
-    let projection =
-        install_terminal_recovery_projection(&host, &managed, thread, lease.clone(), restoring)
-            .await;
-
-    let preparation = managed
-        .prepare_terminal_cleanup_for_effect(
-            effect.clone(),
-            terminal_preparation_authorization(&effect, &projection),
-        )
-        .await
-        .expect("TR1 prepare the exact restoring target");
-    assert_eq!(
-        events.lock().unwrap().as_slice(),
-        &["delete-checkpoint"],
-        "TR1/E1"
-    );
-    assert!(matches!(
-        host.session_slots
-            .read(thread, |slot| slot.environment_owner.clone()),
-        Some(crate::session_slot::SessionEnvironmentOwner::Restoring(
-            crate::session_slot::SessionEnvironmentRestoration::Awaiting { request }
-        )) if request == restore_target
-    ));
-
-    let disposal_effect = terminal_disposal_effect(preparation, lease, &projection);
-    let expected_authorization = host
-        .terminal_cleanup_disposal_authorization(&disposal_effect)
-        .unwrap();
-
-    let first = managed
-        .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
-        .await
-        .expect("TR2 dispose exact restore target");
-    let replay = managed
-        .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
-        .await
-        .expect("TR2 replay after disposal receipt loss");
-    assert_eq!(first, replay, "TR2/E2 deterministic receipt");
-    // TR2A: the exact root authorization reaches the restore-target port on
-    // both initial deletion and receipt-loss replay, with no provider synthesis.
-    assert_eq!(
-        *provider.restored_disposals.lock().unwrap(),
-        vec![expected_authorization.clone(), expected_authorization]
-    );
-
-    assert_eq!(
-        events.lock().unwrap().as_slice(),
-        &["delete-checkpoint", "dispose-restored", "dispose-restored"],
-        "TR2/E2 exact provider port handles absence replay"
-    );
-    assert!(
-        matches!(
+            .await
+            .expect("TR1 prepare the exact restoring target");
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            &["delete-checkpoint"],
+            "TR1/E1"
+        );
+        assert!(matches!(
             host.session_slots
                 .read(thread, |slot| slot.environment_owner.clone()),
             Some(crate::session_slot::SessionEnvironmentOwner::Restoring(
                 crate::session_slot::SessionEnvironmentRestoration::Awaiting { request }
             )) if request == restore_target
-        ),
-        "TR2/E3 response-loss fence"
-    );
+        ));
 
-    managed
-        .acknowledge_terminal_cleanup_disposal(&disposal_effect)
-        .await;
-    assert!(!host.session_slots.contains(thread), "TR3/E4");
+        let disposal_effect = terminal_disposal_effect(preparation, lease.clone(), &projection);
+        let expected_authorization = host
+            .terminal_cleanup_disposal_authorization(&disposal_effect)
+            .unwrap();
+
+        *worker.current.lock().unwrap() = None;
+        assert!(
+            managed
+                .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
+                .await
+                .is_err(),
+            "TR5 entry denial"
+        );
+        assert!(provider.restored_disposals.lock().unwrap().is_empty());
+        *worker.current.lock().unwrap() =
+            Some((worker_fence.clone(), std::time::Duration::from_secs(60)));
+        let mut pending =
+            Box::pin(managed.dispose_terminal_cleanup_for_effect(disposal_effect.clone()));
+        tokio::select! {
+            biased;
+            result = &mut pending => panic!("TR4 must wait: {result:?}"),
+            () = std::future::ready(()) => {}
+        }
+        assert_eq!(
+            provider.restored_disposals.lock().unwrap().len(),
+            1,
+            "TR4 committed exact call before response"
+        );
+        match change {
+            "worker-revoke" => *worker.current.lock().unwrap() = None,
+            "worker-expire" => {
+                worker.current.lock().unwrap().as_mut().unwrap().1 = std::time::Duration::ZERO
+            }
+            "session-revoke" => host.session_slots.update(thread, |slot| {
+                slot.realization_authority =
+                    crate::session_slot::SessionRealizationAuthority::Closed(Some(lease.clone()));
+            }),
+            "replace" | "renew" => host.session_slots.update(thread, |slot| {
+                let mut next = lease.clone();
+                if change == "replace" {
+                    next.epoch += 1;
+                }
+                next.expires_at_unix_ms += 10_000;
+                slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+                    crate::session_slot::test_observed_lease(next),
+                );
+            }),
+            _ => {}
+        }
+        if change == "cancel" {
+            drop(pending);
+        } else {
+            probe.restored_release.notify_one();
+            assert_eq!(
+                pending.await.is_ok(),
+                matches!(change, "unchanged" | "renew"),
+                "TR4 {change}"
+            );
+        }
+        assert!(
+            matches!(host.session_slots.read(thread, |slot| slot.environment_owner.clone()),
+        Some(crate::session_slot::SessionEnvironmentOwner::Restoring(
+            crate::session_slot::SessionEnvironmentRestoration::Awaiting { request }
+        )) if request == restore_target),
+            "TR4 retain original target, not Vacant"
+        );
+        assert_eq!(
+            provider.restored_disposals.lock().unwrap().as_slice(),
+            &[expected_authorization.clone()]
+        );
+        // Begin the independent TR2/TR3 exact-retry phase only after checking the
+        // late response and original owner. Reset fixture observations and supplied
+        // proof; production renewal cannot revive a revoked incarnation.
+        provider.restored_disposals.lock().unwrap().clear();
+        events.lock().unwrap().truncate(1);
+        *worker.current.lock().unwrap() =
+            Some((worker_fence.clone(), std::time::Duration::from_secs(60)));
+        host.session_slots.update(thread, |slot| {
+            slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+                crate::session_slot::test_observed_lease(lease.clone()),
+            );
+        });
+        probe.restored_release.notify_one();
+        let first = managed
+            .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
+            .await
+            .expect("TR2 dispose exact restore target");
+        probe.restored_release.notify_one();
+        let replay = managed
+            .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
+            .await
+            .expect("TR2 replay after disposal receipt loss");
+        assert_eq!(first, replay, "TR2/E2 deterministic receipt");
+        // TR2A: the exact root authorization reaches the restore-target port on
+        // both initial deletion and receipt-loss replay, with no provider synthesis.
+        assert_eq!(
+            *provider.restored_disposals.lock().unwrap(),
+            vec![expected_authorization.clone(), expected_authorization]
+        );
+
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            &["delete-checkpoint", "dispose-restored", "dispose-restored"],
+            "TR2/E2 exact provider port handles absence replay"
+        );
+        assert!(
+            matches!(
+                host.session_slots
+                    .read(thread, |slot| slot.environment_owner.clone()),
+                Some(crate::session_slot::SessionEnvironmentOwner::Restoring(
+                    crate::session_slot::SessionEnvironmentRestoration::Awaiting { request }
+                )) if request == restore_target
+            ),
+            "TR2/E3 response-loss fence"
+        );
+
+        managed
+            .acknowledge_terminal_cleanup_disposal(&disposal_effect)
+            .await;
+        assert!(!host.session_slots.contains(thread), "TR3/E4");
+    }
 }
 
 #[tokio::test]

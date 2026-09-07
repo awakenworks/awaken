@@ -1347,7 +1347,11 @@ pub trait SandboxProvider: Send + Sync {
     /// live Sandbox. A persisted `handle` proves an already-published physical
     /// incarnation. An in-flight restore has no aggregate binding yet, so its
     /// exact prior effect fence is instead supplied as immutable evidence while
-    /// `terminal_effect_fence` remains the sole mutation authority. Returning
+    /// `terminal_effect_fence` identifies the terminal effect; `authority`
+    /// supplies its current authorization. Re-enter that authority after every
+    /// reconstruction wait and before marker/mount/control effects or success,
+    /// including exact absence. Never treat the copied fence as a live grant.
+    /// Returning
     /// `None` is permitted only for provider-proved exact absence or a durable
     /// Removed tombstone; the default is fail closed.
     async fn prepare_terminal_for_effect(
@@ -1356,6 +1360,7 @@ pub trait SandboxProvider: Send + Sync {
         _handle: Option<&SandboxHandle>,
         _expected_effect_fence: Option<&SandboxEffectFence>,
         _terminal_effect_fence: &SandboxEffectFence,
+        _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<Option<Box<dyn Sandbox>>, SandboxError> {
         Err(SandboxError::new(
             "sandbox provider does not implement fenced terminal authorization",
@@ -1390,12 +1395,15 @@ pub trait SandboxProvider: Send + Sync {
     /// Remove only the unpublished physical target named by one durable
     /// restoring tuple using the aggregate preparation/successor authorization.
     /// The tuple identifies the target; it does not authorize physical deletion.
-    /// Provider-proved absence is an idempotent success.
+    /// The current operation-bound authority is mandatory after target-lock and
+    /// backend waits and before the next effect or success. Provider-proved
+    /// absence is an idempotent success only under that same current authority.
     async fn dispose_restored(
         &self,
         _spec: &SandboxSpec,
         _request: &SandboxRestoreRequest,
         _authorization: &SandboxDisposalAuthorization,
+        _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<(), SandboxError> {
         Err(SandboxError::new(
             "sandbox provider does not implement exact restored-target disposal",
@@ -1449,7 +1457,9 @@ pub trait Sandbox: Send + Sync {
     /// a terminal takeover. `expected_effect_fence` identifies the immutable
     /// suspend participant and may already be expired; it never authorizes a
     /// mutation. Every write-ahead update, exact `put` replay, and idempotent
-    /// object deletion is authorized only by the live terminal fence. This is
+    /// object deletion consumes the current operation-bound `authority`, not
+    /// the copied terminal expiry. Re-enter after participant/store waits and
+    /// before returning success, including cached-receipt replay. This is
     /// the checkpoint port's terminal edge, not a second cleanup state machine.
     async fn cleanup_checkpoint_for_terminal(
         &self,
@@ -1457,6 +1467,7 @@ pub trait Sandbox: Send + Sync {
         _store: &dyn SandboxCheckpointStore,
         _expected_effect_fence: &SandboxEffectFence,
         _terminal_effect_fence: &SandboxEffectFence,
+        _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<(), SandboxError> {
         Err(SandboxError::new(
             "sandbox does not implement terminal checkpoint cleanup",

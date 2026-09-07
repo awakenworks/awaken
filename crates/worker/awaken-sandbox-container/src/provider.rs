@@ -550,7 +550,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .await?
         {
             pc::SandboxObservation::Ready => {
-                self.adopt_observed_container_with_spec(adoption.handle, adoption.spec)
+                self.adopt_observed_container_with_spec(adoption.handle, adoption.spec, &|| Ok(()))
                     .await
             }
             pc::SandboxObservation::Provisioning => Err(pc::SandboxError::new(
@@ -573,7 +573,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         handle: &pc::SandboxHandle,
         spec: &pc::SandboxSpec,
+        admit: &(impl Fn() -> Result<(), pc::SandboxError> + Sync),
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
+        admit()?;
         let payload = recovery::decode_handle(handle)?;
         let recovered_staging = if self.runtime.uses_host_live_input_bind() {
             let path = self
@@ -586,6 +588,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                         "host-bind container adoption has no exact staging-root evidence",
                     )
                 })?;
+            admit()?;
             Some(crate::restore_target::retained_host_staging_path(path).map_err(err)?)
         } else {
             None
@@ -602,7 +605,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             !self.runtime.uses_host_bind_materialization() || recovered_staging.is_some(),
             recovered_staging,
         )?;
-        self.adopt_observed_container_with_lifecycle(handle, Some(spec), lifecycle)
+        self.adopt_observed_container_with_lifecycle(handle, Some(spec), lifecycle, admit)
             .await
     }
 
@@ -617,6 +620,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             handle,
             None,
             ContainerCleanupState::physical_cleanup_only(),
+            &|| Ok(()),
         )
         .await
     }
@@ -626,7 +630,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         handle: &pc::SandboxHandle,
         spec: Option<&pc::SandboxSpec>,
         lifecycle: ContainerCleanupState,
+        admit: &(impl Fn() -> Result<(), pc::SandboxError> + Sync),
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
+        admit()?;
         let payload = recovery::decode_handle(handle)?;
         let control_services = pc::validate_adopted_sandbox_control_services(
             spec.map(|spec| &spec.control_services),
@@ -662,6 +668,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     })?,
             )
         };
+        admit()?;
         Ok(ContainerSandbox {
             retained_attempt: None,
             runtime: self.runtime.clone(),
@@ -745,7 +752,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .await?
         {
             pc::SandboxObservation::Ready => {
-                self.adopt_observed_container_with_spec(adoption.handle, adoption.spec)
+                self.adopt_observed_container_with_spec(adoption.handle, adoption.spec, &|| Ok(()))
                     .await
             }
             pc::SandboxObservation::Provisioning => Err(pc::SandboxError::new(
@@ -770,7 +777,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         handle: Option<&pc::SandboxHandle>,
         _expected_effect_fence: Option<&pc::SandboxEffectFence>,
         terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<ContainerSandbox<R>>, pc::SandboxError> {
+        let admit = || pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(()));
+        admit()?;
         let Some(handle) = handle else {
             return Err(pc::SandboxError::new(
                 "container provider cannot dispose an in-flight restore without a durable handle",
@@ -796,16 +806,18 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // a durable handle is present. Root authorization remains the sole
         // policy owner; the runtime re-observes with the terminal fence below.
         let adoption = ContainerEnvironmentAdoption::new(spec, handle);
-        match self
+        let observed = self
             .observe_container_adoption(
                 adoption,
                 Some(terminal_effect_fence),
                 ContainerObservationPurpose::TerminalCleanup,
             )
-            .await?
-        {
+            .await?;
+        // Observation is not a grant for staging/control reconstruction.
+        admit()?;
+        match observed {
             pc::SandboxObservation::Terminal { .. } | pc::SandboxObservation::Ready => self
-                .adopt_observed_container_with_spec(adoption.handle, adoption.spec)
+                .adopt_observed_container_with_spec(adoption.handle, adoption.spec, &admit)
                 .await
                 .map(Some),
             pc::SandboxObservation::Disposing { .. } => self
@@ -813,6 +825,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     adoption.handle,
                     None,
                     ContainerCleanupState::physical_cleanup_only(),
+                    &admit,
                 )
                 .await
                 .map(Some),
@@ -916,12 +929,14 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         handle: Option<&pc::SandboxHandle>,
         expected_effect_fence: Option<&ContainerEffectFence>,
         terminal_effect_fence: &ContainerEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
         self.prepare_terminal_container_for_effect(
             spec,
             handle,
             expected_effect_fence,
             terminal_effect_fence,
+            authority,
         )
         .await
         .map(|environment| {
@@ -945,8 +960,9 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
-        self.dispose_restore_target(spec, request, authorization)
+        self.dispose_restore_target(spec, request, authorization, authority)
             .await
     }
 }
@@ -1033,12 +1049,14 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         handle: Option<&pc::SandboxHandle>,
         expected_effect_fence: Option<&pc::SandboxEffectFence>,
         terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<Box<dyn pc::Sandbox>>, pc::SandboxError> {
         self.prepare_terminal_container_for_effect(
             spec,
             handle,
             expected_effect_fence,
             terminal_effect_fence,
+            authority,
         )
         .await
         .map(|sandbox| sandbox.map(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
@@ -1060,8 +1078,9 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
-        self.dispose_restore_target(spec, request, authorization)
+        self.dispose_restore_target(spec, request, authorization, authority)
             .await
     }
 }

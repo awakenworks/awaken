@@ -868,6 +868,19 @@ def check_local_recovery_model_mutants(tlc_jar: Path) -> None:
         ('/\\ cleanupFenceLive /\\ ~rootPresent', '/\\ cleanupFenceLive', "RemovedIsPhysical", False),
         ('/\\ cleanupFenceLive /\\ ~rootPresent', '/\\ ~rootPresent', "CleanupEffectRequiresFreshFence", True),
         ('cleanupStage = "physical"\n  /\\ cleanupFenceLive /\\ RecoveryQuiescent', 'cleanupStage = "physical"\n  /\\ cleanupFenceLive', "EffectsRequireKnownQuiescence", True),
+        # CP1-3 mutate only the production-corresponding next-effect edges.
+        # Store responses themselves remain possible after authority loss.
+        ('CheckpointStep("checkpoint", "checkpoint-put", TRUE)',
+         'CheckpointStep("checkpoint", "checkpoint-put", FALSE)', "CleanupEffectRequiresFreshFence", True),
+        ('CheckpointStep("checkpoint-receipt", "checkpoint-delete-ready", TRUE)',
+         'CheckpointStep("checkpoint-receipt", "checkpoint-delete-ready", FALSE)', "CleanupEffectRequiresFreshFence", True),
+        ('CheckpointStep("checkpoint-delete-ready", "checkpoint-delete", TRUE)',
+         'CheckpointStep("checkpoint-delete-ready", "checkpoint-delete", FALSE)', "CleanupEffectRequiresFreshFence", True),
+        ('cleanupStage = "checkpoint-finish"\n  /\\ cleanupFenceLive',
+         'cleanupStage = "checkpoint-finish"', "CheckpointSuccessRequiresCurrent", True),
+        ('CancelCleanup ==\n  /\\ cleanupCaller \\in Waiters\n  /\\ cleanupCaller\' = NoLock /\\ cleanupStage\' = "idle"',
+         'CancelCleanup ==\n  /\\ cleanupCaller \\in Waiters\n  /\\ cleanupCaller\' = NoLock /\\ cleanupStage\' = "checkpoint-complete"',
+         "CheckpointSuccessRequiresCurrent", True),
     ]:
         if source.count(original) != 1:
             raise SystemExit(f"Local recovery mutation anchor drifted: {oracle}")
@@ -876,12 +889,14 @@ def check_local_recovery_model_mutants(tlc_jar: Path) -> None:
                           "action:" + oracle if action else oracle))
     for witness in ("NoCancelledCleanupReached", "NoQueuedCheckpointReached",
                     "NoUnrecordedRemovalReached", "NoLostRemovedReceiptReached",
-                    "NoInterMountAdmissionReached"):
+                    "NoInterMountAdmissionReached", "NoCheckpointSuccessReached",
+                    "NoExpiredCheckpointPutResponseReached",
+                    "NoExpiredCheckpointDeleteResponseReached"):
         mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "LocalProcessRecovery", source, config, mutations,
                               dependencies=("LocalProcessLifecycle",),
                               heap_mb=1024, timeout_seconds=240)
-    print("Local recovery mutation score: 18/18 killed; 5 async cleanup schedules reachable")
+    print("Local recovery mutation score: 23/23 killed; 8 async cleanup/checkpoint schedules reachable")
 
 
 def check_memory_copy_model_mutant(tlc_jar: Path) -> None:
@@ -1227,18 +1242,22 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
             raise SystemExit(f"Disposal preparation mutation anchor drifted: {anchor}")
         invariant = "OnlyCurrentBindingCommits"
         mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
-    # F1-F3 bypass the SAME shared wait/authority kernel only for physical
-    # disposal. Preparation counterexamples cannot kill these mutants. The
-    # cached row requires an actual prior disposal before skipping authority.
-    for anchor, broken in [
-        ('/\\ providerWait # 1\n', '/\\ (physicalDisposal \\/ providerWait # 1)\n'),
-        ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ ((physicalDisposal /\\ providerWait = 2) \\/ CurrentBinding)'),
-        ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ ((physicalDisposal /\\ "disposal" \\in effectPhases) \\/ CurrentBinding)'),
-    ]:
-        if source.count(anchor) != 1:
-            raise SystemExit(f"Physical disposal mutation anchor drifted: {anchor}")
-        invariant = "OnlyCurrentBindingCommits"
-        mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
+    # F1-F3 / C1-C3: one constructor for each phase-only pending-response,
+    # post-response-authority and exact-retry mutant. Another phase cannot
+    # supply its counterexample; retry requires an actual prior phase effect.
+    # Compensation and backend cancellation remain adapter obligations.
+    for phase, selector in (("disposal", "physicalDisposal"),
+                            ("reconstruction", "coldReconstruction"),
+                            ("restore-disposal", "restoredDisposal")):
+        for anchor, broken in [
+            ('/\\ providerWait # 1\n', '/\\ (' + selector + ' \\/ providerWait # 1)\n'),
+            ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ ((' + selector + ' /\\ providerWait = 2) \\/ CurrentBinding)'),
+            ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ ((' + selector + ' /\\ "' + phase + '" \\in effectPhases) \\/ CurrentBinding)'),
+        ]:
+            if source.count(anchor) != 1:
+                raise SystemExit(f"{phase} mutation anchor drifted: {anchor}")
+            invariant = "OnlyCurrentBindingCommits"
+            mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
     # Both topology paths must reach actual effects. Otherwise an accidental
     # mandatory Worker guard could make all direct-local safety checks vacuous.
     for witness in ("NoCandidateEffectReached", "NoResidentEffectReached",
@@ -1246,12 +1265,17 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
                     "NoProviderEffectReached", "NoUnreadyProviderEffectReached",
                     "NoMemoryAckReached", "NoMemoryReplayReached",
                     "NoEmptyPreparationReached", "NoCachedPreparationReached",
-                    "NoPhysicalDisposalReached", "NoCachedDisposalReached"):
+                    "NoPhysicalDisposalReached", "NoCachedDisposalReached",
+                    "NoColdReconstructionReached", "NoColdReconstructionReplayReached",
+                    "NoRestoredDisposalReached", "NoRestoredDisposalReplayReached"):
         mutations.append((source, header + "INVARIANTS " + witness, witness))
     check_tlc_model_mutations(tlc_jar, "SessionExecutionBinding", source, config, mutations,
                               dependencies=("SessionRealizationAuthority", "WorkerExecutionAuthority"),
-                              heap_mb=2048, timeout_seconds=180)
-    print("Session execution binding: 26/26 mutants killed; 12 witnesses cover execution, provider projection, Memory, preparation and physical disposal/replay")
+                              # Four phase classes retain the same complete
+                              # two-effect state space; raise tool resources,
+                              # never truncate exploration to fit the old budget.
+                              heap_mb=4096, timeout_seconds=300)
+    print("Session execution binding: 32/32 mutants killed; 16 witnesses cover execution, provider projection, Memory, preparation, physical/restored disposal and cold reconstruction/replay")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:

@@ -712,6 +712,7 @@ impl pc::SandboxProvider for NamespaceProvider {
         handle: Option<&pc::SandboxHandle>,
         expected_effect_fence: Option<&pc::SandboxEffectFence>,
         terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<Box<dyn pc::Sandbox>>, pc::SandboxError> {
         Ok(self
             .prepare_terminal_sandbox_for_effect(
@@ -719,6 +720,7 @@ impl pc::SandboxProvider for NamespaceProvider {
                 handle,
                 expected_effect_fence,
                 terminal_effect_fence,
+                authority,
             )
             .await?
             .map(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
@@ -1125,6 +1127,7 @@ impl NamespaceProvider {
         handle: Option<&pc::SandboxHandle>,
         expected_effect_fence: Option<&pc::SandboxEffectFence>,
         terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<NamespaceSandbox>, pc::SandboxError> {
         let fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
         let (id, outputs_path, base_env, network, owned_paths) = if let Some(handle) = handle {
@@ -1185,6 +1188,7 @@ impl NamespaceProvider {
             handle,
             expected_effect_fence,
             terminal_effect_fence,
+            authority,
             pc::Realization::Bind,
             &host_paths,
         )

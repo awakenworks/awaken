@@ -149,12 +149,18 @@ impl SharedHost {
                 ),
                 BoundEnvironmentPreparationMode::Terminal
                 | BoundEnvironmentPreparationMode::TerminalDisposal => {
+                    let authority = self.session_slots.provider_effect_authority(
+                        thread,
+                        effect_fence,
+                        self.execution_authority.as_ref(),
+                    )?;
                     let Some(environment) = provider
                         .prepare_terminal_effective_for_effect(
                             spec,
                             handle,
                             expected_effect_fence,
                             effect_fence,
+                            &authority,
                         )
                         .await
                         .map_err(|error| {
@@ -886,9 +892,20 @@ impl SharedHost {
                 "No Session environment checkpoint store is installed",
             )
         })?;
+        let terminal_effect_fence = self.terminal_cleanup_effect_fence(effect)?;
+        let authority = self.session_slots.provider_effect_authority(
+            &effect.command.session_id,
+            &terminal_effect_fence,
+            self.execution_authority.as_ref(),
+        )?;
+        awaken_provisioning_contract::with_current_sandbox_effect(
+            &terminal_effect_fence,
+            &authority,
+            || Ok(()),
+        )
+        .map_err(|error| HostError::unavailable(error.to_string()))?;
         match (checkpoint, pending_checkpoint) {
             (Some(checkpoint), None) => {
-                self.terminal_cleanup_effect_fence(effect)?;
                 store
                     .delete(&checkpoint.id)
                     .await
@@ -913,13 +930,13 @@ impl SharedHost {
                     })?;
                 let provider_request =
                     crate::environment_continuation::provisioning_checkpoint_request(request);
-                let terminal_effect_fence = self.terminal_cleanup_effect_fence(effect)?;
                 environment
                     .cleanup_checkpoint_for_terminal(
                         &provider_request,
                         store.as_ref(),
                         &expected_effect_fence,
                         &terminal_effect_fence,
+                        &authority,
                     )
                     .await
                     .map_err(|error| HostError::unavailable(error.to_string()))?;
@@ -928,7 +945,11 @@ impl SharedHost {
                 unreachable!("checkpoint shape was classified above")
             }
         }
-        self.terminal_cleanup_effect_fence(effect)?;
-        Ok(())
+        awaken_provisioning_contract::with_current_sandbox_effect(
+            &terminal_effect_fence,
+            &authority,
+            || Ok(()),
+        )
+        .map_err(|error| HostError::unavailable(error.to_string()))
     }
 }

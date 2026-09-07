@@ -540,6 +540,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         handle: Option<&pc::SandboxHandle>,
         expected_effect_fence: Option<&ContainerEffectFence>,
         terminal_effect_fence: &ContainerEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
         // Terminal cleanup is never a capacity checkout: preserve the frozen
         // handle and aggregate-owned fence by delegating to the exact provider
@@ -550,6 +551,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
                 handle,
                 expected_effect_fence,
                 terminal_effect_fence,
+                authority,
             )
             .await
     }
@@ -579,9 +581,10 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
         authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         self.inner
-            .dispose_restored_environment(spec, request, authorization)
+            .dispose_restored_environment(spec, request, authorization, authority)
             .await
     }
 }

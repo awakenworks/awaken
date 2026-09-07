@@ -4,6 +4,60 @@ use std::io::{Read as _, Write};
 use std::path::Path;
 
 use super::{LocalProvider, LocalSandbox, content_fingerprint, err, pc};
+use crate::realization_marker::CheckpointParticipantGuard;
+
+/// Borrow the original Ready/Removing participant through the shared effect
+/// authority. This adapter owns no lock, journal, lease or cached receipt.
+/// Every synchronous WAL decision stays inside the same current guard; the
+/// existing upload algorithm therefore re-enters it after an awaited put.
+struct CurrentCheckpointParticipant<'a> {
+    participant: &'a mut dyn CheckpointParticipantGuard,
+    fence: &'a pc::SandboxEffectFence,
+    authority: &'a dyn pc::CurrentExecutionAuthority,
+}
+
+impl CheckpointParticipantGuard for CurrentCheckpointParticipant<'_> {
+    fn completed_checkpoint(
+        &self,
+        request_fingerprint: &str,
+    ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
+        pc::with_current_sandbox_effect(self.fence, self.authority, || {
+            self.participant.completed_checkpoint(request_fingerprint)
+        })
+    }
+
+    fn begin_checkpoint_upload(
+        &mut self,
+        request_fingerprint: &str,
+        snapshot_digest: &str,
+        snapshot_size_bytes: u64,
+    ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
+        pc::with_current_sandbox_effect(self.fence, self.authority, || {
+            self.participant.begin_checkpoint_upload(
+                request_fingerprint,
+                snapshot_digest,
+                snapshot_size_bytes,
+            )
+        })
+    }
+
+    fn complete_checkpoint_upload(
+        &mut self,
+        request_fingerprint: &str,
+        reference: &pc::SandboxCheckpointRef,
+    ) -> Result<(), pc::SandboxError> {
+        pc::with_current_sandbox_effect(self.fence, self.authority, || {
+            self.participant
+                .complete_checkpoint_upload(request_fingerprint, reference)
+        })
+    }
+
+    fn validate_before_effect(&self) -> Result<(), pc::SandboxError> {
+        pc::with_current_sandbox_effect(self.fence, self.authority, || {
+            self.participant.validate_before_effect()
+        })
+    }
+}
 
 fn append_snapshot<W: Write>(
     archive: &mut tar::Builder<W>,
@@ -345,7 +399,10 @@ impl LocalSandbox {
         // mutation under the same Ready-or-Removing participant lock and live
         // terminal authorization.
         participant.validate_before_effect()?;
-        store.delete(&reference.id).await
+        store.delete(&reference.id).await?;
+        // A completed backend delete is not permission to acknowledge cleanup.
+        // On denial/cancellation, the original WAL still owns exact replay.
+        participant.validate_before_effect()
     }
 
     pub(super) async fn create_checkpoint(
@@ -396,19 +453,27 @@ impl LocalSandbox {
         store: &dyn pc::SandboxCheckpointStore,
         expected_effect_fence: &pc::SandboxEffectFence,
         terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
+        pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(()))?;
         validate_checkpoint_effect(request, expected_effect_fence)?;
         let request_fingerprint = checkpoint_request_fingerprint(request, expected_effect_fence);
         let mut slot = self.terminal_removal.lock().await;
         if let Some(removal) = slot.as_mut() {
-            removal.refresh_authorization(terminal_effect_fence)?;
-            removal.bind_checkpoint_expected(expected_effect_fence)?;
+            pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+                removal.refresh_authorization(terminal_effect_fence)?;
+                removal.bind_checkpoint_expected(expected_effect_fence)
+            })?;
             return self
                 .cleanup_checkpoint_with_participant(
                     request,
                     store,
                     request_fingerprint.as_str(),
-                    removal,
+                    &mut CurrentCheckpointParticipant {
+                        participant: removal,
+                        fence: terminal_effect_fence,
+                        authority,
+                    },
                 )
                 .await;
         }
@@ -417,17 +482,23 @@ impl LocalSandbox {
             .realization
             .current()
             .ok_or_else(|| err("legacy filesystem sandbox cannot recover a fenced checkpoint"))?;
-        let mut ready = crate::realization_marker::begin_ready_terminal_checkpoint(
-            self.root.root(),
-            evidence,
-            expected_effect_fence,
-            terminal_effect_fence,
-        )?;
+        let mut ready = pc::with_current_sandbox_effect(terminal_effect_fence, authority, || {
+            crate::realization_marker::begin_ready_terminal_checkpoint(
+                self.root.root(),
+                evidence,
+                expected_effect_fence,
+                terminal_effect_fence,
+            )
+        })?;
         self.cleanup_checkpoint_with_participant(
             request,
             store,
             request_fingerprint.as_str(),
-            &mut ready,
+            &mut CurrentCheckpointParticipant {
+                participant: &mut ready,
+                fence: terminal_effect_fence,
+                authority,
+            },
         )
         .await
     }
@@ -435,7 +506,254 @@ impl LocalSandbox {
 
 #[cfg(test)]
 mod tests {
+    use super::super::workdir_helper_tests::{CheckpointPause, CheckpointStore, workdir_spec};
     use super::*;
+    use pc::test_support::EffectAuthority;
+    use std::sync::{Arc, atomic::Ordering};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn terminal_checkpoint_current_authority_covers_every_wait_and_exact_retry() {
+        // Cause/effect graph: C1 original participant Ready/Removing; C2 wait
+        // slot/committed-put-response/committed-delete-response; C3 current
+        // authority revoked/replaced/expired/renewed/caller-cancelled.
+        // 2 x 3 x 5 = 30 real Pending schedules, not sleeps or pre-set results.
+        // R1 denied entry => zero WAL/store effect. R2 denial after slot/put =>
+        // no next put/receipt/delete; after delete => no success (the already
+        // committed delete is not undone). R3 renewal => exact completion.
+        // R4 cancellation preserves the original Removing guard or Ready WAL.
+        // R5 exact retry after a lost put response repeats the SAME object key,
+        // while receipt replay never uploads again. R6 cached success remains
+        // authority-bound. Byte/root identity survives every failed attempt.
+        // Store atomicity, remote cancellation and provider UTC are not proved;
+        // UTC is non-expiring so it cannot accidentally act as the C3 oracle.
+        for removing in [false, true] {
+            for wait in ["slot", "put", "delete"] {
+                for change in ["revoke", "replace", "expire", "renew", "cancel"] {
+                    let tmp = tempfile::tempdir().unwrap();
+                    let spec = workdir_spec("current-checkpoint", false);
+                    let provider = LocalProvider::new(tmp.path());
+                    let create =
+                        pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX - 1)
+                            .unwrap();
+                    let suspend =
+                        pc::SandboxEffectFence::new("suspend", "owner", "runtime", 1, u64::MAX - 1)
+                            .unwrap();
+                    let terminal = pc::SandboxEffectFence::new(
+                        "terminal",
+                        "owner",
+                        "runtime",
+                        1,
+                        u64::MAX - 1,
+                    )
+                    .unwrap();
+                    let sandbox = provider
+                        .create_sandbox_for_effect(&spec, &create, None)
+                        .await
+                        .unwrap();
+                    let request = request("suspend");
+                    let authority = EffectAuthority::new(&terminal);
+                    if removing {
+                        pc::Sandbox::prepare_disposal_for_effect(&sandbox, &terminal, &authority)
+                            .await
+                            .unwrap();
+                    }
+                    let path = sandbox.workspace_path().join("unchanged");
+                    std::fs::write(&path, b"checkpoint-source").unwrap();
+                    let store = CheckpointStore::default();
+                    assert!(
+                        pc::Sandbox::cleanup_checkpoint_for_terminal(
+                            &sandbox,
+                            &request,
+                            &store,
+                            &suspend,
+                            &terminal,
+                            &EffectAuthority::denied(),
+                        )
+                        .await
+                        .is_err(),
+                        "R1"
+                    );
+                    assert_eq!(store.puts.load(Ordering::SeqCst), 0, "R1");
+                    assert_eq!(store.deletes.load(Ordering::SeqCst), 0, "R1");
+
+                    let gate = Arc::new(tokio::sync::Notify::new());
+                    if wait != "slot" {
+                        *store.pause.lock().unwrap() = Some((
+                            if wait == "put" {
+                                CheckpointPause::AfterPut
+                            } else {
+                                CheckpointPause::AfterDelete
+                            },
+                            gate.clone(),
+                        ));
+                    }
+                    let held = if wait == "slot" {
+                        Some(sandbox.terminal_removal.lock().await)
+                    } else {
+                        None
+                    };
+                    let mut pending = Box::pin(pc::Sandbox::cleanup_checkpoint_for_terminal(
+                        &sandbox, &request, &store, &suspend, &terminal, &authority,
+                    ));
+                    tokio::select! {
+                        biased;
+                        result = &mut pending => panic!("C2 must suspend: {result:?}"),
+                        () = std::future::ready(()) => {}
+                    }
+                    let initial_puts = usize::from(wait != "slot");
+                    let initial_deletes = usize::from(wait == "delete");
+                    assert_eq!(store.puts.load(Ordering::SeqCst), initial_puts);
+                    assert_eq!(store.deletes.load(Ordering::SeqCst), initial_deletes);
+                    match change {
+                        "revoke" => *authority.current.lock().unwrap() = None,
+                        "replace" => {
+                            authority.current.lock().unwrap().as_mut().unwrap().0 =
+                                pc::SandboxEffectFence::new(
+                                    "terminal",
+                                    "replacement",
+                                    "runtime",
+                                    2,
+                                    u64::MAX,
+                                )
+                                .unwrap()
+                        }
+                        "expire" => {
+                            authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO
+                        }
+                        "renew" => {
+                            authority
+                                .current
+                                .lock()
+                                .unwrap()
+                                .as_mut()
+                                .unwrap()
+                                .0
+                                .expires_at_unix_ms = u64::MAX
+                        }
+                        "cancel" => {}
+                        _ => unreachable!(),
+                    }
+                    drop(held);
+                    if change == "cancel" {
+                        drop(pending);
+                    } else {
+                        gate.notify_one();
+                        assert_eq!(pending.await.is_ok(), change == "renew", "R2/R3");
+                    }
+                    assert_eq!(std::fs::read(&path).unwrap(), b"checkpoint-source", "R4");
+                    assert_eq!(
+                        sandbox.terminal_removal.lock().await.is_some(),
+                        removing,
+                        "R4 original participant is never taken out across I/O",
+                    );
+                    if change != "renew" {
+                        assert_eq!(store.puts.load(Ordering::SeqCst), initial_puts, "R2");
+                        assert_eq!(store.deletes.load(Ordering::SeqCst), initial_deletes, "R2");
+                        assert_eq!(
+                            store.objects.lock().unwrap().len(),
+                            usize::from(wait == "put")
+                        );
+                        // Inspect the original journal, independently of the
+                        // current-authority adapter, before the retry can fix it.
+                        let fingerprint = checkpoint_request_fingerprint(&request, &suspend);
+                        let recorded = if removing && wait == "slot" {
+                            let slot = sandbox.terminal_removal.lock().await;
+                            let error = slot
+                                .as_ref()
+                                .unwrap()
+                                .completed_checkpoint(&fingerprint)
+                                .unwrap_err();
+                            assert!(
+                                error.to_string().contains("no bound expected effect"),
+                                "R2 slot denial cannot bind the checkpoint participant"
+                            );
+                            None
+                        } else if removing {
+                            sandbox
+                                .terminal_removal
+                                .lock()
+                                .await
+                                .as_ref()
+                                .unwrap()
+                                .completed_checkpoint(&fingerprint)
+                                .unwrap()
+                        } else {
+                            crate::realization_marker::begin_ready_terminal_checkpoint(
+                                sandbox.root.root(),
+                                sandbox.realization.current().unwrap(),
+                                &suspend,
+                                &terminal,
+                            )
+                            .unwrap()
+                            .completed_checkpoint(&fingerprint)
+                            .unwrap()
+                        };
+                        assert_eq!(recorded.is_some(), wait == "delete", "R2 WAL boundary");
+                    }
+                    *store.pause.lock().unwrap() = None;
+                    // Reinstall explicit test authority to inspect exact retry;
+                    // this is not a production renewal of a revoked incarnation.
+                    *authority.current.lock().unwrap() =
+                        Some((terminal.clone(), Duration::from_secs(1)));
+                    pc::Sandbox::cleanup_checkpoint_for_terminal(
+                        &sandbox, &request, &store, &suspend, &terminal, &authority,
+                    )
+                    .await
+                    .unwrap();
+                    let puts = store.puts.load(Ordering::SeqCst);
+                    let deletes = store.deletes.load(Ordering::SeqCst);
+                    assert_eq!(
+                        puts,
+                        if wait == "put" && change != "renew" {
+                            2
+                        } else {
+                            1
+                        },
+                        "R5"
+                    );
+                    assert_eq!(
+                        deletes,
+                        if wait == "delete" || change == "renew" {
+                            2
+                        } else {
+                            1
+                        },
+                        "R5"
+                    );
+                    assert!(store.objects.lock().unwrap().is_empty(), "R5");
+                    *authority.current.lock().unwrap() = None;
+                    assert!(
+                        pc::Sandbox::cleanup_checkpoint_for_terminal(
+                            &sandbox, &request, &store, &suspend, &terminal, &authority,
+                        )
+                        .await
+                        .is_err(),
+                        "R6"
+                    );
+                    assert_eq!(store.puts.load(Ordering::SeqCst), puts, "R6");
+                    assert_eq!(store.deletes.load(Ordering::SeqCst), deletes, "R6");
+                    *authority.current.lock().unwrap() =
+                        Some((terminal.clone(), Duration::from_secs(1)));
+                    pc::Sandbox::prepare_disposal_for_effect(&sandbox, &terminal, &authority)
+                        .await
+                        .unwrap();
+                    let disposal = crate::test_disposal_authorization(&terminal);
+                    pc::Sandbox::dispose_for_effect(
+                        &sandbox,
+                        &disposal,
+                        &EffectAuthority::new(disposal.effect_fence()),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(
+                        !path.exists(),
+                        "R5 exact owned cleanup reaches its terminal state"
+                    );
+                }
+            }
+        }
+    }
 
     fn request(effect_id: &str) -> pc::SandboxCheckpointRequest {
         pc::SandboxCheckpointRequest {

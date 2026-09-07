@@ -1777,6 +1777,7 @@ pub trait ContainerRuntime: Send + Sync {
         _plan_fingerprint: &str,
         _evidence: &pc::SandboxRestorationEvidence,
         _authorization: &pc::SandboxDisposalAuthorization,
+        _authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), RuntimeError> {
         Err(RuntimeError::Backend(
             "container runtime does not implement exact restored-target disposal".into(),

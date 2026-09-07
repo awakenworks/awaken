@@ -263,8 +263,14 @@ pub(super) async fn dispose(
     plan_fingerprint: &str,
     evidence: &pc::SandboxRestorationEvidence,
     authorization: &pc::SandboxDisposalAuthorization,
+    authority: &dyn pc::CurrentExecutionAuthority,
 ) -> Result<(), RuntimeError> {
     authorization.validate().map_err(backend)?;
+    let admit = || {
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))
+            .map_err(backend)
+    };
+    admit()?;
     let runtime_id = k8s_runtime_id(id)?;
     let name = pod_name(&runtime_id);
     if let Some(observation) = observe(
@@ -277,18 +283,22 @@ pub(super) async fn dispose(
     )
     .await?
     {
+        admit()?;
         let handle = continuation::handle_extra(&observation.pod)?;
-        return runtime
+        runtime
             .remove_exact_incarnation(&name, handle.as_ref(), authorization)
-            .await;
+            .await?;
+        return admit();
     }
+    admit()?;
     if continuation::claim_required(plan, runtime.continuation_volume.is_some()) {
         let claim_name = continuation_claim_name(&runtime_id);
         let claim = match runtime.persistent_volume_claims().get(&claim_name).await {
             Ok(claim) => claim,
-            Err(error) if api_not_found(&error) => return Ok(()),
+            Err(error) if api_not_found(&error) => return admit(),
             Err(error) => return Err(backend(error)),
         };
+        admit()?;
         realization::verify_restoration(&claim, evidence)?;
         if realization::restoration_plan_fingerprint(&claim) != Some(plan_fingerprint) {
             return Err(backend(
@@ -313,10 +323,11 @@ pub(super) async fn dispose(
         // Only already-terminating/absent claims can finish this response-loss cut.
         if let Some(pending) = continuation::absent_pod_claim_deletion(&claims, &name, &uid).await?
         {
+            admit()?;
             continuation::await_claim_deletion(&claims, &pending).await?;
         }
     }
-    Ok(())
+    admit()
 }
 
 #[cfg(test)]

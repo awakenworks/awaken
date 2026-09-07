@@ -497,7 +497,9 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
 
     /// Reconstruct the exact terminal substrate and its frozen cleanup
     /// participants without renewing it or making it runnable. The caller has
-    /// already authorized the terminal fence; implementations must re-observe
+    /// supplied the current operation-bound authority; implementations must
+    /// re-enter it after waits and before subsequent effects or success,
+    /// including exact absence. Implementations must re-observe
     /// the exact optional handle before returning an environment that may first
     /// enter `Sandbox::prepare_disposal_for_effect` and, only after aggregate
     /// admission of that preparation, `Sandbox::dispose_for_effect`. A prior
@@ -510,6 +512,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         _handle: Option<&pc::SandboxHandle>,
         _expected_effect_fence: Option<&ContainerEffectFence>,
         _terminal_effect_fence: &ContainerEffectFence,
+        _authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
         Err(pc::SandboxError::new(
             "container provider does not implement fenced terminal preparation",
@@ -544,6 +547,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         _spec: &pc::SandboxSpec,
         _request: &pc::SandboxRestoreRequest,
         _authorization: &pc::SandboxDisposalAuthorization,
+        _authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         Err(pc::SandboxError::new(
             "container provider does not implement exact restored-target disposal",
