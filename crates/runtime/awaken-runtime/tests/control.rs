@@ -700,6 +700,15 @@ impl CommittedThreadView for DamagedAwaitingView {
 
     fn committed_state(&self, thread_id: &ThreadId) -> Vec<StateCommand> {
         let mut commands = self.inner.committed_state(thread_id);
+        // Q3 replay still reads predecessor evidence. Fault injection targets
+        // the Awaiting projection only; never resurrect a batch quarantined by
+        // the real terminal commit or assume it survives that commit.
+        if matches!(
+            self.inner.run_state(&RunId("run-1".into())),
+            Some(RunState::Ended(_))
+        ) {
+            return commands;
+        }
         match self.damage {
             AwaitingDamage::MissingBatch => {
                 commands.retain(|command| command.key.0 != "runtime.active_tool_batch.v1");

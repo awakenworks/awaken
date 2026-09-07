@@ -8,6 +8,32 @@ pub(crate) async fn run_agent_loop(
     context: RuntimeRunContext,
     continuation: ResumeContinuation,
 ) -> Result<RunState> {
+    let run_id = activation.run_id.clone();
+    let thread_id = activation.thread_id.clone();
+    let store = store_from_run_commands(
+        context
+            .reader
+            .as_ref()
+            .map(|reader| reader.committed_state(&thread_id))
+            .unwrap_or_default(),
+        &run_id,
+    );
+    let resume_checkpoint =
+        match model_operation::recover_checkpoint(&store, &context, &run_id, &thread_id).await? {
+            model_operation::RecoveryObservation::Ready(checkpoint) => checkpoint,
+            model_operation::RecoveryObservation::End(cause) => {
+                let (_, fresh_input) =
+                    committed_history_and_fresh_input(&context, &thread_id, activation.input);
+                return finish(
+                    runtime,
+                    &context,
+                    &thread_id,
+                    run_id.clone(),
+                    RunStepResult::ended_with_messages(run_id, cause, fresh_input),
+                )
+                .await;
+            }
+        };
     let mut resolved = runtime
         .resolve(&activation.snapshot)
         .map_err(map_resolver_error)?;
@@ -22,8 +48,6 @@ pub(crate) async fn run_agent_loop(
         )));
     }
 
-    let run_id = activation.run_id.clone();
-    let thread_id = activation.thread_id.clone();
     let delegation_origin = activation.delegation_origin.clone();
 
     // Admission owns the input before any model-side capability is realized.
@@ -82,14 +106,6 @@ pub(crate) async fn run_agent_loop(
     // message id, a fresh run's uncommitted input passes through unchanged while a
     // reclaimed or redelivered input is dropped — input delivery is idempotent.
     transcript.extend(fresh_input.iter().cloned());
-    let store = store_from_run_commands(
-        context
-            .reader
-            .as_ref()
-            .map(|reader| reader.committed_state(&thread_id))
-            .unwrap_or_default(),
-        &run_id,
-    );
     if continuation == ResumeContinuation::ToolBatch {
         return drive_tool_batch(
             runtime,
@@ -119,6 +135,7 @@ pub(crate) async fn run_agent_loop(
         store,
         Vec::new(),
         Vec::new(),
+        resume_checkpoint,
     )
     .await?;
     finalize(runtime, &context, &thread_id, run_id, step_result).await
@@ -440,6 +457,7 @@ pub(super) async fn drive(
     mut store: Store,
     seed_state: Vec<StateCommand>,
     seed_audit: Vec<EventDraft>,
+    mut resume_checkpoint: Option<StreamCheckpoint>,
 ) -> Result<RunStepResult> {
     // The per-run model executor (ADR-0004) wins over the runtime's bound default:
     // the host resolves the run's model ref to an executor for this attempt and
@@ -463,7 +481,7 @@ pub(super) async fn drive(
     // step ceiling, which is itself an end (`MaxSteps`).
     let mut disposition: Option<RunDisposition> = None;
     // Durable interrupted-stream checkpoints (Phase 3), when a store is wired.
-    // A checkpoint left by a crash mid-recovery is read once here and applied to
+    // A checkpoint validated once at the entry boundary is applied to
     // this drive's first step — the only step that can be resuming, since
     // per-step commit means at most one step was ever in flight.
     let checkpoint_ctx = context
@@ -475,42 +493,6 @@ pub(super) async fn drive(
             thread_id: thread_id.0.clone(),
             model: resolved.spec.model_binding.model_ref.clone(),
         });
-    let mut resume_checkpoint = match &checkpoint_ctx {
-        Some(ctx) => {
-            match inference::model_read(context.cancellation.as_ref(), ctx.store.get(&ctx.run_id))
-                .await
-            {
-                Some(Ok(checkpoint))
-                    if checkpoint.as_ref().is_none_or(|checkpoint| {
-                        checkpoint.run_id == ctx.run_id && checkpoint.thread_id == ctx.thread_id
-                    }) =>
-                {
-                    checkpoint
-                }
-                observation => {
-                    // An unavailable or foreign partial is not evidence of absence.
-                    // Decide before tool-batch recovery as well as model entry; even
-                    // a known prior model return cannot validate an unread checkpoint.
-                    let cause = match observation {
-                        None => EndCause::Cancelled,
-                        Some(Err(error)) => {
-                            tracing::warn!(run_id = %ctx.run_id, %error, "failed to load stream checkpoint");
-                            EndCause::Indeterminate
-                        }
-                        Some(Ok(_)) => {
-                            tracing::warn!(run_id = %ctx.run_id, "stream checkpoint identity mismatch");
-                            EndCause::Indeterminate
-                        }
-                    };
-                    context.physical_quiescence.mark_uncertain();
-                    return Ok(
-                        ledger.into_step_result(RunDisposition::ended(run_id.clone(), cause))
-                    );
-                }
-            }
-        }
-        None => None,
-    };
 
     // How many times a run-end guard has steered this run. It is both the
     // guard's iteration signal and the runtime's run-scoped continuation count;

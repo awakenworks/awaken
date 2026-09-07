@@ -56,7 +56,7 @@ pub(crate) async fn cancel_run(
     context: RuntimeRunContext,
 ) -> Result<RunState> {
     let step = RunStepResult::cancelled(run_id.clone());
-    finish(runtime, &context, &thread_id, run_id, step).await
+    finish_control(runtime, &context, &thread_id, run_id, step).await
 }
 
 /// Cancel a claimed activation before its accepted input was necessarily
@@ -73,7 +73,7 @@ pub(crate) async fn cancel_activation(
     let (_, fresh_input) =
         committed_history_and_fresh_input(&context, &thread_id, activation.input);
     let step = RunStepResult::ended_with_messages(run_id.clone(), EndCause::Cancelled, fresh_input);
-    finish(runtime, &context, &thread_id, run_id, step).await
+    finish_control(runtime, &context, &thread_id, run_id, step).await
 }
 
 /// Resolve an externally blocked coordinated child without another inference
@@ -93,6 +93,9 @@ pub(crate) async fn interrupt_awaiting_tools(
             "interrupting an awaiting tool batch requires committed history".to_string(),
         )
     })?;
+    let store = store_from_run_commands(reader.committed_state(&thread_id), &run_id);
+    // Even terminal replay is only a logical observation, not stop evidence.
+    let _ = model_operation::recover_checkpoint(&store, &context, &run_id, &thread_id).await;
     match reader.run_state(&run_id) {
         Some(state @ RunState::Ended(_)) => return Ok(state),
         Some(RunState::Awaiting) => {}
@@ -102,7 +105,6 @@ pub(crate) async fn interrupt_awaiting_tools(
             ));
         }
     }
-    let store = store_from_run_commands(reader.committed_state(&thread_id), &run_id);
     let ticket = reader.resume_ticket(&run_id);
     let batch = ActiveToolBatch::load(&store);
     let coherence = match (&batch, ticket.as_ref()) {
@@ -198,7 +200,28 @@ pub(crate) async fn stop_run(
     context: RuntimeRunContext,
 ) -> Result<RunState> {
     let step = RunStepResult::stopped(run_id.clone(), reason);
-    finish(runtime, &context, &thread_id, run_id, step).await
+    finish_control(runtime, &context, &thread_id, run_id, step).await
+}
+
+/// A control outcome can end a logical Run, never supply missing execution
+/// evidence. Restore the same veto as execution before committing cancel/stop.
+async fn finish_control(
+    runtime: &Runtime,
+    context: &RuntimeRunContext,
+    thread_id: &ThreadId,
+    run_id: RunId,
+    step: RunStepResult,
+) -> Result<RunState> {
+    let store = store_from_run_commands(
+        context
+            .reader
+            .as_ref()
+            .map(|reader| reader.committed_state(thread_id))
+            .unwrap_or_default(),
+        &run_id,
+    );
+    let _ = model_operation::recover_checkpoint(&store, context, &run_id, thread_id).await;
+    finish(runtime, context, thread_id, run_id, step).await
 }
 
 /// Perform a committed `ScheduledAction` (ADR-0020): the run is awaiting on a
@@ -318,6 +341,29 @@ async fn resume_with_continuation(
         &reader.committed_messages(&command.thread_id),
         command.context_messages,
     )?;
+    let store =
+        store_from_run_commands(reader.committed_state(&command.thread_id), &command.run_id);
+    let resume_checkpoint = match model_operation::recover_checkpoint(
+        &store,
+        &context,
+        &command.run_id,
+        &command.thread_id,
+    )
+    .await?
+    {
+        model_operation::RecoveryObservation::Ready(checkpoint) => checkpoint,
+        model_operation::RecoveryObservation::End(cause) => {
+            return finalize::finish_with_reader(
+                runtime,
+                &context,
+                Some(reader),
+                &command.thread_id,
+                command.run_id.clone(),
+                RunStepResult::ended_with_messages(command.run_id, cause, context_messages),
+            )
+            .await;
+        }
+    };
     let resume_operation_id = command.operation_id.clone();
 
     let snapshot = runtime
@@ -339,7 +385,15 @@ async fn resume_with_continuation(
             );
             let mut step = RunStepResult::capability_bound(run_id.clone());
             step.new_messages = context_messages;
-            return finish(runtime, &context, &thread_id, run_id, step).await;
+            return finalize::finish_with_reader(
+                runtime,
+                &context,
+                Some(reader),
+                &thread_id,
+                run_id,
+                step,
+            )
+            .await;
         }
     };
 
@@ -360,6 +414,7 @@ async fn resume_with_continuation(
             &thread_id,
             reader,
             &context,
+            resume_checkpoint,
         )
         .await;
     }
@@ -378,6 +433,7 @@ async fn resume_with_continuation(
         reader,
         &context,
         continuation,
+        resume_checkpoint,
     )
     .await
 }

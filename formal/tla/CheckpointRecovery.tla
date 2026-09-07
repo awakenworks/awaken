@@ -4,13 +4,17 @@ EXTENDS Naturals, TLC
 CONSTANT MaxChunks
 
 VARIABLE durable, staged, checkpoint, checkpointValid, phase,
-         lastKind, lastBefore, lastAfter, readStatus, savedCheckpoint, savedValid
+         lastKind, lastBefore, lastAfter, readStatus, savedCheckpoint, savedValid, recovery
 
 vars == <<durable, staged, checkpoint, checkpointValid, phase,
-          lastKind, lastBefore, lastAfter, readStatus, savedCheckpoint, savedValid>>
+          lastKind, lastBefore, lastAfter, readStatus, savedCheckpoint, savedValid, recovery>>
 
 AcceptedReads == {"absent", "exact"}
-RejectedReads == {"storage", "fenced", "wrong-run", "wrong-thread", "cancelled"}
+RejectedReads == {"storage", "fenced", "wrong-run", "wrong-thread", "cancelled", "deadline"}
+EffectEntries == {"execute", "resume", "handoff"}
+ControlEntries == {"cancel", "stop"}
+EvidencePermits == recovery.evidence = "terminated" \/
+                  (recovery.evidence = "absent" /\ ~savedValid)
 
 NatMax(a, b) == IF a >= b THEN a ELSE b
 
@@ -25,6 +29,7 @@ Init == /\ durable = 0
         /\ readStatus = "absent"
         /\ savedCheckpoint = 0
         /\ savedValid = FALSE
+        /\ recovery = [entry |-> "execute", evidence |-> "absent", quiescent |-> TRUE]
 
 Produce == /\ phase = "running"
            /\ staged < MaxChunks
@@ -33,7 +38,7 @@ Produce == /\ phase = "running"
            /\ lastBefore' = durable
            /\ lastAfter' = durable
            /\ UNCHANGED <<durable, checkpoint, checkpointValid, phase,
-                          readStatus, savedCheckpoint, savedValid>>
+                          readStatus, savedCheckpoint, savedValid, recovery>>
 
 CommitWatermark == /\ phase = "running"
                    /\ durable' = staged
@@ -41,7 +46,7 @@ CommitWatermark == /\ phase = "running"
                    /\ lastBefore' = durable
                    /\ lastAfter' = staged
                    /\ UNCHANGED <<staged, checkpoint, checkpointValid, phase,
-                                  readStatus, savedCheckpoint, savedValid>>
+                                  readStatus, savedCheckpoint, savedValid, recovery>>
 
 FlushCheckpoint == /\ phase = "running"
                    /\ checkpoint' = staged
@@ -50,7 +55,7 @@ FlushCheckpoint == /\ phase = "running"
                    /\ lastBefore' = durable
                    /\ lastAfter' = durable
                    /\ UNCHANGED <<durable, staged, phase,
-                                  readStatus, savedCheckpoint, savedValid>>
+                                  readStatus, savedCheckpoint, savedValid, recovery>>
 
 Crash == /\ phase = "running"
          /\ phase' = "crashed"
@@ -61,21 +66,31 @@ Crash == /\ phase = "running"
          /\ readStatus' = "pending"
          /\ savedCheckpoint' = checkpoint
          /\ savedValid' = checkpointValid
+         /\ recovery' \in [entry : EffectEntries \cup ControlEntries,
+                            evidence : {"absent", "terminated", "unknown", "corrupt"},
+                            quiescent : {FALSE}]
          /\ UNCHANGED <<durable, checkpoint, checkpointValid>>
 
 \* Decision table: observed absence/exact identity permits existing recovery;
 \* storage/fence/foreign identity/cancelled observation never permits effects.
-\* A pending read is not absence. Provider termination is an independent gate
-\* checked by ModelOperation's production/Kani tests, not inferred by this model.
+\* A pending read is not absence. Predecessor evidence is an independent input,
+\* including unknown/malformed history. This models consumption, not its truth.
 ObserveRead(outcome) ==
   /\ phase = "crashed" /\ readStatus = "pending"
   /\ outcome \in RejectedReads \cup {IF checkpointValid THEN "exact" ELSE "absent"}
   /\ readStatus' = outcome
   /\ UNCHANGED <<durable, staged, checkpoint, checkpointValid, phase,
-                 lastKind, lastBefore, lastAfter, savedCheckpoint, savedValid>>
+                 lastKind, lastBefore, lastAfter, savedCheckpoint, savedValid, recovery>>
+
+\* Abstract finite observation timer, not a provider completion event. Fairness
+\* assumes a yielding executor and a scheduled local timer; it cannot preempt
+\* blocking synchronous code or confer authority on the abandoned operation.
+ReadDeadline == ObserveRead("deadline")
 
 Recover == /\ phase = "crashed"
            /\ readStatus \in AcceptedReads
+           /\ EvidencePermits /\ recovery.entry \in EffectEntries
+           /\ recovery' = [recovery EXCEPT !.quiescent = TRUE]
            /\ phase' = "running"
            /\ staged' = IF checkpointValid
                             THEN NatMax(durable, checkpoint)
@@ -87,13 +102,23 @@ Recover == /\ phase = "crashed"
                           readStatus, savedCheckpoint, savedValid>>
 
 RejectRead == /\ phase = "crashed"
-              /\ readStatus \in RejectedReads
+              /\ (readStatus \in RejectedReads \/ ~EvidencePermits)
               /\ phase' = "blocked"
               /\ lastKind' = "reject"
               /\ lastBefore' = durable
               /\ lastAfter' = durable
               /\ UNCHANGED <<durable, staged, checkpoint, checkpointValid,
-                             readStatus, savedCheckpoint, savedValid>>
+                             readStatus, savedCheckpoint, savedValid, recovery>>
+
+ControlReturn == /\ phase = "crashed"
+                 /\ recovery.entry \in ControlEntries
+                 /\ readStatus \in AcceptedReads /\ EvidencePermits
+                 /\ phase' = "controlled"
+                 /\ recovery' = [recovery EXCEPT !.quiescent = TRUE]
+                 /\ lastKind' = "control"
+                 /\ lastBefore' = durable /\ lastAfter' = durable
+                 /\ UNCHANGED <<durable, staged, checkpoint, checkpointValid,
+                                readStatus, savedCheckpoint, savedValid>>
 
 Complete == /\ phase = "running"
             /\ phase' = "done"
@@ -102,40 +127,50 @@ Complete == /\ phase = "running"
             /\ lastKind' = "complete"
             /\ lastBefore' = durable
             /\ lastAfter' = staged
-            /\ UNCHANGED <<staged, checkpoint, readStatus, savedCheckpoint, savedValid>>
+            /\ UNCHANGED <<staged, checkpoint, readStatus, savedCheckpoint, savedValid, recovery>>
 
-DoneStutter == /\ phase \in {"done", "blocked"}
+DoneStutter == /\ phase \in {"done", "blocked", "controlled"}
                /\ UNCHANGED vars
 
 Next == Produce \/ CommitWatermark \/ FlushCheckpoint \/ Crash
-     \/ (\E outcome \in AcceptedReads \cup RejectedReads : ObserveRead(outcome))
-     \/ Recover \/ RejectRead \/ Complete \/ DoneStutter
+     \/ (\E outcome \in (AcceptedReads \cup RejectedReads) \ {"deadline"} : ObserveRead(outcome))
+     \/ ReadDeadline \/ Recover \/ RejectRead \/ ControlReturn \/ Complete \/ DoneStutter
 
 TypeOK == /\ durable \in 0..MaxChunks
           /\ staged \in 0..MaxChunks
           /\ checkpoint \in 0..MaxChunks
           /\ checkpointValid \in BOOLEAN
-          /\ phase \in {"running", "crashed", "done", "blocked"}
-          /\ lastKind \in {"init", "produce", "commit", "flush", "crash", "recover", "reject", "complete"}
+          /\ phase \in {"running", "crashed", "done", "blocked", "controlled"}
+          /\ lastKind \in {"init", "produce", "commit", "flush", "crash", "recover", "reject", "complete", "control"}
           /\ lastBefore \in 0..MaxChunks
           /\ lastAfter \in 0..MaxChunks
           /\ readStatus \in AcceptedReads \cup RejectedReads \cup {"pending"}
           /\ savedCheckpoint \in 0..MaxChunks
           /\ savedValid \in BOOLEAN
+          /\ recovery \in [entry : EffectEntries \cup ControlEntries,
+                            evidence : {"absent", "terminated", "unknown", "corrupt"},
+                            quiescent : BOOLEAN]
 
 DurableWatermarkNeverRollsBack == lastAfter >= lastBefore
 RecoveryNeverStartsBeforeDurable == staged >= durable
 CrashPreservesDurableTruth == lastKind = "crash" => lastAfter = lastBefore
 TerminalClearsCheckpoint == phase = "done" => ~checkpointValid
-UnknownObservationNeverExecutes == phase \in {"running", "done"} => readStatus \in AcceptedReads
-BlockedPreservesCheckpoint == phase = "blocked" =>
+UnknownObservationNeverExecutes == phase \in {"running", "done", "controlled"} => readStatus \in AcceptedReads
+BlockedPreservesCheckpoint == phase \in {"blocked", "controlled"} =>
   /\ checkpoint = savedCheckpoint
   /\ checkpointValid = savedValid
   /\ staged = durable
+UnknownPredecessorNeverExecutes == phase \in {"running", "done", "controlled"} =>
+  recovery.evidence \notin {"unknown", "corrupt"}
+RecoveredPartialRequiresEvidence == lastKind = "recover" /\ savedValid =>
+  recovery.evidence = "terminated"
+UncertainOutcomeVetoesPhysicalReturn == phase = "blocked" => ~recovery.quiescent
+ControlReturnRequiresEvidence == phase = "controlled" => EvidencePermits
 
-\* Fair local scheduling after an observation suffices to decide. No progress
-\* claim is made while a read stays pending or about a remote stop provider.
+\* Decision progress includes an unresponsive store under fair local scheduling.
+\* Neither property promises that an opaque remote operation terminates.
 ObservationSettles == [](phase = "crashed" /\ readStatus # "pending" => <>(phase # "crashed"))
+RecoveryReadSettles == [](phase = "crashed" => <>(phase # "crashed"))
 
 \* Negated witnesses for the shared mutation runner; failure proves reachability.
 NoExactResume == ~(lastKind = "recover" /\ readStatus = "exact")
@@ -145,6 +180,12 @@ NoFenceBlock == ~(phase = "blocked" /\ readStatus = "fenced")
 NoRunMismatchBlock == ~(phase = "blocked" /\ readStatus = "wrong-run")
 NoThreadMismatchBlock == ~(phase = "blocked" /\ readStatus = "wrong-thread")
 NoCancelledReadBlock == ~(phase = "blocked" /\ readStatus = "cancelled" /\ checkpointValid)
+NoDeadlineReadBlock == ~(phase = "blocked" /\ readStatus = "deadline" /\ checkpointValid)
+NoUnknownResumeBlock == ~(phase = "blocked" /\ recovery.entry = "resume" /\ recovery.evidence = "unknown")
+NoUnknownHandoffBlock == ~(phase = "blocked" /\ recovery.entry = "handoff" /\ recovery.evidence = "unknown")
+NoUnknownCancelBlock == ~(phase = "blocked" /\ recovery.entry = "cancel" /\ recovery.evidence = "unknown")
+NoUnknownStopBlock == ~(phase = "blocked" /\ recovery.entry = "stop" /\ recovery.evidence = "unknown")
+NoKnownControlReturn == ~(phase = "controlled" /\ recovery.evidence = "terminated")
 
-Spec == Init /\ [][Next]_vars /\ WF_vars(Recover) /\ WF_vars(RejectRead)
+Spec == Init /\ [][Next]_vars /\ WF_vars(Recover) /\ WF_vars(RejectRead) /\ WF_vars(ControlReturn) /\ WF_vars(ReadDeadline)
 =============================================================================

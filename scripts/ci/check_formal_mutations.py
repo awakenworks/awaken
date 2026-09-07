@@ -306,6 +306,28 @@ def mutate_disconnected_product_feature(case_root: Path) -> None:
 
 
 class MutationOracleTests(unittest.TestCase):
+    def test_model_cli_flags_keep_their_exact_single_handler(self) -> None:
+        # R1 each existing flag => exactly its handler, once, with parsed Path.
+        # This compatibility list is independent of the production registry;
+        # a lost registration or mismatched dispatch must fail before real TLC.
+        flags = (
+            "memory-copy-model-mutant", "agent-input-model-mutant",
+            "resource-preparation-model-mutant", "realization-renewal-model-mutant",
+            "resolution-failure-model-mutant", "config-cas-model-mutant",
+            "background-completion-model-mutant", "sandbox-control-model-mutants",
+            "audit-commit-model-mutants", "effect-retirement-model-mutant",
+            "credential-removal-model-mutant", "verified-admission-model-mutants",
+            "session-network-model-mutant", "session-observation-model-mutants",
+            "cowork-lifecycle-model-mutants", "local-process-model-mutant",
+            "local-recovery-model-mutants", "checkpoint-recovery-model-mutants",
+        )
+        for flag in flags:
+            handler = "check_" + flag.replace("-", "_")
+            if flag == "local-process-model-mutant": handler += "s"
+            with self.subTest(flag=flag), patch(f"{__name__}.{handler}") as check:
+                with patch.object(sys, "argv", ["checker", f"--{flag}", "tlc.jar"]): main()
+                check.assert_called_once_with(Path("tlc.jar"))
+
     def test_tlc_launch_keeps_the_resource_bound_and_strict_timeout(self) -> None:
         # R1 default and R2 explicit composed-model budgets reach every child
         # invocation. Both still require a green baseline and the exact named
@@ -484,96 +506,44 @@ class MutationOracleTests(unittest.TestCase):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    # One registry owns both accepted CLI flags and their execution handlers.
+    model_checks = {
+        "memory-copy-model-mutant": check_memory_copy_model_mutant,
+        "agent-input-model-mutant": check_agent_input_model_mutant,
+        "resource-preparation-model-mutant": check_resource_preparation_model_mutant,
+        "realization-renewal-model-mutant": check_realization_renewal_model_mutant,
+        "resolution-failure-model-mutant": check_resolution_failure_model_mutant,
+        "config-cas-model-mutant": check_config_cas_model_mutant,
+        "background-completion-model-mutant": check_background_completion_model_mutant,
+        "sandbox-control-model-mutants": check_sandbox_control_model_mutants,
+        "memory-invalidation-model-mutants": check_memory_invalidation_model_mutants,
+        "memory-participant-model-mutants": check_memory_participant_model_mutants,
+        "audit-commit-model-mutants": check_audit_commit_model_mutants,
+        "effect-retirement-model-mutant": check_effect_retirement_model_mutant,
+        "credential-removal-model-mutant": check_credential_removal_model_mutant,
+        "verified-admission-model-mutants": check_verified_admission_model_mutants,
+        "session-network-model-mutant": check_session_network_model_mutant,
+        "session-observation-model-mutants": check_session_observation_model_mutants,
+        "cowork-lifecycle-model-mutants": check_cowork_lifecycle_model_mutants,
+        "local-process-model-mutant": check_local_process_model_mutants,
+        "local-recovery-model-mutants": check_local_recovery_model_mutants,
+        "checkpoint-recovery-model-mutants": check_checkpoint_recovery_model_mutants,
+    }
     model_selection = parser.add_mutually_exclusive_group()
-    model_selection.add_argument("--memory-copy-model-mutant", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--agent-input-model-mutant", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--resource-preparation-model-mutant", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--realization-renewal-model-mutant", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--resolution-failure-model-mutant", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--config-cas-model-mutant", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--background-completion-model-mutant", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--sandbox-control-model-mutants", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--memory-invalidation-model-mutants", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--memory-participant-model-mutants", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--audit-commit-model-mutants", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--effect-retirement-model-mutant", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--credential-removal-model-mutant", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--verified-admission-model-mutants", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--session-network-model-mutant", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--session-observation-model-mutants", type=Path, metavar="TLC_JAR")
+    for name in model_checks:
+        model_selection.add_argument(f"--{name}", type=Path, metavar="TLC_JAR")
     model_selection.add_argument("--session-observation-trace-mutants", type=Path, metavar="TLC_JAR")
     parser.add_argument("--observation-trace-dir", type=Path)
-
-    model_selection.add_argument("--cowork-lifecycle-model-mutants", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--local-process-model-mutant", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--local-recovery-model-mutants", type=Path, metavar="TLC_JAR")
-    model_selection.add_argument("--checkpoint-recovery-model-mutants", type=Path, metavar="TLC_JAR")
     arguments = parser.parse_args()
-    if arguments.memory_participant_model_mutants is not None:
-        check_memory_participant_model_mutants(arguments.memory_participant_model_mutants)
-        return
-    if arguments.checkpoint_recovery_model_mutants is not None:
-        check_checkpoint_recovery_model_mutants(arguments.checkpoint_recovery_model_mutants)
-        return
     if arguments.session_observation_trace_mutants is not None:
         if arguments.observation_trace_dir is None:
             parser.error("--observation-trace-dir is required")
         check_observation_trace_mutants(arguments.session_observation_trace_mutants, arguments.observation_trace_dir)
         return
-    if arguments.session_observation_model_mutants is not None:
-        check_session_observation_model_mutants(arguments.session_observation_model_mutants)
-        return
-    if arguments.cowork_lifecycle_model_mutants is not None:
-        check_cowork_lifecycle_model_mutants(arguments.cowork_lifecycle_model_mutants)
-        return
-    if arguments.local_recovery_model_mutants is not None:
-        check_local_recovery_model_mutants(arguments.local_recovery_model_mutants)
-        return
-    if arguments.memory_invalidation_model_mutants is not None:
-        check_memory_invalidation_model_mutants(arguments.memory_invalidation_model_mutants)
-        return
-    if arguments.sandbox_control_model_mutants is not None:
-        check_sandbox_control_model_mutants(arguments.sandbox_control_model_mutants)
-        return
-    if arguments.realization_renewal_model_mutant is not None:
-        check_realization_renewal_model_mutant(arguments.realization_renewal_model_mutant)
-        return
-    if arguments.session_network_model_mutant is not None:
-        check_session_network_model_mutant(arguments.session_network_model_mutant)
-        return
-    if arguments.verified_admission_model_mutants is not None:
-        check_verified_admission_model_mutants(arguments.verified_admission_model_mutants)
-        return
-    if arguments.credential_removal_model_mutant is not None:
-        check_credential_removal_model_mutant(arguments.credential_removal_model_mutant)
-        return
-    if arguments.memory_copy_model_mutant is not None:
-        check_memory_copy_model_mutant(arguments.memory_copy_model_mutant)
-        return
-    if arguments.agent_input_model_mutant is not None:
-        check_agent_input_model_mutant(arguments.agent_input_model_mutant)
-        return
-    if arguments.resource_preparation_model_mutant is not None:
-        check_resource_preparation_model_mutant(arguments.resource_preparation_model_mutant)
-        return
-    if arguments.resolution_failure_model_mutant is not None:
-        check_resolution_failure_model_mutant(arguments.resolution_failure_model_mutant)
-        return
-    if arguments.config_cas_model_mutant is not None:
-        check_config_cas_model_mutant(arguments.config_cas_model_mutant)
-        return
-    if arguments.background_completion_model_mutant is not None:
-        check_background_completion_model_mutant(arguments.background_completion_model_mutant)
-        return
-    if arguments.audit_commit_model_mutants is not None:
-        check_audit_commit_model_mutants(arguments.audit_commit_model_mutants)
-        return
-    if arguments.effect_retirement_model_mutant is not None:
-        check_effect_retirement_model_mutant(arguments.effect_retirement_model_mutant)
-        return
-    if arguments.local_process_model_mutant is not None:
-        check_local_process_model_mutants(arguments.local_process_model_mutant)
-        return
+    for name, check in model_checks.items():
+        if (jar := getattr(arguments, name.replace("-", "_"))) is not None:
+            check(jar)
+            return
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(MutationOracleTests)
     if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
         raise SystemExit(1)
@@ -1960,10 +1930,10 @@ def check_checkpoint_recovery_model_mutants(tlc_jar: Path) -> None:
     config = (ROOT / "formal/tla/CheckpointRecovery.cfg").read_text()
     header = "SPECIFICATION Spec\nCONSTANT MaxChunks = 3\n"
     mutations = []
-    anchor = '/\\ readStatus \\in AcceptedReads\n           /\\ phase\' = "running"'
+    anchor = 'Recover == /\\ phase = "crashed"\n           /\\ readStatus \\in AcceptedReads'
     if source.count(anchor) != 1:
         raise SystemExit("checkpoint observation mutation anchor drifted")
-    for outcome in ("storage", "fenced", "wrong-run", "wrong-thread", "pending", "cancelled"):
+    for outcome in ("storage", "fenced", "wrong-run", "wrong-thread", "pending", "cancelled", "deadline"):
         broken = anchor.replace("AcceptedReads", f'AcceptedReads \\cup {{"{outcome}"}}')
         mutations.append((source.replace(anchor, broken),
                           header + "INVARIANTS UnknownObservationNeverExecutes\n",
@@ -1980,11 +1950,30 @@ def check_checkpoint_recovery_model_mutants(tlc_jar: Path) -> None:
                       header + "INVARIANTS BlockedPreservesCheckpoint\n", "BlockedPreservesCheckpoint"))
     mutations.append((source.replace(anchor, anchor + " /\\ FALSE"), header +
                       "CHECK_DEADLOCK FALSE\nPROPERTIES ObservationSettles\n", "temporal:ObservationSettles"))
-    for witness in ("NoExactResume", "NoAbsentResume", "NoStorageBlock", "NoFenceBlock",
-                    "NoRunMismatchBlock", "NoThreadMismatchBlock", "NoCancelledReadBlock"):
+    for anchor, broken, invariant in [
+        ('/\\ EvidencePermits /\\ recovery.entry \\in EffectEntries',
+         '/\\ recovery.entry \\in EffectEntries', "UnknownPredecessorNeverExecutes"),
+        ('/\\ readStatus \\in AcceptedReads /\\ EvidencePermits',
+         '/\\ readStatus \\in AcceptedReads', "ControlReturnRequiresEvidence"),
+        ('(recovery.evidence = "absent" /\\ ~savedValid)',
+         '(recovery.evidence = "absent")', "RecoveredPartialRequiresEvidence"),
+    ]:
+        if source.count(anchor) != 1: raise SystemExit("entry evidence mutation anchor drifted")
+        mutations.append((source.replace(anchor, broken), header + f"INVARIANTS {invariant}\n", invariant))
+    broken = reject.replace('              /\\ UNCHANGED',
+                            '              /\\ recovery\' = [recovery EXCEPT !.quiescent = TRUE]\n              /\\ UNCHANGED')
+    broken = broken.replace("savedValid, recovery>>", "savedValid>>")
+    mutations.append((source.replace(reject, broken),
+                      header + "INVARIANTS UncertainOutcomeVetoesPhysicalReturn\n", "UncertainOutcomeVetoesPhysicalReturn"))
+    mutations.append((source.replace('ReadDeadline == ObserveRead("deadline")', 'ReadDeadline == FALSE'),
+                      header + "CHECK_DEADLOCK FALSE\nPROPERTIES RecoveryReadSettles\n", "temporal:RecoveryReadSettles"))
+    for witness in ("NoExactResume", "NoAbsentResume", "NoStorageBlock", "NoFenceBlock", "NoDeadlineReadBlock",
+                    "NoRunMismatchBlock", "NoThreadMismatchBlock", "NoCancelledReadBlock",
+                    "NoUnknownResumeBlock", "NoUnknownHandoffBlock", "NoUnknownCancelBlock",
+                    "NoUnknownStopBlock", "NoKnownControlReturn"):
         mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "CheckpointRecovery", source, config, mutations)
-    print("Checkpoint recovery: 8/8 mutants killed; seven observation witnesses reachable")
+    print("Checkpoint recovery: 14/14 mutants killed; thirteen entry/observation witnesses reachable")
 
 
 
