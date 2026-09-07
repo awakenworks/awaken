@@ -1269,6 +1269,47 @@ async fn controlled_modification_fails_when_post_tool_skill_refresh_fails() {
 }
 
 #[tokio::test]
+async fn post_dispatch_refresh_failure_cannot_hide_an_unknown_hand_effect() {
+    // PT4 typed unknown effect + failed catalog refresh => retain Indeterminate
+    // and close the one Hand binding. Neither StateInvalidated nor reacquisition
+    // may hide uncertainty; PT3 above owns definitive effect + refresh failure.
+    use awaken_runtime_contract::tool::ToolError;
+    let provider = Arc::new(FakeContainerProvider::default());
+    let factory = ScriptedHandFactory::new([ScriptedHandOutcome::Indeterminate]);
+    let environment = SessionEnvironmentProvider::container(
+        provider.clone(),
+        Vec::new(),
+        factory.clone(),
+        "/usr/local/bin/awaken-sandbox",
+    )
+    .create(&spec())
+    .await
+    .unwrap();
+    environment.register_skill_dir("skills");
+    provider
+        .shared
+        .lock()
+        .unwrap()
+        .insert("__fail_skill_read".into(), Vec::new());
+    let call = ToolCall {
+        call_id: "unknown-refresh".into(),
+        tool_id: "write".into(),
+        arguments: serde_json::json!({}),
+    };
+    assert!(matches!(
+        environment.tool_executor().invoke(&call).await,
+        Err(ToolError::Indeterminate(_))
+    ));
+    assert!(matches!(
+        environment.tool_executor().invoke(&call).await,
+        Err(ToolError::UnavailableBeforeDispatch(_))
+    ));
+    assert!(environment.scan_skill_dir("skills").is_err());
+    assert_eq!(factory.binds.load(std::sync::atomic::Ordering::SeqCst), 1);
+    environment.dispose().await.unwrap();
+}
+
+#[tokio::test]
 async fn managed_skill_refresh_rejects_invalid_container_skill_bytes() {
     /* Cause/effect graph: C1 the container refresh returns an exact
      * `<id>/SKILL.md`; C2 its bytes are valid or invalid UTF-8. Effects: E1
@@ -1422,7 +1463,7 @@ impl ToolExecutor for ScriptedHandExecutor {
                 ),
             ),
             ScriptedHandOutcome::Indeterminate => {
-                Err(awaken_runtime_contract::tool::ToolError::Execution(
+                Err(awaken_runtime_contract::tool::ToolError::Indeterminate(
                     "indeterminate: hand connection lost during dispatch".into(),
                 ))
             }
@@ -1792,7 +1833,7 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         .expect_err("a possibly executed call is never replayed");
     assert!(matches!(
         error,
-        awaken_runtime_contract::tool::ToolError::Execution(_)
+        awaken_runtime_contract::tool::ToolError::Indeterminate(_)
     ));
     assert_eq!(
         indeterminate

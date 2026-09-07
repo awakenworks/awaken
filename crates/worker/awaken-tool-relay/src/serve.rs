@@ -186,6 +186,7 @@ impl HandSession {
         match self.registry.invoke(&request.call).await {
             Ok(output) => HandResult::ok(output),
             Err(ToolError::Unknown(tool_id)) => HandResult::err(HandError::unknown_tool(&tool_id)),
+            Err(ToolError::Indeterminate(_)) => HandResult::Indeterminate,
             Err(error) => {
                 HandResult::err(HandError::new(HandErrorKind::Execution, error.to_string()))
             }

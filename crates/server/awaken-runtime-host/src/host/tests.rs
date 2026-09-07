@@ -2851,6 +2851,10 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     assert_eq!(after.len(), 1, "R1: uncertain occupant cannot be removed");
     assert_eq!(after[0].run_id, original.run_id);
     assert!(
+        after[0].cancellation_requested,
+        "R1: exact cancellation intent retained"
+    );
+    assert!(
         after[0].physical_attempt_active,
         "R1: dropping inference cannot acknowledge physical termination"
     );

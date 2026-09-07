@@ -809,24 +809,39 @@ pub(super) async fn recover_pending_tool_batch(
     else {
         return Ok(None);
     };
-    match recover_tool_batch(
-        runtime,
-        context,
-        delegation_origin,
-        resolved,
-        env,
+    tool_execution_disposition(
         run_id,
-        thread_id,
-        batch,
-        ledger,
-        store,
-        discovery,
+        recover_tool_batch(
+            runtime,
+            context,
+            delegation_origin,
+            resolved,
+            env,
+            run_id,
+            thread_id,
+            batch,
+            ledger,
+            store,
+            discovery,
+        )
+        .await,
     )
-    .await
-    {
+}
+
+/// Normal and recovered batches consume the same fatal executor signals. These
+/// are logical outcomes only; the attempt-local latch separately vetoes ACK.
+pub(super) fn tool_execution_disposition(
+    run_id: &RunId,
+    result: Result<Option<RunDisposition>>,
+) -> Result<Option<RunDisposition>> {
+    match result {
         Err(Error::StateConflict) => Ok(Some(RunDisposition::ended(
             run_id.clone(),
             EndCause::Error(Failure::StateConflict),
+        ))),
+        Err(Error::Indeterminate) => Ok(Some(RunDisposition::ended(
+            run_id.clone(),
+            EndCause::Indeterminate,
         ))),
         outcome => outcome,
     }

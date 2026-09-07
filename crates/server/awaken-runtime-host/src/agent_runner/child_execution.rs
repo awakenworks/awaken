@@ -55,6 +55,53 @@ impl<T> Drop for AbortOnDropTask<T> {
     }
 }
 
+#[cfg(test)]
+mod owned_task_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dropping_one_child_task_aborts_only_its_observation() {
+        // T1 two owned children have entered; T2 A's owner is dropped; T3 B
+        // returns. => A is aborted (not detached), only A latches uncertainty,
+        // and B's original output is joined. No abort is treated as stop proof.
+        struct Dropped(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+        let a = awaken_runtime_contract::runtime_context::AttemptQuiescence::default();
+        let b = awaken_runtime_contract::runtime_context::AttemptQuiescence::default();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        let owned_a = a.clone();
+        let entered_a = entered.clone();
+        let task_a = AbortOnDropTask::spawn(async move {
+            owned_a
+                .observe_return(async move {
+                    let _dropped = Dropped(Some(dropped_tx));
+                    entered_a.notify_one();
+                    std::future::pending::<()>().await;
+                })
+                .await;
+        });
+        entered.notified().await;
+        let owned_b = b.clone();
+        let task_b =
+            AbortOnDropTask::spawn(async move { owned_b.observe_return(async { 42 }).await });
+        drop(task_a);
+        tokio::time::timeout(Duration::from_secs(2), dropped_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!a.can_acknowledge_return(), "T2 unknown A");
+        assert_eq!(task_b.join().await.unwrap(), 42, "T3 original result");
+        assert!(b.can_acknowledge_return(), "T2/T3 independent B");
+    }
+}
+
 /// Durable scheduling dependencies for a child Run. This is host wiring, not a
 /// child-specific runtime contract: the same dispatch worker and queue drive root
 /// and child Runs; creation is the only difference.

@@ -93,9 +93,10 @@ fn map_hand_result(tool_id: &str, result: HandResult) -> Result<ToolOutput, Tool
             _ => Err(ToolError::Execution(error.message)),
         },
         (HandResultDisposition::Indeterminate, HandResult::Indeterminate) => {
-            Err(ToolError::Execution(format!(
-                "indeterminate: hand connection lost during `{tool_id}`"
-            )))
+            // The same wire outcome covers lost replies and unresolved ledger
+            // claims; do not invent a connection-loss cause or repeat the error
+            // class in its detail. The Runtime already owns call coordinates.
+            Err(ToolError::Indeterminate(tool_id.to_owned()))
         }
         _ => unreachable!("HandResult disposition must match its closed enum variant"),
     }
@@ -274,6 +275,7 @@ mod verification {
     }
 
     #[kani::proof]
+    #[kani::unwind(16)]
     fn hand_result_disposition_allows_only_explicit_success() {
         // Cause graph: C1 the Hand returned Ok; C2 it returned a definite Err;
         // C3 its outcome is Indeterminate. Effects: E1 select Success; E2
@@ -298,6 +300,15 @@ mod verification {
             disposition == HandResultDisposition::Indeterminate,
             indeterminate
         );
+        // Verify the actual adapter too: selecting the right disposition is
+        // insufficient if payload mapping erases Unknown into ordinary failure.
+        // Prove the changed Unknown adapter arm with a fixed diagnostic id.
+        // Success/error payload serialization remains executable-test evidence;
+        // this does not prove transport delivery or provider termination.
+        assert!(matches!(
+            map_hand_result("tool", HandResult::Indeterminate),
+            Err(ToolError::Indeterminate(_))
+        ));
     }
 
     #[kani::proof]

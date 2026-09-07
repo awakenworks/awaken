@@ -41,6 +41,58 @@ use harness::{
 
 const LEASE: u64 = 1_000;
 
+#[tokio::test]
+async fn a_returned_unknown_tool_result_cannot_release_the_durable_physical_slot() {
+    // U1 the real Native Runtime returns from a tool with typed unknown; U2 its
+    // logical Indeterminate is committed; U3 successor claims after expiry.
+    // => one effect, retained predecessor slot, and Blocked successor. A logical
+    // return/terminal commit is not an ACK. No synthetic latch injection here.
+    use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+    struct UnknownTool(Arc<std::sync::atomic::AtomicUsize>);
+    #[async_trait::async_trait]
+    impl RawTool for UnknownTool {
+        fn id(&self) -> &str {
+            "echo"
+        }
+        async fn invoke(&self, _: ToolCall) -> Result<ToolOutput, ToolError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(ToolError::Indeterminate("response lost".into()))
+        }
+    }
+    let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let runtime = harness::tool_until_result_runtime(Arc::new(UnknownTool(effects.clone())), 1);
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let run = RunId("returned-unknown".into());
+    let worker =
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-a").with_lease_ms(LEASE);
+    // Settlement may reject the occupied slot, but must preserve terminal Run
+    // truth and never erase physical uncertainty to report a successful Done.
+    let _ = worker
+        .start_run(RunDispatch::new(activation(&run.0)), harness::clock(0))
+        .await;
+    assert_eq!(
+        CommittedThreadView::run(commit.as_ref(), &run)
+            .unwrap()
+            .state,
+        RunState::Ended(EndCause::Indeterminate)
+    );
+    assert!(store.list_dispatches().await.unwrap()[0].physical_attempt_active);
+    let replacement = store
+        .claim("owner-b", LEASE, LEASE + 1, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store
+            .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1)
+            .await
+            .unwrap(),
+        AttemptAdmission::Blocked
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+}
+
 // --- 1. A live lease fences a second claim ---------------------------------
 
 /// Store-level spec: while owner A holds a live lease on the only runnable

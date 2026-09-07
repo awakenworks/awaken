@@ -218,13 +218,12 @@ impl McpToolHost<AwakenMcpContext> for AwakenMcpHost {
             Err(ToolError::InvalidArguments(message)) => {
                 Err(McpHostError::InvalidArguments(message))
             }
-            Err(ToolError::UnavailableBeforeDispatch(message)) => {
-                Err(McpHostError::Internal(message))
-            }
-            Err(ToolError::StateInvalidatedAfterDispatch(message)) => {
-                Err(McpHostError::Internal(message))
-            }
-            Err(ToolError::Execution(message)) => Err(McpHostError::Internal(message)),
+            Err(
+                ToolError::UnavailableBeforeDispatch(message)
+                | ToolError::StateInvalidatedAfterDispatch(message)
+                | ToolError::Indeterminate(message)
+                | ToolError::Execution(message),
+            ) => Err(McpHostError::Internal(message)),
         }
     }
 }
@@ -376,15 +375,20 @@ mod tests {
         }
     }
 
-    struct InvalidatedAfterDispatchTool;
+    struct PostDispatchErrorTool {
+        uncertain: bool,
+    }
 
     #[async_trait]
-    impl RawTool for InvalidatedAfterDispatchTool {
+    impl RawTool for PostDispatchErrorTool {
         fn id(&self) -> &str {
             "invalidated"
         }
 
         async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+            if self.uncertain {
+                return Err(ToolError::Indeterminate("effect outcome is unknown".into()));
+            }
             Err(ToolError::StateInvalidatedAfterDispatch(
                 "skill catalog refresh failed after the mutation".to_string(),
             ))
@@ -534,27 +538,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_dispatch_invalidation_is_terminal_over_mcp() {
+    async fn post_dispatch_errors_are_protocol_errors_over_mcp() {
         // Cause/effect decision table: C1 dispatch has already produced an
         // external effect; C2 the executor's catalog becomes unavailable;
         // C3 MCP has no Run lifecycle in which to retry or repair it. M1
         // C1+C2+C3 => one Internal response, no model-visible tool result and
-        // no retry. Ordinary pre-dispatch and Execution mappings remain owned
-        // by their adjacent tests.
-        let source = StaticExports::new(vec![McpExportedTool::plain(
-            descriptor("invalidated"),
-            Arc::new(InvalidatedAfterDispatchTool),
-        )]);
-        let service = McpToolService::new("test-server", "0.0.0", Arc::new(source));
+        // no retry. M2 C1 + unknown effect outcome => the same protocol error,
+        // never a completed ToolOutput/isError result. An MCP error is not a
+        // physical stop receipt. Ordinary Execution is tested adjacent here.
+        for uncertain in [false, true] {
+            let source = StaticExports::new(vec![McpExportedTool::plain(
+                descriptor("invalidated"),
+                Arc::new(PostDispatchErrorTool { uncertain }),
+            )]);
+            let service = McpToolService::new("test-server", "0.0.0", Arc::new(source));
 
-        let err = handle(&service, "tools/call", json!({ "name": "invalidated" }))
-            .await
-            .expect_err("post-dispatch invalidation is terminal");
-        assert_eq!(err.code, -32603, "M1 protocol terminal");
-        assert!(
-            err.message.contains("skill catalog refresh failed"),
-            "M1 preserves the operator cause"
-        );
+            let err = handle(&service, "tools/call", json!({ "name": "invalidated" }))
+                .await
+                .expect_err("post-dispatch invalidation is terminal");
+            assert_eq!(err.code, -32603, "M1 protocol terminal");
+            assert!(
+                err.message.contains(if uncertain {
+                    "effect outcome is unknown"
+                } else {
+                    "skill catalog refresh failed"
+                }),
+                "M1/M2 preserve the operator cause"
+            );
+        }
     }
 
     #[tokio::test]

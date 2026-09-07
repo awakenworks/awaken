@@ -232,13 +232,6 @@ impl BackgroundTaskTerminalObserver {
         }
     }
 
-    fn state_invalidated(fence: TaskFence) -> BackgroundTaskCompletion {
-        Self::indeterminate(
-            fence,
-            "detached task executor state became unavailable after dispatch",
-        )
-    }
-
     fn start_failure(
         fence: TaskFence,
         kind: ToolKind,
@@ -413,9 +406,9 @@ impl BackgroundTaskTerminalObserver {
                         )
                         .await;
                     }
-                    Err(awaken_runtime::DetachedToolError::StateInvalidated) => {
-                        supervisor
-                            .complete(task_id.clone(), Self::state_invalidated(fence.clone()));
+                    Err(error @ (awaken_runtime::DetachedToolError::StateInvalidated
+                        | awaken_runtime::DetachedToolError::Indeterminate)) => {
+                        supervisor.complete(task_id.clone(), Self::indeterminate(fence.clone(), error.to_string()));
                         publish_attention(
                             attention,
                             &thread_id,
@@ -664,10 +657,11 @@ impl BackgroundTaskTerminalObserver {
                             failures = 0;
                             observed
                         }
-                        Err(awaken_runtime::DetachedToolError::StateInvalidated) => {
+                        Err(error @ (awaken_runtime::DetachedToolError::StateInvalidated
+                            | awaken_runtime::DetachedToolError::Indeterminate)) => {
                             supervisor.complete(
                                 task_id.clone(),
-                                Self::state_invalidated(fence.clone()),
+                                Self::indeterminate(fence.clone(), error.to_string()),
                             );
                             publish_attention(
                                 attention,
@@ -1024,14 +1018,17 @@ mod tests {
             epoch: 9,
         };
 
-        let completion = BackgroundTaskTerminalObserver::state_invalidated(fence.clone());
+        let completion = BackgroundTaskTerminalObserver::indeterminate(
+            fence.clone(),
+            awaken_runtime::DetachedToolError::StateInvalidated.to_string(),
+        );
 
         assert_eq!(completion.fence, fence, "SI1 exact claim fence");
         assert!(
             matches!(
                 completion.end,
                 BackgroundTaskEnd::Indeterminate { ref message }
-                    if message.contains("unavailable after dispatch")
+                    if message.contains("invalidated after dispatch")
             ),
             "SI1 terminal classification"
         );
@@ -1494,9 +1491,19 @@ mod tests {
         pub(super) cancels: AtomicUsize,
         pub(super) effect_gate: Option<Arc<tokio::sync::Semaphore>>,
         pub(super) effect_entered: tokio::sync::Notify,
+        pub(super) uncertain_action: Option<usize>,
     }
 
     impl RemoteTaskTool {
+        fn observed(&self, action: usize) -> Result<(), ToolError> {
+            if self.uncertain_action == Some(action) {
+                Err(ToolError::Indeterminate(
+                    "remote observation unknown".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
         async fn before_effect(&self) {
             if let Some(gate) = &self.effect_gate {
                 self.effect_entered.notify_one();
@@ -1526,6 +1533,7 @@ mod tests {
         async fn start_task(&self, _call: ToolCall) -> Result<ToolTaskStart, ToolError> {
             self.before_effect().await;
             self.starts.fetch_add(1, Ordering::SeqCst);
+            self.observed(0)?;
             Ok(ToolTaskStart::Pending(Self::handle()))
         }
 
@@ -1537,6 +1545,7 @@ mod tests {
             assert_eq!(task.task_id, "remote-secret-id");
             self.before_effect().await;
             self.polls.fetch_add(1, Ordering::SeqCst);
+            self.observed(1)?;
             Ok(ToolTaskPoll::Completed(ToolOutput::ok(
                 &call.call_id,
                 "remote complete",
@@ -1551,6 +1560,7 @@ mod tests {
             assert_eq!(task.task_id, Self::handle().task_id);
             self.before_effect().await;
             self.cancels.fetch_add(1, Ordering::SeqCst);
+            self.observed(2)?;
             Ok(ToolTaskPoll::Cancelled)
         }
     }

@@ -989,9 +989,285 @@ async fn an_execution_error_yields_a_model_visible_error_result_and_continues() 
 
 /// A tool that PANICS (an impl bug / a stray `.unwrap()`), not one that returns an
 /// error. A runtime that hosts arbitrary third-party tools (MCP/plugin/skill) must
-/// isolate that panic to a model-visible error and keep the run alive — never let one
-/// tool crash the whole agent run.
+/// isolate that panic without claiming its escaped effects stopped.
 struct PanickingTool;
+
+#[derive(Clone, Copy, Debug)]
+enum ObservedToolReturn {
+    Success,
+    Failure,
+    Unknown,
+    Pending,
+}
+
+struct ObservedTool {
+    mode: ObservedToolReturn,
+    entered: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl RawTool for ObservedTool {
+    fn id(&self) -> &str {
+        "echo"
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        match self.mode {
+            ObservedToolReturn::Success => Ok(ToolOutput::ok(call.call_id, "returned")),
+            ObservedToolReturn::Failure => Err(ToolError::Execution("returned failure".into())),
+            ObservedToolReturn::Unknown => Err(ToolError::Indeterminate("lost outcome".into())),
+            ObservedToolReturn::Pending => std::future::pending().await,
+        }
+    }
+
+    async fn poll_task(
+        &self,
+        call: &ToolCall,
+        _: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError> {
+        self.invoke(call.clone()).await.map(ToolTaskPoll::Completed)
+    }
+
+    async fn cancel_task(
+        &self,
+        call: &ToolCall,
+        task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError> {
+        self.poll_task(call, task).await
+    }
+}
+
+#[tokio::test]
+async fn every_prepared_tool_action_preserves_return_evidence_and_drop_uncertainty() {
+    // Decision table: action = invoke/start/poll/cancel x observation = unpolled,
+    // definitive success/error, typed unknown, entered then dropped. R1 unpolled
+    // => zero calls/no veto. R2 definitive return => one call/no veto. R3 unknown
+    // => typed fatal error/veto. R4 drop after entry => veto. R3/R4 reusing the
+    // same attempt => no second effect. A distinct context stays unaffected.
+    for action in 0..4 {
+        for mode in [
+            ObservedToolReturn::Success,
+            ObservedToolReturn::Failure,
+            ObservedToolReturn::Unknown,
+            ObservedToolReturn::Pending,
+        ] {
+            let entered = Arc::new(AtomicUsize::new(0));
+            let runtime = Arc::new(
+                Runtime::new()
+                    .with_tool(Arc::new(ObservedTool {
+                        mode,
+                        entered: entered.clone(),
+                    }))
+                    .with_gate(Arc::new(ConstGate(GateOutcome::Allow))),
+            );
+            let context = RuntimeRunContext::new();
+            let latch = context.physical_quiescence.clone();
+            let independent = RuntimeRunContext::new();
+            let activation = activation();
+            let prepared =
+                PreparedToolExecutor::new(runtime, &activation.snapshot, context).unwrap();
+            let call = ToolCall {
+                call_id: "observed".into(),
+                tool_id: "echo".into(),
+                arguments: serde_json::json!({}),
+            };
+            let handle = ToolTaskHandle {
+                owner: "fixture".into(),
+                binding: "echo".into(),
+                task_id: "existing".into(),
+                poll_interval_ms: None,
+            };
+            let state = Store::new();
+            let execute = || async {
+                let run = &activation.run_id;
+                let thread = &activation.thread_id;
+                match action {
+                    0 => prepared
+                        .invoke(run, thread, "observed".into(), &call, &state)
+                        .await
+                        .map(|_| ()),
+                    1 => prepared
+                        .start_task(run, thread, "observed".into(), &call, &state)
+                        .await
+                        .map(|_| ()),
+                    2 => prepared
+                        .poll_task(run, thread, "observed".into(), &call, &handle, &state)
+                        .await
+                        .map(|_| ()),
+                    _ => prepared
+                        .cancel_task(run, thread, "observed".into(), &call, &handle, &state)
+                        .await
+                        .map(|_| ()),
+                }
+            };
+            drop(execute());
+            assert_eq!(entered.load(Ordering::SeqCst), 0, "R1");
+            assert!(latch.can_acknowledge_return(), "R1");
+            let uncertain = matches!(
+                mode,
+                ObservedToolReturn::Unknown | ObservedToolReturn::Pending
+            );
+            if matches!(mode, ObservedToolReturn::Pending) {
+                let mut future = Box::pin(execute());
+                assert!(
+                    std::future::Future::poll(
+                        future.as_mut(),
+                        &mut std::task::Context::from_waker(std::task::Waker::noop())
+                    )
+                    .is_pending(),
+                    "R4"
+                );
+                assert_eq!(entered.load(Ordering::SeqCst), 1, "R4 entered");
+                drop(future);
+            } else {
+                let result = execute().await;
+                assert_eq!(
+                    matches!(result, Err(DetachedToolError::Indeterminate)),
+                    uncertain,
+                    "R2/R3 {action} {mode:?}"
+                );
+            }
+            assert_eq!(
+                latch.can_acknowledge_return(),
+                !uncertain,
+                "{action} {mode:?}"
+            );
+            assert!(
+                independent.physical_quiescence.can_acknowledge_return(),
+                "independent B"
+            );
+            if uncertain {
+                assert!(
+                    matches!(execute().await, Err(DetachedToolError::Indeterminate)),
+                    "R3/R4 no reentry"
+                );
+            }
+            assert_eq!(entered.load(Ordering::SeqCst), 1, "exactly one effect");
+        }
+    }
+}
+
+#[tokio::test]
+async fn fresh_and_recovered_tool_uncertainty_use_the_same_terminal_decision() {
+    // R1 fresh call / R2 committed Requested batch: each enters once, returns
+    // typed unknown, commits Indeterminate, vetoes ACK, and never reinfers.
+    // Requested recovery needs no replay permission because no prior entry was
+    // recorded. This test does not grant a crash-recovery physical-slot bypass.
+    use awaken_agent_contract::agent::state::StateKey;
+    use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatch};
+    for recovered in [false, true] {
+        let entered = Arc::new(AtomicUsize::new(0));
+        let model = Arc::new(ToolThenText::new());
+        let runtime = Runtime::new()
+            .with_llm(model.clone())
+            .with_tool(Arc::new(ObservedTool {
+                mode: ObservedToolReturn::Unknown,
+                entered: entered.clone(),
+            }))
+            .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+        let activation = activation();
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        if recovered {
+            let batch = ToolBatch::for_step(
+                activation.run_id.clone(),
+                0,
+                [(
+                    ToolCall {
+                        call_id: "recovery".into(),
+                        tool_id: "echo".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                    Default::default(),
+                )],
+            )
+            .unwrap();
+            awaken_runtime_contract::CommitCoordinator::commit(
+                commit.as_ref(),
+                awaken_runtime_contract::ThreadCommit::assemble(
+                    activation.thread_id.clone(),
+                    awaken_runtime_contract::RunDisposition::running(activation.run_id.clone()),
+                    true,
+                    Vec::new(),
+                    vec![ActiveToolBatch::write(&Some(batch))],
+                    Vec::new(),
+                ),
+            )
+            .await
+            .unwrap();
+        }
+        let context = RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_reader(commit.clone());
+        let latch = context.physical_quiescence.clone();
+        assert_eq!(
+            runtime.execute(activation, context).await.unwrap(),
+            RunState::Ended(EndCause::Indeterminate)
+        );
+        assert!(!latch.can_acknowledge_return());
+        assert_eq!(entered.load(Ordering::SeqCst), 1);
+        assert_eq!(model.calls.load(Ordering::SeqCst), usize::from(!recovered));
+        assert!(
+            commit
+                .committed()
+                .messages
+                .iter()
+                .all(|message| message.role != Role::Tool)
+        );
+    }
+}
+
+#[tokio::test]
+async fn dropping_before_tool_ownership_admission_does_not_invent_an_effect() {
+    // A1 ownership read is pending before tool entry; dropping that read => zero
+    // effects and no physical uncertainty. Contrasts with R4 after entry above.
+    struct PendingOwnership;
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier for PendingOwnership {
+        async fn verify_current(
+            &self,
+        ) -> Result<(), awaken_runtime_contract::runtime_context::AttemptOwnershipError> {
+            std::future::pending().await
+        }
+    }
+    let entered = Arc::new(AtomicUsize::new(0));
+    let runtime = Arc::new(
+        Runtime::new()
+            .with_tool(Arc::new(ObservedTool {
+                mode: ObservedToolReturn::Pending,
+                entered: entered.clone(),
+            }))
+            .with_gate(Arc::new(ConstGate(GateOutcome::Allow))),
+    );
+    let mut context = RuntimeRunContext::new();
+    context.ownership = Some(Arc::new(PendingOwnership));
+    let latch = context.physical_quiescence.clone();
+    let activation = activation();
+    let prepared = PreparedToolExecutor::new(runtime, &activation.snapshot, context).unwrap();
+    let call = ToolCall {
+        call_id: "before-entry".into(),
+        tool_id: "echo".into(),
+        arguments: serde_json::json!({}),
+    };
+    let state = Store::new();
+    let mut future = Box::pin(prepared.invoke(
+        &activation.run_id,
+        &activation.thread_id,
+        "before-entry".into(),
+        &call,
+        &state,
+    ));
+    assert!(
+        std::future::Future::poll(
+            future.as_mut(),
+            &mut std::task::Context::from_waker(std::task::Waker::noop())
+        )
+        .is_pending()
+    );
+    drop(future);
+    assert_eq!(entered.load(Ordering::SeqCst), 0);
+    assert!(latch.can_acknowledge_return());
+}
 
 #[async_trait::async_trait]
 impl RawTool for PanickingTool {
@@ -1004,25 +1280,29 @@ impl RawTool for PanickingTool {
 }
 
 #[tokio::test]
-async fn a_panicking_tool_is_isolated_to_a_model_visible_error_and_the_run_continues() {
+async fn a_panicking_tool_is_isolated_but_cannot_authorize_reinference_or_ack() {
+    // P1 entered tool unwinds => logical Indeterminate + physical veto, no
+    // fabricated completed tool message and no second model call. Ordinary
+    // returned errors retain the separate model-visible test above.
+    let model = Arc::new(ToolThenText::new());
     let runtime = Runtime::new()
-        .with_llm(Arc::new(CallsTool("echo")))
+        .with_llm(model.clone())
         .with_tool(Arc::new(PanickingTool))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let quiescence = context.physical_quiescence.clone();
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(outcome, RunState::Ended(EndCause::Indeterminate));
+    assert!(!quiescence.can_acknowledge_return());
+    assert_eq!(model.calls.load(Ordering::SeqCst), 1);
 
     let committed = commit.committed();
     assert!(
-        committed
-            .messages
-            .iter()
-            .any(|m| m.role == Role::Tool && m.text_content().to_lowercase().contains("panic")),
-        "a panicking tool must surface as a model-visible error, not crash the run"
+        committed.messages.iter().all(|m| m.role != Role::Tool),
+        "a panic is not a completed tool result"
     );
 }
 

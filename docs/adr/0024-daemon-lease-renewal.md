@@ -125,9 +125,31 @@ begin B -> Applied -> external future B
 Explicit executor return can acknowledge quiescence only when no nested effect
 was abandoned and process cleanup succeeded. The attempt-local
 `RuntimeRunContext.physical_quiescence` latch propagates uncertainty from Native
-tool cancellation and ACP cleanup failure; it can veto an ACK but
+tool/model execution and ACP cleanup failure; it can veto an ACK but
 cannot clear the Dispatch slot. Inline children share this latch; a separately
 admitted attempt receives a fresh one. No second durable authority is introduced.
+
+The canonical ordinary-tool effect boundary also observes invoke, detached
+start, poll and cancel after concurrency admission and the ownership recheck.
+An entered Future dropped or unwound sets the same latch. A returned typed
+`ToolError::Indeterminate` sets it before any awaited result processing, bypasses
+model-visible completion and reaches the existing logical Indeterminate outcome.
+Normal and recovered batches share one terminal-error projection. A definitive
+ordinary error remains model-visible; replay capability never proves effect
+locality or termination. The Hand wire retains its existing Indeterminate arm,
+and both server and client preserve that classification instead of converting it
+to an ordinary error string. The Session Hand cannot mask it with a subsequent
+catalog-refresh failure. Independently claimed background attempts receive fresh
+latches; their inline children share them. Unknown start/poll/cancel observations
+terminate through the existing background Indeterminate candidate, not another
+retry loop. These rules do not prove that a custom adapter correctly classifies
+its external protocol, or supply a provider receipt for post-crash admission.
+
+Direct and durable delegated child Runs share the existing owned task boundary,
+so a durable Worker is not recursively polled on its parent's stack. Dropping
+the owner requests abort of that exact child task, never detachment; abort still
+does not prove physical termination. Dispatch fencing and the inline-child
+uncertainty propagation remain responsible for the affected execution scope.
 
 Cancellation that exceeds the lease request budget keeps observing the same
 owned executor Future with its Thread lock held. The budget emits a diagnostic;

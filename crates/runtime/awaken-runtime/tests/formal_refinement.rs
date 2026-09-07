@@ -1255,6 +1255,10 @@ async fn response_loss_recovery_preserves_effect_identity_and_never_replay() {
             .expect("external effect reached before the owner is interrupted");
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
+        assert!(
+            !context.physical_quiescence.can_acknowledge_return(),
+            "aborted owner is not physical termination evidence"
+        );
         assert!(matches!(
             trace.latest_batch().unwrap().calls()[0].phase,
             ToolCallPhase::Executing { attempt: 1 }
@@ -1269,6 +1273,12 @@ async fn response_loss_recovery_preserves_effect_identity_and_never_replay() {
             .with_llm(Arc::new(TextOnly))
             .with_tool(tool.clone());
         register_snapshot(&replacement, &snapshot);
+        // This trace isolates operation replay AFTER independent physical
+        // admission, not a Dispatch crash-recovery authorization. Reusing A's
+        // uncertainty latch as B's evidence would model the wrong ownership.
+        let context = RuntimeRunContext::new()
+            .with_commit(Arc::new(trace.clone()))
+            .with_reader(Arc::new(trace.inner.clone()));
         assert_eq!(
             replacement
                 .execute(activation(snapshot), context)

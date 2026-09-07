@@ -57,6 +57,7 @@ impl BackgroundTaskTerminalObserver {
         let mut context = self.context.clone();
         context.cancellation = Some(cancellation);
         context.terminal_observers.clear();
+        context.physical_quiescence = Default::default();
         // Detached work owns its own durable attempt, not the already-ended
         // foreground Run's dispatch claim. Keep one neutral Runtime verifier.
         context.ownership = Some(Arc::new(BackgroundTaskOwnership {
@@ -89,6 +90,101 @@ mod tests {
 
     use super::super::tests::{RemoteTaskTool, remote_snapshot};
     use crate::background::BackgroundRuns;
+
+    #[test]
+    fn separately_owned_background_attempts_do_not_inherit_foreground_uncertainty() {
+        // Q1 foreground uncertainty must not veto detached A/B (new authority).
+        // Q2 A's inline child reports uncertainty => A only, never B. Q3 A's
+        // cancellation token cannot cancel B or the foreground token. Shared
+        // Session concurrency is retained; it is not physical-attempt evidence.
+        let mut foreground = RuntimeRunContext::new();
+        let foreground_token = awaken_runtime_contract::CancellationToken::new();
+        foreground.cancellation = Some(foreground_token.clone());
+        foreground.physical_quiescence.mark_uncertain();
+        let observer = BackgroundTaskTerminalObserver::new(
+            Arc::new(Runtime::new()),
+            remote_snapshot(),
+            foreground,
+            local_commit(),
+            Arc::new(BackgroundRuns::new()),
+            Arc::new(BackgroundTaskSupervisor::new("worker")),
+            "session".into(),
+            "generation".into(),
+            None,
+        );
+        let a = observer.execution_context(&task(0), Default::default());
+        let b = observer.execution_context(&task(0), Default::default());
+        assert!(a.physical_quiescence.can_acknowledge_return(), "Q1 A");
+        assert!(b.physical_quiescence.can_acknowledge_return(), "Q1 B");
+        a.for_child_run().physical_quiescence.mark_uncertain();
+        a.cancellation.as_ref().unwrap().cancel();
+        assert!(!a.physical_quiescence.can_acknowledge_return(), "Q2 A");
+        assert!(b.physical_quiescence.can_acknowledge_return(), "Q2 B");
+        assert!(!b.cancellation.as_ref().unwrap().is_cancelled(), "Q3 B");
+        assert!(!foreground_token.is_cancelled(), "Q3 foreground");
+    }
+
+    #[tokio::test]
+    async fn unknown_background_start_poll_and_cancel_terminate_without_observation_retry() {
+        // U1 Running/start; U2 Waiting/poll; U3 Cancelling/cancel. Each concrete
+        // executor returns typed unknown after one entry => one exact-fence
+        // Indeterminate candidate. No poll retry, second start, or subsequent
+        // cancel-as-proof. Committed task state remains the only durable owner.
+        for boundary in 0..3 {
+            let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
+            let tool = Arc::new(RemoteTaskTool {
+                uncertain_action: Some(boundary),
+                ..Default::default()
+            });
+            let runtime = Arc::new(Runtime::new().with_tool(tool.clone()).with_plugin(Arc::new(
+                BackgroundTaskPlugin::with_supervisor(
+                    BackgroundTaskConfig {
+                        tools: BTreeSet::from(["remote".into()]),
+                    },
+                    supervisor.clone(),
+                ),
+            )));
+            let commit = local_commit();
+            let background = Arc::new(BackgroundRuns::new());
+            let observer = BackgroundTaskTerminalObserver::new(
+                runtime,
+                remote_snapshot(),
+                RuntimeRunContext::new(),
+                commit.clone(),
+                background.clone(),
+                supervisor.clone(),
+                "session".into(),
+                "generation".into(),
+                None,
+            );
+            let task = task(boundary);
+            persist(&commit, &task, "initial").await;
+            if boundary == 0 {
+                observer.launch(task.clone()).await;
+            } else {
+                observer.launch_remote(task.clone()).await;
+            }
+            assert!(background.drain(Duration::from_secs(2)).await);
+            let completion = supervisor.completion(&task.id).expect("terminal candidate");
+            assert_eq!(completion.fence, task.attempt().unwrap().fence());
+            assert!(matches!(
+                completion.end,
+                BackgroundTaskEnd::Indeterminate { .. }
+            ));
+            assert_eq!(
+                tool.starts.load(Ordering::SeqCst),
+                usize::from(boundary == 0)
+            );
+            assert_eq!(
+                tool.polls.load(Ordering::SeqCst),
+                usize::from(boundary == 1)
+            );
+            assert_eq!(
+                tool.cancels.load(Ordering::SeqCst),
+                usize::from(boundary == 2)
+            );
+        }
+    }
 
     fn task(boundary: usize) -> BackgroundTask {
         let mut task = BackgroundTask::requested(

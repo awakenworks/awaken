@@ -81,6 +81,83 @@ struct HandEcho {
     ran: Arc<AtomicUsize>,
 }
 
+struct UnknownEffect(Arc<AtomicUsize>);
+
+#[async_trait::async_trait]
+impl RawTool for UnknownEffect {
+    fn id(&self) -> &str {
+        "echo"
+    }
+    async fn invoke(&self, _: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err(ToolError::Indeterminate(
+            "effect outcome unavailable".into(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn local_remote_and_lost_reply_uncertainty_share_one_runtime_terminal_path() {
+    // U1 local typed unknown; U2 same tool over the real Hand wire; U3 peer reads
+    // request bytes then disappears. All => one inference, no completed tool
+    // message, logical Indeterminate, physical ACK veto, no automatic replay.
+    // U2 also checks server-side mapping (not just the brain's error display).
+    for transport in 0..3 {
+        let effects = Arc::new(AtomicUsize::new(0));
+        let model = Arc::new(ToolThenText {
+            calls: AtomicUsize::new(0),
+        });
+        let mut runtime = Runtime::new().with_llm(model.clone());
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let mut context = RuntimeRunContext::new().with_commit(commit.clone());
+        let mut hand = None;
+        if transport == 0 {
+            runtime = runtime.with_tool(Arc::new(UnknownEffect(effects.clone())));
+        } else {
+            runtime = runtime.with_tool(Arc::new(BrainSideTrap));
+            let (brain_end, mut hand_end) = awaken_connection_plan::in_process_pair();
+            let effects = effects.clone();
+            hand = Some(tokio::spawn(async move {
+                if transport == 1 {
+                    let session = HandSession::in_memory([
+                        Arc::new(UnknownEffect(effects)) as Arc<dyn RawTool>
+                    ]);
+                    serve_hand(hand_end, session).await.unwrap();
+                } else {
+                    use tokio::io::AsyncReadExt;
+                    assert!(hand_end.read(&mut [0u8; 64]).await.unwrap() > 0);
+                    // No response and no asserted terminal provider receipt.
+                }
+            }));
+            context = context.with_tool_executor(Arc::new(RemoteToolExecutor::new(brain_end)));
+        }
+        let latch = context.physical_quiescence.clone();
+        let result = runtime.execute(activation(), context).await.unwrap();
+        assert_eq!(
+            result,
+            RunState::Ended(EndCause::Indeterminate),
+            "U{transport}"
+        );
+        assert!(!latch.can_acknowledge_return(), "U{transport}");
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1, "no reinference");
+        assert_eq!(
+            effects.load(Ordering::SeqCst),
+            usize::from(transport != 2),
+            "no replay"
+        );
+        assert!(
+            commit
+                .committed()
+                .messages
+                .iter()
+                .all(|m| m.role != Role::Tool)
+        );
+        if let Some(hand) = hand {
+            hand.await.unwrap();
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl RawTool for HandEcho {
     fn id(&self) -> &str {

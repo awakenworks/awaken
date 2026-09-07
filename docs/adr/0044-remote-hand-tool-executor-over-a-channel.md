@@ -80,7 +80,7 @@ The brain–hand protocol carries `ToolCall` in and `ToolOutput` out, wrapped in
 minimal envelope:
 
 ```text
-HandRequest  { correlation_id, catalog_fingerprint, deadline_unix_ms, call: ToolCall }
+HandRequest  { protocol_version, correlation_id, operation_id, catalog_fingerprint, deadline_unix_ms, call: ToolCall }
 HandReply    { correlation_id, result: HandResult }
 HandResult   = Ok(ToolOutput) | Err(ToolError) | Indeterminate
 ```
@@ -123,14 +123,21 @@ channel, hand death). `RemoteToolExecutor` surfaces this as
 `HandResult::Indeterminate`, never a silent failure or a fabricated success
 (satisfies G26). Resolution:
 
-- Requests carry a stable `correlation_id`; the hand keeps a small in-flight/
-  recently-completed ledger keyed by it, so a re-drive returns the original
-  `ToolOutput` instead of running the effect twice.
-- The brain's re-drive path is the existing dispatch retry (ADR-0015 budget); no
-  new retry machinery.
+- `correlation_id` pairs one transport reply. A Runtime-owned operation token
+  supplies the stable `operation_id` used by the existing Hand operation ledger;
+  it is not a physical-attempt owner/epoch. The ledger joins a live call or
+  returns its process-local cached result without executing the effect again.
+- Filesystem claims fence replay across process replacement but do not persist
+  sensitive tool output. An interrupted claim without an available result stays
+  Indeterminate; the ledger cannot prove physical termination.
+- Both Hand adapters preserve typed `ToolError::Indeterminate`. Runtime's one
+  tool-effect boundary propagates the existing physical uncertainty veto and
+  commits a logical Indeterminate outcome, rather than asking the model to retry
+  an ordinary error. Dispatch admission remains governed by ADR-0024 D5; generic
+  crash retry cannot substitute for predecessor quiescence.
 
-This makes the remote hand safe under the crash-retry budget without a
-distributed transaction.
+No second retry mechanism or receipt database is added. Duplicate-operation
+suppression and physical-attempt admission remain different responsibilities.
 
 ### D5: This ADR introduces the seam and framing only
 

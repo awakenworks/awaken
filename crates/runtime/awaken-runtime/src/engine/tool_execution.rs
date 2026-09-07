@@ -459,6 +459,9 @@ async fn execute_tool_action(
     // Admission may have waited behind another Run. Recheck the claim fence at
     // the actual effect boundary rather than trusting ownership from before it.
     verify_attempt_ownership(context.ownership.as_deref()).await?;
+    if !context.physical_quiescence.can_acknowledge_return() {
+        return Err(Error::Indeterminate);
+    }
     let started = std::time::Instant::now();
     use futures_util::FutureExt;
     let state_bound = env.and_then(|env| env.dynamic_tool_state_bound(&call.tool_id));
@@ -511,16 +514,25 @@ async fn execute_tool_action(
             },
         ),
     );
-    let mut outcome = match std::panic::AssertUnwindSafe(invocation)
-        .catch_unwind()
-        .await
-    {
-        Ok(outcome) => outcome,
-        Err(_panic) => Err(ToolError::Execution(format!(
-            "tool `{}` panicked during execution",
-            call.tool_id
-        ))),
-    };
+    // Arm only after admission and the ownership recheck. The same observer
+    // used by model execution covers invoke/start/poll/cancel, including Future
+    // drop and unwind. Catching a panic outside it must not fabricate return.
+    let mut outcome =
+        match std::panic::AssertUnwindSafe(context.physical_quiescence.observe_return(invocation))
+            .catch_unwind()
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(_panic) => Err(ToolError::Indeterminate(format!(
+                "tool `{}` panicked during execution",
+                call.tool_id
+            ))),
+        };
+    // Preserve uncertainty before another await or any result normalization.
+    // Replay capability says nothing about physical termination or locality.
+    if matches!(outcome, Err(ToolError::Indeterminate(_))) {
+        context.physical_quiescence.mark_uncertain();
+    }
     if let Ok(ToolExecutorOutcome::Started(ToolTaskStart::Pending(handle))) = &outcome {
         outcome = handle
             .validate()
@@ -548,7 +560,15 @@ async fn execute_tool_action(
         if outcome.is_err() { "error" } else { "ok" },
         started.elapsed(),
     );
-    Ok(outcome)
+    match outcome {
+        Err(ToolError::Indeterminate(_)) => Err(Error::Indeterminate),
+        Err(ToolError::StateInvalidatedAfterDispatch(detail)) => {
+            tracing::error!(tool_id = %call.tool_id, call_id = %call.call_id, %detail,
+                "tool effect completed after its executor projection became unavailable");
+            Err(Error::StateConflict)
+        }
+        other => Ok(other),
+    }
 }
 
 #[tracing::instrument(
@@ -588,15 +608,6 @@ pub(crate) async fn execute_tool(
     {
         Ok(ToolExecutorOutcome::Output(output)) => output,
         Ok(_) => unreachable!("invoke action returns only ToolExecutorOutcome::Output"),
-        Err(ToolError::StateInvalidatedAfterDispatch(detail)) => {
-            tracing::error!(
-                tool_id = %call.tool_id,
-                call_id = %call.call_id,
-                %detail,
-                "tool effect completed after its executor projection became unavailable"
-            );
-            return Err(Error::StateConflict);
-        }
         Err(error) => ToolOutput::error(&call.call_id, error.to_string()),
     };
     // OTel: a tool that returned an error (unknown tool, invocation failure, or a
@@ -621,7 +632,7 @@ pub(crate) async fn execute_detached_tool_action(
     state: &Store,
     action: DetachedToolAction<'_>,
 ) -> Result<std::result::Result<ToolExecutorOutcome, ToolError>> {
-    let outcome = execute_tool_action(
+    execute_tool_action(
         runtime,
         Some(env),
         Some(resolved),
@@ -631,19 +642,7 @@ pub(crate) async fn execute_detached_tool_action(
         state,
         ToolExecutorAction::Detached(action),
     )
-    .await?;
-    match outcome {
-        Err(ToolError::StateInvalidatedAfterDispatch(detail)) => {
-            tracing::error!(
-                tool_id = %call.tool_id,
-                call_id = %call.call_id,
-                %detail,
-                "detached tool effect completed after its executor projection became unavailable"
-            );
-            Err(Error::StateConflict)
-        }
-        other => Ok(other),
-    }
+    .await
 }
 
 /// The in-process `ToolExecutor` (ADR-0044 D1): the degenerate case where the
