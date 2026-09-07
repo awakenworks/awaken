@@ -98,6 +98,10 @@ def main() -> None:
     e2e = (
         Path(__file__).parent.parent.parent / "e2e" / "k3d" / "distributed_control_e2e.sh"
     ).read_text()
+    # KRB4: the installed provisioner has a shared all-node directory, and K3s
+    # may default to local volumes. The node-recovery scenario must select hostPath
+    # explicitly; its live Bound/no-node-affinity checks own Kubernetes admission.
+    assert "kubectl annotate storageclass local-path defaultVolumeType=hostPath --overwrite" in e2e
     assert "initialize_role_installation control" in e2e
     assert "initialize_role_installation coordinator" in e2e
     assert '"--initialize-installation", "--initialization-reference"' in e2e

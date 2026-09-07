@@ -158,6 +158,11 @@ k3d_create_cluster "$CLUSTER" 3 128Mi "" --shared-volume "$CONTINUATION_VOLUME" 
 # node. This is a node-crash fixture, not a proof of production storage durability.
 kubectl -n kube-system patch configmap local-path-config --type=merge -p \
   '{"data":{"config.json":"{\"nodePathMap\":[],\"sharedFileSystemPath\":\"/var/lib/awaken-continuation\"}"}}' >/dev/null
+# Storage cause/effect rule S5: shared filesystem + K3s default `local` PV
+# type => API rejection (local requires node affinity); the same exact shared
+# directory with `hostPath` => a relocatable PV. Select the provisioner's existing
+# type contract explicitly rather than relying on its distribution-specific default.
+kubectl annotate storageclass local-path defaultVolumeType=hostPath --overwrite >/dev/null
 k3d_import_storage_images "$CLUSTER" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
 # Cause/effect decision table: D1 one default CoreDNS replica + its node stops ->
 # replacement application Pods cannot resolve authority Services; D2 two replicas
