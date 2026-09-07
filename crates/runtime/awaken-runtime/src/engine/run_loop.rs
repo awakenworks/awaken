@@ -941,19 +941,12 @@ pub(super) async fn drive(
             disposition = Some(RunDisposition::ended(run_id.clone(), EndCause::Cancelled));
             break;
         };
-        match tool_execution {
+        match dispatch::tool_execution_disposition(run_id, tool_execution) {
             Ok(Some(reached)) => {
                 disposition = Some(reached);
                 break;
             }
             Ok(None) => {}
-            Err(Error::StateConflict) => {
-                disposition = Some(RunDisposition::ended(
-                    run_id.clone(),
-                    EndCause::Error(Failure::StateConflict),
-                ));
-                break;
-            }
             Err(error) => return Err(error),
         }
 

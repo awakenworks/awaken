@@ -465,6 +465,7 @@ pub awaken_runtime_contract::execution::Cancellation::RemoteAbort
 pub enum awaken_runtime_contract::execution::Error
 pub awaken_runtime_contract::execution::Error::Commit(alloc::string::String)
 pub awaken_runtime_contract::execution::Error::Execution(alloc::string::String)
+pub awaken_runtime_contract::execution::Error::Indeterminate
 pub awaken_runtime_contract::execution::Error::Resolution(alloc::string::String)
 pub awaken_runtime_contract::execution::Error::StateConflict
 pub enum awaken_runtime_contract::execution::LiveInput
@@ -1582,6 +1583,7 @@ pub fn awaken_runtime_contract::tool::ToolConcurrency::compatible_with(&self, &S
 pub fn awaken_runtime_contract::tool::ToolConcurrency::narrowed_with(self, Self) -> Self
 pub enum awaken_runtime_contract::tool::ToolError
 pub awaken_runtime_contract::tool::ToolError::Execution(alloc::string::String)
+pub awaken_runtime_contract::tool::ToolError::Indeterminate(alloc::string::String)
 pub awaken_runtime_contract::tool::ToolError::InvalidArguments(alloc::string::String)
 pub awaken_runtime_contract::tool::ToolError::StateInvalidatedAfterDispatch(alloc::string::String)
 pub awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(alloc::string::String)

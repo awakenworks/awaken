@@ -979,10 +979,8 @@ async fn a_brain_fingerprint_drift_is_rejected_end_to_end() {
 
 #[tokio::test]
 async fn invoke_maps_an_indeterminate_outcome_to_a_named_execution_error() {
-    // `call_hand` returning Indeterminate is exercised elsewhere; this covers the
-    // `ToolExecutor::invoke` *mapping* row: Indeterminate → ToolError::Execution
-    // whose message names the tool and says the connection was lost. The kernel
-    // loop sees a definite error string, never a silent success.
+    // R1: request read + reply lost => typed Indeterminate, never an ordinary
+    // Execution error that Runtime could publish as a completed tool result.
     let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
         use futures_util::StreamExt;
@@ -996,6 +994,7 @@ async fn invoke_maps_an_indeterminate_outcome_to_a_named_execution_error() {
         .await
         .expect_err("an indeterminate outcome is surfaced as an error");
     let msg = err.to_string();
+    assert!(matches!(err, ToolError::Indeterminate(_)), "R1");
     assert!(msg.contains("indeterminate"), "got: {msg}");
     assert!(msg.contains("echo"), "the message names the tool: {msg}");
 }
@@ -1004,7 +1003,7 @@ async fn invoke_maps_an_indeterminate_outcome_to_a_named_execution_error() {
 async fn invoke_never_classifies_a_stream_write_error_as_safe_to_reacquire() {
     /*
      * Cause/effect rule RPD1: C1 framed send reports an error; E1 the stream may
-     * have emitted bytes, so invoke returns non-retryable indeterminate Execution
+     * have emitted bytes, so invoke returns typed non-retryable Indeterminate
      * and never the typed pre-dispatch-unavailable signal.
      */
     let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
@@ -1013,10 +1012,7 @@ async fn invoke_never_classifies_a_stream_write_error_as_safe_to_reacquire() {
         .invoke(&call("c1", "echo", "x"))
         .await
         .expect_err("a closed channel cannot accept the request");
-    assert!(matches!(
-        error,
-        ToolError::Execution(ref message) if message.contains("indeterminate")
-    ));
+    assert!(matches!(error, ToolError::Indeterminate(_)));
 }
 
 #[tokio::test]

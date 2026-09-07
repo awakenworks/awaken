@@ -2,6 +2,7 @@ pub mod awaken_runtime
 pub use awaken_runtime::fresh_process_id
 pub enum awaken_runtime::DetachedToolError
 pub awaken_runtime::DetachedToolError::Execution(alloc::string::String)
+pub awaken_runtime::DetachedToolError::Indeterminate
 pub awaken_runtime::DetachedToolError::NotAuthorized
 pub awaken_runtime::DetachedToolError::NotAuthorized::reason: alloc::string::String
 pub awaken_runtime::DetachedToolError::NotAuthorized::tool_id: alloc::string::String

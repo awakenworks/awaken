@@ -509,7 +509,8 @@ pub enum ToolError {
     InvalidArguments(String),
     /// The executor proved that the request never crossed its dispatch boundary.
     /// An owner may reacquire that executor and retry the same call without
-    /// replaying an external effect. Failures after dispatch remain `Execution`.
+    /// replaying an external effect. Definitive failures after dispatch remain
+    /// `Execution`; an unknown effect outcome must be `Indeterminate`.
     #[error("tool executor unavailable before dispatch: {0}")]
     UnavailableBeforeDispatch(String),
     /// The external effect crossed its dispatch boundary, but a required
@@ -518,9 +519,15 @@ pub enum ToolError {
     /// `StateConflict` boundary: this is neither model-visible nor replayable.
     #[error("tool executor state invalidated after dispatch: {0}")]
     StateInvalidatedAfterDispatch(String),
-    /// Includes non-retryable local executor-configuration rejection as well as
-    /// failures after the dispatch boundary. An owner must not replace an
-    /// executor merely because this variant was returned.
+    /// The executor cannot establish the outcome or termination of an effect
+    /// that may have crossed its dispatch boundary. This must remain typed
+    /// across adapters: it is neither a model-visible failure nor replay proof.
+    #[error("tool execution indeterminate: {0}")]
+    Indeterminate(String),
+    /// A definitive returned failure, including non-retryable local executor
+    /// configuration rejection. An owner must not replace an executor merely
+    /// because this variant was returned. An adapter that cannot establish the
+    /// outcome or termination after dispatch must return `Indeterminate` instead.
     #[error("tool execution failed: {0}")]
     Execution(String),
 }
