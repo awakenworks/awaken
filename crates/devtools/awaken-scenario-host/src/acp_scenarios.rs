@@ -185,6 +185,7 @@ pub async fn build_acp_jsonrpc_router_with_deployment(
                 host.with_agent_publications(host_publication)
                     .with_acp_launch_source(awaken_worker::relay_hand_executor_factory(), launch)
                     .await
+                    .expect("scenario Session environment must be available")
             })
             .await;
     mount_with_agent_source(platform, publication)
@@ -671,6 +672,7 @@ pub(crate) async fn bind_acp_session_environment(
             let host = host
                 .with_acp_launch_source(awaken_worker::relay_hand_executor_factory(), source)
                 .await
+                .expect("scenario Session environment must be available")
                 // This composition owner mirrors the production Worker/CLI
                 // wiring for every Scenario ACP environment. Individual
                 // scenarios must not remember a second, optional tool-export
@@ -809,6 +811,7 @@ pub async fn build_acp_container_router() -> Router {
             host.with_agent_publications(host_publication)
                 .with_acp_launch_source(awaken_worker::relay_hand_executor_factory(), launch)
                 .await
+                .expect("scenario Session environment must be available")
         })
         .await;
     // Use the same shared Resource Registry + Managed ACL assembly as every other

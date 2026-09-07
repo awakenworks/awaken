@@ -340,12 +340,10 @@ impl crate::host::SharedHost {
     pub async fn with_session_environment_from_deployment(
         self,
         hand_factory: Option<Arc<dyn crate::HandExecutorFactory>>,
-    ) -> Self {
-        self.deployment
-            .validate_local_execution()
-            .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
+    ) -> Result<Self, String> {
+        self.deployment.validate_local_execution()?;
         if self.session_provider_explicit && !self.deployment.trusted_host_enabled() {
-            return self;
+            return Ok(self);
         }
         let deployment = self.deployment.clone();
         let base = session_sandbox_base(&deployment);
@@ -358,7 +356,7 @@ impl crate::host::SharedHost {
                 &base,
             )
             .await
-            .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"))
+            .map_err(|error| format!("configure the Session sandbox tier: {error}"))?
         };
         let mut host = self;
         // Namespace and TrustedHost run the same Hand binary as Container, from the local
@@ -371,17 +369,19 @@ impl crate::host::SharedHost {
             .unwrap_or_else(|| {
                 std::path::PathBuf::from(format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX))
             });
-        let trusted_hand_factory = deployment.trusted_host_enabled().then(|| {
-            hand_factory
-                .clone()
-                .expect("TrustedHost Native execution requires the installed Hand factory")
-        });
+        let trusted_hand_factory = if deployment.trusted_host_enabled() {
+            Some(
+                hand_factory
+                    .clone()
+                    .ok_or("TrustedHost Native execution requires the installed Hand factory")?,
+            )
+        } else {
+            None
+        };
         if (!host.session_provider_explicit && tier == crate::SandboxTier::Namespace)
             || trusted_hand_factory.is_some()
         {
-            validate_namespace_hand_bin(&namespace_hand_path)
-                .await
-                .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
+            validate_namespace_hand_bin(&namespace_hand_path).await?;
         }
         let namespace_hand_bin = namespace_hand_path.to_string_lossy().into_owned();
         if deployment.trusted_host_enabled() && host.backend_owned_session_provider.is_none() {
@@ -407,13 +407,13 @@ impl crate::host::SharedHost {
         if deployment.sandbox.trusted_host_scoped_execution {
             let execution =
                 awaken_sandbox_local::LocalExecutionDeployment::discover(namespace_hand_path)
-                    .unwrap_or_else(|error| panic!("configure TrustedHost execution: {error}"));
+                    .map_err(|error| format!("configure TrustedHost execution: {error}"))?;
             host.backend_owned_session_provider
                 .as_mut()
                 .expect("TrustedHost provider installed")
                 .install_scoped_execution(execution)
                 .await
-                .unwrap_or_else(|error| panic!("configure TrustedHost execution: {error}"));
+                .map_err(|error| format!("configure TrustedHost execution: {error}"))?;
         }
         // An explicit primary provider does not configure the independent,
         // operator-enabled TrustedHost backend. Preserve the primary while
@@ -427,20 +427,17 @@ impl crate::host::SharedHost {
                     hand_factory.clone(),
                     namespace_hand_bin,
                     std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
-                ) {
+                )? {
                 provider
             } else {
-                let hand_factory = hand_factory.unwrap_or_else(|| {
-                    panic!("container Session environments require a hand executor factory")
-                });
+                let hand_factory = hand_factory
+                    .ok_or("container Session environments require a hand executor factory")?;
                 let realization_namespace =
                     awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
                         "direct-host-installation",
                         host.local_workspace(),
                     ])
-                    .unwrap_or_else(|error| {
-                        panic!("configure Session container identity: {error}")
-                    });
+                    .map_err(|error| format!("configure Session container identity: {error}"))?;
                 let components =
                     crate::container_environment::build_container_environment_for_realization(
                         realization_namespace,
@@ -449,7 +446,7 @@ impl crate::host::SharedHost {
                         &deployment.sandbox,
                     )
                     .await
-                    .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
+                    .map_err(|error| format!("configure the Session sandbox tier: {error}"))?;
                 if let Some(initializer) = components.cache_volume_initializer {
                     host.cache_volume_prewarmer =
                         crate::cache_volume::CacheVolumePrewarmer::new(initializer);
@@ -473,7 +470,7 @@ impl crate::host::SharedHost {
                 provider.install_memory_mounter(mounter);
             }
         }
-        host
+        Ok(host)
     }
 
     /// Realize an explicitly supplied ACP launch source in the deployment's sandbox
@@ -483,10 +480,11 @@ impl crate::host::SharedHost {
         self,
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
         source: crate::LaunchSource,
-    ) -> Self {
-        self.with_session_environment_from_deployment(Some(hand_factory))
-            .await
-            .with_bound_acp(source, None)
+    ) -> Result<Self, String> {
+        Ok(self
+            .with_session_environment_from_deployment(Some(hand_factory))
+            .await?
+            .with_bound_acp(source, None))
     }
 
     /// The hub-backed launch observer for this host: republishes an ACP agent's
@@ -717,6 +715,7 @@ mod tests {
         let host = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
             .with_session_environment_from_deployment(Some(Arc::new(NoHandFactory)))
             .await
+            .unwrap()
             .with_acp_from_deployment(None, None)
             .await;
 
@@ -761,10 +760,12 @@ mod tests {
                     let capabilities = host.session_provider.capabilities();
                     let host = host
                         .with_session_environment_from_deployment(Some(Arc::new(NoHandFactory)))
-                        .await;
+                        .await
+                        .unwrap();
                     let host = host
                         .with_session_environment_from_deployment(Some(Arc::new(NoHandFactory)))
-                        .await;
+                        .await
+                        .unwrap();
                     #[cfg(target_os = "linux")]
                     {
                         let provider = host.backend_owned_session_provider.as_ref().unwrap();
@@ -802,22 +803,15 @@ mod tests {
         // S4 enabled+no factory => fail before launching a companion. S5 missing
         // or directory companion => fail; S6 executable without Hand --check
         // support => fail. There is no successful Local executor substitution.
-        let failure = tokio::spawn(async {
-            let mut deployment = crate::DeploymentConfig::ephemeral();
-            deployment.sandbox_tier = crate::SandboxTier::Local;
-            SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
-                .with_session_environment_from_deployment(None)
-                .await;
-        })
-        .await
-        .unwrap_err();
-        assert!(failure.is_panic());
-        let message = failure.into_panic();
-        let message = message
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| message.downcast_ref::<&str>().copied())
-            .unwrap();
+        // Configuration failure is a returned error, not an unwind: callers
+        // must still be able to withdraw an already-created Worker registration.
+        let mut deployment = crate::DeploymentConfig::ephemeral();
+        deployment.sandbox_tier = crate::SandboxTier::Local;
+        let message = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
+            .with_session_environment_from_deployment(None)
+            .await
+            .err()
+            .expect("missing factory must reject");
         assert!(message.contains("requires the installed Hand factory"));
         let root = tempfile::tempdir().unwrap();
         assert!(
