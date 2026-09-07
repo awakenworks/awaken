@@ -364,6 +364,16 @@ impl<'a> ContainerEnvironmentAdoption<'a> {
     }
 }
 
+/// What absence must establish for the caller. Recovery may retain durable
+/// continuation bytes; terminal cleanup must never acknowledge those bytes as
+/// gone merely because their execution process disappeared. Neither purpose
+/// authorizes a mutation or substitutes for the aggregate effect fence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerObservationPurpose {
+    Recovery,
+    TerminalCleanup,
+}
+
 /// Complete durable evidence presented to one runtime's effect-free observer.
 /// The runtime adapter, not the Host, interprets backend-specific continuation
 /// evidence (for example Kubernetes Pod and PVC UIDs). V1 has no realization
@@ -371,6 +381,7 @@ impl<'a> ContainerEnvironmentAdoption<'a> {
 /// Provisioning but can never prove destructive unavailability.
 #[derive(Debug, Clone, Copy)]
 pub struct ContainerObservationExpectation<'a> {
+    pub purpose: ContainerObservationPurpose,
     pub container_id: &'a str,
     pub adoption_fingerprint: Option<&'a pc::SandboxRealizationFingerprint>,
     pub realization_fingerprint: Option<&'a pc::SandboxRealizationFingerprint>,
@@ -383,6 +394,7 @@ impl<'a> ContainerObservationExpectation<'a> {
     pub fn from_handle(handle: &'a pc::SandboxHandle) -> Result<Self, pc::SandboxError> {
         let payload = handle.container_payload()?;
         Ok(Self {
+            purpose: ContainerObservationPurpose::Recovery,
             container_id: &payload.container_id,
             adoption_fingerprint: handle.container_adoption_fingerprint()?,
             realization_fingerprint: handle.realization_fingerprint(),

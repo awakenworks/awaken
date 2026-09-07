@@ -327,6 +327,7 @@ impl ContainerRuntime for K8sRuntime {
                 expectation.container_id,
                 pod.as_ref(),
                 expectation.runtime_handle,
+                expectation.purpose,
                 expectation.effect_fence.is_some(),
                 effect_fenced_total_absence,
             )
@@ -394,6 +395,7 @@ impl ContainerRuntime for K8sRuntime {
                     expectation.container_id,
                     Some(pod),
                     expectation.runtime_handle,
+                    expectation.purpose,
                     false,
                     false,
                 )

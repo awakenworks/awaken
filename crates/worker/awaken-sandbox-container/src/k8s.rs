@@ -41,10 +41,10 @@ use crate::runtime::{
 };
 use crate::{
     BindPlan, ContainerCreateAttempt, ContainerEffectFence, ContainerObservationExpectation,
-    ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
-    ContainerRealizationNamespace, ContainerRuntime, ContainerState, RuntimeAgentProcess,
-    RuntimeError, SandboxControlBindingRequest, container_effect_fence_from_values,
-    sandbox_scope_identity,
+    ContainerObservationPurpose, ContainerPlan, ContainerRealizationContext,
+    ContainerRealizationIntent, ContainerRealizationNamespace, ContainerRuntime, ContainerState,
+    RuntimeAgentProcess, RuntimeError, SandboxControlBindingRequest,
+    container_effect_fence_from_values, sandbox_scope_identity,
 };
 use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory};
 pub(crate) mod api_defaults;
@@ -341,6 +341,7 @@ enum ContinuationObservationDisposition {
 
 #[derive(Clone, Copy)]
 struct ContinuationObservationEvidence<'a> {
+    purpose: ContainerObservationPurpose,
     pod_present: bool,
     pod_deleting: bool,
     cleanup_gate_held: bool,
@@ -362,6 +363,7 @@ fn continuation_observation_disposition(
     evidence: ContinuationObservationEvidence<'_>,
 ) -> Result<ContinuationObservationDisposition, RuntimeError> {
     let ContinuationObservationEvidence {
+        purpose,
         pod_present,
         pod_deleting,
         cleanup_gate_held,
@@ -383,9 +385,17 @@ fn continuation_observation_disposition(
     }
 
     if !pod_present && expected_uid.is_some() {
+        // The same exact live claim is recovery evidence, not completed cleanup.
+        // Only the existing deletion admission owns the unsafe-live-claim rule.
+        if purpose == ContainerObservationPurpose::Recovery && !observed_terminating {
+            return Ok(ContinuationObservationDisposition::Live);
+        }
         return if observed_terminating && effect_fenced {
             Ok(ContinuationObservationDisposition::Disposing)
-        } else if effect_fenced {
+        } else if effect_fenced
+            && continuation::absent_pod_claim_admission(true, true, true, observed_terminating)
+                == continuation::AbsentPodClaimAdmission::UnsafeLiveClaim
+        {
             Err(backend(continuation::ORPHANED_LIVE_CLAIM_ERROR))
         } else {
             Ok(ContinuationObservationDisposition::Incompatible)
@@ -419,6 +429,56 @@ fn continuation_observation_disposition(
     }
 
     Ok(ContinuationObservationDisposition::Live)
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn absent_pod_observation_never_confuses_recovery_with_completed_cleanup() {
+    // KCO2 proof calls the production classifier for both purposes over every
+    // absent/exact/foreign claim, termination, fence and total-absence bit.
+    // KPV5 checks purpose routing and API effects; this finite string quotient
+    // proves classification, not API linearizability or external storage bytes.
+    use ContainerObservationPurpose::{Recovery, TerminalCleanup};
+    use ContinuationObservationDisposition::{Disposing, Incompatible, Live};
+    let claim = kani::any::<u8>();
+    kani::assume(claim < 3);
+    let observed_uid = match claim {
+        0 => None,
+        1 => Some("p"),
+        _ => Some("q"),
+    };
+    let terminating = kani::any::<bool>();
+    let fenced = kani::any::<bool>();
+    let total_absence = kani::any::<bool>() && fenced;
+    let evidence = ContinuationObservationEvidence {
+        purpose: Recovery,
+        pod_present: false,
+        pod_deleting: false,
+        cleanup_gate_held: false,
+        expected_uid: Some("p"),
+        observed_uid,
+        observed_terminating: terminating,
+        effect_fenced: fenced,
+        effect_fenced_total_absence: total_absence,
+    };
+    let recovery = continuation_observation_disposition(evidence);
+    let terminal = continuation_observation_disposition(ContinuationObservationEvidence {
+        purpose: TerminalCleanup,
+        ..evidence
+    });
+    if claim == 1 && !terminating {
+        assert_eq!(recovery.unwrap(), Live);
+        assert!(!matches!(terminal, Ok(Live | Disposing)));
+    } else if claim == 1 && terminating && fenced {
+        assert_eq!(recovery.unwrap(), Disposing);
+        assert_eq!(terminal.unwrap(), Disposing);
+    } else if claim == 0 && total_absence {
+        assert_eq!(recovery.unwrap(), Live);
+        assert_eq!(terminal.unwrap(), Live);
+    } else {
+        assert_eq!(recovery.unwrap(), Incompatible);
+        assert_eq!(terminal.unwrap(), Incompatible);
+    }
 }
 
 /// Claim API access is owned only by an enabled continuation policy or an
@@ -883,6 +943,7 @@ impl K8sRuntime {
         pod_name: &str,
         pod: Option<&Pod>,
         runtime_handle: Option<&pc::ContainerContinuationHandle>,
+        purpose: ContainerObservationPurpose,
         effect_fenced: bool,
         effect_fenced_total_absence: bool,
     ) -> Result<ContinuationObservationDisposition, RuntimeError> {
@@ -904,6 +965,7 @@ impl K8sRuntime {
             pod_name,
             pod,
             expected_claim_uid,
+            purpose,
             effect_fenced,
             effect_fenced_total_absence,
         )
@@ -915,6 +977,7 @@ impl K8sRuntime {
         pod_name: &str,
         pod: Option<&Pod>,
         expected_claim_uid: Option<&str>,
+        purpose: ContainerObservationPurpose,
         effect_fenced: bool,
         effect_fenced_total_absence: bool,
     ) -> Result<ContinuationObservationDisposition, RuntimeError> {
@@ -950,6 +1013,7 @@ impl K8sRuntime {
             .flatten();
         let cleanup_gate_held = cleanup_authorization.is_some();
         continuation_observation_disposition(ContinuationObservationEvidence {
+            purpose,
             pod_present: pod.is_some(),
             pod_deleting: pod.is_some_and(|pod| pod.metadata.deletion_timestamp.is_some()),
             cleanup_gate_held,
@@ -1200,6 +1264,7 @@ impl K8sRuntime {
                 container_id,
                 observed_pod.as_ref(),
                 expected_claim_uid,
+                ContainerObservationPurpose::TerminalCleanup,
                 effect_fenced,
                 effect_fenced && persisted_claim_uid.is_some(),
             )

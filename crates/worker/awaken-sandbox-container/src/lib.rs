@@ -56,8 +56,8 @@ use podman_plan::{image_of, rootfs_of};
 pub use provider_contract::{
     ContainerCreateAttempt, ContainerEffectFence, ContainerEffectFenceSource, ContainerEnvironment,
     ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerObservationExpectation,
-    ContainerRealizationContext, ContainerRealizationIntent, ContainerRealizationNamespace,
-    EnvironmentFile,
+    ContainerObservationPurpose, ContainerRealizationContext, ContainerRealizationIntent,
+    ContainerRealizationNamespace, EnvironmentFile,
 };
 pub use resident_hand::ResidentHandConfig;
 #[cfg(any(test, feature = "docker", feature = "podman"))]

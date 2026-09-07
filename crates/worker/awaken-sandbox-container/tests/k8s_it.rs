@@ -839,7 +839,13 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
      * zero PVC deletion effect; E2 Rebuild preserves exact P under B; E3 B's
      * Pod-finalizer-serialized cleanup removes B+P; E4 same V2/effect replay
      * observes total absence and returns `None` idempotently. Rules: KPV5a
-     * C1+C2+C3=>E1; KPV5b E1+C4=>E2; KPV5c E2+C5=>E3+E4. */
+     * C1+C2+C3=>E1; KPV5b E1+C4=>E2; KPV5c E2+C5=>E3+E4.
+     * Expanded purpose rows KPV5r/d: the SAME A/P cut is observed through the
+     * public provider port with and without an effect fence. Both report exact
+     * A unavailable, permitting the existing Rebuild policy; neither deletes P.
+     * Direct dispose_authorized with a default Recovery expectation must still
+     * reject P, as must terminal preparation. These paired callers prevent a
+     * shared classifier from confusing execution absence with cleanup completion. */
     let Some(runtime) = live_runtime().await else {
         return;
     };
@@ -847,7 +853,7 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         storage_class_name: None,
         size: "1Gi".into(),
     }));
-    let provider = ContainerProvider::new(runtime, fixture_image());
+    let provider = ContainerProvider::new(runtime.clone(), fixture_image());
     let scope = format!("claim-only-terminal-{}", std::process::id());
     let frozen = spec_with_command(&scope, fixture_image(), command(&["sleep", "30"]));
     let create_fence = effect_fence(&scope, "create", "claim-only-owner", 1);
@@ -932,7 +938,44 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
     );
     drop(source);
 
+    for fenced in [false, true] {
+        let adoption =
+            awaken_sandbox_container::ContainerEnvironmentAdoption::new(&frozen, &source_handle);
+        let observed = if fenced {
+            provider
+                .observe_environment_for_effect(adoption, &create_fence)
+                .await
+        } else {
+            provider.observe_environment(adoption).await
+        }
+        .expect("KPV5r read-only observation preserves recovery admission");
+        assert!(
+            matches!(observed, pc::SandboxObservation::DefinitivelyUnavailable {
+            physical_incarnation: Some(ref identity),
+        } if identity == &pod_uid),
+            "KPV5r exact A unavailable: {observed:?}"
+        );
+    }
+
     let terminal_fence = effect_fence(&scope, "terminal", "claim-only-owner", 2);
+    let disposal = disposal_authorization(&terminal_fence);
+    let expectation =
+        awaken_sandbox_container::ContainerObservationExpectation::from_handle_for_effect(
+            &source_handle,
+            disposal.effect_fence(),
+        )
+        .unwrap();
+    let rejected = runtime
+        .dispose_authorized(expectation, &disposal)
+        .await
+        .expect_err("KPV5d physical disposal must own terminal observation purpose");
+    assert!(
+        rejected.to_string().contains(
+            "live Kubernetes continuation PVC cannot be disposed after its source Pod is absent"
+        ),
+        "KPV5d must reach claim admission, not fail on an invalid fence: {rejected}"
+    );
+
     let error = match ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
         &provider,
         &frozen,
