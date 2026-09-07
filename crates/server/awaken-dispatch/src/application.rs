@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
-use awaken_agent_contract::thread::commit::operation::{
-    CommitOperation, CommitReceipt, commit_payload_hash,
-};
+use awaken_agent_contract::thread::commit::operation::{CommitReceipt, commit_payload_hash};
 
 use crate::commit_fence::validate_commit_dispatch_binding;
 use crate::{ClaimedCommitRequest, DispatchQueue, RunDispatch};
@@ -122,29 +120,26 @@ pub trait DurableRunOperations: Send + Sync {
 }
 
 #[async_trait::async_trait]
-pub trait ClaimedCommitApplier: Send + Sync {
-    /// Apply through the physical authority selected by the claim-guarded
-    /// dispatch. `dispatch` is trusted queue truth, never Worker input.
-    async fn apply(
+pub trait ClaimedOperationCoordinatorResolver: Send + Sync {
+    /// Resolve the physical Coordinator selected by the claim-guarded
+    /// dispatch. `dispatch` is trusted queue truth, never Worker input. The
+    /// resolver may select an authority but cannot replace the one canonical
+    /// `OperationCoordinator::commit_operation` write boundary below.
+    async fn resolve(
         &self,
         trusted_dispatch: &RunDispatch,
-        operation: CommitOperation,
-    ) -> Result<CommitReceipt, ApplicationError>;
+    ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError>;
 }
 
-struct CoordinatorCommitApplier(Arc<dyn OperationCoordinator>);
+struct FixedOperationCoordinatorResolver(Arc<dyn OperationCoordinator>);
 
 #[async_trait::async_trait]
-impl ClaimedCommitApplier for CoordinatorCommitApplier {
-    async fn apply(
+impl ClaimedOperationCoordinatorResolver for FixedOperationCoordinatorResolver {
+    async fn resolve(
         &self,
         _dispatch: &RunDispatch,
-        operation: CommitOperation,
-    ) -> Result<CommitReceipt, ApplicationError> {
-        self.0
-            .commit_operation(operation)
-            .await
-            .map_err(|error| ApplicationError::internal(error.to_string()))
+    ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError> {
+        Ok(self.0.clone())
     }
 }
 
@@ -152,7 +147,7 @@ impl ClaimedCommitApplier for CoordinatorCommitApplier {
 /// status mapping are deliberately outside this owner.
 pub struct ClaimedCommitService {
     dispatch: Arc<dyn DispatchQueue>,
-    applier: Arc<dyn ClaimedCommitApplier>,
+    coordinator: Arc<dyn ClaimedOperationCoordinatorResolver>,
 }
 
 impl ClaimedCommitService {
@@ -163,16 +158,19 @@ impl ClaimedCommitService {
     ) -> Self {
         Self {
             dispatch,
-            applier: Arc::new(CoordinatorCommitApplier(coordinator)),
+            coordinator: Arc::new(FixedOperationCoordinatorResolver(coordinator)),
         }
     }
 
     #[must_use]
-    pub fn with_applier(
+    pub fn with_coordinator_resolver(
         dispatch: Arc<dyn DispatchQueue>,
-        applier: Arc<dyn ClaimedCommitApplier>,
+        coordinator: Arc<dyn ClaimedOperationCoordinatorResolver>,
     ) -> Self {
-        Self { dispatch, applier }
+        Self {
+            dispatch,
+            coordinator,
+        }
     }
 
     pub async fn apply_claimed(
@@ -202,10 +200,11 @@ impl ClaimedCommitService {
                 "commit operation payload hash does not match ThreadCommit",
             ));
         }
-        let receipt = self
-            .applier
-            .apply(trusted_dispatch, request.operation)
-            .await?;
+        let coordinator = self.coordinator.resolve(trusted_dispatch).await?;
+        let receipt = coordinator
+            .commit_operation(request.operation)
+            .await
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         drop(guard);
         Ok(receipt)
     }

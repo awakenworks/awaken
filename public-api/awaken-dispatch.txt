@@ -222,7 +222,7 @@ pub struct awaken_dispatch::ClaimedCommitService
 impl awaken_dispatch::ClaimedCommitService
 pub async fn awaken_dispatch::ClaimedCommitService::apply_claimed(&self, awaken_dispatch_contract::worker_transport::ClaimedCommitRequest) -> core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_dispatch::ApplicationError>
 pub fn awaken_dispatch::ClaimedCommitService::new(alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::OperationCoordinator>) -> Self
-pub fn awaken_dispatch::ClaimedCommitService::with_applier(alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_dispatch::ClaimedCommitApplier>) -> Self
+pub fn awaken_dispatch::ClaimedCommitService::with_coordinator_resolver(alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_dispatch::ClaimedOperationCoordinatorResolver>) -> Self
 pub struct awaken_dispatch::DispatchMaintenance
 impl awaken_dispatch::DispatchMaintenance
 pub async fn awaken_dispatch::DispatchMaintenance::shutdown(self)
@@ -476,8 +476,8 @@ pub fn awaken_dispatch::SqliteDispatchStore::stage_session_resume<'life0, 'life1
 impl awaken_dispatch_contract::operational::DispatchOperationalFeed for awaken_dispatch::SqliteDispatchStore
 pub fn awaken_dispatch::SqliteDispatchStore::events_after<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::operational::DispatchCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::operational::DispatchPage, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub const awaken_dispatch::DEFAULT_LEASE_MS: u64
-pub trait awaken_dispatch::ClaimedCommitApplier: core::marker::Send + core::marker::Sync
-pub fn awaken_dispatch::ClaimedCommitApplier::apply<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::run_dispatch::RunDispatch, awaken_agent_contract::thread::commit::operation::CommitOperation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_dispatch::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_dispatch::ClaimedOperationCoordinatorResolver: core::marker::Send + core::marker::Sync
+pub fn awaken_dispatch::ClaimedOperationCoordinatorResolver::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::run_dispatch::RunDispatch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::OperationCoordinator>, awaken_dispatch::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_dispatch::CompletionSink: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch::CompletionSink::settled(&self, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::run::RunState)
 pub trait awaken_dispatch::DurableRunOperations: core::marker::Send + core::marker::Sync

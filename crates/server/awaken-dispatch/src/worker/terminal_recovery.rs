@@ -2,7 +2,7 @@
 //! This is the existing Worker implementation split by responsibility. Every
 //! entry uses its original claim-fenced commit, observer and settlement path.
 
-use super::DispatchWorker;
+use super::{DispatchWorker, PendingInputAdmission, pending_input_admission};
 use crate::Error;
 use crate::clock::Clock;
 use crate::dispatch::{Claimed, Dispatch, DispatchOutcome, DispatchState, RunClaim, SettleOutcome};
@@ -243,6 +243,22 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         let Some(terminal) = self.committed_terminal_for_claim(claimed)? else {
             return Ok(None);
         };
+
+        // The committed terminal dominates the claimed signal set. Rebuild the
+        // settlement deletion list from the same admission kernel used by fresh
+        // execution and awaiting resume, so a future input class cannot bypass
+        // the no-redelivery rule merely by being added to Claimed::pending.
+        all_pending.clear();
+        all_pending.extend(
+            claimed
+                .pending
+                .iter()
+                .filter(|input| {
+                    pending_input_admission(true, None, input)
+                        == PendingInputAdmission::ConsumedByCommittedTruth
+                })
+                .map(|input| input.message_id.clone()),
+        );
 
         // A recovered fresh run that already committed a terminal record may
         // have drained unbound idle-thread input before dying prior to settle.
