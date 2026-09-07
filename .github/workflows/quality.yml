@@ -43,8 +43,10 @@ jobs:
       - name: Install the existing ACP E2E dependencies
         run: npm ci --prefix e2e
       - name: Verify TrustedHost filesystem and native Sandbox contracts
+        # Linux must run the real scoped/Session gates; other matrix platforms
+        # keep their native portability gates without requesting Linux support.
         shell: bash
-        run: scripts/ci/check-trusted-host-portability.sh
+        run: scripts/ci/check-trusted-host-portability.sh ${{ runner.os == 'Linux' && '--linux-supervision' || '' }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         if: runner.os != 'Windows'
         with:
