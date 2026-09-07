@@ -29,6 +29,7 @@ if [ "${1:-}" = "--session-observations" ]; then
   cargo test --locked --features awaken-store-sqlite/test-support \
     -p awaken-session-contract -p awaken-session-application \
     -p awaken-store-inmem -p awaken-store-fs -p awaken-store-sqlite -p awaken-protocol-managed
+  cargo test --locked -p awaken-session-executor --lib projection_convergence::
   cargo test --locked -p awaken-coordinator --lib runtime_authority::tests
   pnpm -C e2e exec tsx managed_mcp_recovery_e2e.ts
   python3 scripts/ci/render_runtime_refinement_traces.py --projection session-observations \
@@ -51,6 +52,7 @@ cleanup_mutation_artifacts() {
   cargo clean -p awaken-mcp-wire >/dev/null 2>&1 || true
   cargo clean -p awaken-runtime-contract >/dev/null 2>&1 || true
   cargo clean -p awaken-session-contract >/dev/null 2>&1 || true
+  cargo clean -p awaken-session-executor >/dev/null 2>&1 || true
 }
 cleanup_mutation_artifacts
 python3 scripts/ci/check_reliability.py
@@ -133,6 +135,14 @@ cargo mutants --package awaken-session-contract \
   --re 'mark_processed_observation|realization_generation_authorizes|bounded_rfc3339_nanos' \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-observations/mutants.out"
+# Root projection ordering and same-version equality must be observed through
+# the complete ManagedHost installation entry, including its returned error.
+cargo mutants --package awaken-session-executor \
+  --output "$mutation_evidence/environment-projection" \
+  --file crates/server/awaken-session-executor/src/session_slot/projection_receipt.rs \
+  --re 'replace > with <|replace > with >=|replace && with \|\|' \
+  --timeout 60 --no-times -- --lib projection_convergence::
+python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/environment-projection/mutants.out"
 cleanup_mutation_artifacts
 trap - EXIT
 

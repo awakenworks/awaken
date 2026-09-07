@@ -41,8 +41,9 @@ type checking are valuable executable evidence, but are not formal proofs.
   Native opaque-tool cancellation without a terminal receipt can still block
   same-Thread resumption indefinitely; no recovery API or receipt is invented.
   Pure Native inference returns data, and its discarded response cannot invoke
-  a governed tool. Cancellation can end that local attempt and resume; neither
-  this test nor the model proves that provider computation/billing stopped.
+  a governed tool. Without execution-termination evidence, abandoned inference remains
+  Indeterminate and keeps its physical fence. Neither this test nor the model
+  proves that provider computation/billing stopped.
   The same owned drive retries an observed-return ACK after transient write
   failure, response loss or request timeout, without rerunning execution; a
   permanent rejection remains an error. Tests inject all four outcomes into
@@ -602,6 +603,65 @@ Where product bounds are real, encode and enforce them at admission. Where data
 must remain unbounded, prove one transition preserves an invariant and use
 mathematical induction/TLAPS rather than claiming a small Kani vector proves an
 unbounded collection.
+
+## Run ownership and delegation evidence
+
+`RunIngress.tla` models claim fencing as one atomic state transition. Production
+now keeps the exact epoch guard live across the actual `ThreadCommit` for the
+local durable backends: PostgreSQL holds a locked dispatch-row transaction and
+SQLite serializes the singleton store's dispatch authority through the commit.
+Database-less workers use one claimed-commit HTTP operation carrying the full
+`RunClaim` (`run_id`, owner, epoch). The store-owning server holds that exact
+claim stable while applying the real `ThreadCommit`; remote adapters cannot
+degrade to a check-then-commit sequence. Custom remote queues fail closed unless
+they supply the same atomic `ClaimedRunCommit` capability.
+
+Likewise, `Delegation.tla` specifies the target semantics for independently
+owned local and remote child Runs. The executable bridge now proves stable child
+identity, durable relationship recovery, durable result delivery, exactly-once
+parent consumption, terminal publication, and cancellation intent for the
+current runtime path. Terminal-only local children emitted in one tool batch run
+concurrently after their relationship/executor-entry commit; children that may
+ask the parent for input stay on the single-ticket path so correlation is never
+collapsed. Remote cancellation stores its opaque task reference with the
+relationship, delivers only after the parent terminal commit, and is redelivered
+when a process rebuilds or re-enters the session. Eventual success across an
+unavailable network remains an environmental liveness property, not a safety
+claim. Native children now enter the same durable dispatch queue as ordinary
+Runs with their own stable identity, exact-target claim, lease epoch, and crash
+reclaim rules. A session-thread route returns recovery to the parent session's
+runtime and commit capabilities without changing the child's first-class Thread
+identity. Store conformance and a durable host integration test link this path
+to the independently owned child state modeled by `Delegation.tla`.
+
+Local coordination admission and child execution reuse one `AbortOnDropTask`
+owner. The local Session application call installs a child projection before
+execution begins, so it needs the same poll-stack boundary as direct and durable
+child execution. Default-stack Coordinator HTTP and scenario-factory tests cover
+that complete chain; runtime-host tests require actual application/model-future
+Drop receipts when their owning future is dropped. These native checks validate
+stack and cancellation behavior. The TLA+ relation does not model Rust frame
+sizes or prove Tokio's scheduler/abort implementation, and logical cancellation
+alone remains insufficient evidence of physical model termination.
+
+The Managed WorkQueue proof covers queue state, transactional single-active
+claim, lease epoch/expiry, heartbeat compare-and-set, exact-boundary reclaim,
+and terminal authority clearing. The official worker header is persisted as
+the claim owner, including before the first heartbeat; only that worker may
+advance the `first`/`matching last_heartbeat` condition. Stop consumes the exact
+owner-and-epoch lease receipt, so a paused same-incarnation predecessor cannot
+retire a higher-epoch successor. The in-memory, SQLite,
+and PostgreSQL conformance paths exercise the same ownership rule. Stop remains
+a control-plane operation rather than worker authority, and exactly-once
+external work effects remain outside the queue proof.
+
+`CancelRequested` is the terminal parent commit's durable, idempotent
+relationship fact. It intentionally has no later `Cancelled` acknowledgement:
+the commit stores reject every post-terminal mutation. Live cancellation uses
+the one-way child token; recovery uses the same relationship as an outbox and
+the A2A adapter maps its persisted task reference to `tasks:cancel`. A child Run's own
+`EndCause::Cancelled` remains its ordinary Run lifecycle outcome and is not a
+delegation relationship status.
 
 ## Follow-up implementation sequence
 

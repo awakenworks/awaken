@@ -67,13 +67,15 @@ async fn postgres_commit_backs_execute_resume_and_survives_restart() {
             .await
             .expect("restart"),
     );
-    // Per-step durability leaves three semantic checkpoints: the input, the complete
-    // Requested tool batch (before any executor may be entered), and Awaiting with its
-    // approval ticket. A fresh coordinator warm-loads all three from the shared database.
+    // C1 model returns a gated tool call; C2 the coordinator restarts before
+    // approval. E1 recover input + model enter/return + Requested batch + Awaiting;
+    // E2 exactly one invocation, zero tool entries, and the exact active ticket.
+    // The shared memory/Postgres oracle reads the canonical Thread state log.
+    harness::assert_one_model_invocation(restarted.as_ref());
     assert_eq!(
         restarted.commit_count(),
-        3,
-        "input, requested batch, and awaiting approval survive restart"
+        5,
+        "input, model evidence, requested batch, and awaiting approval survive restart"
     );
     assert!(
         CommittedThreadView::resume_ticket(&*restarted, &RunId("run-1".to_string())).is_some(),

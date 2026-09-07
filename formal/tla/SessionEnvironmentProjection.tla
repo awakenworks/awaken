@@ -1,5 +1,5 @@
 -------------------- MODULE SessionEnvironmentProjection --------------------
-EXTENDS TLC
+EXTENDS TLC, Naturals
 
 \* Process-local Session Environment projection boundary. Durable effect ids
 \* order logical adoption operations; the binding plus immutable generation
@@ -20,13 +20,29 @@ ownerVars == <<phase, localEffect, localGeneration, localBinding,
           retirementFence, lastOutcome, lastBeforeEffect, lastAfterEffect,
           lastCapturedGeneration, lastCapturedBinding, recoveryVars>>
 
+VARIABLE convergence
 VARIABLE lastSynchronization
-vars == <<ownerVars, lastSynchronization>>
+vars == <<ownerVars, lastSynchronization, convergence>>
 
 NoValue == "none"
 RetirementCauses == {"Revocation", "Discard", "Terminal", "Checkpoint"}
 
+
+\* The second configuration composes this owner boundary across independent
+\* Coordinator/Worker projections. One ordered root is still the only truth.
+Processes == {"Coordinator", "Worker"}
+SnapshotA == [revision |-> 1, binding |-> "A"]
+SnapshotB == [revision |-> 2, binding |-> "B"]
+ConvergenceInitial ==
+    [root |-> SnapshotA, closed |-> FALSE,
+     cached |-> [p \in Processes |-> SnapshotA],
+     physical |-> [p \in Processes |-> IF p = "Worker" THEN "A" ELSE "none"],
+     inbox |-> [p \in Processes |-> {SnapshotA}],
+     last |-> [before |-> SnapshotA, after |-> SnapshotA, incoming |-> SnapshotA,
+               physical |-> "none", admitted |-> TRUE]]
+
 Init ==
+    /\ convergence = ConvergenceInitial
     /\ lastSynchronization = [observed |-> TRUE, closed |-> FALSE,
                                 allowed |-> FALSE, admitted |-> TRUE, after |-> "Resident"]
     /\ phase = "Resident"
@@ -155,9 +171,11 @@ OwnerNext ==
     \/ InstallCaptured
     \/ \E exact, closed, allowed \in BOOLEAN: RecoverClosed(exact, closed, allowed)
 
+
 Next ==
-    \/ (OwnerNext /\ UNCHANGED lastSynchronization)
-    \/ \E closed, allowed \in BOOLEAN: SynchronizeResident(closed, allowed)
+    /\ UNCHANGED convergence
+    /\ ( (OwnerNext /\ UNCHANGED lastSynchronization)
+        \/ \E closed, allowed \in BOOLEAN: SynchronizeResident(closed, allowed))
 
 Spec == Init /\ [][Next]_vars
 
@@ -224,4 +242,77 @@ Safety ==
     /\ RetiringKeepsExactEffectFence
     /\ ProjectionNeverRewritesTheRetirementFence
     /\ ClosedRecoveryIsExactAndComplete
+
+\* Same predicate as the production root-receipt ordering kernel. Binding here
+\* represents the equal aggregate-coordinate digest, with contents erased.
+RootProjectionAdmitted(before, incoming) ==
+    incoming.revision > before.revision \/ incoming = before
+PhysicalProjectionCompatible(physical, incoming) ==
+    physical = "none" \/ physical = incoming.binding
+
+ConvergenceCapture(p) ==
+    /\ UNCHANGED <<ownerVars, lastSynchronization>>
+    /\ convergence.root \notin convergence.inbox[p]
+    /\ convergence' = [convergence EXCEPT !.inbox[p] = @ \cup {convergence.root}]
+ConvergenceLose ==
+    /\ UNCHANGED <<ownerVars, lastSynchronization>>
+    /\ ~convergence.closed
+    /\ convergence' = [convergence EXCEPT !.closed = TRUE]
+ConvergencePublish ==
+    /\ UNCHANGED <<ownerVars, lastSynchronization>>
+    /\ convergence.closed /\ convergence.root = SnapshotA
+    /\ convergence' = [convergence EXCEPT !.root = SnapshotB]
+ConvergenceClear ==
+    /\ UNCHANGED <<ownerVars, lastSynchronization>>
+    /\ convergence.closed /\ convergence.physical["Worker"] = "A"
+    /\ convergence' = [convergence EXCEPT !.physical["Worker"] = "none"]
+ConvergenceAdopt ==
+    /\ UNCHANGED <<ownerVars, lastSynchronization>>
+    /\ convergence.cached["Worker"] = SnapshotB
+    /\ convergence.physical["Worker"] = "none"
+    /\ convergence' = [convergence EXCEPT !.physical["Worker"] = "B"]
+ConvergenceDeliver(p, incoming) ==
+    /\ UNCHANGED <<ownerVars, lastSynchronization>>
+    /\ incoming \in convergence.inbox[p]
+    /\ LET before == convergence.cached[p]
+           physical == convergence.physical[p]
+           admitted == RootProjectionAdmitted(before, incoming) /\
+                       PhysicalProjectionCompatible(physical, incoming)
+           after == IF admitted THEN incoming ELSE before
+       IN convergence' = [convergence EXCEPT
+            !.cached[p] = after,
+            !.last = [before |-> before, after |-> after, incoming |-> incoming,
+                      physical |-> physical, admitted |-> admitted]]
+ConvergenceLatest(p) == ConvergenceDeliver(p, convergence.root)
+ConvergenceNext ==
+    /\ UNCHANGED <<ownerVars, lastSynchronization>>
+    /\ (ConvergenceLose \/ ConvergencePublish \/ ConvergenceClear \/ ConvergenceAdopt
+        \/ (\E p \in Processes: ConvergenceCapture(p))
+        \/ \E p \in Processes, incoming \in {SnapshotA, SnapshotB}: ConvergenceDeliver(p, incoming))
+ConvergenceSpec == Init /\ [][ConvergenceNext]_vars
+    /\ WF_vars(ConvergenceClear) /\ WF_vars(ConvergenceAdopt)
+    /\ \A p \in Processes: WF_vars(ConvergenceCapture(p)) /\ WF_vars(ConvergenceLatest(p))
+ProjectionConvergenceSafety ==
+    /\ convergence.last.after.revision >= convergence.last.before.revision
+    /\ (~convergence.last.admitted => convergence.last.after = convergence.last.before)
+    /\ (convergence.last.admitted =>
+          PhysicalProjectionCompatible(convergence.last.physical, convergence.last.incoming))
+ProjectionEventuallyConverges ==
+    (convergence.root = SnapshotB) ~>
+      (\A p \in Processes: convergence.cached[p] = SnapshotB) /\
+      convergence.physical["Worker"] = "B"
+
+\* Executed ManagedHost observations use this SAME admission predicate. The
+\* producer reads before/after from the slot and records the actual Result.
+\* No statement about provider atomicity or all Rust interleavings is implied.
+ProjectionObservation(before, incoming, after, admitted) ==
+    /\ admitted = (~before.exists \/
+          RootProjectionAdmitted([revision |-> before.revision, binding |-> before.fingerprint],
+                                 [revision |-> incoming.revision, binding |-> incoming.fingerprint]))
+    /\ IF admitted
+       THEN /\ after.exists
+            /\ after.revision = incoming.revision
+            /\ after.fingerprint = incoming.fingerprint
+            /\ after.binding = incoming.binding
+       ELSE after = before
 =============================================================================

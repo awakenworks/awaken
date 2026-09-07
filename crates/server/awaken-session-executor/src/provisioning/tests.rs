@@ -228,6 +228,9 @@ async fn root_terminal_cleanup_effect(
             idle_since_unix_ms: None,
         },
     );
+    // Terminal Resident is a successor of the initially unmaterialized root.
+    let mut projection = projection;
+    projection.revision.0 += 1;
     let mut session = awaken_session_contract::PersistedSession::frozen_with_budget(
         session_id,
         projection.baseline.clone(),

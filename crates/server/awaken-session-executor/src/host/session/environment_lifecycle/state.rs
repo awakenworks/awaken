@@ -263,7 +263,19 @@ impl SessionEnvironmentOwner {
     pub(super) fn install_projection(
         &mut self,
         projected: ProjectedEnvironmentOwner,
+        newer: bool,
     ) -> Result<(), HostError> {
+        // A pending adoption is only a cached descriptor, never a physical Arc.
+        // A newer complete root snapshot may replace it; all actual owners still
+        // pass through the exact observation/retirement protocol below.
+        if newer
+            && matches!(
+                self,
+                Self::Preparing(SessionEnvironmentPreparation::AwaitingAdoption { .. })
+            )
+        {
+            *self = Self::Vacant;
+        }
         match projected {
             ProjectedEnvironmentOwner::Vacant => match self {
                 Self::Vacant | Self::Retiring(_) => Ok(()),

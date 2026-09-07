@@ -148,8 +148,9 @@ pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::cancellation_reques
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::expires_ms(&self) -> u64
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::is_live_at(&self, u64) -> bool
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::matches_execution_scope(&self, &str, &str) -> bool
-pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool) -> Self
-pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new_releasing(impl core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool) -> Self
+pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool, awaken_dispatch_contract::PhysicalAttemptSlot) -> Self
+pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new_releasing(impl core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool, awaken_dispatch_contract::PhysicalAttemptSlot) -> Self
+pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::permits_settlement(&self) -> bool
 pub async fn awaken_dispatch_contract::dispatch::CommitEpochGuard::release(self) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::request(&self) -> &awaken_dispatch_contract::run_dispatch::RunDispatch
 pub struct awaken_dispatch_contract::dispatch::DispatchCompletion
@@ -260,7 +261,7 @@ pub fn awaken_dispatch_contract::dispatch::DispatchQueue::worker_owns_run<'life0
 pub trait awaken_dispatch_contract::dispatch::DispatchSettlementObserver: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch_contract::dispatch::DispatchSettlementObserver::admit_session_run_activity<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::run_dispatch::RunDispatch, &'life2 awaken_dispatch_contract::dispatch::RunClaim, awaken_session_contract::coordination::SessionRunActivityAdmissionMode) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::coordination::SessionRunActivityAdmission, awaken_dispatch_contract::dispatch::DispatchSettlementError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::DispatchSettlementObserver::before_settle<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::run_dispatch::RunDispatch, &'life2 awaken_dispatch_contract::dispatch::RunClaim, &'life3 awaken_agent_contract::agent::run::RunState, bool) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dispatch_contract::dispatch::DispatchSettlementError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
-pub fn awaken_dispatch_contract::dispatch::DispatchSettlementObserver::owns_session_run_reservation_fence(&self) -> bool
+pub fn awaken_dispatch_contract::dispatch::DispatchSettlementObserver::owns_dispatch_fence(&self) -> bool
 pub trait awaken_dispatch_contract::dispatch::Inbox: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch_contract::dispatch::Inbox::append<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::Inbox::edit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, awaken_runtime_contract::resume::ResumeResult) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::CasOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -477,6 +478,7 @@ pub awaken_dispatch_contract::PhysicalAttemptSlot::ExactClaim
 pub awaken_dispatch_contract::PhysicalAttemptSlot::OtherClaim
 impl awaken_dispatch_contract::PhysicalAttemptSlot
 pub const fn awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(bool, bool, bool, bool) -> Self
+pub const fn awaken_dispatch_contract::PhysicalAttemptSlot::permits_settlement(self) -> bool
 pub enum awaken_dispatch_contract::PhysicalAttemptTransition
 pub awaken_dispatch_contract::PhysicalAttemptTransition::Blocked
 pub awaken_dispatch_contract::PhysicalAttemptTransition::Clear
@@ -582,8 +584,9 @@ pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::cancellation_reques
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::expires_ms(&self) -> u64
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::is_live_at(&self, u64) -> bool
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::matches_execution_scope(&self, &str, &str) -> bool
-pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool) -> Self
-pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new_releasing(impl core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool) -> Self
+pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool, awaken_dispatch_contract::PhysicalAttemptSlot) -> Self
+pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::new_releasing(impl core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'static, awaken_dispatch_contract::run_dispatch::RunDispatch, u64, bool, awaken_dispatch_contract::PhysicalAttemptSlot) -> Self
+pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::permits_settlement(&self) -> bool
 pub async fn awaken_dispatch_contract::dispatch::CommitEpochGuard::release(self) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_dispatch_contract::dispatch::CommitEpochGuard::request(&self) -> &awaken_dispatch_contract::run_dispatch::RunDispatch
 pub struct awaken_dispatch_contract::CredentialRealizationRequest
@@ -838,7 +841,7 @@ pub fn awaken_dispatch_contract::DispatchQueue::worker_owns_run<'life0, 'life1, 
 pub trait awaken_dispatch_contract::DispatchSettlementObserver: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch_contract::DispatchSettlementObserver::admit_session_run_activity<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::run_dispatch::RunDispatch, &'life2 awaken_dispatch_contract::dispatch::RunClaim, awaken_session_contract::coordination::SessionRunActivityAdmissionMode) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::coordination::SessionRunActivityAdmission, awaken_dispatch_contract::dispatch::DispatchSettlementError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_dispatch_contract::DispatchSettlementObserver::before_settle<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::run_dispatch::RunDispatch, &'life2 awaken_dispatch_contract::dispatch::RunClaim, &'life3 awaken_agent_contract::agent::run::RunState, bool) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dispatch_contract::dispatch::DispatchSettlementError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
-pub fn awaken_dispatch_contract::DispatchSettlementObserver::owns_session_run_reservation_fence(&self) -> bool
+pub fn awaken_dispatch_contract::DispatchSettlementObserver::owns_dispatch_fence(&self) -> bool
 pub trait awaken_dispatch_contract::Inbox: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch_contract::Inbox::append<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::Inbox::edit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, awaken_runtime_contract::resume::ResumeResult) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::CasOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

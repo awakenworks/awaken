@@ -30,12 +30,12 @@ use crate::config::{build_runtime_with_authorization, effective_tool_authorizati
 /// A child task must not outlive the parent future that owns its delegation
 /// boundary. Tokio's bare `JoinHandle` detaches on drop; this guard makes parent
 /// cancellation abort the same child execution instead of creating an orphan.
-struct AbortOnDropTask<T> {
+pub(crate) struct AbortOnDropTask<T> {
     handle: tokio::task::JoinHandle<T>,
 }
 
 impl<T> AbortOnDropTask<T> {
-    fn spawn(future: impl std::future::Future<Output = T> + Send + 'static) -> Self
+    pub(crate) fn spawn(future: impl std::future::Future<Output = T> + Send + 'static) -> Self
     where
         T: Send + 'static,
     {
@@ -44,7 +44,7 @@ impl<T> AbortOnDropTask<T> {
         }
     }
 
-    async fn join(mut self) -> Result<T, tokio::task::JoinError> {
+    pub(crate) async fn join(mut self) -> Result<T, tokio::task::JoinError> {
         (&mut self.handle).await
     }
 }
@@ -339,60 +339,107 @@ pub(crate) async fn run_configured_agent_until_boundary(
             ));
         }
     }?;
-    let mut boundary_reader = reader.clone();
-    let state = if let Some(scheduler) = scheduler {
-        // The foreground child scheduler and every later ownership operation
-        // retain this one edge clock. The Worker never substitutes another time
-        // source after the queue grants the claim.
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        let runtime = Arc::new(runtime);
-        let attempt_executor = child_attempt_executor(
-            runtime.clone(),
-            &config,
-            &adapters,
-            authorization.policy.clone(),
-        )?;
-        // A database-independent Worker keeps one recovery projection per
-        // claimed Run. Reusing the parent's projection lets the child install
-        // its snapshot over the still-running parent and fences whichever one
-        // commits next. Local authoritative stores need no projection.
-        let child_projection =
-            isolated_child_recovery_projection(scheduler.recovery_projection.as_ref());
-        let worker_reader: Arc<dyn CommittedThreadView> = child_projection
-            .as_ref()
-            .map_or_else(|| reader.clone(), |projection| projection.clone());
-        boundary_reader = worker_reader.clone();
-        let mut worker = DispatchWorker::from_parts(
-            runtime,
-            scheduler.store.clone(),
-            scheduler.commit.clone(),
-            worker_reader,
-            scheduler.owner,
-        )
-        .with_context(context.clone())
-        .with_local_credential_capabilities(adapters.credential_capabilities.clone());
-        worker.install_attempt_executor(attempt_executor);
-        if let Some(claimed_commit) = scheduler.claimed_commit {
-            worker = worker.with_claimed_commit(claimed_commit);
-        }
-        if let Some(projection) = child_projection {
-            worker = worker.with_recovery_projection(projection);
-        }
-        match operation {
-            (Some(activation), None) => {
-                // Stable child identity reconnects to committed truth. Only a
-                // genuinely new child is scheduled; retries never create another.
-                match reader.run_state(&child_run_id) {
-                    Some(state @ (RunState::Awaiting | RunState::Ended(_))) => state,
-                    _ => {
-                        let request = child_dispatch_request(
-                            activation,
-                            parent_thread_id.clone(),
-                            scheduler.session_resources.clone(),
-                            scheduler.publication_source.as_deref(),
-                        )?;
-                        match worker
-                            .start_run(request, clock.clone())
+    // Both scheduling modes execute on the same owned task boundary. Polling
+    // a complete child Worker inside its parent can exhaust the default stack;
+    // dropping the parent must abort that execution instead of detaching it.
+    // Queue claims, committed readers and cancellation authority stay unchanged.
+    AbortOnDropTask::spawn(async move {
+        let mut boundary_reader = reader.clone();
+        let state = if let Some(scheduler) = scheduler {
+            // The foreground child scheduler and every later ownership operation
+            // retain this one edge clock. The Worker never substitutes another time
+            // source after the queue grants the claim.
+            let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+            let runtime = Arc::new(runtime);
+            let attempt_executor = child_attempt_executor(
+                runtime.clone(),
+                &config,
+                &adapters,
+                authorization.policy.clone(),
+            )?;
+            // A database-independent Worker keeps one recovery projection per
+            // claimed Run. Reusing the parent's projection lets the child install
+            // its snapshot over the still-running parent and fences whichever one
+            // commits next. Local authoritative stores need no projection.
+            let child_projection =
+                isolated_child_recovery_projection(scheduler.recovery_projection.as_ref());
+            let worker_reader: Arc<dyn CommittedThreadView> = child_projection
+                .as_ref()
+                .map_or_else(|| reader.clone(), |projection| projection.clone());
+            boundary_reader = worker_reader.clone();
+            let mut worker = DispatchWorker::from_parts(
+                runtime,
+                scheduler.store.clone(),
+                scheduler.commit.clone(),
+                worker_reader,
+                scheduler.owner,
+            )
+            .with_context(context.clone())
+            .with_local_credential_capabilities(adapters.credential_capabilities.clone());
+            worker.install_attempt_executor(attempt_executor);
+            if let Some(claimed_commit) = scheduler.claimed_commit {
+                worker = worker.with_claimed_commit(claimed_commit);
+            }
+            if let Some(projection) = child_projection {
+                worker = worker.with_recovery_projection(projection);
+            }
+            Ok::<_, AgentRunError>(match operation {
+                (Some(activation), None) => {
+                    // Stable child identity reconnects to committed truth. Only a
+                    // genuinely new child is scheduled; retries never create another.
+                    match reader.run_state(&child_run_id) {
+                        Some(state @ (RunState::Awaiting | RunState::Ended(_))) => state,
+                        _ => {
+                            let request = child_dispatch_request(
+                                activation,
+                                parent_thread_id.clone(),
+                                scheduler.session_resources.clone(),
+                                scheduler.publication_source.as_deref(),
+                            )?;
+                            match worker.start_run(request, clock.clone()).await.map_err(
+                                |error| {
+                                    AgentRunError::Runtime(
+                                        awaken_runtime_contract::execution::Error::Execution(
+                                            error.to_string(),
+                                        ),
+                                    )
+                                },
+                            )? {
+                                Some((_, state)) => state,
+                                None => {
+                                    await_committed_child_boundary(
+                                        boundary_reader.as_ref(),
+                                        &child_run_id,
+                                        context.cancellation.as_ref(),
+                                    )
+                                    .await?
+                                }
+                            }
+                        }
+                    }
+                }
+                (Some(_), Some(command)) => {
+                    let ticket = reader.resume_ticket(&child_run_id).ok_or_else(|| {
+                        AgentRunError::Configuration(format!(
+                            "child Run {:?} is not awaiting",
+                            child_run_id.0
+                        ))
+                    })?;
+                    let input = PendingInput {
+                        message_id: format!(
+                            "child-resume:{}:{}",
+                            child_run_id.0, ticket.correlation_id
+                        ),
+                        run_id: child_run_id.clone(),
+                        thread_id: ticket.thread_id.clone(),
+                        correlation_id: ticket.correlation_id,
+                        available_at_ms: None,
+                        context_messages: Vec::new(),
+                        result: command.result,
+                    };
+                    let resumed =
+                        worker
+                            .resume_run(input, clock.clone())
                             .await
                             .map_err(|error| {
                                 AgentRunError::Runtime(
@@ -400,73 +447,25 @@ pub(crate) async fn run_configured_agent_until_boundary(
                                         error.to_string(),
                                     ),
                                 )
-                            })? {
-                            Some((_, state)) => state,
-                            None => {
-                                await_committed_child_boundary(
-                                    boundary_reader.as_ref(),
-                                    &child_run_id,
-                                    context.cancellation.as_ref(),
-                                )
-                                .await?
-                            }
+                            })?;
+                    match resumed {
+                        Some((_, state)) => state,
+                        None => {
+                            await_committed_child_boundary(
+                                boundary_reader.as_ref(),
+                                &child_run_id,
+                                context.cancellation.as_ref(),
+                            )
+                            .await?
                         }
                     }
                 }
-            }
-            (Some(_), Some(command)) => {
-                let ticket = reader.resume_ticket(&child_run_id).ok_or_else(|| {
-                    AgentRunError::Configuration(format!(
-                        "child Run {:?} is not awaiting",
-                        child_run_id.0
-                    ))
-                })?;
-                let input = PendingInput {
-                    message_id: format!(
-                        "child-resume:{}:{}",
-                        child_run_id.0, ticket.correlation_id
-                    ),
-                    run_id: child_run_id.clone(),
-                    thread_id: ticket.thread_id.clone(),
-                    correlation_id: ticket.correlation_id,
-                    available_at_ms: None,
-                    context_messages: Vec::new(),
-                    result: command.result,
-                };
-                let resumed = worker
-                    .resume_run(input, clock.clone())
-                    .await
-                    .map_err(|error| {
-                        AgentRunError::Runtime(
-                            awaken_runtime_contract::execution::Error::Execution(error.to_string()),
-                        )
-                    })?;
-                match resumed {
-                    Some((_, state)) => state,
-                    None => {
-                        await_committed_child_boundary(
-                            boundary_reader.as_ref(),
-                            &child_run_id,
-                            context.cancellation.as_ref(),
-                        )
-                        .await?
-                    }
-                }
-            }
-            _ => unreachable!("operation construction is exhaustive"),
-        }
-    } else {
-        let runtime = Arc::new(runtime);
-        let attempt_executor =
-            child_attempt_executor(runtime, &config, &adapters, authorization.policy.clone())?;
-        // A Native child is one ordinary Run, but polling that complete Run
-        // recursively inside its parent's `agent_run` poll stack can overflow a
-        // standard Tokio worker stack in debug and sufficiently deep production
-        // compositions. An owned task is only an execution boundary: the same
-        // activation, context, executor, commit authority, and cancellation token
-        // remain canonical. Abort-on-drop prevents detaching work if the parent
-        // attempt is cancelled while awaiting the child boundary.
-        AbortOnDropTask::spawn(async move {
+                _ => unreachable!("operation construction is exhaustive"),
+            })
+        } else {
+            let runtime = Arc::new(runtime);
+            let attempt_executor =
+                child_attempt_executor(runtime, &config, &adapters, authorization.policy.clone())?;
             match operation {
                 (Some(activation), None) => {
                     let context = bind_direct_child_credentials(&activation, context, &adapters)?;
@@ -484,16 +483,16 @@ pub(crate) async fn run_configured_agent_until_boundary(
                 }
                 _ => unreachable!("operation construction is exhaustive"),
             }
-        })
-        .join()
-        .await
-        .map_err(|error| {
-            AgentRunError::Runtime(awaken_runtime_contract::execution::Error::Execution(
-                format!("delegated child task failed: {error}"),
-            ))
-        })??
-    };
-    settled_agent_boundary(boundary_reader.as_ref(), &thread_id, state)
+        }?;
+        settled_agent_boundary(boundary_reader.as_ref(), &thread_id, state)
+    })
+    .join()
+    .await
+    .map_err(|error| {
+        AgentRunError::Runtime(awaken_runtime_contract::execution::Error::Execution(
+            format!("delegated child task failed: {error}"),
+        ))
+    })?
 }
 
 /// Execution-edge adapters already installed by the host process startup.

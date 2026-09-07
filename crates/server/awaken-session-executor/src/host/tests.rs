@@ -1,5 +1,6 @@
 use super::*;
 mod mcp_relay_lease;
+mod projection_convergence;
 mod resource_staging_lease;
 use crate::config::block_text;
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -2391,6 +2392,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         .ctx_for("branch-thread", None)
         .await
         .expect("B1 resident context");
+    branch.revision.0 += 1;
     branch.environment = committed_environment
         .lock()
         .unwrap()
@@ -2789,13 +2791,15 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     // durable Run blocked inside Provider inference; C2 is an interrupt accepted
     // by the Session control edge. E0 is that setup failure cannot masquerade as
     // a gate hang; E1 is that C2 returns while C1 remains blocked; E2 is the
-    // existing pool drainer committing one Cancelled terminal fact under the new
+    // existing pool drainer committing one Indeterminate terminal fact under the new
     // claim epoch. Constraint: the caller may wake the pool but must never become
     // a synchronous dispatch driver. This is the pure Native inference branch:
     // LlmExecutor yields response data, not an invoked Awaken tool. Discarding
     // that response cannot authorize a later tool call. Opaque tool abandonment
     // is separately fenced by lease_semantics::native_cancelled_external_future.
-    // No claim is made that disconnect terminates provider-side computation.
+    // C3 the blocked adapter supplies no execution-termination evidence.
+    // E2 must therefore be Indeterminate; interrupt admission alone cannot
+    // prove cancellation of provider-side computation.
     //
     // | Rule | Runtime | durable Run | Provider | interrupt | Effects |
     // |---|---|---|---|---|---|
@@ -2838,7 +2842,7 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
         .expect("R1 join")
         .expect("R1 durable Run");
     assert!(
-        matches!(result.state, RunState::Ended(EndCause::Cancelled)),
+        matches!(result.state, RunState::Ended(EndCause::Indeterminate)),
         "R1/E2: {:?}",
         result.state
     );
@@ -2849,8 +2853,8 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
             .await
             .unwrap()
             .iter()
-            .all(|row| !row.physical_attempt_active),
-        "pure inference cancellation leaves no tool effect to fence"
+            .any(|row| row.physical_attempt_active),
+        "R1 unknown model execution retains its physical fence despite terminal projection"
     );
     gate.notify_waiters();
 }
@@ -9479,6 +9483,8 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
     else {
         panic!("P1 Environment must retain its generated Store-read authority");
     };
+    // A changed aggregate Environment is a new root-CAS snapshot.
+    terminal_projection.revision.0 += 1;
     terminal_projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding: retained.binding,
         effect_id: Some(effect_id),
@@ -18684,6 +18690,8 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         Some(lease.clone()),
         None,
     );
+    // A changed aggregate Environment is a new root-CAS snapshot.
+    projection.revision.0 += 1;
     projection.environment = awaken_session_contract::SessionEnvironmentState::Suspending {
         operation: checkpoint_operation,
         source_effect_id: Box::new("terminal-source-effect".into()),
@@ -18825,6 +18833,8 @@ async fn install_terminal_recovery_projection(
     )
     .await
     .expect("install frozen terminal recovery projection");
+    // A changed aggregate Environment is a new root-CAS snapshot.
+    projection.revision.0 += 1;
     projection.environment = environment;
     host.install_test_terminal_cleanup_projection(
         &awaken_session_contract::SessionTerminalCleanupAssignment {
@@ -19127,6 +19137,8 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         .expect("A1 durable handle carries exact writable Copy evidence");
     let (disposing_environment, source_preparation, source_preparation_receipt) =
         disposing_terminal_environment(thread, &lease, &handle, checkpoint_id);
+    // A changed aggregate Environment is a new root-CAS snapshot.
+    projection.revision.0 += 1;
     projection.environment = disposing_environment;
     host.install_test_terminal_cleanup_projection(
         &awaken_session_contract::SessionTerminalCleanupAssignment {
@@ -19238,6 +19250,8 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
         .with_memory_materializations(vec![terminal_memory_evidence()])
         .expect("M0 durable handle carries exact writable Copy evidence");
     let binding = serde_json::to_string(&handle).expect("M0 encode durable binding");
+    // A changed aggregate Environment is a new root-CAS snapshot.
+    projection.revision.0 += 1;
     projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding,
         effect_id: None,
@@ -19451,6 +19465,8 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             .with_memory_materializations(vec![evidence])
             .expect("HM1 current V2 handle carries exact Memory evidence");
         let binding = serde_json::to_string(&handle).expect("HM1 encode terminal binding");
+        // A changed aggregate Environment is a new root-CAS snapshot.
+        projection.revision.0 += 1;
         projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
             binding: binding.clone(),
             effect_id: None,
@@ -19712,6 +19728,8 @@ async fn exact_terminal_cleanup_disposes_the_threads_sandbox() {
     let command = cleanup
         .command_for("t-end", "t-end")
         .expect("T1 exact root command");
+    // A changed aggregate Environment is a new root-CAS snapshot.
+    terminal_projection.revision.0 += 1;
     terminal_projection.environment = environment_state;
     host.install_test_terminal_cleanup_projection(
         &awaken_session_contract::SessionTerminalCleanupAssignment {
@@ -21882,6 +21900,8 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         "remote-terminal-image",
     );
     let environment_effect_id = create_fence.operation_id.clone();
+    // A changed aggregate Environment is a new root-CAS snapshot.
+    projection.revision.0 += 1;
     projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
         binding,
         effect_id: Some(environment_effect_id.clone()),

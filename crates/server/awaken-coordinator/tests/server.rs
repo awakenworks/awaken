@@ -1020,6 +1020,10 @@ async fn delegation_runs_a_subagent_and_returns_its_result() {
     // E2 Runtime still executes C2's list/send surface; E3 the child report
     // admits exactly one later root report Run. The immutable publication and
     // derived execution closure are distinct roles, never parallel authorities.
+    // Stack/cancellation boundary rule S1: a tool admits another Agent through
+    // the actual local Session application, which installs a frozen projection
+    // before execution. On the default Tokio test stack, both admission and
+    // execution must return the committed child report without overflow.
     let app = build_local_delegation_router().await;
     let id = create_session(&app).await;
     send_message(&app, &id, "research the answer").await;

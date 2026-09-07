@@ -137,7 +137,8 @@
       "Each independent publication-set observation fixes its Session and retains attachment/generation set identities. Lease/holder/target axes are checked separately by production admission tests and Kani; they are not retained in this set projection.",
       "Store traces retain committed sequence/time pairs. The same Rust test compares all recovered facts against the full committed snapshot; those content semantics are erased from this TLA projection.",
       "Time values use one injective increasing rank map per scenario because TLC integers cannot contain real millisecond clocks. This preserves and reflects the canonical relations using equality/order/max only, retains unknown values, and never rewrites the raw Rust trace.",
-      "Continuous HTTP traces retain execution sequence/Session, durable root revision/times/lease, attachment active/ACK sets, complete generation coordinates in root claims/directives/completed calls/reports, and stage/publish/drain ordering. Target credentials, process scheduling between checkpoints and provider internals are erased; this checks only recorded paths through the canonical driver, not every implementation execution."
+      "Continuous HTTP traces retain execution sequence/Session, durable root revision/times/lease, attachment active/ACK sets, complete generation coordinates in root claims/directives/completed calls/reports, and stage/publish/drain ordering. Target credentials, process scheduling between checkpoints and provider internals are erased; this checks only recorded paths through the canonical driver, not every implementation execution.",
+      "Environment installation observations retain the actual slot receipt revision/digest, cached binding, and installation Result across independent Hosts. Digests erase aggregate payload contents; this is executed Dispatch-entry trace checking, not universal async refinement or provider-side recovery proof."
     ],
     "families": {
       "root": {
@@ -198,6 +199,18 @@
           "trace",
           "cut",
           "count"
+        ],
+        "dependencies": []
+      },
+      "environment-projection": {
+        "model": "SessionEnvironmentProjection",
+        "config": "SessionEnvironmentConvergence",
+        "operator": "ProjectionObservation",
+        "arguments": [
+          "before",
+          "incoming",
+          "after",
+          "admitted"
         ],
         "dependencies": []
       }
@@ -306,6 +319,32 @@
           "drain-one-0",
           "published-0",
           "ack-after-0"
+        ]
+      },
+      "environment-projection-convergence": {
+        "family": "environment-projection",
+        "source": "crates/server/awaken-session-executor/src/host/tests/projection_convergence.rs",
+        "rules": [
+          "p0-A",
+          "p1-A",
+          "p1-B",
+          "p1-replay",
+          "p1-stale",
+          "p1-stale-replay",
+          "p1-conflict",
+          "p1-identity-conflict",
+          "p0-B",
+          "p0-replay",
+          "p0-stale",
+          "p0-stale-replay",
+          "p0-conflict",
+          "p0-identity-conflict",
+          "p2-B",
+          "p2-replay",
+          "p2-stale",
+          "p2-stale-replay",
+          "p2-conflict",
+          "p2-identity-conflict"
         ]
       }
     }

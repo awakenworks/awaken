@@ -115,7 +115,11 @@ impl WorkerDirectory for ConfiguredWorkerDirectory {
 }
 
 fn configured_worker() -> (WorkerIdentity, Arc<dyn WorkerDirectory>) {
-    let manifest = WorkerManifest::default();
+    // The active/active claim requires an explicitly current incarnation.
+    // ANY is historical absence of evidence, not a valid registered protocol.
+    let mut manifest = WorkerManifest::default();
+    manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     let identity = WorkerIdentity::new(WORKER_ID, WORKER_INCARNATION_ID, 1);
     let worker = RegisteredWorker {
         snapshot: WorkerSnapshot {
@@ -374,7 +378,13 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
     let run_id = RunId("active-active-run".into());
     let thread_id = ThreadId("active-active-thread".into());
     queue_a
-        .enqueue(RunDispatch::new(activation(&run_id, &thread_id)))
+        // Current registration and current dispatch are both prerequisites.
+        // Legacy default rows remain protocol 1 and must not be claimed by this
+        // current-only incarnation; compatibility rejection has its own matrix.
+        .enqueue(
+            RunDispatch::new(activation(&run_id, &thread_id))
+                .with_placement(awaken_dispatch::PlacementRequirements::remote_required()),
+        )
         .await
         .expect("enqueue through Control A");
     let claimed = queue_b

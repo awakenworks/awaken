@@ -109,6 +109,22 @@ mod verification {
                 && min <= CURRENT_RUNTIME_PROTOCOL_VERSION
                 && CURRENT_RUNTIME_PROTOCOL_VERSION <= max
         );
+        // New requirements use the execution protocol authority, independently
+        // of the envelope version. Either location admits the exact same floor.
+        let request = if kani::any::<bool>() {
+            PlacementRequirements::remote_required()
+        } else {
+            PlacementRequirements::remote_preferred()
+        };
+        assert_eq!(
+            request.runtime_protocol_version,
+            CURRENT_RUNTIME_PROTOCOL_VERSION
+        );
+        assert_eq!(request.dispatch_contract_version, CURRENT_CONTRACT_VERSION);
+        assert_eq!(
+            worker.supports_current_runtime_protocol(),
+            min > 0 && range.contains(request.runtime_protocol_version)
+        );
     }
 
     #[kani::proof]
@@ -1251,9 +1267,33 @@ mod tests {
         let legacy: PlacementRequirements = serde_json::from_str("{}").unwrap();
         assert_eq!(legacy.contract_version, 0);
         assert_eq!(legacy.location, ExecutionLocation::RemotePreferred);
-        let strict = PlacementRequirements::remote_required();
-        assert_eq!(strict.contract_version, CURRENT_CONTRACT_VERSION);
-        assert_eq!(strict.location, ExecutionLocation::RemoteRequired);
+        // C1 legacy decoder => preserve v0; C2 new required/preferred request
+        // => envelope v1 and independently current runtime v3. The exact-current
+        // Worker must claim both; changing an envelope must not imply protocol support.
+        assert_eq!(legacy.runtime_protocol_version, 0);
+        for (request, location) in [
+            (
+                PlacementRequirements::remote_required(),
+                ExecutionLocation::RemoteRequired,
+            ),
+            (
+                PlacementRequirements::remote_preferred(),
+                ExecutionLocation::RemotePreferred,
+            ),
+        ] {
+            assert_eq!(request.contract_version, CURRENT_CONTRACT_VERSION);
+            assert_eq!(request.dispatch_contract_version, CURRENT_CONTRACT_VERSION);
+            assert_eq!(
+                request.runtime_protocol_version,
+                CURRENT_RUNTIME_PROTOCOL_VERSION
+            );
+            assert_eq!(request.location, location);
+            let worker = WorkerManifest {
+                runtime_protocol: VersionRange::exact(CURRENT_RUNTIME_PROTOCOL_VERSION),
+                ..Default::default()
+            };
+            assert!(can_claim(&worker, &request).is_ok());
+        }
     }
 
     #[test]

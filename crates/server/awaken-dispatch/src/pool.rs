@@ -1051,36 +1051,38 @@ mod in_flight_tests {
         assert_eq!(drain_error_backoff(u32::MAX), Duration::from_secs(5), "E3");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn one_shared_recovery_probe_crosses_the_error_gate() {
-        // Causes: C1 one queue outage; C2 multiple drain tasks. Effects: E1 one
-        // probe crosses after the deadline; E2 every sibling remains blocked.
-        // Constraint/Invariant: retry authority is pool-wide; per-task counters
-        // must not rotate fresh first retries. Decision rule: with C1+C2, exactly
-        // one waiter finishes before shutdown and its sibling does not.
-        let gate = Arc::new(DrainErrorGate::default());
-        let shutdown = CancellationToken::new();
-        assert_eq!(gate.record_failure().await.0, 1);
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
 
-        let first = {
-            let gate = gate.clone();
-            let shutdown = shutdown.clone();
-            tokio::spawn(async move { gate.wait_cycle(&shutdown).await })
-        };
-        let second = {
-            let gate = gate.clone();
-            let shutdown = shutdown.clone();
-            tokio::spawn(async move { gate.wait_cycle(&shutdown).await })
-        };
-        tokio::time::sleep(Duration::from_millis(130)).await;
-        assert_eq!(
-            u8::from(first.is_finished()) + u8::from(second.is_finished()),
-            1,
-            "one pool-wide probe owns recovery authority"
-        );
+        // Causes: C1 one outage; C2 two waiting drain cycles; C3 retry deadline;
+        // C4 shutdown. Rules: before C3 both wait; at C3 exactly one gets the
+        // shared probe; its sibling still waits; C4 releases that sibling with
+        // false. Poll both futures and advance virtual time: scheduler load and
+        // fixed wall-clock sleeps must not decide the test's outcome.
+        let gate = DrainErrorGate::default();
+        let shutdown = CancellationToken::new();
+        let (errors, delay) = gate.record_failure().await;
+        assert_eq!(errors, 1);
+        let first = gate.wait_cycle(&shutdown);
+        let second = gate.wait_cycle(&shutdown);
+        tokio::pin!(first, second);
+        poll_fn(|cx| {
+            assert!(first.as_mut().poll(cx).is_pending());
+            assert!(second.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        tokio::time::advance(delay).await;
+        assert!(first.await, "one pool-wide probe owns recovery authority");
+        poll_fn(|cx| {
+            assert!(second.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
         shutdown.cancel();
-        let _ = first.await;
-        let _ = second.await;
+        assert!(!second.await, "shutdown releases the blocked sibling");
     }
 
     struct ReconciliationResolver {
